@@ -6,6 +6,7 @@
 #include <memory>
 #include <string_view>
 #include <unordered_map>
+#include <array>
 
 
 namespace iv {
@@ -299,9 +300,11 @@ namespace iv {
             }
             std::span<std::byte> memory_after = allocator.get_buffer();
 
+#ifndef NDEBUG
             std::byte* before_end = memory_before.data() + memory_before.size();
             std::byte* after_end = memory_after.data() + memory_after.size();
             assert(before_end == after_end);
+#endif
             return { memory_before.data(), memory_before.size() - memory_after.size() };
         }
         else

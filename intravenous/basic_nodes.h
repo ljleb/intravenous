@@ -1,5 +1,4 @@
 ﻿#pragma once
-#include "graph_node.h"
 #include "node.h"
 #include "alligator.h"
 #include "polyblep.h"
@@ -159,7 +158,7 @@ namespace iv {
         template<class Alloc, class Ctx>
         void init_buffer(Alloc& alloc, Ctx& ctx) const
         {
-            State& st = alloc.new_object<State>();
+            State& st = alloc.template new_object<State>();
             st.slot = ctx.acquire_detach_slot(id, alloc);
         }
 
@@ -184,7 +183,7 @@ namespace iv {
         template<class Alloc, class Ctx>
         void init_buffer(Alloc& alloc, Ctx& ctx) const
         {
-            State& st = alloc.new_object<State>();
+            State& st = alloc.template new_object<State>();
             st.slot = ctx.acquire_detach_slot(id, alloc);
         }
 
@@ -201,7 +200,7 @@ namespace iv {
             return std::array<InputConfig, 1>{};
         }
 
-        void tick(TickState const& state) const
+        void tick(TickState const&) const
         {}
     };
 
@@ -250,12 +249,8 @@ namespace iv {
         }
     };
 
-    class Integrator {
-        double const* _update_frequency;
-
-    public:
-        constexpr explicit Integrator(double const* update_frequency) :
-            _update_frequency(update_frequency)
+    struct Integrator {
+        constexpr explicit Integrator()
         {}
 
         constexpr auto inputs() const
@@ -263,7 +258,8 @@ namespace iv {
             return std::array {
                 InputConfig { "f_prev" },
                 InputConfig { "f"},
-                InputConfig { .name = "dx", .default_value = 0.0},
+                InputConfig { .name = "dx", .default_value = 1.0 },
+                InputConfig { .name = "reset", .default_value = 0.0 },
             };
         }
 
@@ -277,16 +273,16 @@ namespace iv {
         void tick(iv::TickState const& state)
         {
             auto& out = state.outputs[0];
-            auto const& reset = state.inputs[2].get();
+            auto const reset = state.inputs[3].get();
             if (reset)
             {
                 out.push(0.0);
                 return;
             }
 
-            auto const& f_prev = state.inputs[0].get();
-            auto const& f = state.inputs[1].get();
-            auto const& dx = *_update_frequency;
+            auto const f_prev = state.inputs[0].get();
+            auto const f = state.inputs[1].get();
+            auto const dx = state.inputs[2].get();
             out.push(warp_pm1(f_prev + f * dx, 1.0));
         }
     };
@@ -403,7 +399,10 @@ namespace iv {
         ) :
             _min(min),
             _max(max),
-            _seed(seed.has_value() ? *seed : (std::random_device{}() << (sizeof(unsigned int)*CHAR_BIT)) + std::random_device{}())
+            _seed(seed.has_value()
+                ? *seed
+                : (static_cast<std::uint64_t>(std::random_device{}()) << 32) |
+                  static_cast<std::uint64_t>(std::random_device{}()))
         {}
 
         constexpr auto outputs() const
@@ -548,10 +547,10 @@ namespace iv {
         template<typename A>
         void init_buffer(A& alloc) const
         {
-            State& s = alloc.new_object<State>();
+            State& s = alloc.template new_object<State>();
             size_t range = std::max<ptrdiff_t>(0, _max - _min);
-            alloc.assign(s.weights, alloc.new_array<Sample>(range));
-            for (ptrdiff_t i = 0; i < range; ++i)
+            alloc.assign(s.weights, alloc.template new_array<Sample>(range));
+            for (size_t i = 0; i < range; ++i)
             {
                 alloc.assign(alloc.at(s.weights, i), std::powf(_lambda, range - 1 - static_cast<ptrdiff_t>(i)));
             }
@@ -721,8 +720,8 @@ namespace iv {
         template<typename Alloc>
         void init_buffer(Alloc& alloc) const
         {
-            State& st = alloc.new_object<State>();
-            alloc.assign(st.w, alloc.new_array<float>(_order));
+            State& st = alloc.template new_object<State>();
+            alloc.assign(st.w, alloc.template new_array<float>(_order));
             alloc.fill_n(st.w, 0.f);              // cold-start weights
             alloc.assign(alloc.at(st.w, 0),  1.f);
         }
@@ -752,11 +751,12 @@ namespace iv {
                 float s = in.get(k);
                 norm += s * s;
             }
-            const float beta = 0.01f;/*
+            // const float beta = 0.01f;
+            /*
             float mu_dyn = _learning_rate * (1.f + beta * err * err / norm);
             mu_dyn = std::clamp(mu_dyn, _learning_rate, 4.f * _learning_rate);*/
 
-            float err_clip = 0.1;
+            // float err_clip = 0.1f;
             //if (fabs(err) > err_clip) err = copysign(err_clip, err);
 
             float g = _lr * err / norm;
@@ -812,11 +812,11 @@ namespace iv {
         template<typename Allocator>
         void init_buffer(Allocator& allocator) const
         {
-            State& s = allocator.new_object<State>();
-            allocator.assign(s.W1, allocator.new_array<float>(_h * (_p + _q)));
-            allocator.assign(s.W2, allocator.new_array<float>(_h));
-            allocator.assign(s.b1, allocator.new_array<float>(_h));
-            allocator.assign(s.a, allocator.new_array<float>(_h));
+            State& s = allocator.template new_object<State>();
+            allocator.assign(s.W1, allocator.template new_array<float>(_h * (_p + _q)));
+            allocator.assign(s.W2, allocator.template new_array<float>(_h));
+            allocator.assign(s.b1, allocator.template new_array<float>(_h));
+            allocator.assign(s.a, allocator.template new_array<float>(_h));
             allocator.fill_n(s.W1, 0.f);
             allocator.fill_n(s.W2, 0.f);
             allocator.fill_n(s.b1, 0.f);
@@ -934,18 +934,18 @@ namespace iv {
         template<typename A>
         void init_buffer(A& alloc) const
         {
-            State& s = alloc.new_object<State>();
+            State& s = alloc.template new_object<State>();
 
-            alloc.assign(s.W1, alloc.new_array<float>(_h1 * (_p + _q)));
-            alloc.assign(s.b1, alloc.new_array<float>(_h1));
+            alloc.assign(s.W1, alloc.template new_array<float>(_h1 * (_p + _q)));
+            alloc.assign(s.b1, alloc.template new_array<float>(_h1));
 
-            alloc.assign(s.W2, alloc.new_array<float>(_h2 * _h1));
-            alloc.assign(s.b2, alloc.new_array<float>(_h2));
+            alloc.assign(s.W2, alloc.template new_array<float>(_h2 * _h1));
+            alloc.assign(s.b2, alloc.template new_array<float>(_h2));
 
-            alloc.assign(s.W3, alloc.new_array<float>(_h2));
+            alloc.assign(s.W3, alloc.template new_array<float>(_h2));
 
-            alloc.assign(s.a1, alloc.new_array<float>(_h1));
-            alloc.assign(s.a2, alloc.new_array<float>(_h2));
+            alloc.assign(s.a1, alloc.template new_array<float>(_h1));
+            alloc.assign(s.a2, alloc.template new_array<float>(_h2));
 
             alloc.fill_n(s.W1, 0.f); alloc.fill_n(s.W2, 0.f); alloc.fill_n(s.W3, 0.f);
             alloc.fill_n(s.b1, 0.f); alloc.fill_n(s.b2, 0.f);
@@ -1071,8 +1071,8 @@ namespace iv {
         template<typename A>
         void init_buffer(A& alloc) const
         {
-            State& s = alloc.new_object<State>();
-            alloc.assign(s.w, alloc.new_array<float>(2 * _p));
+            State& s = alloc.template new_object<State>();
+            alloc.assign(s.w, alloc.template new_array<float>(2 * _p));
             alloc.fill_n(s.w, 0.f);
         }
 
@@ -1203,6 +1203,199 @@ namespace iv {
             Sample alpha = state.inputs[2].get();
             auto& out = state.outputs[0];
             out.push(a + alpha*(b-a));
+        }
+    };
+
+    class BufferSink {
+        iv::Sample* _destination;
+        size_t _size;
+
+    public:
+        constexpr explicit BufferSink(
+            iv::Sample* destination,
+            size_t size
+        ):
+            _destination(destination),
+            _size(size)
+        {}
+
+        constexpr auto inputs() const
+        {
+            return std::array<iv::InputConfig, 1>{};
+        }
+
+        void tick(iv::TickState const& state)
+        {
+            auto& in = state.inputs[0];
+            if (state.index < _size) _destination[state.index] = in.get();
+        }
+    };
+
+    class BufferSource {
+        iv::Sample* _source;
+        size_t _size;
+
+    public:
+        constexpr explicit BufferSource(
+            iv::Sample* source,
+            size_t size
+        ):
+            _source(source),
+            _size(size)
+        {}
+
+        constexpr auto outputs() const
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+
+        void tick(iv::TickState const& state)
+        {
+            auto& out = state.outputs[0];
+            if (state.index < _size) {
+                out.push(_source[state.index]);
+            }
+            else {
+                out.push(_source[_size-1]);
+            }
+        }
+    };
+
+    struct WhackIirThing {
+        constexpr explicit WhackIirThing()
+        {}
+
+        constexpr auto inputs() const
+        {
+            return std::array<iv::InputConfig, 3>{};
+        }
+
+        constexpr auto outputs() const
+        {
+            return std::array<iv::OutputConfig, 2>{};
+        }
+
+        void tick(iv::TickState const& state) const
+        {
+            iv::Sample in_dry = state.inputs[0].get();
+            iv::Sample in_control = state.inputs[1].get();
+            iv::Sample alpha = 1 - in_control; for (size_t i = 0; i < 4; ++i) alpha *= alpha;
+
+            auto& out_low = state.outputs[0];
+            auto& out_high = state.outputs[1];
+            iv::Sample last_low = out_low.get();
+
+            iv::Sample low = last_low + alpha * (in_dry - last_low);
+            out_low.push(low);
+            out_high.push(in_dry - low);
+        }
+    };
+
+    struct SimpleIirHighPass {
+        static constexpr iv::Sample const FMIN = 1;
+        static constexpr iv::Sample const FMAX = 4.41e4;
+
+        constexpr explicit SimpleIirHighPass()
+        {}
+
+        constexpr auto inputs() const
+        {
+            return std::array {
+                iv::InputConfig { .name = "in", .history = 1 },
+                iv::InputConfig { .name = "cutoff" },
+                iv::InputConfig { .name = "dx", .default_value = 1.0 },
+            };
+        }
+
+        constexpr auto outputs() const
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+
+        void tick(iv::TickState const& state) const
+        {
+            auto& in = state.inputs[0];
+            auto const ctrl = state.inputs[1].get();          // ∈ [0,1]
+            auto const dx = state.inputs[1].get();
+            auto& out = state.outputs[0];
+
+            // compute host the *usable* max cutoff
+            auto const usableMax = std::min<iv::Sample>(FMAX, 0.5 / dx);
+
+            // 2) (optionally) exponential sweep, clamped
+            auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);
+
+            // normalize and compute IIR coeffs
+            auto const norm = f_c * dx;                     // ∈ [0, usableMax/fs] ⩽ 0.5
+            auto const c = std::tan(std::_Pi_val * norm);
+            auto const a1 = (1.0 - c) / (1.0 + c);
+            auto const b0 = 1.0 / (1.0 + c);
+
+            // standard one‑pole highpass:
+            auto const x = in.get(0);
+            auto const x1 = in.get(1);
+            auto const y1 = out.get();
+            auto const y = a1*y1 + b0*(x - x1);
+
+            out.push(y);
+        }
+    };
+
+    struct SimpleIirLowPass {
+        static constexpr iv::Sample const FMIN = 2e1;
+        static constexpr iv::Sample const FMAX = 4.41e4;
+
+        constexpr explicit SimpleIirLowPass()
+        {}
+
+        constexpr auto inputs() const
+        {
+            return std::array {
+                iv::InputConfig { .name = "in", .history = 1 },
+                iv::InputConfig { .name = "cutoff" },
+                iv::InputConfig { .name = "dx", .default_value = 1.0 },
+            };
+        }
+
+        constexpr auto outputs() const
+        {
+            return std::array {
+                iv::OutputConfig { "out" },
+            };
+        }
+
+        void tick(iv::TickState const& state) const
+        {
+            auto& in_port = state.inputs[0];
+            auto const ctrl = state.inputs[1].get();          // ∈ [0,1]
+            auto const dx = state.inputs[1].get();
+            auto& out = state.outputs[0];
+
+            // 2) compute sample‐rate and clamped max cutoff
+            auto const usableMax = std::min<iv::Sample>(FMAX, 0.5 / dx);
+
+            // 3a) linear sweep: maps 0→1 straight to FMIN→usableMax
+            //iv::Sample fc_linear = FMIN + u * (usableMax - FMIN);
+
+            // 3b) exponential sweep: perceptually smoother
+            auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);
+
+            // 4) normalize to [0…0.5] and compute warped c
+            auto const norm = f_c * dx;             // now ∈ [FMIN/fs … usableMax/fs] ⩽ 0.5
+            auto const c = std::tan(std::_Pi_val * norm);
+
+            // 5) one‑pole low‑pass coeffs
+            auto const a1 = (1.0 - c) / (1.0 + c);
+            auto const alpha = c / (1.0 + c);
+
+            // 6) apply difference equation
+            auto const x = in_port.get(0);
+            auto const x_prev = in_port.get(1);
+            auto const y_prev = out.get();
+
+            auto const y = a1*y_prev + alpha*(x + x_prev);
+
+            out.push(y);
         }
     };
 }

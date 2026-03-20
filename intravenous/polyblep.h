@@ -33,15 +33,15 @@ namespace iv {
 
     IV_FORCEINLINE static Sample polyblep_error(Sample sample, Sample delta, Sample warp_threshold, PolyblepSide side) noexcept
     {
-        Sample sign = std::copysign(1.0, delta);
-        delta = std::copysign(delta, 1.0);
+        Sample sign = std::copysignf(1.0, delta);
+        delta = std::copysignf(delta, 1.0);
 
         Sample phi = polyblep_phi(sample, warp_threshold);
         Sample p = polyblep_p(phi, delta, warp_threshold, side) * sign;
         return p;
     }
 
-    IV_FORCEINLINE static inline Sample warp_pm1(Sample x, Sample limit) noexcept
+    IV_FORCEINLINE static Sample warp_pm1(Sample x, Sample limit) noexcept
     {
         Sample period = Sample(2.0 * limit);
         return x - std::floor((x + limit) / period) * period;

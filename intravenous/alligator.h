@@ -38,7 +38,7 @@ namespace iv {
             size_t const alignment = alignof(T);
             void* buffer_start = buffer.data();
             size_t space_left = buffer.size();
-            if (!std::align(alignof(T), num_bytes, buffer_start, space_left)) throw std::bad_alloc();
+            if (!std::align(alignment, num_bytes, buffer_start, space_left)) throw std::bad_alloc();
             T* ptr = ::new (buffer_start) T[number];
             buffer = { static_cast<std::byte*>(buffer_start) + num_bytes, space_left - num_bytes };
             return std::span<T> { ptr, number };
@@ -51,7 +51,7 @@ namespace iv {
             size_t const alignment = alignof(T);
             void* buffer_start = buffer.data();
             size_t space_left = buffer.size();
-            if (!std::align(alignof(T), num_bytes, buffer_start, space_left)) throw std::bad_alloc();
+            if (!std::align(alignment, num_bytes, buffer_start, space_left)) throw std::bad_alloc();
             T* ptr = ::new (buffer_start) T;
             buffer = { static_cast<std::byte*>(buffer_start) + num_bytes, space_left - num_bytes };
             return *ptr;

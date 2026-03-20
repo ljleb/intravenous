@@ -1,5 +1,4 @@
 #pragma once
-
 #include "graph_node.h"
 #include "basic_nodes.h"
 #include "node.h"
@@ -42,7 +41,7 @@ namespace iv {
 
     struct NamedRef {
         std::string_view name;
-        SignalRef signal;
+        std::variant<SignalRef, Sample> value;
     };
 
     class NodeRef {
@@ -102,8 +101,7 @@ namespace iv {
     public:
         explicit GraphBuilder(std::string_view parent_path = {}):
             _parent_path(parent_path)
-        {
-        }
+        {}
 
         std::string debug_node_id(size_t index) const
         {
@@ -122,7 +120,7 @@ namespace iv {
             return SignalRef(*this, GRAPH_ID, _public_inputs.size() - 1);
         }
 
-        SignalRef input(std::string_view name)
+        SignalRef input(std::string_view name, Sample default_value = 0.0)
         {
             if (name.empty()) {
                 details::error("input name cannot be empty");
@@ -131,7 +129,7 @@ namespace iv {
                 details::error("input '" + std::string(name) + "' already exists");
             }
 
-            _public_inputs.emplace_back(InputConfig{ .name = name });
+            _public_inputs.emplace_back(InputConfig { .name = name, .default_value = default_value });
             _input_name_to_index.emplace(name, _public_inputs.size() - 1);
             return SignalRef(*this, GRAPH_ID, _public_inputs.size() - 1);
         }
@@ -171,7 +169,9 @@ namespace iv {
                 details::error("outputs(...) was already called on builder " + _parent_path);
             }
 
-            std::array<SignalRef, sizeof...(Refs)> refs_array{ std::forward<Refs>(refs)... };
+            std::array<SignalRef, sizeof...(Refs)> refs_array{
+                lift_to_signal(std::forward<Refs>(refs))...
+            };
             _public_outputs.clear();
             _public_outputs.reserve(refs_array.size());
 
@@ -206,13 +206,6 @@ namespace iv {
 
             size_t output_port = 0;
             for (auto const& ref : refs) {
-                if (ref.signal.graph_builder != this) {
-                    details::error(
-                        "builder " + _parent_path + ": outputs({ ... }): "
-                        + ref.signal.to_string() + " belongs to another builder"
-                    );
-                }
-
                 if (ref.name.empty()) {
                     details::error(
                         "builder " + _parent_path + ": named outputs must not use empty names"
@@ -226,8 +219,10 @@ namespace iv {
                 }
                 output_names.insert(ref.name);
 
+                auto const signal = lift_to_signal(ref);
+
                 _edges.emplace(GraphEdge{
-                    PortId{ ref.signal.node_index, ref.signal.output_port },
+                    signal,
                     PortId{ GRAPH_ID, output_port++ },
                     });
                 _public_outputs.emplace_back(OutputConfig{ .name = ref.name });
@@ -307,6 +302,30 @@ namespace iv {
             _detached_reader_outputs.insert(detached);
 
             return detached;
+        }
+
+        SignalRef lift_to_signal(SignalRef s)
+        {
+            if (s.graph_builder != this) {
+                details::error(
+                    "builder " + _parent_path + ": signal " + s.to_string() + " belongs to another builder"
+                );
+            }
+            return s;
+        }
+
+        template<class T>
+        requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        SignalRef lift_to_signal(T value)
+        {
+            return node<Constant>(static_cast<Sample>(value));
+        }
+
+        SignalRef lift_to_signal(NamedRef const& ref)
+        {
+            return std::visit([&](auto const& v) -> SignalRef {
+                return lift_to_signal(v);
+            }, ref.value);
         }
 
         static auto make_source_target_edge_maps(PreparedGraph const& g)
@@ -843,7 +862,9 @@ namespace iv {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
         }
-        std::array<SignalRef, sizeof...(Refs)> refs_array{ std::forward<Refs>(refs)... };
+        std::array<SignalRef, sizeof...(Refs)> refs_array{
+            _graph_builder->lift_to_signal(std::forward<Refs>(refs))...
+        };
 
         if (_graph_builder->_placed_nodes.contains(_index)) {
             details::error(
@@ -902,9 +923,11 @@ namespace iv {
                 );
             }
 
-            if (ref.signal.graph_builder != _graph_builder) {
+            auto const signal = _graph_builder->lift_to_signal(ref);
+
+            if (signal.graph_builder != _graph_builder) {
                 details::error(
-                    ref.signal.to_string() + " "
+                    signal.to_string() + " "
                     "does not belong to the same builder as " + to_string()
                 );
             }
@@ -919,9 +942,10 @@ namespace iv {
                         );
                     }
 
-                    PortId source{ ref.signal.node_index, ref.signal.output_port };
-                    PortId target{ _index, input_port };
-                    _graph_builder->_edges.emplace(GraphEdge{ source, target });
+                    _graph_builder->_edges.emplace(GraphEdge{
+                        signal,
+                        PortId { _index, input_port },
+                    });
 
                     placed_inputs[input_port] = true;
                     placed = true;

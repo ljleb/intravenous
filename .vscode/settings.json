@@ -1,0 +1,19 @@
+{
+  "cmake.useVsDeveloperEnvironment": "always",
+  "cmake.generator": "Ninja",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build",
+    "--query-driver=C:/Program Files/Microsoft Visual Studio/*/*/VC/Tools/MSVC/**/bin/Hostx64/x64/cl.exe",
+    "--log=verbose"
+  ],
+  "terminal.integrated.profiles.windows": {
+    "MSVC Dev Shell": {
+      "path": "C:\\Windows\\System32\\cmd.exe",
+      "args": [
+        "/k",
+        "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat"
+      ]
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "MSVC Dev Shell"
+}

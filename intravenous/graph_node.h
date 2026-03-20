@@ -296,7 +296,6 @@ namespace iv {
                         output_configs = get_outputs(node);
                     }
                     size_t const num_inputs = input_configs.size();
-                    size_t const num_outputs = output_configs.size();
                     std::span<SharedPortData> inputs_port_data = node_inputs_port_data[node_i];
 
                     for (size_t input_i = 0; input_i < num_inputs; ++input_i)
