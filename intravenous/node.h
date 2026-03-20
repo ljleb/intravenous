@@ -180,7 +180,7 @@ namespace iv {
                 return it->second;
             }
 
-            Sample* slot = &alloc.new_object<Sample>();
+            Sample* slot = &alloc.template new_object<Sample>();
             alloc.assign(*slot, Sample{ 0 });
             detach_slots.emplace(id, slot);
             return slot;
@@ -267,7 +267,7 @@ namespace iv {
         }
         else
         {
-            return std::array<InputConfig, 0>{};
+            return std::span<InputConfig, 0>{};
         }
     }
 

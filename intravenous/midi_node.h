@@ -159,17 +159,17 @@ namespace iv {
             * };
             */
 
-            MidiState& midi_state = allocator.new_object<MidiState>();
+            MidiState& midi_state = allocator.template new_object<MidiState>();
 
             auto input_configs = get_inputs(_graph_node);
 
-            std::span<SharedPortData> all_input_data = allocator.allocate_array<SharedPortData>(input_configs.size());
-            allocator.assign(midi_state.inputs, allocator.allocate_array<InputPort>(input_configs.size()));
+            std::span<SharedPortData> all_input_data = allocator.template allocate_array<SharedPortData>(input_configs.size());
+            allocator.assign(midi_state.inputs, allocator.template allocate_array<InputPort>(input_configs.size()));
 
             for (size_t input_i = 0; input_i < input_configs.size(); ++input_i)
             {
                 size_t num_samples = calculate_port_buffer_size(0, input_configs[input_i].history, 0);
-                std::span<Sample> samples = allocator.new_array<Sample>(num_samples);
+                std::span<Sample> samples = allocator.template new_array<Sample>(num_samples);
                 allocator.fill_n(samples, input_configs[input_i].default_value);
 
                 SharedPortData& input_data = allocator.at(all_input_data, input_i);
@@ -187,10 +187,10 @@ namespace iv {
 
             auto output_configs = get_outputs(_graph_node);
 
-            std::span<SharedPortData> all_output_data = allocator.allocate_array<SharedPortData>(1);
-            allocator.assign(midi_state.outputs, allocator.allocate_array<OutputPort>(1));
+            std::span<SharedPortData> all_output_data = allocator.template allocate_array<SharedPortData>(1);
+            allocator.assign(midi_state.outputs, allocator.template allocate_array<OutputPort>(1));
             size_t num_output_samples = calculate_port_buffer_size(output_configs[0].latency, 0, output_configs[0].history);
-            std::span<Sample> output_samples = allocator.new_array<Sample>(num_output_samples);
+            std::span<Sample> output_samples = allocator.template new_array<Sample>(num_output_samples);
 
             SharedPortData& output_data = allocator.at(all_output_data, 0);
             OutputPort& output_port = allocator.at(midi_state.outputs, 0);

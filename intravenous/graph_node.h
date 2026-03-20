@@ -184,9 +184,9 @@ namespace iv {
             std::vector<InputConfig> private_input_configs(num_outputs());
             OutputConfig private_outputs_config;
 
-            GraphState& graph_state = allocator.new_object<GraphState>();
-            allocator.assign(graph_state.node_states, allocator.new_array<NodeState>(num_nodes));
-            allocator.assign(graph_state.outputs, allocator.allocate_array<OutputPort>(num_inputs()));
+            GraphState& graph_state = allocator.template new_object<GraphState>();
+            allocator.assign(graph_state.node_states, allocator.template new_array<NodeState>(num_nodes));
+            allocator.assign(graph_state.outputs, allocator.template allocate_array<OutputPort>(num_inputs()));
 
             auto [source_of, target_of] = make_source_target_edge_maps();
 
@@ -202,8 +202,8 @@ namespace iv {
                     ? graph_state
                     : allocator.at(graph_state.node_states, node_i);
 
-                std::span<InputConfig const> input_configs;
-                std::span<OutputConfig const> output_configs;
+                std::vector<InputConfig> input_configs;
+                std::vector<OutputConfig> output_configs;
                 if (node_i == GRAPH_ID)
                 {
                     // private inputs
@@ -212,14 +212,14 @@ namespace iv {
                 }
                 else
                 {
-                    input_configs = get_inputs(node);
-                    output_configs = get_outputs(node);
+                    input_configs.assign_range(get_inputs(node));
+                    output_configs.assign_range(get_outputs(node));
                 }
                 size_t const num_inputs = input_configs.size();
                 size_t const num_outputs = output_configs.size();
-                allocator.assign(node_state.inputs, allocator.allocate_array<InputPort>(num_inputs));
-                if (node_i != GRAPH_ID) allocator.assign(node_state.outputs, allocator.allocate_array<OutputPort>(num_outputs));
-                node_inputs_port_data[node_i] = allocator.allocate_array<SharedPortData>(num_inputs);
+                allocator.assign(node_state.inputs, allocator.template allocate_array<InputPort>(num_inputs));
+                if (node_i != GRAPH_ID) allocator.assign(node_state.outputs, allocator.template allocate_array<OutputPort>(num_outputs));
+                node_inputs_port_data[node_i] = allocator.template allocate_array<SharedPortData>(num_inputs);
 
                 latency_accumulator.align_latencies(node, node_i, input_configs, output_configs, target_of);
 
@@ -248,14 +248,14 @@ namespace iv {
                         num_port_samples = calculate_port_buffer_size(0, input_config.history, 0);
                     }
 
-                    input_ports_samples.insert({ this_input, allocator.allocate_array<Sample>(num_port_samples) });
+                    input_ports_samples.insert({ this_input, allocator.template allocate_array<Sample>(num_port_samples) });
                 }
 
                 if (node_i != GRAPH_ID)
                 {
                     CountingNonAllocator counter(allocator.get_buffer().data());
                     do_init_buffer(node, counter, counting_context);
-                    allocator.assign(node_state.buffer, allocator.allocate_array<std::byte>(counter.estimate_buffer_size()));
+                    allocator.assign(node_state.buffer, allocator.template allocate_array<std::byte>(counter.estimate_buffer_size()));
                 }
             };
 
@@ -282,8 +282,8 @@ namespace iv {
                         ? graph_state
                         : allocator.at(graph_state.node_states, node_i);
 
-                    std::span<InputConfig const> input_configs;
-                    std::span<OutputConfig const> output_configs;
+                    std::vector<InputConfig> input_configs;
+                    std::vector<OutputConfig> output_configs;
                     if (node_i == GRAPH_ID)
                     {
                         // private inputs
@@ -292,8 +292,8 @@ namespace iv {
                     }
                     else
                     {
-                        input_configs = get_inputs(node);
-                        output_configs = get_outputs(node);
+                        input_configs.assign_range(get_inputs(node));
+                        output_configs.assign_range(get_outputs(node));
                     }
                     size_t const num_inputs = input_configs.size();
                     std::span<SharedPortData> inputs_port_data = node_inputs_port_data[node_i];
@@ -478,7 +478,7 @@ namespace iv {
                 reinterpret_cast<std::byte*>(_buffer.data()),
                 _buffer.size() * sizeof(AlignedBytes)
             };
-            _node.tick({ NodeState {.buffer = buffer_span }, midi, index });
+            _node.tick({ NodeState { .inputs = {}, .outputs = {}, .buffer = buffer_span }, midi, index });
         }
 
         size_t get_latency() const
