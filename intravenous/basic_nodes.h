@@ -259,7 +259,6 @@ namespace iv {
                 InputConfig { "f_prev" },
                 InputConfig { "f"},
                 InputConfig { .name = "dx", .default_value = 1.0 },
-                InputConfig { .name = "reset", .default_value = 0.0 },
             };
         }
 
@@ -273,13 +272,6 @@ namespace iv {
         void tick(iv::TickState const& state)
         {
             auto& out = state.outputs[0];
-            auto const reset = state.inputs[3].get();
-            if (reset)
-            {
-                out.push(0.0);
-                return;
-            }
-
             auto const f_prev = state.inputs[0].get();
             auto const f = state.inputs[1].get();
             auto const dx = state.inputs[2].get();

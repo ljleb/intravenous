@@ -89,7 +89,7 @@ namespace iv {
 
         Graph::Nodes _nodes;
         Graph::Edges _edges;
-        std::unordered_set<size_t> _placed_nodes;
+        std::unordered_set<PortId> _placed_input_ports;
 
         std::vector<InputConfig> _public_inputs;
         std::unordered_map<std::string_view, size_t> _input_name_to_index;
@@ -868,18 +868,11 @@ namespace iv {
             _graph_builder->lift_to_signal(std::forward<Refs>(refs))...
         };
 
-        if (_graph_builder->_placed_nodes.contains(_index)) {
+        auto const inputs = get_inputs(node());
+        if (sizeof...(Refs) > inputs.size()) {
             details::error(
                 to_string() + " "
-                "was already placed in the graph"
-            );
-        }
-
-        size_t num_inputs = get_num_inputs(node());
-        if (sizeof...(Refs) > num_inputs) {
-            details::error(
-                to_string() + " "
-                "has at most " + std::to_string(num_inputs) + " inputs, "
+                "has at most " + std::to_string(inputs.size()) + " inputs, "
                 "got " + std::to_string(sizeof...(Refs))
             );
         }
@@ -894,12 +887,21 @@ namespace iv {
                 );
             }
 
-            PortId source{ ref.node_index, ref.output_port };
-            PortId target{ _index, input_port };
-            _graph_builder->_edges.emplace(GraphEdge{ source, target });
+            PortId const input_port_id = {_index, input_port};
+            if (_graph_builder->_placed_input_ports.contains(input_port_id)) {
+                details::error(
+                    "input port " + std::string(inputs[input_port].name) + " of " + to_string() + " "
+                    "was already placed in the graph"
+                );
+            }
+
+            _graph_builder->_placed_input_ports.insert(input_port_id);
+            _graph_builder->_edges.emplace(GraphEdge{
+                ref,
+                PortId{ _index, input_port },
+            });
         }
 
-        _graph_builder->_placed_nodes.insert(_index);
         return *this;
     }
 
@@ -908,15 +910,8 @@ namespace iv {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
         }
-        if (_graph_builder->_placed_nodes.contains(_index)) {
-            details::error(
-                to_string() + " "
-                "was already placed in the graph"
-            );
-        }
 
         auto inputs = get_inputs(node());
-        std::vector<bool> placed_inputs(inputs.size(), false);
 
         for (auto const& ref : refs) {
             if (ref.name.empty()) {
@@ -936,23 +931,24 @@ namespace iv {
 
             bool placed = false;
             for (size_t input_port = 0; input_port < inputs.size(); ++input_port) {
-                if (ref.name == inputs[input_port].name) {
-                    if (placed_inputs[input_port]) {
-                        details::error(
-                            "input '" + std::string(ref.name) + "' "
-                            "was specified more than once on " + to_string()
-                        );
-                    }
+                if (ref.name != inputs[input_port].name) continue;
 
-                    _graph_builder->_edges.emplace(GraphEdge{
-                        signal,
-                        PortId { _index, input_port },
-                    });
-
-                    placed_inputs[input_port] = true;
-                    placed = true;
-                    break;
+                PortId const input_port_id = {_index, input_port};
+                if (_graph_builder->_placed_input_ports.contains(input_port_id)) {
+                    details::error(
+                        "input port " + std::string(inputs[input_port].name) + " of " + to_string() + " "
+                        "was already placed in the graph"
+                    );
                 }
+
+                _graph_builder->_placed_input_ports.insert(input_port_id);
+                _graph_builder->_edges.emplace(GraphEdge{
+                    signal,
+                    PortId { _index, input_port },
+                });
+
+                placed = true;
+                break;
             }
 
             if (!placed) {
@@ -963,7 +959,6 @@ namespace iv {
             }
         }
 
-        _graph_builder->_placed_nodes.insert(_index);
         return *this;
     }
 

@@ -31,12 +31,12 @@ static void feedback_voice(GraphBuilder& g) {
     auto frequency = g.input("frequency", 1000.0);
     auto voice_noise = g.input("noise");
     auto dx = g.input("dx", 1.0);
-    auto reset = g.input("reset");
+    auto reset = g.input("reset", 1.0);
 
     auto integrator = g.node<Integrator>();
     auto warper = g.node<Warper>();
 
-    integrator(warper["aliased"].detach(), frequency * 2.0, dx, reset);
+    integrator(warper["aliased"].detach() * reset, frequency * 2.0, dx);
     warper(integrator + voice_noise);
     g.outputs(warper["anti_aliased"] * amplitude);
 }
@@ -78,6 +78,13 @@ NodeProcessor init_graph(
     GraphBuilder g;
 
     auto const sample_period = g.node<BufferSource>(sample_period_buffer, 1);
+    auto const shared_noise = g.node<Interpolation>();
+    auto const interpolation_params = std::array {
+        "a",
+        "b",
+    };
+
+    shared_noise({{"alpha", 0.0}});
 
     for (size_t i = 0; i < num_channels; ++i)
     {
@@ -86,7 +93,10 @@ NodeProcessor init_graph(
         auto const out = g.node<BufferSink>(channels[i], channels_size);
 
         noise({{"dx", sample_period}});
-        voice(0.5f, 200.0f, noise, sample_period);
+        if (i < interpolation_params.size()) {
+            shared_noise({{interpolation_params[i], noise}});
+        }
+        voice(0.5f, 200.0f, shared_noise, sample_period);
         out(voice);
     }
 
