@@ -43,7 +43,7 @@ namespace iv {
         explicit MidiNode(
             Graph voice_node,
             Sample silence_threshold = std::pow(10.0, -60.0 / 20.0)  // -60db
-        ) noexcept :
+        ) :
             _graph_node(std::move(voice_node)),
             _internal_latency_cache(get_internal_latency(_graph_node)),
             _silence_threshold(silence_threshold)
@@ -52,17 +52,17 @@ namespace iv {
             assert(get_num_outputs(_graph_node) == MIN_GRAPH_OUTPUTS && "the voice graph should have exactly 1 output");
         }
 
-        constexpr auto inputs() const noexcept
+        constexpr auto inputs() const
         {
             return std::vector<InputConfig>(get_num_inputs(_graph_node) - MIN_GRAPH_INPUTS + MIN_INPUTS);
         }
 
-        constexpr auto outputs() const noexcept
+        constexpr auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state) noexcept
+        void tick(TickState const& state)
         {
             MidiState& midi_state = get_midi_state(state);
 
@@ -136,7 +136,7 @@ namespace iv {
             out_mix.push(result);
         }
 
-        constexpr size_t internal_latency() const noexcept
+        constexpr size_t internal_latency() const
         {
             return _internal_latency_cache;
         }
@@ -211,7 +211,7 @@ namespace iv {
             }
         }
 
-        MidiState& get_midi_state(NodeState const& state) const noexcept
+        MidiState& get_midi_state(NodeState const& state) const
         {
             void* object = state.buffer.data();
             size_t size = state.buffer.size();

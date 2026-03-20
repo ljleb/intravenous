@@ -365,8 +365,6 @@ namespace iv {
     };
 
     class DeterministicUniformNoise {
-        Sample _min;
-        Sample _max;
         size_t _seed;
 
         uint64_t splitmix64(uint64_t index) const
@@ -377,7 +375,7 @@ namespace iv {
             return z ^ (z >> 31);
         }
 
-        double uniform_m11(uint64_t i) const {
+        double uniform_m11(uint64_t i, Sample min, Sample max) const {
             // 1) harvest top 52 bits of i → mantissa
             uint64_t mantissa = i >> (64 - 52);
 
@@ -386,24 +384,28 @@ namespace iv {
             uint64_t bits = 0x4000000000000000ULL | mantissa;
 
             // 3) reinterpret as double (in [2,4)), then subtract 3.0 → [-1,1)
-            double range = (_max - _min)/2.0;
-            double min = 2.0*_min - _max;
-            return std::bit_cast<double>(bits)*range + min;
+            double range = (max - min)/2.0;
+            double min_reinterpret = 2.0*min - max;
+            return std::bit_cast<double>(bits)*range + min_reinterpret;
         }
 
     public:
         constexpr explicit DeterministicUniformNoise(
-            Sample min = 0.0,
-            Sample max = 1.0,
             std::optional<Sample> seed = {}
-        ) :
-            _min(min),
-            _max(max),
+        ):
             _seed(seed.has_value()
                 ? *seed
                 : (static_cast<std::uint64_t>(std::random_device{}()) << 32) |
                   static_cast<std::uint64_t>(std::random_device{}()))
         {}
+
+        constexpr auto inputs() const
+        {
+            return std::array{
+                InputConfig { .name = "min", .default_value = -1.0 },
+                InputConfig { .name = "max", .default_value = 1.0 },
+            };
+        }
 
         constexpr auto outputs() const
         {
@@ -413,8 +415,10 @@ namespace iv {
         void tick(TickState const& state)
         {
             auto& out = state.outputs[0];
+            auto const min = state.inputs[0].get();
+            auto const max = state.inputs[1].get();
             uint64_t uniform_int = splitmix64(state.index);
-            Sample uniform_float = uniform_m11(uniform_int);
+            Sample uniform_float = uniform_m11(uniform_int, min, max);
             out.push(uniform_float);
         }
     };
@@ -423,8 +427,6 @@ namespace iv {
         using Rng = r123::AESNI4x32;
         Rng _generator;
         Rng::key_type _seed;
-        Sample _min;
-        Sample _max;
 
         static Rng::key_type make_seed(std::optional<uint64_t> seed_opt)
         {
@@ -455,15 +457,19 @@ namespace iv {
 
     public:
         explicit DeterministicUniformAESNoise(
-            Sample min = -1.0,
-            Sample max = 1.0,
             std::optional<uint64_t> seed = {}
         ) :
-            _seed(make_seed(seed)),
-            _min(min),
-            _max(max)
+            _seed(make_seed(seed))
         {
             assert(haveAESNI() && "This machine does not have the AES-NI instruction set, use a different noise node.");
+        }
+
+        constexpr auto inputs() const
+        {
+            return std::array{
+                InputConfig { .name = "min", .default_value = -1.0 },
+                InputConfig { .name = "max", .default_value = 1.0 },
+            };
         }
 
         constexpr auto outputs() const
@@ -474,9 +480,11 @@ namespace iv {
         void tick(TickState const& state)
         {
             auto& out = state.outputs[0];
+            auto const min = state.inputs[0].get();
+            auto const max = state.inputs[1].get();
             Rng::ctr_type counter = make_index(state.index);
             unsigned int uniform_uint = _generator(counter, _seed)[0];
-            Sample uniform_float = r123::u01<Sample>(uniform_uint) * (_max - _min) + _min;
+            Sample uniform_float = r123::u01<Sample>(uniform_uint) * (max - min) + min;
             out.push(uniform_float);
         }
     };
@@ -1292,8 +1300,8 @@ namespace iv {
     };
 
     struct SimpleIirHighPass {
-        static constexpr iv::Sample const FMIN = 1;
-        static constexpr iv::Sample const FMAX = 4.41e4;
+        static constexpr iv::Sample const FMIN = 2e1;
+        static constexpr iv::Sample const FMAX = 2e4;
 
         constexpr explicit SimpleIirHighPass()
         {}
@@ -1316,11 +1324,11 @@ namespace iv {
         {
             auto& in = state.inputs[0];
             auto const ctrl = state.inputs[1].get();          // ∈ [0,1]
-            auto const dx = state.inputs[1].get();
+            auto const dx = state.inputs[2].get();
             auto& out = state.outputs[0];
 
             // compute host the *usable* max cutoff
-            auto const usableMax = std::min<iv::Sample>(FMAX, 0.5 / dx);
+            auto const usableMax = std::min<Sample>(FMAX, 0.5 / dx);
 
             // 2) (optionally) exponential sweep, clamped
             auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);
@@ -1343,7 +1351,7 @@ namespace iv {
 
     struct SimpleIirLowPass {
         static constexpr iv::Sample const FMIN = 2e1;
-        static constexpr iv::Sample const FMAX = 4.41e4;
+        static constexpr iv::Sample const FMAX = 2e4;
 
         constexpr explicit SimpleIirLowPass()
         {}
@@ -1368,11 +1376,11 @@ namespace iv {
         {
             auto& in_port = state.inputs[0];
             auto const ctrl = state.inputs[1].get();          // ∈ [0,1]
-            auto const dx = state.inputs[1].get();
+            auto const dx = state.inputs[2].get();
             auto& out = state.outputs[0];
 
             // 2) compute sample‐rate and clamped max cutoff
-            auto const usableMax = std::min<iv::Sample>(FMAX, 0.5 / dx);
+            auto const usableMax = std::min<Sample>(FMAX, 0.5 / dx);
 
             // 3a) linear sweep: maps 0→1 straight to FMIN→usableMax
             //iv::Sample fc_linear = FMIN + u * (usableMax - FMIN);

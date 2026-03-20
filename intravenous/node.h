@@ -12,7 +12,7 @@
 namespace iv {
 	using Sample = float;
 
-    IV_FORCEINLINE bool is_power_of_2(size_t n) noexcept
+    IV_FORCEINLINE bool is_power_of_2(size_t n)
     {
         return n && !(n & (n - 1));
     }
@@ -25,7 +25,7 @@ namespace iv {
         constexpr explicit SharedPortData(
             std::span<Sample> buffer = {},
             size_t latency = 0
-        ) noexcept :
+        ) :
             buffer(buffer),
             position(0),
             latency(latency)
@@ -40,39 +40,39 @@ namespace iv {
         explicit InputPort(
             SharedPortData& shared_data,
             size_t history
-        ) noexcept :
+        ) :
             _shared_data(shared_data),
             _history(history)
         {
             assert(is_power_of_2(_shared_data.buffer.size()) && "buffer size should be a power of 2");
         }
 
-        IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const noexcept
+        IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const
         {
             if (offset > _history) return 0.0;
             size_t idx = (_shared_data.position + _shared_data.buffer.size() - offset) & (_shared_data.buffer.size() - 1);
             return _shared_data.buffer[idx];
         }
 
-        IV_FORCEINLINE constexpr void push(Sample value) const noexcept
+        IV_FORCEINLINE constexpr void push(Sample value) const
         {
             _shared_data.position = (_shared_data.position + 1) & (_shared_data.buffer.size() - 1);
             update(value);
         }
 
-        IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0) const noexcept
+        IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0) const
         {
             if (offset > _shared_data.latency) return;
             size_t idx = (_shared_data.position + _shared_data.latency - offset) & (_shared_data.buffer.size() - 1);
             _shared_data.buffer[idx] = value;
         }
 
-        IV_FORCEINLINE constexpr size_t latency() const noexcept
+        IV_FORCEINLINE constexpr size_t latency() const
         {
             return _shared_data.latency;
         }
 
-        IV_FORCEINLINE constexpr size_t buffer_size() const noexcept
+        IV_FORCEINLINE constexpr size_t buffer_size() const
         {
             return _shared_data.buffer.size();
         }
@@ -83,27 +83,27 @@ namespace iv {
         size_t _history;
 
     public:
-        explicit OutputPort(SharedPortData& shared_data, size_t history) noexcept :
+        explicit OutputPort(SharedPortData& shared_data, size_t history) :
             _shared_data(shared_data),
             _history(history)
         {
             assert(is_power_of_2(_shared_data.buffer.size()) && "buffer size should be a power of 2");
         }
 
-        IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const noexcept
+        IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const
         {
             if (offset > _shared_data.latency + _history) return 0.0;
             size_t idx = (_shared_data.position + _shared_data.latency - offset) & (_shared_data.buffer.size() - 1);
             return _shared_data.buffer[idx];
         }
 
-        IV_FORCEINLINE constexpr void push(Sample value) const noexcept
+        IV_FORCEINLINE constexpr void push(Sample value) const
         {
             _shared_data.position = (_shared_data.position + 1) & (_shared_data.buffer.size() - 1);
             update(value);
         }
 
-        IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0) const noexcept
+        IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0) const
         {
             if (offset > _shared_data.latency) return;
             size_t idx = (_shared_data.position + _shared_data.latency - offset) & (_shared_data.buffer.size() - 1);
@@ -165,7 +165,7 @@ namespace iv {
         std::span<MidiMessage const> midi;
         size_t index;
 
-        TickState(NodeState base, std::span<MidiMessage const> midi, size_t index) noexcept :
+        TickState(NodeState base, std::span<MidiMessage const> midi, size_t index) :
             NodeState(base), midi(midi), index(index)
         {}
     };
@@ -233,7 +233,7 @@ namespace iv {
     }
 
     template<typename Node>
-    constexpr auto get_outputs(Node const& node) noexcept
+    constexpr auto get_outputs(Node const& node)
     {
         if constexpr (details::has_outputs<Node>)
         {
@@ -246,7 +246,7 @@ namespace iv {
     }
 
     template<typename Node>
-    constexpr auto get_num_outputs(Node const& node) noexcept
+    constexpr auto get_num_outputs(Node const& node)
     {
         if constexpr (details::has_num_outputs<Node>)
         {
@@ -259,7 +259,7 @@ namespace iv {
     }
 
     template<typename Node>
-    constexpr auto get_inputs(Node const& node) noexcept
+    constexpr auto get_inputs(Node const& node)
     {
         if constexpr (details::has_inputs<Node>)
         {
@@ -272,7 +272,7 @@ namespace iv {
     }
 
     template<typename Node>
-    constexpr auto get_num_inputs(Node const& node) noexcept
+    constexpr auto get_num_inputs(Node const& node)
     {
         if constexpr (details::has_num_inputs<Node>)
         {
@@ -285,7 +285,7 @@ namespace iv {
     }
 
     template<typename Node, typename Allocator>
-    constexpr std::span<std::byte> do_init_buffer(Node const& node, Allocator& allocator, GraphInitContext& ctx) noexcept
+    constexpr std::span<std::byte> do_init_buffer(Node const& node, Allocator& allocator, GraphInitContext& ctx)
     {
         if constexpr (details::has_init_buffer_ctx<Node, Allocator> || details::has_init_buffer<Node, Allocator>)
         {
@@ -314,7 +314,7 @@ namespace iv {
     }
 
     template<typename Node>
-    constexpr size_t get_internal_latency(Node const& node) noexcept
+    constexpr size_t get_internal_latency(Node const& node)
     {
         if constexpr (details::has_internal_latency<Node>)
         {

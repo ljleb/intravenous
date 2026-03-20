@@ -42,6 +42,9 @@ namespace iv {
     struct NamedRef {
         std::string_view name;
         std::variant<SignalRef, Sample> value;
+
+        NamedRef(std::string_view name, SignalRef signal): name(name), value(signal) {}
+        NamedRef(std::string_view name, Sample sample): name(name), value(sample) {}
     };
 
     class NodeRef {
@@ -747,7 +750,7 @@ namespace iv {
         );
     }
 
-    SignalRef::SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
+    inline SignalRef::SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
         graph_builder(&graph_builder_),
         node_index(node_index),
         output_port(output_port)
@@ -783,7 +786,7 @@ namespace iv {
         }
     }
 
-    SignalRef SignalRef::detach() const
+    inline SignalRef SignalRef::detach() const
     {
         if (!graph_builder) {
             details::error("attempted to detach an empty signal");
@@ -791,7 +794,7 @@ namespace iv {
         return graph_builder->detach_signal(*this);
     }
 
-    std::string SignalRef::to_string() const
+    inline std::string SignalRef::to_string() const
     {
         if (!graph_builder) {
             return "empty signal";
@@ -802,13 +805,12 @@ namespace iv {
         return "signal at address " + graph_builder->debug_node_id(node_index) + ":" + std::to_string(output_port);
     }
 
-    NodeRef::NodeRef(GraphBuilder& graph_builder, size_t index) :
+    inline NodeRef::NodeRef(GraphBuilder& graph_builder, size_t index) :
         _graph_builder(&graph_builder),
         _index(index)
-    {
-    }
+    {}
 
-    TypeErasedNode& NodeRef::node() const
+    inline TypeErasedNode& NodeRef::node() const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -816,7 +818,7 @@ namespace iv {
         return _graph_builder->_nodes[_index];
     }
 
-    SignalRef NodeRef::operator[](size_t output_index) const
+    inline SignalRef NodeRef::operator[](size_t output_index) const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -824,7 +826,7 @@ namespace iv {
         return SignalRef(*_graph_builder, _index, output_index);
     }
 
-    SignalRef NodeRef::operator[](std::string_view output_name) const
+    inline SignalRef NodeRef::operator[](std::string_view output_name) const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -842,7 +844,7 @@ namespace iv {
         );
     }
 
-    NodeRef::operator SignalRef() const
+    inline NodeRef::operator SignalRef() const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -901,7 +903,7 @@ namespace iv {
         return *this;
     }
 
-    NodeRef NodeRef::operator()(std::initializer_list<NamedRef> refs) const
+    inline NodeRef NodeRef::operator()(std::initializer_list<NamedRef> refs) const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -965,12 +967,12 @@ namespace iv {
         return *this;
     }
 
-    SignalRef NodeRef::detach() const
+    inline SignalRef NodeRef::detach() const
     {
         return static_cast<SignalRef>(*this).detach();
     }
 
-    std::string NodeRef::to_string() const
+    inline std::string NodeRef::to_string() const
     {
         if (!_graph_builder) {
             return "empty node";

@@ -306,10 +306,7 @@ namespace iv {
                         SharedPortData& input_port_data = allocator.at(inputs_port_data, input_i);
                         std::span<Sample> port_samples = input_ports_samples.at(this_input);
 
-                        if (input_config.default_value)
-                        {
-                            allocator.fill_n(port_samples, input_config.default_value);
-                        }
+                        allocator.fill_n(port_samples, input_config.default_value);
 
                         if (auto it = source_of.find({ node_i, input_i }); it != source_of.end())
                         {

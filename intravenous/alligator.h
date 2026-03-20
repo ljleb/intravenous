@@ -20,12 +20,12 @@ namespace iv {
     struct FixedBufferAllocator {
         std::span<std::byte> buffer;
 
-        constexpr bool can_allocate() const noexcept
+        constexpr bool can_allocate() const
         {
             return true;
         }
 
-        constexpr std::span<std::byte> get_buffer() const noexcept
+        constexpr std::span<std::byte> get_buffer() const
         {
             return buffer;
         }
@@ -106,7 +106,7 @@ namespace iv {
         {
         }
 
-        constexpr bool can_allocate() const noexcept
+        constexpr bool can_allocate() const
         {
             return false;
         }
@@ -189,7 +189,7 @@ namespace iv {
     struct TypeErasedAllocator {
         std::variant<std::reference_wrapper<FixedBufferAllocator>, std::reference_wrapper<CountingNonAllocator>> _allocator;
 
-        constexpr bool can_allocate() const noexcept
+        constexpr bool can_allocate() const
         {
             return std::visit([](auto&& allocator) { return allocator.get().can_allocate(); }, _allocator);
         }

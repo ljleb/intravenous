@@ -8,7 +8,7 @@ namespace iv
     // src:
     // https://stackoverflow.com/questions/27229371/inverse-error-function-in-c
     // https://stackoverflow.com/a/49743348
-    inline float erfinvf(float a) noexcept
+    inline float erfinvf(float a)
     {
         float p, r, t;
         t = std::fmaf(a, 0.0f - a, 1.0f);

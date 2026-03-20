@@ -10,12 +10,12 @@ namespace iv {
         RIGHT,
     };
 
-    IV_FORCEINLINE static Sample polyblep_phi(Sample sample, Sample warp_threshold) noexcept
+    IV_FORCEINLINE static Sample polyblep_phi(Sample sample, Sample warp_threshold)
     {
         return Sample((sample + warp_threshold) / 2.0);
     }
 
-    IV_FORCEINLINE static Sample polyblep_p(Sample phi, Sample delta, Sample warp_threshold, PolyblepSide side) noexcept
+    IV_FORCEINLINE static Sample polyblep_p(Sample phi, Sample delta, Sample warp_threshold, PolyblepSide side)
     {
         if (side == PolyblepSide::RIGHT && phi < delta)
         {
@@ -31,7 +31,7 @@ namespace iv {
         return 0;
     }
 
-    IV_FORCEINLINE static Sample polyblep_error(Sample sample, Sample delta, Sample warp_threshold, PolyblepSide side) noexcept
+    IV_FORCEINLINE static Sample polyblep_error(Sample sample, Sample delta, Sample warp_threshold, PolyblepSide side)
     {
         Sample sign = std::copysignf(1.0, delta);
         delta = std::copysignf(delta, 1.0);
@@ -41,7 +41,7 @@ namespace iv {
         return p;
     }
 
-    IV_FORCEINLINE static Sample warp_pm1(Sample x, Sample limit) noexcept
+    IV_FORCEINLINE static Sample warp_pm1(Sample x, Sample limit)
     {
         Sample period = Sample(2.0 * limit);
         return x - std::floor((x + limit) / period) * period;

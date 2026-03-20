@@ -10,7 +10,7 @@ using namespace iv;
 
 static void feedback_voice(GraphBuilder& g) {
     auto amplitude = g.input("amplitude", 0.5);
-    auto frequency = g.input("frequency", 200.0);
+    auto frequency = g.input("frequency", 1000.0);
     auto voice_noise = g.input("noise");
     auto dx = g.input("dx", 1.0);
     auto reset = g.input("reset");
@@ -27,9 +27,9 @@ static void noise_voice(GraphBuilder& g) {
     auto const dx = g.input("dx", 1.0);
 
     auto const level_knob = 0.5;
-    auto const lo_pass_knob = 0.6;
-    auto const hi_pass_knob = 0.0;
-    auto const generator = g.node<DeterministicUniformAESNoise>(-1, 1, 0ull);
+    auto const lo_pass_knob = 1.0;
+    auto const hi_pass_knob = 0.9;
+    auto const generator = g.node<DeterministicUniformAESNoise>(0ull);
     auto const lo_pass = g.node<SimpleIirLowPass>();
     auto const hi_pass = g.node<SimpleIirHighPass>();
 
@@ -37,6 +37,8 @@ static void noise_voice(GraphBuilder& g) {
     auto const u_to_n = g.node<UniformToGaussian>(0.0, 0.5);
     auto const u_to_c = g.node<UniformToCauchy>(0.0, 0.01);
     auto const interp = g.node<Interpolation>();
+
+    generator({ {"min", -1}, {"max", 1} });
 
     u_to_c(generator);
     u_to_n(generator);
