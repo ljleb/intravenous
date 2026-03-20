@@ -7,11 +7,11 @@
 
 
 template<class T>
-class KnobNode {
+class Knob {
     std::atomic<T>* _value;
 
 public:
-    explicit KnobNode(std::atomic<T>* value) :
+    explicit Knob(std::atomic<T>* value) :
         _value(value)
     {}
 
@@ -26,11 +26,11 @@ public:
     }
 };
 
-class AudioStreamNode {
+class AudioStream {
     iv::Sample*& _destination;
 
 public:
-    constexpr explicit AudioStreamNode(iv::Sample*& destination) :
+    constexpr explicit AudioStream(iv::Sample*& destination) :
         _destination(destination)
     {}
 
@@ -201,85 +201,26 @@ public:
     }
 };
 
-static iv::GraphNode feedback_voice(
+static iv::Graph feedback_voice(
     double* sample_period
 ) {
     using namespace iv;
     GraphBuilder g;
 
     auto amplitude = g.input("amplitude");
-    auto raw_frequency = g.input("frequency");
+    auto frequency = g.input("frequency");
     auto reset = g.input("reset");
+
     auto voice_noise = g.input("voice_noise");
 
     auto integrator = g.node<Integrator>(sample_period);
-    auto warper = g.node<WarperNode>();
-    //auto predictor = g.node(iv::NlmsPredictor(1, 100, 1e-5, 1.0));
-    //auto predictor = g.node(iv::TanhResidualPredictor(8, 8, 2, 4, 1e-6));
-    //auto predictor = g.node(iv::TanhResidualAR2Predictor(0, 16, 16, 8, 8, 1e-8));
-    //auto predictor = g.node(iv::PolyResidualPredictor(1, 16, 1e-6));
-    //auto lo_pass = g.node(SimpleIirLowPass(sample_period));
-    //auto lo_pass_coef = g.node(iv::ConstantNode(1.0));
-    //auto latency = g.node(iv::Latency(100));
-    //auto lo_pass2 = g.node(SimpleIirLowPass(sample_period));
+    auto warper = g.node<Warper>();
 
-    auto frequency = g.node<ProductNode>();
-    auto constant = g.node<ConstantNode>(2.0);
-    frequency(raw_frequency, constant);
-
-    /*auto noise = make_subgraph_id(nodes, [](auto& nodes, auto& edges)
-    {
-        auto product = g.node(iv::ProductNode());
-        auto product2 = g.node(iv::ProductNode());
-        auto constant = g.node(iv::ConstantNode(1 / 440.0 / 2.0));
-
-        edges.insert(iv::GraphEdge { { graph,    0 }, { product,  0 } });
-        edges.insert(iv::GraphEdge { { graph,    1 }, { product,  1 } });
-        edges.insert(iv::GraphEdge { { product,  0 }, { product2, 0 } });
-        edges.insert(iv::GraphEdge { { constant, 0 }, { product2, 1 } });
-        edges.insert(iv::GraphEdge { { product2, 0 }, { graph,    0 } });
-
-        return std::make_tuple(2, 1);
-    });*/
-
-    //edges.insert(iv::GraphEdge { { frequency, 0 },                      { noise, 0 } });
-    //edges.insert(iv::GraphEdge { { graph, voice_noise_generator_port }, { noise, 1 } });
-
-    // low pass
-    //edges.insert(iv::GraphEdge{ { lo_pass_coef, 0 }, { lo_pass, 1 } });
-    //edges.insert(iv::GraphEdge{ { lo_pass_coef, 0 }, { lo_pass2, 1 } });
-
-    // main loop
-    //edges.insert(iv::GraphEdge { { integrator, 0 }, { lo_pass,    0 } });
-    //edges.insert(iv::GraphEdge { { lo_pass,    0 }, { predictor,  0 } });
-    //edges.insert(iv::GraphEdge { { predictor,    0 }, { lo_pass2,  0 } });
-    //edges.insert(iv::GraphEdge { { lo_pass2,  0 }, { warper,     0 } });
-
-    //edges.insert(iv::GraphEdge { { integrator, 0 }, { predictor,  0 } });
-    //edges.insert(iv::GraphEdge { { integrator, 0 }, { lo_pass,    0 } });
-    //edges.insert(iv::GraphEdge { { lo_pass,    0 }, { predictor,  0 } });
-
-    //edges.insert(iv::GraphEdge { { predictor,  0 }, { warper,     0 } });
-    auto noisy_integrator = g.node<SumNode>();
-    noisy_integrator(integrator, voice_noise);
-    warper(noisy_integrator);
-    integrator(warper["anti_aliased"], frequency, reset);
-
-    //edges.insert(iv::GraphEdge { { warper,     1 }, { lo_pass,    0 } });
-    //edges.insert(iv::GraphEdge { { lo_pass,    0 }, { latency,    0 } });
-    //edges.insert(iv::GraphEdge { { latency,    0 }, { predictor,  0 } });
-    //edges.insert(iv::GraphEdge { { warper,  1 }, { latency, 0 } });
-    //edges.insert(iv::GraphEdge { { warper,     1 }, { dummy_sink, 0 } });
-
-    // knobs
-    //edges.insert(iv::GraphEdge { { graph,     voice_warp_threshold_port },  { warper,     1 } });
-    //edges.insert(iv::GraphEdge { { noise,     0 },                          { warper,     0 } });
-
-    // out
-    auto out_amplified = g.node<ProductNode>();
-    g.outputs(out_amplified(amplitude, warper["aliased"]));
-
-    return std::move(g).build();
+    integrator(warper["aliased"].detach(), frequency * 2.0, reset);
+    warper(integrator + voice_noise);
+    g.outputs(amplitude * warper["anti_aliased"]);
+    auto res = std::move(g).build();
+    return res;
 }
 
 auto iv::init_graph(
@@ -292,26 +233,22 @@ auto iv::init_graph(
     std::atomic<float>* noise_hi_pass) -> NodeProcessor*
 {
     GraphBuilder g;
-    //auto warp_threshold_knob = g.node(KnobNode<float>(warp_threshold));
-    //auto iir_outw0_knob = g.node(KnobNode<float>(_iir_outw0));
-
     std::array<NodeRef, 2> noises;
     for (size_t i = 0; i < noises.size(); ++i)
     {
         noises[i] = g.subgraph([&](auto& g)
         {
-            auto level_knob = g.node<KnobNode<float>>(noise_level);
-            auto lo_pass_knob = g.node<KnobNode<float>>(noise_lo_pass);
-            auto hi_pass_knob = g.node<KnobNode<float>>(noise_hi_pass);
-            auto generator = g.node<DeterministicUniformAESNoiseNode>(-1, 1, 0ull);
-            auto product = g.node<ProductNode>();
+            auto level_knob = g.node<Knob<float>>(noise_level);
+            auto lo_pass_knob = g.node<Knob<float>>(noise_lo_pass);
+            auto hi_pass_knob = g.node<Knob<float>>(noise_hi_pass);
+            auto generator = g.node<DeterministicUniformAESNoise>(-1, 1, 0ull);
             auto lo_pass = g.node<SimpleIirLowPass>(sample_period);
             auto hi_pass = g.node<SimpleIirHighPass>(sample_period);
 
-            auto u_to_n_knob = g.node<KnobNode<float>>(gaussian_noise_ratio);
-            auto u_to_n = g.node<UniformToGaussianNode>(0.0, 0.5);
-            auto u_to_c = g.node<UniformToCauchyNode>(0.0, 0.01);
-            auto interp = g.node<InterpolationNode>();
+            auto u_to_n_knob = g.node<Knob<float>>(gaussian_noise_ratio);
+            auto u_to_n = g.node<UniformToGaussian>(0.0, 0.5);
+            auto u_to_c = g.node<UniformToCauchy>(0.0, 0.01);
+            auto interp = g.node<Interpolation>();
 
             u_to_c(generator);
             u_to_n(generator);
@@ -320,9 +257,8 @@ auto iv::init_graph(
 
             lo_pass(interp, lo_pass_knob);
             hi_pass(lo_pass, hi_pass_knob);
-            product(hi_pass, level_knob);
 
-            g.outputs(product);
+            g.outputs(hi_pass * level_knob);
         });
     }
 
@@ -331,12 +267,8 @@ auto iv::init_graph(
     auto midi_left = g.node<MidiNode>(midi_voice);
     auto midi_right = g.node<MidiNode>(midi_voice);
 
-    auto left_out = g.node<AudioStreamNode>(channels[0]);
-    auto right_out = g.node<AudioStreamNode>(channels[1]);
-
-    // shared inputs
-    //edges.insert(iv::GraphEdge { { warp_threshold_knob, 0 }, { midi_left, 0 } });
-    //edges.insert(iv::GraphEdge { { warp_threshold_knob, 0 }, { midi_right, 0 } });
+    auto left_out = g.node<AudioStream>(channels[0]);
+    auto right_out = g.node<AudioStream>(channels[1]);
 
     midi_left(noises[0]);
     midi_right(noises[1]);

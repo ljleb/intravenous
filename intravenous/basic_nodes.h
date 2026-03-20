@@ -65,13 +65,33 @@ namespace iv {
         }
     };
 
-    using SumNode = BinaryOpNode<std::plus<Sample>>;
-    using SubtractNode = BinaryOpNode<std::minus<Sample>>;
-    using ProductNode = BinaryOpNode<std::multiplies<Sample>>;
-    using QuotientNode = BinaryOpNode<std::divides<Sample>>;
+    using Sum = BinaryOpNode<std::plus<Sample>>;
+    using Subtract = BinaryOpNode<std::minus<Sample>>;
+    using Product = BinaryOpNode<std::multiplies<Sample>>;
+    using Quotient = BinaryOpNode<std::divides<Sample>>;
     
-    struct PowerNode {
-        constexpr explicit PowerNode()
+    struct Invert {
+        constexpr explicit Invert()
+        {}
+
+        constexpr auto inputs() const
+        {
+            return std::array<InputConfig, 1>{};
+        }
+
+        constexpr auto outputs() const
+        {
+            return std::array<OutputConfig, 1>{};
+        }
+
+        void tick(TickState const& state)
+        {
+            state.outputs[0].push(-state.inputs[0].get());
+        }
+    };
+
+    struct Power {
+        constexpr explicit Power()
         {}
 
         constexpr auto inputs() const
@@ -91,14 +111,12 @@ namespace iv {
         }
     };
 
-    class BroadcastNode {
+    class Broadcast {
         size_t _num_outputs;
-        char const* _tag;
 
     public:
-        constexpr explicit BroadcastNode(size_t num_outputs, char const* tag = "") :
-            _num_outputs(num_outputs),
-            _tag(tag)
+        constexpr explicit Broadcast(size_t num_outputs) :
+            _num_outputs(num_outputs)
         {}
 
         constexpr auto inputs() const
@@ -127,7 +145,57 @@ namespace iv {
         }
     };
 
-    struct DummySinkNode {
+    struct DetachWriterNode {
+        size_t id;
+
+        struct State {
+            Sample* slot{};
+        };
+
+        constexpr auto inputs() const {
+            return std::array<InputConfig, 1>{};
+        }
+
+        template<class Alloc, class Ctx>
+        void init_buffer(Alloc& alloc, Ctx& ctx) const
+        {
+            State& st = alloc.new_object<State>();
+            st.slot = ctx.acquire_detach_slot(id, alloc);
+        }
+
+        void tick(TickState const& ts) const
+        {
+            auto& st = ts.get_state<State>();
+            *st.slot = ts.inputs[0].get();
+        }
+    };
+
+    struct DetachReaderNode {
+        size_t id;
+
+        struct State {
+            Sample* slot{};
+        };
+
+        constexpr auto outputs() const {
+            return std::array<OutputConfig, 1>{};
+        }
+
+        template<class Alloc, class Ctx>
+        void init_buffer(Alloc& alloc, Ctx& ctx) const
+        {
+            State& st = alloc.new_object<State>();
+            st.slot = ctx.acquire_detach_slot(id, alloc);
+        }
+
+        void tick(TickState const& ts) const
+        {
+            auto& st = ts.get_state<State>();
+            ts.outputs[0].push(*st.slot);
+        }
+    };
+
+    struct DummySink {
         constexpr auto inputs() const
         {
             return std::array<InputConfig, 1>{};
@@ -137,7 +205,7 @@ namespace iv {
         {}
     };
 
-    struct WarperNode {
+    struct Warper {
         constexpr auto inputs() const
         {
             return std::array {
@@ -192,16 +260,18 @@ namespace iv {
 
         constexpr auto inputs() const
         {
-            return std::array<iv::InputConfig, 3>{
-                InputConfig{},
-                InputConfig{},
-                InputConfig { .default_value = 0.0 },
+            return std::array {
+                InputConfig { "f_prev" },
+                InputConfig { "f"},
+                InputConfig { .name = "dx", .default_value = 0.0},
             };
         }
 
         constexpr auto outputs() const
         {
-            return std::array<iv::OutputConfig, 1>{};
+            return std::array {
+                OutputConfig { "integral" },
+            };
         }
 
         void tick(iv::TickState const& state)
@@ -249,7 +319,7 @@ namespace iv {
         }
     };
 
-    struct ConstantNode {
+    struct Constant {
         Sample _value;
 
         constexpr auto outputs() const
@@ -264,7 +334,7 @@ namespace iv {
         }
     };
     
-    class UniformNoiseNode {
+    class UniformNoise {
         std::optional<std::mt19937> _generator;
         std::optional<std::uniform_real_distribution<Sample>> _distribution;
         Sample _min;
@@ -272,7 +342,7 @@ namespace iv {
         std::optional<unsigned int> _seed;
 
     public:
-        constexpr explicit UniformNoiseNode(
+        constexpr explicit UniformNoise(
             Sample min = -1.0,
             Sample max = 1.0,
             std::optional<unsigned int> seed = {}
@@ -298,7 +368,7 @@ namespace iv {
         }
     };
 
-    class DeterministicUniformNoiseNode {
+    class DeterministicUniformNoise {
         Sample _min;
         Sample _max;
         size_t _seed;
@@ -326,7 +396,7 @@ namespace iv {
         }
 
     public:
-        constexpr explicit DeterministicUniformNoiseNode(
+        constexpr explicit DeterministicUniformNoise(
             Sample min = 0.0,
             Sample max = 1.0,
             std::optional<Sample> seed = {}
@@ -350,7 +420,7 @@ namespace iv {
         }
     };
 
-    class DeterministicUniformAESNoiseNode {
+    class DeterministicUniformAESNoise {
         using Rng = r123::AESNI4x32;
         Rng _generator;
         Rng::key_type _seed;
@@ -385,7 +455,7 @@ namespace iv {
         }
 
     public:
-        explicit DeterministicUniformAESNoiseNode(
+        explicit DeterministicUniformAESNoise(
             Sample min = -1.0,
             Sample max = 1.0,
             std::optional<uint64_t> seed = {}
@@ -412,12 +482,12 @@ namespace iv {
         }
     };
 
-    class UniformToCauchyNode {
+    class UniformToCauchy {
         Sample _x0;
         Sample _gamma;
 
     public:
-        explicit UniformToCauchyNode(
+        explicit UniformToCauchy(
             Sample x0 = 1.0,
             Sample gamma = 1.0
         ) :
@@ -440,13 +510,12 @@ namespace iv {
             auto& in = state.inputs[0];
             auto& out = state.outputs[0];
             Sample uniform = in.get();
-            uniform = uniform * uniform * uniform;
             Sample cauchy = _x0 + _gamma * std::tanf(std::numbers::pi_v<float> * uniform * 0.5);
             out.push(cauchy);
         }
     };
-    
-    class UniformToPowerNode {
+
+    class UniformToPower {
         ptrdiff_t _min;
         ptrdiff_t _max;
         Sample _lambda;
@@ -456,7 +525,7 @@ namespace iv {
         };
 
     public:
-        explicit UniformToPowerNode(
+        explicit UniformToPower(
             ptrdiff_t min = -5,
             ptrdiff_t max = 4,
             Sample lambda = 0.5
@@ -504,19 +573,19 @@ namespace iv {
         {
             auto& in = state.inputs[0];
             auto& out = state.outputs[0];
-            auto& s = get_state<State>(state.buffer);
+            auto& s = state.get_state<State>();
             Sample uniform = in.get() * 0.5 + 0.5;
             size_t discrete = static_cast<size_t>(std::lower_bound(s.weights.begin(), s.weights.end(), uniform) - s.weights.begin());
             out.push(std::exp2f(static_cast<Sample>(discrete)));
         }
     };
 
-    class UniformToGaussianNode {
+    class UniformToGaussian {
         Sample _mean;
         Sample _std;
 
     public:
-        explicit UniformToGaussianNode(
+        explicit UniformToGaussian(
             Sample mean = 0.0,
             Sample std = 1.0
         ) :
@@ -546,7 +615,7 @@ namespace iv {
         }
     };
 
-    class DeterministicGaussianAESNoiseNode {
+    class DeterministicGaussianAESNoise {
         using Rng = r123::AESNI4x32;
         Rng _generator;
         Rng::key_type _seed;
@@ -581,7 +650,7 @@ namespace iv {
         }
 
     public:
-        explicit DeterministicGaussianAESNoiseNode(
+        explicit DeterministicGaussianAESNoise(
             Sample mean = 0.0,
             Sample std = 1.0,
             std::optional<uint64_t> seed = {}
@@ -660,7 +729,7 @@ namespace iv {
 
         void tick(TickState const& ts) const
         {
-            State& st = get_state<State>(ts.buffer);
+            State& st = ts.get_state<State>();
             auto  &in  = ts.inputs[0];
             auto  &out = ts.outputs[0];
 
@@ -755,7 +824,7 @@ namespace iv {
 
         void tick(TickState const& ts) const
         {
-            State& s = get_state<State>(ts.buffer);
+            State& s = ts.get_state<State>();
             auto& in = ts.inputs[0];
             auto& out = ts.outputs[0];
 
@@ -1059,7 +1128,7 @@ namespace iv {
         std::vector<InputConfig> _inputs;
         std::vector<OutputConfig> _outputs;
         size_t _internal_latency;
-        std::span<std::byte>(*_init_buffer_fn)(void*, TypeErasedAllocator);
+        std::span<std::byte>(*_init_buffer_fn)(void*, TypeErasedAllocator, GraphInitContext&);
         void (*_tick_fn)(void*, TickState const&);
 
     public:
@@ -1069,13 +1138,13 @@ namespace iv {
             if constexpr (std::is_empty_v<Node>)
             {
                 _node = nullptr;
-                _init_buffer_fn = [](void*, TypeErasedAllocator allocator) { return do_init_buffer(Node{}, allocator); };
+                _init_buffer_fn = [](void*, TypeErasedAllocator allocator, GraphInitContext& ctx) { return do_init_buffer(Node{}, allocator, ctx); };
                 _tick_fn = [](void*, TickState const& state) { Node{}.tick(state); };
             }
             else
             {
                 _node = std::make_shared<Node>(node);
-                _init_buffer_fn = [](void* node, TypeErasedAllocator allocator) { return do_init_buffer(*static_cast<Node*>(node), allocator); };
+                _init_buffer_fn = [](void* node, TypeErasedAllocator allocator, GraphInitContext& ctx) { return do_init_buffer(*static_cast<Node*>(node), allocator, ctx); };
                 _tick_fn = [](void* node, TickState const& state) { static_cast<Node*>(node)->tick(state); };
             }
             _inputs.assign_range(get_inputs(node));
@@ -1099,9 +1168,9 @@ namespace iv {
         }
 
         template<typename Allocator>
-        constexpr std::span<std::byte> init_buffer(Allocator& allocator) const
+        constexpr std::span<std::byte> init_buffer(Allocator& allocator, GraphInitContext& ctx) const
         {
-            return _init_buffer_fn(_node.get(), TypeErasedAllocator{ allocator });
+            return _init_buffer_fn(_node.get(), TypeErasedAllocator{ allocator }, ctx);
         }
 
         void tick(TickState const& state)
@@ -1110,7 +1179,7 @@ namespace iv {
         }
     };
     
-    struct InterpolationNode {
+    struct Interpolation {
         constexpr auto inputs() const
         {
             return std::array{

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <memory>
 #include <string_view>
+#include <unordered_map>
 
 
 namespace iv {
@@ -125,6 +126,13 @@ namespace iv {
         std::span<InputPort> inputs;
         std::span<OutputPort> outputs;
         std::span<std::byte> buffer;
+
+        template<typename State>
+        State& get_state() const {
+            void* ptr = buffer.data();
+            size_t space = buffer.size();
+            return *reinterpret_cast<State*>(std::align(alignof(State), sizeof(State), ptr, space));
+        }
     };
 
     enum struct MidiMessageType {
@@ -161,6 +169,23 @@ namespace iv {
         {}
     };
 
+    struct GraphInitContext {
+        std::unordered_map<size_t, Sample*> detach_slots;
+
+        template<class Alloc>
+        Sample* acquire_detach_slot(size_t id, Alloc& alloc)
+        {
+            if (auto it = detach_slots.find(id); it != detach_slots.end()) {
+                return it->second;
+            }
+
+            Sample* slot = &alloc.new_object<Sample>();
+            alloc.assign(*slot, Sample{ 0 });
+            detach_slots.emplace(id, slot);
+            return slot;
+        }
+    };
+
     namespace details
     {
         template <typename Node>
@@ -191,6 +216,12 @@ namespace iv {
         concept has_init_buffer = requires(Node node, Allocator allocator)
         {
             node.init_buffer(allocator);
+        };
+
+        template <typename Node, typename Allocator>
+        concept has_init_buffer_ctx = requires(Node node, Allocator allocator, GraphInitContext ctx)
+        {
+            node.init_buffer(allocator, ctx);
         };
 
         template <typename Node>
@@ -253,12 +284,19 @@ namespace iv {
     }
 
     template<typename Node, typename Allocator>
-    constexpr std::span<std::byte> do_init_buffer(Node const& node, Allocator& allocator) noexcept
+    constexpr std::span<std::byte> do_init_buffer(Node const& node, Allocator& allocator, GraphInitContext& ctx) noexcept
     {
-        if constexpr (details::has_init_buffer<Node, Allocator>)
+        if constexpr (details::has_init_buffer_ctx<Node, Allocator> || details::has_init_buffer<Node, Allocator>)
         {
             std::span<std::byte> memory_before = allocator.get_buffer();
-            node.init_buffer(allocator);
+            if constexpr (details::has_init_buffer_ctx<Node, Allocator>)
+            {
+                node.init_buffer(allocator, ctx);
+            }
+            else
+            {
+                node.init_buffer(allocator);
+            }
             std::span<std::byte> memory_after = allocator.get_buffer();
 
             std::byte* before_end = memory_before.data() + memory_before.size();
@@ -283,12 +321,5 @@ namespace iv {
         {
             return 0;
         }
-    }
-
-    template<typename State>
-    static State& get_state(std::span<std::byte> buffer) {
-        void* ptr = buffer.data();
-        size_t space = buffer.size();
-        return *reinterpret_cast<State*>(std::align(alignof(State), sizeof(State), ptr, space));
     }
 }

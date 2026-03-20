@@ -10,7 +10,7 @@
 
 namespace iv {
     class MidiNode {
-        GraphNode _graph_node;
+        Graph _graph_node;
         size_t _internal_latency_cache;
         Sample _silence_threshold;
 
@@ -41,7 +41,7 @@ namespace iv {
         };
 
         explicit MidiNode(
-            GraphNode voice_node,
+            Graph voice_node,
             Sample silence_threshold = std::pow(10.0, -60.0 / 20.0)  // -60db
         ) noexcept :
             _graph_node(std::move(voice_node)),
@@ -142,7 +142,7 @@ namespace iv {
         }
 
         template<typename Allocator>
-        void init_buffer(Allocator& allocator) const
+        void init_buffer(Allocator& allocator, GraphInitContext& ctx) const
         {
             /*
             * struct MemoryLayout {
@@ -181,7 +181,7 @@ namespace iv {
             for (size_t note = 0; note < MAX_MIDI_NOTES; ++note)
             {
                 MidiNoteState& midi_note_state = allocator.at(midi_state.note_states, note);
-                allocator.assign(midi_note_state.buffer, do_init_buffer(_graph_node, allocator));
+                allocator.assign(midi_note_state.buffer, do_init_buffer(_graph_node, allocator, ctx));
                 allocator.assign(midi_note_state.inputs, midi_state.inputs);
             }
 

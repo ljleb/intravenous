@@ -33,6 +33,9 @@ namespace iv {
 
         SignalRef() = default;
         explicit SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
+        operator PortId() const { return { node_index, output_port }; }
+
+        SignalRef detach() const;
 
         std::string to_string() const;
     };
@@ -60,17 +63,30 @@ namespace iv {
         NodeRef operator()(Refs&&... refs) const;
         NodeRef operator()(std::initializer_list<NamedRef> refs) const;
 
+        SignalRef detach() const;
+
         std::string to_string() const;
+    };
+
+    struct DetachedSignalInfo {
+        size_t detach_id;
+        PortId original_source;
+        PortId reader_output;
     };
 
     class GraphBuilder {
         friend class NodeRef;
         friend struct SignalRef;
 
+        struct PreparedGraph {
+            Graph::Nodes nodes;
+            Graph::Edges edges;
+        };
+
         std::string _parent_path;
 
-        GraphNode::Nodes _nodes;
-        GraphNode::Edges _edges;
+        Graph::Nodes _nodes;
+        Graph::Edges _edges;
         std::unordered_set<size_t> _placed_nodes;
 
         std::vector<InputConfig> _public_inputs;
@@ -78,6 +94,10 @@ namespace iv {
 
         std::vector<OutputConfig> _public_outputs;
         bool _outputs_defined{ false };
+
+        std::unordered_map<PortId, DetachedSignalInfo> _detached_info_by_source;
+        std::unordered_set<PortId> _detached_reader_outputs;
+        size_t _next_detach_id{ 0 };
 
     public:
         explicit GraphBuilder(std::string_view parent_path = {}):
@@ -141,7 +161,7 @@ namespace iv {
                 );
             }
 
-            return node<GraphNode>(std::move(g).build());
+            return node<Graph>(std::move(g).build());
         }
 
         template<class... Refs>
@@ -168,7 +188,7 @@ namespace iv {
                 _edges.emplace(GraphEdge{
                     PortId{ ref.node_index, ref.output_port },
                     PortId{ GRAPH_ID, i },
-                    });
+                });
                 _public_outputs.emplace_back();
             }
 
@@ -216,20 +236,497 @@ namespace iv {
             _outputs_defined = true;
         }
 
-        GraphNode build()&&
+        Graph build()&&
         {
             if (!_outputs_defined) {
                 details::error("builder " + _parent_path + ": g.outputs(...) must be called before build()");
             }
 
-            return GraphNode(
-                std::move(_nodes),
-                std::move(_edges),
+            PreparedGraph g{
+                .nodes = std::move(_nodes),
+                .edges = std::move(_edges),
+            };
+
+            expand_hyperedge_ports(g);
+            stub_dangling_ports(g);
+            validate_graph(g);
+            validate_detached_edges(g);
+            sort_nodes_or_error(g);
+            validate_graph(g);
+
+            return Graph(
+                std::move(g.nodes),
+                std::move(g.edges),
                 std::move(_public_inputs),
                 std::move(_public_outputs)
             );
         }
+
+    private:
+        SignalRef detach_signal(SignalRef signal)
+        {
+            if (!signal.graph_builder) {
+                details::error(
+                    "builder " + _parent_path + ": cannot detach an empty signal"
+                );
+            }
+
+            if (signal.graph_builder != this) {
+                details::error(
+                    "builder " + _parent_path + ": cannot detach " + signal.to_string() +
+                    " because it belongs to another builder"
+                );
+            }
+
+            PortId const source = signal;
+
+            // Already detached: return unchanged.
+            if (_detached_reader_outputs.contains(source)) {
+                return signal;
+            }
+
+            // Reuse existing detached bridge for the same source.
+            if (auto it = _detached_info_by_source.find(source); it != _detached_info_by_source.end()) {
+                PortId const reader = it->second.reader_output;
+                return SignalRef(*this, reader.node, reader.port);
+            }
+
+            size_t const detach_id = _next_detach_id++;
+
+            auto writer = node<DetachWriterNode>(detach_id);
+            writer(signal);
+
+            auto reader = node<DetachReaderNode>(detach_id);
+            SignalRef detached = reader;
+
+            _detached_info_by_source.emplace(source, DetachedSignalInfo{
+                .detach_id = detach_id,
+                .original_source = source,
+                .reader_output = detached,
+            });
+            _detached_reader_outputs.insert(detached);
+
+            return detached;
+        }
+
+        static auto make_source_target_edge_maps(PreparedGraph const& g)
+        {
+            std::unordered_map<PortId, PortId> source_of;
+            std::unordered_map<PortId, PortId> target_of;
+
+            for (GraphEdge const& edge : g.edges)
+            {
+                source_of[edge.target] = edge.source;
+                target_of[edge.source] = edge.target;
+            }
+
+            return std::make_tuple(std::move(source_of), std::move(target_of));
+        }
+
+        void expand_hyperedge_ports(PreparedGraph& g) const
+        {
+            std::unordered_map<PortId, std::vector<GraphEdge>> reverse_edges_map;
+            for (GraphEdge const& edge : g.edges)
+            {
+                reverse_edges_map[edge.target].push_back(edge);
+            }
+
+            size_t nodes_size = g.nodes.size();
+            for (size_t node = 0; node < nodes_size; ++node)
+            {
+                size_t const num_inputs = get_num_inputs(g.nodes[node]);
+                for (size_t in_port = 0; in_port < num_inputs; ++in_port)
+                {
+                    auto it = reverse_edges_map.find({ node, in_port });
+                    if (it == reverse_edges_map.end()) continue;
+
+                    auto const& edges_to_expand = it->second;
+                    size_t const port_arity = edges_to_expand.size();
+                    if (port_arity <= 1) continue;
+
+                    g.nodes.emplace_back(Sum(port_arity));
+                    size_t const sum_node = g.nodes.size() - 1;
+
+                    for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
+                    {
+                        GraphEdge const& to_rewire = edges_to_expand[out_port];
+                        g.edges.erase(to_rewire);
+                        g.edges.insert(GraphEdge{ to_rewire.source, { sum_node, out_port } });
+                    }
+                    g.edges.insert(GraphEdge{ { sum_node, 0 }, { node, in_port } });
+                }
+            }
+
+            std::unordered_map<PortId, std::vector<GraphEdge>> edges_map;
+            for (GraphEdge const& edge : g.edges)
+            {
+                edges_map[edge.source].push_back(edge);
+            }
+
+            nodes_size = g.nodes.size();
+            for (size_t node = 0; node < nodes_size; ++node)
+            {
+                size_t const num_outputs = get_num_outputs(g.nodes[node]);
+                for (size_t out_port = 0; out_port < num_outputs; ++out_port)
+                {
+                    auto it = edges_map.find({ node, out_port });
+                    if (it == edges_map.end()) continue;
+
+                    auto const& edges_to_expand = it->second;
+                    size_t const port_arity = edges_to_expand.size();
+                    if (port_arity <= 1) continue;
+
+                    g.nodes.emplace_back(Broadcast(port_arity));
+                    size_t const broadcast_node = g.nodes.size() - 1;
+
+                    for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
+                    {
+                        GraphEdge const& to_rewire = edges_to_expand[in_port];
+                        g.edges.erase(to_rewire);
+                        g.edges.insert(GraphEdge{ { broadcast_node, in_port }, to_rewire.target });
+                    }
+                    g.edges.insert(GraphEdge{ { node, out_port }, { broadcast_node, 0 } });
+                }
+            }
+        }
+
+        void stub_dangling_ports(PreparedGraph& g) const
+        {
+            auto [source_of, target_of] = make_source_target_edge_maps(g);
+
+            size_t const num_nodes = g.nodes.size();
+            for (size_t node_id = 0; node_id < num_nodes + 1; ++node_id)
+            {
+                size_t const node = (node_id == num_nodes) ? GRAPH_ID : node_id;
+                size_t const num_outputs = (node == GRAPH_ID) ? _public_inputs.size() : get_num_outputs(g.nodes[node]);
+
+                for (size_t output_port = 0; output_port < num_outputs; ++output_port)
+                {
+                    PortId const this_port{ node, output_port };
+                    if (auto it = target_of.find(this_port); it == target_of.end())
+                    {
+                        g.nodes.emplace_back(DummySink());
+                        size_t const new_node = g.nodes.size() - 1;
+                        g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
+                    }
+                }
+            }
+        }
+
+        void validate_graph(PreparedGraph const& g) const
+        {
+            for (auto const& edge : g.edges)
+            {
+                size_t source_num_outputs = (edge.source.node == GRAPH_ID)
+                    ? _public_inputs.size()
+                    : get_num_outputs(g.nodes[edge.source.node]);
+
+                size_t target_num_inputs = (edge.target.node == GRAPH_ID)
+                    ? _public_outputs.size()
+                    : get_num_inputs(g.nodes[edge.target.node]);
+
+                if (edge.source.port >= source_num_outputs) {
+                    details::error("bad connection: source output port out of range");
+                }
+                if (edge.target.port >= target_num_inputs) {
+                    details::error("bad connection: target input port out of range");
+                }
+            }
+        }
+
+        static auto make_node_adjacency(PreparedGraph const& g)
+        {
+            size_t const num_nodes = g.nodes.size();
+            std::vector<std::unordered_set<size_t>> outgoing(num_nodes);
+            std::vector<size_t> indegree(num_nodes, 0);
+
+            for (GraphEdge const& edge : g.edges)
+            {
+                if (edge.source.node == GRAPH_ID) continue;
+                if (edge.target.node == GRAPH_ID) continue;
+
+                size_t const u = edge.source.node;
+                size_t const v = edge.target.node;
+
+                if (outgoing[u].insert(v).second) {
+                    ++indegree[v];
+                }
+            }
+
+            return std::make_pair(std::move(outgoing), std::move(indegree));
+        }
+
+        void apply_node_permutation(PreparedGraph& g, std::vector<size_t> const& sorted)
+        {
+            size_t const num_nodes = g.nodes.size();
+
+            Graph::Nodes sorted_nodes;
+            sorted_nodes.reserve(num_nodes);
+            for (size_t old_i = 0; old_i < num_nodes; ++old_i)
+            {
+                sorted_nodes.push_back(std::move(g.nodes[sorted[old_i]]));
+            }
+            g.nodes.swap(sorted_nodes);
+
+            std::vector<size_t> reverse_sorted(num_nodes);
+            for (size_t new_i = 0; new_i < num_nodes; ++new_i) {
+                reverse_sorted[sorted[new_i]] = new_i;
+            }
+
+            Graph::Edges sorted_edges;
+            sorted_edges.reserve(g.edges.size());
+            for (GraphEdge edge : g.edges)
+            {
+                if (edge.source.node != GRAPH_ID)
+                    edge.source.node = reverse_sorted[edge.source.node];
+                if (edge.target.node != GRAPH_ID)
+                    edge.target.node = reverse_sorted[edge.target.node];
+                sorted_edges.insert(edge);
+            }
+            g.edges.swap(sorted_edges);
+
+            for (auto& [_, info] : _detached_info_by_source)
+            {
+                if (info.original_source.node != GRAPH_ID) {
+                    info.original_source.node = reverse_sorted[info.original_source.node];
+                }
+                if (info.reader_output.node != GRAPH_ID) {
+                    info.reader_output.node = reverse_sorted[info.reader_output.node];
+                }
+            }
+        }
+
+        void sort_nodes_or_error(PreparedGraph& g)
+        {
+            auto [outgoing, indegree] = make_node_adjacency(g);
+
+            std::deque<size_t> ready;
+            for (size_t node = 0; node < indegree.size(); ++node) {
+                if (indegree[node] == 0) {
+                    ready.push_back(node);
+                }
+            }
+
+            std::vector<size_t> sorted;
+            sorted.reserve(g.nodes.size());
+
+            while (!ready.empty())
+            {
+                size_t const node = ready.front();
+                ready.pop_front();
+                sorted.push_back(node);
+
+                for (size_t target : outgoing[node])
+                {
+                    if (--indegree[target] == 0) {
+                        ready.push_back(target);
+                    }
+                }
+            }
+
+            if (sorted.size() != g.nodes.size()) {
+                details::error(
+                    "builder " + _parent_path + ": graph contains a cycle; use detach() to break feedback explicitly"
+                );
+            }
+
+            apply_node_permutation(g, sorted);
+        }
+
+        static bool has_path(
+            std::vector<std::unordered_set<size_t>> const& outgoing,
+            size_t start,
+            size_t goal)
+        {
+            if (start == goal) {
+                return true;
+            }
+
+            std::vector<bool> seen(outgoing.size(), false);
+            std::deque<size_t> q;
+            q.push_back(start);
+            seen[start] = true;
+
+            while (!q.empty())
+            {
+                size_t u = q.front();
+                q.pop_front();
+
+                for (size_t v : outgoing[u])
+                {
+                    if (seen[v]) continue;
+                    if (v == goal) return true;
+                    seen[v] = true;
+                    q.push_back(v);
+                }
+            }
+
+            return false;
+        }
+
+        void validate_detached_edges(PreparedGraph const& g) const
+        {
+            size_t const num_nodes = g.nodes.size();
+
+            std::vector<std::unordered_set<size_t>> explicit_outgoing(num_nodes);
+            std::unordered_map<PortId, std::vector<PortId>> consumers_of_output;
+
+            for (GraphEdge const& edge : g.edges)
+            {
+                consumers_of_output[edge.source].push_back(edge.target);
+
+                if (edge.source.node == GRAPH_ID) continue;
+                if (edge.target.node == GRAPH_ID) continue;
+
+                explicit_outgoing[edge.source.node].insert(edge.target.node);
+            }
+
+            for (auto const& [_, info] : _detached_info_by_source)
+            {
+                if (info.original_source.node == GRAPH_ID) {
+                    continue;
+                }
+
+                auto it = consumers_of_output.find(info.reader_output);
+                if (it == consumers_of_output.end()) {
+                    continue;
+                }
+
+                for (PortId target_port : it->second)
+                {
+                    if (target_port.node == GRAPH_ID) {
+                        continue;
+                    }
+
+                    size_t const u = info.original_source.node;
+                    size_t const v = target_port.node;
+
+                    auto augmented = explicit_outgoing;
+                    if (!has_path(augmented, v, u)) {
+                        details::error(
+                            "builder " + _parent_path + ": detach() on " +
+                            "signal " + std::to_string(info.original_source.node) + ":" + std::to_string(info.original_source.port) +
+                            " breaks an acyclic dependency"
+                        );
+                    }
+                }
+            }
+        }
     };
+
+    inline SignalRef lift(GraphBuilder& g, Sample value)
+    {
+        return g.node<Constant>(value);
+    }
+
+    inline SignalRef lift(SignalRef s)
+    {
+        if (!s.graph_builder) {
+            details::error("cannot lift an empty signal");
+        }
+        return s;
+    }
+
+    template<class T>
+    concept SignalLike = std::convertible_to<std::remove_cvref_t<T>, SignalRef>;
+
+    template<class T>
+    concept ScalarLike =
+        std::integral<std::remove_cvref_t<T>> ||
+        std::floating_point<std::remove_cvref_t<T>>;
+
+    template<class T>
+    concept Liftable = SignalLike<T> || ScalarLike<T>;
+
+    template<class T>
+    SignalRef lift_operand(GraphBuilder& g, T&& x)
+    {
+        if constexpr (SignalLike<T>) {
+            SignalRef s = std::forward<T>(x);
+            if (s.graph_builder != &g) {
+                details::error("operand belongs to a different builder");
+            }
+            return s;
+        }
+        else {
+            return g.node<Constant>(static_cast<Sample>(x))();
+        }
+    }
+
+    template<class Node, class L, class R>
+    requires (Liftable<L> && Liftable<R>)
+    SignalRef make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
+    {
+        GraphBuilder* g = nullptr;
+
+        if constexpr (SignalLike<L>) {
+            SignalRef s = std::forward<L>(lhs);
+            g = s.graph_builder;
+        }
+
+        if constexpr (SignalLike<R>) {
+            SignalRef s = std::forward<R>(rhs);
+            if (!g) {
+                g = s.graph_builder;
+            }
+            else if (s.graph_builder != g) {
+                details::error(std::string(op_name) + ": operands belong to different builders");
+            }
+        }
+
+        if (!g) {
+            details::error(std::string(op_name) + ": at least one operand must be a signal");
+        }
+
+        SignalRef lhs_signal = lift_operand(*g, std::forward<L>(lhs));
+        SignalRef rhs_signal = lift_operand(*g, std::forward<R>(rhs));
+
+        return g->node<Node>()(lhs_signal, rhs_signal);
+    }
+
+    template<class L, class R>
+    requires (Liftable<L>&& Liftable<R>)
+    SignalRef operator+(L&& lhs, R&& rhs)
+    {
+        return make_binary_op<Sum>(
+            std::forward<L>(lhs),
+            std::forward<R>(rhs),
+            "operator+"
+        );
+    }
+
+    template<class L, class R>
+    requires (Liftable<L>&& Liftable<R>)
+    SignalRef operator-(L&& lhs, R&& rhs)
+    {
+        return make_binary_op<Subtract>(
+            std::forward<L>(lhs),
+            std::forward<R>(rhs),
+            "operator-"
+        );
+    }
+
+    template<class L, class R>
+    requires (Liftable<L>&& Liftable<R>)
+    SignalRef operator*(L&& lhs, R&& rhs)
+    {
+        return make_binary_op<Product>(
+            std::forward<L>(lhs),
+            std::forward<R>(rhs),
+            "operator*"
+        );
+    }
+
+    template<class L, class R>
+    requires (Liftable<L>&& Liftable<R>)
+    SignalRef operator/(L&& lhs, R&& rhs)
+    {
+        return make_binary_op<Quotient>(
+            std::forward<L>(lhs),
+            std::forward<R>(rhs),
+            "operator/"
+        );
+    }
 
     SignalRef::SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
         graph_builder(&graph_builder_),
@@ -267,6 +764,14 @@ namespace iv {
         }
     }
 
+    SignalRef SignalRef::detach() const
+    {
+        if (!graph_builder) {
+            details::error("attempted to detach an empty signal");
+        }
+        return graph_builder->detach_signal(*this);
+    }
+
     std::string SignalRef::to_string() const
     {
         if (!graph_builder) {
@@ -277,7 +782,6 @@ namespace iv {
         }
         return "signal at address " + graph_builder->debug_node_id(node_index) + ":" + std::to_string(output_port);
     }
-
 
     NodeRef::NodeRef(GraphBuilder& graph_builder, size_t index) :
         _graph_builder(&graph_builder),
@@ -435,6 +939,11 @@ namespace iv {
 
         _graph_builder->_placed_nodes.insert(_index);
         return *this;
+    }
+
+    SignalRef NodeRef::detach() const
+    {
+        return static_cast<SignalRef>(*this).detach();
     }
 
     std::string NodeRef::to_string() const
