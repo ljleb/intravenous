@@ -3,10 +3,28 @@
 #include "dsl.h"
 #include "graph_node.h"
 #include "wav.h"
-
+#include <stacktrace>
 
 using namespace iv;
 
+[[noreturn]] void terminate_stacktrace() {
+    std::cerr << "\nstd::terminate called\n";
+
+    if (auto ep = std::current_exception()) {
+        try {
+            std::rethrow_exception(ep);
+        } catch (const std::exception& e) {
+            std::cerr << std::stacktrace::current() << '\n';
+            std::cerr << "uncaught exception: " << e.what() << '\n';
+        } catch (...) {
+            std::cerr << "uncaught non-std exception\n";
+        }
+    } else {
+        std::cerr << "no active exception\n";
+    }
+
+    std::abort();
+}
 
 static void feedback_voice(GraphBuilder& g) {
     auto amplitude = g.input("amplitude", 0.5);
@@ -77,8 +95,10 @@ NodeProcessor init_graph(
     return NodeProcessor(std::move(g).build());
 }
 
-
 int main() {
+#ifndef NDEBUG
+    std::set_terminate(terminate_stacktrace);
+#endif
     size_t const sample_rate = 48000;
     float const duration_seconds = 4.0f;
 
