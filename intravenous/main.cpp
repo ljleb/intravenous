@@ -79,7 +79,7 @@ NodeProcessor init_graph(
 ) {
     GraphBuilder g;
 
-    auto const dt = g.node<BufferSource>(&sample_period, 1);
+    auto const dt = g.node<ValueSource>(&sample_period);
     SignalRef first_noise;
 
     for (size_t i = 0; i < num_channels; ++i)

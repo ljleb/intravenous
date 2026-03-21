@@ -1237,6 +1237,24 @@ namespace iv {
         }
     };
 
+    struct ValueSource {
+        Sample const* _value;
+
+        explicit ValueSource(Sample const* value):
+            _value(value)
+        {
+            assert(_value);
+        }
+
+        constexpr auto outputs() const {
+            return std::array{ OutputConfig{ .name = "value" } };
+        }
+
+        void tick(TickState const& ts) const {
+            ts.outputs[0].push(*_value);
+        }
+    };
+
     class BufferSource {
         iv::Sample* _source;
         size_t _size;
