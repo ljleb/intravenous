@@ -1,9 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(intravenous LANGUAGES CXX)
+project(intravenous LANGUAGES C CXX)
 
 add_executable(intravenous
+    third_party/miniaudio/miniaudio.c
     main.cpp
+)
+
+set_source_files_properties(
+    third_party/miniaudio/miniaudio.c
+    PROPERTIES LANGUAGE C
 )
 
 target_compile_features(intravenous PRIVATE cxx_std_23)
@@ -19,6 +25,7 @@ target_include_directories(intravenous PRIVATE
 
 target_include_directories(intravenous SYSTEM PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/random123
+    third_party/
 )
 
 if(MSVC)

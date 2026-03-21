@@ -258,7 +258,7 @@ namespace iv {
             return std::array {
                 InputConfig { "f_prev" },
                 InputConfig { "f"},
-                InputConfig { .name = "dx", .default_value = 1.0 },
+                InputConfig { .name = "dt", .default_value = 1.0 },
             };
         }
 
@@ -275,7 +275,8 @@ namespace iv {
             auto const f_prev = state.inputs[0].get();
             auto const f = state.inputs[1].get();
             auto const dx = state.inputs[2].get();
-            out.push(warp_pm1(f_prev + f * dx, 1.0));
+            auto res = warp_pm1(f_prev + f * dx, 1.0);
+            out.push(res);
         }
     };
 
@@ -572,7 +573,7 @@ namespace iv {
         {
             auto& in = state.inputs[0];
             auto& out = state.outputs[0];
-            auto& s = state.get_state<State>();
+            auto const& s = state.get_state<State>();
             Sample uniform = in.get() * 0.5 + 0.5;
             size_t discrete = static_cast<size_t>(std::lower_bound(s.weights.begin(), s.weights.end(), uniform) - s.weights.begin());
             out.push(std::exp2f(static_cast<Sample>(discrete)));
@@ -1209,14 +1210,17 @@ namespace iv {
     class BufferSink {
         iv::Sample* _destination;
         size_t _size;
+        size_t _time_offset;
 
     public:
         constexpr explicit BufferSink(
             iv::Sample* destination,
-            size_t size
+            size_t size,
+            size_t time_offset = 0
         ):
             _destination(destination),
-            _size(size)
+            _size(size),
+            _time_offset(time_offset)
         {}
 
         constexpr auto inputs() const
@@ -1227,22 +1231,29 @@ namespace iv {
         void tick(iv::TickState const& state)
         {
             auto& in = state.inputs[0];
-            if (state.index < _size) _destination[state.index] = in.get();
+            if (state.index >= _time_offset && state.index < _time_offset + _size) {
+                _destination[state.index] = in.get();
+            }
         }
     };
 
     class BufferSource {
         iv::Sample* _source;
         size_t _size;
+        size_t _time_offset;
 
     public:
         constexpr explicit BufferSource(
             iv::Sample* source,
-            size_t size
+            size_t size,
+            size_t time_offset = 0
         ):
             _source(source),
-            _size(size)
-        {}
+            _size(size),
+            _time_offset(time_offset)
+        {
+            assert(_size >= 1);
+        }
 
         constexpr auto outputs() const
         {
@@ -1252,11 +1263,14 @@ namespace iv {
         void tick(iv::TickState const& state)
         {
             auto& out = state.outputs[0];
-            if (state.index < _size) {
-                out.push(_source[state.index]);
+            if (state.index < _time_offset) {
+                out.push(_source[0]);
+            }
+            else if (state.index >= _time_offset + _size) {
+                out.push(_source[_size-1]);
             }
             else {
-                out.push(_source[_size-1]);
+                out.push(_source[state.index - _time_offset]);
             }
         }
     };
