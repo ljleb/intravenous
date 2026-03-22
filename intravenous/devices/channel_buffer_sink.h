@@ -1,20 +1,9 @@
 #pragma once
-#include "miniaudio/miniaudio.h"
-
 #include "node.h"
-#include "graph_node.h"
-
-#include <iostream>
-#include <memory>
-#include <vector>
-#include <cstring>
-#include <cstddef>
 #include <cassert>
-#include <array>
-
 
 namespace iv {
-    struct RealtimeOutputTarget {
+    struct ChannelBufferTarget {
         Sample** channels = nullptr;
         size_t num_channels = 0;
         size_t frames = 0;
@@ -53,15 +42,15 @@ namespace iv {
             assert(channels != nullptr);
             assert(channel < num_channels);
             assert(contains_global_index(global_index));
-            channels[channel][local_index(global_index)] = value;
+            channels[channel][local_index(global_index)] += value;
         }
     };
 
-    struct OutputDeviceSink {
-        RealtimeOutputTarget* target = nullptr;
+    struct ChannelBufferSink {
+        ChannelBufferTarget* target = nullptr;
         size_t channel = 0;
 
-        inline explicit OutputDeviceSink(RealtimeOutputTarget& target, size_t channel)
+        inline explicit ChannelBufferSink(ChannelBufferTarget& target, size_t channel)
             : target(&target), channel(channel) {}
 
         inline constexpr auto inputs() const {

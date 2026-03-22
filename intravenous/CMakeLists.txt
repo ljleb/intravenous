@@ -24,7 +24,6 @@ target_include_directories(intravenous PRIVATE
 )
 
 target_include_directories(intravenous SYSTEM PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/random123
     third_party/
 )
 
