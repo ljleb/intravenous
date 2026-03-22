@@ -1,13 +1,13 @@
 #pragma once
 
-#include "modules/module.h"
+#include "module/module.h"
 
 namespace iv::modules {
     inline TypeErasedNode noisy_saw()
     {
         GraphBuilder g;
 
-        auto const amplitude = g.input("amplitude", 0.5);
+        auto const amplitude = g.input("amplitude", 0.1);
         auto const frequency = g.input("frequency", 500.0);
         auto const voice_noise = g.input("noise");
         auto const dt = g.input("dt", 1.0);

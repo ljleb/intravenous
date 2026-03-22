@@ -1,15 +1,12 @@
-#pragma once
-
-#include "modules/module.h"
+#include "module/module.h"
 #include "modules/noisy_saw.h"
-#include "runtime/system.h"
 
 namespace iv::modules {
     inline void noise_voice(GraphBuilder& g)
     {
         auto const dt = g.input("dt", 1.0);
 
-        auto const level_knob = 0.1;
+        auto const level_knob = 1.5;
         auto const lo_pass_knob = 1.0;
         auto const hi_pass_knob = 1.0;
         auto const generator = g.node<DeterministicUniformAESNoise>();
@@ -37,7 +34,7 @@ namespace iv::modules {
     inline TypeErasedNode noisy_saw_project(ModuleContext const& context)
     {
         GraphBuilder& g = context.builder();
-        System& system = context.system();
+        ModuleSystem const& system = context.system();
 
         auto const dt = g.node<ValueSource>(&system.sample_period());
         SignalRef first_noise;
@@ -50,7 +47,7 @@ namespace iv::modules {
 
             auto const voice = g.node<TypeErasedNode>(modules::noisy_saw());
             auto const shared_noise = g.node<Interpolation>();
-            auto const sink = system.audio_device().sink(g, channel);
+            auto const sink = system.sink(g, channel);
 
             noise(dt);
             shared_noise(first_noise, noise, 1.0);
@@ -62,3 +59,5 @@ namespace iv::modules {
         return TypeErasedNode(std::move(g).build());
     }
 }
+
+IV_EXPORT_MODULE(iv::modules::noisy_saw_project);

@@ -1,8 +1,6 @@
 #include "devices/channel_buffer_sink.h"
 #include "graph_node.h"
-#include "modules/module.h"
-#include "modules/noisy_saw_project.h"
-#include "runtime/system.h"
+#include "module_test_utils.h"
 
 #include <array>
 #include <cmath>
@@ -10,16 +8,6 @@
 #include <vector>
 
 namespace {
-    bool all_finite(std::vector<float> const& buffer)
-    {
-        for (float sample : buffer) {
-            if (!std::isfinite(sample)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
 }
 
 int main()
@@ -58,20 +46,15 @@ int main()
 
     {
         iv::System system({}, false, false);
-        iv::GraphBuilder g;
-        iv::ModuleContext context(g, system);
-        iv::TypeErasedModule module(iv::modules::noisy_saw_project);
-        iv::TypeErasedNode root = system.wrap_root(module.build(context));
-        iv::NodeProcessor processor(std::move(root));
-
-        for (size_t i = 0; i < 16; ++i) {
-            processor.tick({}, i);
-        }
-
-        if (system.is_shutdown_requested()) {
-            std::cerr << "project module requested shutdown unexpectedly\n";
-            return 1;
-        }
+        iv::ModuleLoader loader(iv::test::repo_root());
+        iv::NodeProcessor processor = iv::test::make_processor(
+            loader,
+            system,
+            iv::test::test_modules_root() / "noisy_saw_project"
+        );
+        iv::test::require(processor.num_module_refs() != 0, "module refs should be retained by NodeProcessor");
+        iv::test::run_processor_ticks(processor);
+        iv::test::require(!system.is_shutdown_requested(), "directory module requested shutdown unexpectedly");
     }
 
     return 0;

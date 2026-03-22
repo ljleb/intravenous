@@ -84,9 +84,9 @@ namespace iv {
             return _audio_device.is_shutdown_requested();
         }
 
-        TypeErasedNode wrap_root(TypeErasedNode root)
+        TypeErasedNode wrap_root(TypeErasedNode root, bool uses_audio_device = false)
         {
-            if (!_audio_device.has_sinks()) {
+            if (!uses_audio_device) {
                 return root;
             }
 
@@ -99,6 +99,11 @@ namespace iv {
         void request_shutdown()
         {
             _audio_device.request_shutdown();
+        }
+
+        void activate_root(bool uses_audio_device)
+        {
+            _audio_device.set_sink_active(uses_audio_device);
         }
     };
 }

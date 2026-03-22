@@ -32,6 +32,7 @@ namespace iv {
         bool _render_in_progress = false;
         bool _render_finished = false;
         bool _block_open = false;
+        bool _has_active_sinks = false;
 
         RenderConfig _config;
         Sample _sample_period;
@@ -43,8 +44,6 @@ namespace iv {
         size_t _requested_channels = 0;
         size_t _active_block_start = 0;
         size_t _active_block_end = 0;
-        size_t _num_sinks = 0;
-
         std::mutex _mutex;
         std::condition_variable _cv;
 
@@ -190,6 +189,7 @@ namespace iv {
             _render_in_progress(std::exchange(other._render_in_progress, false)),
             _render_finished(std::exchange(other._render_finished, false)),
             _block_open(std::exchange(other._block_open, false)),
+            _has_active_sinks(std::exchange(other._has_active_sinks, false)),
             _config(other._config),
             _sample_period(other._sample_period),
             _output_target(other._output_target),
@@ -198,8 +198,7 @@ namespace iv {
             _requested_frames(std::exchange(other._requested_frames, 0)),
             _requested_channels(std::exchange(other._requested_channels, 0)),
             _active_block_start(std::exchange(other._active_block_start, 0)),
-            _active_block_end(std::exchange(other._active_block_end, 0)),
-            _num_sinks(std::exchange(other._num_sinks, 0))
+            _active_block_end(std::exchange(other._active_block_end, 0))
         {}
 
         AudioDevice& operator=(AudioDevice&& other) noexcept
@@ -230,7 +229,7 @@ namespace iv {
             _requested_channels = std::exchange(other._requested_channels, 0);
             _active_block_start = std::exchange(other._active_block_start, 0);
             _active_block_end = std::exchange(other._active_block_end, 0);
-            _num_sinks = std::exchange(other._num_sinks, 0);
+            _has_active_sinks = std::exchange(other._has_active_sinks, false);
             return *this;
         }
 
@@ -246,7 +245,7 @@ namespace iv {
 
         bool has_sinks() const
         {
-            return _num_sinks != 0;
+            return _has_active_sinks;
         }
 
         bool is_shutdown_requested() const
@@ -254,14 +253,17 @@ namespace iv {
             return _shutdown_requested;
         }
 
-        NodeRef sink(GraphBuilder& builder, size_t channel, size_t device_id = 0)
+        ChannelBufferTarget& output_target()
         {
-            (void)device_id;
-            ++_num_sinks;
-            if (_open_backend && !_device_started) {
+            return _output_target;
+        }
+
+        void set_sink_active(bool active)
+        {
+            _has_active_sinks = active;
+            if (_has_active_sinks && _open_backend && !_device_started) {
                 init_backend();
             }
-            return builder.node<ChannelBufferSink>(_output_target, channel);
         }
 
         void prepare_tick(size_t global_index)

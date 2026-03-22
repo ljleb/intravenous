@@ -433,6 +433,7 @@ namespace iv {
     class NodeProcessor {
         using Buffer = std::vector<AlignedBytes>;
 
+        std::vector<std::shared_ptr<void>> _module_refs;
         TypeErasedNode _node;
         Buffer _buffer;
         NodeState _graph_state;
@@ -462,8 +463,12 @@ namespace iv {
         }
 
     public:
-        explicit NodeProcessor(TypeErasedNode node) :
-            _node(std::move(node))
+        explicit NodeProcessor(
+            TypeErasedNode node,
+            std::vector<std::shared_ptr<void>> module_refs = {}
+        ) :
+            _node(std::move(node)),
+            _module_refs(std::move(module_refs))
         {
             assert(get_num_inputs(_node) == 0 && "the graph should have 0 inputs");
             assert(get_num_outputs(_node) == 0 && "the graph should have 0 outputs");
@@ -484,6 +489,11 @@ namespace iv {
         size_t get_latency() const
         {
             return _node.internal_latency();
+        }
+
+        size_t num_module_refs() const
+        {
+            return _module_refs.size();
         }
     };
 }
