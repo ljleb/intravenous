@@ -6,7 +6,7 @@ namespace iv::modules {
     {
         auto const dt = g.input("dt", 1.0);
 
-        auto const level_knob = 1.5;
+        auto const level_knob = 0.0;
         auto const lo_pass_knob = 1.0;
         auto const hi_pass_knob = 1.0;
         auto const generator = g.node<DeterministicUniformAESNoise>();
@@ -35,6 +35,7 @@ namespace iv::modules {
     {
         GraphBuilder& g = context.builder();
         ModuleSystem const& system = context.system();
+        TypeErasedModule voice_module = context.load("iv.test.noisy_saw_voice");
 
         auto const dt = g.node<ValueSource>(&system.sample_period());
         SignalRef first_noise;
@@ -45,7 +46,7 @@ namespace iv::modules {
                 first_noise = noise;
             }
 
-            auto const voice = g.node<TypeErasedNode>(modules::noisy_saw());
+            auto const voice = g.node<TypeErasedNode>(voice_module.build(context));
             auto const shared_noise = g.node<Interpolation>();
             auto const sink = system.sink(g, channel);
 
@@ -60,4 +61,4 @@ namespace iv::modules {
     }
 }
 
-IV_EXPORT_MODULE(iv::modules::noisy_saw_project);
+IV_EXPORT_MODULE("iv.test.noisy_saw_project", iv::modules::noisy_saw_project);

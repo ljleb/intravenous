@@ -24,6 +24,8 @@ else()
     target_compile_options(intravenous_architecture_smoke PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+target_link_libraries(intravenous_architecture_smoke PRIVATE intravenous_module_runtime)
+
 add_test(NAME intravenous_architecture_smoke COMMAND intravenous_architecture_smoke)
 
 add_executable(intravenous_module_loader_variants
@@ -51,6 +53,8 @@ if(MSVC)
 else()
     target_compile_options(intravenous_module_loader_variants PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+target_link_libraries(intravenous_module_loader_variants PRIVATE intravenous_module_runtime)
 
 add_test(NAME intravenous_module_loader_variants COMMAND intravenous_module_loader_variants)
 
@@ -80,6 +84,8 @@ else()
     target_compile_options(intravenous_module_loader_failures PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+target_link_libraries(intravenous_module_loader_failures PRIVATE intravenous_module_runtime)
+
 add_test(NAME intravenous_module_loader_failures COMMAND intravenous_module_loader_failures)
 
 add_executable(intravenous_module_loader_reload
@@ -108,4 +114,36 @@ else()
     target_compile_options(intravenous_module_loader_reload PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+target_link_libraries(intravenous_module_loader_reload PRIVATE intravenous_module_runtime)
+
 add_test(NAME intravenous_module_loader_reload COMMAND intravenous_module_loader_reload)
+
+add_executable(intravenous_module_watcher
+    module_watcher.cpp
+    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
+)
+
+target_compile_features(intravenous_module_watcher PRIVATE cxx_std_23)
+set_target_properties(intravenous_module_watcher PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+
+target_include_directories(intravenous_module_watcher PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenous
+)
+
+target_include_directories(intravenous_module_watcher SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenous/third_party
+)
+
+if(MSVC)
+    target_compile_options(intravenous_module_watcher PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(intravenous_module_watcher PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+target_link_libraries(intravenous_module_watcher PRIVATE intravenous_module_runtime)
+
+add_test(NAME intravenous_module_watcher COMMAND intravenous_module_watcher)

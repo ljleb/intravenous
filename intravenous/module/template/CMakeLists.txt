@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(test_local_module LANGUAGES CXX)
+project(iv_runtime_module LANGUAGES CXX)
 
 add_library(iv_runtime_module SHARED ${IV_MODULE_ENTRY_FILE})
 target_compile_features(iv_runtime_module PRIVATE cxx_std_23)
@@ -19,15 +19,13 @@ set_target_properties(iv_runtime_module PROPERTIES
 
 target_include_directories(iv_runtime_module PRIVATE
     ${IV_CORE_INCLUDE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${IV_MODULE_SOURCE_DIR}
 )
 target_include_directories(iv_runtime_module SYSTEM PRIVATE
     ${IV_THIRD_PARTY_INCLUDE_DIR}
 )
 
-if(DEFINED IV_MODULE_PCH_HEADER)
-    target_precompile_headers(iv_runtime_module PRIVATE ${IV_MODULE_PCH_HEADER})
-endif()
+target_precompile_headers(iv_runtime_module PRIVATE ${IV_MODULE_PCH_HEADER})
 
 if(MSVC)
     target_compile_options(iv_runtime_module PRIVATE /W4 /permissive-)

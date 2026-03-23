@@ -1,14 +1,17 @@
 #include "module/loader.h"
+#include "module/watcher.h"
 #include "runtime/system.h"
 
-#include <chrono>
 #include <filesystem>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <stacktrace>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 using namespace iv;
 
@@ -32,6 +35,36 @@ using namespace iv;
     std::abort();
 }
 
+std::vector<std::filesystem::path> parse_search_path_env(char const* name)
+{
+    std::vector<std::filesystem::path> roots;
+    char const* value = std::getenv(name);
+    if (!value || !*value) {
+        return roots;
+    }
+
+#if defined(_WIN32)
+    constexpr char separator = ';';
+#else
+    constexpr char separator = ':';
+#endif
+
+    std::string_view remaining(value);
+    while (!remaining.empty()) {
+        size_t split = remaining.find(separator);
+        std::string_view token = remaining.substr(0, split);
+        if (!token.empty()) {
+            roots.emplace_back(std::string(token));
+        }
+        if (split == std::string_view::npos) {
+            break;
+        }
+        remaining.remove_prefix(split + 1);
+    }
+
+    return roots;
+}
+
 int main(int argc, char** argv)
 {
 #ifndef NDEBUG
@@ -39,16 +72,30 @@ int main(int argc, char** argv)
 #endif
 
     if (argc < 2) {
-        std::cerr << "usage: intravenous <module-path>\n";
+        std::cerr << "usage: intravenous <module-path> [search-root...]\n";
+        std::cerr << "env:   IV_MODULE_SEARCH_PATH="
+#if defined(_WIN32)
+                  << "root1;root2"
+#else
+                  << "root1:root2"
+#endif
+                  << '\n';
         return 2;
     }
 
     std::cout << "Audio running. Press Enter to quit.\n";
 
     System system;
-    ModuleLoader loader;
     std::filesystem::path const module_path = argv[1];
+    std::vector<std::filesystem::path> search_roots = parse_search_path_env("IV_MODULE_SEARCH_PATH");
+    for (int i = 2; i < argc; ++i) {
+        search_roots.emplace_back(argv[i]);
+    }
+
+    ModuleLoader loader(std::filesystem::current_path(), std::move(search_roots));
+    auto watcher = make_dependency_watcher();
     auto live_graph = loader.load_root(module_path, system);
+    watcher->update(live_graph.dependencies);
     system.activate_root(live_graph.sink_count != 0);
     auto processor = std::make_unique<NodeProcessor>(
         system.wrap_root(std::move(live_graph.root), live_graph.sink_count != 0),
@@ -57,26 +104,23 @@ int main(int argc, char** argv)
 
     struct PendingReload {
         std::unique_ptr<NodeProcessor> processor;
-        std::filesystem::file_time_type stamp {};
+        std::vector<ModuleDependency> dependencies;
         bool uses_audio_device = false;
     };
 
     std::mutex reload_mutex;
     std::optional<PendingReload> pending_reload;
-    std::filesystem::file_time_type live_stamp = live_graph.source_stamp;
     bool build_in_progress = false;
 
     std::jthread reload_thread([&](std::stop_token stop_token) {
         while (!stop_token.stop_requested() && !system.is_shutdown_requested()) {
             bool should_build = false;
-            std::filesystem::file_time_type observed_live_stamp {};
             {
                 std::lock_guard lock(reload_mutex);
-                observed_live_stamp = live_stamp;
                 should_build =
                     !build_in_progress &&
                     !pending_reload.has_value() &&
-                    loader.source_changed(module_path, observed_live_stamp);
+                    watcher->has_changes();
                 if (should_build) {
                     build_in_progress = true;
                 }
@@ -90,7 +134,7 @@ int main(int argc, char** argv)
                             system.wrap_root(std::move(next_graph.root), next_graph.sink_count != 0),
                             std::move(next_graph.module_refs)
                         ),
-                        .stamp = next_graph.source_stamp,
+                        .dependencies = std::move(next_graph.dependencies),
                         .uses_audio_device = next_graph.sink_count != 0,
                     };
 
@@ -123,10 +167,7 @@ int main(int argc, char** argv)
         if (next_reload.has_value()) {
             system.activate_root(next_reload->uses_audio_device);
             processor = std::move(next_reload->processor);
-            {
-                std::lock_guard lock(reload_mutex);
-                live_stamp = next_reload->stamp;
-            }
+            watcher->update(std::move(next_reload->dependencies));
             std::cout << "reloaded " << module_path.string() << '\n';
         }
     }

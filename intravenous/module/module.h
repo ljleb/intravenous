@@ -3,6 +3,7 @@
 #include "dsl.h"
 
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
@@ -92,7 +93,7 @@ namespace iv {
             return _system;
         }
 
-        TypeErasedModule load(std::string_view path) const;
+        TypeErasedModule load(std::string_view id) const;
     };
 
     class TypeErasedModule {
@@ -125,15 +126,15 @@ namespace iv {
         }
     };
 
-    inline TypeErasedModule ModuleContext::load(std::string_view path) const
+    inline TypeErasedModule ModuleContext::load(std::string_view id) const
     {
         if (!_load_fn) {
             throw std::logic_error(
-                "module loader is unavailable in this ModuleContext; cannot load '" + std::string(path) + "'"
+                "module loader is unavailable in this ModuleContext; cannot load '" + std::string(id) + "'"
             );
         }
 
-        return _load_fn(_load_user_data, path);
+        return _load_fn(_load_user_data, id);
     }
 }
 
@@ -144,6 +145,7 @@ extern "C" {
 
     struct iv_module_descriptor_v1 {
         uint32_t abi_version;
+        char const* id;
         iv_module_build_fn_v1 build;
     };
 
@@ -156,11 +158,12 @@ extern "C" {
 #define IV_MODULE_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define IV_EXPORT_MODULE(module_fn) \
+#define IV_EXPORT_MODULE(module_id, module_fn) \
     extern "C" IV_MODULE_EXPORT iv_module_descriptor_v1 const* iv_get_module_descriptor_v1() \
     { \
         static iv_module_descriptor_v1 descriptor { \
             IV_MODULE_ABI_VERSION_V1, \
+            module_id, \
             [](iv::ModuleContext const& context) -> iv::TypeErasedNode { return module_fn(context); }, \
         }; \
         return &descriptor; \

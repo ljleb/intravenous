@@ -15,5 +15,8 @@
       ]
     }
   },
-  "terminal.integrated.defaultProfile.windows": "MSVC Dev Shell"
+  "terminal.integrated.defaultProfile.windows": "MSVC Dev Shell",
+  "terminal.integrated.env.windows": {
+    "IV_MODULE_SEARCH_PATH": "tests\\test_modules"
+  }
 }

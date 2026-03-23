@@ -46,7 +46,7 @@ int main()
 
     {
         iv::System system({}, false, false);
-        iv::ModuleLoader loader(iv::test::repo_root());
+        auto loader = iv::test::make_loader();
         iv::NodeProcessor processor = iv::test::make_processor(
             loader,
             system,

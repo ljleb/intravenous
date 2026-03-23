@@ -23,6 +23,11 @@ namespace iv::test {
         return repo_root() / "tests" / "test_modules";
     }
 
+    inline std::filesystem::path duplicate_modules_root()
+    {
+        return repo_root() / "tests" / "test_modules_duplicate";
+    }
+
     inline std::filesystem::path runtime_modules_root()
     {
         return repo_root() / "build" / "test_runtime_modules";
@@ -85,6 +90,11 @@ namespace iv::test {
 
         std::cerr << message << '\n';
         std::exit(1);
+    }
+
+    inline iv::ModuleLoader make_loader(std::vector<std::filesystem::path> extra_roots = { test_modules_root() })
+    {
+        return iv::ModuleLoader(repo_root(), std::move(extra_roots));
     }
 
     inline iv::NodeProcessor make_processor(iv::ModuleLoader& loader, iv::System& system, std::filesystem::path const& module_path)
