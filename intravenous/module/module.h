@@ -157,7 +157,7 @@ namespace iv {
 }
 
 extern "C" {
-    static constexpr uint32_t IV_MODULE_ABI_VERSION_V1 = 1;
+    [[maybe_unused]] static constexpr uint32_t IV_MODULE_ABI_VERSION_V1 = 1;
 
     using iv_module_build_fn_v1 = void (*)(iv::ModuleContext const&);
 
