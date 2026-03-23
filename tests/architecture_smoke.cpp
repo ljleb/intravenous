@@ -29,7 +29,7 @@ int main()
         sink_b(src_b);
         g.outputs();
 
-        iv::NodeProcessor processor(iv::TypeErasedNode(std::move(g).build()));
+        iv::NodeProcessor processor(iv::TypeErasedNode(g.build()));
         for (size_t i = 0; i < channel.size(); ++i) {
             processor.tick({}, i);
         }

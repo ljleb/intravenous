@@ -1,13 +1,12 @@
 #include "module/module.h"
 
-namespace {
-    iv::TypeErasedNode missing_dependency(iv::ModuleContext const& context)
+namespace iv {
+    void missing_dependency(ModuleContext const& context)
     {
         auto& g = context.builder();
         auto dep = context.load("iv.test.this_does_not_exist");
-        auto const voice = g.node<iv::TypeErasedNode>(dep.build(context));
+        auto const voice = g.node<TypeErasedNode>(dep.build(context));
         g.outputs(voice);
-        return iv::TypeErasedNode(std::move(g).build());
     }
 }
 

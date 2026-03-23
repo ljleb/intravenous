@@ -93,12 +93,22 @@ namespace iv {
             return _system;
         }
 
+        TypeErasedModule (*load_fn() const)(void*, std::string_view)
+        {
+            return _load_fn;
+        }
+
+        void* load_user_data() const
+        {
+            return _load_user_data;
+        }
+
         TypeErasedModule load(std::string_view id) const;
     };
 
     class TypeErasedModule {
         std::shared_ptr<void> _module;
-        TypeErasedNode (*_build_fn)(void*, ModuleContext const&) = nullptr;
+        void (*_build_fn)(void*, ModuleContext const&) = nullptr;
 
     public:
         TypeErasedModule() = default;
@@ -122,7 +132,15 @@ namespace iv {
 
         TypeErasedNode build(ModuleContext const& context) const
         {
-            return _build_fn(_module.get(), context);
+            GraphBuilder builder;
+            ModuleContext isolated_context(
+                builder,
+                context.system(),
+                context.load_fn(),
+                context.load_user_data()
+            );
+            _build_fn(_module.get(), isolated_context);
+            return builder.build();
         }
     };
 
@@ -141,7 +159,7 @@ namespace iv {
 extern "C" {
     static constexpr uint32_t IV_MODULE_ABI_VERSION_V1 = 1;
 
-    using iv_module_build_fn_v1 = iv::TypeErasedNode (*)(iv::ModuleContext const&);
+    using iv_module_build_fn_v1 = void (*)(iv::ModuleContext const&);
 
     struct iv_module_descriptor_v1 {
         uint32_t abi_version;
@@ -164,7 +182,7 @@ extern "C" {
         static iv_module_descriptor_v1 descriptor { \
             IV_MODULE_ABI_VERSION_V1, \
             module_id, \
-            [](iv::ModuleContext const& context) -> iv::TypeErasedNode { return module_fn(context); }, \
+            [](iv::ModuleContext const& context) -> void { module_fn(context); }, \
         }; \
         return &descriptor; \
     }

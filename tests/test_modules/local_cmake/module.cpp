@@ -1,7 +1,7 @@
 #include "module/module.h"
 
 namespace {
-    iv::TypeErasedNode local_cmake_module(iv::ModuleContext const& context)
+    void local_cmake_module(iv::ModuleContext const& context)
     {
         auto& g = context.builder();
         auto const dt = g.node<iv::ValueSource>(&context.system().sample_period());
@@ -12,7 +12,6 @@ namespace {
         }
 
         g.outputs();
-        return iv::TypeErasedNode(std::move(g).build());
     }
 }
 

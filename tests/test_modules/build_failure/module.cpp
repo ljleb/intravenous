@@ -1,11 +1,10 @@
 #include "module/module.h"
 
 namespace {
-    iv::TypeErasedNode build_failure(iv::ModuleContext const& context)
+    void build_failure(iv::ModuleContext const& context)
     {
         auto& g = context.builder();
         g.outputs();
-        return iv::TypeErasedNode(std::move(g).build());
     }
 }
 

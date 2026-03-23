@@ -27,8 +27,8 @@ int main()
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
-    auto needle = std::string("return iv::modules::noisy_saw();");
-    auto replacement = std::string("return iv::modules::noisy_saw();\n        // watcher marker");
+    auto needle = std::string("        g.outputs(warper[\"anti_aliased\"] * amplitude);");
+    auto replacement = std::string("        g.outputs(warper[\"anti_aliased\"] * amplitude);\n        // watcher marker");
     iv::test::require(source.contains(needle), "watch fixture did not contain expected marker");
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text(module_cpp, source);

@@ -1,5 +1,4 @@
 #include "module/module.h"
-#include "modules/noisy_saw.h"
 
 namespace iv::modules {
     inline void noise_voice(GraphBuilder& g)
@@ -31,7 +30,7 @@ namespace iv::modules {
         g.outputs(hi_pass * level_knob);
     }
 
-    inline TypeErasedNode noisy_saw_project(ModuleContext const& context)
+    inline void noisy_saw_project(ModuleContext const& context)
     {
         GraphBuilder& g = context.builder();
         ModuleSystem const& system = context.system();
@@ -57,7 +56,6 @@ namespace iv::modules {
         }
 
         g.outputs();
-        return TypeErasedNode(std::move(g).build());
     }
 }
 

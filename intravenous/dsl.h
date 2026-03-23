@@ -83,6 +83,8 @@ namespace iv {
         struct PreparedGraph {
             Graph::Nodes nodes;
             Graph::Edges edges;
+            std::unordered_map<PortId, DetachedSignalInfo> detached_info_by_source;
+            std::unordered_set<PortId> detached_reader_outputs;
         };
 
         std::string _parent_path;
@@ -162,7 +164,7 @@ namespace iv {
                 );
             }
 
-            return node<Graph>(std::move(g).build());
+            return node<Graph>(g.build());
         }
 
         template<class... Refs>
@@ -234,15 +236,17 @@ namespace iv {
             _outputs_defined = true;
         }
 
-        Graph build()&&
+        Graph build() const
         {
             if (!_outputs_defined) {
                 details::error("builder " + _parent_path + ": g.outputs(...) must be called before build()");
             }
 
             PreparedGraph g{
-                .nodes = std::move(_nodes),
-                .edges = std::move(_edges),
+                .nodes = _nodes,
+                .edges = _edges,
+                .detached_info_by_source = _detached_info_by_source,
+                .detached_reader_outputs = _detached_reader_outputs,
             };
 
             expand_hyperedge_ports(g);
@@ -255,8 +259,8 @@ namespace iv {
             return Graph(
                 std::move(g.nodes),
                 std::move(g.edges),
-                std::move(_public_inputs),
-                std::move(_public_outputs)
+                _public_inputs,
+                _public_outputs
             );
         }
 
@@ -478,7 +482,7 @@ namespace iv {
             return std::make_pair(std::move(outgoing), std::move(indegree));
         }
 
-        void apply_node_permutation(PreparedGraph& g, std::vector<size_t> const& sorted)
+        static void apply_node_permutation(PreparedGraph& g, std::vector<size_t> const& sorted)
         {
             size_t const num_nodes = g.nodes.size();
 
@@ -507,7 +511,7 @@ namespace iv {
             }
             g.edges.swap(sorted_edges);
 
-            for (auto& [_, info] : _detached_info_by_source)
+            for (auto& [_, info] : g.detached_info_by_source)
             {
                 if (info.original_source.node != GRAPH_ID) {
                     info.original_source.node = reverse_sorted[info.original_source.node];
@@ -518,7 +522,7 @@ namespace iv {
             }
         }
 
-        void sort_nodes_or_error(PreparedGraph& g)
+        void sort_nodes_or_error(PreparedGraph& g) const
         {
             auto [outgoing, indegree] = make_node_adjacency(g);
 
@@ -603,7 +607,7 @@ namespace iv {
                 explicit_outgoing[edge.source.node].insert(edge.target.node);
             }
 
-            for (auto const& [_, info] : _detached_info_by_source)
+            for (auto const& [_, info] : g.detached_info_by_source)
             {
                 if (info.original_source.node == GRAPH_ID) {
                     continue;

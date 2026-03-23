@@ -4,12 +4,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -276,6 +278,20 @@ namespace iv {
             return sanitized;
         }
 
+        std::string stable_path_hash(std::filesystem::path const& path)
+        {
+            std::string const text = normalize_path(path).generic_string();
+            uint64_t hash = 1469598103934665603ull;
+            for (unsigned char c : text) {
+                hash ^= c;
+                hash *= 1099511628211ull;
+            }
+
+            std::ostringstream out;
+            out << std::hex << hash;
+            return out.str();
+        }
+
         std::string shared_library_filename(std::string_view base_name)
         {
 #if defined(_WIN32)
@@ -285,6 +301,94 @@ namespace iv {
 #else
             return "lib" + std::string(base_name) + ".so";
 #endif
+        }
+
+        std::vector<std::filesystem::path> path_entries()
+        {
+            char const* value = std::getenv("PATH");
+            if (!value || !*value) {
+                return {};
+            }
+
+#if defined(_WIN32)
+            constexpr char separator = ';';
+#else
+            constexpr char separator = ':';
+#endif
+
+            std::vector<std::filesystem::path> entries;
+            std::string_view remaining(value);
+            while (!remaining.empty()) {
+                size_t split = remaining.find(separator);
+                std::string_view token = remaining.substr(0, split);
+                if (!token.empty()) {
+                    entries.emplace_back(std::string(token));
+                }
+                if (split == std::string_view::npos) {
+                    break;
+                }
+                remaining.remove_prefix(split + 1);
+            }
+
+            return entries;
+        }
+
+        bool env_flag_disabled(char const* name)
+        {
+            char const* value = std::getenv(name);
+            if (!value || !*value) {
+                return false;
+            }
+
+            std::string normalized(value);
+            std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off";
+        }
+
+        std::optional<std::filesystem::path> find_program_on_path(std::string_view name)
+        {
+#if defined(_WIN32)
+            std::vector<std::string> suffixes;
+            char const* pathext = std::getenv("PATHEXT");
+            if (pathext && *pathext) {
+                std::string_view remaining(pathext);
+                while (!remaining.empty()) {
+                    size_t split = remaining.find(';');
+                    std::string_view token = remaining.substr(0, split);
+                    if (!token.empty()) {
+                        suffixes.emplace_back(token);
+                    }
+                    if (split == std::string_view::npos) {
+                        break;
+                    }
+                    remaining.remove_prefix(split + 1);
+                }
+            }
+            if (suffixes.empty()) {
+                suffixes = { ".exe", ".cmd", ".bat" };
+            }
+#endif
+
+            for (auto const& entry : path_entries()) {
+                std::filesystem::path base = entry / std::string(name);
+                std::error_code ec;
+                if (std::filesystem::exists(base, ec)) {
+                    return base;
+                }
+#if defined(_WIN32)
+                for (auto const& suffix : suffixes) {
+                    std::filesystem::path candidate = base;
+                    candidate += suffix;
+                    if (std::filesystem::exists(candidate, ec)) {
+                        return candidate;
+                    }
+                }
+#endif
+            }
+
+            return std::nullopt;
         }
 
         char const* active_build_config()
@@ -303,9 +407,47 @@ namespace iv {
                 throw std::runtime_error("command failed with exit code " + std::to_string(result) + ": " + command);
             }
         }
+
+        std::filesystem::file_time_type compute_module_build_stamp(std::filesystem::path const& dir)
+        {
+            std::filesystem::file_time_type latest {};
+            bool saw_file = false;
+
+            std::filesystem::path local_cmake = normalize_path(dir / "CMakeLists.txt");
+            for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
+                if (!entry.is_regular_file()) {
+                    continue;
+                }
+
+                if (normalize_path(entry.path()) == local_cmake) {
+                    continue;
+                }
+
+                auto stamp = compute_stamp_for_file(entry.path());
+                latest = saw_file ? std::max(latest, stamp) : stamp;
+                saw_file = true;
+            }
+
+            if (!saw_file) {
+                return compute_stamp_for_file(dir);
+            }
+
+            return latest;
+        }
     }
 
     class ModuleLoader::Impl {
+        struct BuildWorkspace {
+            std::filesystem::path root;
+            std::filesystem::path source_dir;
+            std::filesystem::path build_dir;
+            std::filesystem::path output_dir;
+            std::filesystem::path generations_dir;
+            std::filesystem::path configure_signature_file;
+            std::filesystem::path build_signature_file;
+            std::filesystem::path generator_file;
+        };
+
         struct BuildSession {
             Impl* impl = nullptr;
             System* system = nullptr;
@@ -380,7 +522,7 @@ namespace iv {
 
             void ensure_loaded_binary_dependencies()
             {
-                for (auto const& [id, binary] : binaries_by_id) {
+                for (auto const& [id, _] : binaries_by_id) {
                     if (seen_dependencies.contains(id)) {
                         continue;
                     }
@@ -531,9 +673,24 @@ namespace iv {
             return registry;
         }
 
-        std::filesystem::path module_workspace(std::string_view id) const
+        std::filesystem::path module_workspace(std::string_view id, std::filesystem::path const& module_dir) const
         {
-            return cache_root / sanitize_identifier(id) / active_build_config();
+            return cache_root / (sanitize_identifier(id) + "_" + stable_path_hash(module_dir)) / active_build_config();
+        }
+
+        BuildWorkspace build_workspace_for(ResolvedModule const& resolved) const
+        {
+            std::filesystem::path root = module_workspace(resolved.id, resolved.module_dir);
+            return BuildWorkspace {
+                .root = root,
+                .source_dir = root / "src",
+                .build_dir = root / "build",
+                .output_dir = root / "out",
+                .generations_dir = root / "generations",
+                .configure_signature_file = root / "configure.signature",
+                .build_signature_file = root / "build.signature",
+                .generator_file = root / "generator.txt",
+            };
         }
 
         std::string configure_signature(ResolvedModule const& resolved, std::filesystem::path const& output_dir, std::string const& output_name) const
@@ -551,6 +708,15 @@ namespace iv {
             return sig.str();
         }
 
+        std::string build_signature(ResolvedModule const& resolved) const
+        {
+            std::ostringstream sig;
+            sig
+                << "id=" << resolved.id << '\n'
+                << "build_stamp=" << compute_module_build_stamp(resolved.module_dir).time_since_epoch().count() << '\n';
+            return sig.str();
+        }
+
         std::filesystem::path ensure_default_template_workspace(std::filesystem::path const& source_dir) const
         {
             std::filesystem::create_directories(source_dir);
@@ -558,60 +724,167 @@ namespace iv {
             return source_dir;
         }
 
+        std::optional<std::string> configured_generator(BuildWorkspace const& workspace) const
+        {
+            if (std::filesystem::exists(workspace.generator_file)) {
+                return read_text(workspace.generator_file);
+            }
+
+            std::filesystem::path cache_path = workspace.build_dir / "CMakeCache.txt";
+            if (!std::filesystem::exists(cache_path)) {
+                return std::nullopt;
+            }
+
+            std::ifstream in(cache_path);
+            std::string line;
+            while (std::getline(in, line)) {
+                static std::string const prefix = "CMAKE_GENERATOR:INTERNAL=";
+                if (line.starts_with(prefix)) {
+                    return line.substr(prefix.size());
+                }
+            }
+
+            return std::nullopt;
+        }
+
+        std::string preferred_generator() const
+        {
+            if (!env_flag_disabled("IV_RUNTIME_MODULE_PREFER_NINJA") && find_program_on_path("ninja").has_value()) {
+                return "Ninja";
+            }
+
+            return {};
+        }
+
+        std::string choose_generator(BuildWorkspace const& workspace, bool should_configure) const
+        {
+            if (auto configured = configured_generator(workspace); configured.has_value() && !configured->empty()) {
+                return *configured;
+            }
+
+            if (!should_configure) {
+                return {};
+            }
+
+            return preferred_generator();
+        }
+
+        void configure_workspace(
+            BuildWorkspace const& workspace,
+            ResolvedModule const& resolved,
+            std::filesystem::path const& configure_source,
+            std::string const& output_name,
+            std::string const& configure_signature_text,
+            std::string const& generator
+        ) const
+        {
+            if (!generator.empty()) {
+                if (
+                    auto existing = configured_generator(workspace);
+                    existing.has_value() &&
+                    *existing != generator &&
+                    std::filesystem::exists(workspace.build_dir / "CMakeCache.txt")
+                ) {
+                    std::filesystem::remove_all(workspace.build_dir);
+                }
+            }
+
+            std::ostringstream configure;
+            configure
+                << "cmake -S " << quote(configure_source)
+                << " -B " << quote(workspace.build_dir);
+            if (!generator.empty()) {
+                configure << " -G " << quote(std::filesystem::path(generator));
+            }
+            configure
+                << " -DCMAKE_BUILD_TYPE=" << active_build_config()
+                << " -DIV_MODULE_ENTRY_FILE=" << quote(resolved.entry_file)
+                << " -DIV_MODULE_SOURCE_DIR=" << quote(resolved.module_dir)
+                << " -DIV_CORE_INCLUDE_DIR=" << quote(core_include_dir)
+                << " -DIV_THIRD_PARTY_INCLUDE_DIR=" << quote(third_party_include_dir)
+                << " -DIV_MODULE_OUTPUT_DIR=" << quote(workspace.output_dir)
+                << " -DIV_MODULE_OUTPUT_NAME=" << quote(std::filesystem::path(output_name))
+                << " -DIV_MODULE_PCH_HEADER=" << quote(default_pch_path);
+            run_command(configure.str());
+
+            write_text_if_different(workspace.configure_signature_file, configure_signature_text);
+            write_text_if_different(workspace.generator_file, generator);
+        }
+
+        void build_workspace(BuildWorkspace const& workspace, std::string const& generator) const
+        {
+            if (generator == "Ninja" && find_program_on_path("ninja").has_value()) {
+                std::ostringstream build;
+                build << "ninja -C " << quote(workspace.build_dir);
+                run_command(build.str());
+                return;
+            }
+
+            std::ostringstream build;
+            build
+                << "cmake --build " << quote(workspace.build_dir)
+                << " --config " << active_build_config()
+                << " --parallel";
+            run_command(build.str());
+        }
+
         std::filesystem::path build_artifact(ResolvedModule const& resolved) const
         {
             std::lock_guard lock(build_mutex);
 
             std::string output_name = sanitize_identifier(resolved.id);
-            std::filesystem::path workspace = module_workspace(resolved.id);
-            std::filesystem::path source_dir = workspace / "src";
-            std::filesystem::path build_dir = workspace / "build";
-            std::filesystem::path output_dir = workspace / "out";
-            std::filesystem::path generations_dir = workspace / "generations";
-            std::filesystem::create_directories(output_dir);
-            std::filesystem::create_directories(generations_dir);
+            BuildWorkspace workspace = build_workspace_for(resolved);
+            std::filesystem::create_directories(workspace.output_dir);
+            std::filesystem::create_directories(workspace.generations_dir);
 
             std::filesystem::path configure_source =
                 resolved.has_custom_cmake
                     ? resolved.cmake_dir
-                    : ensure_default_template_workspace(source_dir);
+                    : ensure_default_template_workspace(workspace.source_dir);
 
-            std::filesystem::path signature_file = workspace / "configure.signature";
-            std::string signature = configure_signature(resolved, output_dir, output_name);
-            bool should_configure = !std::filesystem::exists(build_dir / "CMakeCache.txt");
+            std::string configure_signature_text = configure_signature(resolved, workspace.output_dir, output_name);
+            bool should_configure = !std::filesystem::exists(workspace.build_dir / "CMakeCache.txt");
             if (!should_configure) {
-                should_configure = !std::filesystem::exists(signature_file) || read_text(signature_file) != signature;
+                should_configure =
+                    !std::filesystem::exists(workspace.configure_signature_file) ||
+                    read_text(workspace.configure_signature_file) != configure_signature_text;
             }
 
+            std::string generator = choose_generator(workspace, should_configure);
             if (should_configure) {
-                std::ostringstream configure;
-                configure
-                    << "cmake -S " << quote(configure_source)
-                    << " -B " << quote(build_dir)
-                    << " -DCMAKE_BUILD_TYPE=" << active_build_config()
-                    << " -DIV_MODULE_ENTRY_FILE=" << quote(resolved.entry_file)
-                    << " -DIV_MODULE_SOURCE_DIR=" << quote(resolved.module_dir)
-                    << " -DIV_CORE_INCLUDE_DIR=" << quote(core_include_dir)
-                    << " -DIV_THIRD_PARTY_INCLUDE_DIR=" << quote(third_party_include_dir)
-                    << " -DIV_MODULE_OUTPUT_DIR=" << quote(output_dir)
-                    << " -DIV_MODULE_OUTPUT_NAME=" << quote(std::filesystem::path(output_name))
-                    << " -DIV_MODULE_PCH_HEADER=" << quote(default_pch_path);
-                run_command(configure.str());
-                write_text_if_different(signature_file, signature);
+                configure_workspace(
+                    workspace,
+                    resolved,
+                    configure_source,
+                    output_name,
+                    configure_signature_text,
+                    generator
+                );
             }
 
-            std::ostringstream build;
-            build
-                << "cmake --build " << quote(build_dir)
-                << " --config " << active_build_config()
-                << " --parallel";
-            run_command(build.str());
-
-            std::filesystem::path stable_artifact = output_dir / shared_library_filename(output_name);
+            std::filesystem::path stable_artifact = workspace.output_dir / shared_library_filename(output_name);
             std::filesystem::path config_artifact =
-                output_dir / active_build_config() / shared_library_filename(output_name);
+                workspace.output_dir / active_build_config() / shared_library_filename(output_name);
             if (!std::filesystem::exists(stable_artifact) && std::filesystem::exists(config_artifact)) {
                 stable_artifact = config_artifact;
+            }
+
+            std::string build_signature_text = build_signature(resolved);
+            bool should_build = should_configure || !std::filesystem::exists(stable_artifact);
+            if (!should_build) {
+                should_build =
+                    !std::filesystem::exists(workspace.build_signature_file) ||
+                    read_text(workspace.build_signature_file) != build_signature_text;
+            }
+
+            if (should_build) {
+                build_workspace(workspace, generator);
+                write_text_if_different(workspace.build_signature_file, build_signature_text);
+                stable_artifact = workspace.output_dir / shared_library_filename(output_name);
+                config_artifact = workspace.output_dir / active_build_config() / shared_library_filename(output_name);
+                if (!std::filesystem::exists(stable_artifact) && std::filesystem::exists(config_artifact)) {
+                    stable_artifact = config_artifact;
+                }
             }
 
             if (!std::filesystem::exists(stable_artifact)) {
@@ -621,7 +894,7 @@ namespace iv {
             }
 
             std::string generation = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-            std::filesystem::path generation_dir = generations_dir / generation;
+            std::filesystem::path generation_dir = workspace.generations_dir / generation;
             std::filesystem::create_directories(generation_dir);
             std::filesystem::path generation_artifact = generation_dir / stable_artifact.filename();
             std::filesystem::copy_file(stable_artifact, generation_artifact, std::filesystem::copy_options::overwrite_existing);

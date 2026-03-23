@@ -5,10 +5,12 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -31,6 +33,59 @@ namespace iv::test {
     inline std::filesystem::path runtime_modules_root()
     {
         return repo_root() / "build" / "test_runtime_modules";
+    }
+
+    inline std::filesystem::path runtime_module_cache_root()
+    {
+        return repo_root() / "build" / "iv_runtime_modules";
+    }
+
+    inline std::string sanitize_module_id(std::string_view id)
+    {
+        std::string sanitized(id);
+        if (sanitized.empty()) {
+            sanitized = "module";
+        }
+
+        for (char& c : sanitized) {
+            bool good =
+                (c >= 'a' && c <= 'z') ||
+                (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9');
+            if (!good) {
+                c = '_';
+            }
+        }
+
+        return sanitized;
+    }
+
+    inline char const* active_build_config()
+    {
+#if defined(NDEBUG)
+        return "Release";
+#else
+        return "Debug";
+#endif
+    }
+
+    inline std::string stable_path_hash(std::filesystem::path const& path)
+    {
+        auto normalized = std::filesystem::weakly_canonical(path).generic_string();
+        uint64_t hash = 1469598103934665603ull;
+        for (unsigned char c : normalized) {
+            hash ^= c;
+            hash *= 1099511628211ull;
+        }
+
+        std::ostringstream out;
+        out << std::hex << hash;
+        return out.str();
+    }
+
+    inline std::filesystem::path runtime_module_workspace(std::string_view id, std::filesystem::path const& module_dir)
+    {
+        return runtime_module_cache_root() / (sanitize_module_id(id) + "_" + stable_path_hash(module_dir)) / active_build_config();
     }
 
     inline void require(bool condition, char const* message)
@@ -61,6 +116,14 @@ namespace iv::test {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         require(static_cast<bool>(out), "failed to open output file");
         out << text;
+    }
+
+    inline std::filesystem::file_time_type write_time(std::filesystem::path const& path)
+    {
+        std::error_code ec;
+        auto stamp = std::filesystem::last_write_time(path, ec);
+        require(!ec, "failed to read timestamp");
+        return stamp;
     }
 
     inline void copy_directory(std::filesystem::path const& from, std::filesystem::path const& to)
