@@ -1,6 +1,7 @@
 #pragma once
+#include "basic_nodes/routing.h"
+#include "basic_nodes/arithmetic.h"
 #include "graph_node.h"
-#include "basic_nodes.h"
 #include "node.h"
 
 #include <array>

@@ -2,7 +2,13 @@ cmake_minimum_required(VERSION 3.20)
 
 project(iv_runtime_module LANGUAGES CXX)
 
-add_library(iv_runtime_module SHARED ${IV_MODULE_ENTRY_FILE})
+add_library(iv_runtime_module SHARED
+    ${IV_MODULE_ENTRY_FILE}
+    ${IV_CORE_INCLUDE_DIR}/basic_nodes/filters.cpp
+    ${IV_CORE_INCLUDE_DIR}/basic_nodes/noise.cpp
+    ${IV_CORE_INCLUDE_DIR}/basic_nodes/predictors.cpp
+    ${IV_CORE_INCLUDE_DIR}/basic_nodes/shaping.cpp
+)
 target_compile_features(iv_runtime_module PRIVATE cxx_std_23)
 set_target_properties(iv_runtime_module PROPERTIES
     CXX_STANDARD 23

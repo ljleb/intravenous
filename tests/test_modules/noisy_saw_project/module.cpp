@@ -1,11 +1,15 @@
 #include "module/module.h"
+#include "basic_nodes/noise.h"
+#include "basic_nodes/filters.h"
+#include "basic_nodes/shaping.h"
+#include "basic_nodes/buffers.h"
 
 namespace iv::modules {
     inline void noise_voice(GraphBuilder& g)
     {
         auto const dt = g.input("dt", 1.0);
 
-        auto const level_knob = 0.0;
+        auto const level_knob = 2.5;
         auto const lo_pass_knob = 1.0;
         auto const hi_pass_knob = 1.0;
         auto const generator = g.node<DeterministicUniformAESNoise>();

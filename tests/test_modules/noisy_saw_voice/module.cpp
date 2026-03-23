@@ -1,5 +1,5 @@
 #include "module/module.h"
-#include "basic_nodes.h"
+#include "basic_nodes/shaping.h"
 
 namespace {
     inline void noisy_saw_voice(iv::ModuleContext const& ctx)

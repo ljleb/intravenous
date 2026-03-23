@@ -1,4 +1,5 @@
 #include "module/module.h"
+#include "basic_nodes/buffers.h"
 
 namespace {
     void local_cmake_module(iv::ModuleContext const& context)

@@ -202,19 +202,19 @@ namespace iv {
         template<typename T>
         auto new_array(size_t number)
         {
-            return std::visit([=](auto&& allocator) { return allocator.get().new_array<T>(number); }, _allocator);
+            return std::visit([=](auto&& allocator) { return allocator.get().template new_array<T>(number); }, _allocator);
         };
 
         template<typename T>
         auto new_object() -> T&
         {
-            return std::visit([](auto&& allocator) -> T& { return allocator.get().new_object<T>(); }, _allocator);
+            return std::visit([](auto&& allocator) -> T& { return allocator.get().template new_object<T>(); }, _allocator);
         }
 
         template<typename T>
         auto allocate_array(size_t number)
         {
-            return std::visit([=](auto&& allocator) { return allocator.get().allocate_array<T>(number); }, _allocator);
+            return std::visit([=](auto&& allocator) { return allocator.get().template allocate_array<T>(number); }, _allocator);
         };
 
         template<typename T, typename... Args>

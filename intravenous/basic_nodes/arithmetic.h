@@ -1,0 +1,93 @@
+#pragma once
+
+#include "node.h"
+
+#include <array>
+#include <functional>
+#include <vector>
+
+namespace iv {
+    template<typename BinaryOp>
+    constexpr Sample binary_op_default_v = 0.0;
+
+    template<typename T>
+    constexpr T binary_op_default_v<std::multiplies<T>> = T(1.0);
+
+    template<typename T>
+    constexpr T binary_op_default_v<std::divides<T>> = T(1.0);
+
+    template<typename BinaryOp>
+    class BinaryOpNode {
+        BinaryOp _binary_op;
+        size_t _num_inputs;
+
+    public:
+        constexpr explicit BinaryOpNode(size_t num_inputs = 2) :
+            _num_inputs(num_inputs)
+        {}
+
+        constexpr auto inputs() const
+        {
+            return std::vector<InputConfig>(_num_inputs);
+        }
+
+        constexpr auto outputs() const
+        {
+            return std::array<OutputConfig, 1>{};
+        }
+
+        constexpr auto num_inputs() const
+        {
+            return _num_inputs;
+        }
+
+        constexpr void tick(TickState const& state)
+        {
+            auto& out = state.outputs[0];
+            Sample result = binary_op_default_v<BinaryOp>;
+            for (auto& input : state.inputs) {
+                result = _binary_op(result, input.get());
+            }
+            out.push(result);
+        }
+    };
+
+    using Sum = BinaryOpNode<std::plus<Sample>>;
+    using Subtract = BinaryOpNode<std::minus<Sample>>;
+    using Product = BinaryOpNode<std::multiplies<Sample>>;
+    using Quotient = BinaryOpNode<std::divides<Sample>>;
+
+    struct Invert {
+        constexpr auto inputs() const
+        {
+            return std::array<InputConfig, 1>{};
+        }
+
+        constexpr auto outputs() const
+        {
+            return std::array<OutputConfig, 1>{};
+        }
+
+        void tick(TickState const& state)
+        {
+            state.outputs[0].push(-state.inputs[0].get());
+        }
+    };
+
+    struct Power {
+        constexpr auto inputs() const
+        {
+            return std::array<InputConfig, 2>{};
+        }
+
+        constexpr auto outputs() const
+        {
+            return std::array<OutputConfig, 1>{};
+        }
+
+        void tick(TickState const& state)
+        {
+            state.outputs[0].push(std::powf(state.inputs[0].get(), state.inputs[1].get()));
+        }
+    };
+}

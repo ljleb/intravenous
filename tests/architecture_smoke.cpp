@@ -1,4 +1,5 @@
 #include "devices/channel_buffer_sink.h"
+#include "basic_nodes/buffers.h"
 #include "graph_node.h"
 #include "module_test_utils.h"
 

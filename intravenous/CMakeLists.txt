@@ -3,6 +3,10 @@ cmake_minimum_required(VERSION 3.20)
 project(intravenous LANGUAGES C CXX)
 
 add_library(intravenous_module_runtime STATIC
+    basic_nodes/filters.cpp
+    basic_nodes/noise.cpp
+    basic_nodes/predictors.cpp
+    basic_nodes/shaping.cpp
     module/loader.cpp
     module/watcher.cpp
 )

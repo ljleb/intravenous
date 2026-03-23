@@ -1,5 +1,5 @@
 ﻿#pragma once
-#include "basic_nodes.h"
+#include "basic_nodes/type_erased.h"
 #include "node.h"
 #include <vector>
 #include <unordered_map>
@@ -466,9 +466,9 @@ namespace iv {
         explicit NodeProcessor(
             TypeErasedNode node,
             std::vector<std::shared_ptr<void>> module_refs = {}
-        ) :
-            _node(std::move(node)),
-            _module_refs(std::move(module_refs))
+        )
+        : _module_refs(std::move(module_refs))
+        , _node(std::move(node))
         {
             assert(get_num_inputs(_node) == 0 && "the graph should have 0 inputs");
             assert(get_num_outputs(_node) == 0 && "the graph should have 0 outputs");
