@@ -8,6 +8,8 @@
 #include <variant>
 #include <numeric>
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 
 namespace iv {
@@ -106,8 +108,13 @@ namespace iv {
         Edges _edges;
         std::vector<InputConfig> _public_inputs;
         std::vector<OutputConfig> _public_outputs;
-        mutable std::vector<size_t> _node_buffer_sizes;
-        mutable std::vector<AllocationTrace> _node_buffer_traces;
+
+        struct ReplayState {
+            std::span<size_t> node_buffer_sizes;
+#ifndef NDEBUG
+            std::span<AllocationTrace> node_buffer_traces;
+#endif
+        };
 
         static size_t calculate_port_buffer_size(size_t latency, size_t input_history, size_t output_history)
         {
@@ -126,6 +133,68 @@ namespace iv {
                 target_of[edge.source] = edge.target;
             }
             return std::make_tuple(std::move(source_of), std::move(target_of));
+        }
+
+        static std::string make_init_buffer_id(Graph const* graph, std::string_view suffix)
+        {
+            return "__graph_init:" + std::to_string(reinterpret_cast<uintptr_t>(graph)) + ":" + std::string(suffix);
+        }
+
+        ReplayState register_replay_state(InitBufferContext& context, size_t num_nodes) const
+        {
+            ReplayState replay_state{
+                .node_buffer_sizes = context.register_init_buffer<size_t>(
+                    make_init_buffer_id(this, "node_buffer_sizes"),
+                    num_nodes
+                ),
+            };
+#ifndef NDEBUG
+            replay_state.node_buffer_traces = context.register_init_buffer<AllocationTrace>(
+                make_init_buffer_id(this, "node_buffer_traces"),
+                num_nodes
+            );
+#endif
+            return replay_state;
+        }
+
+        template<typename Allocator>
+        static NodeState& node_state_for(Allocator& allocator, GraphState& graph_state, size_t node_i)
+        {
+            return (node_i == GRAPH_ID)
+                ? static_cast<NodeState&>(graph_state)
+                : allocator.at(graph_state.node_states, node_i);
+        }
+
+        template<typename NodeLike>
+        static auto make_node_configs(
+            NodeLike const& node,
+            size_t node_i,
+            std::span<InputConfig const> private_input_configs
+        )
+        {
+            std::vector<InputConfig> input_configs;
+            std::vector<OutputConfig> output_configs;
+
+            if (node_i == GRAPH_ID)
+            {
+                input_configs.assign(private_input_configs.begin(), private_input_configs.end());
+            }
+            else
+            {
+                input_configs.assign_range(get_inputs(node));
+                output_configs.assign_range(get_outputs(node));
+            }
+
+            return std::make_pair(std::move(input_configs), std::move(output_configs));
+        }
+
+        template<typename Fn>
+        void for_each_graph_node(Fn&& fn) const
+        {
+            for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
+                fn(_nodes[node_i], node_i);
+            }
+            fn(*this, GRAPH_ID);
         }
 
     public:
@@ -183,10 +252,7 @@ namespace iv {
             * };
             */
             size_t num_nodes = _nodes.size();
-            if (context.mode == InitBufferContext::PassMode::counting) {
-                _node_buffer_sizes.assign(num_nodes, 0);
-                _node_buffer_traces.assign(num_nodes, AllocationTrace{});
-            }
+            ReplayState replay_state = register_replay_state(context, num_nodes);
 
             std::vector<InputConfig> private_input_configs(num_outputs());
             OutputConfig private_outputs_config;
@@ -203,23 +269,12 @@ namespace iv {
 
             auto allocate_node_state = [&](auto const& node, size_t node_i)
             {
-                NodeState& node_state = (node_i == GRAPH_ID)
-                    ? graph_state
-                    : allocator.at(graph_state.node_states, node_i);
-
-                std::vector<InputConfig> input_configs;
-                std::vector<OutputConfig> output_configs;
-                if (node_i == GRAPH_ID)
-                {
-                    // private inputs
-                    input_configs = private_input_configs;
-                    // no outputs, public are handled by parent node and private are handled by the children nodes connected to them
-                }
-                else
-                {
-                    input_configs = get_inputs(node);
-                    output_configs = get_outputs(node);
-                }
+                NodeState& node_state = node_state_for(allocator, graph_state, node_i);
+                auto [input_configs, output_configs] = make_node_configs(
+                    node,
+                    node_i,
+                    private_input_configs
+                );
                 size_t const num_inputs = input_configs.size();
                 size_t const num_outputs = output_configs.size();
                 allocator.assign(node_state.inputs, allocator.template allocate_array<InputPort>(num_inputs));
@@ -259,63 +314,42 @@ namespace iv {
                 if (node_i != GRAPH_ID)
                 {
                     if (context.mode == InitBufferContext::PassMode::counting) {
-                        AllocationTrace trace;
                         CountingNonAllocator counter(
-                            allocator.get_buffer().data(),
-                            &trace,
                             allocator.get_buffer().data()
+#ifndef NDEBUG
+                            , &replay_state.node_buffer_traces[node_i],
+                            allocator.get_buffer().data()
+#endif
                         );
                         do_init_buffer(node, counter, context);
                         auto const node_buffer_size = counter.estimate_buffer_size();
-                        _node_buffer_sizes[node_i] = node_buffer_size;
-                        _node_buffer_traces[node_i] = std::move(trace);
+                        replay_state.node_buffer_sizes[node_i] = node_buffer_size;
                         allocator.assign(node_state.buffer, allocator.template allocate_array<std::byte>(node_buffer_size));
                     } else {
-                        if (node_i >= _node_buffer_sizes.size()) {
+                        if (node_i >= replay_state.node_buffer_sizes.size()) {
                             throw std::logic_error("graph node buffer replay ran past the counting-pass record");
                         }
                         allocator.assign(
                             node_state.buffer,
-                            allocator.template allocate_array<std::byte>(_node_buffer_sizes[node_i])
+                            allocator.template allocate_array<std::byte>(replay_state.node_buffer_sizes[node_i])
                         );
                     }
                 }
             };
 
-            for (size_t node_i = 0; node_i < num_nodes + 1; ++node_i)
-            {
-                if (node_i < num_nodes)
-                {
-                    allocate_node_state(_nodes[node_i], node_i);
-                }
-                else if (node_i == num_nodes)
-                {
-                    allocate_node_state(*this, GRAPH_ID);
-                }
-            }
+            for_each_graph_node(allocate_node_state);
 
             if (allocator.can_allocate())
             {
                 // memory was allocated, now let's initialize it
                 auto initialize_node_state = [&](auto const& node, size_t node_i)
                 {
-                    NodeState& node_state = (node_i == GRAPH_ID)
-                        ? graph_state
-                        : allocator.at(graph_state.node_states, node_i);
-
-                    std::vector<InputConfig> input_configs;
-                    std::vector<OutputConfig> output_configs;
-                    if (node_i == GRAPH_ID)
-                    {
-                        // private inputs
-                        input_configs = private_input_configs;
-                        // no outputs, public are handled by parent node and private are handled by the children nodes connected to them
-                    }
-                    else
-                    {
-                        input_configs.assign_range(get_inputs(node));
-                        output_configs.assign_range(get_outputs(node));
-                    }
+                    NodeState& node_state = node_state_for(allocator, graph_state, node_i);
+                    auto [input_configs, output_configs] = make_node_configs(
+                        node,
+                        node_i,
+                        private_input_configs
+                    );
                     size_t const num_inputs = input_configs.size();
                     std::span<SharedPortData> inputs_port_data = node_inputs_port_data[node_i];
 
@@ -357,29 +391,23 @@ namespace iv {
 
                     if (node_i != GRAPH_ID)
                     {
-                        _node_buffer_traces[node_i].reset_replay();
+#ifndef NDEBUG
+                        replay_state.node_buffer_traces[node_i].reset_replay();
                         FixedBufferAllocator nested_allocator {
                             node_state.buffer,
-                            &_node_buffer_traces[node_i],
+                            &replay_state.node_buffer_traces[node_i],
                             node_state.buffer.data(),
                         };
+#else
+                        FixedBufferAllocator nested_allocator { node_state.buffer };
+#endif
                         std::span<std::byte> result = do_init_buffer(node, nested_allocator, context);
                         nested_allocator.validate_trace_consumed();
                         assert(result.data() == node_state.buffer.data() && result.size() == node_state.buffer.size());
                     }
                 };
 
-                for (size_t node_i = 0; node_i < num_nodes + 1; ++node_i)
-                {
-                    if (node_i < num_nodes)
-                    {
-                        initialize_node_state(_nodes[node_i], node_i);
-                    }
-                    else if (node_i == num_nodes)
-                    {
-                        initialize_node_state(*this, GRAPH_ID);
-                    }
-                }
+                for_each_graph_node(initialize_node_state);
             }
         }
 
@@ -484,14 +512,20 @@ namespace iv {
         Buffer _buffer;
         NodeState _graph_state;
         InitBufferContext _counting_context;
+#ifndef NDEBUG
         AllocationTrace _allocation_trace;
+#endif
 
         void resize_buffer()
         {
             _buffer.reserve(1);
             std::byte* byte_data = reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x10000));
+#ifndef NDEBUG
             _allocation_trace = {};
             CountingNonAllocator counter(byte_data, &_allocation_trace, byte_data);
+#else
+            CountingNonAllocator counter(byte_data);
+#endif
             InitBufferContext ctx(InitBufferContext::PassMode::counting, counter.get_buffer());
             do_init_buffer(_node, counter, ctx);
             ctx.validate_after_counting();
@@ -501,6 +535,7 @@ namespace iv {
 
         void initialize_graph()
         {
+#ifndef NDEBUG
             FixedBufferAllocator allocator {
                 {
                     reinterpret_cast<std::byte*>(_buffer.data()),
@@ -510,6 +545,14 @@ namespace iv {
                 reinterpret_cast<std::byte*>(_buffer.data()),
             };
             _allocation_trace.reset_replay();
+#else
+            FixedBufferAllocator allocator {
+                {
+                    reinterpret_cast<std::byte*>(_buffer.data()),
+                    _buffer.size() * sizeof(AlignedBytes),
+                },
+            };
+#endif
             InitBufferContext ctx = _counting_context.make_initializing_context(allocator.get_buffer());
             auto allocated = do_init_buffer(_node, allocator, ctx);
             ctx.validate_after_initialization();

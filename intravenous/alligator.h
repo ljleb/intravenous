@@ -16,7 +16,7 @@ namespace iv {
         raw_array,
         aligned_array,
     };
-
+#ifndef NDEBUG
     struct AllocationEvent {
         AllocationKind kind{};
         size_t alignment = 0;
@@ -73,6 +73,12 @@ namespace iv {
             return &token;
         }
     }
+#else
+    struct AllocationTrace {
+        void reset_replay() {}
+        void validate_consumed() const {}
+    };
+#endif
 
 	template<typename T>
     union AlignedStorage {
@@ -90,6 +96,7 @@ namespace iv {
         std::byte* trace_base = nullptr;
 
     private:
+#ifndef NDEBUG
         ptrdiff_t trace_offset(void const* ptr) const
         {
             auto const* base = trace_base ? trace_base : buffer.data();
@@ -112,13 +119,21 @@ namespace iv {
                 .type_tag = details::allocation_type_token<T>(),
             });
         }
+#else
+        template<typename T>
+        void validate_trace(AllocationKind, void const*, size_t, size_t) const
+        {
+        }
+#endif
 
     public:
         void validate_trace_consumed() const
         {
+#ifndef NDEBUG
             if (trace) {
                 trace->validate_consumed();
             }
+#endif
         }
 
         constexpr bool can_allocate() const
@@ -214,6 +229,7 @@ namespace iv {
         AllocationTrace* _trace = nullptr;
         size_t total_bytes = MAX_ALLOCATION;
 
+#ifndef NDEBUG
         ptrdiff_t trace_offset(void const* ptr) const
         {
             auto const* base = _trace_base ? _trace_base : _memory_hint;
@@ -236,6 +252,12 @@ namespace iv {
                 .type_tag = details::allocation_type_token<T>(),
             });
         }
+#else
+        template<typename T>
+        void record_trace(AllocationKind, void const*, size_t, size_t)
+        {
+        }
+#endif
 
     public:
         explicit CountingNonAllocator(

@@ -6,7 +6,6 @@
 
 #include <array>
 #include <cassert>
-#include <atomic>
 #include <cstddef>
 #include <initializer_list>
 #include <stdexcept>
@@ -119,7 +118,12 @@ namespace iv {
             std::unordered_set<PortId> detached_reader_outputs;
         };
 
+        struct BuilderState {
+            size_t next_detach_id = 0;
+        };
+
         BuilderIdentity _builder_id;
+        std::shared_ptr<BuilderState> _builder_state;
 
         Graph::Nodes _nodes;
         Graph::Edges _edges;
@@ -133,23 +137,27 @@ namespace iv {
 
         std::unordered_map<PortId, DetachedSignalInfo> _detached_info_by_source;
         std::unordered_set<PortId> _detached_reader_outputs;
-        std::shared_ptr<std::atomic_size_t> _next_detach_id;
 
-    public:
-        explicit GraphBuilder(std::shared_ptr<std::atomic_size_t> next_detach_id = {}) :
-            _builder_id(allocate_root_builder_id()),
-            _next_detach_id(std::move(next_detach_id))
+        GraphBuilder(BuilderIdentity builder_id, std::shared_ptr<BuilderState> builder_state) :
+            _builder_id(std::move(builder_id)),
+            _builder_state(std::move(builder_state))
         {
-            if (!_next_detach_id) {
-                static std::atomic_size_t global_detach_id { 0 };
-                _next_detach_id = std::make_shared<std::atomic_size_t>(global_detach_id.fetch_add(1024));
-            }
         }
 
-        explicit GraphBuilder(GraphBuilder& parent) :
-            _builder_id(parent._builder_id.allocate_child_path()),
-            _next_detach_id(parent._next_detach_id)
-        {}
+    public:
+        GraphBuilder() :
+            _builder_id(allocate_root_builder_id()),
+            _builder_state(std::make_shared<BuilderState>())
+        {
+        }
+
+        GraphBuilder derive_nested_builder()
+        {
+            return GraphBuilder(
+                BuilderIdentity(_builder_id.allocate_child_path()),
+                _builder_state
+            );
+        }
 
         std::string debug_node_id(size_t index) const
         {
@@ -187,7 +195,7 @@ namespace iv {
         template<class Fn>
         NodeRef subgraph(Fn&& fn)
         {
-            GraphBuilder g(*this);
+            GraphBuilder g = derive_nested_builder();
             std::forward<Fn>(fn)(g);
 
             if (!g._outputs_defined) {
@@ -299,8 +307,8 @@ namespace iv {
     private:
         static std::string allocate_root_builder_id()
         {
-            static std::atomic_size_t next_root_builder_id { 0 };
-            return std::to_string(next_root_builder_id.fetch_add(1));
+            static size_t next_root_builder_id = 0;
+            return std::to_string(next_root_builder_id++);
         }
 
         SignalRef detach_signal(SignalRef signal)
@@ -331,7 +339,7 @@ namespace iv {
                 return SignalRef(*this, reader.node, reader.port);
             }
 
-            size_t const detach_id = _next_detach_id->fetch_add(1);
+            size_t const detach_id = _builder_state->next_detach_id++;
 
             auto writer = node<DetachWriterNode>(detach_id);
             writer(signal);
