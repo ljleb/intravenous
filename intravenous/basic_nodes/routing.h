@@ -3,9 +3,20 @@
 #include "node.h"
 
 #include <array>
+#include <string>
 #include <vector>
 
 namespace iv {
+    struct BufferId {
+        size_t id;
+
+        BufferId(size_t id): id(id) {}
+
+        operator std::string() const {
+            return "detach:" + std::to_string(id);
+        }
+    };
+
     class Broadcast {
         size_t _num_outputs;
 
@@ -39,7 +50,7 @@ namespace iv {
     };
 
     struct DetachWriterNode {
-        size_t id;
+        BufferId id;
 
         struct State {
             Sample* slot{};
@@ -54,7 +65,10 @@ namespace iv {
         void init_buffer(Alloc& alloc, Ctx& ctx) const
         {
             State& st = alloc.template new_object<State>();
-            st.slot = ctx.acquire_detach_slot(id, alloc);
+            auto span = alloc.template new_array<Sample>(1);
+            alloc.assign(alloc.at(span, 0), Sample{ 0 });
+            ctx.register_buffer(id, span);
+            st.slot = span.data();
         }
 
         void tick(TickState const& ts) const
@@ -65,7 +79,7 @@ namespace iv {
     };
 
     struct DetachReaderNode {
-        size_t id;
+        BufferId id;
 
         struct State {
             Sample* slot{};
@@ -80,7 +94,8 @@ namespace iv {
         void init_buffer(Alloc& alloc, Ctx& ctx) const
         {
             State& st = alloc.template new_object<State>();
-            st.slot = ctx.acquire_detach_slot(id, alloc);
+            auto span = ctx.template use_buffer<Sample>(id);
+            st.slot = span.data();
         }
 
         void tick(TickState const& ts) const

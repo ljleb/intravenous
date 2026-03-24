@@ -1,11 +1,13 @@
 #pragma once
 
 #include "module/loader.h"
+#include "runtime/crash_handlers.h"
 #include "runtime/system.h"
 
 #include <chrono>
 #include <cstdlib>
 #include <cctype>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -175,5 +177,10 @@ namespace iv::test {
         for (size_t i = 0; i < ticks; ++i) {
             processor.tick({}, i);
         }
+    }
+
+    inline void install_crash_handlers()
+    {
+        iv::install_crash_handlers();
     }
 }

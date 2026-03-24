@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cassert>
+#include <atomic>
 #include <cstddef>
 #include <initializer_list>
 #include <stdexcept>
@@ -102,12 +103,21 @@ namespace iv {
 
         std::unordered_map<PortId, DetachedSignalInfo> _detached_info_by_source;
         std::unordered_set<PortId> _detached_reader_outputs;
-        size_t _next_detach_id{ 0 };
+        std::shared_ptr<std::atomic_size_t> _next_detach_id;
 
     public:
-        explicit GraphBuilder(std::string_view parent_path = {}):
-            _parent_path(parent_path)
-        {}
+        explicit GraphBuilder(
+            std::string_view parent_path = {},
+            std::shared_ptr<std::atomic_size_t> next_detach_id = {}
+        ):
+            _parent_path(parent_path),
+            _next_detach_id(std::move(next_detach_id))
+        {
+            if (!_next_detach_id) {
+                static std::atomic_size_t global_detach_id { 0 };
+                _next_detach_id = std::make_shared<std::atomic_size_t>(global_detach_id.fetch_add(1024));
+            }
+        }
 
         std::string debug_node_id(size_t index) const
         {
@@ -156,7 +166,7 @@ namespace iv {
             }
             nested_path += std::to_string(_nodes.size());
 
-            GraphBuilder g(nested_path);
+            GraphBuilder g(nested_path, _next_detach_id);
             std::forward<Fn>(fn)(g);
 
             if (!g._outputs_defined) {
@@ -294,7 +304,7 @@ namespace iv {
                 return SignalRef(*this, reader.node, reader.port);
             }
 
-            size_t const detach_id = _next_detach_id++;
+            size_t const detach_id = _next_detach_id->fetch_add(1);
 
             auto writer = node<DetachWriterNode>(detach_id);
             writer(signal);

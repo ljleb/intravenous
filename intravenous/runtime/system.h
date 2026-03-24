@@ -1,7 +1,6 @@
 #pragma once
 #include "devices/audio_device.h"
 #include <iostream>
-#include <string>
 #include <thread>
 
 namespace iv {

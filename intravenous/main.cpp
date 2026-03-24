@@ -1,5 +1,6 @@
 #include "module/loader.h"
 #include "module/watcher.h"
+#include "runtime/crash_handlers.h"
 #include "runtime/system.h"
 
 #include <filesystem>
@@ -8,32 +9,11 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <stacktrace>
 #include <string_view>
 #include <thread>
 #include <vector>
 
 using namespace iv;
-
-[[noreturn]] void terminate_stacktrace()
-{
-    std::cerr << "\nstd::terminate called\n";
-
-    if (auto ep = std::current_exception()) {
-        try {
-            std::rethrow_exception(ep);
-        } catch (std::exception const& e) {
-            std::cerr << std::stacktrace::current() << '\n';
-            std::cerr << "uncaught exception: " << e.what() << '\n';
-        } catch (...) {
-            std::cerr << "uncaught non-std exception\n";
-        }
-    } else {
-        std::cerr << "no active exception\n";
-    }
-
-    std::abort();
-}
 
 std::vector<std::filesystem::path> parse_search_path_env(char const* name)
 {
@@ -68,7 +48,7 @@ std::vector<std::filesystem::path> parse_search_path_env(char const* name)
 int main(int argc, char** argv)
 {
 #ifndef NDEBUG
-    std::set_terminate(terminate_stacktrace);
+    install_crash_handlers();
 #endif
 
     if (argc < 2) {

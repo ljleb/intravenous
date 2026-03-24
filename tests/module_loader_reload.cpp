@@ -2,6 +2,8 @@
 
 int main()
 {
+    iv::test::install_crash_handlers();
+
     auto const repo = iv::test::repo_root();
     auto const fixtures = iv::test::test_modules_root();
     auto const runtime_root = iv::test::runtime_modules_root();

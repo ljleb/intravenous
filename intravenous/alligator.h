@@ -1,6 +1,7 @@
 #pragma once
 #include <span>
 #include <array>
+#include <cassert>
 #include <limits>
 #include <variant>
 #include <memory>
@@ -136,8 +137,16 @@ namespace iv {
         template<typename T>
         auto new_array(size_t number)
         {
-            advance_buffer<T>(number);
-            return std::span<T> { static_cast<T*>(nullptr), number };
+            if (number == 0) return std::span<T>{};
+            size_t const alignment = alignof(T);
+            size_t const num_bytes = number * sizeof(T);
+            void* buffer_start = static_cast<void*>(_memory_hint);
+            size_t space = total_bytes;
+            if (!std::align(alignment, num_bytes, buffer_start, space)) throw std::bad_alloc();
+            T* fake_ptr = static_cast<T*>(buffer_start);
+            _memory_hint = static_cast<std::byte*>(buffer_start) + num_bytes;
+            total_bytes = space - num_bytes;
+            return std::span<T> { fake_ptr, number };
         };
 
         template<typename T>

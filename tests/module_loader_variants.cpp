@@ -2,6 +2,8 @@
 
 int main()
 {
+    iv::test::install_crash_handlers();
+
     auto const fixtures = iv::test::test_modules_root();
 
     {

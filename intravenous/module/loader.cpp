@@ -713,7 +713,8 @@ namespace iv {
             std::ostringstream sig;
             sig
                 << "id=" << resolved.id << '\n'
-                << "build_stamp=" << compute_module_build_stamp(resolved.module_dir).time_since_epoch().count() << '\n';
+                << "build_stamp=" << compute_module_build_stamp(resolved.module_dir).time_since_epoch().count() << '\n'
+                << "core_stamp=" << compute_stamp_for_directory(core_include_dir).time_since_epoch().count() << '\n';
             return sig.str();
         }
 

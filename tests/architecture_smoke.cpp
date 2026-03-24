@@ -5,14 +5,12 @@
 
 #include <array>
 #include <cmath>
-#include <iostream>
 #include <vector>
-
-namespace {
-}
 
 int main()
 {
+    iv::test::install_crash_handlers();
+
     {
         iv::Sample a = 0.25f;
         iv::Sample b = 0.5f;

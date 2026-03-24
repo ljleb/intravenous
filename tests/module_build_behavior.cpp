@@ -6,6 +6,8 @@
 
 int main()
 {
+    iv::test::install_crash_handlers();
+
     auto const fixtures = iv::test::test_modules_root();
     auto const runtime_root = iv::test::runtime_modules_root();
     auto const project_src = fixtures / "noisy_saw_project";
