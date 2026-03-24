@@ -55,12 +55,12 @@ namespace iv {
             _internal_latency = get_internal_latency(node);
         }
 
-        constexpr std::span<InputConfig const> inputs() const
+        constexpr std::vector<InputConfig> const& inputs() const
         {
             return _inputs;
         }
 
-        constexpr std::span<OutputConfig const> outputs() const
+        constexpr std::vector<OutputConfig> const& outputs() const
         {
             return _outputs;
         }

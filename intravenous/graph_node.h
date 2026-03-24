@@ -52,13 +52,6 @@ struct std::hash<iv::GraphEdge> {
 };
 
 namespace iv {
-    static size_t calculate_port_buffer_size(size_t latency, size_t input_history, size_t output_history)
-    {
-        size_t min_size = 1 + latency + std::max(input_history, output_history);
-        size_t pow2_size = size_t(1) << size_t(std::ceil(std::log2(min_size)));
-        return pow2_size;
-    };
-
     static constexpr size_t GRAPH_ID = std::numeric_limits<size_t>::max();
 
     class LatencyAccumulator {
@@ -112,6 +105,13 @@ namespace iv {
         Edges _edges;
         std::vector<InputConfig> _public_inputs;
         std::vector<OutputConfig> _public_outputs;
+
+        static size_t calculate_port_buffer_size(size_t latency, size_t input_history, size_t output_history)
+        {
+            size_t min_size = 1 + latency + std::max(input_history, output_history);
+            size_t pow2_size = size_t(1) << size_t(std::ceil(std::log2(min_size)));
+            return pow2_size;
+        };
 
         auto make_source_target_edge_maps() const
         {
@@ -202,8 +202,8 @@ namespace iv {
                     ? graph_state
                     : allocator.at(graph_state.node_states, node_i);
 
-                std::vector<InputConfig> input_configs;
-                std::vector<OutputConfig> output_configs;
+                std::span<InputConfig const> input_configs;
+                std::span<OutputConfig const> output_configs;
                 if (node_i == GRAPH_ID)
                 {
                     // private inputs
@@ -212,8 +212,8 @@ namespace iv {
                 }
                 else
                 {
-                    input_configs.assign_range(get_inputs(node));
-                    output_configs.assign_range(get_outputs(node));
+                    input_configs = get_inputs(node);
+                    output_configs = get_outputs(node);
                 }
                 size_t const num_inputs = input_configs.size();
                 size_t const num_outputs = output_configs.size();
@@ -235,7 +235,7 @@ namespace iv {
                         size_t output_node_i = it->second.node;
                         size_t output_port_i = it->second.port;
 
-                        OutputConfig const& output_config = (output_node_i == GRAPH_ID)
+                        OutputConfig const output_config = (output_node_i == GRAPH_ID)
                             ? private_outputs_config
                             : get_outputs(_nodes[output_node_i])[output_port_i];
 
@@ -314,7 +314,7 @@ namespace iv {
                             size_t output_node_i = it->second.node;
                             size_t output_port_i = it->second.port;
 
-                            OutputConfig const& output_config = (output_node_i == GRAPH_ID)
+                            OutputConfig const output_config = (output_node_i == GRAPH_ID)
                                 ? private_outputs_config
                                 : get_outputs(_nodes[output_node_i])[output_port_i];
 

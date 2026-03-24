@@ -1,29 +1,27 @@
 #pragma once
 #include "node.h"
 #include <cassert>
+#include <memory>
+#include <vector>
 
 namespace iv {
-    struct ChannelBufferTarget {
-        Sample** channels = nullptr;
-        size_t num_channels = 0;
+    struct ChannelBufferWriteTarget {
+        Sample* channel = nullptr;
         size_t frames = 0;
         size_t global_start_index = 0;
 
         void inline begin(
-            Sample** out_channels,
-            size_t channel_count,
+            Sample* out_channel,
             size_t frame_count,
             size_t start_index
         ) {
-            channels = out_channels;
-            num_channels = channel_count;
+            channel = out_channel;
             frames = frame_count;
             global_start_index = start_index;
         }
 
         void inline end() {
-            channels = nullptr;
-            num_channels = 0;
+            channel = nullptr;
             frames = 0;
             global_start_index = 0;
         }
@@ -38,20 +36,67 @@ namespace iv {
             return global_index - global_start_index;
         }
 
-        inline void write(size_t channel, size_t global_index, Sample value) const {
-            assert(channels != nullptr);
-            assert(channel < num_channels);
+        inline void write(size_t global_index, Sample value) const {
+            assert(channel != nullptr);
             assert(contains_global_index(global_index));
-            channels[channel][local_index(global_index)] += value;
+            channel[local_index(global_index)] += value;
+        }
+    };
+
+    class ChannelBufferTarget {
+        std::vector<std::unique_ptr<ChannelBufferWriteTarget>> _channels;
+
+        void ensure_channels(size_t channel_count)
+        {
+            while (_channels.size() < channel_count) {
+                _channels.push_back(std::make_unique<ChannelBufferWriteTarget>());
+            }
+        }
+
+    public:
+        explicit ChannelBufferTarget(size_t channel_count = 0)
+        {
+            ensure_channels(channel_count);
+        }
+
+        ChannelBufferTarget(ChannelBufferTarget&&) noexcept = default;
+        ChannelBufferTarget& operator=(ChannelBufferTarget&&) noexcept = default;
+        ChannelBufferTarget(ChannelBufferTarget const&) = delete;
+        ChannelBufferTarget& operator=(ChannelBufferTarget const&) = delete;
+
+        ChannelBufferWriteTarget& channel(size_t index)
+        {
+            ensure_channels(index + 1);
+            return *_channels[index];
+        }
+
+        void inline begin(
+            Sample** out_channels,
+            size_t channel_count,
+            size_t frame_count,
+            size_t start_index
+        ) {
+            ensure_channels(channel_count);
+            for (size_t channel_index = 0; channel_index < channel_count; ++channel_index) {
+                _channels[channel_index]->begin(out_channels[channel_index], frame_count, start_index);
+            }
+            for (size_t channel_index = channel_count; channel_index < _channels.size(); ++channel_index) {
+                _channels[channel_index]->end();
+            }
+        }
+
+        void inline end() {
+            for (auto& channel_target : _channels) {
+                channel_target->end();
+            }
         }
     };
 
     struct ChannelBufferSink {
-        ChannelBufferTarget* target = nullptr;
-        size_t channel = 0;
+        ChannelBufferWriteTarget* target = nullptr;
 
         inline explicit ChannelBufferSink(ChannelBufferTarget& target, size_t channel)
-            : target(&target), channel(channel) {}
+            : target(&target.channel(channel)) {}
 
         inline constexpr auto inputs() const {
             return std::array{
@@ -66,7 +111,7 @@ namespace iv {
         inline void tick(TickState const& state) const {
             assert(target != nullptr);
             assert(target->contains_global_index(state.index));
-            target->write(channel, state.index, state.inputs[0].get());
+            target->write(state.index, state.inputs[0].get());
         }
     };
 }

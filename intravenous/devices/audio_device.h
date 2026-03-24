@@ -192,7 +192,7 @@ namespace iv {
             _has_active_sinks(std::exchange(other._has_active_sinks, false)),
             _config(other._config),
             _sample_period(other._sample_period),
-            _output_target(other._output_target),
+            _output_target(std::move(other._output_target)),
             _planar_storage(std::move(other._planar_storage)),
             _channel_ptrs(std::move(other._channel_ptrs)),
             _requested_frames(std::exchange(other._requested_frames, 0)),
@@ -222,7 +222,7 @@ namespace iv {
             _block_open = std::exchange(other._block_open, false);
             _config = other._config;
             _sample_period = other._sample_period;
-            _output_target = other._output_target;
+            _output_target = std::move(other._output_target);
             _planar_storage = std::move(other._planar_storage);
             _channel_ptrs = std::move(other._channel_ptrs);
             _requested_frames = std::exchange(other._requested_frames, 0);
