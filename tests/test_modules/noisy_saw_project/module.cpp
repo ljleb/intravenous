@@ -38,7 +38,7 @@ namespace iv::modules {
     {
         GraphBuilder& g = context.builder();
         ModuleSystem const& system = context.system();
-        TypeErasedModule voice_module = context.load("iv.test.noisy_saw_voice");
+        auto voice_module = context.load("iv.test.noisy_saw_voice");
 
         auto const dt = g.node<ValueSource>(&system.sample_period());
         SignalRef first_noise;
@@ -49,7 +49,7 @@ namespace iv::modules {
                 first_noise = noise;
             }
 
-            auto const voice = g.node<TypeErasedNode>(voice_module.build(context));
+            auto const voice = g.node(voice_module.builder());
             auto const shared_noise = g.node<Interpolation>();
             auto const sink = system.sink(g, channel);
 

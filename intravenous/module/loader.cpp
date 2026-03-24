@@ -970,7 +970,7 @@ namespace iv {
             );
             ModuleContext context(builder, module_system, &Impl::load_from_context, &session);
             TypeErasedModule root_module = session.load_module(root.id);
-            TypeErasedNode built_root = root_module.build(context);
+            TypeErasedNode built_root = root_module.builder(context).build();
             session.ensure_loaded_binary_dependencies();
 
             return LoadedGraph(

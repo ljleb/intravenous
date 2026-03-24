@@ -5,7 +5,7 @@ namespace iv {
     {
         auto& g = context.builder();
         auto dep = context.load("iv.test.this_does_not_exist");
-        auto const voice = g.node<TypeErasedNode>(dep.build(context));
+        auto const voice = g.node(dep.builder());
         g.outputs(voice);
     }
 }

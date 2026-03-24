@@ -12,6 +12,7 @@
 
 namespace iv {
     class TypeErasedModule;
+    class LoadedModule;
 
     struct ModuleRenderConfig {
         size_t sample_rate = 48000;
@@ -103,7 +104,7 @@ namespace iv {
             return _load_user_data;
         }
 
-        TypeErasedModule load(std::string_view id) const;
+        LoadedModule load(std::string_view id) const;
     };
 
     class TypeErasedModule {
@@ -130,7 +131,7 @@ namespace iv {
             }
         }
 
-        TypeErasedNode build(ModuleContext const& context) const
+        GraphBuilder builder(ModuleContext const& context) const
         {
             GraphBuilder builder = context.builder().derive_nested_builder();
             ModuleContext isolated_context(
@@ -140,11 +141,28 @@ namespace iv {
                 context.load_user_data()
             );
             _build_fn(_module.get(), isolated_context);
-            return builder.build();
+            return builder;
         }
     };
 
-    inline TypeErasedModule ModuleContext::load(std::string_view id) const
+    class LoadedModule {
+        TypeErasedModule _module;
+        ModuleContext _context;
+
+    public:
+        LoadedModule(TypeErasedModule module, ModuleContext context) :
+            _module(std::move(module)),
+            _context(std::move(context))
+        {
+        }
+
+        GraphBuilder builder() const
+        {
+            return _module.builder(_context);
+        }
+    };
+
+    inline LoadedModule ModuleContext::load(std::string_view id) const
     {
         if (!_load_fn) {
             throw std::logic_error(
@@ -152,7 +170,7 @@ namespace iv {
             );
         }
 
-        return _load_fn(_load_user_data, id);
+        return LoadedModule(_load_fn(_load_user_data, id), *this);
     }
 }
 

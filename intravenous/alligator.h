@@ -377,6 +377,28 @@ namespace iv {
         {}
     };
 
+    inline FixedBufferAllocator make_fixed_buffer_allocator(
+        std::span<std::byte> buffer,
+        AllocationTrace* trace = nullptr,
+        std::byte* trace_base = nullptr
+    )
+    {
+        return FixedBufferAllocator {
+            buffer,
+            trace,
+            trace_base,
+        };
+    }
+
+    inline CountingNonAllocator make_counting_allocator(
+        std::byte* memory_hint,
+        AllocationTrace* trace = nullptr,
+        std::byte* trace_base = nullptr
+    )
+    {
+        return CountingNonAllocator(memory_hint, trace, trace_base);
+    }
+
     struct TypeErasedAllocator {
         std::variant<std::reference_wrapper<FixedBufferAllocator>, std::reference_wrapper<CountingNonAllocator>> _allocator;
 

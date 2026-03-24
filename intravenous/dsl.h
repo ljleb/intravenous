@@ -7,10 +7,13 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <functional>
 #include <initializer_list>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -48,6 +51,22 @@ namespace iv {
         NamedRef(std::string_view name, Sample sample): name(name), value(sample) {}
     };
 
+    struct BuilderNode {
+        std::vector<InputConfig> input_configs;
+        std::vector<OutputConfig> output_configs;
+        std::function<TypeErasedNode(size_t)> materialize;
+
+        std::vector<InputConfig> const& inputs() const
+        {
+            return input_configs;
+        }
+
+        std::vector<OutputConfig> const& outputs() const
+        {
+            return output_configs;
+        }
+    };
+
     class NodeRef {
         GraphBuilder* _graph_builder{};
         size_t _index{};
@@ -56,7 +75,7 @@ namespace iv {
         NodeRef() = default;
         explicit NodeRef(GraphBuilder& graph_builder, size_t index);
 
-        TypeErasedNode& node() const;
+        BuilderNode const& node() const;
 
         SignalRef operator[](size_t output_index) const;
         SignalRef operator[](std::string_view output_name) const;
@@ -118,14 +137,10 @@ namespace iv {
             std::unordered_set<PortId> detached_reader_outputs;
         };
 
-        struct BuilderState {
-            size_t next_detach_id = 0;
-        };
-
         BuilderIdentity _builder_id;
-        std::shared_ptr<BuilderState> _builder_state;
+        size_t _next_detach_id = 0;
 
-        Graph::Nodes _nodes;
+        std::vector<BuilderNode> _nodes;
         Graph::Edges _edges;
         std::unordered_set<PortId> _placed_input_ports;
 
@@ -138,24 +153,21 @@ namespace iv {
         std::unordered_map<PortId, DetachedSignalInfo> _detached_info_by_source;
         std::unordered_set<PortId> _detached_reader_outputs;
 
-        GraphBuilder(BuilderIdentity builder_id, std::shared_ptr<BuilderState> builder_state) :
-            _builder_id(std::move(builder_id)),
-            _builder_state(std::move(builder_state))
+        explicit GraphBuilder(BuilderIdentity builder_id) :
+            _builder_id(std::move(builder_id))
         {
         }
 
     public:
         GraphBuilder() :
-            _builder_id(allocate_root_builder_id()),
-            _builder_state(std::make_shared<BuilderState>())
+            _builder_id(allocate_root_builder_id())
         {
         }
 
         GraphBuilder derive_nested_builder()
         {
             return GraphBuilder(
-                BuilderIdentity(_builder_id.allocate_child_path()),
-                _builder_state
+                BuilderIdentity(_builder_id.allocate_child_path())
             );
         }
 
@@ -188,7 +200,47 @@ namespace iv {
         template<class Node, class... Args>
         NodeRef node(Args&&... args)
         {
-            _nodes.emplace_back(Node(std::forward<Args>(args)...));
+            using StoredNode = std::remove_cvref_t<Node>;
+            StoredNode node_value(std::forward<Args>(args)...);
+            auto inputs = get_inputs(node_value);
+            auto outputs = get_outputs(node_value);
+
+            auto materialize = [node_value = std::move(node_value)]([[maybe_unused]] size_t detach_id_offset) {
+                if constexpr (std::same_as<StoredNode, DetachWriterNode>) {
+                    return TypeErasedNode(DetachWriterNode{ BufferId(node_value.id.id + detach_id_offset) });
+                } else if constexpr (std::same_as<StoredNode, DetachReaderNode>) {
+                    return TypeErasedNode(DetachReaderNode{ BufferId(node_value.id.id + detach_id_offset) });
+                } else {
+                    return TypeErasedNode(node_value);
+                }
+            };
+
+            _nodes.emplace_back(BuilderNode{
+                .input_configs = std::vector<InputConfig>(std::begin(inputs), std::end(inputs)),
+                .output_configs = std::vector<OutputConfig>(std::begin(outputs), std::end(outputs)),
+                .materialize = std::move(materialize),
+            });
+            return NodeRef(*this, _nodes.size() - 1);
+        }
+
+        NodeRef node(GraphBuilder child)
+        {
+            if (!child._outputs_defined) {
+                details::error(
+                    "builder " + child._builder_id.value + ": g.outputs(...) must be called before insertion"
+                );
+            }
+
+            size_t const child_detach_offset = _next_detach_id;
+            _next_detach_id += child._next_detach_id;
+
+            _nodes.emplace_back(BuilderNode{
+                .input_configs = child._public_inputs,
+                .output_configs = child._public_outputs,
+                .materialize = [child = std::make_shared<GraphBuilder>(std::move(child)), child_detach_offset](size_t parent_detach_offset) {
+                    return TypeErasedNode(child->build(parent_detach_offset + child_detach_offset));
+                },
+            });
             return NodeRef(*this, _nodes.size() - 1);
         }
 
@@ -204,7 +256,7 @@ namespace iv {
                 );
             }
 
-            return node<Graph>(g.build());
+            return node(std::move(g));
         }
 
         template<class... Refs>
@@ -276,18 +328,22 @@ namespace iv {
             _outputs_defined = true;
         }
 
-        Graph build() const
+        Graph build(size_t detach_id_offset = 0) const
         {
             if (!_outputs_defined) {
                 details::error("builder " + _builder_id.value + ": g.outputs(...) must be called before build()");
             }
 
             PreparedGraph g{
-                .nodes = _nodes,
+                .nodes = {},
                 .edges = _edges,
                 .detached_info_by_source = _detached_info_by_source,
                 .detached_reader_outputs = _detached_reader_outputs,
             };
+            g.nodes.reserve(_nodes.size());
+            for (auto const& node : _nodes) {
+                g.nodes.push_back(node.materialize(detach_id_offset));
+            }
 
             expand_hyperedge_ports(g);
             stub_dangling_ports(g);
@@ -339,7 +395,7 @@ namespace iv {
                 return SignalRef(*this, reader.node, reader.port);
             }
 
-            size_t const detach_id = _builder_state->next_detach_id++;
+            size_t const detach_id = _next_detach_id++;
 
             auto writer = node<DetachWriterNode>(detach_id);
             writer(signal);
@@ -860,7 +916,7 @@ namespace iv {
         _index(index)
     {}
 
-    inline TypeErasedNode& NodeRef::node() const
+    inline BuilderNode const& NodeRef::node() const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");

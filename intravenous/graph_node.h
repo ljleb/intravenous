@@ -111,9 +111,7 @@ namespace iv {
 
         struct ReplayState {
             std::span<size_t> node_buffer_sizes;
-#ifndef NDEBUG
             std::span<AllocationTrace> node_buffer_traces;
-#endif
         };
 
         static size_t calculate_port_buffer_size(size_t latency, size_t input_history, size_t output_history)
@@ -148,12 +146,10 @@ namespace iv {
                     num_nodes
                 ),
             };
-#ifndef NDEBUG
             replay_state.node_buffer_traces = context.register_init_buffer<AllocationTrace>(
                 make_init_buffer_id(this, "node_buffer_traces"),
                 num_nodes
             );
-#endif
             return replay_state;
         }
 
@@ -311,15 +307,13 @@ namespace iv {
                     input_ports_samples.insert({ this_input, allocator.template allocate_array<Sample>(num_port_samples) });
                 }
 
-                if (node_i != GRAPH_ID)
+                    if (node_i != GRAPH_ID)
                 {
                     if (context.mode == InitBufferContext::PassMode::counting) {
-                        CountingNonAllocator counter(
+                        CountingNonAllocator counter = make_counting_allocator(
                             allocator.get_buffer().data()
-#ifndef NDEBUG
                             , &replay_state.node_buffer_traces[node_i],
                             allocator.get_buffer().data()
-#endif
                         );
                         do_init_buffer(node, counter, context);
                         auto const node_buffer_size = counter.estimate_buffer_size();
@@ -391,16 +385,12 @@ namespace iv {
 
                     if (node_i != GRAPH_ID)
                     {
-#ifndef NDEBUG
                         replay_state.node_buffer_traces[node_i].reset_replay();
-                        FixedBufferAllocator nested_allocator {
+                        FixedBufferAllocator nested_allocator = make_fixed_buffer_allocator(
                             node_state.buffer,
                             &replay_state.node_buffer_traces[node_i],
-                            node_state.buffer.data(),
-                        };
-#else
-                        FixedBufferAllocator nested_allocator { node_state.buffer };
-#endif
+                            node_state.buffer.data()
+                        );
                         std::span<std::byte> result = do_init_buffer(node, nested_allocator, context);
                         nested_allocator.validate_trace_consumed();
                         assert(result.data() == node_state.buffer.data() && result.size() == node_state.buffer.size());
@@ -512,20 +502,14 @@ namespace iv {
         Buffer _buffer;
         NodeState _graph_state;
         InitBufferContext _counting_context;
-#ifndef NDEBUG
         AllocationTrace _allocation_trace;
-#endif
 
         void resize_buffer()
         {
             _buffer.reserve(1);
             std::byte* byte_data = reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x10000));
-#ifndef NDEBUG
             _allocation_trace = {};
-            CountingNonAllocator counter(byte_data, &_allocation_trace, byte_data);
-#else
-            CountingNonAllocator counter(byte_data);
-#endif
+            CountingNonAllocator counter = make_counting_allocator(byte_data, &_allocation_trace, byte_data);
             InitBufferContext ctx(InitBufferContext::PassMode::counting, counter.get_buffer());
             do_init_buffer(_node, counter, ctx);
             ctx.validate_after_counting();
@@ -535,24 +519,15 @@ namespace iv {
 
         void initialize_graph()
         {
-#ifndef NDEBUG
-            FixedBufferAllocator allocator {
+            FixedBufferAllocator allocator = make_fixed_buffer_allocator(
                 {
                     reinterpret_cast<std::byte*>(_buffer.data()),
                     _buffer.size() * sizeof(AlignedBytes),
                 },
                 &_allocation_trace,
-                reinterpret_cast<std::byte*>(_buffer.data()),
-            };
+                reinterpret_cast<std::byte*>(_buffer.data())
+            );
             _allocation_trace.reset_replay();
-#else
-            FixedBufferAllocator allocator {
-                {
-                    reinterpret_cast<std::byte*>(_buffer.data()),
-                    _buffer.size() * sizeof(AlignedBytes),
-                },
-            };
-#endif
             InitBufferContext ctx = _counting_context.make_initializing_context(allocator.get_buffer());
             auto allocated = do_init_buffer(_node, allocator, ctx);
             ctx.validate_after_initialization();
