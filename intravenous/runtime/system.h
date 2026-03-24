@@ -5,13 +5,57 @@
 
 namespace iv {
     struct SystemWrappedNode {
-        AudioDevice* audio_device = nullptr;
+        AudioRenderSession render_session;
         TypeErasedNode root;
+
+        struct SinkBinding {
+            size_t channel = 0;
+            std::span<Sample> buffer;
+        };
+
+        struct State {
+            std::span<std::byte> root_buffer;
+            std::span<SinkBinding> sink_bindings;
+            bool has_active_sinks = false;
+        };
+
+        std::string make_init_buffer_id(std::string_view suffix) const
+        {
+            return "__system_wrap_init:" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ":" + std::string(suffix);
+        }
 
         template<typename Allocator>
         void init_buffer(Allocator& allocator, InitBufferContext& context) const
         {
-            do_init_buffer(root, allocator, context);
+            size_t const num_channels = render_session.config().num_channels;
+            State& system_state = allocator.template new_object<State>();
+
+            allocator.assign(system_state.root_buffer, do_init_buffer(root, allocator, context));
+
+            auto used_channels = context.register_init_buffer<size_t>(make_init_buffer_id("used_channels"), num_channels);
+            auto used_count = context.register_init_buffer<size_t>(make_init_buffer_id("used_count"), 1);
+
+            size_t count = 0;
+            for (size_t channel = 0; channel < num_channels; ++channel) {
+                if (!context.has_tick_buffer(render_session.sink_id(channel))) {
+                    continue;
+                }
+                used_channels[count++] = channel;
+            }
+            used_count[0] = count;
+
+            allocator.assign(system_state.sink_bindings, allocator.template new_array<SinkBinding>(count));
+
+            size_t const sink_buffer_size = render_session.sink_buffer_size();
+            for (size_t i = 0; i < count; ++i) {
+                auto const channel = used_channels[i];
+                auto buffer = allocator.template new_array<Sample>(sink_buffer_size);
+                context.register_tick_buffer(render_session.sink_id(channel), buffer);
+                allocator.assign(allocator.at(system_state.sink_bindings, i).channel, channel);
+                allocator.assign(allocator.at(system_state.sink_bindings, i).buffer, buffer);
+            }
+
+            allocator.assign(system_state.has_active_sinks, count != 0);
         }
 
         size_t internal_latency() const
@@ -21,13 +65,43 @@ namespace iv {
 
         void tick(TickState const& state)
         {
-            audio_device->prepare_tick(state.index);
-            if (audio_device->is_shutdown_requested()) {
+            auto& system_state = state.get_state<State>();
+            render_session.prepare_tick(state.index);
+            if (render_session.is_shutdown_requested()) {
                 return;
             }
 
-            root.tick(state);
-            audio_device->finish_tick(state.index);
+            if (system_state.has_active_sinks && state.index == render_session.active_block_start()) {
+                size_t const block_start = render_session.active_block_start();
+                for (auto const& binding : system_state.sink_bindings) {
+                    auto buffer = binding.buffer;
+                    if (buffer.empty()) {
+                        continue;
+                    }
+                    for (size_t frame = 0; frame < render_session.active_block_frames(); ++frame) {
+                        size_t const global_index = block_start + frame;
+                        buffer[global_index & (buffer.size() - 1)] = 0.0f;
+                    }
+                }
+            }
+
+            root.tick({
+                NodeState{
+                    .inputs = state.inputs,
+                    .outputs = state.outputs,
+                    .buffer = system_state.root_buffer,
+                },
+                state.midi,
+                state.index,
+            });
+
+            if (system_state.has_active_sinks && state.index + 1 == render_session.active_block_end()) {
+                for (auto const& binding : system_state.sink_bindings) {
+                    render_session.mix_sink_buffer(binding.channel, binding.buffer);
+                }
+            }
+
+            render_session.finish_tick(state.index);
         }
     };
 
@@ -90,7 +164,7 @@ namespace iv {
             }
 
             return TypeErasedNode(SystemWrappedNode {
-                .audio_device = &_audio_device,
+                .render_session = AudioRenderSession(_audio_device),
                 .root = std::move(root),
             });
         }
@@ -102,7 +176,7 @@ namespace iv {
 
         void activate_root(bool uses_audio_device)
         {
-            _audio_device.set_sink_active(uses_audio_device);
+            (void)uses_audio_device;
         }
     };
 }

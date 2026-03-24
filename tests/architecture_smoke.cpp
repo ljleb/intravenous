@@ -1,9 +1,11 @@
 #include "devices/channel_buffer_sink.h"
 #include "basic_nodes/buffers.h"
 #include "graph_node.h"
+#include "runtime/system.h"
 #include "module_test_utils.h"
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -15,25 +17,37 @@ int main()
         iv::Sample a = 0.25f;
         iv::Sample b = 0.5f;
         std::array<iv::Sample, 8> channel {};
-        iv::Sample* channels[] { channel.data() };
-        iv::ChannelBufferTarget target;
-        target.begin(channels, 1, channel.size(), 0);
+        iv::System system(
+            iv::RenderConfig{
+                .sample_rate = 48000,
+                .num_channels = 1,
+                .max_block_frames = channel.size(),
+            },
+            false,
+            false
+        );
 
         iv::GraphBuilder g;
         auto const src_a = g.node<iv::ValueSource>(&a);
         auto const src_b = g.node<iv::ValueSource>(&b);
-        auto const sink_a = g.node<iv::ChannelBufferSink>(target, 0);
-        auto const sink_b = g.node<iv::ChannelBufferSink>(target, 0);
+        auto const sink_a = g.node<iv::SharedAccumulatingSink>(
+            system.audio_device().sink_id(0)
+        );
+        auto const sink_b = g.node<iv::SharedAccumulatingSink>(
+            system.audio_device().sink_id(0)
+        );
         sink_a(src_a);
         sink_b(src_b);
         g.outputs();
 
-        iv::NodeProcessor processor(iv::TypeErasedNode(g.build()));
+        system.activate_root(true);
+        iv::NodeProcessor processor(system.wrap_root(iv::TypeErasedNode(g.build()), true));
         for (size_t i = 0; i < channel.size(); ++i) {
             processor.tick({}, i);
         }
 
-        target.end();
+        auto block = system.audio_device().output_block(0);
+        std::copy_n(block.begin(), channel.size(), channel.begin());
 
         for (iv::Sample sample : channel) {
             if (sample != 0.75f) {

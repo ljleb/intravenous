@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstddef>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -193,10 +194,9 @@ namespace iv {
             std::string id;
             void const* type_tag = nullptr;
             size_t count = 0;
-            ptrdiff_t offset = 0;
+            ptrdiff_t offset = std::numeric_limits<ptrdiff_t>::min();
             bool registered = false;
             bool used = false;
-            bool fulfilled = false;
         };
 
         PassMode mode = PassMode::counting;
@@ -221,7 +221,7 @@ namespace iv {
                 record.fulfilled = false;
             }
             for (auto& [_, record] : replay.tick_buffers) {
-                record.fulfilled = false;
+                record.registered = false;
             }
             return replay;
         }
@@ -243,10 +243,7 @@ namespace iv {
                 }
             }
             for (auto const& [_, record] : tick_buffers) {
-                if (record.used && !record.registered) {
-                    throw std::logic_error("tick buffer '" + record.id + "' was used but never registered");
-                }
-                if (record.registered && !record.fulfilled) {
+                if (was_tick_buffer_declared(record) && !record.registered) {
                     throw std::logic_error("tick buffer '" + record.id + "' was not registered again during the second pass");
                 }
             }
@@ -337,20 +334,19 @@ namespace iv {
                 record.count = tick_buffer.size();
                 record.offset = offset;
                 record.registered = true;
-                record.fulfilled = false;
                 return;
             }
 
-            if (!record.registered) {
+            if (!was_tick_buffer_declared(record)) {
                 throw std::logic_error("tick buffer '" + record.id + "' was not registered during the first pass");
             }
-            if (record.fulfilled) {
+            if (record.registered) {
                 throw std::logic_error("tick buffer '" + record.id + "' was registered more than once on the second pass");
             }
             if (record.offset != offset) {
                 throw std::logic_error("tick buffer '" + record.id + "' changed offset between init passes");
             }
-            record.fulfilled = true;
+            record.registered = true;
         }
 
         template<typename T>
@@ -373,7 +369,7 @@ namespace iv {
             if (mode == PassMode::counting) {
                 return {};
             }
-            if (!record.registered) {
+            if (!was_tick_buffer_declared(record)) {
                 throw std::logic_error("tick buffer '" + record.id + "' was used before first-pass registration");
             }
 
@@ -408,6 +404,16 @@ namespace iv {
             if (record.count != 0 && record.count != count) {
                 throw std::logic_error("tick buffer '" + record.id + "' changed element count between registrations");
             }
+        }
+
+        static bool was_tick_buffer_declared(TickBufferRecord const& record)
+        {
+            return record.offset != unresolved_tick_offset();
+        }
+
+        static constexpr ptrdiff_t unresolved_tick_offset()
+        {
+            return std::numeric_limits<ptrdiff_t>::min();
         }
     };
 

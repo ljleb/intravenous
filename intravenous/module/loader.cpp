@@ -1,5 +1,6 @@
 #include "module/loader.h"
 
+#include "devices/channel_buffer_sink.h"
 #include "runtime/system.h"
 
 #include <algorithm>
@@ -572,11 +573,13 @@ namespace iv {
             return static_cast<BuildSession*>(session_ptr)->load_module(id);
         }
 
-        static NodeRef sink_from_context(void* session_ptr, GraphBuilder& builder, size_t channel, size_t)
+        static NodeRef sink_from_context(void* session_ptr, GraphBuilder& builder, size_t channel, size_t device_id)
         {
             auto& session = *static_cast<BuildSession*>(session_ptr);
             ++session.sink_count;
-            return builder.node<ChannelBufferSink>(session.system->audio_device().output_target(), channel);
+            return builder.node<SharedAccumulatingSink>(
+                session.system->audio_device().sink_id(channel, device_id)
+            );
         }
 
         ResolvedModule resolve_module_path(std::filesystem::path const& requested_path) const

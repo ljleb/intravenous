@@ -5,10 +5,14 @@
 #include "third_party/miniaudio/miniaudio.h"
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -32,11 +36,9 @@ namespace iv {
         bool _render_in_progress = false;
         bool _render_finished = false;
         bool _block_open = false;
-        bool _has_active_sinks = false;
 
         RenderConfig _config;
         Sample _sample_period;
-        ChannelBufferTarget _output_target {};
         std::vector<std::vector<Sample>> _planar_storage;
         std::vector<Sample*> _channel_ptrs;
 
@@ -189,10 +191,8 @@ namespace iv {
             _render_in_progress(std::exchange(other._render_in_progress, false)),
             _render_finished(std::exchange(other._render_finished, false)),
             _block_open(std::exchange(other._block_open, false)),
-            _has_active_sinks(std::exchange(other._has_active_sinks, false)),
             _config(other._config),
             _sample_period(other._sample_period),
-            _output_target(std::move(other._output_target)),
             _planar_storage(std::move(other._planar_storage)),
             _channel_ptrs(std::move(other._channel_ptrs)),
             _requested_frames(std::exchange(other._requested_frames, 0)),
@@ -222,14 +222,12 @@ namespace iv {
             _block_open = std::exchange(other._block_open, false);
             _config = other._config;
             _sample_period = other._sample_period;
-            _output_target = std::move(other._output_target);
             _planar_storage = std::move(other._planar_storage);
             _channel_ptrs = std::move(other._channel_ptrs);
             _requested_frames = std::exchange(other._requested_frames, 0);
             _requested_channels = std::exchange(other._requested_channels, 0);
             _active_block_start = std::exchange(other._active_block_start, 0);
             _active_block_end = std::exchange(other._active_block_end, 0);
-            _has_active_sinks = std::exchange(other._has_active_sinks, false);
             return *this;
         }
 
@@ -243,43 +241,67 @@ namespace iv {
             return _sample_period;
         }
 
-        bool has_sinks() const
-        {
-            return _has_active_sinks;
-        }
-
         bool is_shutdown_requested() const
         {
             return _shutdown_requested;
         }
 
-        ChannelBufferTarget& output_target()
+        std::string sink_id(size_t channel, size_t device_id = 0) const
         {
-            return _output_target;
+            return "output-device:" + std::to_string(device_id) + ":channel:" + std::to_string(channel);
         }
 
-        void set_sink_active(bool active)
+        std::optional<size_t> sink_channel(std::string_view id) const
         {
-            _has_active_sinks = active;
-            if (_has_active_sinks && _open_backend && !_device_started) {
-                init_backend();
+            constexpr std::string_view prefix = "output-device:";
+            constexpr std::string_view channel_marker = ":channel:";
+
+            if (!id.starts_with(prefix)) {
+                return std::nullopt;
             }
+
+            size_t const marker = id.find(channel_marker, prefix.size());
+            if (marker == std::string_view::npos) {
+                return std::nullopt;
+            }
+
+            std::string_view channel_text = id.substr(marker + channel_marker.size());
+            if (channel_text.empty()) {
+                return std::nullopt;
+            }
+
+            size_t channel = 0;
+            for (char c : channel_text) {
+                if (c < '0' || c > '9') {
+                    return std::nullopt;
+                }
+                channel = channel * 10 + size_t(c - '0');
+            }
+            return channel;
+        }
+
+        size_t sink_buffer_size() const
+        {
+            return size_t(1) << size_t(std::ceil(std::log2(_config.max_block_frames)));
+        }
+
+        std::span<Sample const> output_block(size_t channel) const
+        {
+            return _planar_storage.at(channel);
         }
 
         void prepare_tick(size_t global_index)
         {
-            if (!has_sinks() || _block_open) {
+            if (_block_open) {
                 return;
+            }
+
+            if (_open_backend && !_device_started) {
+                init_backend();
             }
 
             if (!_open_backend) {
                 clear_staging(_config.num_channels, _config.max_block_frames);
-                _output_target.begin(
-                    _channel_ptrs.data(),
-                    _config.num_channels,
-                    _config.max_block_frames,
-                    global_index
-                );
                 _block_open = true;
                 _active_block_start = global_index;
                 _active_block_end = global_index + _config.max_block_frames;
@@ -298,15 +320,41 @@ namespace iv {
             _render_requested = false;
             _render_in_progress = true;
             clear_staging(_requested_channels, _requested_frames);
-            _output_target.begin(
-                _channel_ptrs.data(),
-                _requested_channels,
-                _requested_frames,
-                global_index
-            );
             _block_open = true;
             _active_block_start = global_index;
             _active_block_end = global_index + _requested_frames;
+        }
+
+        size_t active_block_start() const
+        {
+            return _active_block_start;
+        }
+
+        size_t active_block_end() const
+        {
+            return _active_block_end;
+        }
+
+        size_t active_output_channels() const
+        {
+            return _requested_channels == 0 ? _config.num_channels : _requested_channels;
+        }
+
+        size_t active_block_frames() const
+        {
+            return _active_block_end - _active_block_start;
+        }
+
+        void mix_sink_block(size_t channel, std::span<Sample const> sink_buffer, size_t block_start, size_t frames)
+        {
+            if (channel >= active_output_channels() || sink_buffer.empty()) {
+                return;
+            }
+
+            for (size_t frame = 0; frame < frames; ++frame) {
+                size_t const global_index = block_start + frame;
+                _planar_storage[channel][frame] += sink_buffer[global_index & (sink_buffer.size() - 1)];
+            }
         }
 
         void finish_tick(size_t global_index)
@@ -314,8 +362,6 @@ namespace iv {
             if (!_block_open || global_index + 1 < _active_block_end) {
                 return;
             }
-
-            _output_target.end();
             _block_open = false;
 
             if (!_open_backend) {
@@ -359,4 +405,76 @@ namespace iv {
             }
         }
     };
+
+    class AudioRenderSession {
+        AudioDevice* _device = nullptr;
+
+    public:
+        AudioRenderSession() = default;
+
+        explicit AudioRenderSession(AudioDevice& device) :
+            _device(&device)
+        {}
+
+        RenderConfig const& config() const
+        {
+            return _device->config();
+        }
+
+        std::string sink_id(size_t channel, size_t device_id = 0) const
+        {
+            return _device->sink_id(channel, device_id);
+        }
+
+        std::optional<size_t> sink_channel(std::string_view id) const
+        {
+            return _device->sink_channel(id);
+        }
+
+        size_t sink_buffer_size() const
+        {
+            return _device->sink_buffer_size();
+        }
+
+        bool is_shutdown_requested() const
+        {
+            return _device->is_shutdown_requested();
+        }
+
+        void prepare_tick(size_t global_index) const
+        {
+            _device->prepare_tick(global_index);
+        }
+
+        size_t active_block_start() const
+        {
+            return _device->active_block_start();
+        }
+
+        size_t active_block_end() const
+        {
+            return _device->active_block_end();
+        }
+
+        size_t active_block_frames() const
+        {
+            return _device->active_block_frames();
+        }
+
+        void mix_sink_buffer(size_t channel, std::span<Sample const> sink_buffer) const
+        {
+            _device->mix_sink_block(
+                channel,
+                sink_buffer,
+                active_block_start(),
+                active_block_frames()
+            );
+        }
+
+        void finish_tick(size_t global_index) const
+        {
+            _device->finish_tick(global_index);
+        }
+    };
+
 }
