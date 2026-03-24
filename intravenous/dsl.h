@@ -82,6 +82,36 @@ namespace iv {
         friend class NodeRef;
         friend struct SignalRef;
 
+        struct BuilderIdentity {
+            std::string value;
+            size_t next_child_id = 0;
+
+            BuilderIdentity() = default;
+            explicit BuilderIdentity(std::string value_) :
+                value(value_)
+            {}
+
+            std::string debug_node_id(size_t index) const
+            {
+                std::string nested_path = value;
+                if (!nested_path.empty()) {
+                    nested_path += ".";
+                }
+                nested_path += std::to_string(index);
+                return nested_path;
+            }
+
+            std::string allocate_child_path()
+            {
+                std::string nested_path = value;
+                if (!nested_path.empty()) {
+                    nested_path += ".";
+                }
+                nested_path += std::to_string(next_child_id++);
+                return nested_path;
+            }
+        };
+
         struct PreparedGraph {
             Graph::Nodes nodes;
             Graph::Edges edges;
@@ -89,7 +119,7 @@ namespace iv {
             std::unordered_set<PortId> detached_reader_outputs;
         };
 
-        std::string _parent_path;
+        BuilderIdentity _builder_id;
 
         Graph::Nodes _nodes;
         Graph::Edges _edges;
@@ -106,11 +136,8 @@ namespace iv {
         std::shared_ptr<std::atomic_size_t> _next_detach_id;
 
     public:
-        explicit GraphBuilder(
-            std::string_view parent_path = {},
-            std::shared_ptr<std::atomic_size_t> next_detach_id = {}
-        ):
-            _parent_path(parent_path),
+        explicit GraphBuilder(std::shared_ptr<std::atomic_size_t> next_detach_id = {}) :
+            _builder_id(allocate_root_builder_id()),
             _next_detach_id(std::move(next_detach_id))
         {
             if (!_next_detach_id) {
@@ -119,15 +146,15 @@ namespace iv {
             }
         }
 
+        explicit GraphBuilder(GraphBuilder& parent) :
+            _builder_id(parent._builder_id.allocate_child_path()),
+            _next_detach_id(parent._next_detach_id)
+        {}
+
         std::string debug_node_id(size_t index) const
         {
             assert(index < _nodes.size() && "node index out of bounds");
-            std::string nested_path = _parent_path;
-            if (!nested_path.empty()) {
-                nested_path += ".";
-            }
-            nested_path += std::to_string(index);
-            return nested_path;
+            return _builder_id.debug_node_id(index);
         }
 
         SignalRef input()
@@ -160,18 +187,12 @@ namespace iv {
         template<class Fn>
         NodeRef subgraph(Fn&& fn)
         {
-            std::string nested_path = _parent_path;
-            if (!nested_path.empty()) {
-                nested_path += ".";
-            }
-            nested_path += std::to_string(_nodes.size());
-
-            GraphBuilder g(nested_path, _next_detach_id);
+            GraphBuilder g(*this);
             std::forward<Fn>(fn)(g);
 
             if (!g._outputs_defined) {
                 details::error(
-                    "builder " + g._parent_path + ": g.outputs(...) must be called before returning from subgraph()"
+                    "builder " + g._builder_id.value + ": g.outputs(...) must be called before returning from subgraph()"
                 );
             }
 
@@ -182,7 +203,7 @@ namespace iv {
         void outputs(Refs&&... refs)
         {
             if (_outputs_defined) {
-                details::error("outputs(...) was already called on builder " + _parent_path);
+                details::error("outputs(...) was already called on builder " + _builder_id.value);
             }
 
             std::array<SignalRef, sizeof...(Refs)> refs_array{
@@ -195,9 +216,9 @@ namespace iv {
                 auto const& ref = refs_array[i];
                 if (ref.graph_builder != this) {
                     details::error(
-                        "builder " + _parent_path + ": outputs(...): "
+                        "builder " + _builder_id.value + ": outputs(...): "
                         "SignalRef at index " + std::to_string(i) + " "
-                        "belongs to builder " + ref.graph_builder->_parent_path
+                        "belongs to builder " + ref.graph_builder->_builder_id.value
                     );
                 }
 
@@ -214,7 +235,7 @@ namespace iv {
         void outputs(std::initializer_list<NamedRef> refs)
         {
             if (_outputs_defined) {
-                details::error("outputs(...) was already called on builder " + _parent_path);
+                details::error("outputs(...) was already called on builder " + _builder_id.value);
             }
 
             _public_outputs.reserve(refs.size());
@@ -224,13 +245,13 @@ namespace iv {
             for (auto const& ref : refs) {
                 if (ref.name.empty()) {
                     details::error(
-                        "builder " + _parent_path + ": named outputs must not use empty names"
+                        "builder " + _builder_id.value + ": named outputs must not use empty names"
                     );
                 }
 
                 if (output_names.contains(ref.name)) {
                     details::error(
-                        "builder " + _parent_path + ": duplicate output name '" + std::string(ref.name) + "'"
+                        "builder " + _builder_id.value + ": duplicate output name '" + std::string(ref.name) + "'"
                     );
                 }
                 output_names.insert(ref.name);
@@ -250,7 +271,7 @@ namespace iv {
         Graph build() const
         {
             if (!_outputs_defined) {
-                details::error("builder " + _parent_path + ": g.outputs(...) must be called before build()");
+                details::error("builder " + _builder_id.value + ": g.outputs(...) must be called before build()");
             }
 
             PreparedGraph g{
@@ -276,17 +297,23 @@ namespace iv {
         }
 
     private:
+        static std::string allocate_root_builder_id()
+        {
+            static std::atomic_size_t next_root_builder_id { 0 };
+            return std::to_string(next_root_builder_id.fetch_add(1));
+        }
+
         SignalRef detach_signal(SignalRef signal)
         {
             if (!signal.graph_builder) {
                 details::error(
-                    "builder " + _parent_path + ": cannot detach an empty signal"
+                    "builder " + _builder_id.value + ": cannot detach an empty signal"
                 );
             }
 
             if (signal.graph_builder != this) {
                 details::error(
-                    "builder " + _parent_path + ": cannot detach " + signal.to_string() +
+                    "builder " + _builder_id.value + ": cannot detach " + signal.to_string() +
                     " because it belongs to another builder"
                 );
             }
@@ -326,7 +353,7 @@ namespace iv {
         {
             if (s.graph_builder != this) {
                 details::error(
-                    "builder " + _parent_path + ": signal " + s.to_string() + " belongs to another builder"
+                    "builder " + _builder_id.value + ": signal " + s.to_string() + " belongs to another builder"
                 );
             }
             return s;
@@ -563,7 +590,7 @@ namespace iv {
 
             if (sorted.size() != g.nodes.size()) {
                 details::error(
-                    "builder " + _parent_path + ": graph contains a cycle; use detach() to break feedback explicitly"
+                    "builder " + _builder_id.value + ": graph contains a cycle; use detach() to break feedback explicitly"
                 );
             }
 
@@ -641,7 +668,7 @@ namespace iv {
                     auto augmented = explicit_outgoing;
                     if (!has_path(augmented, v, u)) {
                         details::error(
-                            "builder " + _parent_path + ": detach() on " +
+                            "builder " + _builder_id.value + ": detach() on " +
                             "signal " + std::to_string(info.original_source.node) + ":" + std::to_string(info.original_source.port) +
                             " breaks an acyclic dependency"
                         );
@@ -774,7 +801,7 @@ namespace iv {
             if (output_port >= graph_builder->_public_inputs.size()) {
                 details::error(
                     "graph input port " + std::to_string(output_port) + " "
-                    "is out of bounds in builder " + graph_builder->_parent_path + ", "
+                    "is out of bounds in builder " + graph_builder->_builder_id.value + ", "
                     "public_inputs.size() = " + std::to_string(graph_builder->_public_inputs.size())
                 );
             }
@@ -784,7 +811,7 @@ namespace iv {
         if (node_index >= graph_builder->_nodes.size()) {
             details::error(
                 "node at index " + std::to_string(node_index) + " "
-                "is out of bounds in builder " + graph_builder->_parent_path + ", "
+                "is out of bounds in builder " + graph_builder->_builder_id.value + ", "
                 "nodes.size() = " + std::to_string(graph_builder->_nodes.size())
             );
         }
@@ -795,7 +822,7 @@ namespace iv {
             details::error(
                 "output port " + std::to_string(output_port) + " of "
                 "node at index " + std::to_string(node_index) + " in "
-                "builder " + graph_builder->_parent_path + " "
+                "builder " + graph_builder->_builder_id.value + " "
                 "is out of bounds, get_num_outputs(node) = " + std::to_string(num_outputs)
             );
         }
@@ -815,7 +842,7 @@ namespace iv {
             return "empty signal";
         }
         if (node_index == GRAPH_ID) {
-            return "graph input " + std::to_string(output_port) + " in builder " + graph_builder->_parent_path;
+            return "graph input " + std::to_string(output_port) + " in builder " + graph_builder->_builder_id.value;
         }
         return "signal at address " + graph_builder->debug_node_id(node_index) + ":" + std::to_string(output_port);
     }

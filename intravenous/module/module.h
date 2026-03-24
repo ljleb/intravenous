@@ -132,7 +132,7 @@ namespace iv {
 
         TypeErasedNode build(ModuleContext const& context) const
         {
-            GraphBuilder builder;
+            GraphBuilder builder(context.builder());
             ModuleContext isolated_context(
                 builder,
                 context.system(),

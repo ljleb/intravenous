@@ -173,49 +173,54 @@ namespace iv {
         {}
     };
 
-    struct GraphInitContext {
+    struct InitBufferContext {
         enum class PassMode {
             counting,
             initializing,
         };
 
-        struct SharedBufferRecord {
+        struct InitBufferRecord {
+            std::string id;
+            void const* type_tag = nullptr;
+            size_t count = 0;
+            bool declared = false;
+            bool registered = false;
+            bool fulfilled = false;
+            std::shared_ptr<void> storage;
+        };
+
+        struct TickBufferRecord {
             std::string id;
             void const* type_tag = nullptr;
             size_t count = 0;
             ptrdiff_t offset = 0;
             bool registered = false;
-            bool fetched = false;
+            bool used = false;
             bool fulfilled = false;
         };
 
-        struct NodeBufferFrame {
-            std::vector<size_t> immediate_sizes;
-            std::vector<NodeBufferFrame> child_frames;
-            size_t replay_size_index = 0;
-            size_t replay_child_index = 0;
-        };
-
         PassMode mode = PassMode::counting;
-        std::span<std::byte> buffer;
-        std::unordered_map<std::string, SharedBufferRecord> shared_buffers;
-        NodeBufferFrame node_buffer_root;
-        std::vector<NodeBufferFrame*> active_node_buffer_frames;
+        std::span<std::byte> runtime_buffer;
+        std::unordered_map<std::string, InitBufferRecord> init_buffers;
+        std::unordered_map<std::string, TickBufferRecord> tick_buffers;
 
-        GraphInitContext() = default;
+        InitBufferContext() = default;
 
-        GraphInitContext(PassMode mode_, std::span<std::byte> buffer_ = {}) :
+        InitBufferContext(PassMode mode_, std::span<std::byte> runtime_buffer_ = {}) :
             mode(mode_),
-            buffer(buffer_)
+            runtime_buffer(runtime_buffer_)
         {}
 
-        GraphInitContext make_replay_context(std::span<std::byte> new_buffer) const
+        InitBufferContext make_initializing_context(std::span<std::byte> new_runtime_buffer) const
         {
-            GraphInitContext replay(PassMode::initializing, new_buffer);
-            replay.shared_buffers = shared_buffers;
-            replay.node_buffer_root = node_buffer_root;
-            replay.reset_node_buffer_replay(replay.node_buffer_root);
-            for (auto& [_, record] : replay.shared_buffers) {
+            InitBufferContext replay(PassMode::initializing, new_runtime_buffer);
+            replay.init_buffers = init_buffers;
+            replay.tick_buffers = tick_buffers;
+            for (auto& [_, record] : replay.init_buffers) {
+                record.registered = false;
+                record.fulfilled = false;
+            }
+            for (auto& [_, record] : replay.tick_buffers) {
                 record.fulfilled = false;
             }
             return replay;
@@ -223,140 +228,144 @@ namespace iv {
 
         void validate_after_counting() const
         {
-            for (auto const& [_, record] : shared_buffers) {
-                if (record.fetched && !record.registered) {
-                    throw std::logic_error(
-                        "shared buffer '" + record.id + "' was used but never registered during the first pass"
-                    );
+            for (auto const& [_, record] : tick_buffers) {
+                if (record.used && !record.registered) {
+                    throw std::logic_error("tick buffer '" + record.id + "' was used but never registered during the first pass");
                 }
             }
         }
 
         void validate_after_initialization() const
         {
-            for (auto const& [_, record] : shared_buffers) {
-                if (record.fetched && !record.registered) {
-                    throw std::logic_error(
-                        "shared buffer '" + record.id + "' was used but never registered"
-                    );
+            for (auto const& [_, record] : init_buffers) {
+                if (record.declared && !record.fulfilled) {
+                    throw std::logic_error("init buffer '" + record.id + "' was not registered again during the second pass");
+                }
+            }
+            for (auto const& [_, record] : tick_buffers) {
+                if (record.used && !record.registered) {
+                    throw std::logic_error("tick buffer '" + record.id + "' was used but never registered");
                 }
                 if (record.registered && !record.fulfilled) {
-                    throw std::logic_error(
-                        "shared buffer '" + record.id + "' was not registered again during the second pass"
-                    );
+                    throw std::logic_error("tick buffer '" + record.id + "' was not registered again during the second pass");
                 }
             }
-            if (!active_node_buffer_frames.empty()) {
-                throw std::logic_error("graph node buffer replay scopes were not balanced during initialization");
-            }
-            if (!is_node_buffer_frame_fully_consumed(node_buffer_root)) {
-                throw std::logic_error("node buffer size replay did not consume the full counting-pass record");
-            }
         }
 
-        void record_node_buffer_size(size_t size)
+        bool has_init_buffer(std::string const& id) const
         {
-            if (mode != PassMode::counting) {
-                throw std::logic_error("node buffer sizes may only be recorded during the first pass");
-            }
-            current_node_buffer_frame().immediate_sizes.push_back(size);
+            return init_buffers.contains(id);
         }
 
-        void begin_graph_buffer_scope()
+        bool has_tick_buffer(std::string const& id) const
         {
-            if (mode == PassMode::counting) {
-                if (active_node_buffer_frames.empty()) {
-                    node_buffer_root = {};
-                    active_node_buffer_frames.push_back(&node_buffer_root);
-                    return;
-                }
-
-                auto& child = active_node_buffer_frames.back()->child_frames.emplace_back();
-                active_node_buffer_frames.push_back(&child);
-                return;
-            }
-
-            if (active_node_buffer_frames.empty()) {
-                active_node_buffer_frames.push_back(&node_buffer_root);
-                return;
-            }
-
-            NodeBufferFrame& parent = *active_node_buffer_frames.back();
-            if (parent.replay_child_index >= parent.child_frames.size()) {
-                throw std::logic_error("node buffer frame replay ran past the counting-pass graph record");
-            }
-            active_node_buffer_frames.push_back(&parent.child_frames[parent.replay_child_index++]);
-        }
-
-        void end_graph_buffer_scope()
-        {
-            if (active_node_buffer_frames.empty()) {
-                throw std::logic_error("graph node buffer scope stack underflow");
-            }
-            active_node_buffer_frames.pop_back();
-        }
-
-        size_t replay_node_buffer_size()
-        {
-            if (mode != PassMode::initializing) {
-                throw std::logic_error("node buffer sizes may only be replayed during the second pass");
-            }
-            NodeBufferFrame& frame = current_node_buffer_frame();
-            if (frame.replay_size_index >= frame.immediate_sizes.size()) {
-                throw std::logic_error("node buffer size replay ran past the counting-pass record");
-            }
-            return frame.immediate_sizes[frame.replay_size_index++];
+            return tick_buffers.contains(id);
         }
 
         template<typename T>
-        void register_buffer(std::string const& id, std::span<T> shared_buffer)
+        std::span<T> register_init_buffer(std::string const& id, size_t count)
         {
-            auto& record = shared_buffers[id];
+            auto& record = init_buffers[id];
             if (record.id.empty()) {
                 record.id = id;
             }
+            if (record.type_tag && record.type_tag != type_token<T>()) {
+                throw std::logic_error("init buffer '" + record.id + "' was registered with a different element type");
+            }
+            if (record.count != 0 && record.count != count) {
+                throw std::logic_error("init buffer '" + record.id + "' changed element count between registrations");
+            }
+            if (mode == PassMode::counting) {
+                if (record.registered) {
+                    throw std::logic_error("init buffer '" + record.id + "' was registered more than once");
+                }
+                if (!record.storage) {
+                    std::shared_ptr<T[]> storage(new T[count](), std::default_delete<T[]>());
+                    record.storage = std::shared_ptr<void>(storage, storage.get());
+                }
+                record.type_tag = type_token<T>();
+                record.count = count;
+                record.declared = true;
+                record.registered = true;
+                record.fulfilled = false;
+                return { static_cast<T*>(record.storage.get()), record.count };
+            }
 
-            validate_buffer_identity<T>(record, shared_buffer);
-            ptrdiff_t const offset = compute_offset(shared_buffer.data());
+            if (!record.declared) {
+                throw std::logic_error("init buffer '" + record.id + "' was not registered during the first pass");
+            }
+            if (record.fulfilled) {
+                throw std::logic_error("init buffer '" + record.id + "' was registered more than once on the second pass");
+            }
+            record.registered = true;
+            record.fulfilled = true;
+            return { static_cast<T*>(record.storage.get()), record.count };
+        }
+
+        template<typename T>
+        std::span<T> use_init_buffer(std::string const& id)
+        {
+            auto it = init_buffers.find(id);
+            if (it == init_buffers.end()) {
+                throw std::logic_error("init buffer '" + id + "' was used before registration");
+            }
+            auto& record = it->second;
+            if (record.type_tag && record.type_tag != type_token<T>()) {
+                throw std::logic_error("init buffer '" + record.id + "' was used with a different element type");
+            }
+            if (!record.registered) {
+                throw std::logic_error("init buffer '" + record.id + "' was used before registration in the current pass");
+            }
+            return { static_cast<T*>(record.storage.get()), record.count };
+        }
+
+        template<typename T>
+        void register_tick_buffer(std::string const& id, std::span<T> tick_buffer)
+        {
+            auto& record = tick_buffers[id];
+            if (record.id.empty()) {
+                record.id = id;
+            }
+            validate_tick_buffer_identity<T>(record, tick_buffer.size());
+            ptrdiff_t const offset = compute_runtime_offset(tick_buffer.data());
 
             if (mode == PassMode::counting) {
                 if (record.registered) {
-                    throw std::logic_error("shared buffer '" + record.id + "' was registered more than once");
+                    throw std::logic_error("tick buffer '" + record.id + "' was registered more than once");
                 }
                 record.type_tag = type_token<T>();
-                record.count = shared_buffer.size();
+                record.count = tick_buffer.size();
                 record.offset = offset;
                 record.registered = true;
                 record.fulfilled = false;
                 return;
             }
 
-            if (record.fulfilled) {
-                throw std::logic_error("shared buffer '" + record.id + "' was registered more than once on the second pass");
-            }
             if (!record.registered) {
-                throw std::logic_error("shared buffer '" + record.id + "' was not registered during the first pass");
+                throw std::logic_error("tick buffer '" + record.id + "' was not registered during the first pass");
+            }
+            if (record.fulfilled) {
+                throw std::logic_error("tick buffer '" + record.id + "' was registered more than once on the second pass");
             }
             if (record.offset != offset) {
-                throw std::logic_error("shared buffer '" + record.id + "' changed offset between init passes");
+                throw std::logic_error("tick buffer '" + record.id + "' changed offset between init passes");
             }
-
             record.fulfilled = true;
         }
 
         template<typename T>
-        std::span<T> use_buffer(std::string const& id)
+        std::span<T> use_tick_buffer(std::string const& id)
         {
-            auto& record = shared_buffers[id];
+            auto& record = tick_buffers[id];
             if (record.id.empty()) {
                 record.id = id;
             }
 
             if (record.type_tag && record.type_tag != type_token<T>()) {
-                throw std::logic_error("shared buffer '" + record.id + "' was used with a different element type");
+                throw std::logic_error("tick buffer '" + record.id + "' was used with a different element type");
             }
 
-            record.fetched = true;
+            record.used = true;
             if (!record.type_tag) {
                 record.type_tag = type_token<T>();
             }
@@ -364,15 +373,11 @@ namespace iv {
             if (mode == PassMode::counting) {
                 return {};
             }
-
             if (!record.registered) {
-                throw std::logic_error("shared buffer '" + record.id + "' was used before first-pass registration");
-            }
-            if (record.type_tag != type_token<T>()) {
-                throw std::logic_error("shared buffer '" + record.id + "' was registered with a different element type");
+                throw std::logic_error("tick buffer '" + record.id + "' was used before first-pass registration");
             }
 
-            auto* data = reinterpret_cast<T*>(buffer.data() + record.offset);
+            auto* data = reinterpret_cast<T*>(runtime_buffer.data() + record.offset);
             return { data, record.count };
         }
 
@@ -384,58 +389,25 @@ namespace iv {
             return &token;
         }
 
-        ptrdiff_t compute_offset(void const* data) const
+        ptrdiff_t compute_runtime_offset(void const* data) const
         {
-            if (!buffer.data() || !data) {
+            if (!runtime_buffer.data() || !data) {
                 return 0;
             }
-            auto const* base = reinterpret_cast<std::byte const*>(buffer.data());
+            auto const* base = reinterpret_cast<std::byte const*>(runtime_buffer.data());
             auto const* ptr = reinterpret_cast<std::byte const*>(data);
             return ptr - base;
         }
 
         template<typename T>
-        void validate_buffer_identity(SharedBufferRecord const& record, std::span<T> shared_buffer) const
+        void validate_tick_buffer_identity(TickBufferRecord const& record, size_t count) const
         {
             if (record.type_tag && record.type_tag != type_token<T>()) {
-                throw std::logic_error("shared buffer '" + record.id + "' was registered with a different element type");
+                throw std::logic_error("tick buffer '" + record.id + "' was registered with a different element type");
             }
-            if (record.count != 0 && record.count != shared_buffer.size()) {
-                throw std::logic_error("shared buffer '" + record.id + "' changed element count between registrations");
+            if (record.count != 0 && record.count != count) {
+                throw std::logic_error("tick buffer '" + record.id + "' changed element count between registrations");
             }
-        }
-
-        NodeBufferFrame& current_node_buffer_frame()
-        {
-            if (active_node_buffer_frames.empty()) {
-                throw std::logic_error("graph node buffer scope was not active");
-            }
-            return *active_node_buffer_frames.back();
-        }
-
-        static void reset_node_buffer_replay(NodeBufferFrame& frame)
-        {
-            frame.replay_size_index = 0;
-            frame.replay_child_index = 0;
-            for (auto& child : frame.child_frames) {
-                reset_node_buffer_replay(child);
-            }
-        }
-
-        static bool is_node_buffer_frame_fully_consumed(NodeBufferFrame const& frame)
-        {
-            if (frame.replay_size_index != frame.immediate_sizes.size()) {
-                return false;
-            }
-            if (frame.replay_child_index != frame.child_frames.size()) {
-                return false;
-            }
-            for (auto const& child : frame.child_frames) {
-                if (!is_node_buffer_frame_fully_consumed(child)) {
-                    return false;
-                }
-            }
-            return true;
         }
     };
 
@@ -472,7 +444,7 @@ namespace iv {
         };
 
         template <typename Node, typename Allocator>
-        concept has_init_buffer_ctx = requires(Node node, Allocator allocator, GraphInitContext ctx)
+        concept has_init_buffer_ctx = requires(Node node, Allocator allocator, InitBufferContext ctx)
         {
             node.init_buffer(allocator, ctx);
         };
@@ -537,7 +509,7 @@ namespace iv {
     }
 
     template<typename Node, typename Allocator>
-    constexpr std::span<std::byte> do_init_buffer(Node const& node, Allocator& allocator, GraphInitContext& ctx)
+    constexpr std::span<std::byte> do_init_buffer(Node const& node, Allocator& allocator, InitBufferContext& ctx)
     {
         if constexpr (details::has_init_buffer_ctx<Node, Allocator> || details::has_init_buffer<Node, Allocator>)
         {

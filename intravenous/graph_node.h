@@ -106,6 +106,8 @@ namespace iv {
         Edges _edges;
         std::vector<InputConfig> _public_inputs;
         std::vector<OutputConfig> _public_outputs;
+        mutable std::vector<size_t> _node_buffer_sizes;
+        mutable std::vector<AllocationTrace> _node_buffer_traces;
 
         static size_t calculate_port_buffer_size(size_t latency, size_t input_history, size_t output_history)
         {
@@ -157,22 +159,8 @@ namespace iv {
         }
 
         template<typename Allocator>
-        void init_buffer(Allocator& allocator, GraphInitContext& context) const
+        void init_buffer(Allocator& allocator, InitBufferContext& context) const
         {
-            struct GraphBufferScope {
-                GraphInitContext& context;
-
-                explicit GraphBufferScope(GraphInitContext& context_) : context(context_)
-                {
-                    context.begin_graph_buffer_scope();
-                }
-
-                ~GraphBufferScope()
-                {
-                    context.end_graph_buffer_scope();
-                }
-            } graph_buffer_scope(context);
-
             /*
             * struct MemoryLayout {
             *     GraphState;    // private inputs outputs pointers
@@ -195,6 +183,10 @@ namespace iv {
             * };
             */
             size_t num_nodes = _nodes.size();
+            if (context.mode == InitBufferContext::PassMode::counting) {
+                _node_buffer_sizes.assign(num_nodes, 0);
+                _node_buffer_traces.assign(num_nodes, AllocationTrace{});
+            }
 
             std::vector<InputConfig> private_input_configs(num_outputs());
             OutputConfig private_outputs_config;
@@ -266,16 +258,25 @@ namespace iv {
 
                 if (node_i != GRAPH_ID)
                 {
-                    if (!allocator.can_allocate()) {
-                        CountingNonAllocator counter(allocator.get_buffer().data());
+                    if (context.mode == InitBufferContext::PassMode::counting) {
+                        AllocationTrace trace;
+                        CountingNonAllocator counter(
+                            allocator.get_buffer().data(),
+                            &trace,
+                            allocator.get_buffer().data()
+                        );
                         do_init_buffer(node, counter, context);
                         auto const node_buffer_size = counter.estimate_buffer_size();
-                        context.record_node_buffer_size(node_buffer_size);
+                        _node_buffer_sizes[node_i] = node_buffer_size;
+                        _node_buffer_traces[node_i] = std::move(trace);
                         allocator.assign(node_state.buffer, allocator.template allocate_array<std::byte>(node_buffer_size));
                     } else {
+                        if (node_i >= _node_buffer_sizes.size()) {
+                            throw std::logic_error("graph node buffer replay ran past the counting-pass record");
+                        }
                         allocator.assign(
                             node_state.buffer,
-                            allocator.template allocate_array<std::byte>(context.replay_node_buffer_size())
+                            allocator.template allocate_array<std::byte>(_node_buffer_sizes[node_i])
                         );
                     }
                 }
@@ -356,8 +357,14 @@ namespace iv {
 
                     if (node_i != GRAPH_ID)
                     {
-                        FixedBufferAllocator nested_allocator(node_state.buffer);
+                        _node_buffer_traces[node_i].reset_replay();
+                        FixedBufferAllocator nested_allocator {
+                            node_state.buffer,
+                            &_node_buffer_traces[node_i],
+                            node_state.buffer.data(),
+                        };
                         std::span<std::byte> result = do_init_buffer(node, nested_allocator, context);
+                        nested_allocator.validate_trace_consumed();
                         assert(result.data() == node_state.buffer.data() && result.size() == node_state.buffer.size());
                     }
                 };
@@ -380,17 +387,17 @@ namespace iv {
         void init_buffer(Allocator& allocator) const
         {
             if (!allocator.can_allocate()) {
-                GraphInitContext context(GraphInitContext::PassMode::counting, allocator.get_buffer());
+                InitBufferContext context(InitBufferContext::PassMode::counting, allocator.get_buffer());
                 init_buffer(allocator, context);
                 return;
             }
 
             CountingNonAllocator counter(allocator.get_buffer().data());
-            GraphInitContext counting_context(GraphInitContext::PassMode::counting, counter.get_buffer());
+            InitBufferContext counting_context(InitBufferContext::PassMode::counting, counter.get_buffer());
             do_init_buffer(*this, counter, counting_context);
             counting_context.validate_after_counting();
 
-            GraphInitContext init_context = counting_context.make_replay_context(allocator.get_buffer());
+            InitBufferContext init_context = counting_context.make_initializing_context(allocator.get_buffer());
             init_buffer(allocator, init_context);
             init_context.validate_after_initialization();
         }
@@ -476,14 +483,16 @@ namespace iv {
         TypeErasedNode _node;
         Buffer _buffer;
         NodeState _graph_state;
-        GraphInitContext _counting_context;
+        InitBufferContext _counting_context;
+        AllocationTrace _allocation_trace;
 
         void resize_buffer()
         {
             _buffer.reserve(1);
             std::byte* byte_data = reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x10000));
-            CountingNonAllocator counter(byte_data);
-            GraphInitContext ctx(GraphInitContext::PassMode::counting, counter.get_buffer());
+            _allocation_trace = {};
+            CountingNonAllocator counter(byte_data, &_allocation_trace, byte_data);
+            InitBufferContext ctx(InitBufferContext::PassMode::counting, counter.get_buffer());
             do_init_buffer(_node, counter, ctx);
             ctx.validate_after_counting();
             _buffer.resize(counter.estimate_buffer_size());
@@ -492,13 +501,19 @@ namespace iv {
 
         void initialize_graph()
         {
-            FixedBufferAllocator allocator({
+            FixedBufferAllocator allocator {
+                {
+                    reinterpret_cast<std::byte*>(_buffer.data()),
+                    _buffer.size() * sizeof(AlignedBytes),
+                },
+                &_allocation_trace,
                 reinterpret_cast<std::byte*>(_buffer.data()),
-                _buffer.size() * sizeof(AlignedBytes),
-            });
-            GraphInitContext ctx = _counting_context.make_replay_context(allocator.get_buffer());
+            };
+            _allocation_trace.reset_replay();
+            InitBufferContext ctx = _counting_context.make_initializing_context(allocator.get_buffer());
             auto allocated = do_init_buffer(_node, allocator, ctx);
             ctx.validate_after_initialization();
+            allocator.validate_trace_consumed();
             assert(
                 _buffer.size() - allocated.size() < alignof(max_align_t) &&
                 "buffer was over allocated"

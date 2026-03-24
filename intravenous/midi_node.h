@@ -142,7 +142,7 @@ namespace iv {
         }
 
         template<typename Allocator>
-        void init_buffer(Allocator& allocator, GraphInitContext& ctx) const
+        void init_buffer(Allocator& allocator, InitBufferContext& ctx) const
         {
             /*
             * struct MemoryLayout {

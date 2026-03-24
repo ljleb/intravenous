@@ -61,14 +61,14 @@ namespace iv {
             return std::array<InputConfig, 1>{};
         }
 
-        template<class Alloc, class Ctx>
-        void init_buffer(Alloc& alloc, Ctx& ctx) const
+        template<class Alloc>
+        void init_buffer(Alloc& alloc, InitBufferContext& ctx) const
         {
             State& st = alloc.template new_object<State>();
             auto span = alloc.template new_array<Sample>(1);
             alloc.assign(alloc.at(span, 0), Sample{ 0 });
-            ctx.register_buffer(id, span);
-            st.slot = span.data();
+            ctx.register_tick_buffer(id, span);
+            alloc.assign(st.slot, span.data());
         }
 
         void tick(TickState const& ts) const
@@ -90,12 +90,12 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        template<class Alloc, class Ctx>
-        void init_buffer(Alloc& alloc, Ctx& ctx) const
+        template<class Alloc>
+        void init_buffer(Alloc& alloc, InitBufferContext& ctx) const
         {
             State& st = alloc.template new_object<State>();
-            auto span = ctx.template use_buffer<Sample>(id);
-            st.slot = span.data();
+            auto span = ctx.template use_tick_buffer<Sample>(id);
+            alloc.assign(st.slot, span.data());
         }
 
         void tick(TickState const& ts) const

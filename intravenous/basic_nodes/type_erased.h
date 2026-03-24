@@ -28,7 +28,7 @@ namespace iv {
         std::vector<InputConfig> _inputs;
         std::vector<OutputConfig> _outputs;
         size_t _internal_latency;
-        std::span<std::byte>(*_init_buffer_fn)(void*, TypeErasedAllocator, GraphInitContext&);
+        std::span<std::byte>(*_init_buffer_fn)(void*, TypeErasedAllocator, InitBufferContext&);
         void (*_tick_fn)(void*, TickState const&);
 
     public:
@@ -37,13 +37,13 @@ namespace iv {
         {
             if constexpr (std::is_empty_v<Node>) {
                 _node = nullptr;
-                _init_buffer_fn = [](void*, TypeErasedAllocator allocator, GraphInitContext& ctx) {
+                _init_buffer_fn = [](void*, TypeErasedAllocator allocator, InitBufferContext& ctx) {
                     return do_init_buffer(Node{}, allocator, ctx);
                 };
                 _tick_fn = [](void*, TickState const& state) { Node{}.tick(state); };
             } else {
                 _node = std::make_shared<Node>(node);
-                _init_buffer_fn = [](void* node_ptr, TypeErasedAllocator allocator, GraphInitContext& ctx) {
+                _init_buffer_fn = [](void* node_ptr, TypeErasedAllocator allocator, InitBufferContext& ctx) {
                     return do_init_buffer(*static_cast<Node*>(node_ptr), allocator, ctx);
                 };
                 _tick_fn = [](void* node_ptr, TickState const& state) {
@@ -71,7 +71,7 @@ namespace iv {
         }
 
         template<typename Allocator>
-        constexpr std::span<std::byte> init_buffer(Allocator& allocator, GraphInitContext& ctx) const
+        constexpr std::span<std::byte> init_buffer(Allocator& allocator, InitBufferContext& ctx) const
         {
             return _init_buffer_fn(_node.get(), TypeErasedAllocator { allocator }, ctx);
         }

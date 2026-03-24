@@ -9,7 +9,7 @@ namespace iv {
         TypeErasedNode root;
 
         template<typename Allocator>
-        void init_buffer(Allocator& allocator, GraphInitContext& context) const
+        void init_buffer(Allocator& allocator, InitBufferContext& context) const
         {
             do_init_buffer(root, allocator, context);
         }

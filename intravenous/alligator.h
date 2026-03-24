@@ -2,12 +2,78 @@
 #include <span>
 #include <array>
 #include <cassert>
+#include <cstddef>
 #include <limits>
-#include <variant>
 #include <memory>
+#include <stdexcept>
+#include <variant>
+#include <vector>
 
 
 namespace iv {
+    enum class AllocationKind {
+        object,
+        raw_array,
+        aligned_array,
+    };
+
+    struct AllocationEvent {
+        AllocationKind kind{};
+        size_t alignment = 0;
+        size_t element_size = 0;
+        size_t count = 0;
+        ptrdiff_t offset = 0;
+        void const* type_tag = nullptr;
+    };
+
+    struct AllocationTrace {
+        std::vector<AllocationEvent> events;
+        size_t replay_index = 0;
+
+        void record(AllocationEvent event)
+        {
+            events.push_back(event);
+        }
+
+        void reset_replay()
+        {
+            replay_index = 0;
+        }
+
+        void validate_next(AllocationEvent const& actual)
+        {
+            if (replay_index >= events.size()) {
+                throw std::logic_error("allocation trace replay ran past the counting-pass record");
+            }
+
+            AllocationEvent const& expected = events[replay_index++];
+            if (expected.kind != actual.kind ||
+                expected.alignment != actual.alignment ||
+                expected.element_size != actual.element_size ||
+                expected.count != actual.count ||
+                expected.offset != actual.offset ||
+                expected.type_tag != actual.type_tag) {
+                throw std::logic_error("allocation trace mismatch between init passes");
+            }
+        }
+
+        void validate_consumed() const
+        {
+            if (replay_index != events.size()) {
+                throw std::logic_error("allocation trace replay did not consume the full counting-pass record");
+            }
+        }
+    };
+
+    namespace details {
+        template<typename T>
+        constexpr void const* allocation_type_token()
+        {
+            static int token = 0;
+            return &token;
+        }
+    }
+
 	template<typename T>
     union AlignedStorage {
         alignas(T) std::byte uninitialized_object[sizeof(T)];
@@ -20,6 +86,40 @@ namespace iv {
 
     struct FixedBufferAllocator {
         std::span<std::byte> buffer;
+        AllocationTrace* trace = nullptr;
+        std::byte* trace_base = nullptr;
+
+    private:
+        ptrdiff_t trace_offset(void const* ptr) const
+        {
+            auto const* base = trace_base ? trace_base : buffer.data();
+            return reinterpret_cast<std::byte const*>(ptr) - base;
+        }
+
+        template<typename T>
+        void validate_trace(AllocationKind kind, void const* ptr, size_t count, size_t element_size) const
+        {
+            if (!trace) {
+                return;
+            }
+
+            trace->validate_next(AllocationEvent{
+                .kind = kind,
+                .alignment = alignof(T),
+                .element_size = element_size,
+                .count = count,
+                .offset = trace_offset(ptr),
+                .type_tag = details::allocation_type_token<T>(),
+            });
+        }
+
+    public:
+        void validate_trace_consumed() const
+        {
+            if (trace) {
+                trace->validate_consumed();
+            }
+        }
 
         constexpr bool can_allocate() const
         {
@@ -40,6 +140,7 @@ namespace iv {
             void* buffer_start = buffer.data();
             size_t space_left = buffer.size();
             if (!std::align(alignment, num_bytes, buffer_start, space_left)) throw std::bad_alloc();
+            validate_trace<T>(AllocationKind::raw_array, buffer_start, number, sizeof(T));
             T* ptr = ::new (buffer_start) T[number];
             buffer = { static_cast<std::byte*>(buffer_start) + num_bytes, space_left - num_bytes };
             return std::span<T> { ptr, number };
@@ -53,6 +154,7 @@ namespace iv {
             void* buffer_start = buffer.data();
             size_t space_left = buffer.size();
             if (!std::align(alignment, num_bytes, buffer_start, space_left)) throw std::bad_alloc();
+            validate_trace<T>(AllocationKind::object, buffer_start, 1, sizeof(T));
             T* ptr = ::new (buffer_start) T;
             buffer = { static_cast<std::byte*>(buffer_start) + num_bytes, space_left - num_bytes };
             return *ptr;
@@ -61,7 +163,16 @@ namespace iv {
         template<typename T>
         auto allocate_array(size_t number)
         {
-            auto span = new_array<AlignedStorage<T>>(number);
+            if (number == 0) return std::span<T>{};
+            size_t num_bytes = number * sizeof(AlignedStorage<T>);
+            size_t const alignment = alignof(AlignedStorage<T>);
+            void* buffer_start = buffer.data();
+            size_t space_left = buffer.size();
+            if (!std::align(alignment, num_bytes, buffer_start, space_left)) throw std::bad_alloc();
+            validate_trace<T>(AllocationKind::aligned_array, buffer_start, number, sizeof(AlignedStorage<T>));
+            auto* ptr = ::new (buffer_start) AlignedStorage<T>[number];
+            buffer = { static_cast<std::byte*>(buffer_start) + num_bytes, space_left - num_bytes };
+            std::span<AlignedStorage<T>> span { ptr, number };
             return std::span<T> { &(span.data()->object), span.size() };
         };
 
@@ -99,11 +210,42 @@ namespace iv {
     class CountingNonAllocator {
         static constexpr size_t MAX_ALLOCATION = std::numeric_limits<uint32_t>::max();
         std::byte* _memory_hint = nullptr;
+        std::byte* _trace_base = nullptr;
+        AllocationTrace* _trace = nullptr;
         size_t total_bytes = MAX_ALLOCATION;
 
+        ptrdiff_t trace_offset(void const* ptr) const
+        {
+            auto const* base = _trace_base ? _trace_base : _memory_hint;
+            return reinterpret_cast<std::byte const*>(ptr) - base;
+        }
+
+        template<typename T>
+        void record_trace(AllocationKind kind, void const* ptr, size_t count, size_t element_size)
+        {
+            if (!_trace) {
+                return;
+            }
+
+            _trace->record(AllocationEvent{
+                .kind = kind,
+                .alignment = alignof(T),
+                .element_size = element_size,
+                .count = count,
+                .offset = trace_offset(ptr),
+                .type_tag = details::allocation_type_token<T>(),
+            });
+        }
+
     public:
-        explicit CountingNonAllocator(std::byte* memory_hint) :
-            _memory_hint(memory_hint)
+        explicit CountingNonAllocator(
+            std::byte* memory_hint,
+            AllocationTrace* trace = nullptr,
+            std::byte* trace_base = nullptr
+        ) :
+            _memory_hint(memory_hint),
+            _trace_base(trace_base ? trace_base : memory_hint),
+            _trace(trace)
         {
         }
 
@@ -144,6 +286,7 @@ namespace iv {
             size_t space = total_bytes;
             if (!std::align(alignment, num_bytes, buffer_start, space)) throw std::bad_alloc();
             T* fake_ptr = static_cast<T*>(buffer_start);
+            record_trace<T>(AllocationKind::raw_array, fake_ptr, number, sizeof(T));
             _memory_hint = static_cast<std::byte*>(buffer_start) + num_bytes;
             total_bytes = space - num_bytes;
             return std::span<T> { fake_ptr, number };
@@ -153,14 +296,31 @@ namespace iv {
         T& new_object()
         {
             static AlignedStorage<T> storage;
-            advance_buffer<AlignedStorage<T>>(1);
+            size_t const alignment = alignof(T);
+            size_t const num_bytes = sizeof(T);
+            void* buffer_start = static_cast<void*>(_memory_hint);
+            size_t space = total_bytes;
+            if (!std::align(alignment, num_bytes, buffer_start, space)) throw std::bad_alloc();
+            record_trace<T>(AllocationKind::object, buffer_start, 1, sizeof(T));
+            _memory_hint = static_cast<std::byte*>(buffer_start) + num_bytes;
+            total_bytes = space - num_bytes;
             return storage.object;
         }
 
         template<typename T>
         auto allocate_array(size_t number)
         {
-            std::span<AlignedStorage<T>> span = new_array<AlignedStorage<T>>(number);
+            if (number == 0) return std::span<T>{};
+            size_t const alignment = alignof(AlignedStorage<T>);
+            size_t const num_bytes = number * sizeof(AlignedStorage<T>);
+            void* buffer_start = static_cast<void*>(_memory_hint);
+            size_t space = total_bytes;
+            if (!std::align(alignment, num_bytes, buffer_start, space)) throw std::bad_alloc();
+            auto* fake_ptr = static_cast<AlignedStorage<T>*>(buffer_start);
+            record_trace<T>(AllocationKind::aligned_array, fake_ptr, number, sizeof(AlignedStorage<T>));
+            _memory_hint = static_cast<std::byte*>(buffer_start) + num_bytes;
+            total_bytes = space - num_bytes;
+            std::span<AlignedStorage<T>> span { fake_ptr, number };
             return std::span<T> { static_cast<T*>(nullptr), span.size() };
         };
 
