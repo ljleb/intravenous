@@ -521,7 +521,8 @@ namespace iv {
         live_instance.plugin->processBlock(buffer, live_instance.midi_buffer);
 
         for (size_t channel = 0; channel < spec.schema.audio_outputs; ++channel) {
-            auto const* source = buffer.getReadPointer(static_cast<int>(channel));
+            Sample::storage const* source_storage = buffer.getReadPointer(static_cast<int>(channel));
+            Sample const* source = reinterpret_cast<Sample const*>(source_storage);
             state.outputs[channel].push_block(std::span<Sample const>(source, state.block_size));
         }
     }

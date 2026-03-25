@@ -15,7 +15,92 @@
 
 
 namespace iv {
-	using Sample = float;
+	struct Sample {
+        using storage = float;
+        storage value{};
+
+        constexpr Sample() = default;
+
+        template <typename T>
+            requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        constexpr Sample(T v) : value(static_cast<float>(v)) {}
+
+        constexpr operator float() const noexcept {
+            return value;
+        }
+
+        constexpr Sample& operator+=(Sample other) noexcept { value += other.value; return *this; }
+        constexpr Sample& operator-=(Sample other) noexcept { value -= other.value; return *this; }
+        constexpr Sample& operator*=(Sample other) noexcept { value *= other.value; return *this; }
+        constexpr Sample& operator/=(Sample other) noexcept { value /= other.value; return *this; }
+
+        friend constexpr Sample operator+(Sample a, Sample b) noexcept { return a.value + b.value; }
+        friend constexpr Sample operator-(Sample a, Sample b) noexcept { return a.value - b.value; }
+        friend constexpr Sample operator*(Sample a, Sample b) noexcept { return a.value * b.value; }
+        friend constexpr Sample operator/(Sample a, Sample b) noexcept { return a.value / b.value; }
+
+        template <typename T>
+            requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        friend constexpr Sample operator+(Sample a, T b) noexcept {
+            return a.value + static_cast<float>(b);
+        }
+        template <typename T>
+            requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        friend constexpr Sample operator-(Sample a, T b) noexcept {
+            return a.value - static_cast<float>(b);
+        }
+        template <typename T>
+            requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        friend constexpr Sample operator*(Sample a, T b) noexcept {
+            return a.value * static_cast<float>(b);
+        }
+        template <typename T>
+            requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        friend constexpr Sample operator/(Sample a, T b) noexcept {
+            return a.value / static_cast<float>(b);
+        }
+
+        template <typename T>
+            requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        friend constexpr Sample operator+(T a, Sample b) noexcept {
+            return static_cast<float>(a) + b.value;
+        }
+        template <typename T>
+            requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        friend constexpr Sample operator-(T a, Sample b) noexcept {
+            return static_cast<float>(a) - b.value;
+        }
+        template <typename T>
+            requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        friend constexpr Sample operator*(T a, Sample b) noexcept {
+            return static_cast<float>(a) * b.value;
+        }
+        template <typename T>
+            requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        friend constexpr Sample operator/(T a, Sample b) noexcept {
+            return static_cast<float>(a) / b.value;
+        }
+
+        constexpr Sample& operator++() noexcept {
+            ++value;
+            return *this;
+        }
+        constexpr Sample operator++(int) noexcept {
+            Sample tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+
+        constexpr Sample& operator--() noexcept {
+            --value;
+            return *this;
+        }
+        constexpr Sample operator--(int) noexcept {
+            Sample tmp = *this;
+            --(*this);
+            return tmp;
+        }
+    };
 
     inline constexpr size_t MAX_BLOCK_SIZE = size_t(1) << (std::numeric_limits<size_t>::digits - 1);
 
@@ -75,6 +160,62 @@ namespace iv {
             return index < first.size()
                 ? first[index]
                 : second[index - first.size()];
+        }
+
+        struct iterator {
+            using value_type = Sample;
+            using difference_type = std::ptrdiff_t;
+            using iterator_category = std::forward_iterator_tag;
+            using iterator_concept = std::forward_iterator_tag;
+            using reference = Sample;
+            using pointer = void;
+
+            Sample const* first_ptr = nullptr;
+            size_t split = 0;
+            std::ptrdiff_t second_offset = 0;
+            size_t index = 0;
+
+            constexpr reference operator*() const
+            {
+                return index < split
+                    ? first_ptr[index]
+                    : (first_ptr + second_offset)[index - split];
+            }
+
+            constexpr iterator& operator++()
+            {
+                ++index;
+                return *this;
+            }
+
+            constexpr iterator operator++(int)
+            {
+                auto tmp = *this;
+                ++*this;
+                return tmp;
+            }
+
+            constexpr bool operator==(iterator const&) const = default;
+        };
+
+        constexpr iterator begin() const
+        {
+            return iterator{
+                first.data(),
+                first.size(),
+                second.data() - first.data(),
+                0
+            };
+        }
+
+        constexpr iterator end() const
+        {
+            return iterator{
+                first.data(),
+                first.size(),
+                second.data() - first.data(),
+                size()
+            };
         }
     };
 

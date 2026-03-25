@@ -499,16 +499,6 @@ namespace iv {
             init_context.validate_after_initialization();
         }
 
-        void tick(TickState const& state)
-        {
-            tick_block({
-                static_cast<NodeState const&>(state),
-                state.midi,
-                state.index,
-                1,
-            });
-        }
-
         void tick_block(BlockTickState const& state)
         {
             if (state.block_size == 0) {

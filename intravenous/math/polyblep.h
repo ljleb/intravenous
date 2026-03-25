@@ -12,7 +12,7 @@ namespace iv {
 
     IV_FORCEINLINE static Sample polyblep_phi(Sample sample, Sample warp_threshold)
     {
-        return Sample((sample + warp_threshold) / 2.0);
+        return (sample + warp_threshold) / 2.0;
     }
 
     IV_FORCEINLINE static Sample polyblep_p(Sample phi, Sample delta, Sample warp_threshold, PolyblepSide side)

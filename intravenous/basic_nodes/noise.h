@@ -14,7 +14,7 @@
 namespace iv {
     class UniformNoise {
         std::optional<std::mt19937> _generator;
-        std::optional<std::uniform_real_distribution<Sample>> _distribution;
+        std::optional<std::uniform_real_distribution<Sample::storage>> _distribution;
         Sample _min;
         Sample _max;
         std::optional<unsigned int> _seed;
@@ -48,8 +48,8 @@ namespace iv {
         explicit DeterministicUniformNoise(std::optional<Sample> seed = {}) :
             _seed(seed.has_value()
                 ? *seed
-                : (static_cast<std::uint64_t>(std::random_device{}()) << 32) |
-                  static_cast<std::uint64_t>(std::random_device{}()))
+                : static_cast<Sample>((static_cast<std::uint64_t>(std::random_device{}()) << 32) |
+                  static_cast<std::uint64_t>(std::random_device{}())))
         {}
 
         auto inputs() const

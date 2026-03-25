@@ -32,7 +32,7 @@ namespace iv {
         auto const usableMax = std::min<Sample>(FMAX, 0.5f / dx);
         auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);
         auto const norm = f_c * dx;
-        auto const c = std::tanf(std::numbers::pi_v<Sample> * norm);
+        auto const c = std::tanf(std::numbers::pi_v<Sample::storage> * norm);
         auto const a1 = (1.0f - c) / (1.0f + c);
         auto const b0 = 1.0f / (1.0f + c);
 
@@ -52,7 +52,7 @@ namespace iv {
         auto const usableMax = std::min<Sample>(FMAX, 0.5f / dx);
         auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);
         auto const norm = f_c * dx;
-        auto const c = std::tanf(std::numbers::pi_v<Sample> * norm);
+        auto const c = std::tanf(std::numbers::pi_v<Sample::storage> * norm);
         auto const a1 = (1.0f - c) / (1.0f + c);
         auto const alpha = c / (1.0f + c);
 

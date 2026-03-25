@@ -37,7 +37,7 @@ namespace {
             auto& counter = state.get_state<State>();
             std::array<iv::Sample, 16> block {};
             for (size_t sample = 0; sample < state.block_size; ++sample) {
-                block[sample] = counter.value++;
+                block[sample] = counter.value ++;
             }
             state.outputs[0].push_block(std::span<iv::Sample const>(block.data(), state.block_size));
         }

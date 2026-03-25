@@ -433,7 +433,7 @@ namespace iv {
         }
 
         template<class T>
-        requires std::is_arithmetic_v<std::remove_cvref_t<T>>
+        requires std::is_arithmetic_v<std::remove_cvref_t<T>> || std::is_same_v<std::remove_cvref_t<T>, Sample>
         SignalRef lift_to_signal(T value)
         {
             return node<Constant>(static_cast<Sample>(value));
@@ -467,7 +467,8 @@ namespace iv {
     template<class T>
     concept ScalarLike =
         std::integral<std::remove_cvref_t<T>> ||
-        std::floating_point<std::remove_cvref_t<T>>;
+        std::floating_point<std::remove_cvref_t<T>> ||
+        std::is_same_v<std::remove_cvref_t<T>, Sample>;
 
     template<class T>
     concept Liftable = SignalLike<T> || ScalarLike<T>;
