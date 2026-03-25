@@ -41,10 +41,8 @@ int main()
         g.outputs();
 
         system.activate_root(true);
-        iv::NodeProcessor processor(system.wrap_root(iv::TypeErasedNode(g.build()), true));
-        for (size_t i = 0; i < channel.size(); ++i) {
-            processor.tick({}, i);
-        }
+        iv::NodeProcessor processor = system.make_processor(iv::TypeErasedNode(g.build()));
+        processor.tick_block({}, 0, channel.size());
 
         auto block = system.audio_device().output_block(0);
         std::copy_n(block.begin(), channel.size(), channel.begin());

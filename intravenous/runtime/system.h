@@ -1,107 +1,254 @@
 #pragma once
 #include "devices/audio_device.h"
+#include "wav.h"
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 
 namespace iv {
-    struct SystemWrappedNode {
+    inline char const* file_render_path_env()
+    {
+        char const* value = std::getenv("IV_FILE_RENDER_PATH");
+        return (value && *value) ? value : nullptr;
+    }
+
+    struct SystemProcessorRuntime {
         AudioRenderSession render_session;
-        TypeErasedNode root;
 
         struct SinkBinding {
             size_t channel = 0;
             std::span<Sample> buffer;
         };
 
-        struct State {
-            std::span<std::byte> root_buffer;
-            std::span<SinkBinding> sink_bindings;
-            bool has_active_sinks = false;
-        };
+        std::vector<SinkBinding> sink_bindings;
 
-        std::string make_init_buffer_id(std::string_view suffix) const
+        explicit SystemProcessorRuntime(AudioDevice& audio_device) :
+            render_session(audio_device)
         {
-            return "__system_wrap_init:" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ":" + std::string(suffix);
         }
 
-        template<typename Allocator>
-        void init_buffer(Allocator& allocator, InitBufferContext& context) const
+        void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
         {
             size_t const num_channels = render_session.config().num_channels;
-            State& system_state = allocator.template new_object<State>();
+            if (context.mode == InitBufferContext::PassMode::initializing) {
+                sink_bindings.clear();
+            }
 
-            allocator.assign(system_state.root_buffer, do_init_buffer(root, allocator, context));
-
-            auto used_channels = context.register_init_buffer<size_t>(make_init_buffer_id("used_channels"), num_channels);
-            auto used_count = context.register_init_buffer<size_t>(make_init_buffer_id("used_count"), 1);
-
-            size_t count = 0;
             for (size_t channel = 0; channel < num_channels; ++channel) {
                 if (!context.has_tick_buffer(render_session.sink_id(channel))) {
                     continue;
                 }
-                used_channels[count++] = channel;
-            }
-            used_count[0] = count;
 
-            allocator.assign(system_state.sink_bindings, allocator.template new_array<SinkBinding>(count));
-
-            size_t const sink_buffer_size = render_session.sink_buffer_size();
-            for (size_t i = 0; i < count; ++i) {
-                auto const channel = used_channels[i];
-                auto buffer = allocator.template new_array<Sample>(sink_buffer_size);
+                auto buffer = allocator.template new_array<Sample>(render_session.sink_buffer_size());
                 context.register_tick_buffer(render_session.sink_id(channel), buffer);
-                allocator.assign(allocator.at(system_state.sink_bindings, i).channel, channel);
-                allocator.assign(allocator.at(system_state.sink_bindings, i).buffer, buffer);
+                if (context.mode == InitBufferContext::PassMode::initializing) {
+                    sink_bindings.push_back({ channel, buffer });
+                }
             }
-
-            allocator.assign(system_state.has_active_sinks, count != 0);
         }
 
-        size_t internal_latency() const
+        size_t max_block_size() const
         {
-            return root.internal_latency();
+            return render_session.scheduling_block_size();
         }
 
-        void tick(TickState const& state)
+        size_t max_block_size(TypeErasedNode const&, size_t requested_max_block_size) const
         {
-            auto& system_state = state.get_state<State>();
-            render_session.prepare_tick(state.index);
-            if (render_session.is_shutdown_requested()) {
+            return std::min(requested_max_block_size, max_block_size());
+        }
+
+        void clear_sink_buffers()
+        {
+            for (auto const& binding : sink_bindings) {
+                auto buffer = binding.buffer;
+                if (buffer.empty()) {
+                    continue;
+                }
+                std::fill(buffer.begin(), buffer.end(), 0.0f);
+            }
+        }
+
+        void mix_sink_buffers()
+        {
+            for (auto const& binding : sink_bindings) {
+                render_session.mix_sink_buffer(binding.channel, binding.buffer);
+            }
+        }
+
+        void tick_block(
+            TypeErasedNode& root,
+            std::span<std::byte> buffer,
+            std::span<MidiMessage const> midi,
+            size_t index,
+            size_t block_size
+        )
+        {
+            if (block_size == 0) {
                 return;
             }
 
-            if (system_state.has_active_sinks && state.index == render_session.active_block_start()) {
-                size_t const block_start = render_session.active_block_start();
-                for (auto const& binding : system_state.sink_bindings) {
-                    auto buffer = binding.buffer;
-                    if (buffer.empty()) {
-                        continue;
-                    }
-                    for (size_t frame = 0; frame < render_session.active_block_frames(); ++frame) {
-                        size_t const global_index = block_start + frame;
-                        buffer[global_index & (buffer.size() - 1)] = 0.0f;
-                    }
+            size_t processed = 0;
+
+            while (processed < block_size) {
+                size_t block_index = index + processed;
+                render_session.prepare_tick(block_index);
+                if (render_session.is_shutdown_requested()) {
+                    return;
                 }
+
+                if (!sink_bindings.empty() && block_index == render_session.active_block_start()) {
+                    clear_sink_buffers();
+                }
+
+                size_t chunk_remaining = std::min(
+                    block_size - processed,
+                    render_session.active_block_end() - block_index
+                );
+
+                while (chunk_remaining != 0) {
+                    size_t chunk_size = prev_power_of_2(chunk_remaining);
+                    root.tick_block({
+                        NodeState { .inputs = {}, .outputs = {}, .buffer = buffer },
+                        midi,
+                        block_index,
+                        chunk_size,
+                    });
+
+                    processed += chunk_size;
+                    block_index += chunk_size;
+                    chunk_remaining -= chunk_size;
+                }
+
+                if (!sink_bindings.empty() && block_index == render_session.active_block_end()) {
+                    mix_sink_buffers();
+                }
+
+                render_session.finish_tick(block_index - 1);
+            }
+        }
+    };
+
+    struct FileRenderRuntime {
+        RenderConfig config;
+        std::string output_path;
+        std::vector<std::string> sink_ids;
+
+        struct SinkBinding {
+            size_t channel = 0;
+            std::span<Sample> ring;
+            std::vector<Sample> captured;
+        };
+
+        std::vector<SinkBinding> sink_bindings;
+
+        explicit FileRenderRuntime(RenderConfig config_, std::string output_path_, std::vector<std::string> sink_ids_) :
+            config(config_),
+            output_path(std::move(output_path_)),
+            sink_ids(std::move(sink_ids_))
+        {}
+
+        ~FileRenderRuntime()
+        {
+            flush();
+        }
+
+        void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
+        {
+            if (context.mode == InitBufferContext::PassMode::initializing) {
+                sink_bindings.clear();
             }
 
-            root.tick({
-                NodeState{
-                    .inputs = state.inputs,
-                    .outputs = state.outputs,
-                    .buffer = system_state.root_buffer,
-                },
-                state.midi,
-                state.index,
+            size_t const ring_size = size_t(1) << size_t(std::ceil(std::log2(std::max<size_t>(context.max_block_size, 1))));
+            for (size_t channel = 0; channel < config.num_channels; ++channel) {
+                if (channel >= sink_ids.size()) {
+                    continue;
+                }
+                std::string const& id = sink_ids[channel];
+                if (!context.has_tick_buffer(id)) {
+                    continue;
+                }
+
+                auto buffer = allocator.template new_array<Sample>(ring_size);
+                context.register_tick_buffer(id, buffer);
+                if (context.mode == InitBufferContext::PassMode::initializing) {
+                    sink_bindings.push_back({ channel, buffer, {} });
+                }
+            }
+        }
+
+        size_t max_block_size(TypeErasedNode const&, size_t requested_max_block_size) const
+        {
+            return std::min(requested_max_block_size, prev_power_of_2(config.max_block_frames));
+        }
+
+        void clear_window(size_t index, size_t frames)
+        {
+            for (auto& binding : sink_bindings) {
+                for (size_t frame = 0; frame < frames; ++frame) {
+                    binding.ring[(index + frame) & (binding.ring.size() - 1)] = 0.0f;
+                }
+            }
+        }
+
+        void capture_window(size_t index, size_t frames)
+        {
+            for (auto& binding : sink_bindings) {
+                size_t const end = index + frames;
+                if (binding.captured.size() < end) {
+                    binding.captured.resize(end, 0.0f);
+                }
+                for (size_t frame = 0; frame < frames; ++frame) {
+                    binding.captured[index + frame] += binding.ring[(index + frame) & (binding.ring.size() - 1)];
+                }
+            }
+        }
+
+        void tick_block(
+            TypeErasedNode& root,
+            std::span<std::byte> buffer,
+            std::span<MidiMessage const> midi,
+            size_t index,
+            size_t block_size
+        )
+        {
+            clear_window(index, block_size);
+            root.tick_block({
+                NodeState { .inputs = {}, .outputs = {}, .buffer = buffer },
+                midi,
+                index,
+                block_size
             });
+            capture_window(index, block_size);
+        }
 
-            if (system_state.has_active_sinks && state.index + 1 == render_session.active_block_end()) {
-                for (auto const& binding : system_state.sink_bindings) {
-                    render_session.mix_sink_buffer(binding.channel, binding.buffer);
-                }
+        void flush()
+        {
+            if (output_path.empty() || sink_bindings.empty()) {
+                return;
             }
 
-            render_session.finish_tick(state.index);
+            size_t frames = 0;
+            for (auto const& binding : sink_bindings) {
+                frames = std::max(frames, binding.captured.size());
+            }
+            if (frames == 0) {
+                return;
+            }
+
+            std::vector<Sample> left(frames, 0.0f);
+            std::vector<Sample> right(frames, 0.0f);
+            for (auto const& binding : sink_bindings) {
+                if (binding.channel == 0) {
+                    std::copy(binding.captured.begin(), binding.captured.end(), left.begin());
+                } else if (binding.channel == 1) {
+                    std::copy(binding.captured.begin(), binding.captured.end(), right.begin());
+                }
+            }
+            if (sink_bindings.size() == 1) {
+                right = left;
+            }
+            write_wav(output_path, left, right, static_cast<uint32_t>(config.sample_rate));
+            output_path.clear();
         }
     };
 
@@ -109,6 +256,7 @@ namespace iv {
         AudioDevice _audio_device;
         bool _close_on_enter = true;
         std::jthread _close_thread;
+        bool _active_root_uses_audio_device = false;
 
     public:
         explicit System(RenderConfig config = {}, bool open_backend = true, bool close_on_enter = true) :
@@ -152,21 +300,21 @@ namespace iv {
             return _audio_device.sample_period();
         }
 
+        size_t preferred_block_size() const
+        {
+            return render_config().preferred_block_size;
+        }
+
+        size_t root_block_size() const
+        {
+            return (_active_root_uses_audio_device && !file_render_path_env())
+                ? _audio_device.scheduling_block_size()
+                : prev_power_of_2(render_config().max_block_frames);
+        }
+
         bool is_shutdown_requested() const
         {
             return _audio_device.is_shutdown_requested();
-        }
-
-        TypeErasedNode wrap_root(TypeErasedNode root, bool uses_audio_device = false)
-        {
-            if (!uses_audio_device) {
-                return root;
-            }
-
-            return TypeErasedNode(SystemWrappedNode {
-                .render_session = AudioRenderSession(_audio_device),
-                .root = std::move(root),
-            });
         }
 
         void request_shutdown()
@@ -176,7 +324,41 @@ namespace iv {
 
         void activate_root(bool uses_audio_device)
         {
-            (void)uses_audio_device;
+            _active_root_uses_audio_device = uses_audio_device;
+            if (_active_root_uses_audio_device && !file_render_path_env()) {
+                _audio_device.ensure_backend_initialized();
+            }
+        }
+
+        NodeProcessor make_processor(TypeErasedNode root, std::vector<std::shared_ptr<void>> module_refs = {})
+        {
+            TypeErasedNodeRuntime runtime;
+            if (_active_root_uses_audio_device) {
+                if (char const* file_path = file_render_path_env()) {
+                    std::vector<std::string> sink_ids(render_config().num_channels);
+                    for (size_t channel = 0; channel < sink_ids.size(); ++channel) {
+                        sink_ids[channel] = _audio_device.sink_id(channel);
+                    }
+                    runtime = TypeErasedNodeRuntime(FileRenderRuntime(render_config(), std::string(file_path), std::move(sink_ids)));
+                } else {
+                    _audio_device.ensure_backend_initialized();
+                    runtime = TypeErasedNodeRuntime(SystemProcessorRuntime(_audio_device));
+                }
+            }
+            size_t const root_max_block_size = root.max_block_size();
+            size_t const runtime_max_block_size = runtime
+                ? runtime.max_block_size(root, root_max_block_size)
+                : root_max_block_size;
+            size_t const processor_block_size = std::min(
+                root_block_size(),
+                runtime_max_block_size
+            );
+            return NodeProcessor(
+                std::move(root),
+                std::move(module_refs),
+                processor_block_size,
+                std::move(runtime)
+            );
         }
     };
 }

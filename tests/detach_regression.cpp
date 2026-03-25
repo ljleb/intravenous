@@ -48,10 +48,8 @@ int main()
     sink(voice_a + voice_b);
     graph.outputs();
 
-    iv::NodeProcessor processor(iv::TypeErasedNode(graph.build()));
-    for (size_t i = 0; i < output.size(); ++i) {
-        processor.tick({}, i);
-    }
+    iv::NodeProcessor processor(iv::TypeErasedNode(graph.build()), {}, output.size());
+    processor.tick_block({}, 0, output.size());
 
     bool saw_non_zero = false;
     for (iv::Sample sample : output) {

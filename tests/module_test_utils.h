@@ -166,16 +166,26 @@ namespace iv::test {
     {
         auto graph = loader.load_root(module_path, system);
         system.activate_root(graph.sink_count != 0);
-        return iv::NodeProcessor(
-            system.wrap_root(std::move(graph.root), graph.sink_count != 0),
-            std::move(graph.module_refs)
-        );
+        return system.make_processor(std::move(graph.root), std::move(graph.module_refs));
     }
 
     inline void run_processor_ticks(iv::NodeProcessor& processor, size_t ticks = 16)
     {
         for (size_t i = 0; i < ticks; ++i) {
-            processor.tick({}, i);
+            processor.tick_block({}, i, 1);
+        }
+    }
+
+    inline void run_processor_blocks(
+        iv::NodeProcessor& processor,
+        std::span<size_t const> block_sizes,
+        size_t start_index = 0
+    )
+    {
+        size_t index = start_index;
+        for (size_t block_size : block_sizes) {
+            processor.tick_block({}, index, block_size);
+            index += block_size;
         }
     }
 

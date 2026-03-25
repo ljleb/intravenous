@@ -7,8 +7,8 @@ namespace iv {
     {
         auto const& in = state.inputs[0];
         auto const& in_threshold = state.inputs[1];
-        auto const& out = state.outputs[0];
-        auto const& out_aliased = state.outputs[1];
+        auto& out = state.outputs[0];
+        auto& out_aliased = state.outputs[1];
 
         Sample threshold = in_threshold.get();
         Sample sample_prev = std::fmin(std::fmax(out_aliased.get(), -1.0f), 1.0f);

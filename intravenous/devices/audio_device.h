@@ -21,6 +21,7 @@ namespace iv {
         size_t sample_rate = 48000;
         size_t num_channels = 2;
         size_t max_block_frames = 4096;
+        size_t preferred_block_size = 256;
     };
 
     class AudioDevice {
@@ -49,9 +50,12 @@ namespace iv {
         std::mutex _mutex;
         std::condition_variable _cv;
 
-        void init_backend()
+        void initialize_backend()
         {
-            if (_device_started) {
+            if (_shutdown_requested) {
+                return;
+            }
+            if (_device_initialized) {
                 return;
             }
 
@@ -77,6 +81,9 @@ namespace iv {
 
             _config.sample_rate = _device.sampleRate;
             _config.num_channels = _device.playback.channels;
+            if (_device.playback.internalPeriodSizeInFrames != 0) {
+                _config.max_block_frames = _device.playback.internalPeriodSizeInFrames;
+            }
             _sample_period = static_cast<Sample>(1) / static_cast<Sample>(_config.sample_rate);
 
             _planar_storage.assign(_config.num_channels, std::vector<Sample>(_config.max_block_frames, 0.0f));
@@ -84,8 +91,18 @@ namespace iv {
             for (size_t channel = 0; channel < _config.num_channels; ++channel) {
                 _channel_ptrs[channel] = _planar_storage[channel].data();
             }
+        }
 
-            result = ma_device_start(&_device);
+        void start_backend()
+        {
+            if (_shutdown_requested) {
+                return;
+            }
+            if (_device_started) {
+                return;
+            }
+
+            ma_result result = ma_device_start(&_device);
             if (result != MA_SUCCESS) {
                 shutdown();
                 throw std::runtime_error("ma_device_start failed");
@@ -165,9 +182,18 @@ namespace iv {
             if (_config.sample_rate == 0 || _config.num_channels == 0 || _config.max_block_frames == 0) {
                 throw std::invalid_argument("render config values must be non-zero");
             }
+            try {
+                validate_block_size(_config.preferred_block_size, "preferred_block_size must be a power of 2");
+            } catch (std::logic_error const& e) {
+                throw std::invalid_argument(e.what());
+            }
 
             for (size_t channel = 0; channel < _config.num_channels; ++channel) {
                 _channel_ptrs[channel] = _planar_storage[channel].data();
+            }
+
+            if (_open_backend) {
+                initialize_backend();
             }
         }
 
@@ -236,6 +262,14 @@ namespace iv {
             return _config;
         }
 
+        void ensure_backend_initialized()
+        {
+            if (_shutdown_requested || !_open_backend || _device_initialized) {
+                return;
+            }
+            initialize_backend();
+        }
+
         Sample& sample_period()
         {
             return _sample_period;
@@ -285,6 +319,16 @@ namespace iv {
             return size_t(1) << size_t(std::ceil(std::log2(_config.max_block_frames)));
         }
 
+        size_t processing_block_size() const
+        {
+            return _config.max_block_frames;
+        }
+
+        size_t scheduling_block_size() const
+        {
+            return prev_power_of_2(processing_block_size());
+        }
+
         std::span<Sample const> output_block(size_t channel) const
         {
             return _planar_storage.at(channel);
@@ -295,9 +339,15 @@ namespace iv {
             if (_block_open) {
                 return;
             }
+            if (_shutdown_requested) {
+                return;
+            }
 
             if (_open_backend && !_device_started) {
-                init_backend();
+                if (!_device_initialized) {
+                    initialize_backend();
+                }
+                start_backend();
             }
 
             if (!_open_backend) {
@@ -373,7 +423,6 @@ namespace iv {
                 if (_shutdown_requested || !_render_in_progress) {
                     return;
                 }
-
                 _render_in_progress = false;
                 _render_finished = true;
             }
@@ -434,6 +483,11 @@ namespace iv {
         size_t sink_buffer_size() const
         {
             return _device->sink_buffer_size();
+        }
+
+        size_t scheduling_block_size() const
+        {
+            return _device->scheduling_block_size();
         }
 
         bool is_shutdown_requested() const

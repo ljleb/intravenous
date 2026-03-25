@@ -1,6 +1,8 @@
 ﻿#pragma once
 #include "basic_nodes/type_erased.h"
 #include "node.h"
+#include <algorithm>
+#include <cmath>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -33,6 +35,16 @@ namespace iv {
 
         bool operator==(GraphEdge const&) const = default;
     };
+
+    struct DetachedInfo {
+        size_t detach_id = 0;
+        PortId original_source;
+        size_t writer_node = std::numeric_limits<size_t>::max();
+        PortId reader_output;
+        size_t loop_block_size = 1;
+
+        bool operator==(DetachedInfo const&) const = default;
+    };
 }
 
 template<>
@@ -56,6 +68,18 @@ struct std::hash<iv::GraphEdge> {
 
 namespace iv {
     static constexpr size_t GRAPH_ID = std::numeric_limits<size_t>::max();
+
+    struct GraphRegion {
+        std::vector<size_t> nodes;
+        std::vector<size_t> execution_order;
+        size_t max_block_size = MAX_BLOCK_SIZE;
+    };
+
+    struct GraphExecutionPlan {
+        std::vector<GraphRegion> regions;
+        std::vector<size_t> node_to_region;
+        std::vector<size_t> region_order;
+    };
 
     class LatencyAccumulator {
         std::unordered_map<PortId, size_t> _input_port_global_latencies;
@@ -108,15 +132,17 @@ namespace iv {
         Edges _edges;
         std::vector<InputConfig> _public_inputs;
         std::vector<OutputConfig> _public_outputs;
+        std::vector<DetachedInfo> _detached;
+        GraphExecutionPlan _execution_plan;
 
         struct ReplayState {
             std::span<size_t> node_buffer_sizes;
             std::span<AllocationTrace> node_buffer_traces;
         };
 
-        static size_t calculate_port_buffer_size(size_t latency, size_t input_history, size_t output_history)
+        static size_t calculate_port_buffer_size(size_t block_size, size_t latency, size_t input_history, size_t output_history)
         {
-            size_t min_size = 1 + latency + std::max(input_history, output_history);
+            size_t min_size = block_size + latency + std::max(input_history, output_history);
             size_t pow2_size = size_t(1) << size_t(std::ceil(std::log2(min_size)));
             return pow2_size;
         };
@@ -193,15 +219,59 @@ namespace iv {
             fn(*this, GRAPH_ID);
         }
 
+        static size_t clamp_power_of_2(size_t value)
+        {
+            if (value == MAX_BLOCK_SIZE) {
+                return value;
+            }
+            if (!is_valid_block_size(value)) {
+                throw std::logic_error("block size constraints must be powers of 2");
+            }
+            return value;
+        }
+
+        auto make_consumers_of_output() const
+        {
+            std::unordered_map<PortId, std::vector<PortId>> consumers;
+            for (auto const& edge : _edges) {
+                consumers[edge.source].push_back(edge.target);
+            }
+            return consumers;
+        }
+
+        size_t connection_block_size(
+            PortId source,
+            PortId target,
+            size_t host_block_size,
+            GraphExecutionPlan const& plan
+        ) const
+        {
+            auto region_block = [&](size_t node) {
+                if (node == GRAPH_ID) {
+                    return host_block_size;
+                }
+                return std::min(host_block_size, plan.regions[plan.node_to_region[node]].max_block_size);
+            };
+            return std::max(region_block(source.node), region_block(target.node));
+        }
+
     public:
         template<class InputConfigs, class OutputConfigs>
-        explicit Graph(Nodes nodes, Edges edges, InputConfigs&& inputs, OutputConfigs&& outputs) :
+        explicit Graph(
+            Nodes nodes,
+            Edges edges,
+            std::vector<DetachedInfo> detached,
+            GraphExecutionPlan execution_plan,
+            InputConfigs&& inputs,
+            OutputConfigs&& outputs
+        ) :
             _nodes(std::move(nodes)),
             _edges(std::move(edges)),
             _public_inputs(std::cbegin(inputs), std::cend(inputs)),
-            _public_outputs(std::cbegin(outputs), std::cend(outputs))
-        {
-        }
+            _public_outputs(std::cbegin(outputs), std::cend(outputs)),
+            _detached(std::move(detached)),
+            _execution_plan(std::move(execution_plan))
+        {}
 
         constexpr auto inputs() const
         {
@@ -262,6 +332,7 @@ namespace iv {
             LatencyAccumulator latency_accumulator;
             std::unordered_map<PortId, std::span<Sample>> input_ports_samples;
             std::unordered_map<size_t, std::span<SharedPortData>> node_inputs_port_data;
+            size_t const host_block_size = clamp_power_of_2(context.max_block_size);
 
             auto allocate_node_state = [&](auto const& node, size_t node_i)
             {
@@ -296,12 +367,17 @@ namespace iv {
                             : get_outputs(_nodes[output_node_i])[output_port_i];
 
                         size_t const corrected_latency = latency_accumulator.delay_input(this_input, output_config.latency);
-                        num_port_samples = calculate_port_buffer_size(corrected_latency, input_config.history, output_config.history);
+                        num_port_samples = calculate_port_buffer_size(
+                            connection_block_size(it->second, this_input, host_block_size, _execution_plan),
+                            corrected_latency,
+                            input_config.history,
+                            output_config.history
+                        );
                     }
                     else
                     {
                         // input is disconnected, no corresponding output port
-                        num_port_samples = calculate_port_buffer_size(0, input_config.history, 0);
+                        num_port_samples = calculate_port_buffer_size(host_block_size, 0, input_config.history, 0);
                     }
 
                     input_ports_samples.insert({ this_input, allocator.template allocate_array<Sample>(num_port_samples) });
@@ -374,13 +450,14 @@ namespace iv {
                             size_t corrected_latency = latency_accumulator.get_input_latency(this_input);
                             allocator.construct_at(&input_port_data, port_samples, corrected_latency);
                             allocator.construct_at(&output_port, input_port_data, output_config.history);
+                            allocator.construct_at(&input_port, input_port_data, input_config.history);
                         }
                         else
                         {
                             // input is disconnected: init dummy buffer
                             allocator.construct_at(&input_port_data, port_samples, OutputConfig{}.latency);
+                            allocator.construct_at(&input_port, input_port_data, input_config.history);
                         }
-                        allocator.construct_at(&input_port, input_port_data, input_config.history);
                     }
 
                     if (node_i != GRAPH_ID)
@@ -406,12 +483,14 @@ namespace iv {
         {
             if (!allocator.can_allocate()) {
                 InitBufferContext context(InitBufferContext::PassMode::counting, allocator.get_buffer());
+                context.max_block_size = MAX_BLOCK_SIZE;
                 init_buffer(allocator, context);
                 return;
             }
 
             CountingNonAllocator counter(allocator.get_buffer().data());
             InitBufferContext counting_context(InitBufferContext::PassMode::counting, counter.get_buffer());
+            counting_context.max_block_size = MAX_BLOCK_SIZE;
             do_init_buffer(*this, counter, counting_context);
             counting_context.validate_after_counting();
 
@@ -422,21 +501,59 @@ namespace iv {
 
         void tick(TickState const& state)
         {
+            tick_block({
+                static_cast<NodeState const&>(state),
+                state.midi,
+                state.index,
+                1,
+            });
+        }
+
+        void tick_block(BlockTickState const& state)
+        {
+            if (state.block_size == 0) {
+                return;
+            }
+            validate_block_size(state.block_size, "Graph::tick_block requires a power-of-2 block size");
+
             auto& private_state = state.get_state<GraphState>();
             for (size_t i = 0; i < num_inputs(); ++i) {
-                private_state.outputs[i].push(state.inputs[i].get());
+                private_state.outputs[i].push_block(state.inputs[i].get_block(state.block_size));
             }
-            size_t num_nodes = _nodes.size();
-            for (size_t i = 0; i < num_nodes; ++i)
-            {
-                _nodes[i].tick({
-                    private_state.node_states[i],
-                    state.midi,
-                    state.index
-                });
+
+            for (size_t region_id : _execution_plan.region_order) {
+                GraphRegion const& region = _execution_plan.regions[region_id];
+                size_t const region_block_size = std::min(region.max_block_size, state.block_size);
+                validate_block_size(region_block_size, "graph region block size must be a non-zero power of 2");
+
+                for (size_t offset = 0; offset < state.block_size; offset += region_block_size) {
+                    if (region.execution_order.size() == 1) {
+                        size_t const node_i = region.execution_order[0];
+                        _nodes[node_i].tick_block({
+                            private_state.node_states[node_i],
+                            state.midi,
+                            state.index + offset,
+                            region_block_size,
+                        });
+                        continue;
+                    }
+
+                    for (size_t sample = 0; sample < region_block_size; ++sample) {
+                        for (size_t node_i : region.execution_order) {
+                            _nodes[node_i].tick_block({
+                                private_state.node_states[node_i],
+                                state.midi,
+                                state.index + offset + sample,
+                                1,
+                            });
+                        }
+                    }
+                }
             }
+
             for (size_t i = 0; i < num_outputs(); ++i) {
-                state.outputs[i].push(private_state.inputs[i].get());
+                state.outputs[i].push_block(private_state.inputs[i].get_block(state.block_size));
+                advance_input(private_state.inputs[i], state.block_size);
             }
         }
 
@@ -488,21 +605,81 @@ namespace iv {
             }
             return max_latency;
         }
+
+        size_t max_block_size() const
+        {
+            return MAX_BLOCK_SIZE;
+        }
     };
 
     struct alignas(max_align_t) AlignedBytes {
         std::byte b[alignof(max_align_t)];
     };
 
+    class TypeErasedNodeRuntime {
+        std::shared_ptr<void> _runtime;
+        void (*_register_runtime_buffers_fn)(void*, TypeErasedAllocator, InitBufferContext&) = nullptr;
+        size_t (*_max_block_size_fn)(void const*, TypeErasedNode const&, size_t) = nullptr;
+        void (*_tick_block_fn)(void*, TypeErasedNode&, std::span<std::byte>, std::span<MidiMessage const>, size_t, size_t) = nullptr;
+
+    public:
+        TypeErasedNodeRuntime() = default;
+
+        template<typename Runtime>
+        explicit TypeErasedNodeRuntime(Runtime runtime) :
+            _runtime(std::make_shared<Runtime>(std::move(runtime)))
+        {
+            _register_runtime_buffers_fn = [](void* runtime_ptr, TypeErasedAllocator allocator, InitBufferContext& context) {
+                static_cast<Runtime*>(runtime_ptr)->register_runtime_buffers(allocator, context);
+            };
+            _max_block_size_fn = [](void const* runtime_ptr, TypeErasedNode const& node, size_t requested_max_block_size) {
+                return static_cast<Runtime const*>(runtime_ptr)->max_block_size(node, requested_max_block_size);
+            };
+            _tick_block_fn = [](void* runtime_ptr, TypeErasedNode& root, std::span<std::byte> buffer, std::span<MidiMessage const> midi, size_t index, size_t block_size) {
+                static_cast<Runtime*>(runtime_ptr)->tick_block(root, buffer, midi, index, block_size);
+            };
+        }
+
+        explicit operator bool() const
+        {
+            return static_cast<bool>(_runtime);
+        }
+
+        void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context) const
+        {
+            _register_runtime_buffers_fn(_runtime.get(), allocator, context);
+        }
+
+        size_t max_block_size(TypeErasedNode const& node, size_t requested_max_block_size) const
+        {
+            return _max_block_size_fn
+                ? _max_block_size_fn(_runtime.get(), node, requested_max_block_size)
+                : requested_max_block_size;
+        }
+
+        void tick_block(
+            TypeErasedNode& root,
+            std::span<std::byte> buffer,
+            std::span<MidiMessage const> midi,
+            size_t index,
+            size_t block_size
+        ) const
+        {
+            _tick_block_fn(_runtime.get(), root, buffer, midi, index, block_size);
+        }
+    };
+
     class NodeProcessor {
         using Buffer = std::vector<AlignedBytes>;
 
         std::vector<std::shared_ptr<void>> _module_refs;
+        TypeErasedNodeRuntime _runtime;
         TypeErasedNode _node;
         Buffer _buffer;
         NodeState _graph_state;
         InitBufferContext _counting_context;
         AllocationTrace _allocation_trace;
+        size_t _max_block_size = 1;
 
         void resize_buffer()
         {
@@ -511,7 +688,11 @@ namespace iv {
             _allocation_trace = {};
             CountingNonAllocator counter = make_counting_allocator(byte_data, &_allocation_trace, byte_data);
             InitBufferContext ctx(InitBufferContext::PassMode::counting, counter.get_buffer());
+            ctx.max_block_size = _max_block_size;
             do_init_buffer(_node, counter, ctx);
+            if (_runtime) {
+                _runtime.register_runtime_buffers(TypeErasedAllocator { counter }, ctx);
+            }
             ctx.validate_after_counting();
             _buffer.resize(counter.estimate_buffer_size());
             _counting_context = std::move(ctx);
@@ -529,42 +710,71 @@ namespace iv {
             );
             _allocation_trace.reset_replay();
             InitBufferContext ctx = _counting_context.make_initializing_context(allocator.get_buffer());
-            auto allocated = do_init_buffer(_node, allocator, ctx);
+            do_init_buffer(_node, allocator, ctx);
+            if (_runtime) {
+                _runtime.register_runtime_buffers(TypeErasedAllocator { allocator }, ctx);
+            }
             ctx.validate_after_initialization();
             allocator.validate_trace_consumed();
-            assert(
-                _buffer.size() - allocated.size() < alignof(max_align_t) &&
-                "buffer was over allocated"
-            );
         }
 
     public:
         explicit NodeProcessor(
             TypeErasedNode node,
-            std::vector<std::shared_ptr<void>> module_refs = {}
+            std::vector<std::shared_ptr<void>> module_refs = {},
+            size_t max_block_size = 1,
+            TypeErasedNodeRuntime runtime = {}
         )
         : _module_refs(std::move(module_refs))
+        , _runtime(std::move(runtime))
         , _node(std::move(node))
+        , _max_block_size(std::min(
+            max_block_size,
+            _runtime ? _runtime.max_block_size(_node, max_block_size) : max_block_size
+        ))
         {
             assert(get_num_inputs(_node) == 0 && "the graph should have 0 inputs");
             assert(get_num_outputs(_node) == 0 && "the graph should have 0 outputs");
+            validate_max_block_size(_max_block_size, "NodeProcessor max block size must be a power of 2");
 
             resize_buffer();
             initialize_graph();
         }
 
-        void tick(std::span<MidiMessage const> midi, size_t index)
+        void tick_block(std::span<MidiMessage const> midi, size_t index, size_t block_size)
         {
+            if (block_size == 0) {
+                return;
+            }
+            validate_block_size(block_size, "tick_block block size must be a power of 2");
+            if (block_size > _max_block_size) {
+                throw std::logic_error("tick_block block size exceeds NodeProcessor max block size");
+            }
+
             std::span<std::byte> buffer_span{
                 reinterpret_cast<std::byte*>(_buffer.data()),
                 _buffer.size() * sizeof(AlignedBytes)
             };
-            _node.tick({ NodeState { .inputs = {}, .outputs = {}, .buffer = buffer_span }, midi, index });
+            if (_runtime) {
+                _runtime.tick_block(_node, buffer_span, midi, index, block_size);
+                return;
+            }
+            _node.tick_block({
+                NodeState { .inputs = {}, .outputs = {}, .buffer = buffer_span },
+                midi,
+                index,
+                block_size
+            });
         }
 
         size_t get_latency() const
         {
             return _node.internal_latency();
+        }
+
+        size_t max_block_size() const
+        {
+            return _max_block_size;
         }
 
         size_t num_module_refs() const

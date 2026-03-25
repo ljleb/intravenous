@@ -237,3 +237,33 @@ endif()
 target_link_libraries(intravenous_detach_regression PRIVATE intravenous_module_runtime)
 
 add_test(NAME intravenous_detach_regression COMMAND intravenous_detach_regression)
+
+add_executable(intravenous_block_processing
+    block_processing.cpp
+    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
+)
+
+target_compile_features(intravenous_block_processing PRIVATE cxx_std_23)
+set_target_properties(intravenous_block_processing PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+
+target_include_directories(intravenous_block_processing PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenous
+)
+
+target_include_directories(intravenous_block_processing SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenous/third_party
+)
+
+if(MSVC)
+    target_compile_options(intravenous_block_processing PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(intravenous_block_processing PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+target_link_libraries(intravenous_block_processing PRIVATE intravenous_module_runtime)
+
+add_test(NAME intravenous_block_processing COMMAND intravenous_block_processing)

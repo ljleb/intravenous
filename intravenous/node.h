@@ -1,5 +1,6 @@
 #pragma once
 #include "compat.h"
+#include <algorithm>
 #include <span>
 #include <cassert>
 #include <cstddef>
@@ -16,14 +17,86 @@
 namespace iv {
 	using Sample = float;
 
+    inline constexpr size_t MAX_BLOCK_SIZE = size_t(1) << (std::numeric_limits<size_t>::digits - 1);
+
     IV_FORCEINLINE bool is_power_of_2(size_t n)
     {
         return n && !(n & (n - 1));
     }
 
+    IV_FORCEINLINE constexpr bool is_valid_block_size(size_t block_size)
+    {
+        return block_size != 0 && block_size <= MAX_BLOCK_SIZE && is_power_of_2(block_size);
+    }
+
+    IV_FORCEINLINE void validate_block_size(size_t block_size, char const* message = "block size must be a power of 2")
+    {
+        if (!is_valid_block_size(block_size)) {
+            throw std::logic_error(message);
+        }
+    }
+
+    IV_FORCEINLINE void validate_max_block_size(size_t block_size, char const* message = "max_block_size must be a power of 2")
+    {
+        if (block_size == MAX_BLOCK_SIZE) {
+            return;
+        }
+        validate_block_size(block_size, message);
+    }
+
+    IV_FORCEINLINE size_t prev_power_of_2(size_t n)
+    {
+        if (n == 0) {
+            return 0;
+        }
+        size_t power = 1;
+        while ((power << 1) != 0 && (power << 1) <= n) {
+            power <<= 1;
+        }
+        return power;
+    }
+
+    struct SampleBlockView {
+        std::span<Sample const> first {};
+        std::span<Sample const> second {};
+
+        constexpr size_t size() const
+        {
+            return first.size() + second.size();
+        }
+
+        constexpr bool empty() const
+        {
+            return size() == 0;
+        }
+
+        constexpr Sample operator[](size_t index) const
+        {
+            return index < first.size()
+                ? first[index]
+                : second[index - first.size()];
+        }
+    };
+
+    IV_FORCEINLINE constexpr SampleBlockView make_block_view(
+        std::span<Sample> buffer,
+        size_t start,
+        size_t count
+    )
+    {
+        if (count == 0) {
+            return {};
+        }
+
+        size_t const first_size = std::min(count, buffer.size() - start);
+        return {
+            buffer.subspan(start, first_size),
+            buffer.subspan(0, count - first_size),
+        };
+    }
+
     struct SharedPortData {
         std::span<Sample> buffer;
-        size_t position;
         size_t latency;
 
         constexpr explicit SharedPortData(
@@ -31,7 +104,6 @@ namespace iv {
             size_t latency = 0
         ) :
             buffer(buffer),
-            position(0),
             latency(latency)
         {}
     };
@@ -39,6 +111,21 @@ namespace iv {
     class InputPort {
         SharedPortData& _shared_data;
         size_t _history;
+        size_t _read_position = 0;
+
+        friend void advance_input(InputPort&, size_t);
+        friend void advance_inputs(std::span<InputPort>, size_t);
+
+        IV_FORCEINLINE constexpr size_t current_read_position() const
+        {
+            return _read_position & (buffer_size() - 1);
+        }
+
+    private:
+        IV_FORCEINLINE constexpr void advance(size_t amount = 1)
+        {
+            _read_position = (_read_position + amount) & (buffer_size() - 1);
+        }
 
     public:
         explicit InputPort(
@@ -53,22 +140,19 @@ namespace iv {
 
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const
         {
-            if (offset > _history) return 0.0;
-            size_t idx = (_shared_data.position + _shared_data.buffer.size() - offset) & (_shared_data.buffer.size() - 1);
+            if (offset > _history) return 0.0f;
+            size_t const idx = (current_read_position() + buffer_size() - offset) & (buffer_size() - 1);
             return _shared_data.buffer[idx];
         }
 
-        IV_FORCEINLINE constexpr void push(Sample value) const
+        IV_FORCEINLINE constexpr SampleBlockView get_block(size_t block_size, size_t sample_offset = 0) const
         {
-            _shared_data.position = (_shared_data.position + 1) & (_shared_data.buffer.size() - 1);
-            update(value);
-        }
+            if (sample_offset > block_size) {
+                return {};
+            }
 
-        IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0) const
-        {
-            if (offset > _shared_data.latency) return;
-            size_t idx = (_shared_data.position + _shared_data.latency - offset) & (_shared_data.buffer.size() - 1);
-            _shared_data.buffer[idx] = value;
+            size_t const start = (current_read_position() + sample_offset) & (buffer_size() - 1);
+            return make_block_view(_shared_data.buffer, start, block_size - sample_offset);
         }
 
         IV_FORCEINLINE constexpr size_t latency() const
@@ -85,6 +169,7 @@ namespace iv {
     class OutputPort {
         SharedPortData& _shared_data;
         size_t _history;
+        size_t _position = 0;
 
     public:
         explicit OutputPort(SharedPortData& shared_data, size_t history) :
@@ -96,22 +181,60 @@ namespace iv {
 
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const
         {
-            if (offset > _shared_data.latency + _history) return 0.0;
-            size_t idx = (_shared_data.position + _shared_data.latency - offset) & (_shared_data.buffer.size() - 1);
+            if (offset > _shared_data.latency + _history) return 0.0f;
+            size_t const idx = (
+                _position + _shared_data.latency + buffer_size() - 1 - offset
+            ) & (buffer_size() - 1);
             return _shared_data.buffer[idx];
         }
 
-        IV_FORCEINLINE constexpr void push(Sample value) const
+        IV_FORCEINLINE constexpr SampleBlockView get_block(size_t block_size, size_t sample_offset = 0) const
         {
-            _shared_data.position = (_shared_data.position + 1) & (_shared_data.buffer.size() - 1);
-            update(value);
+            if (sample_offset > block_size) {
+                return {};
+            }
+
+            size_t const start = (
+                _position + _shared_data.latency + buffer_size() - block_size + sample_offset
+            ) & (buffer_size() - 1);
+            return make_block_view(_shared_data.buffer, start, block_size - sample_offset);
         }
 
-        IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0) const
+        IV_FORCEINLINE constexpr void push(Sample value)
+        {
+            size_t const idx = (_position + _shared_data.latency) & (buffer_size() - 1);
+            _shared_data.buffer[idx] = value;
+            _position = (_position + 1) & (buffer_size() - 1);
+        }
+
+        IV_FORCEINLINE constexpr void push_block(std::span<Sample const> samples)
+        {
+            for (Sample sample : samples) {
+                push(sample);
+            }
+        }
+
+        IV_FORCEINLINE constexpr void push_block(SampleBlockView samples)
+        {
+            push_block(samples.first);
+            push_block(samples.second);
+        }
+
+        IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0)
         {
             if (offset > _shared_data.latency) return;
-            size_t idx = (_shared_data.position + _shared_data.latency - offset) & (_shared_data.buffer.size() - 1);
+            size_t const idx = (_position + _shared_data.latency + buffer_size() - offset) & (buffer_size() - 1);
             _shared_data.buffer[idx] = value;
+        }
+
+        IV_FORCEINLINE constexpr size_t position() const
+        {
+            return _position;
+        }
+
+        IV_FORCEINLINE constexpr size_t buffer_size() const
+        {
+            return _shared_data.buffer.size();
         }
     };
 
@@ -174,6 +297,24 @@ namespace iv {
         {}
     };
 
+    struct BlockTickState : public NodeState {
+        std::span<MidiMessage const> midi;
+        size_t index;
+        size_t block_size;
+
+        BlockTickState(
+            NodeState base,
+            std::span<MidiMessage const> midi,
+            size_t index,
+            size_t block_size
+        ) :
+            NodeState(base),
+            midi(midi),
+            index(index),
+            block_size(block_size)
+        {}
+    };
+
     struct InitBufferContext {
         enum class PassMode {
             counting,
@@ -201,6 +342,7 @@ namespace iv {
 
         PassMode mode = PassMode::counting;
         std::span<std::byte> runtime_buffer;
+        size_t max_block_size = 1;
         std::unordered_map<std::string, InitBufferRecord> init_buffers;
         std::unordered_map<std::string, TickBufferRecord> tick_buffers;
 
@@ -214,6 +356,7 @@ namespace iv {
         InitBufferContext make_initializing_context(std::span<std::byte> new_runtime_buffer) const
         {
             InitBufferContext replay(PassMode::initializing, new_runtime_buffer);
+            replay.max_block_size = max_block_size;
             replay.init_buffers = init_buffers;
             replay.tick_buffers = tick_buffers;
             for (auto& [_, record] : replay.init_buffers) {
@@ -456,9 +599,27 @@ namespace iv {
         };
 
         template <typename Node>
+        concept has_tick = requires(Node node, TickState state)
+        {
+            node.tick(state);
+        };
+
+        template <typename Node>
+        concept has_tick_block = requires(Node node, BlockTickState state)
+        {
+            node.tick_block(state);
+        };
+
+        template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)
         {
             internal_latency = node.internal_latency();
+        };
+
+        template <typename Node>
+        concept has_max_block_size_method = requires(Node node, size_t block_size)
+        {
+            block_size = node.max_block_size();
         };
     }
 
@@ -553,6 +714,82 @@ namespace iv {
         else
         {
             return 0;
+        }
+    }
+
+    template<typename Node>
+    constexpr size_t get_max_block_size(Node const& node)
+    {
+        if constexpr (details::has_max_block_size_method<Node>)
+        {
+            return node.max_block_size();
+        }
+        else
+        {
+            return MAX_BLOCK_SIZE;
+        }
+    }
+
+    template<typename Node>
+    void do_tick_block(Node& node, BlockTickState const& state);
+
+    IV_FORCEINLINE void advance_input(InputPort& input, size_t amount = 1)
+    {
+        input.advance(amount);
+    }
+
+    IV_FORCEINLINE void advance_inputs(std::span<InputPort> inputs, size_t amount)
+    {
+        for (InputPort& input : inputs) {
+            advance_input(input, amount);
+        }
+    }
+
+    template<typename Node>
+    void do_tick(Node& node, TickState const& state)
+    {
+        if constexpr (details::has_tick<Node>)
+        {
+            node.tick(state);
+            advance_inputs(state.inputs, 1);
+        }
+        else if constexpr (details::has_tick_block<Node>)
+        {
+            do_tick_block(node, {
+                static_cast<NodeState const&>(state),
+                state.midi,
+                state.index,
+                1,
+            });
+        }
+        else
+        {
+            static_assert(details::has_tick<Node> || details::has_tick_block<Node>, "node must implement tick() or tick_block()");
+        }
+    }
+
+    template<typename Node>
+    void do_tick_block(Node& node, BlockTickState const& state)
+    {
+        if (state.block_size == 0) {
+            return;
+        }
+        validate_block_size(state.block_size);
+
+        if constexpr (details::has_tick_block<Node>)
+        {
+            node.tick_block(state);
+            advance_inputs(state.inputs, state.block_size);
+        }
+        else
+        {
+            for (size_t sample = 0; sample < state.block_size; ++sample) {
+                do_tick(node, {
+                    static_cast<NodeState const&>(state),
+                    state.midi,
+                    state.index + sample,
+                });
+            }
         }
     }
 }

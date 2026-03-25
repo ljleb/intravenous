@@ -38,7 +38,7 @@ namespace iv {
         explicit SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
         operator PortId() const { return { node_index, output_port }; }
 
-        SignalRef detach() const;
+        SignalRef detach(size_t loop_block_size = 1) const;
 
         std::string to_string() const;
     };
@@ -85,16 +85,12 @@ namespace iv {
         NodeRef operator()(Refs&&... refs) const;
         NodeRef operator()(std::initializer_list<NamedRef> refs) const;
 
-        SignalRef detach() const;
+        SignalRef detach(size_t loop_block_size = 1) const;
 
         std::string to_string() const;
     };
 
-    struct DetachedSignalInfo {
-        size_t detach_id;
-        PortId original_source;
-        PortId reader_output;
-    };
+    using DetachedSignalInfo = DetachedInfo;
 
     class GraphBuilder {
         friend class NodeRef;
@@ -352,9 +348,21 @@ namespace iv {
             sort_nodes_or_error(g);
             validate_graph(g);
 
+            auto detached = [&] {
+                std::vector<DetachedInfo> detached_info;
+                detached_info.reserve(g.detached_info_by_source.size());
+                for (auto const& [_, info] : g.detached_info_by_source) {
+                    detached_info.push_back(info);
+                }
+                return detached_info;
+            }();
+            auto execution_plan = build_execution_plan(g.nodes, g.edges, detached);
+
             return Graph(
                 std::move(g.nodes),
                 std::move(g.edges),
+                std::move(detached),
+                std::move(execution_plan),
                 _public_inputs,
                 _public_outputs
             );
@@ -367,7 +375,213 @@ namespace iv {
             return std::to_string(next_root_builder_id++);
         }
 
-        SignalRef detach_signal(SignalRef signal)
+        static iv::GraphExecutionPlan build_execution_plan(
+            std::vector<TypeErasedNode> const& nodes,
+            Graph::Edges const& edges,
+            std::vector<DetachedInfo> const& detached
+        )
+        {
+            size_t const num_nodes = nodes.size();
+            iv::GraphExecutionPlan plan;
+            plan.node_to_region.assign(num_nodes, 0);
+            if (num_nodes == 0) {
+                return plan;
+            }
+
+            std::vector<std::vector<size_t>> outgoing(num_nodes);
+            std::unordered_map<PortId, std::vector<PortId>> consumers;
+            for (auto const& edge : edges) {
+                consumers[edge.source].push_back(edge.target);
+                if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
+                    continue;
+                }
+                outgoing[edge.source.node].push_back(edge.target.node);
+            }
+
+            for (auto const& detached_info : detached) {
+                if (detached_info.writer_node == GRAPH_ID || detached_info.reader_output.node == GRAPH_ID) {
+                    continue;
+                }
+                outgoing[detached_info.writer_node].push_back(detached_info.reader_output.node);
+            }
+
+            std::vector<size_t> index(num_nodes, std::numeric_limits<size_t>::max());
+            std::vector<size_t> lowlink(num_nodes, 0);
+            std::vector<bool> on_stack(num_nodes, false);
+            std::vector<size_t> stack;
+            size_t next_index = 0;
+            std::vector<std::vector<size_t>> sccs;
+
+            auto strongconnect = [&](auto&& self, size_t v) -> void {
+                index[v] = next_index;
+                lowlink[v] = next_index;
+                ++next_index;
+                stack.push_back(v);
+                on_stack[v] = true;
+
+                for (size_t w : outgoing[v]) {
+                    if (index[w] == std::numeric_limits<size_t>::max()) {
+                        self(self, w);
+                        lowlink[v] = std::min(lowlink[v], lowlink[w]);
+                    } else if (on_stack[w]) {
+                        lowlink[v] = std::min(lowlink[v], index[w]);
+                    }
+                }
+
+                if (lowlink[v] == index[v]) {
+                    auto& scc = sccs.emplace_back();
+                    while (true) {
+                        size_t w = stack.back();
+                        stack.pop_back();
+                        on_stack[w] = false;
+                        scc.push_back(w);
+                        if (w == v) {
+                            break;
+                        }
+                    }
+                }
+            };
+
+            for (size_t node = 0; node < num_nodes; ++node) {
+                if (index[node] == std::numeric_limits<size_t>::max()) {
+                    strongconnect(strongconnect, node);
+                }
+            }
+
+            plan.regions.reserve(sccs.size());
+            for (auto& scc : sccs) {
+                std::sort(scc.begin(), scc.end());
+                iv::GraphRegion region;
+                region.nodes = scc;
+                region.execution_order = scc;
+                region.max_block_size = MAX_BLOCK_SIZE;
+                for (size_t node : scc) {
+                    plan.node_to_region[node] = plan.regions.size();
+                    region.max_block_size = std::min(region.max_block_size, nodes[node].max_block_size());
+                }
+                plan.regions.push_back(std::move(region));
+            }
+
+            for (auto const& detached_info : detached) {
+                if (detached_info.original_source.node == GRAPH_ID) {
+                    continue;
+                }
+                auto it = consumers.find(detached_info.reader_output);
+                if (it == consumers.end()) {
+                    continue;
+                }
+                for (PortId consumer : it->second) {
+                    if (consumer.node == GRAPH_ID) {
+                        continue;
+                    }
+                    size_t const source_region = plan.node_to_region[detached_info.original_source.node];
+                    size_t const consumer_region = plan.node_to_region[consumer.node];
+                    if (source_region == consumer_region) {
+                        plan.regions[source_region].max_block_size = std::min(
+                            plan.regions[source_region].max_block_size,
+                            detached_info.loop_block_size
+                        );
+                    }
+                }
+            }
+
+            for (iv::GraphRegion& region : plan.regions) {
+                std::unordered_set<size_t> region_nodes(region.nodes.begin(), region.nodes.end());
+                std::unordered_map<size_t, std::unordered_set<size_t>> local_outgoing_sets;
+                std::unordered_map<size_t, std::vector<size_t>> local_outgoing;
+                std::unordered_map<size_t, size_t> local_indegree;
+
+                for (size_t node : region.nodes) {
+                    local_outgoing_sets[node] = {};
+                    local_outgoing[node] = {};
+                    local_indegree[node] = 0;
+                }
+
+                for (auto const& edge : edges) {
+                    if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
+                        continue;
+                    }
+                    if (!region_nodes.contains(edge.source.node) || !region_nodes.contains(edge.target.node)) {
+                        continue;
+                    }
+                    local_outgoing_sets[edge.source.node].insert(edge.target.node);
+                }
+
+                for (size_t node : region.nodes) {
+                    auto& targets = local_outgoing[node];
+                    auto const& unique_targets = local_outgoing_sets[node];
+                    targets.assign(unique_targets.begin(), unique_targets.end());
+                    std::sort(targets.begin(), targets.end());
+                    for (size_t target : targets) {
+                        ++local_indegree[target];
+                    }
+                }
+
+                std::vector<size_t> ready;
+                for (size_t node : region.nodes) {
+                    if (local_indegree[node] == 0) {
+                        ready.push_back(node);
+                    }
+                }
+                std::sort(ready.begin(), ready.end());
+
+                region.execution_order.clear();
+                region.execution_order.reserve(region.nodes.size());
+                while (!ready.empty()) {
+                    size_t const node = ready.front();
+                    ready.erase(ready.begin());
+                    region.execution_order.push_back(node);
+
+                    for (size_t target : local_outgoing[node]) {
+                        if (--local_indegree[target] == 0) {
+                            ready.insert(
+                                std::lower_bound(ready.begin(), ready.end(), target),
+                                target
+                            );
+                        }
+                    }
+                }
+
+                if (region.execution_order.size() != region.nodes.size()) {
+                    details::error("graph region remains cyclic after detached edge removal");
+                }
+            }
+
+            std::vector<std::unordered_set<size_t>> region_outgoing(plan.regions.size());
+            std::vector<size_t> indegree(plan.regions.size(), 0);
+            for (auto const& edge : edges) {
+                if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
+                    continue;
+                }
+                size_t const u = plan.node_to_region[edge.source.node];
+                size_t const v = plan.node_to_region[edge.target.node];
+                if (u != v && region_outgoing[u].insert(v).second) {
+                    ++indegree[v];
+                }
+            }
+
+            std::deque<size_t> ready;
+            for (size_t region = 0; region < indegree.size(); ++region) {
+                if (indegree[region] == 0) {
+                    ready.push_back(region);
+                }
+            }
+
+            while (!ready.empty()) {
+                size_t region = ready.front();
+                ready.pop_front();
+                plan.region_order.push_back(region);
+                for (size_t target : region_outgoing[region]) {
+                    if (--indegree[target] == 0) {
+                        ready.push_back(target);
+                    }
+                }
+            }
+
+            return plan;
+        }
+
+        SignalRef detach_signal(SignalRef signal, size_t loop_block_size)
         {
             if (!signal.graph_builder) {
                 details::error(
@@ -391,22 +605,36 @@ namespace iv {
 
             // Reuse existing detached bridge for the same source.
             if (auto it = _detached_info_by_source.find(source); it != _detached_info_by_source.end()) {
+                if (it->second.loop_block_size != loop_block_size) {
+                    details::error(
+                        "builder " + _builder_id.value + ": detach loop block size conflict on " + signal.to_string()
+                    );
+                }
                 PortId const reader = it->second.reader_output;
                 return SignalRef(*this, reader.node, reader.port);
             }
 
+            try {
+                validate_block_size(loop_block_size, "detach loop block size must be a power of 2");
+            } catch (std::logic_error const& e) {
+                details::error("builder " + _builder_id.value + ": " + e.what());
+            }
+
             size_t const detach_id = _next_detach_id++;
 
-            auto writer = node<DetachWriterNode>(detach_id);
+            auto writer = node<DetachWriterNode>(detach_id, loop_block_size);
+            size_t const writer_node = _nodes.size() - 1;
             writer(signal);
 
-            auto reader = node<DetachReaderNode>(detach_id);
+            auto reader = node<DetachReaderNode>(detach_id, loop_block_size);
             SignalRef detached = reader;
 
             _detached_info_by_source.emplace(source, DetachedSignalInfo{
                 .detach_id = detach_id,
                 .original_source = source,
+                .writer_node = writer_node,
                 .reader_output = detached,
+                .loop_block_size = loop_block_size,
             });
             _detached_reader_outputs.insert(detached);
 
@@ -617,6 +845,9 @@ namespace iv {
             {
                 if (info.original_source.node != GRAPH_ID) {
                     info.original_source.node = reverse_sorted[info.original_source.node];
+                }
+                if (info.writer_node != GRAPH_ID) {
+                    info.writer_node = reverse_sorted[info.writer_node];
                 }
                 if (info.reader_output.node != GRAPH_ID) {
                     info.reader_output.node = reverse_sorted[info.reader_output.node];
@@ -892,12 +1123,12 @@ namespace iv {
         }
     }
 
-    inline SignalRef SignalRef::detach() const
+    inline SignalRef SignalRef::detach(size_t loop_block_size) const
     {
         if (!graph_builder) {
             details::error("attempted to detach an empty signal");
         }
-        return graph_builder->detach_signal(*this);
+        return graph_builder->detach_signal(*this, loop_block_size);
     }
 
     inline std::string SignalRef::to_string() const
@@ -1068,9 +1299,9 @@ namespace iv {
         return *this;
     }
 
-    inline SignalRef NodeRef::detach() const
+    inline SignalRef NodeRef::detach(size_t loop_block_size) const
     {
-        return static_cast<SignalRef>(*this).detach();
+        return static_cast<SignalRef>(*this).detach(loop_block_size);
     }
 
     inline std::string NodeRef::to_string() const

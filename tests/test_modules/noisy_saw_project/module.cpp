@@ -9,7 +9,7 @@ namespace iv::modules {
     {
         auto const dt = g.input("dt", 1.0);
 
-        auto const level_knob = 1.5;
+        auto const level_knob = 1.;
         auto const lo_pass_knob = 1.0;
         auto const hi_pass_knob = 1.0;
         auto const generator = g.node<DeterministicUniformAESNoise>();

@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <cstdlib>
+#include <csignal>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -14,6 +15,37 @@
 #include <vector>
 
 using namespace iv;
+
+namespace {
+    iv::System* g_active_system = nullptr;
+
+    void handle_sigint(int)
+    {
+        if (g_active_system) {
+            g_active_system->request_shutdown();
+        }
+    }
+
+#if defined(_WIN32)
+    BOOL WINAPI handle_console_ctrl(DWORD ctrl_type)
+    {
+        if (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT || ctrl_type == CTRL_CLOSE_EVENT) {
+            handle_sigint(0);
+            return TRUE;
+        }
+        return FALSE;
+    }
+#endif
+
+    void install_shutdown_handlers(iv::System& system)
+    {
+        g_active_system = &system;
+        std::signal(SIGINT, handle_sigint);
+#if defined(_WIN32)
+        SetConsoleCtrlHandler(handle_console_ctrl, TRUE);
+#endif
+    }
+}
 
 std::vector<std::filesystem::path> parse_search_path_env(char const* name)
 {
@@ -66,6 +98,7 @@ int main(int argc, char** argv)
     std::cout << "Audio running. Press Enter to quit.\n";
 
     System system;
+    install_shutdown_handlers(system);
     std::filesystem::path const module_path = argv[1];
     std::vector<std::filesystem::path> search_roots = parse_search_path_env("IV_MODULE_SEARCH_PATH");
     for (int i = 2; i < argc; ++i) {
@@ -74,12 +107,12 @@ int main(int argc, char** argv)
 
     ModuleLoader loader(std::filesystem::current_path(), std::move(search_roots));
     auto watcher = make_dependency_watcher();
+    system.activate_root(true);
     auto live_graph = loader.load_root(module_path, system);
     watcher->update(live_graph.dependencies);
     system.activate_root(live_graph.sink_count != 0);
     auto processor = std::make_unique<NodeProcessor>(
-        system.wrap_root(std::move(live_graph.root), live_graph.sink_count != 0),
-        std::move(live_graph.module_refs)
+        system.make_processor(std::move(live_graph.root), std::move(live_graph.module_refs))
     );
 
     struct PendingReload {
@@ -110,10 +143,10 @@ int main(int argc, char** argv)
                 try {
                     auto next_graph = loader.load_root(module_path, system);
                     PendingReload next_reload {
-                        .processor = std::make_unique<NodeProcessor>(
-                            system.wrap_root(std::move(next_graph.root), next_graph.sink_count != 0),
+                        .processor = std::make_unique<NodeProcessor>(system.make_processor(
+                            std::move(next_graph.root),
                             std::move(next_graph.module_refs)
-                        ),
+                        )),
                         .dependencies = std::move(next_graph.dependencies),
                         .uses_audio_device = next_graph.sink_count != 0,
                     };
@@ -132,8 +165,11 @@ int main(int argc, char** argv)
         }
     });
 
-    for (size_t global_index = 0; !system.is_shutdown_requested(); ++global_index) {
-        processor->tick({}, global_index);
+    size_t execution_block_size = processor->max_block_size();
+    validate_block_size(execution_block_size, "audio device block size must be a power of 2");
+
+    for (size_t global_index = 0; !system.is_shutdown_requested(); global_index += execution_block_size) {
+        processor->tick_block({}, global_index, execution_block_size);
 
         std::optional<PendingReload> next_reload;
         {
@@ -148,9 +184,11 @@ int main(int argc, char** argv)
             system.activate_root(next_reload->uses_audio_device);
             processor = std::move(next_reload->processor);
             watcher->update(std::move(next_reload->dependencies));
+            execution_block_size = processor->max_block_size();
             std::cout << "reloaded " << module_path.string() << '\n';
         }
     }
 
+    g_active_system = nullptr;
     return 0;
 }

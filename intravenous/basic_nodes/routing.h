@@ -51,9 +51,10 @@ namespace iv {
 
     struct DetachWriterNode {
         BufferId id;
+        size_t loop_block_size = 1;
 
         struct State {
-            Sample* slot{};
+            std::span<Sample> slot;
         };
 
         constexpr auto inputs() const
@@ -65,24 +66,41 @@ namespace iv {
         void init_buffer(Alloc& alloc, InitBufferContext& ctx) const
         {
             State& st = alloc.template new_object<State>();
-            auto span = alloc.template new_array<Sample>(1);
-            alloc.assign(alloc.at(span, 0), Sample{ 0 });
+            auto span = alloc.template new_array<Sample>(ctx.max_block_size);
+            alloc.fill_n(span, Sample{ 0 });
             ctx.register_tick_buffer(id, span);
-            alloc.assign(st.slot, span.data());
+            alloc.assign(st.slot, span);
+        }
+
+        size_t max_block_size() const
+        {
+            return loop_block_size;
         }
 
         void tick(TickState const& ts) const
         {
             auto& st = ts.get_state<State>();
-            *st.slot = ts.inputs[0].get();
+            size_t const slot_index = ts.index & (st.slot.size() - 1);
+            Sample const value = ts.inputs[0].get();
+            st.slot[slot_index] = value;
+        }
+
+        void tick_block(BlockTickState const& ts) const
+        {
+            auto& st = ts.get_state<State>();
+            auto block = ts.inputs[0].get_block(ts.block_size);
+            for (size_t sample = 0; sample < ts.block_size; ++sample) {
+                st.slot[(ts.index + sample) & (st.slot.size() - 1)] = block[sample];
+            }
         }
     };
 
     struct DetachReaderNode {
         BufferId id;
+        size_t loop_block_size = 1;
 
         struct State {
-            Sample* slot{};
+            std::span<Sample> slot;
         };
 
         constexpr auto outputs() const
@@ -95,13 +113,32 @@ namespace iv {
         {
             State& st = alloc.template new_object<State>();
             auto span = ctx.template use_tick_buffer<Sample>(id);
-            alloc.assign(st.slot, span.data());
+            alloc.assign(st.slot, span);
+        }
+
+        size_t max_block_size() const
+        {
+            return loop_block_size;
         }
 
         void tick(TickState const& ts) const
         {
             auto& st = ts.get_state<State>();
-            ts.outputs[0].push(*st.slot);
+            size_t const slot_index = (ts.index + st.slot.size() - loop_block_size) & (st.slot.size() - 1);
+            Sample const value = st.slot[slot_index];
+            ts.outputs[0].push(value);
+        }
+
+        void tick_block(BlockTickState const& ts) const
+        {
+            auto& st = ts.get_state<State>();
+            std::vector<Sample> block(ts.block_size);
+            for (size_t sample = 0; sample < ts.block_size; ++sample) {
+                block[sample] = st.slot[
+                    (ts.index + sample + st.slot.size() - loop_block_size) & (st.slot.size() - 1)
+                ];
+            }
+            ts.outputs[0].push_block(block);
         }
     };
 
