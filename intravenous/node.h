@@ -735,6 +735,9 @@ namespace iv {
     }
 
     template<typename Node>
+    void do_tick_block(Node& node, BlockTickState const& state);
+
+    template<typename Node>
     void do_tick(Node& node, TickState const& state)
     {
         if constexpr (details::has_tick<Node>)

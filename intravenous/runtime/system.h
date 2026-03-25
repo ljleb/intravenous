@@ -36,7 +36,7 @@ namespace iv {
         {
 #if IV_ENABLE_JUCE_VST
             if (juce_manager) {
-                juce_vst_runtime = JuceVstRuntimeSupport(*juce_manager, audio_device.config().sample_rate);
+                juce_vst_runtime = JuceVstRuntimeSupport(*juce_manager, static_cast<double>(audio_device.config().sample_rate));
             }
 #endif
         }
@@ -412,7 +412,7 @@ namespace iv {
                     }
                     auto file_runtime = FileRenderRuntime(render_config(), std::string(file_path), std::move(sink_ids));
 #if IV_ENABLE_JUCE_VST
-                    file_runtime.juce_vst_runtime = JuceVstRuntimeSupport(_juce_vst_runtime_manager, render_config().sample_rate);
+                    file_runtime.juce_vst_runtime = JuceVstRuntimeSupport(_juce_vst_runtime_manager, static_cast<double>(render_config().sample_rate));
 #endif
                     runtime = TypeErasedNodeRuntime(std::move(file_runtime));
                 } else {
@@ -426,7 +426,7 @@ namespace iv {
                 }
 #if IV_ENABLE_JUCE_VST
             } else {
-                runtime = TypeErasedNodeRuntime(PassiveRuntime(_juce_vst_runtime_manager, render_config().sample_rate));
+                runtime = TypeErasedNodeRuntime(PassiveRuntime(_juce_vst_runtime_manager, static_cast<double>(render_config().sample_rate)));
 #endif
             }
             size_t const root_max_block_size = root.max_block_size();

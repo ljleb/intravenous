@@ -327,8 +327,7 @@ namespace iv {
         }
     };
 
-    class JuceVstRuntimeManager::Impl {
-    public:
+    struct JuceVstRuntimeManager::Impl {
         ::juce::AudioPluginFormatManager format_manager;
 
         Impl()
@@ -398,8 +397,8 @@ namespace iv {
         }
         auto& parameters = instance->getParameters();
         spec.schema.parameters.reserve(parameters.size());
-        for (size_t index = 0; index < parameters.size(); ++index) {
-            spec.schema.parameters.push_back(make_parameter_spec(*parameters[index], index));
+        for (int index = 0; index < parameters.size(); ++index) {
+            spec.schema.parameters.push_back(make_parameter_spec(*parameters[index], size_t(index)));
         }
         spec.schema.fingerprint = make_schema_fingerprint(
             spec.schema.audio_inputs,
@@ -498,7 +497,6 @@ namespace iv {
         std::lock_guard lock(live_instance.mutex);
 
         auto& buffer = live_instance.audio_buffer;
-        buffer.clear();
 
         for (size_t channel = 0; channel < spec.schema.audio_inputs; ++channel) {
             auto const block = state.inputs[channel].get_block(state.block_size);

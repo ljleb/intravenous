@@ -137,7 +137,7 @@ namespace iv {
 
         struct ReplayState {
             std::span<size_t> node_buffer_sizes;
-            std::span<AllocationTrace> node_buffer_traces;
+            std::span<AllocationTrace> node_buffer_traces{};
         };
 
         static size_t calculate_port_buffer_size(size_t block_size, size_t latency, size_t input_history, size_t output_history)
@@ -691,7 +691,7 @@ namespace iv {
             ctx.max_block_size = _max_block_size;
             do_init_buffer(_node, counter, ctx);
             if (_runtime) {
-                _runtime.register_runtime_buffers(TypeErasedAllocator { counter }, ctx);
+                _runtime.register_runtime_buffers(counter, ctx);
             }
             ctx.validate_after_counting();
             _buffer.resize(counter.estimate_buffer_size());
@@ -712,7 +712,7 @@ namespace iv {
             InitBufferContext ctx = _counting_context.make_initializing_context(allocator.get_buffer());
             do_init_buffer(_node, allocator, ctx);
             if (_runtime) {
-                _runtime.register_runtime_buffers(TypeErasedAllocator { allocator }, ctx);
+                _runtime.register_runtime_buffers(allocator, ctx);
             }
             ctx.validate_after_initialization();
             allocator.validate_trace_consumed();

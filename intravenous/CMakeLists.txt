@@ -2,43 +2,33 @@ cmake_minimum_required(VERSION 3.20)
 
 project(intravenous LANGUAGES C CXX)
 
-add_library(intravenous_module_runtime STATIC
-    basic_nodes/filters.cpp
-    basic_nodes/noise.cpp
-    basic_nodes/predictors.cpp
-    basic_nodes/shaping.cpp
-    module/loader.cpp
-    module/watcher.cpp
-)
-
-if(JUCE_FOUND)
-    target_sources(intravenous_module_runtime PRIVATE
-        runtime/juce_vst_runtime.cpp
+function(iv_apply_common_cxx_settings target defs_visibility)
+    set_target_properties(${target} PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
     )
-endif()
 
-target_compile_features(intravenous_module_runtime PUBLIC cxx_std_23)
-set_target_properties(intravenous_module_runtime PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE
+            /W4
+            /permissive-
+        )
+        target_compile_definitions(${target} ${defs_visibility}
+            _CRT_SECURE_NO_WARNINGS
+            _SILENCE_CXX23_ALIGNED_STORAGE_DEPRECATION_WARNING
+        )
+    else()
+        target_compile_options(${target} PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+            -Wno-deprecated-declarations
+        )
+    endif()
+endfunction()
 
-target_include_directories(intravenous_module_runtime PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-target_include_directories(intravenous_module_runtime SYSTEM PUBLIC
-    third_party/
-)
-
-if(MSVC)
-    target_compile_options(intravenous_module_runtime PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous_module_runtime PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-if(JUCE_FOUND)
+function(iv_configure_juce)
     set(IV_JUCE_AUDIO_PROCESSORS_TARGET "")
     set(IV_JUCE_EVENTS_TARGET "")
     set(IV_JUCE_CORE_TARGET "")
@@ -70,10 +60,44 @@ if(JUCE_FOUND)
         endif()
     endif()
 
+    set(IV_JUCE_AUDIO_PROCESSORS_TARGET "${IV_JUCE_AUDIO_PROCESSORS_TARGET}" PARENT_SCOPE)
+    set(IV_JUCE_EVENTS_TARGET "${IV_JUCE_EVENTS_TARGET}" PARENT_SCOPE)
+    set(IV_JUCE_CORE_TARGET "${IV_JUCE_CORE_TARGET}" PARENT_SCOPE)
+    set(IV_JUCE_MODULES_DIR "${IV_JUCE_MODULES_DIR}" PARENT_SCOPE)
+endfunction()
+
+add_library(intravenous_module_runtime STATIC
+    basic_nodes/filters.cpp
+    basic_nodes/noise.cpp
+    basic_nodes/predictors.cpp
+    basic_nodes/shaping.cpp
+    module/loader.cpp
+    module/watcher.cpp
+)
+
+iv_apply_common_cxx_settings(intravenous_module_runtime PUBLIC)
+
+target_include_directories(intravenous_module_runtime PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(intravenous_module_runtime SYSTEM PUBLIC
+    third_party/
+)
+
+if(JUCE_FOUND)
+    iv_configure_juce()
+
+    target_sources(intravenous_module_runtime PRIVATE
+        runtime/juce_vst_runtime.cpp
+    )
+
     target_compile_definitions(intravenous_module_runtime PUBLIC
         IV_ENABLE_JUCE_VST=1
         JUCE_PLUGINHOST_VST3=1
+        IV_CONFIGURED_JUCE_MODULES_DIR="${IV_JUCE_MODULES_DIR}"
     )
+
     if(DEFINED JUCE_DIR AND NOT JUCE_DIR STREQUAL "")
         target_compile_definitions(intravenous_module_runtime PUBLIC
             IV_CONFIGURED_JUCE_DIR="${JUCE_DIR}"
@@ -83,9 +107,7 @@ if(JUCE_FOUND)
             IV_CONFIGURED_JUCE_DIR=""
         )
     endif()
-    target_compile_definitions(intravenous_module_runtime PUBLIC
-        IV_CONFIGURED_JUCE_MODULES_DIR="${IV_JUCE_MODULES_DIR}"
-    )
+
     target_link_libraries(intravenous_module_runtime PRIVATE
         ${IV_JUCE_AUDIO_PROCESSORS_TARGET}
         ${IV_JUCE_EVENTS_TARGET}
@@ -108,17 +130,7 @@ add_executable(intravenous
     main.cpp
 )
 
-set_source_files_properties(
-    third_party/miniaudio/miniaudio.c
-    PROPERTIES LANGUAGE C
-)
-
-target_compile_features(intravenous PRIVATE cxx_std_23)
-set_target_properties(intravenous PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
+iv_apply_common_cxx_settings(intravenous PRIVATE)
 
 target_include_directories(intravenous PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -128,10 +140,6 @@ target_include_directories(intravenous SYSTEM PRIVATE
     third_party/
 )
 
-if(MSVC)
-    target_compile_options(intravenous PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-target_link_libraries(intravenous PRIVATE intravenous_module_runtime)
+target_link_libraries(intravenous PRIVATE
+    intravenous_module_runtime
+)

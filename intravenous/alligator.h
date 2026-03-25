@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <span>
 #include <array>
 #include <cassert>
@@ -401,6 +402,13 @@ namespace iv {
 
     struct TypeErasedAllocator {
         std::variant<std::reference_wrapper<FixedBufferAllocator>, std::reference_wrapper<CountingNonAllocator>> _allocator;
+
+        template<typename A>
+        requires(!std::is_same_v<std::decay_t<A>, TypeErasedAllocator>)
+        TypeErasedAllocator(A&& a): _allocator(std::forward<A>(a)) {}
+
+        TypeErasedAllocator(TypeErasedAllocator const&) = default;
+        TypeErasedAllocator(TypeErasedAllocator&&) = default;
 
         constexpr bool can_allocate() const
         {
