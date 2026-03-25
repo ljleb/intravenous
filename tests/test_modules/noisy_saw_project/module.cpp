@@ -44,12 +44,17 @@ namespace iv::modules {
         auto const dt = g.node<ValueSource>(&system.sample_period());
         SignalRef first_noise;
         auto const val = juce::vst(g, "thing", "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
+        info(val.node());
         auto const val_idx = std::array {
             "l0",
             "r0",
         };
 
-        val({{"Mix", 1.0}});
+        val({
+            {"Mix", 0.4},
+            {"DelayWarp", 0.5},
+            {"Density", 0.5},
+        });
 
         for (size_t channel = 0; channel < system.render_config().num_channels; ++channel) {
             auto const noise = g.subgraph(noise_voice);
