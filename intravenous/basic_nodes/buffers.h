@@ -11,13 +11,13 @@ namespace iv {
         size_t _time_offset;
 
     public:
-        constexpr explicit BufferSink(Sample* destination, size_t size, size_t time_offset = 0) :
+        explicit BufferSink(Sample* destination, size_t size, size_t time_offset = 0) :
             _destination(destination),
             _size(size),
             _time_offset(time_offset)
         {}
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<InputConfig, 1>{};
         }
@@ -56,7 +56,7 @@ namespace iv {
         size_t _time_offset;
 
     public:
-        constexpr explicit BufferSource(Sample* source, size_t size, size_t time_offset = 0) :
+        explicit BufferSource(Sample* source, size_t size, size_t time_offset = 0) :
             _source(source),
             _size(size),
             _time_offset(time_offset)
@@ -64,7 +64,7 @@ namespace iv {
             assert(_size >= 1);
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }

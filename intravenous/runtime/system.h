@@ -1,5 +1,6 @@
 #pragma once
 #include "devices/audio_device.h"
+#include "juce_vst_runtime.h"
 #include "wav.h"
 #include <cstdlib>
 #include <iostream>
@@ -14,6 +15,9 @@ namespace iv {
 
     struct SystemProcessorRuntime {
         AudioRenderSession render_session;
+#if IV_ENABLE_JUCE_VST
+        JuceVstRuntimeSupport juce_vst_runtime;
+#endif
 
         struct SinkBinding {
             size_t channel = 0;
@@ -22,13 +26,26 @@ namespace iv {
 
         std::vector<SinkBinding> sink_bindings;
 
-        explicit SystemProcessorRuntime(AudioDevice& audio_device) :
+        explicit SystemProcessorRuntime(
+            AudioDevice& audio_device
+#if IV_ENABLE_JUCE_VST
+            , JuceVstRuntimeManager* juce_manager = nullptr
+#endif
+        ) :
             render_session(audio_device)
         {
+#if IV_ENABLE_JUCE_VST
+            if (juce_manager) {
+                juce_vst_runtime = JuceVstRuntimeSupport(*juce_manager, audio_device.config().sample_rate);
+            }
+#endif
         }
 
         void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
         {
+#if IV_ENABLE_JUCE_VST
+            juce_vst_runtime.register_runtime_buffers(allocator, context);
+#endif
             size_t const num_channels = render_session.config().num_channels;
             if (context.mode == InitBufferContext::PassMode::initializing) {
                 sink_bindings.clear();
@@ -132,6 +149,9 @@ namespace iv {
         RenderConfig config;
         std::string output_path;
         std::vector<std::string> sink_ids;
+#if IV_ENABLE_JUCE_VST
+        JuceVstRuntimeSupport juce_vst_runtime;
+#endif
 
         struct SinkBinding {
             size_t channel = 0;
@@ -154,6 +174,11 @@ namespace iv {
 
         void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
         {
+#if IV_ENABLE_JUCE_VST
+            if (juce_vst_runtime) {
+                juce_vst_runtime.register_runtime_buffers(allocator, context);
+            }
+#endif
             if (context.mode == InitBufferContext::PassMode::initializing) {
                 sink_bindings.clear();
             }
@@ -252,11 +277,57 @@ namespace iv {
         }
     };
 
+    struct PassiveRuntime {
+#if IV_ENABLE_JUCE_VST
+        JuceVstRuntimeSupport juce_vst_runtime;
+
+        explicit PassiveRuntime(JuceVstRuntimeManager& manager, double sample_rate) :
+            juce_vst_runtime(manager, sample_rate)
+        {}
+#else
+        PassiveRuntime() = default;
+#endif
+
+        void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
+        {
+#if IV_ENABLE_JUCE_VST
+            juce_vst_runtime.register_runtime_buffers(allocator, context);
+#else
+            (void)allocator;
+            (void)context;
+#endif
+        }
+
+        size_t max_block_size(TypeErasedNode const&, size_t requested_max_block_size) const
+        {
+            return requested_max_block_size;
+        }
+
+        void tick_block(
+            TypeErasedNode& root,
+            std::span<std::byte> buffer,
+            std::span<MidiMessage const> midi,
+            size_t index,
+            size_t block_size
+        )
+        {
+            root.tick_block({
+                NodeState { .inputs = {}, .outputs = {}, .buffer = buffer },
+                midi,
+                index,
+                block_size
+            });
+        }
+    };
+
     class System {
         AudioDevice _audio_device;
         bool _close_on_enter = true;
         std::jthread _close_thread;
         bool _active_root_uses_audio_device = false;
+#if IV_ENABLE_JUCE_VST
+        JuceVstRuntimeManager _juce_vst_runtime_manager;
+#endif
 
     public:
         explicit System(RenderConfig config = {}, bool open_backend = true, bool close_on_enter = true) :
@@ -339,11 +410,24 @@ namespace iv {
                     for (size_t channel = 0; channel < sink_ids.size(); ++channel) {
                         sink_ids[channel] = _audio_device.sink_id(channel);
                     }
-                    runtime = TypeErasedNodeRuntime(FileRenderRuntime(render_config(), std::string(file_path), std::move(sink_ids)));
+                    auto file_runtime = FileRenderRuntime(render_config(), std::string(file_path), std::move(sink_ids));
+#if IV_ENABLE_JUCE_VST
+                    file_runtime.juce_vst_runtime = JuceVstRuntimeSupport(_juce_vst_runtime_manager, render_config().sample_rate);
+#endif
+                    runtime = TypeErasedNodeRuntime(std::move(file_runtime));
                 } else {
                     _audio_device.ensure_backend_initialized();
-                    runtime = TypeErasedNodeRuntime(SystemProcessorRuntime(_audio_device));
+                    runtime = TypeErasedNodeRuntime(SystemProcessorRuntime(
+                        _audio_device
+#if IV_ENABLE_JUCE_VST
+                        , &_juce_vst_runtime_manager
+#endif
+                    ));
                 }
+#if IV_ENABLE_JUCE_VST
+            } else {
+                runtime = TypeErasedNodeRuntime(PassiveRuntime(_juce_vst_runtime_manager, render_config().sample_rate));
+#endif
             }
             size_t const root_max_block_size = root.max_block_size();
             size_t const runtime_max_block_size = runtime

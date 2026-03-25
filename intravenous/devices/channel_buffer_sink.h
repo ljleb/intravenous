@@ -14,7 +14,7 @@ namespace iv {
             std::span<Sample> buffer;
         };
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array{
                 InputConfig{ "in" }

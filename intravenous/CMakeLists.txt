@@ -11,6 +11,12 @@ add_library(intravenous_module_runtime STATIC
     module/watcher.cpp
 )
 
+if(JUCE_FOUND)
+    target_sources(intravenous_module_runtime PRIVATE
+        runtime/juce_vst_runtime.cpp
+    )
+endif()
+
 target_compile_features(intravenous_module_runtime PUBLIC cxx_std_23)
 set_target_properties(intravenous_module_runtime PROPERTIES
     CXX_STANDARD 23
@@ -31,6 +37,71 @@ if(MSVC)
 else()
     target_compile_options(intravenous_module_runtime PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+if(JUCE_FOUND)
+    set(IV_JUCE_AUDIO_PROCESSORS_TARGET "")
+    set(IV_JUCE_EVENTS_TARGET "")
+    set(IV_JUCE_CORE_TARGET "")
+    set(IV_JUCE_MODULES_DIR "")
+
+    if(TARGET juce::juce_audio_processors)
+        set(IV_JUCE_AUDIO_PROCESSORS_TARGET juce::juce_audio_processors)
+        set(IV_JUCE_EVENTS_TARGET juce::juce_events)
+        set(IV_JUCE_CORE_TARGET juce::juce_core)
+    elseif(TARGET JUCE::juce_audio_processors)
+        set(IV_JUCE_AUDIO_PROCESSORS_TARGET JUCE::juce_audio_processors)
+        set(IV_JUCE_EVENTS_TARGET JUCE::juce_events)
+        set(IV_JUCE_CORE_TARGET JUCE::juce_core)
+    else()
+        message(FATAL_ERROR "JUCE was found but no supported JUCE CMake targets are available")
+    endif()
+
+    if(DEFINED JUCE_MODULES_DIR AND EXISTS "${JUCE_MODULES_DIR}")
+        set(IV_JUCE_MODULES_DIR "${JUCE_MODULES_DIR}")
+    elseif(DEFINED JUCE_SOURCE_DIR AND EXISTS "${JUCE_SOURCE_DIR}/modules")
+        set(IV_JUCE_MODULES_DIR "${JUCE_SOURCE_DIR}/modules")
+    elseif(DEFINED JUCE_DIR AND EXISTS "${JUCE_DIR}/modules")
+        set(IV_JUCE_MODULES_DIR "${JUCE_DIR}/modules")
+    elseif(DEFINED JUCE_DIR)
+        file(GLOB IV_JUCE_MODULES_CANDIDATES LIST_DIRECTORIES true "${JUCE_DIR}/include/JUCE-*/modules")
+        list(LENGTH IV_JUCE_MODULES_CANDIDATES IV_JUCE_MODULES_CANDIDATES_LENGTH)
+        if(IV_JUCE_MODULES_CANDIDATES_LENGTH GREATER 0)
+            list(GET IV_JUCE_MODULES_CANDIDATES 0 IV_JUCE_MODULES_DIR)
+        endif()
+    endif()
+
+    target_compile_definitions(intravenous_module_runtime PUBLIC
+        IV_ENABLE_JUCE_VST=1
+        JUCE_PLUGINHOST_VST3=1
+    )
+    if(DEFINED JUCE_DIR AND NOT JUCE_DIR STREQUAL "")
+        target_compile_definitions(intravenous_module_runtime PUBLIC
+            IV_CONFIGURED_JUCE_DIR="${JUCE_DIR}"
+        )
+    else()
+        target_compile_definitions(intravenous_module_runtime PUBLIC
+            IV_CONFIGURED_JUCE_DIR=""
+        )
+    endif()
+    target_compile_definitions(intravenous_module_runtime PUBLIC
+        IV_CONFIGURED_JUCE_MODULES_DIR="${IV_JUCE_MODULES_DIR}"
+    )
+    target_link_libraries(intravenous_module_runtime PRIVATE
+        ${IV_JUCE_AUDIO_PROCESSORS_TARGET}
+        ${IV_JUCE_EVENTS_TARGET}
+        ${IV_JUCE_CORE_TARGET}
+    )
+else()
+    target_compile_definitions(intravenous_module_runtime PUBLIC
+        IV_ENABLE_JUCE_VST=0
+        IV_CONFIGURED_JUCE_DIR=""
+        IV_CONFIGURED_JUCE_MODULES_DIR=""
+    )
+endif()
+
+target_compile_definitions(intravenous_module_runtime PUBLIC
+    IV_CONFIGURED_CORE_RUNTIME_LIBRARY="$<TARGET_LINKER_FILE:intravenous_module_runtime>"
+)
 
 add_executable(intravenous
     third_party/miniaudio/miniaudio.c

@@ -52,12 +52,12 @@ namespace iv {
             assert(get_num_outputs(_graph_node) == MIN_GRAPH_OUTPUTS && "the voice graph should have exactly 1 output");
         }
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::vector<InputConfig>(get_num_inputs(_graph_node) - MIN_GRAPH_INPUTS + MIN_INPUTS);
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }

@@ -706,6 +706,9 @@ namespace iv {
                 << "custom=" << resolved.has_custom_cmake << '\n'
                 << "template_stamp=" << compute_stamp_for_file(default_template_path).time_since_epoch().count() << '\n'
                 << "custom_stamp=" << (resolved.has_custom_cmake ? compute_stamp_for_file(resolved.cmake_dir / "CMakeLists.txt").time_since_epoch().count() : 0) << '\n'
+                << "core_runtime_library=" << IV_CONFIGURED_CORE_RUNTIME_LIBRARY << '\n'
+                << "juce_dir=" << IV_CONFIGURED_JUCE_DIR << '\n'
+                << "juce_modules_dir=" << IV_CONFIGURED_JUCE_MODULES_DIR << '\n'
                 << "output_name=" << output_name << '\n'
                 << "output_dir=" << output_dir.generic_string() << '\n';
             return sig.str();
@@ -809,6 +812,15 @@ namespace iv {
                 << " -DIV_MODULE_OUTPUT_DIR=" << quote(workspace.output_dir)
                 << " -DIV_MODULE_OUTPUT_NAME=" << quote(std::filesystem::path(output_name))
                 << " -DIV_MODULE_PCH_HEADER=" << quote(default_pch_path);
+            if (std::string_view(IV_CONFIGURED_CORE_RUNTIME_LIBRARY).size() != 0) {
+                configure << " -DIV_CORE_RUNTIME_LIBRARY=" << quote(std::filesystem::path(IV_CONFIGURED_CORE_RUNTIME_LIBRARY));
+            }
+            if (std::string_view(IV_CONFIGURED_JUCE_MODULES_DIR).size() != 0) {
+                configure << " -DIV_JUCE_MODULES_DIR=" << quote(std::filesystem::path(IV_CONFIGURED_JUCE_MODULES_DIR));
+            }
+            if (std::string_view(IV_CONFIGURED_JUCE_DIR).size() != 0) {
+                configure << " -DJUCE_DIR=" << quote(std::filesystem::path(IV_CONFIGURED_JUCE_DIR));
+            }
             run_command(configure.str());
 
             write_text_if_different(workspace.configure_signature_file, configure_signature_text);

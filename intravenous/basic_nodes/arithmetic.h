@@ -22,26 +22,26 @@ namespace iv {
         size_t _num_inputs;
 
     public:
-        constexpr explicit BinaryOpNode(size_t num_inputs = 2) :
+        explicit BinaryOpNode(size_t num_inputs = 2) :
             _num_inputs(num_inputs)
         {}
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::vector<InputConfig>(_num_inputs);
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
 
-        constexpr auto num_inputs() const
+        auto num_inputs() const
         {
             return _num_inputs;
         }
 
-        constexpr void tick(TickState const& state)
+        void tick(TickState const& state)
         {
             auto& out = state.outputs[0];
             Sample result = binary_op_default_v<BinaryOp>;
@@ -58,12 +58,12 @@ namespace iv {
     using Quotient = BinaryOpNode<std::divides<Sample>>;
 
     struct Invert {
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<InputConfig, 1>{};
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -75,12 +75,12 @@ namespace iv {
     };
 
     struct Power {
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<InputConfig, 2>{};
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }

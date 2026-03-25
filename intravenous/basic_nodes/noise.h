@@ -20,7 +20,7 @@ namespace iv {
         std::optional<unsigned int> _seed;
 
     public:
-        constexpr explicit UniformNoise(
+        explicit UniformNoise(
             Sample min = -1.0,
             Sample max = 1.0,
             std::optional<unsigned int> seed = {}
@@ -30,7 +30,7 @@ namespace iv {
             _seed(seed)
         {}
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -45,14 +45,14 @@ namespace iv {
         double uniform_m11(uint64_t i, Sample min, Sample max) const;
 
     public:
-        constexpr explicit DeterministicUniformNoise(std::optional<Sample> seed = {}) :
+        explicit DeterministicUniformNoise(std::optional<Sample> seed = {}) :
             _seed(seed.has_value()
                 ? *seed
                 : (static_cast<std::uint64_t>(std::random_device{}()) << 32) |
                   static_cast<std::uint64_t>(std::random_device{}()))
         {}
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array {
                 InputConfig { .name = "min", .default_value = -1.0 },
@@ -60,7 +60,7 @@ namespace iv {
             };
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -79,7 +79,7 @@ namespace iv {
     public:
         explicit DeterministicUniformAESNoise(std::optional<uint64_t> seed = {});
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array {
                 InputConfig { .name = "min", .default_value = -1.0 },
@@ -87,7 +87,7 @@ namespace iv {
             };
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -102,12 +102,12 @@ namespace iv {
     public:
         explicit UniformToCauchy(Sample x0 = 1.0, Sample gamma = 1.0);
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<InputConfig, 1>{};
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -127,12 +127,12 @@ namespace iv {
     public:
         explicit UniformToPower(ptrdiff_t min = -5, ptrdiff_t max = 4, Sample lambda = 0.5);
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<InputConfig, 1>{};
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -167,12 +167,12 @@ namespace iv {
     public:
         explicit UniformToGaussian(Sample mean = 0.0, Sample std = 1.0);
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<InputConfig, 1>{};
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -197,7 +197,7 @@ namespace iv {
             std::optional<uint64_t> seed = {}
         );
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }

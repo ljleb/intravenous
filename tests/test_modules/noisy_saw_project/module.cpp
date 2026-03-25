@@ -3,13 +3,14 @@
 #include "basic_nodes/filters.h"
 #include "basic_nodes/shaping.h"
 #include "basic_nodes/buffers.h"
+#include "juce_vst_wrapper.h"
 
 namespace iv::modules {
     inline void noise_voice(GraphBuilder& g)
     {
         auto const dt = g.input("dt", 1.0);
 
-        auto const level_knob = 1.;
+        auto const level_knob = 1.5;
         auto const lo_pass_knob = 1.0;
         auto const hi_pass_knob = 1.0;
         auto const generator = g.node<DeterministicUniformAESNoise>();
@@ -42,6 +43,13 @@ namespace iv::modules {
 
         auto const dt = g.node<ValueSource>(&system.sample_period());
         SignalRef first_noise;
+        auto const val = juce::vst(g, "thing", "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
+        auto const val_idx = std::array {
+            "l0",
+            "r0",
+        };
+
+        val({{"Mix", 1.0}});
 
         for (size_t channel = 0; channel < system.render_config().num_channels; ++channel) {
             auto const noise = g.subgraph(noise_voice);
@@ -56,7 +64,8 @@ namespace iv::modules {
             noise(dt);
             shared_noise(first_noise, noise, 1.0);
             voice({ {"noise", shared_noise}, {"dt", dt} });
-            sink(voice);
+            val({{val_idx[channel], voice}});
+            sink(val[val_idx[channel]]);
         }
 
         g.outputs();

@@ -273,22 +273,22 @@ namespace iv {
             _execution_plan(std::move(execution_plan))
         {}
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return _public_inputs;
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return _public_outputs;
         }
 
-        constexpr auto num_inputs() const
+        auto num_inputs() const
         {
             return _public_inputs.size();
         }
 
-        constexpr auto num_outputs() const
+        auto num_outputs() const
         {
             return _public_outputs.size();
         }

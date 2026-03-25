@@ -44,6 +44,13 @@ int main()
     auto const project_cache_before = iv::test::write_time(project_cache);
     auto const voice_cache_before = iv::test::write_time(voice_cache);
 
+#if IV_ENABLE_JUCE_VST
+    iv::test::require(
+        !std::filesystem::exists(project_workspace / "build" / "_deps" / "juce" / "JUCEConfig.cmake"),
+        "juce-enabled runtime module should reuse the core runtime's JUCE support instead of configuring its own _deps/juce tree"
+    );
+#endif
+
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto project_needle = std::string("SignalRef first_noise;");

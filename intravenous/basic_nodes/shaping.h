@@ -5,7 +5,7 @@
 
 namespace iv {
     struct Warper {
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array {
                 InputConfig { .name = "in" },
@@ -13,7 +13,7 @@ namespace iv {
             };
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array {
                 OutputConfig { .name = "anti_aliased", .latency = 1 },
@@ -25,7 +25,7 @@ namespace iv {
     };
 
     struct Integrator {
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array {
                 InputConfig { "f_prev" },
@@ -34,7 +34,7 @@ namespace iv {
             };
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array { OutputConfig { "integral" } };
         }
@@ -43,7 +43,7 @@ namespace iv {
     };
 
     struct Interpolation {
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array {
                 InputConfig { "a" },
@@ -52,7 +52,7 @@ namespace iv {
             };
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array { OutputConfig { "out" } };
         }

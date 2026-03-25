@@ -1,0 +1,541 @@
+#include "juce_vst_runtime.h"
+
+#if IV_ENABLE_JUCE_VST
+
+#include "../juce_vst_wrapper.h"
+
+#include <juce_audio_processors/juce_audio_processors.h>
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <mutex>
+#include <unordered_map>
+#include <utility>
+
+namespace iv {
+    namespace {
+        uint64_t fnv1a_append(uint64_t hash, std::string_view text)
+        {
+            for (unsigned char c : text) {
+                hash ^= c;
+                hash *= 1099511628211ull;
+            }
+            return hash;
+        }
+
+        uint64_t make_schema_fingerprint(size_t audio_inputs, size_t audio_outputs, std::span<JuceVstParameterSpec const> parameters)
+        {
+            uint64_t hash = 1469598103934665603ull;
+            hash = fnv1a_append(hash, std::to_string(audio_inputs));
+            hash = fnv1a_append(hash, std::to_string(audio_outputs));
+            for (auto const& parameter : parameters) {
+                hash = fnv1a_append(hash, parameter.id);
+                hash = fnv1a_append(hash, parameter.name);
+                hash = fnv1a_append(hash, std::to_string(parameter.default_value));
+            }
+            return hash;
+        }
+
+        std::string canonical_plugin_path(std::filesystem::path const& path)
+        {
+            std::error_code ec;
+            auto canonical = std::filesystem::weakly_canonical(path, ec);
+            if (!ec) {
+                return canonical.generic_string();
+            }
+            return std::filesystem::absolute(path).lexically_normal().generic_string();
+        }
+
+        ::juce::String to_juce_string(std::filesystem::path const& path)
+        {
+            return ::juce::String(path.string());
+        }
+
+        std::runtime_error make_probe_error(std::string const& message, JuceVstPluginConfig const& config)
+        {
+            return std::runtime_error(message + ": " + canonical_plugin_path(config.plugin_path));
+        }
+
+        std::string make_audio_port_name(size_t channel)
+        {
+            return std::string(channel % 2 == 0 ? "l" : "r") + std::to_string(channel / 2);
+        }
+
+        size_t saturating_stream_channels(size_t streams)
+        {
+            if (streams > std::numeric_limits<size_t>::max() / 2) {
+                return std::numeric_limits<size_t>::max();
+            }
+            return streams * 2;
+        }
+
+        ::juce::PluginDescription resolve_plugin_description(
+            ::juce::AudioPluginFormatManager& format_manager,
+            JuceVstPluginConfig const& config
+        )
+        {
+            ::juce::OwnedArray<::juce::PluginDescription> descriptions;
+            ::juce::String const file_path = to_juce_string(config.plugin_path);
+            for (auto* format : format_manager.getFormats()) {
+                if (!format->fileMightContainThisPluginType(file_path)) {
+                    continue;
+                }
+                format->findAllTypesForFile(descriptions, file_path);
+            }
+
+            if (descriptions.isEmpty()) {
+                throw make_probe_error("no JUCE-hostable plugins found in file", config);
+            }
+
+            if (!config.plugin_identifier.empty()) {
+                for (auto const* description : descriptions) {
+                    if (description->createIdentifierString().toStdString() == config.plugin_identifier) {
+                        return *description;
+                    }
+                }
+                throw make_probe_error("plugin identifier was not found in file", config);
+            }
+
+            if (descriptions.size() != 1) {
+                throw make_probe_error("plugin file contains multiple JUCE plugin descriptions but no identifier was provided", config);
+            }
+
+            return *descriptions.getFirst();
+        }
+
+        std::unique_ptr<::juce::AudioPluginInstance> create_plugin_instance(
+            ::juce::AudioPluginFormatManager& format_manager,
+            JuceVstPluginConfig const& config,
+            double sample_rate,
+            int block_size
+        )
+        {
+            ::juce::PluginDescription const description = resolve_plugin_description(format_manager, config);
+            ::juce::String error;
+            auto instance = format_manager.createPluginInstance(description, sample_rate, block_size, error);
+            if (!instance) {
+                throw std::runtime_error("JUCE failed to create plugin instance '" + description.createIdentifierString().toStdString() + "': " + error.toStdString());
+            }
+            return instance;
+        }
+
+        bool try_set_bus_layout(
+            ::juce::AudioPluginInstance& instance,
+            bool is_input,
+            std::span<::juce::AudioChannelSet const> bus_layouts
+        )
+        {
+            int const bus_count = instance.getBusCount(is_input);
+            if (bus_layouts.size() != static_cast<size_t>(bus_count)) {
+                return false;
+            }
+
+            for (int bus_index = 0; bus_index < bus_count; ++bus_index) {
+                if (!instance.setChannelLayoutOfBus(is_input, bus_index, bus_layouts[bus_index])) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        size_t count_layout_channels(std::span<::juce::AudioChannelSet const> bus_layouts)
+        {
+            size_t total = 0;
+            for (auto const& layout : bus_layouts) {
+                total += static_cast<size_t>(layout.size());
+            }
+            return total;
+        }
+
+        size_t configure_audio_direction(
+            ::juce::AudioPluginInstance& instance,
+            bool is_input,
+            size_t preferred_streams
+        )
+        {
+            int const bus_count = instance.getBusCount(is_input);
+            if (bus_count <= 0) {
+                return 0;
+            }
+
+            size_t const desired_channels = saturating_stream_channels(preferred_streams);
+            std::vector<size_t> candidate_active_buses;
+            candidate_active_buses.reserve(static_cast<size_t>(bus_count) + 1);
+            auto push_candidate = [&](size_t active_buses) {
+                if (active_buses > static_cast<size_t>(bus_count)) {
+                    return;
+                }
+                if (std::find(candidate_active_buses.begin(), candidate_active_buses.end(), active_buses) == candidate_active_buses.end()) {
+                    candidate_active_buses.push_back(active_buses);
+                }
+            };
+
+            size_t const desired_buses = std::min(preferred_streams, static_cast<size_t>(bus_count));
+            push_candidate(desired_buses);
+            for (size_t delta = 1; delta <= static_cast<size_t>(bus_count); ++delta) {
+                if (desired_buses >= delta) {
+                    push_candidate(desired_buses - delta);
+                }
+                push_candidate(desired_buses + delta);
+            }
+
+            for (size_t active_buses : candidate_active_buses) {
+                std::vector<::juce::AudioChannelSet> layouts(static_cast<size_t>(bus_count), ::juce::AudioChannelSet::disabled());
+                for (size_t bus_index = 0; bus_index < active_buses; ++bus_index) {
+                    layouts[bus_index] = ::juce::AudioChannelSet::stereo();
+                }
+                if (try_set_bus_layout(instance, is_input, layouts)) {
+                    return count_layout_channels(layouts);
+                }
+            }
+
+            std::vector<size_t> candidate_channels;
+            candidate_channels.reserve(std::max<size_t>(8, desired_channels / 2 + 2));
+            auto push_channel_candidate = [&](size_t channels) {
+                if (std::find(candidate_channels.begin(), candidate_channels.end(), channels) == candidate_channels.end()) {
+                    candidate_channels.push_back(channels);
+                }
+            };
+
+            push_channel_candidate(desired_channels);
+            for (size_t delta = 2; delta <= std::max<size_t>(desired_channels, 16); delta += 2) {
+                if (desired_channels >= delta) {
+                    push_channel_candidate(desired_channels - delta);
+                }
+                push_channel_candidate(desired_channels + delta);
+            }
+            push_channel_candidate(1);
+            push_channel_candidate(0);
+
+            for (size_t channels : candidate_channels) {
+                std::vector<::juce::AudioChannelSet> layouts(static_cast<size_t>(bus_count), ::juce::AudioChannelSet::disabled());
+                layouts[0] = channels == 0
+                    ? ::juce::AudioChannelSet::disabled()
+                    : ::juce::AudioChannelSet::discreteChannels(static_cast<int>(channels));
+                if (try_set_bus_layout(instance, is_input, layouts)) {
+                    return count_layout_channels(layouts);
+                }
+            }
+
+            return static_cast<size_t>(is_input ? instance.getTotalNumInputChannels() : instance.getTotalNumOutputChannels());
+        }
+
+        void configure_audio_layout(::juce::AudioPluginInstance& instance, JuceVstPluginConfig const& config)
+        {
+            configure_audio_direction(instance, true, config.preferred_audio_input_streams);
+            configure_audio_direction(instance, false, config.preferred_audio_output_streams);
+        }
+
+        JuceVstParameterSpec make_parameter_spec(::juce::AudioProcessorParameter& parameter, size_t index)
+        {
+            JuceVstParameterSpec spec;
+            if (auto* with_id = dynamic_cast<::juce::AudioProcessorParameterWithID*>(&parameter)) {
+                spec.id = with_id->paramID.toStdString();
+            } else {
+                spec.id = "param_" + std::to_string(index);
+            }
+            spec.name = parameter.getName(128).toStdString();
+            if (spec.name.empty()) {
+                spec.name = spec.id;
+            }
+            spec.default_value = parameter.getDefaultValue();
+            return spec;
+        }
+
+        bool compatible_specs(JuceVstWrapperSpec const& a, JuceVstWrapperSpec const& b)
+        {
+            return
+                canonical_plugin_path(a.plugin.plugin_path) == canonical_plugin_path(b.plugin.plugin_path) &&
+                a.plugin.plugin_identifier == b.plugin.plugin_identifier &&
+                a.plugin.preferred_audio_input_streams == b.plugin.preferred_audio_input_streams &&
+                a.plugin.preferred_audio_output_streams == b.plugin.preferred_audio_output_streams &&
+                a.schema.fingerprint == b.schema.fingerprint &&
+                a.schema.audio_inputs == b.schema.audio_inputs &&
+                a.schema.audio_outputs == b.schema.audio_outputs;
+        }
+
+        struct ParameterBinding {
+            ::juce::AudioProcessorParameter* parameter = nullptr;
+            float last_value = std::numeric_limits<float>::quiet_NaN();
+        };
+    }
+
+    struct JuceVstRuntimeManager::LiveInstance {
+        std::shared_ptr<JuceVstWrapperSpec const> spec;
+        std::unique_ptr<::juce::AudioPluginInstance> plugin;
+        ::juce::AudioBuffer<float> audio_buffer;
+        ::juce::MidiBuffer midi_buffer;
+        std::vector<ParameterBinding> parameter_bindings;
+        double prepared_sample_rate = 0.0;
+        int prepared_block_size = 0;
+        size_t ref_count = 0;
+        std::mutex mutex;
+
+        void prepare(double sample_rate, size_t block_size)
+        {
+            std::lock_guard lock(mutex);
+            if (prepared_sample_rate == sample_rate && prepared_block_size == static_cast<int>(block_size)) {
+                return;
+            }
+
+            plugin->suspendProcessing(true);
+            plugin->releaseResources();
+            plugin->setRateAndBufferSizeDetails(sample_rate, static_cast<int>(block_size));
+            plugin->prepareToPlay(sample_rate, static_cast<int>(block_size));
+            plugin->suspendProcessing(false);
+
+            prepared_sample_rate = sample_rate;
+            prepared_block_size = static_cast<int>(block_size);
+            audio_buffer.setSize(
+                static_cast<int>(std::max(spec->schema.audio_inputs, spec->schema.audio_outputs)),
+                static_cast<int>(block_size),
+                false,
+                true,
+                true
+            );
+        }
+    };
+
+    struct JuceVstRuntimeManager::Session {
+        JuceVstRuntimeManager* manager = nullptr;
+        double sample_rate = 0.0;
+        std::unordered_map<std::string, LiveInstance*> active_instances;
+
+        ~Session()
+        {
+            if (!manager) {
+                return;
+            }
+
+            std::lock_guard lock(manager->_mutex);
+            for (auto const& [resource_id, _] : active_instances) {
+                auto it = manager->_instances.find(resource_id);
+                if (it == manager->_instances.end()) {
+                    continue;
+                }
+                auto& instance = it->second;
+                if (instance->ref_count != 0) {
+                    --instance->ref_count;
+                }
+                if (instance->ref_count == 0) {
+                    instance->plugin->suspendProcessing(true);
+                    instance->plugin->releaseResources();
+                    manager->_instances.erase(it);
+                }
+            }
+        }
+    };
+
+    class JuceVstRuntimeManager::Impl {
+    public:
+        ::juce::AudioPluginFormatManager format_manager;
+
+        Impl()
+        {
+            format_manager.addDefaultFormats();
+        }
+    };
+
+    JuceVstRuntimeManager::JuceVstRuntimeManager() :
+        _impl(std::make_unique<Impl>())
+    {}
+
+    JuceVstRuntimeManager::~JuceVstRuntimeManager() = default;
+
+    std::shared_ptr<JuceVstRuntimeManager::Session> JuceVstRuntimeManager::make_session(double sample_rate)
+    {
+        auto session = std::make_shared<Session>();
+        session->manager = this;
+        session->sample_rate = sample_rate;
+        return session;
+    }
+
+    JuceVstRuntimeSupport::JuceVstRuntimeSupport(JuceVstRuntimeManager& manager, double sample_rate) :
+        _manager(&manager),
+        _sample_rate(sample_rate),
+        _session(manager.make_session(sample_rate))
+    {}
+
+    namespace juce_details {
+        std::string make_juce_vst_runtime_resource_id(std::string_view resource_id)
+        {
+            return "juce_vst_instance:" + std::string(resource_id);
+        }
+
+        std::string make_juce_vst_spec_buffer_id(std::string_view resource_id)
+        {
+            return "juce_vst_spec:" + std::string(resource_id);
+        }
+    }
+
+    JuceVstWrapperSpec probe_juce_vst(JuceVstProbeRequest request)
+    {
+        if (request.resource_id.empty()) {
+            throw std::logic_error("probe_juce_vst requires a non-empty resource_id");
+        }
+
+        ::juce::AudioPluginFormatManager format_manager;
+        format_manager.addDefaultFormats();
+
+        ::juce::PluginDescription const description = resolve_plugin_description(format_manager, request.plugin);
+        auto instance = create_plugin_instance(format_manager, request.plugin, 48000.0, 512);
+        configure_audio_layout(*instance, request.plugin);
+
+        JuceVstWrapperSpec spec;
+        spec.resource_id = std::move(request.resource_id);
+        spec.plugin.plugin_path = std::filesystem::weakly_canonical(request.plugin.plugin_path);
+        spec.plugin.plugin_identifier = description.createIdentifierString().toStdString();
+        spec.schema.audio_inputs = static_cast<size_t>(instance->getTotalNumInputChannels());
+        spec.schema.audio_outputs = static_cast<size_t>(instance->getTotalNumOutputChannels());
+        spec.schema.audio_input_names.reserve(spec.schema.audio_inputs);
+        for (size_t channel = 0; channel < spec.schema.audio_inputs; ++channel) {
+            spec.schema.audio_input_names.push_back(make_audio_port_name(channel));
+        }
+        spec.schema.audio_output_names.reserve(spec.schema.audio_outputs);
+        for (size_t channel = 0; channel < spec.schema.audio_outputs; ++channel) {
+            spec.schema.audio_output_names.push_back(make_audio_port_name(channel));
+        }
+        auto& parameters = instance->getParameters();
+        spec.schema.parameters.reserve(parameters.size());
+        for (size_t index = 0; index < parameters.size(); ++index) {
+            spec.schema.parameters.push_back(make_parameter_spec(*parameters[index], index));
+        }
+        spec.schema.fingerprint = make_schema_fingerprint(
+            spec.schema.audio_inputs,
+            spec.schema.audio_outputs,
+            spec.schema.parameters
+        );
+        return spec;
+    }
+
+    JuceVstRuntimeManager::LiveInstance* JuceVstRuntimeManager::acquire_instance(
+        Session& session,
+        std::shared_ptr<JuceVstWrapperSpec const> const& spec,
+        size_t block_size
+    )
+    {
+        std::lock_guard lock(_mutex);
+        auto it = _instances.find(spec->resource_id);
+        if (it != _instances.end()) {
+            auto& existing = it->second;
+            if (!compatible_specs(*existing->spec, *spec)) {
+                throw std::logic_error("JuceVstWrapper resource_id '" + spec->resource_id + "' was reused with an incompatible plugin configuration");
+            }
+            existing->prepare(session.sample_rate, block_size);
+            if (!session.active_instances.contains(spec->resource_id)) {
+                ++existing->ref_count;
+                session.active_instances.emplace(spec->resource_id, existing.get());
+            }
+            return existing.get();
+        }
+
+        auto instance = create_plugin_instance(
+            _impl->format_manager,
+            spec->plugin,
+            session.sample_rate,
+            static_cast<int>(block_size)
+        );
+        configure_audio_layout(*instance, spec->plugin);
+
+        auto live = std::make_unique<LiveInstance>();
+        live->spec = spec;
+        live->plugin = std::move(instance);
+        live->parameter_bindings.reserve(live->plugin->getParameters().size());
+        for (auto* parameter : live->plugin->getParameters()) {
+            live->parameter_bindings.push_back(ParameterBinding{ parameter, std::numeric_limits<float>::quiet_NaN() });
+        }
+        live->prepare(session.sample_rate, block_size);
+        live->ref_count = 1;
+
+        LiveInstance* result = live.get();
+        _instances.emplace(spec->resource_id, std::move(live));
+        session.active_instances.emplace(spec->resource_id, result);
+        return result;
+    }
+
+    void JuceVstRuntimeSupport::register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
+    {
+        if (!_manager || !_session) {
+            return;
+        }
+
+        auto session = std::static_pointer_cast<JuceVstRuntimeManager::Session>(_session);
+        constexpr std::string_view prefix = "juce_vst_instance:";
+        for (auto const& [runtime_id, record] : context.tick_buffers) {
+            if (!record.used || !runtime_id.starts_with(prefix)) {
+                continue;
+            }
+            std::string const resource_id = runtime_id.substr(prefix.size());
+            auto const spec_buffer_id = juce_details::make_juce_vst_spec_buffer_id(resource_id);
+            if (!context.has_init_buffer(spec_buffer_id)) {
+                throw std::logic_error("JuceVstWrapper resource_id '" + resource_id + "' did not publish its probe spec");
+            }
+            auto spec_slot = context.template use_init_buffer<JuceVstWrapperSpec>(spec_buffer_id);
+            auto spec = std::make_shared<JuceVstWrapperSpec const>(spec_slot[0]);
+
+            auto slots = allocator.template new_array<void*>(1);
+            context.register_tick_buffer(runtime_id, slots);
+
+            if (allocator.can_allocate() && !slots.empty()) {
+                slots[0] = nullptr;
+                slots[0] = _manager->acquire_instance(*session, spec, context.max_block_size);
+            }
+        }
+    }
+
+    void tick_juce_vst_wrapper(
+        JuceVstWrapperSpec const& spec,
+        void* live_instance_ptr,
+        BlockTickState const& state
+    )
+    {
+        if (live_instance_ptr == nullptr) {
+            throw std::logic_error("JuceVstWrapper was ticked without a bound runtime instance");
+        }
+
+        auto& live_instance = *static_cast<JuceVstRuntimeManager::LiveInstance*>(live_instance_ptr);
+        std::lock_guard lock(live_instance.mutex);
+
+        auto& buffer = live_instance.audio_buffer;
+        buffer.clear();
+
+        for (size_t channel = 0; channel < spec.schema.audio_inputs; ++channel) {
+            auto const block = state.inputs[channel].get_block(state.block_size);
+            float* destination = buffer.getWritePointer(static_cast<int>(channel));
+            for (size_t sample = 0; sample < state.block_size; ++sample) {
+                destination[sample] = block[sample];
+            }
+        }
+
+        size_t const parameter_offset = spec.schema.audio_inputs;
+        for (size_t index = 0; index < live_instance.parameter_bindings.size(); ++index) {
+            float value = state.inputs[parameter_offset + index].get();
+            value = std::clamp(value, 0.0f, 1.0f);
+            auto& binding = live_instance.parameter_bindings[index];
+            if (binding.last_value != value) {
+                binding.parameter->setValue(value);
+                binding.last_value = value;
+            }
+        }
+
+        live_instance.midi_buffer.clear();
+        live_instance.plugin->processBlock(buffer, live_instance.midi_buffer);
+
+        for (size_t channel = 0; channel < spec.schema.audio_outputs; ++channel) {
+            auto const* source = buffer.getReadPointer(static_cast<int>(channel));
+            state.outputs[channel].push_block(std::span<Sample const>(source, state.block_size));
+        }
+    }
+
+    void JuceVstWrapper::tick_block(BlockTickState const& state) const
+    {
+        State& wrapper_state = state.get_state<State>();
+        void* live_instance = (wrapper_state.runtime_slot && *wrapper_state.runtime_slot)
+            ? *wrapper_state.runtime_slot
+            : nullptr;
+        tick_juce_vst_wrapper(*_spec, live_instance, state);
+    }
+}
+
+#endif

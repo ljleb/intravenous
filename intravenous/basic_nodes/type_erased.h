@@ -12,12 +12,12 @@ namespace iv {
     struct Constant {
         Sample _value;
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
 
-        constexpr void tick(TickState const& state)
+        void tick(TickState const& state)
         {
             state.outputs[0].push(_value);
         }
@@ -35,7 +35,7 @@ namespace iv {
 
     public:
         template<typename Node>
-        constexpr /*implicit*/ TypeErasedNode(Node node)
+        /*implicit*/ TypeErasedNode(Node node)
         {
             if constexpr (std::is_empty_v<Node>) {
                 _node = nullptr;
@@ -69,28 +69,28 @@ namespace iv {
             validate_max_block_size(_max_block_size, "node max_block_size() must be a power of 2");
         }
 
-        constexpr std::vector<InputConfig> const& inputs() const
+        std::vector<InputConfig> const& inputs() const
         {
             return _inputs;
         }
 
-        constexpr std::vector<OutputConfig> const& outputs() const
+        std::vector<OutputConfig> const& outputs() const
         {
             return _outputs;
         }
 
-        constexpr size_t internal_latency() const
+        size_t internal_latency() const
         {
             return _internal_latency;
         }
 
-        constexpr size_t max_block_size() const
+        size_t max_block_size() const
         {
             return _max_block_size;
         }
 
         template<typename Allocator>
-        constexpr std::span<std::byte> init_buffer(Allocator& allocator, InitBufferContext& ctx) const
+        std::span<std::byte> init_buffer(Allocator& allocator, InitBufferContext& ctx) const
         {
             return _init_buffer_fn(_node.get(), TypeErasedAllocator { allocator }, ctx);
         }

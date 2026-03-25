@@ -16,7 +16,7 @@ namespace {
             iv::Sample value = 0.0f;
         };
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<iv::OutputConfig, 1>{};
         }
@@ -44,12 +44,12 @@ namespace {
     };
 
     struct BlockPassthrough {
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<iv::InputConfig, 1>{};
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<iv::OutputConfig, 1>{};
         }

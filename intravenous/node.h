@@ -8,7 +8,6 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <array>
 #include <vector>
@@ -239,13 +238,13 @@ namespace iv {
     };
 
     struct InputConfig {
-        std::string_view name {};
+        std::string name {};
         size_t history = 0;
         Sample default_value = 0.0;
     };
 
     struct OutputConfig {
-        std::string_view name {};
+        std::string name {};
         size_t latency = 0;
         size_t history = 0;
     };
@@ -346,6 +345,7 @@ namespace iv {
         std::unordered_map<std::string, InitBufferRecord> init_buffers;
         std::unordered_map<std::string, TickBufferRecord> tick_buffers;
 
+    // public:
         InitBufferContext() = default;
 
         InitBufferContext(PassMode mode_, std::span<std::byte> runtime_buffer_ = {}) :
@@ -392,6 +392,10 @@ namespace iv {
             }
         }
 
+        // size_t max_block_size() const {
+        //     return _max_block_size;
+        // }
+
         bool has_init_buffer(std::string const& id) const
         {
             return init_buffers.contains(id);
@@ -408,9 +412,6 @@ namespace iv {
             auto& record = init_buffers[id];
             if (record.id.empty()) {
                 record.id = id;
-            }
-            if (record.type_tag && record.type_tag != type_token<T>()) {
-                throw std::logic_error("init buffer '" + record.id + "' was registered with a different element type");
             }
             if (record.count != 0 && record.count != count) {
                 throw std::logic_error("init buffer '" + record.id + "' changed element count between registrations");
@@ -450,9 +451,6 @@ namespace iv {
                 throw std::logic_error("init buffer '" + id + "' was used before registration");
             }
             auto& record = it->second;
-            if (record.type_tag && record.type_tag != type_token<T>()) {
-                throw std::logic_error("init buffer '" + record.id + "' was used with a different element type");
-            }
             if (!record.registered) {
                 throw std::logic_error("init buffer '" + record.id + "' was used before registration in the current pass");
             }
@@ -500,10 +498,6 @@ namespace iv {
                 record.id = id;
             }
 
-            if (record.type_tag && record.type_tag != type_token<T>()) {
-                throw std::logic_error("tick buffer '" + record.id + "' was used with a different element type");
-            }
-
             record.used = true;
             if (!record.type_tag) {
                 record.type_tag = type_token<T>();
@@ -541,9 +535,6 @@ namespace iv {
         template<typename T>
         void validate_tick_buffer_identity(TickBufferRecord const& record, size_t count) const
         {
-            if (record.type_tag && record.type_tag != type_token<T>()) {
-                throw std::logic_error("tick buffer '" + record.id + "' was registered with a different element type");
-            }
             if (record.count != 0 && record.count != count) {
                 throw std::logic_error("tick buffer '" + record.id + "' changed element count between registrations");
             }

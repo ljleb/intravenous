@@ -128,7 +128,7 @@ namespace iv {
         std::unordered_set<PortId> _placed_input_ports;
 
         std::vector<InputConfig> _public_inputs;
-        std::unordered_map<std::string_view, size_t> _input_name_to_index;
+        std::unordered_map<std::string, size_t> _input_name_to_index;
 
         std::vector<OutputConfig> _public_outputs;
         bool _outputs_defined{ false };
@@ -171,12 +171,12 @@ namespace iv {
             if (name.empty()) {
                 details::error("input name cannot be empty");
             }
-            if (_input_name_to_index.contains(name)) {
+            if (_input_name_to_index.contains(std::string(name))) {
                 details::error("input '" + std::string(name) + "' already exists");
             }
 
-            _public_inputs.emplace_back(InputConfig { .name = name, .default_value = default_value });
-            _input_name_to_index.emplace(name, _public_inputs.size() - 1);
+            _public_inputs.emplace_back(InputConfig { .name = std::string(name), .default_value = default_value });
+            _input_name_to_index.emplace(std::string(name), _public_inputs.size() - 1);
             return SignalRef(*this, GRAPH_ID, _public_inputs.size() - 1);
         }
 
@@ -282,7 +282,7 @@ namespace iv {
             }
 
             _public_outputs.reserve(refs.size());
-            std::unordered_set<std::string_view> output_names;
+            std::unordered_set<std::string> output_names;
 
             size_t output_port = 0;
             for (auto const& ref : refs) {
@@ -292,12 +292,12 @@ namespace iv {
                     );
                 }
 
-                if (output_names.contains(ref.name)) {
+                if (output_names.contains(std::string(ref.name))) {
                     details::error(
                         "builder " + _builder_id.value + ": duplicate output name '" + std::string(ref.name) + "'"
                     );
                 }
-                output_names.insert(ref.name);
+                output_names.insert(std::string(ref.name));
 
                 auto const signal = lift_to_signal(ref);
 
@@ -305,7 +305,7 @@ namespace iv {
                     signal,
                     PortId{ GRAPH_ID, output_port++ },
                     });
-                _public_outputs.emplace_back(OutputConfig{ .name = ref.name });
+                _public_outputs.emplace_back(OutputConfig{ .name = std::string(ref.name) });
             }
 
             _outputs_defined = true;

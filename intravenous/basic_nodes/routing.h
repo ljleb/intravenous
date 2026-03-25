@@ -21,21 +21,21 @@ namespace iv {
         size_t _num_outputs;
 
     public:
-        constexpr explicit Broadcast(size_t num_outputs) :
+        explicit Broadcast(size_t num_outputs) :
             _num_outputs(num_outputs)
         {}
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<InputConfig, 1>{};
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::vector<OutputConfig>(_num_outputs);
         }
 
-        constexpr auto num_outputs() const
+        auto num_outputs() const
         {
             return _num_outputs;
         }
@@ -57,7 +57,7 @@ namespace iv {
             std::span<Sample> slot;
         };
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<InputConfig, 1>{};
         }
@@ -103,7 +103,7 @@ namespace iv {
             std::span<Sample> slot;
         };
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -143,7 +143,7 @@ namespace iv {
     };
 
     struct DummySink {
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array<InputConfig, 1>{};
         }
@@ -151,5 +151,4 @@ namespace iv {
         void tick(TickState const&) const
         {}
     };
-
 }

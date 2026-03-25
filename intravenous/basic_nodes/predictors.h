@@ -17,7 +17,7 @@ namespace iv {
         };
 
     public:
-        constexpr NlmsPredictor(size_t look_ahead, size_t order, float lr = 1e-4, float decay = 1.0) :
+        NlmsPredictor(size_t look_ahead, size_t order, float lr = 1e-4, float decay = 1.0) :
             _look_ahead(look_ahead),
             _order(order),
             _lr(lr),
@@ -26,12 +26,12 @@ namespace iv {
             assert(_order >= _look_ahead && "window length must cover look-ahead");
         }
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array { InputConfig { .history = _order - 1 } };
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array { OutputConfig { .history = _look_ahead } };
         }
@@ -63,7 +63,7 @@ namespace iv {
         };
 
     public:
-        constexpr TanhResidualPredictor(
+        TanhResidualPredictor(
             size_t look_ahead,
             size_t order,
             size_t ar_order = 2,
@@ -79,12 +79,12 @@ namespace iv {
             assert(_p >= _L && "window length must cover look-ahead");
         }
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array { InputConfig { .history = _p - 1 } };
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array { OutputConfig { .history = _L + _q } };
         }
@@ -129,7 +129,7 @@ namespace iv {
         }
 
     public:
-        constexpr TanhResidualAR2Predictor(
+        TanhResidualAR2Predictor(
             size_t look_ahead,
             size_t order,
             size_t ar_order = 2,
@@ -147,12 +147,12 @@ namespace iv {
             assert(_p >= _L);
         }
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array { InputConfig { .history = _p - 1 } };
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array { OutputConfig { .latency = 0, .history = _L + _q } };
         }
@@ -196,7 +196,7 @@ namespace iv {
         }
 
     public:
-        constexpr PolyResidualPredictor(size_t look_ahead, size_t order, float mu = 1e-5f) :
+        PolyResidualPredictor(size_t look_ahead, size_t order, float mu = 1e-5f) :
             _L(look_ahead),
             _p(order),
             _mu(mu)
@@ -204,12 +204,12 @@ namespace iv {
             assert(_p >= _L);
         }
 
-        constexpr auto inputs() const
+        auto inputs() const
         {
             return std::array { InputConfig { .history = _p - 1 } };
         }
 
-        constexpr auto outputs() const
+        auto outputs() const
         {
             return std::array { OutputConfig { .history = _L } };
         }
