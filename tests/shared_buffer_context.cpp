@@ -11,7 +11,7 @@ int main()
 
     {
         iv::CountingNonAllocator counter(reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x20000)));
-        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer());
+        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer(), 1);
 
         auto shared = counting.register_init_buffer<iv::Sample>("shared", 8);
         auto counted_use = counting.use_init_buffer<iv::Sample>("shared");
@@ -21,7 +21,6 @@ int main()
         counting.validate_after_counting();
 
         std::vector<std::byte> storage(256);
-        iv::FixedBufferAllocator allocator({ storage.data(), storage.size() });
         iv::InitBufferContext replay = counting.make_initializing_context({ storage.data(), storage.size() });
 
         auto replayed = replay.register_init_buffer<iv::Sample>("shared", 8);
@@ -34,37 +33,35 @@ int main()
 
     iv::test::expect_failure([] {
         iv::CountingNonAllocator counter(reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x30000)));
-        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer());
+        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer(), 1);
         counting.use_init_buffer<iv::Sample>("missing");
     }, "used before registration", "missing init registration should fail immediately");
 
     iv::test::expect_failure([] {
         iv::CountingNonAllocator counter(reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x40000)));
-        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer());
+        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer(), 1);
         counting.register_init_buffer<iv::Sample>("shared", 4);
         counting.validate_after_counting();
 
         std::vector<std::byte> storage(256);
-        iv::FixedBufferAllocator allocator({ storage.data(), storage.size() });
         iv::InitBufferContext replay = counting.make_initializing_context({ storage.data(), storage.size() });
         replay.validate_after_initialization();
     }, "was not registered again during the second pass", "missing second init registration should fail");
 
     iv::test::expect_failure([] {
         iv::CountingNonAllocator counter(reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x50000)));
-        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer());
+        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer(), 1);
         counting.register_init_buffer<iv::Sample>("shared", 4);
         counting.validate_after_counting();
 
         std::vector<std::byte> storage(256);
-        iv::FixedBufferAllocator allocator({ storage.data(), storage.size() });
         iv::InitBufferContext replay = counting.make_initializing_context({ storage.data(), storage.size() });
         replay.register_init_buffer<iv::Sample>("shared", 2);
     }, "changed element count", "init buffer size mismatch should fail");
 
     {
         iv::CountingNonAllocator counter(reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x60000)));
-        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer());
+        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer(), 1);
 
         auto early = counting.use_tick_buffer<iv::Sample>("tick");
         iv::test::require(early.empty(), "counting tick use before register should not expose a live span");
@@ -87,14 +84,14 @@ int main()
 
     iv::test::expect_failure([] {
         iv::CountingNonAllocator counter(reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x70000)));
-        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer());
+        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer(), 1);
         counting.use_tick_buffer<iv::Sample>("missing");
         counting.validate_after_counting();
     }, "used but never registered during the first pass", "missing tick registration should fail after counting");
 
     iv::test::expect_failure([] {
         iv::CountingNonAllocator counter(reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x80000)));
-        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer());
+        iv::InitBufferContext counting(iv::InitBufferContext::PassMode::counting, counter.get_buffer(), 1);
         auto tick = counter.new_array<iv::Sample>(1);
         counting.register_tick_buffer("tick", tick);
         counting.validate_after_counting();

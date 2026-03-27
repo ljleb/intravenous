@@ -487,17 +487,16 @@ namespace iv {
         std::unordered_map<std::string, InitBufferRecord> init_buffers;
         std::unordered_map<std::string, TickBufferRecord> tick_buffers;
 
-    // public:
         InitBufferContext() = default;
-
-        InitBufferContext(PassMode mode_, std::span<std::byte> runtime_buffer_ = {}) :
+        InitBufferContext(PassMode mode_, std::span<std::byte> runtime_buffer_, size_t max_block_size_):
             mode(mode_),
-            runtime_buffer(runtime_buffer_)
+            runtime_buffer(runtime_buffer_),
+            max_block_size(max_block_size_)
         {}
 
         InitBufferContext make_initializing_context(std::span<std::byte> new_runtime_buffer) const
         {
-            InitBufferContext replay(PassMode::initializing, new_runtime_buffer);
+            InitBufferContext replay(PassMode::initializing, new_runtime_buffer, max_block_size);
             replay.max_block_size = max_block_size;
             replay.init_buffers = init_buffers;
             replay.tick_buffers = tick_buffers;

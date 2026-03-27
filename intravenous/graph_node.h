@@ -482,15 +482,13 @@ namespace iv {
         void init_buffer(Allocator& allocator) const
         {
             if (!allocator.can_allocate()) {
-                InitBufferContext context(InitBufferContext::PassMode::counting, allocator.get_buffer());
-                context.max_block_size = MAX_BLOCK_SIZE;
+                InitBufferContext context(InitBufferContext::PassMode::counting, allocator.get_buffer(), MAX_BLOCK_SIZE);
                 init_buffer(allocator, context);
                 return;
             }
 
             CountingNonAllocator counter(allocator.get_buffer().data());
-            InitBufferContext counting_context(InitBufferContext::PassMode::counting, counter.get_buffer());
-            counting_context.max_block_size = MAX_BLOCK_SIZE;
+            InitBufferContext counting_context(InitBufferContext::PassMode::counting, counter.get_buffer(), MAX_BLOCK_SIZE);
             do_init_buffer(*this, counter, counting_context);
             counting_context.validate_after_counting();
 
@@ -677,8 +675,7 @@ namespace iv {
             std::byte* byte_data = reinterpret_cast<std::byte*>(static_cast<uintptr_t>(0x10000));
             _allocation_trace = {};
             CountingNonAllocator counter = make_counting_allocator(byte_data, &_allocation_trace, byte_data);
-            InitBufferContext ctx(InitBufferContext::PassMode::counting, counter.get_buffer());
-            ctx.max_block_size = _max_block_size;
+            InitBufferContext ctx(InitBufferContext::PassMode::counting, counter.get_buffer(), _max_block_size);
             do_init_buffer(_node, counter, ctx);
             if (_runtime) {
                 _runtime.register_runtime_buffers(counter, ctx);

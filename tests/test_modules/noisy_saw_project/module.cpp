@@ -73,7 +73,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
 
         noise(dt);
         shared_noise(first_noise, noise, 1.0);
-        valhalla({{val_idx[channel], 1.0 * voice["feedback"].detach(3000)}});
+        valhalla({{val_idx[channel], 1.0 * voice["feedback"].detach(1 << 9)}});
         voice({
             {"noise", 0.0*shared_noise},
             {"dt", dt},
