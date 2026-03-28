@@ -356,18 +356,6 @@ namespace iv {
         _session(manager.make_session(sample_rate))
     {}
 
-    namespace juce_details {
-        std::string make_juce_vst_runtime_resource_id(std::string_view resource_id)
-        {
-            return "juce_vst_instance:" + std::string(resource_id);
-        }
-
-        std::string make_juce_vst_spec_buffer_id(std::string_view resource_id)
-        {
-            return "juce_vst_spec:" + std::string(resource_id);
-        }
-    }
-
     JuceVstWrapperSpec probe_juce_vst(JuceVstProbeRequest request)
     {
         if (request.resource_id.empty()) {
@@ -453,40 +441,16 @@ namespace iv {
         return result;
     }
 
-    void JuceVstRuntimeSupport::register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
+    void JuceVstRuntimeSupport::register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder)
     {
-        if (!_manager || !_session) {
-            return;
-        }
-
-        auto session = std::static_pointer_cast<JuceVstRuntimeManager::Session>(_session);
-        constexpr std::string_view prefix = "juce_vst_instance:";
-        for (auto const& [runtime_id, record] : context.tick_buffers) {
-            if (!record.used || !runtime_id.starts_with(prefix)) {
-                continue;
-            }
-            std::string const resource_id = runtime_id.substr(prefix.size());
-            auto const spec_buffer_id = juce_details::make_juce_vst_spec_buffer_id(resource_id);
-            if (!context.has_init_buffer(spec_buffer_id)) {
-                throw std::logic_error("JuceVstWrapper resource_id '" + resource_id + "' did not publish its probe spec");
-            }
-            auto spec_slot = context.template use_init_buffer<JuceVstWrapperSpec>(spec_buffer_id);
-            auto spec = std::make_shared<JuceVstWrapperSpec const>(spec_slot[0]);
-
-            auto slots = allocator.template new_array<void*>(1);
-            context.register_tick_buffer(runtime_id, slots);
-
-            if (allocator.can_allocate() && !slots.empty()) {
-                slots[0] = nullptr;
-                slots[0] = _manager->acquire_instance(*session, spec, context.max_block_size);
-            }
-        }
+        (void)allocator;
+        (void)builder;
     }
 
     void tick_juce_vst_wrapper(
         JuceVstWrapperSpec const& spec,
         void* live_instance_ptr,
-        BlockTickState const& state
+        TickBlockContext<JuceVstWrapper> const& state
     )
     {
         if (live_instance_ptr == nullptr) {
@@ -527,13 +491,9 @@ namespace iv {
         }
     }
 
-    void JuceVstWrapper::tick_block(BlockTickState const& state) const
+    void JuceVstWrapper::tick_block(TickBlockContext<JuceVstWrapper> const& ctx) const
     {
-        State& wrapper_state = state.get_state<State>();
-        void* live_instance = (wrapper_state.runtime_slot && *wrapper_state.runtime_slot)
-            ? *wrapper_state.runtime_slot
-            : nullptr;
-        tick_juce_vst_wrapper(*_spec, live_instance, state);
+        tick_juce_vst_wrapper(*_spec, ctx.state().plugin_instance, ctx);
     }
 }
 

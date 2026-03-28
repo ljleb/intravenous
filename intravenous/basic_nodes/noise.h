@@ -1,7 +1,10 @@
 #pragma once
 
 #include "node.h"
+
+#include "math/erfinv.h"
 #include "random123/aes.h"
+#include "random123/uniform.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,24 +13,23 @@
 #include <cstdint>
 #include <optional>
 #include <random>
+#include <numbers>
 
 namespace iv {
     class UniformNoise {
-        std::optional<std::mt19937> _generator;
-        std::optional<std::uniform_real_distribution<Sample::storage>> _distribution;
         Sample _min;
         Sample _max;
-        std::optional<unsigned int> _seed;
+        unsigned int _seed;
 
     public:
         explicit UniformNoise(
             Sample min = -1.0,
             Sample max = 1.0,
             std::optional<unsigned int> seed = {}
-        ) :
-            _min(min),
-            _max(max),
-            _seed(seed)
+        )
+        : _min(min)
+        , _max(max)
+        , _seed(seed.has_value() ? seed.value() : std::random_device{}())
         {}
 
         auto outputs() const
@@ -35,14 +37,44 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state);
+        struct State {
+            std::mt19937 generator;
+            std::uniform_real_distribution<Sample::storage> distribution;
+        };
+
+        void initialize(InitializationContext<UniformNoise> ctx) const
+        {
+            auto& state = ctx.state();
+            state.generator.seed(_seed);
+            state.distribution = std::uniform_real_distribution<Sample::storage>(_min, _max);
+        }
+
+        void tick(TickContext<UniformNoise> const& ctx) const
+        {
+            auto& state = ctx.state();
+            ctx.outputs[0].push((state.distribution)(state.generator));
+        }
     };
 
     class DeterministicUniformNoise {
         size_t _seed;
 
-        uint64_t splitmix64(uint64_t index) const;
-        double uniform_m11(uint64_t i, Sample min, Sample max) const;
+        uint64_t splitmix64(uint64_t index) const
+        {
+            size_t z = _seed + index * 0x9e3779b97f4a7c15ULL;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            return z ^ (z >> 31);
+        }
+
+        double uniform_m11(uint64_t i, Sample min, Sample max) const
+        {
+            uint64_t mantissa = i >> (64 - 52);
+            uint64_t bits = 0x4000000000000000ULL | mantissa;
+            double range = (max - min) / 2.0;
+            double min_reinterpret = 2.0 * min - max;
+            return std::bit_cast<double>(bits) * range + min_reinterpret;
+        }
 
     public:
         explicit DeterministicUniformNoise(std::optional<Sample> seed = {}) :
@@ -65,7 +97,13 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state);
+        void tick(TickContext<DeterministicUniformNoise> const& state) const
+        {
+            auto const min = state.inputs[0].get();
+            auto const max = state.inputs[1].get();
+            uint64_t uniform_int = splitmix64(state.index);
+            state.outputs[0].push(uniform_m11(uniform_int, min, max));
+        }
     };
 
     class DeterministicUniformAESNoise {
@@ -73,11 +111,37 @@ namespace iv {
         Rng _generator;
         Rng::key_type _seed;
 
-        static Rng::key_type make_seed(std::optional<uint64_t> seed_opt);
-        static Rng::ctr_type make_index(uint64_t index);
+        static Rng::key_type make_seed(std::optional<uint64_t> seed_opt)
+        {
+            uint32_t seed_low;
+            uint32_t seed_high;
+            if (seed_opt.has_value()) {
+                uint64_t seed = *seed_opt;
+                seed_low = static_cast<uint32_t>(seed);
+                seed_high = static_cast<uint32_t>(seed >> 32);
+            } else {
+                seed_low = std::random_device{}();
+                seed_high = std::random_device{}();
+            }
+            return Rng::ukey_type { seed_low, seed_high, 0, 0 };
+        }
+
+        static Rng::ctr_type make_index(uint64_t index)
+        {
+            return {
+                static_cast<uint32_t>(index),
+                static_cast<uint32_t>(index >> 32),
+                0,
+                0,
+            };
+        }
 
     public:
-        explicit DeterministicUniformAESNoise(std::optional<uint64_t> seed = {});
+        explicit DeterministicUniformAESNoise(std::optional<uint64_t> seed = {})
+        : _seed(make_seed(seed))
+        {
+            assert(haveAESNI() && "This machine does not have the AES-NI instruction set, use a different noise node.");
+        }
 
         auto inputs() const
         {
@@ -92,7 +156,14 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state);
+        void tick(TickContext<DeterministicUniformAESNoise> const& state) const
+        {
+            auto const min = state.inputs[0].get();
+            auto const max = state.inputs[1].get();
+            Rng::ctr_type counter = make_index(state.index);
+            unsigned int uniform_uint = _generator(counter, _seed)[0];
+            state.outputs[0].push(r123::u01<Sample>(uniform_uint) * (max - min) + min);
+        }
     };
 
     class UniformToCauchy {
@@ -100,7 +171,10 @@ namespace iv {
         Sample _gamma;
 
     public:
-        explicit UniformToCauchy(Sample x0 = 1.0, Sample gamma = 1.0);
+        explicit UniformToCauchy(Sample x0 = 1.0, Sample gamma = 1.0)
+        : _x0(x0)
+        , _gamma(gamma)
+        {}
 
         auto inputs() const
         {
@@ -112,7 +186,11 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state);
+        void tick(TickContext<UniformToCauchy> const& state) const
+        {
+            Sample uniform = state.inputs[0].get();
+            state.outputs[0].push(_x0 + _gamma * std::tanf(std::numbers::pi_v<float> * uniform * 0.5));
+        }
     };
 
     class UniformToPower {
@@ -120,12 +198,16 @@ namespace iv {
         ptrdiff_t _max;
         Sample _lambda;
 
+    public:
         struct State {
             std::span<Sample> weights;
         };
 
-    public:
-        explicit UniformToPower(ptrdiff_t min = -5, ptrdiff_t max = 4, Sample lambda = 0.5);
+        explicit UniformToPower(ptrdiff_t min = -5, ptrdiff_t max = 4, Sample lambda = 0.5)
+        : _min(min)
+        , _max(max)
+        , _lambda(lambda)
+        {}
 
         auto inputs() const
         {
@@ -137,27 +219,39 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        template<typename A>
-        void init_buffer(A& alloc) const
+        void declare(DeclarationContext<UniformToPower> const& ctx) const
         {
-            State& s = alloc.template new_object<State>();
+            auto const& state = ctx.state();
+
             size_t range = std::max<ptrdiff_t>(0, _max - _min);
-            alloc.assign(s.weights, alloc.template new_array<Sample>(range));
-            for (size_t i = 0; i < range; ++i) {
-                alloc.assign(alloc.at(s.weights, i), std::powf(_lambda, range - 1 - static_cast<ptrdiff_t>(i)));
+            ctx.local_array(state.weights, range);
+        }
+
+        void initialize(InitializationContext<UniformToPower> const& ctx) const
+        {
+            auto& state = ctx.state();
+
+            for (size_t i = 0; i < state.weights.size(); ++i) {
+                state.weights[i] = std::powf(_lambda, state.weights.size() - 1 - i);
             }
-            if (alloc.can_allocate()) {
-                Sample total = 0.0;
-                for (size_t i = 0; i < range; ++i) {
-                    total += s.weights[i];
-                }
-                for (size_t i = 0; i < range; ++i) {
-                    s.weights[i] /= total;
-                }
+            Sample total = 0.0;
+            for (size_t i = 0; i < state.weights.size(); ++i) {
+                total += state.weights[i];
+            }
+            for (size_t i = 0; i < state.weights.size(); ++i) {
+                state.weights[i] /= total;
             }
         }
 
-        void tick(TickState const& state);
+        void tick(TickContext<UniformToPower> const& ctx) const
+        {
+            auto& state = ctx.state();
+            Sample uniform = ctx.inputs[0].get() * 0.5 + 0.5;
+            size_t discrete = static_cast<size_t>(
+                std::lower_bound(state.weights.begin(), state.weights.end(), uniform) - state.weights.begin()
+            );
+            ctx.outputs[0].push(std::exp2f(static_cast<Sample>(discrete)));
+        }
     };
 
     class UniformToGaussian {
@@ -165,7 +259,10 @@ namespace iv {
         Sample _std;
 
     public:
-        explicit UniformToGaussian(Sample mean = 0.0, Sample std = 1.0);
+        explicit UniformToGaussian(Sample mean = 0.0, Sample std = 1.0)
+        : _mean(mean)
+        , _std(std)
+        {}
 
         auto inputs() const
         {
@@ -177,7 +274,12 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state);
+        void tick(TickContext<UniformToGaussian> const& state) const
+        {
+            Sample uniform = state.inputs[0].get();
+            Sample normal = std::numbers::sqrt2_v<float> * erfinvf(uniform);
+            state.outputs[0].push(std::fmaf(normal, _std, _mean));
+        }
     };
 
     class DeterministicGaussianAESNoise {
@@ -187,21 +289,56 @@ namespace iv {
         Sample _mean;
         Sample _std;
 
-        static Rng::key_type make_seed(std::optional<uint64_t> seed_opt);
-        static Rng::ctr_type make_index(uint64_t index);
+        static Rng::key_type make_seed(std::optional<uint64_t> seed_opt)
+        {
+            uint32_t seed_low;
+            uint32_t seed_high;
+            if (seed_opt.has_value()) {
+                uint64_t seed = *seed_opt;
+                seed_low = static_cast<uint32_t>(seed);
+                seed_high = static_cast<uint32_t>(seed >> 32);
+            } else {
+                seed_low = std::random_device{}();
+                seed_high = std::random_device{}();
+            }
+            return Rng::ukey_type { seed_low, seed_high, 0, 0 };
+        }
+
+        static Rng::ctr_type make_index(uint64_t index)
+        {
+            return {
+                static_cast<uint32_t>(index),
+                static_cast<uint32_t>(index >> 32),
+                0,
+                0,
+            };
+        }
 
     public:
         explicit DeterministicGaussianAESNoise(
             Sample mean = 0.0,
             Sample std = 1.0,
             std::optional<uint64_t> seed = {}
-        );
+        )
+        : _seed(make_seed(seed))
+        , _mean(mean)
+        , _std(std)
+        {
+            assert(haveAESNI() && "This machine does not have the AES-NI instruction set, use a different noise node.");
+        }
 
         auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state);
+        void tick(TickContext<DeterministicGaussianAESNoise> const& state) const
+        {
+            Rng::ctr_type counter = make_index(state.index);
+            unsigned int uniform_uint = _generator(counter, _seed)[0];
+            Sample uniform = r123::uneg11<Sample>(uniform_uint);
+            Sample gaussian = std::numbers::sqrt2_v<float> * erfinvf(uniform);
+            state.outputs[0].push(std::fmaf(gaussian, _std, _mean));
+        }
     };
 }

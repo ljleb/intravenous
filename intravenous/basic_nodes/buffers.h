@@ -5,31 +5,6 @@
 #include <cassert>
 
 namespace iv {
-    class BufferSink {
-        Sample* _destination;
-        size_t _size;
-        size_t _time_offset;
-
-    public:
-        explicit BufferSink(Sample* destination, size_t size, size_t time_offset = 0) :
-            _destination(destination),
-            _size(size),
-            _time_offset(time_offset)
-        {}
-
-        auto inputs() const
-        {
-            return std::array<InputConfig, 1>{};
-        }
-
-        void tick(TickState const& state)
-        {
-            if (state.index >= _time_offset && state.index < _time_offset + _size) {
-                _destination[state.index] = state.inputs[0].get();
-            }
-        }
-    };
-
     struct ValueSource {
         Sample const* _value;
 
@@ -44,9 +19,9 @@ namespace iv {
             return std::array { OutputConfig { .name = "value" } };
         }
 
-        void tick(TickState const& ts) const
+        void tick(auto const& ctx) const
         {
-            ts.outputs[0].push(*_value);
+            ctx.outputs[0].push(*_value);
         }
     };
 
@@ -69,15 +44,15 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state) const
+        void tick(TickContext<BufferSource> const& ctx) const
         {
-            auto& out = state.outputs[0];
-            if (state.index < _time_offset) {
+            auto& out = ctx.outputs[0];
+            if (ctx.index < _time_offset) {
                 out.push(_source[0]);
-            } else if (state.index >= _time_offset + _size) {
+            } else if (ctx.index >= _time_offset + _size) {
                 out.push(_source[_size - 1]);
             } else {
-                out.push(_source[state.index - _time_offset]);
+                out.push(_source[ctx.index - _time_offset]);
             }
         }
     };

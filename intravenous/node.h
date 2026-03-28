@@ -1,6 +1,7 @@
 #pragma once
 #include "compat.h"
 #include <algorithm>
+#include <concepts>
 #include <span>
 #include <cassert>
 #include <cstddef>
@@ -8,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <array>
 #include <vector>
@@ -109,6 +111,23 @@ namespace iv {
         return n && !(n & (n - 1));
     }
 
+    template<typename A>
+    requires std::unsigned_integral<A>
+    IV_FORCEINLINE A next_power_of_2(A x)
+    {
+        x--;
+        x |= x >> 1;
+        x |= x >> 2;
+        x |= x >> 4;
+        if constexpr (sizeof(A) >= 2) x |= x >> 8;
+        if constexpr (sizeof(A) >= 4) x |= x >> 16;
+        if constexpr (sizeof(A) >= 8) x |= x >> 32;
+        if constexpr (sizeof(A) >= 16) x |= x >> 64;
+        x++;
+
+        return x;
+    }
+
     IV_FORCEINLINE constexpr bool is_valid_block_size(size_t block_size)
     {
         return block_size != 0 && block_size <= MAX_BLOCK_SIZE && is_power_of_2(block_size);
@@ -141,9 +160,10 @@ namespace iv {
         return power;
     }
 
-    struct SampleBlockView {
-        std::span<Sample const> first {};
-        std::span<Sample const> second {};
+    template<typename A>
+    struct BlockView {
+        std::span<A> first {};
+        std::span<A> second {};
 
         constexpr size_t size() const
         {
@@ -155,7 +175,7 @@ namespace iv {
             return size() == 0;
         }
 
-        constexpr Sample operator[](size_t index) const
+        constexpr A operator[](size_t index) const
         {
             return index < first.size()
                 ? first[index]
@@ -163,14 +183,14 @@ namespace iv {
         }
 
         struct iterator {
-            using value_type = Sample;
+            using value_type = A;
             using difference_type = std::ptrdiff_t;
             using iterator_category = std::forward_iterator_tag;
             using iterator_concept = std::forward_iterator_tag;
-            using reference = Sample;
+            using reference = A;
             using pointer = void;
 
-            Sample const* first_ptr = nullptr;
+            A const* first_ptr = nullptr;
             size_t split = 0;
             std::ptrdiff_t second_offset = 0;
             size_t index = 0;
@@ -219,7 +239,7 @@ namespace iv {
         }
     };
 
-    IV_FORCEINLINE constexpr SampleBlockView make_block_view(
+    IV_FORCEINLINE constexpr BlockView<Sample> make_block_view(
         std::span<Sample> buffer,
         size_t start,
         size_t count
@@ -286,7 +306,7 @@ namespace iv {
             return _shared_data.buffer[idx];
         }
 
-        IV_FORCEINLINE constexpr SampleBlockView get_block(size_t block_size, size_t sample_offset = 0) const
+        IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
         {
             if (sample_offset > block_size) {
                 return {};
@@ -329,7 +349,7 @@ namespace iv {
             return _shared_data.buffer[idx];
         }
 
-        IV_FORCEINLINE constexpr SampleBlockView get_block(size_t block_size, size_t sample_offset = 0) const
+        IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
         {
             if (sample_offset > block_size) {
                 return {};
@@ -350,12 +370,12 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void push_block(std::span<Sample const> samples)
         {
-            for (Sample sample : samples) {
+            for (Sample const& sample : samples) {
                 push(sample);
             }
         }
 
-        IV_FORCEINLINE constexpr void push_block(SampleBlockView samples)
+        IV_FORCEINLINE constexpr void push_block(BlockView<Sample> samples)
         {
             push_block(samples.first);
             push_block(samples.second);
@@ -391,305 +411,225 @@ namespace iv {
         size_t history = 0;
     };
 
+    template<typename Node>
+    struct NodeStateType {
+        using Type = void;
+    };
+
+    namespace details {
+        template<typename Node>
+        concept has_State = requires {
+            typename Node::State;
+        };
+    }
+
+    template<typename Node>
+    requires(details::has_State<Node>)
+    struct NodeStateType<Node> {
+        using Type = typename Node::State;
+    };
+
+    template<typename Node>
     struct NodeState {
         std::span<InputPort> inputs;
         std::span<OutputPort> outputs;
         std::span<std::byte> buffer;
 
-        template<typename State>
-        State& get_state() const {
+        using State = typename NodeStateType<Node>::Type;
+
+        std::add_lvalue_reference_t<State> state() const
+        requires(!std::is_void_v<State>)
+        {
             void* ptr = buffer.data();
             size_t space = buffer.size();
             return *reinterpret_cast<State*>(std::align(alignof(State), sizeof(State), ptr, space));
         }
     };
 
-    enum struct MidiMessageType {
-        NOTE_ON,
-        NOTE_OFF,
-        PITCH_WHEEL,
-    };
-
-    struct MidiMessage {
-        MidiMessageType type;
-        union {
-            struct {
-                uint8_t note_number;
-                uint8_t channel;
-                uint8_t amplitude;
-            } note_on;
-            struct {
-                uint8_t note_number;
-                uint8_t channel;
-            } note_off;
-            struct {
-                uint16_t pitch_value;
-                uint8_t channel;
-            } pitch_wheel;
-        };
-    };
-
-    struct TickState : public NodeState {
-        std::span<MidiMessage const> midi;
+    template<typename Node>
+    struct TickContext : public NodeState<Node> {
         size_t index;
 
-        TickState(NodeState base, std::span<MidiMessage const> midi, size_t index) :
-            NodeState(base), midi(midi), index(index)
+        TickContext(NodeState<Node> base, size_t index)
+        : NodeState<Node>(base), index(index)
         {}
     };
 
-    struct BlockTickState : public NodeState {
-        std::span<MidiMessage const> midi;
+    template<typename Node>
+    struct TickBlockContext : public NodeState<Node> {
         size_t index;
         size_t block_size;
 
-        BlockTickState(
-            NodeState base,
-            std::span<MidiMessage const> midi,
+        TickBlockContext(
+            NodeState<Node> base,
             size_t index,
             size_t block_size
-        ) :
-            NodeState(base),
-            midi(midi),
-            index(index),
-            block_size(block_size)
+        )
+        : NodeState<Node>(base)
+        , index(index)
+        , block_size(block_size)
         {}
     };
 
-    struct InitBufferContext {
-        enum class PassMode {
-            counting,
-            initializing,
+    template<typename A>
+    struct NoCopy : public A
+    {
+        NoCopy(NoCopy const&) = delete;
+        NoCopy(NoCopy&&) = delete;
+    };
+
+    template<>
+    struct NoCopy<void>
+    {
+        NoCopy(NoCopy const&) = delete;
+        NoCopy(NoCopy&&) = delete;
+    };
+
+    struct NodeLayout {
+    };
+
+    struct NodeLayoutBuilder {
+        template<typename Node, typename A>
+        A const* local_object(Node const& node);
+
+        template<typename Node, typename Marker, typename A>
+        void local_array(Node const& node, Marker const*, std::span<A> const*, size_t);
+
+        template<typename Node, typename A>
+        void export_array(Node const& node, std::string id, std::span<A> value);
+
+        template<typename Node, typename A>
+        void import_array(Node const& node, std::string id, std::span<A> const&);
+
+        template<typename A>
+        bool has_import_array(std::string const& id) const;
+
+        template<typename A>
+        bool has_export_array(std::string const& id) const;
+
+        template<typename A>
+        std::span<A> get_export_array(std::string const& id) const;
+
+        template<typename A>
+        void bind_import_array(std::string const& id, std::span<A> value);
+
+        size_t max_block_size() const;
+
+        NodeLayout build() &&;
+    };
+
+    struct ResourceContext {
+        struct VstResources {
+            template<typename Descriptor>
+            void* create(Descriptor const& descriptor) const;
         };
 
-        struct InitBufferRecord {
-            std::string id;
-            void const* type_tag = nullptr;
-            size_t count = 0;
-            bool declared = false;
-            bool registered = false;
-            bool fulfilled = false;
-            std::shared_ptr<void> storage;
-        };
+        VstResources const& vst;
+    };
 
-        struct TickBufferRecord {
-            std::string id;
-            void const* type_tag = nullptr;
-            size_t count = 0;
-            ptrdiff_t offset = std::numeric_limits<ptrdiff_t>::min();
-            bool registered = false;
-            bool used = false;
-        };
+    template<typename Node>
+    struct DeclarationContext
+    {
+        template<typename>
+        friend struct DeclarationContext;
 
-        PassMode mode = PassMode::counting;
-        std::span<std::byte> runtime_buffer;
-        size_t max_block_size = 1;
-        std::unordered_map<std::string, InitBufferRecord> init_buffers;
-        std::unordered_map<std::string, TickBufferRecord> tick_buffers;
-
-        InitBufferContext() = default;
-        InitBufferContext(PassMode mode_, std::span<std::byte> runtime_buffer_, size_t max_block_size_):
-            mode(mode_),
-            runtime_buffer(runtime_buffer_),
-            max_block_size(max_block_size_)
-        {}
-
-        InitBufferContext make_initializing_context(std::span<std::byte> new_runtime_buffer) const
-        {
-            InitBufferContext replay(PassMode::initializing, new_runtime_buffer, max_block_size);
-            replay.max_block_size = max_block_size;
-            replay.init_buffers = init_buffers;
-            replay.tick_buffers = tick_buffers;
-            for (auto& [_, record] : replay.init_buffers) {
-                record.registered = false;
-                record.fulfilled = false;
-            }
-            for (auto& [_, record] : replay.tick_buffers) {
-                record.registered = false;
-            }
-            return replay;
-        }
-
-        void validate_after_counting() const
-        {
-            for (auto const& [_, record] : tick_buffers) {
-                if (record.used && !record.registered) {
-                    throw std::logic_error("tick buffer '" + record.id + "' was used but never registered during the first pass");
-                }
-            }
-        }
-
-        void validate_after_initialization() const
-        {
-            for (auto const& [_, record] : init_buffers) {
-                if (record.declared && !record.fulfilled) {
-                    throw std::logic_error("init buffer '" + record.id + "' was not registered again during the second pass");
-                }
-            }
-            for (auto const& [_, record] : tick_buffers) {
-                if (was_tick_buffer_declared(record) && !record.registered) {
-                    throw std::logic_error("tick buffer '" + record.id + "' was not registered again during the second pass");
-                }
-            }
-        }
-
-        // size_t max_block_size() const {
-        //     return _max_block_size;
-        // }
-
-        bool has_init_buffer(std::string const& id) const
-        {
-            return init_buffers.contains(id);
-        }
-
-        bool has_tick_buffer(std::string const& id) const
-        {
-            return tick_buffers.contains(id);
-        }
-
-        template<typename T>
-        std::span<T> register_init_buffer(std::string const& id, size_t count)
-        {
-            auto& record = init_buffers[id];
-            if (record.id.empty()) {
-                record.id = id;
-            }
-            if (record.count != 0 && record.count != count) {
-                throw std::logic_error("init buffer '" + record.id + "' changed element count between registrations");
-            }
-            if (mode == PassMode::counting) {
-                if (record.registered) {
-                    throw std::logic_error("init buffer '" + record.id + "' was registered more than once");
-                }
-                if (!record.storage) {
-                    std::shared_ptr<T[]> storage(new T[count](), std::default_delete<T[]>());
-                    record.storage = std::shared_ptr<void>(storage, storage.get());
-                }
-                record.type_tag = type_token<T>();
-                record.count = count;
-                record.declared = true;
-                record.registered = true;
-                record.fulfilled = false;
-                return { static_cast<T*>(record.storage.get()), record.count };
-            }
-
-            if (!record.declared) {
-                throw std::logic_error("init buffer '" + record.id + "' was not registered during the first pass");
-            }
-            if (record.fulfilled) {
-                throw std::logic_error("init buffer '" + record.id + "' was registered more than once on the second pass");
-            }
-            record.registered = true;
-            record.fulfilled = true;
-            return { static_cast<T*>(record.storage.get()), record.count };
-        }
-
-        template<typename T>
-        std::span<T> use_init_buffer(std::string const& id)
-        {
-            auto it = init_buffers.find(id);
-            if (it == init_buffers.end()) {
-                throw std::logic_error("init buffer '" + id + "' was used before registration");
-            }
-            auto& record = it->second;
-            if (!record.registered) {
-                throw std::logic_error("init buffer '" + record.id + "' was used before registration in the current pass");
-            }
-            return { static_cast<T*>(record.storage.get()), record.count };
-        }
-
-        template<typename T>
-        void register_tick_buffer(std::string const& id, std::span<T> tick_buffer)
-        {
-            auto& record = tick_buffers[id];
-            if (record.id.empty()) {
-                record.id = id;
-            }
-            validate_tick_buffer_identity<T>(record, tick_buffer.size());
-            ptrdiff_t const offset = compute_runtime_offset(tick_buffer.data());
-
-            if (mode == PassMode::counting) {
-                if (record.registered) {
-                    throw std::logic_error("tick buffer '" + record.id + "' was registered more than once");
-                }
-                record.type_tag = type_token<T>();
-                record.count = tick_buffer.size();
-                record.offset = offset;
-                record.registered = true;
-                return;
-            }
-
-            if (!was_tick_buffer_declared(record)) {
-                throw std::logic_error("tick buffer '" + record.id + "' was not registered during the first pass");
-            }
-            if (record.registered) {
-                throw std::logic_error("tick buffer '" + record.id + "' was registered more than once on the second pass");
-            }
-            if (record.offset != offset) {
-                throw std::logic_error("tick buffer '" + record.id + "' changed offset between init passes");
-            }
-            record.registered = true;
-        }
-
-        template<typename T>
-        std::span<T> use_tick_buffer(std::string const& id)
-        {
-            auto& record = tick_buffers[id];
-            if (record.id.empty()) {
-                record.id = id;
-            }
-
-            record.used = true;
-            if (!record.type_tag) {
-                record.type_tag = type_token<T>();
-            }
-
-            if (mode == PassMode::counting) {
-                return {};
-            }
-            if (!was_tick_buffer_declared(record)) {
-                throw std::logic_error("tick buffer '" + record.id + "' was used before first-pass registration");
-            }
-
-            auto* data = reinterpret_cast<T*>(runtime_buffer.data() + record.offset);
-            return { data, record.count };
-        }
+        using State = typename NodeStateType<Node>::Type;
 
     private:
-        template<typename T>
-        static void const* type_token()
-        {
-            static int token = 0;
-            return &token;
-        }
+        NodeLayoutBuilder* _builder;
+        Node const* _node;
+        State const* _state_marker;
 
-        ptrdiff_t compute_runtime_offset(void const* data) const
+    public:
+        explicit DeclarationContext(NodeLayoutBuilder& builder, Node const& node)
+        : _builder(&builder)
+        , _node(&node)
         {
-            if (!runtime_buffer.data() || !data) {
-                return 0;
+            if constexpr (details::has_State<Node>)
+            {
+                _state_marker = _builder->template local_object<Node, State>(node);
             }
-            auto const* base = reinterpret_cast<std::byte const*>(runtime_buffer.data());
-            auto const* ptr = reinterpret_cast<std::byte const*>(data);
-            return ptr - base;
-        }
-
-        template<typename T>
-        void validate_tick_buffer_identity(TickBufferRecord const& record, size_t count) const
-        {
-            if (record.count != 0 && record.count != count) {
-                throw std::logic_error("tick buffer '" + record.id + "' changed element count between registrations");
+            else
+            {
+                _state_marker = nullptr;
             }
         }
 
-        static bool was_tick_buffer_declared(TickBufferRecord const& record)
+        template<typename Node2>
+        DeclarationContext(DeclarationContext<Node2> const& ctx, Node const& node)
+        : DeclarationContext<Node>(*ctx._builder, node)
+        {}
+
+        NoCopy<State> const& state() const
+        requires(!std::is_void_v<State>)
         {
-            return record.offset != unresolved_tick_offset();
+            return reinterpret_cast<NoCopy<State> const&>(*_state_marker);
         }
 
-        static constexpr ptrdiff_t unresolved_tick_offset()
+        template<typename A>
+        void local_array(std::span<A> const& span, size_t count) const
         {
-            return std::numeric_limits<ptrdiff_t>::min();
+            _builder->local_array(*_node, _state_marker, &span, count);
         }
+
+        template<typename A>
+        void export_array(std::string id, std::span<A> const& span) const
+        {
+            _builder->export_array(*_node, std::move(id), span);
+        }
+
+        template<typename A>
+        void import_array(std::string id, std::span<A> const& span) const
+        {
+            _builder->import_array(*_node, std::move(id), span);
+        }
+
+        size_t max_block_size() const
+        {
+            return _builder->max_block_size();
+        }
+    };
+
+    template<typename Node>
+    struct InitializationContext {
+        using State = typename NodeStateType<Node>::Type;
+
+    private:
+        NodeLayoutBuilder* _builder;
+        void* _state = nullptr;
+
+    public:
+        ResourceContext const& resources;
+
+        explicit InitializationContext(NodeLayoutBuilder& builder, void* state, ResourceContext const& resources);
+
+        template<typename Node2>
+        InitializationContext(InitializationContext<Node2> const& ctx);
+
+        std::add_lvalue_reference_t<State> state() const
+        requires(!std::is_void_v<State>)
+        ;
+    };
+
+    template<typename Node>
+    struct ReleaseContext {
+        using State = typename NodeStateType<Node>::Type;
+
+    private:
+        NodeLayoutBuilder* _builder;
+        void* _state = nullptr;
+
+    public:
+        ResourceContext const& resources;
+
+        explicit ReleaseContext(NodeLayoutBuilder& builder, void* state, ResourceContext const& resources);
+
+        template<typename Node2>
+        ReleaseContext(ReleaseContext<Node2> const& ctx);
+
+        std::add_lvalue_reference_t<State> state() const
+        requires(!std::is_void_v<State>)
+        ;
     };
 
     namespace details
@@ -718,26 +658,32 @@ namespace iv {
             num_inputs = node.num_inputs();
         };
 
-        template <typename Node, typename Allocator>
-        concept has_init_buffer = requires(Node node, Allocator allocator)
+        template <typename Node>
+        concept has_declare = requires(Node node, DeclarationContext<Node> ctx)
         {
-            node.init_buffer(allocator);
-        };
-
-        template <typename Node, typename Allocator>
-        concept has_init_buffer_ctx = requires(Node node, Allocator allocator, InitBufferContext ctx)
-        {
-            node.init_buffer(allocator, ctx);
+            node.declare(ctx);
         };
 
         template <typename Node>
-        concept has_tick = requires(Node node, TickState state)
+        concept has_initialize = requires(Node node, InitializationContext<Node> ctx)
+        {
+            node.initialize(ctx);
+        };
+
+        template <typename Node>
+        concept has_release = requires(Node node, ReleaseContext<Node> ctx)
+        {
+            node.release(ctx);
+        };
+
+        template <typename Node>
+        concept has_tick = requires(Node node, TickContext<Node> state)
         {
             node.tick(state);
         };
 
         template <typename Node>
-        concept has_tick_block = requires(Node node, BlockTickState state)
+        concept has_tick_block = requires(Node node, TickBlockContext<Node> state)
         {
             node.tick_block(state);
         };
@@ -807,32 +753,33 @@ namespace iv {
         }
     }
 
-    template<typename Node, typename Allocator>
-    constexpr std::span<std::byte> do_init_buffer(Node const& node, Allocator& allocator, InitBufferContext& ctx)
+    template<typename Node, typename Ctx>
+    constexpr void do_declare(Node const& node, Ctx& ctx)
     {
-        if constexpr (details::has_init_buffer_ctx<Node, Allocator> || details::has_init_buffer<Node, Allocator>)
+        DeclarationContext<Node> node_ctx(ctx, node);
+        if constexpr (details::has_declare<Node>)
         {
-            std::span<std::byte> memory_before = allocator.get_buffer();
-            if constexpr (details::has_init_buffer_ctx<Node, Allocator>)
-            {
-                node.init_buffer(allocator, ctx);
-            }
-            else
-            {
-                node.init_buffer(allocator);
-            }
-            std::span<std::byte> memory_after = allocator.get_buffer();
-
-#ifndef NDEBUG
-            std::byte* before_end = memory_before.data() + memory_before.size();
-            std::byte* after_end = memory_after.data() + memory_after.size();
-            assert(before_end == after_end);
-#endif
-            return { memory_before.data(), memory_before.size() - memory_after.size() };
+            node.declare(node_ctx);
         }
-        else
+    }
+
+    template<typename Node, typename Ctx>
+    constexpr void do_initialize(Node const& node, Ctx& ctx)
+    {
+        InitializationContext<Node> node_ctx(ctx);
+        if constexpr (details::has_initialize<Node>)
         {
-            return { allocator.get_buffer().data(), 0 };
+            node.initialize(node_ctx);
+        }
+    }
+
+    template<typename Node, typename Ctx>
+    constexpr void do_release(Node const& node, Ctx& ctx)
+    {
+        ReleaseContext<Node> node_ctx(ctx);
+        if constexpr (details::has_release<Node>)
+        {
+            node.release(node_ctx);
         }
     }
 
@@ -875,22 +822,21 @@ namespace iv {
     }
 
     template<typename Node>
-    void do_tick_block(Node& node, BlockTickState const& state);
+    void do_tick_block(Node& node, TickBlockContext<Node> const& state);
 
     template<typename Node>
-    void do_tick(Node& node, TickState const& state)
+    void do_tick(Node& node, TickContext<Node> const& ctx)
     {
         if constexpr (details::has_tick<Node>)
         {
-            node.tick(state);
-            advance_inputs(state.inputs, 1);
+            node.tick(ctx);
+            advance_inputs(ctx.inputs, 1);
         }
         else if constexpr (details::has_tick_block<Node>)
         {
             do_tick_block(node, {
-                static_cast<NodeState const&>(state),
-                state.midi,
-                state.index,
+                static_cast<NodeState<Node> const&>(ctx),
+                ctx.index,
                 1,
             });
         }
@@ -901,25 +847,24 @@ namespace iv {
     }
 
     template<typename Node>
-    void do_tick_block(Node& node, BlockTickState const& state)
+    void do_tick_block(Node& node, TickBlockContext<Node> const& ctx)
     {
-        if (state.block_size == 0) {
+        if (ctx.block_size == 0) {
             return;
         }
-        validate_block_size(state.block_size);
+        validate_block_size(ctx.block_size);
 
         if constexpr (details::has_tick_block<Node>)
         {
-            node.tick_block(state);
-            advance_inputs(state.inputs, state.block_size);
+            node.tick_block(ctx);
+            advance_inputs(ctx.inputs, ctx.block_size);
         }
         else
         {
-            for (size_t sample = 0; sample < state.block_size; ++sample) {
+            for (size_t i = 0; i < ctx.block_size; ++i) {
                 do_tick(node, {
-                    static_cast<NodeState const&>(state),
-                    state.midi,
-                    state.index + sample,
+                    static_cast<NodeState<Node> const&>(ctx),
+                    ctx.index + i,
                 });
             }
         }

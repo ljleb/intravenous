@@ -26,7 +26,7 @@ namespace iv {
             return _manager != nullptr;
         }
 
-        void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context);
+        void register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder);
     };
 
     class JuceVstRuntimeManager {
@@ -47,7 +47,7 @@ namespace iv {
         friend void tick_juce_vst_wrapper(
             JuceVstWrapperSpec const& spec,
             void* live_instance,
-            BlockTickState const& state
+            TickBlockContext<JuceVstWrapper> const& state
         );
 
         std::unique_ptr<Impl> _impl;
@@ -64,7 +64,7 @@ namespace iv {
     void tick_juce_vst_wrapper(
         JuceVstWrapperSpec const& spec,
         void* live_instance,
-        BlockTickState const& state
+        TickBlockContext<JuceVstWrapper> const& state
     );
 #endif
 }

@@ -21,22 +21,20 @@ namespace iv {
             };
         }
 
-        template<class Allocator>
-        void init_buffer(Allocator& alloc, InitBufferContext& context) const
+        void declare(DeclarationContext<SharedAccumulatingSink> const& ctx) const
         {
-            State& state = alloc.template new_object<State>();
-            auto buffer = context.template use_tick_buffer<Sample>(resource_id);
-            alloc.assign(state.buffer, buffer);
+            auto const& state = ctx.state();
+            ctx.import_array(resource_id, state.buffer);
         }
 
-        void tick(TickState const& state) const
+        void tick(TickContext<SharedAccumulatingSink> const& ctx) const
         {
-            auto& sink_state = state.get_state<State>();
+            auto& sink_state = ctx.state();
             if (sink_state.buffer.empty()) {
                 return;
             }
 
-            sink_state.buffer[state.index & (sink_state.buffer.size() - 1)] += state.inputs[0].get();
+            sink_state.buffer[ctx.index & (sink_state.buffer.size() - 1)] += ctx.inputs[0].get();
         }
     };
 }

@@ -41,11 +41,11 @@ namespace iv {
             return _num_inputs;
         }
 
-        void tick(TickState const& state)
+        void tick(auto const& ctx) const
         {
-            auto& out = state.outputs[0];
+            auto& out = ctx.outputs[0];
             Sample result = binary_op_default_v<BinaryOp>;
-            for (auto& input : state.inputs) {
+            for (auto& input : ctx.inputs) {
                 result = _binary_op(result, input.get());
             }
             out.push(result);
@@ -68,7 +68,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state)
+        void tick(auto const& state) const
         {
             state.outputs[0].push(-state.inputs[0].get());
         }
@@ -85,9 +85,9 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state)
+        void tick(auto const& ctx) const
         {
-            state.outputs[0].push(std::powf(state.inputs[0].get(), state.inputs[1].get()));
+            ctx.outputs[0].push(std::powf(ctx.inputs[0].get(), ctx.inputs[1].get()));
         }
     };
 }

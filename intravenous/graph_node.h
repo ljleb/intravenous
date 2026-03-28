@@ -124,8 +124,8 @@ namespace iv {
         using Nodes = std::vector<TypeErasedNode>;
         using Edges = std::unordered_set<GraphEdge>;
 
-        struct GraphState : public NodeState {
-            std::span<NodeState> node_states;
+        struct GraphState : public NodeState<TypeErasedNode> {
+            std::span<NodeState<TypeErasedNode>> node_states;
         };
 
         Nodes _nodes;
@@ -519,7 +519,6 @@ namespace iv {
                         size_t const node_i = region.execution_order[0];
                         _nodes[node_i].tick_block({
                             private_state.node_states[node_i],
-                            state.midi,
                             state.index + offset,
                             region_block_size,
                         });
@@ -530,7 +529,6 @@ namespace iv {
                         for (size_t node_i : region.execution_order) {
                             _nodes[node_i].tick_block({
                                 private_state.node_states[node_i],
-                                state.midi,
                                 state.index + offset + sample,
                                 1,
                             });
@@ -608,7 +606,7 @@ namespace iv {
         std::shared_ptr<void> _runtime;
         void (*_register_runtime_buffers_fn)(void*, TypeErasedAllocator, InitBufferContext&) = nullptr;
         size_t (*_max_block_size_fn)(void const*, TypeErasedNode const&, size_t) = nullptr;
-        void (*_tick_block_fn)(void*, TypeErasedNode&, std::span<std::byte>, std::span<MidiMessage const>, size_t, size_t) = nullptr;
+        void (*_tick_block_fn)(void*, TypeErasedNode&, std::span<std::byte>, size_t, size_t) = nullptr;
 
     public:
         TypeErasedNodeRuntime() = default;
@@ -623,8 +621,8 @@ namespace iv {
             _max_block_size_fn = [](void const* runtime_ptr, TypeErasedNode const& node, size_t requested_max_block_size) {
                 return static_cast<Runtime const*>(runtime_ptr)->max_block_size(node, requested_max_block_size);
             };
-            _tick_block_fn = [](void* runtime_ptr, TypeErasedNode& root, std::span<std::byte> buffer, std::span<MidiMessage const> midi, size_t index, size_t block_size) {
-                static_cast<Runtime*>(runtime_ptr)->tick_block(root, buffer, midi, index, block_size);
+            _tick_block_fn = [](void* runtime_ptr, TypeErasedNode& root, std::span<std::byte> buffer, size_t index, size_t block_size) {
+                static_cast<Runtime*>(runtime_ptr)->tick_block(root, buffer, index, block_size);
             };
         }
 
@@ -648,12 +646,11 @@ namespace iv {
         void tick_block(
             TypeErasedNode& root,
             std::span<std::byte> buffer,
-            std::span<MidiMessage const> midi,
             size_t index,
             size_t block_size
         ) const
         {
-            _tick_block_fn(_runtime.get(), root, buffer, midi, index, block_size);
+            _tick_block_fn(_runtime.get(), root, buffer, index, block_size);
         }
     };
 
@@ -728,7 +725,7 @@ namespace iv {
             initialize_graph();
         }
 
-        void tick_block(std::span<MidiMessage const> midi, size_t index, size_t block_size)
+        void tick_block(size_t index, size_t block_size)
         {
             if (block_size == 0) {
                 return;
@@ -743,12 +740,11 @@ namespace iv {
                 _buffer.size() * sizeof(AlignedBytes)
             };
             if (_runtime) {
-                _runtime.tick_block(_node, buffer_span, midi, index, block_size);
+                _runtime.tick_block(_node, buffer_span, index, block_size);
                 return;
             }
             _node.tick_block({
-                NodeState { .inputs = {}, .outputs = {}, .buffer = buffer_span },
-                midi,
+                NodeState<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer_span },
                 index,
                 block_size
             });

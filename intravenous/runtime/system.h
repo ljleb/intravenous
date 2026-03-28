@@ -1,4 +1,5 @@
 #pragma once
+#include "basic_nodes/type_erased.h"
 #include "devices/audio_device.h"
 #include "juce_vst_runtime.h"
 #include "wav.h"
@@ -41,26 +42,23 @@ namespace iv {
 #endif
         }
 
-        void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
+        void register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder)
         {
 #if IV_ENABLE_JUCE_VST
-            juce_vst_runtime.register_runtime_buffers(allocator, context);
+            juce_vst_runtime.register_runtime_buffers(allocator, builder);
 #endif
             size_t const num_channels = render_session.config().num_channels;
-            if (context.mode == InitBufferContext::PassMode::initializing) {
-                sink_bindings.clear();
-            }
+            sink_bindings.clear();
 
             for (size_t channel = 0; channel < num_channels; ++channel) {
-                if (!context.has_tick_buffer(render_session.sink_id(channel))) {
+                auto const& sink_id = render_session.sink_id(channel);
+                if (!builder.template has_import_array<Sample>(sink_id)) {
                     continue;
                 }
 
                 auto buffer = allocator.template new_array<Sample>(render_session.sink_buffer_size());
-                context.register_tick_buffer(render_session.sink_id(channel), buffer);
-                if (context.mode == InitBufferContext::PassMode::initializing) {
-                    sink_bindings.push_back({ channel, buffer });
-                }
+                builder.bind_import_array(sink_id, buffer);
+                sink_bindings.push_back({ channel, buffer });
             }
         }
 
@@ -95,7 +93,6 @@ namespace iv {
         void tick_block(
             TypeErasedNode& root,
             std::span<std::byte> buffer,
-            std::span<MidiMessage const> midi,
             size_t index,
             size_t block_size
         )
@@ -125,8 +122,7 @@ namespace iv {
                 while (chunk_remaining != 0) {
                     size_t chunk_size = prev_power_of_2(chunk_remaining);
                     root.tick_block({
-                        NodeState { .inputs = {}, .outputs = {}, .buffer = buffer },
-                        midi,
+                        NodeState<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer },
                         block_index,
                         chunk_size,
                     });
@@ -172,32 +168,28 @@ namespace iv {
             flush();
         }
 
-        void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
+        void register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder)
         {
 #if IV_ENABLE_JUCE_VST
             if (juce_vst_runtime) {
-                juce_vst_runtime.register_runtime_buffers(allocator, context);
+                juce_vst_runtime.register_runtime_buffers(allocator, builder);
             }
 #endif
-            if (context.mode == InitBufferContext::PassMode::initializing) {
-                sink_bindings.clear();
-            }
+            sink_bindings.clear();
 
-            size_t const ring_size = size_t(1) << size_t(std::ceil(std::log2(std::max<size_t>(context.max_block_size, 1))));
+            size_t const ring_size = size_t(1) << size_t(std::ceil(std::log2(std::max<size_t>(builder.max_block_size(), size_t(1)))));
             for (size_t channel = 0; channel < config.num_channels; ++channel) {
                 if (channel >= sink_ids.size()) {
                     continue;
                 }
                 std::string const& id = sink_ids[channel];
-                if (!context.has_tick_buffer(id)) {
+                if (!builder.has_import_array<Sample>(id)) {
                     continue;
                 }
 
                 auto buffer = allocator.template new_array<Sample>(ring_size);
-                context.register_tick_buffer(id, buffer);
-                if (context.mode == InitBufferContext::PassMode::initializing) {
-                    sink_bindings.push_back({ channel, buffer, {} });
-                }
+                builder.bind_import_array(id, buffer);
+                sink_bindings.push_back({ channel, buffer, {} });
             }
         }
 
@@ -231,15 +223,13 @@ namespace iv {
         void tick_block(
             TypeErasedNode& root,
             std::span<std::byte> buffer,
-            std::span<MidiMessage const> midi,
             size_t index,
             size_t block_size
         )
         {
             clear_window(index, block_size);
             root.tick_block({
-                NodeState { .inputs = {}, .outputs = {}, .buffer = buffer },
-                midi,
+                NodeState<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer },
                 index,
                 block_size
             });
@@ -288,13 +278,13 @@ namespace iv {
         PassiveRuntime() = default;
 #endif
 
-        void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
+        void register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder)
         {
 #if IV_ENABLE_JUCE_VST
-            juce_vst_runtime.register_runtime_buffers(allocator, context);
+            juce_vst_runtime.register_runtime_buffers(allocator, builder);
 #else
             (void)allocator;
-            (void)context;
+            (void)builder;
 #endif
         }
 
@@ -306,14 +296,12 @@ namespace iv {
         void tick_block(
             TypeErasedNode& root,
             std::span<std::byte> buffer,
-            std::span<MidiMessage const> midi,
             size_t index,
             size_t block_size
         )
         {
             root.tick_block({
-                NodeState { .inputs = {}, .outputs = {}, .buffer = buffer },
-                midi,
+                NodeState<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer },
                 index,
                 block_size
             });

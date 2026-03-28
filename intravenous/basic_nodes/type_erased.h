@@ -17,7 +17,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state)
+        void tick(TickContext<Constant> const& state)
         {
             state.outputs[0].push(_value);
         }
@@ -29,9 +29,10 @@ namespace iv {
         std::vector<OutputConfig> _outputs;
         size_t _internal_latency;
         size_t _max_block_size;
-        std::span<std::byte>(*_init_buffer_fn)(void*, TypeErasedAllocator, InitBufferContext&);
-        void (*_tick_fn)(void*, TickState const&);
-        void (*_tick_block_fn)(void*, BlockTickState const&);
+        void (*_declare_fn)(void*, DeclarationContext<TypeErasedNode> const&);
+        void (*_initialize_fn)(void*, InitializationContext<TypeErasedNode> const&);
+        void (*_tick_fn)(void*, TickContext<TypeErasedNode> const&);
+        void (*_tick_block_fn)(void*, TickBlockContext<TypeErasedNode> const&);
 
     public:
         template<typename Node>
@@ -39,27 +40,31 @@ namespace iv {
         {
             if constexpr (std::is_empty_v<Node>) {
                 _node = nullptr;
-                _init_buffer_fn = [](void*, TypeErasedAllocator allocator, InitBufferContext& ctx) {
-                    return do_init_buffer(Node{}, allocator, ctx);
+                _declare_fn = [](void*, DeclarationContext<TypeErasedNode> const& ctx) {
+                    return do_declare(Node{}, ctx);
                 };
-                _tick_fn = [](void*, TickState const& state) {
-                    Node node {};
-                    do_tick(node, state);
+                _initialize_fn = [](void*, InitializationContext<TypeErasedNode> const& ctx) {
+                    return do_initialize(Node{}, ctx);
                 };
-                _tick_block_fn = [](void*, BlockTickState const& state) {
-                    Node node {};
-                    do_tick_block(node, state);
+                _tick_fn = [](void*, TickContext<TypeErasedNode> const& ctx) {
+                    do_tick(Node{}, ctx);
+                };
+                _tick_block_fn = [](void*, TickBlockContext<TypeErasedNode> const& ctx) {
+                    do_tick_block(Node{}, ctx);
                 };
             } else {
                 _node = std::make_shared<Node>(node);
-                _init_buffer_fn = [](void* node_ptr, TypeErasedAllocator allocator, InitBufferContext& ctx) {
-                    return do_init_buffer(*static_cast<Node*>(node_ptr), allocator, ctx);
+                _declare_fn = [](void* node, DeclarationContext<TypeErasedNode> const& ctx) {
+                    return do_declare(*static_cast<Node*>(node), ctx);
                 };
-                _tick_fn = [](void* node_ptr, TickState const& state) {
-                    do_tick(*static_cast<Node*>(node_ptr), state);
+                _initialize_fn = [](void* node, InitializationContext<TypeErasedNode> const& ctx) {
+                    return do_initialize(*static_cast<Node*>(node), ctx);
                 };
-                _tick_block_fn = [](void* node_ptr, BlockTickState const& state) {
-                    do_tick_block(*static_cast<Node*>(node_ptr), state);
+                _tick_fn = [](void* node, TickContext<TypeErasedNode> const& ctx) {
+                    do_tick(*static_cast<Node*>(node), ctx);
+                };
+                _tick_block_fn = [](void* node, TickBlockContext<TypeErasedNode> const& ctx) {
+                    do_tick_block(*static_cast<Node*>(node), ctx);
                 };
             }
             _inputs.assign_range(get_inputs(node));
@@ -89,20 +94,24 @@ namespace iv {
             return _max_block_size;
         }
 
-        template<typename Allocator>
-        std::span<std::byte> init_buffer(Allocator& allocator, InitBufferContext& ctx) const
+        void declare(DeclarationContext<TypeErasedNode> const& ctx) const
         {
-            return _init_buffer_fn(_node.get(), TypeErasedAllocator { allocator }, ctx);
+            return _declare_fn(_node.get(), ctx);
         }
 
-        void tick(TickState const& state)
+        void initialize(InitializationContext<TypeErasedNode> const& ctx) const
         {
-            _tick_fn(_node.get(), state);
+            return _initialize_fn(_node.get(), ctx);
         }
 
-        void tick_block(BlockTickState const& state)
+        void tick(TickContext<TypeErasedNode> const& ctx)
         {
-            _tick_block_fn(_node.get(), state);
+            _tick_fn(_node.get(), ctx);
+        }
+
+        void tick_block(TickBlockContext<TypeErasedNode> const& ctx)
+        {
+            _tick_block_fn(_node.get(), ctx);
         }
     };
 }
