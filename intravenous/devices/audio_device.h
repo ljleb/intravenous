@@ -1,18 +1,14 @@
 #pragma once
 
-#include "dsl.h"
-#include "devices/channel_buffer_sink.h"
+#include "ports.h"
 #include "third_party/miniaudio/miniaudio.h"
 
-#include <algorithm>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <memory>
 #include <mutex>
-#include <optional>
 #include <stdexcept>
-#include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -24,160 +20,463 @@ namespace iv {
         size_t preferred_block_size = 256;
     };
 
-    class AudioDevice {
-        ma_context _context {};
-        ma_device _device {};
+    class AudioDevicePlayback {
+        std::shared_ptr<void> _state;
+        size_t (*_preferred_block_size_fn)(void*) = nullptr;
+        void (*_begin_block_fn)(void*, size_t) = nullptr;
+        size_t (*_active_block_start_fn)(void const*) = nullptr;
+        size_t (*_active_block_end_fn)(void const*) = nullptr;
+        size_t (*_active_block_frames_fn)(void const*) = nullptr;
+        void (*_mix_sink_block_fn)(void*, size_t, std::span<Sample const>, size_t, size_t) = nullptr;
+        void (*_finish_tick_fn)(void*, size_t) = nullptr;
+        std::span<Sample const> (*_output_block_fn)(void const*, size_t) = nullptr;
+        bool (*_is_shutdown_requested_fn)(void const*) = nullptr;
+        void (*_request_shutdown_fn)(void*) = nullptr;
 
-        bool _open_backend = true;
-        bool _context_initialized = false;
-        bool _device_initialized = false;
-        bool _device_started = false;
-        bool _shutdown_requested = false;
-        bool _render_requested = false;
-        bool _render_in_progress = false;
-        bool _render_finished = false;
-        bool _block_open = false;
+    public:
+        AudioDevicePlayback() = default;
 
-        RenderConfig _config;
-        Sample _sample_period;
-        std::vector<std::vector<Sample>> _planar_storage;
-        std::vector<Sample*> _channel_ptrs;
+        template<typename State>
+        explicit AudioDevicePlayback(std::shared_ptr<State> state) :
+            _state(std::move(state)),
+            _preferred_block_size_fn([](void* state_ptr) {
+                return static_cast<State*>(state_ptr)->preferred_block_size();
+            }),
+            _begin_block_fn([](void* state_ptr, size_t global_index) {
+                static_cast<State*>(state_ptr)->begin_block(global_index);
+            }),
+            _active_block_start_fn([](void const* state_ptr) {
+                return static_cast<State const*>(state_ptr)->active_block_start();
+            }),
+            _active_block_end_fn([](void const* state_ptr) {
+                return static_cast<State const*>(state_ptr)->active_block_end();
+            }),
+            _active_block_frames_fn([](void const* state_ptr) {
+                return static_cast<State const*>(state_ptr)->active_block_frames();
+            }),
+            _mix_sink_block_fn([](void* state_ptr, size_t channel, std::span<Sample const> sink_buffer, size_t block_start, size_t frames) {
+                static_cast<State*>(state_ptr)->mix_sink_block(channel, sink_buffer, block_start, frames);
+            }),
+            _finish_tick_fn([](void* state_ptr, size_t global_index) {
+                static_cast<State*>(state_ptr)->finish_tick(global_index);
+            }),
+            _output_block_fn([](void const* state_ptr, size_t channel) {
+                return static_cast<State const*>(state_ptr)->output_block(channel);
+            }),
+            _is_shutdown_requested_fn([](void const* state_ptr) {
+                return static_cast<State const*>(state_ptr)->is_shutdown_requested();
+            }),
+            _request_shutdown_fn([](void* state_ptr) {
+                static_cast<State*>(state_ptr)->request_shutdown();
+            })
+        {}
 
-        size_t _requested_frames = 0;
-        size_t _requested_channels = 0;
-        size_t _active_block_start = 0;
-        size_t _active_block_end = 0;
-        std::mutex _mutex;
-        std::condition_variable _cv;
-
-        void initialize_backend()
+        explicit operator bool() const
         {
-            if (_shutdown_requested) {
-                return;
-            }
-            if (_device_initialized) {
-                return;
-            }
-
-            ma_result result = ma_context_init(nullptr, 0, nullptr, &_context);
-            if (result != MA_SUCCESS) {
-                throw std::runtime_error("ma_context_init failed");
-            }
-            _context_initialized = true;
-
-            ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
-            device_config.playback.format = ma_format_f32;
-            device_config.playback.channels = static_cast<ma_uint32>(_config.num_channels);
-            device_config.sampleRate = static_cast<ma_uint32>(_config.sample_rate);
-            device_config.dataCallback = data_callback;
-            device_config.pUserData = this;
-
-            result = ma_device_init(&_context, &device_config, &_device);
-            if (result != MA_SUCCESS) {
-                shutdown();
-                throw std::runtime_error("ma_device_init failed");
-            }
-            _device_initialized = true;
-
-            _config.sample_rate = _device.sampleRate;
-            _config.num_channels = _device.playback.channels;
-            if (_device.playback.internalPeriodSizeInFrames != 0) {
-                _config.max_block_frames = _device.playback.internalPeriodSizeInFrames;
-            }
-            _sample_period = static_cast<Sample>(1) / static_cast<Sample>(_config.sample_rate);
-
-            _planar_storage.assign(_config.num_channels, std::vector<Sample>(_config.max_block_frames, 0.0f));
-            _channel_ptrs.assign(_config.num_channels, nullptr);
-            for (size_t channel = 0; channel < _config.num_channels; ++channel) {
-                _channel_ptrs[channel] = _planar_storage[channel].data();
-            }
+            return static_cast<bool>(_state);
         }
 
-        void start_backend()
+        size_t preferred_block_size() const
         {
-            if (_shutdown_requested) {
-                return;
-            }
-            if (_device_started) {
-                return;
-            }
-
-            ma_result result = ma_device_start(&_device);
-            if (result != MA_SUCCESS) {
-                shutdown();
-                throw std::runtime_error("ma_device_start failed");
-            }
-            _device_started = true;
+            return _preferred_block_size_fn(_state.get());
         }
 
-        void clear_staging(size_t channels, size_t frames)
+        void begin_block(size_t global_index)
         {
-            for (size_t channel = 0; channel < channels; ++channel) {
-                std::fill_n(_planar_storage[channel].data(), frames, 0.0f);
-            }
+            _begin_block_fn(_state.get(), global_index);
         }
 
-        void interleave_to(float* output) const
+        size_t active_block_start() const
         {
-            for (size_t frame = 0; frame < _requested_frames; ++frame) {
-                for (size_t channel = 0; channel < _requested_channels; ++channel) {
-                    output[frame * _requested_channels + channel] = _planar_storage[channel][frame];
+            return _active_block_start_fn(_state.get());
+        }
+
+        size_t active_block_end() const
+        {
+            return _active_block_end_fn(_state.get());
+        }
+
+        size_t active_block_frames() const
+        {
+            return _active_block_frames_fn(_state.get());
+        }
+
+        void mix_sink_block(size_t channel, std::span<Sample const> sink_buffer, size_t block_start, size_t frames)
+        {
+            _mix_sink_block_fn(_state.get(), channel, sink_buffer, block_start, frames);
+        }
+
+        void finish_tick(size_t global_index)
+        {
+            _finish_tick_fn(_state.get(), global_index);
+        }
+
+        std::span<Sample const> output_block(size_t channel) const
+        {
+            return _output_block_fn(_state.get(), channel);
+        }
+
+        bool is_shutdown_requested() const
+        {
+            return _is_shutdown_requested_fn(_state.get());
+        }
+
+        void request_shutdown()
+        {
+            _request_shutdown_fn(_state.get());
+        }
+    };
+
+    namespace details {
+        struct FakeAudioPlayback {
+            RenderConfig config;
+            std::vector<std::vector<Sample>> planar_storage;
+            size_t active_block_start_index = 0;
+            size_t active_block_end_index = 0;
+            bool shutdown_requested = false;
+
+            explicit FakeAudioPlayback(RenderConfig config_) :
+                config(config_),
+                planar_storage(config.num_channels, std::vector<Sample>(config.max_block_frames, 0.0f))
+            {}
+
+            size_t preferred_block_size() const
+            {
+                return prev_power_of_2(config.max_block_frames);
+            }
+
+            void begin_block(size_t global_index)
+            {
+                for (size_t channel = 0; channel < config.num_channels; ++channel) {
+                    std::fill(planar_storage[channel].begin(), planar_storage[channel].end(), 0.0f);
+                }
+                active_block_start_index = global_index;
+                active_block_end_index = global_index + config.max_block_frames;
+            }
+
+            size_t active_block_start() const
+            {
+                return active_block_start_index;
+            }
+
+            size_t active_block_end() const
+            {
+                return active_block_end_index;
+            }
+
+            size_t active_block_frames() const
+            {
+                return active_block_end_index - active_block_start_index;
+            }
+
+            void mix_sink_block(size_t channel, std::span<Sample const> sink_buffer, size_t block_start, size_t frames)
+            {
+                if (channel >= config.num_channels || sink_buffer.empty()) {
+                    return;
+                }
+
+                for (size_t frame = 0; frame < frames; ++frame) {
+                    size_t const global_index = block_start + frame;
+                    planar_storage[channel][frame] += sink_buffer[global_index & (sink_buffer.size() - 1)];
                 }
             }
-        }
 
-        void write_silence(float* output, size_t frames, size_t channels) const
-        {
-            std::memset(output, 0, frames * channels * sizeof(float));
-        }
+            void finish_tick(size_t)
+            {}
 
-        static void data_callback(ma_device* device, void* output, void const*, ma_uint32 frame_count)
-        {
-            auto* self = static_cast<AudioDevice*>(device->pUserData);
-            auto* out = static_cast<float*>(output);
-            if (!self) {
-                return;
+            std::span<Sample const> output_block(size_t channel) const
+            {
+                return planar_storage.at(channel);
             }
 
-            std::unique_lock lock(self->_mutex);
-
-            if (
-                self->_shutdown_requested ||
-                device->playback.channels > self->_config.num_channels ||
-                frame_count > self->_config.max_block_frames
-            ) {
-                self->write_silence(out, frame_count, device->playback.channels);
-                return;
+            bool is_shutdown_requested() const
+            {
+                return shutdown_requested;
             }
 
-            self->_requested_frames = frame_count;
-            self->_requested_channels = device->playback.channels;
-            self->_render_requested = true;
-            self->_render_in_progress = false;
-            self->_render_finished = false;
-            self->_cv.notify_all();
+            void request_shutdown()
+            {
+                shutdown_requested = true;
+            }
+        };
 
-            self->_cv.wait(lock, [&] {
-                return self->_render_finished || self->_shutdown_requested;
-            });
+        struct MiniaudioPlayback {
+            ma_context context {};
+            ma_device device {};
 
-            if (self->_shutdown_requested) {
-                self->write_silence(out, frame_count, device->playback.channels);
-                return;
+            bool context_initialized = false;
+            bool device_initialized = false;
+            bool device_started = false;
+            bool shutdown_requested = false;
+            bool render_requested = false;
+            bool render_in_progress = false;
+            bool render_finished = false;
+            bool block_open = false;
+
+            RenderConfig config;
+            std::vector<std::vector<Sample>> planar_storage;
+            std::vector<Sample*> channel_ptrs;
+
+            size_t requested_frames = 0;
+            size_t requested_channels = 0;
+            size_t active_block_start_index = 0;
+            size_t active_block_end_index = 0;
+            std::mutex mutex;
+            std::condition_variable cv;
+
+            explicit MiniaudioPlayback(RenderConfig config_) :
+                config(config_),
+                planar_storage(config.num_channels, std::vector<Sample>(config.max_block_frames, 0.0f)),
+                channel_ptrs(config.num_channels, nullptr)
+            {
+                for (size_t channel = 0; channel < config.num_channels; ++channel) {
+                    channel_ptrs[channel] = planar_storage[channel].data();
+                }
             }
 
-            self->interleave_to(out);
-            self->_render_finished = false;
-            self->_cv.notify_all();
-        }
+            ~MiniaudioPlayback()
+            {
+                request_shutdown();
+                shutdown_backend();
+            }
+
+            static void data_callback(ma_device* device, void* output, void const*, ma_uint32 frame_count)
+            {
+                auto* self = static_cast<MiniaudioPlayback*>(device->pUserData);
+                auto* out = static_cast<float*>(output);
+                if (!self) {
+                    return;
+                }
+
+                std::unique_lock lock(self->mutex);
+
+                if (
+                    self->shutdown_requested ||
+                    device->playback.channels > self->config.num_channels ||
+                    frame_count > self->config.max_block_frames
+                ) {
+                    self->write_silence(out, frame_count, device->playback.channels);
+                    return;
+                }
+
+                self->requested_frames = frame_count;
+                self->requested_channels = device->playback.channels;
+                self->render_requested = true;
+                self->render_in_progress = false;
+                self->render_finished = false;
+                self->cv.notify_all();
+
+                self->cv.wait(lock, [&] {
+                    return self->render_finished || self->shutdown_requested;
+                });
+
+                if (self->shutdown_requested) {
+                    self->write_silence(out, frame_count, device->playback.channels);
+                    return;
+                }
+
+                self->interleave_to(out);
+                self->render_finished = false;
+                self->cv.notify_all();
+            }
+
+            void ensure_backend_initialized()
+            {
+                if (shutdown_requested || device_initialized) {
+                    return;
+                }
+
+                ma_result result = ma_context_init(nullptr, 0, nullptr, &context);
+                if (result != MA_SUCCESS) {
+                    throw std::runtime_error("ma_context_init failed");
+                }
+                context_initialized = true;
+
+                ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
+                device_config.playback.format = ma_format_f32;
+                device_config.playback.channels = static_cast<ma_uint32>(config.num_channels);
+                device_config.sampleRate = static_cast<ma_uint32>(config.sample_rate);
+                device_config.dataCallback = data_callback;
+                device_config.pUserData = this;
+
+                result = ma_device_init(&context, &device_config, &device);
+                if (result != MA_SUCCESS) {
+                    shutdown_backend();
+                    throw std::runtime_error("ma_device_init failed");
+                }
+                device_initialized = true;
+
+                config.sample_rate = device.sampleRate;
+                config.num_channels = device.playback.channels;
+                if (device.playback.internalPeriodSizeInFrames != 0) {
+                    config.max_block_frames = device.playback.internalPeriodSizeInFrames;
+                }
+
+                planar_storage.assign(config.num_channels, std::vector<Sample>(config.max_block_frames, 0.0f));
+                channel_ptrs.assign(config.num_channels, nullptr);
+                for (size_t channel = 0; channel < config.num_channels; ++channel) {
+                    channel_ptrs[channel] = planar_storage[channel].data();
+                }
+            }
+
+            void ensure_backend_started()
+            {
+                ensure_backend_initialized();
+                if (shutdown_requested || device_started) {
+                    return;
+                }
+
+                ma_result result = ma_device_start(&device);
+                if (result != MA_SUCCESS) {
+                    shutdown_backend();
+                    throw std::runtime_error("ma_device_start failed");
+                }
+                device_started = true;
+            }
+
+            size_t preferred_block_size()
+            {
+                ensure_backend_initialized();
+                return prev_power_of_2(config.max_block_frames);
+            }
+
+            void begin_block(size_t global_index)
+            {
+                if (block_open || shutdown_requested) {
+                    return;
+                }
+
+                ensure_backend_started();
+
+                std::unique_lock lock(mutex);
+                cv.wait(lock, [&] {
+                    return render_requested || shutdown_requested;
+                });
+
+                if (shutdown_requested) {
+                    return;
+                }
+
+                render_requested = false;
+                render_in_progress = true;
+                clear_staging(requested_channels, requested_frames);
+                block_open = true;
+                active_block_start_index = global_index;
+                active_block_end_index = global_index + requested_frames;
+            }
+
+            size_t active_block_start() const
+            {
+                return active_block_start_index;
+            }
+
+            size_t active_block_end() const
+            {
+                return active_block_end_index;
+            }
+
+            size_t active_block_frames() const
+            {
+                return active_block_end_index - active_block_start_index;
+            }
+
+            void mix_sink_block(size_t channel, std::span<Sample const> sink_buffer, size_t block_start, size_t frames)
+            {
+                if (channel >= requested_channels || sink_buffer.empty()) {
+                    return;
+                }
+
+                for (size_t frame = 0; frame < frames; ++frame) {
+                    size_t const global_index = block_start + frame;
+                    planar_storage[channel][frame] += sink_buffer[global_index & (sink_buffer.size() - 1)];
+                }
+            }
+
+            void finish_tick(size_t global_index)
+            {
+                if (!block_open || global_index + 1 < active_block_end_index) {
+                    return;
+                }
+                block_open = false;
+
+                {
+                    std::lock_guard lock(mutex);
+                    if (shutdown_requested || !render_in_progress) {
+                        return;
+                    }
+                    render_in_progress = false;
+                    render_finished = true;
+                }
+                cv.notify_all();
+            }
+
+            std::span<Sample const> output_block(size_t channel) const
+            {
+                return planar_storage.at(channel);
+            }
+
+            bool is_shutdown_requested() const
+            {
+                return shutdown_requested;
+            }
+
+            void request_shutdown()
+            {
+                {
+                    std::lock_guard lock(mutex);
+                    shutdown_requested = true;
+                }
+                cv.notify_all();
+            }
+
+        private:
+            void clear_staging(size_t channels, size_t frames)
+            {
+                for (size_t channel = 0; channel < channels; ++channel) {
+                    std::fill_n(planar_storage[channel].data(), frames, 0.0f);
+                }
+            }
+
+            void interleave_to(float* output) const
+            {
+                for (size_t frame = 0; frame < requested_frames; ++frame) {
+                    for (size_t channel = 0; channel < requested_channels; ++channel) {
+                        output[frame * requested_channels + channel] = planar_storage[channel][frame];
+                    }
+                }
+            }
+
+            void write_silence(float* output, size_t frames, size_t channels) const
+            {
+                std::memset(output, 0, frames * channels * sizeof(float));
+            }
+
+            void shutdown_backend()
+            {
+                if (device_initialized) {
+                    ma_device_uninit(&device);
+                    device_initialized = false;
+                    device_started = false;
+                }
+
+                if (context_initialized) {
+                    ma_context_uninit(&context);
+                    context_initialized = false;
+                }
+            }
+        };
+    }
+
+    class AudioDevice {
+        bool _open_backend = true;
+        RenderConfig _config;
+        Sample _sample_period;
 
     public:
         explicit AudioDevice(RenderConfig config = {}, bool open_backend = true) :
             _open_backend(open_backend),
             _config(config),
-            _sample_period(static_cast<Sample>(1) / static_cast<Sample>(config.sample_rate)),
-            _planar_storage(config.num_channels, std::vector<Sample>(config.max_block_frames, 0.0f)),
-            _channel_ptrs(config.num_channels, nullptr)
+            _sample_period(static_cast<Sample>(1) / static_cast<Sample>(config.sample_rate))
         {
             if (_config.sample_rate == 0 || _config.num_channels == 0 || _config.max_block_frames == 0) {
                 throw std::invalid_argument("render config values must be non-zero");
@@ -187,74 +486,6 @@ namespace iv {
             } catch (std::logic_error const& e) {
                 throw std::invalid_argument(e.what());
             }
-
-            for (size_t channel = 0; channel < _config.num_channels; ++channel) {
-                _channel_ptrs[channel] = _planar_storage[channel].data();
-            }
-
-            if (_open_backend) {
-                initialize_backend();
-            }
-        }
-
-        ~AudioDevice()
-        {
-            shutdown();
-        }
-
-        AudioDevice(AudioDevice const&) = delete;
-        AudioDevice& operator=(AudioDevice const&) = delete;
-
-        AudioDevice(AudioDevice&& other) noexcept :
-            _context(std::exchange(other._context, {})),
-            _device(std::exchange(other._device, {})),
-            _open_backend(std::exchange(other._open_backend, false)),
-            _context_initialized(std::exchange(other._context_initialized, false)),
-            _device_initialized(std::exchange(other._device_initialized, false)),
-            _device_started(std::exchange(other._device_started, false)),
-            _shutdown_requested(std::exchange(other._shutdown_requested, false)),
-            _render_requested(std::exchange(other._render_requested, false)),
-            _render_in_progress(std::exchange(other._render_in_progress, false)),
-            _render_finished(std::exchange(other._render_finished, false)),
-            _block_open(std::exchange(other._block_open, false)),
-            _config(other._config),
-            _sample_period(other._sample_period),
-            _planar_storage(std::move(other._planar_storage)),
-            _channel_ptrs(std::move(other._channel_ptrs)),
-            _requested_frames(std::exchange(other._requested_frames, 0)),
-            _requested_channels(std::exchange(other._requested_channels, 0)),
-            _active_block_start(std::exchange(other._active_block_start, 0)),
-            _active_block_end(std::exchange(other._active_block_end, 0))
-        {}
-
-        AudioDevice& operator=(AudioDevice&& other) noexcept
-        {
-            if (this == &other) {
-                return *this;
-            }
-
-            shutdown();
-
-            _context = std::exchange(other._context, {});
-            _device = std::exchange(other._device, {});
-            _open_backend = std::exchange(other._open_backend, false);
-            _context_initialized = std::exchange(other._context_initialized, false);
-            _device_initialized = std::exchange(other._device_initialized, false);
-            _device_started = std::exchange(other._device_started, false);
-            _shutdown_requested = std::exchange(other._shutdown_requested, false);
-            _render_requested = std::exchange(other._render_requested, false);
-            _render_in_progress = std::exchange(other._render_in_progress, false);
-            _render_finished = std::exchange(other._render_finished, false);
-            _block_open = std::exchange(other._block_open, false);
-            _config = other._config;
-            _sample_period = other._sample_period;
-            _planar_storage = std::move(other._planar_storage);
-            _channel_ptrs = std::move(other._channel_ptrs);
-            _requested_frames = std::exchange(other._requested_frames, 0);
-            _requested_channels = std::exchange(other._requested_channels, 0);
-            _active_block_start = std::exchange(other._active_block_start, 0);
-            _active_block_end = std::exchange(other._active_block_end, 0);
-            return *this;
         }
 
         RenderConfig const& config() const
@@ -262,12 +493,9 @@ namespace iv {
             return _config;
         }
 
-        void ensure_backend_initialized()
+        bool open_backend() const
         {
-            if (_shutdown_requested || !_open_backend || _device_initialized) {
-                return;
-            }
-            initialize_backend();
+            return _open_backend;
         }
 
         Sample& sample_period()
@@ -275,48 +503,9 @@ namespace iv {
             return _sample_period;
         }
 
-        bool is_shutdown_requested() const
+        Sample sample_period() const
         {
-            return _shutdown_requested;
-        }
-
-        std::string sink_id(size_t channel, size_t device_id = 0) const
-        {
-            return "output-device:" + std::to_string(device_id) + ":channel:" + std::to_string(channel);
-        }
-
-        std::optional<size_t> sink_channel(std::string_view id) const
-        {
-            constexpr std::string_view prefix = "output-device:";
-            constexpr std::string_view channel_marker = ":channel:";
-
-            if (!id.starts_with(prefix)) {
-                return std::nullopt;
-            }
-
-            size_t const marker = id.find(channel_marker, prefix.size());
-            if (marker == std::string_view::npos) {
-                return std::nullopt;
-            }
-
-            std::string_view channel_text = id.substr(marker + channel_marker.size());
-            if (channel_text.empty()) {
-                return std::nullopt;
-            }
-
-            size_t channel = 0;
-            for (char c : channel_text) {
-                if (c < '0' || c > '9') {
-                    return std::nullopt;
-                }
-                channel = channel * 10 + size_t(c - '0');
-            }
-            return channel;
-        }
-
-        size_t sink_buffer_size() const
-        {
-            return size_t(1) << size_t(std::ceil(std::log2(_config.max_block_frames)));
+            return _sample_period;
         }
 
         size_t processing_block_size() const
@@ -329,206 +518,17 @@ namespace iv {
             return prev_power_of_2(processing_block_size());
         }
 
-        std::span<Sample const> output_block(size_t channel) const
-        {
-            return _planar_storage.at(channel);
-        }
-
-        void prepare_tick(size_t global_index)
-        {
-            if (_block_open) {
-                return;
-            }
-            if (_shutdown_requested) {
-                return;
-            }
-
-            if (_open_backend && !_device_started) {
-                if (!_device_initialized) {
-                    initialize_backend();
-                }
-                start_backend();
-            }
-
-            if (!_open_backend) {
-                clear_staging(_config.num_channels, _config.max_block_frames);
-                _block_open = true;
-                _active_block_start = global_index;
-                _active_block_end = global_index + _config.max_block_frames;
-                return;
-            }
-
-            std::unique_lock lock(_mutex);
-            _cv.wait(lock, [&] {
-                return _render_requested || _shutdown_requested;
-            });
-
-            if (_shutdown_requested) {
-                return;
-            }
-
-            _render_requested = false;
-            _render_in_progress = true;
-            clear_staging(_requested_channels, _requested_frames);
-            _block_open = true;
-            _active_block_start = global_index;
-            _active_block_end = global_index + _requested_frames;
-        }
-
-        size_t active_block_start() const
-        {
-            return _active_block_start;
-        }
-
-        size_t active_block_end() const
-        {
-            return _active_block_end;
-        }
-
-        size_t active_output_channels() const
-        {
-            return _requested_channels == 0 ? _config.num_channels : _requested_channels;
-        }
-
-        size_t active_block_frames() const
-        {
-            return _active_block_end - _active_block_start;
-        }
-
-        void mix_sink_block(size_t channel, std::span<Sample const> sink_buffer, size_t block_start, size_t frames)
-        {
-            if (channel >= active_output_channels() || sink_buffer.empty()) {
-                return;
-            }
-
-            for (size_t frame = 0; frame < frames; ++frame) {
-                size_t const global_index = block_start + frame;
-                _planar_storage[channel][frame] += sink_buffer[global_index & (sink_buffer.size() - 1)];
-            }
-        }
-
-        void finish_tick(size_t global_index)
-        {
-            if (!_block_open || global_index + 1 < _active_block_end) {
-                return;
-            }
-            _block_open = false;
-
-            if (!_open_backend) {
-                return;
-            }
-
-            {
-                std::lock_guard lock(_mutex);
-                if (_shutdown_requested || !_render_in_progress) {
-                    return;
-                }
-                _render_in_progress = false;
-                _render_finished = true;
-            }
-            _cv.notify_all();
-        }
-
-        void request_shutdown()
-        {
-            shutdown();
-        }
-
-        void shutdown()
-        {
-            {
-                std::lock_guard lock(_mutex);
-                _shutdown_requested = true;
-            }
-            _cv.notify_all();
-
-            if (_device_initialized) {
-                ma_device_uninit(&_device);
-                _device_initialized = false;
-                _device_started = false;
-            }
-
-            if (_context_initialized) {
-                ma_context_uninit(&_context);
-                _context_initialized = false;
-            }
-        }
-    };
-
-    class AudioRenderSession {
-        AudioDevice* _device = nullptr;
-
-    public:
-        AudioRenderSession() = default;
-
-        explicit AudioRenderSession(AudioDevice& device) :
-            _device(&device)
-        {}
-
-        RenderConfig const& config() const
-        {
-            return _device->config();
-        }
-
-        std::string sink_id(size_t channel, size_t device_id = 0) const
-        {
-            return _device->sink_id(channel, device_id);
-        }
-
-        std::optional<size_t> sink_channel(std::string_view id) const
-        {
-            return _device->sink_channel(id);
-        }
-
         size_t sink_buffer_size() const
         {
-            return _device->sink_buffer_size();
+            return size_t(1) << size_t(std::ceil(std::log2(_config.max_block_frames)));
         }
 
-        size_t scheduling_block_size() const
+        AudioDevicePlayback make_playback() const
         {
-            return _device->scheduling_block_size();
-        }
-
-        bool is_shutdown_requested() const
-        {
-            return _device->is_shutdown_requested();
-        }
-
-        void prepare_tick(size_t global_index) const
-        {
-            _device->prepare_tick(global_index);
-        }
-
-        size_t active_block_start() const
-        {
-            return _device->active_block_start();
-        }
-
-        size_t active_block_end() const
-        {
-            return _device->active_block_end();
-        }
-
-        size_t active_block_frames() const
-        {
-            return _device->active_block_frames();
-        }
-
-        void mix_sink_buffer(size_t channel, std::span<Sample const> sink_buffer) const
-        {
-            _device->mix_sink_block(
-                channel,
-                sink_buffer,
-                active_block_start(),
-                active_block_frames()
-            );
-        }
-
-        void finish_tick(size_t global_index) const
-        {
-            _device->finish_tick(global_index);
+            if (_open_backend) {
+                return AudioDevicePlayback(std::make_shared<details::MiniaudioPlayback>(_config));
+            }
+            return AudioDevicePlayback(std::make_shared<details::FakeAudioPlayback>(_config));
         }
     };
-
 }

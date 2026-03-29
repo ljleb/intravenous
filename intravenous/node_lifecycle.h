@@ -1,7 +1,7 @@
 #pragma once
 
 #include "node_layout.h"
-#include "node_execution.h"
+#include "node_tick.h"
 
 namespace iv {
     template<typename Node, typename Ctx>

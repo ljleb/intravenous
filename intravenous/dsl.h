@@ -123,7 +123,7 @@ namespace iv {
         size_t _next_detach_id = 0;
 
         std::vector<BuilderNode> _nodes;
-        Graph::Edges _edges;
+        std::unordered_set<GraphEdge> _edges;
         std::unordered_set<PortId> _placed_input_ports;
 
         std::vector<InputConfig> _public_inputs;
@@ -155,7 +155,7 @@ namespace iv {
 
         std::string debug_node_id(size_t index) const
         {
-            assert(index < _nodes.size() && "node index out of bounds");
+            IV_ASSERT(index < _nodes.size(), "node index out of bounds");
             return _builder_id.debug_node_id(index);
         }
 
@@ -344,14 +344,14 @@ namespace iv {
             }();
             auto execution_plan = details::build_execution_plan(g.nodes, g.edges, detached);
 
-            return Graph(
+            return Graph(details::build_graph_artifact(
                 std::move(g.nodes),
                 std::move(g.edges),
                 std::move(detached),
                 std::move(execution_plan),
                 _public_inputs,
                 _public_outputs
-            );
+            ));
         }
 
     private:

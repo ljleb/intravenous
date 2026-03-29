@@ -1,8 +1,9 @@
 #pragma once
 
+#include "devices/audio_device.h"
 #include "module/loader.h"
-#include "runtime/crash_handlers.h"
-#include "runtime/system.h"
+#include "node_executor.h"
+#include "runtime/handlers.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -162,29 +163,64 @@ namespace iv::test {
         return iv::ModuleLoader(repo_root(), std::move(extra_roots));
     }
 
-    inline iv::NodeProcessor make_processor(iv::ModuleLoader& loader, iv::System& system, std::filesystem::path const& module_path)
+    inline iv::ExecutionTargets::AudioDeviceProvider make_audio_device_provider(iv::AudioDevice& audio_device)
     {
-        auto graph = loader.load_root(module_path, system);
-        system.activate_root(graph.sink_count != 0);
-        return system.make_processor(std::move(graph.root), std::move(graph.module_refs));
+        return iv::ExecutionTargets::AudioDeviceProvider{
+            .owner = &audio_device,
+            .device_fn = [](void* owner, size_t device_id) -> iv::AudioDevice* {
+                if (device_id != 0) {
+                    return nullptr;
+                }
+                return static_cast<iv::AudioDevice*>(owner);
+            }
+        };
     }
 
-    inline void run_processor_ticks(iv::NodeProcessor& processor, size_t ticks = 16)
+    inline iv::ModuleRenderConfig module_render_config(iv::AudioDevice const& audio_device)
+    {
+        return iv::ModuleRenderConfig{
+            .sample_rate = audio_device.config().sample_rate,
+            .num_channels = audio_device.config().num_channels,
+            .max_block_frames = audio_device.config().max_block_frames,
+        };
+    }
+
+    inline iv::NodeExecutor make_executor(iv::ModuleLoader& loader, iv::AudioDevice& audio_device, std::filesystem::path const& module_path)
+    {
+        auto graph = loader.load_root(
+            module_path,
+            module_render_config(audio_device),
+            &audio_device.sample_period()
+        );
+
+        iv::ResourceContext resources {};
+        iv::ExecutionTargets execution_targets(make_audio_device_provider(audio_device));
+        return iv::NodeExecutor::create(
+            std::move(graph.root),
+            std::move(resources),
+            std::move(execution_targets),
+            std::move(graph.module_refs)
+        );
+    }
+
+    template<typename Executor>
+    inline void run_processor_ticks(Executor& processor, size_t ticks = 16)
     {
         for (size_t i = 0; i < ticks; ++i) {
-            processor.tick_block({}, i, 1);
+            processor.tick_block(i, 1);
         }
     }
 
+    template<typename Executor>
     inline void run_processor_blocks(
-        iv::NodeProcessor& processor,
+        Executor& processor,
         std::span<size_t const> block_sizes,
         size_t start_index = 0
     )
     {
         size_t index = start_index;
         for (size_t block_size : block_sizes) {
-            processor.tick_block({}, index, block_size);
+            processor.tick_block(index, block_size);
             index += block_size;
         }
     }

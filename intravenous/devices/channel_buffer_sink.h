@@ -4,11 +4,11 @@
 
 #include <array>
 #include <string>
-#include <utility>
 
 namespace iv {
-    struct SharedAccumulatingSink {
-        std::string resource_id;
+    struct AudioDeviceSink {
+        size_t device_id = 0;
+        size_t channel = 0;
 
         struct State {
             std::span<Sample> buffer;
@@ -21,13 +21,47 @@ namespace iv {
             };
         }
 
-        void declare(DeclarationContext<SharedAccumulatingSink> const& ctx) const
+        void declare(DeclarationContext<AudioDeviceSink> const& ctx) const
         {
             auto const& state = ctx.state();
-            ctx.import_array(resource_id, state.buffer);
+            ctx.local_array(state.buffer, ctx.max_block_size());
         }
 
-        void tick(TickSampleContext<SharedAccumulatingSink> const& ctx) const
+        void initialize(InitializationContext<AudioDeviceSink> const& ctx) const
+        {
+            if (!ctx.execution_targets) {
+                return;
+            }
+
+            auto& state = ctx.state();
+            auto& target = ctx.execution_targets->audio_device(device_id, channel);
+            target.register_sink(state.buffer);
+        }
+
+        void move(MoveContext<AudioDeviceSink> const& ctx) const
+        {
+            if (!ctx.execution_targets) {
+                return;
+            }
+
+            auto& state = ctx.state();
+            auto& previous = ctx.previous_state();
+            auto& target = ctx.execution_targets->audio_device(device_id, channel);
+            target.update_sink(previous.buffer, state.buffer);
+        }
+
+        void release(ReleaseContext<AudioDeviceSink> const& ctx) const
+        {
+            if (!ctx.execution_targets) {
+                return;
+            }
+
+            auto& state = ctx.state();
+            auto& target = ctx.execution_targets->audio_device(device_id, channel);
+            target.unregister_sink(state.buffer);
+        }
+
+        void tick(TickSampleContext<AudioDeviceSink> const& ctx) const
         {
             auto& sink_state = ctx.state();
             if (sink_state.buffer.empty()) {

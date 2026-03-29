@@ -17,7 +17,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickSampleContext<Constant> const& state)
+        void tick(TickSampleContext<Constant> const& state) const
         {
             state.outputs[0].push(_value);
         }
@@ -41,30 +41,60 @@ namespace iv {
             if constexpr (std::is_empty_v<Node>) {
                 _node = nullptr;
                 _declare_fn = [](void*, DeclarationContext<TypeErasedNode> const& ctx) {
-                    return do_declare(Node{}, ctx);
+                    do_declare(Node{}, ctx);
                 };
                 _initialize_fn = [](void*, InitializationContext<TypeErasedNode> const& ctx) {
-                    return do_initialize(Node{}, ctx);
+                    do_initialize(Node{}, ctx);
                 };
                 _tick_fn = [](void*, TickSampleContext<TypeErasedNode> const& ctx) {
-                    do_tick(Node{}, ctx);
+                    do_tick(Node{}, TickSampleContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .buffer = ctx.buffer,
+                        },
+                        ctx.index,
+                    });
                 };
                 _tick_block_fn = [](void*, TickBlockContext<TypeErasedNode> const& ctx) {
-                    do_tick_block(Node{}, ctx);
+                    do_tick_block(Node{}, TickBlockContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .buffer = ctx.buffer,
+                        },
+                        ctx.index,
+                        ctx.block_size,
+                    });
                 };
             } else {
                 _node = std::make_shared<Node>(node);
                 _declare_fn = [](void* node, DeclarationContext<TypeErasedNode> const& ctx) {
-                    return do_declare(*static_cast<Node*>(node), ctx);
+                    do_declare(*static_cast<Node*>(node), ctx);
                 };
                 _initialize_fn = [](void* node, InitializationContext<TypeErasedNode> const& ctx) {
-                    return do_initialize(*static_cast<Node*>(node), ctx);
+                    do_initialize(*static_cast<Node*>(node), ctx);
                 };
                 _tick_fn = [](void* node, TickSampleContext<TypeErasedNode> const& ctx) {
-                    do_tick(*static_cast<Node*>(node), ctx);
+                    do_tick(*static_cast<Node*>(node), TickSampleContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .buffer = ctx.buffer,
+                        },
+                        ctx.index,
+                    });
                 };
                 _tick_block_fn = [](void* node, TickBlockContext<TypeErasedNode> const& ctx) {
-                    do_tick_block(*static_cast<Node*>(node), ctx);
+                    do_tick_block(*static_cast<Node*>(node), TickBlockContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .buffer = ctx.buffer,
+                        },
+                        ctx.index,
+                        ctx.block_size,
+                    });
                 };
             }
             _inputs.assign_range(get_inputs(node));
@@ -104,12 +134,12 @@ namespace iv {
             return _initialize_fn(_node.get(), ctx);
         }
 
-        void tick(TickSampleContext<TypeErasedNode> const& ctx)
+        void tick(TickSampleContext<TypeErasedNode> const& ctx) const
         {
             _tick_fn(_node.get(), ctx);
         }
 
-        void tick_block(TickBlockContext<TypeErasedNode> const& ctx)
+        void tick_block(TickBlockContext<TypeErasedNode> const& ctx) const
         {
             _tick_block_fn(_node.get(), ctx);
         }

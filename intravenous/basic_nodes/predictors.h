@@ -24,7 +24,7 @@ namespace iv {
             _lr(lr),
             _decay(decay)
         {
-            assert(_order >= _look_ahead && "window length must cover look-ahead");
+            IV_ASSERT(_order >= _look_ahead, "window length must cover look-ahead");
         }
 
         auto inputs() const
@@ -107,7 +107,7 @@ namespace iv {
             _h(hidden),
             _mu(mu)
         {
-            assert(_p >= _L && "window length must cover look-ahead");
+            IV_ASSERT(_p >= _L, "window length must cover look-ahead");
         }
 
         auto inputs() const
@@ -221,7 +221,7 @@ namespace iv {
         , _h2(hidden2)
         , _mu(mu)
         {
-            assert(_p >= _L);
+            IV_ASSERT(_p >= _L, "window length must cover look-ahead");
         }
 
         auto inputs() const
@@ -355,7 +355,7 @@ namespace iv {
             _p(order),
             _mu(mu)
         {
-            assert(_p >= _L);
+            IV_ASSERT(_p >= _L, "window length must cover look-ahead");
         }
 
         auto inputs() const

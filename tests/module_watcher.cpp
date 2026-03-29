@@ -18,9 +18,13 @@ int main()
     iv::test::copy_directory(project_src, project_dst);
     iv::test::copy_directory(voice_src, voice_dst);
 
-    iv::System system({}, false, false);
+    iv::AudioDevice audio_device({}, false);
     auto loader = iv::test::make_loader({ runtime_root });
-    auto graph = loader.load_root(project_dst, system);
+    auto graph = loader.load_root(
+        project_dst,
+        iv::test::module_render_config(audio_device),
+        &audio_device.sample_period()
+    );
 
     auto watcher = iv::make_dependency_watcher();
     watcher->update(graph.dependencies);

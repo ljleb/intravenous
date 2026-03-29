@@ -11,7 +11,7 @@ namespace iv {
         explicit ValueSource(Sample const* value) :
             _value(value)
         {
-            assert(_value);
+            IV_ASSERT(_value, "ValueSource requires a non-null value pointer");
         }
 
         constexpr auto outputs() const
@@ -36,7 +36,7 @@ namespace iv {
             _size(size),
             _time_offset(time_offset)
         {
-            assert(_size >= 1);
+            IV_ASSERT(_size >= 1, "BufferSource requires at least one sample");
         }
 
         auto outputs() const

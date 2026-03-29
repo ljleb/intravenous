@@ -77,10 +77,40 @@ namespace iv {
     {}
 
     template<typename Node>
-    void do_tick_block(Node& node, TickBlockContext<Node> const& state);
+    void do_tick_block(Node const& node, TickBlockContext<Node> const& state);
+
+    inline std::span<std::byte> remaining_buffer(std::span<std::byte> buffer, std::byte* state_base)
+    {
+        if (!state_base) {
+            throw std::logic_error("nested node state pointer cannot be null");
+        }
+
+        auto* const buffer_begin = buffer.data();
+        auto* const buffer_end = buffer_begin + buffer.size();
+        if (state_base < buffer_begin || state_base > buffer_end) {
+            throw std::logic_error("nested node state pointer is outside the enclosing buffer");
+        }
+
+        return { state_base, static_cast<size_t>(buffer_end - state_base) };
+    }
+
+    template<typename NestedNode, typename OuterNode>
+    TickContext<NestedNode> make_nested_tick_context(
+        TickContext<OuterNode> const& outer,
+        std::byte* nested_state,
+        std::span<InputPort> inputs,
+        std::span<OutputPort> outputs
+    )
+    {
+        return TickContext<NestedNode> {
+            .inputs = inputs,
+            .outputs = outputs,
+            .buffer = remaining_buffer(outer.buffer, nested_state),
+        };
+    }
 
     template<typename Node>
-    void do_tick(Node& node, TickSampleContext<Node> const& ctx)
+    void do_tick(Node const& node, TickSampleContext<Node> const& ctx)
     {
         if constexpr (details::has_tick<Node>)
         {
@@ -102,7 +132,7 @@ namespace iv {
     }
 
     template<typename Node>
-    void do_tick_block(Node& node, TickBlockContext<Node> const& ctx)
+    void do_tick_block(Node const& node, TickBlockContext<Node> const& ctx)
     {
         if (ctx.block_size == 0) {
             return;

@@ -11,57 +11,57 @@ int main()
     std::filesystem::create_directories(runtime_root);
 
     {
-        iv::System system({}, false, false);
+        iv::AudioDevice audio_device({}, false);
         auto loader = iv::test::make_loader();
         auto missing_dir = runtime_root / "missing_entry";
         std::filesystem::create_directories(missing_dir);
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(missing_dir, system); },
+            [&] { (void)loader.load_root(missing_dir, iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
             "module.cpp",
             "missing module.cpp should fail"
         );
     }
 
     {
-        iv::System system({}, false, false);
+        iv::AudioDevice audio_device({}, false);
         auto loader = iv::test::make_loader();
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(fixtures / "missing_export", system); },
+            [&] { (void)loader.load_root(fixtures / "missing_export", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
             "does not declare IV_EXPORT_MODULE",
             "missing export symbol should fail"
         );
     }
 
     {
-        iv::System system({}, false, false);
+        iv::AudioDevice audio_device({}, false);
         auto loader = iv::test::make_loader();
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(fixtures / "build_failure", system); },
+            [&] { (void)loader.load_root(fixtures / "build_failure", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
             "command failed",
             "build failure should propagate"
         );
     }
 
     {
-        iv::System system({}, false, false);
+        iv::AudioDevice audio_device({}, false);
         auto loader = iv::test::make_loader();
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(fixtures / "missing_dependency", system); },
+            [&] { (void)loader.load_root(fixtures / "missing_dependency", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
             "unknown module id",
             "missing dependency id should fail"
         );
     }
 
     {
-        iv::System system({}, false, false);
+        iv::AudioDevice audio_device({}, false);
         auto loader = iv::test::make_loader({ fixtures, iv::test::duplicate_modules_root() });
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(fixtures / "noisy_saw_project", system); },
+            [&] { (void)loader.load_root(fixtures / "noisy_saw_project", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
             "duplicate module id",
             "duplicate module id should fail"
         );

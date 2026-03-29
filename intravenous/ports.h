@@ -147,6 +147,29 @@ namespace iv {
                 size()
             };
         }
+
+        template<typename Dst>
+        IV_FORCEINLINE constexpr void copy_to(BlockView<Dst> dst) const
+        {
+            IV_ASSERT(size() == dst.size(), "BlockView::copy_to requires matching block sizes");
+
+            auto src_first = first;
+            auto src_second = second;
+            auto dst_first = dst.first;
+            auto dst_second = dst.second;
+
+            auto copy_partial = [](auto& source, auto& target) {
+                size_t const n = std::min(source.size(), target.size());
+                std::copy_n(source.data(), n, target.data());
+                source = source.subspan(n);
+                target = target.subspan(n);
+            };
+
+            copy_partial(src_first, dst_first);
+            copy_partial(src_first, dst_second);
+            copy_partial(src_second, dst_first);
+            copy_partial(src_second, dst_second);
+        }
     };
 
     IV_FORCEINLINE constexpr BlockView<Sample> make_block_view(
@@ -206,7 +229,7 @@ namespace iv {
             _shared_data(shared_data),
             _history(history)
         {
-            assert(is_power_of_2(_shared_data.buffer.size()) && "buffer size should be a power of 2");
+            IV_ASSERT(is_power_of_2(_shared_data.buffer.size()), "buffer size should be a power of 2");
         }
 
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const
@@ -247,7 +270,7 @@ namespace iv {
             _shared_data(shared_data),
             _history(history)
         {
-            assert(is_power_of_2(_shared_data.buffer.size()) && "buffer size should be a power of 2");
+            IV_ASSERT(is_power_of_2(_shared_data.buffer.size()), "buffer size should be a power of 2");
         }
 
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const
@@ -287,8 +310,14 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void push_block(BlockView<Sample> samples)
         {
-            push_block(samples.first);
-            push_block(samples.second);
+            samples.copy_to(get_block(samples.size()));
+            _position = (_position + samples.size()) & (buffer_size() - 1);
+        }
+
+        IV_FORCEINLINE constexpr void push_block(BlockView<Sample const> samples)
+        {
+            samples.copy_to(get_block(samples.size()));
+            _position = (_position + samples.size()) & (buffer_size() - 1);
         }
 
         IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0)
@@ -332,4 +361,5 @@ namespace iv {
             advance_input(input, amount);
         }
     }
+
 }

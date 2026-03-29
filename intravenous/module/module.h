@@ -15,45 +15,27 @@ namespace iv {
     class LoadedModule;
 
     struct ModuleRenderConfig {
+        // TODO: This is still a bootstrap/runtime hint passed into module loading.
+        // The long-term source of truth should come from executor-target negotiation.
         size_t sample_rate = 48000;
         size_t num_channels = 2;
         size_t max_block_frames = 4096;
     };
 
-    class ModuleSystem {
+    class ModuleTargetFactory {
         void* _user_data = nullptr;
-        ModuleRenderConfig _render_config;
-        Sample* _sample_period = nullptr;
         NodeRef (*_sink_fn)(void*, GraphBuilder&, size_t, size_t) = nullptr;
 
     public:
-        ModuleSystem() = default;
+        ModuleTargetFactory() = default;
 
-        ModuleSystem(
+        ModuleTargetFactory(
             void* user_data,
-            ModuleRenderConfig render_config,
-            Sample* sample_period,
             NodeRef (*sink_fn)(void*, GraphBuilder&, size_t, size_t)
         ) :
             _user_data(user_data),
-            _render_config(render_config),
-            _sample_period(sample_period),
             _sink_fn(sink_fn)
         {}
-
-        ModuleRenderConfig const& render_config() const
-        {
-            return _render_config;
-        }
-
-        Sample& sample_period() const
-        {
-            if (!_sample_period) {
-                throw std::logic_error("module sample_period is unavailable");
-            }
-
-            return *_sample_period;
-        }
 
         NodeRef sink(GraphBuilder& builder, size_t channel, size_t device_id = 0) const
         {
@@ -67,19 +49,25 @@ namespace iv {
 
     class ModuleContext {
         GraphBuilder* _builder = nullptr;
-        ModuleSystem _system;
+        ModuleTargetFactory _target_factory;
+        ModuleRenderConfig _render_config;
+        Sample* _sample_period = nullptr;
         TypeErasedModule (*_load_fn)(void*, std::string_view) = nullptr;
         void* _load_user_data = nullptr;
 
     public:
         ModuleContext(
             GraphBuilder& builder,
-            ModuleSystem system = {},
+            ModuleTargetFactory target_factory = {},
+            ModuleRenderConfig render_config = {},
+            Sample* sample_period = nullptr,
             TypeErasedModule (*load_fn)(void*, std::string_view) = nullptr,
             void* load_user_data = nullptr
         ) :
             _builder(&builder),
-            _system(std::move(system)),
+            _target_factory(std::move(target_factory)),
+            _render_config(render_config),
+            _sample_period(sample_period),
             _load_fn(load_fn),
             _load_user_data(load_user_data)
         {}
@@ -89,9 +77,23 @@ namespace iv {
             return *_builder;
         }
 
-        ModuleSystem const& system() const
+        ModuleTargetFactory const& target_factory() const
         {
-            return _system;
+            return _target_factory;
+        }
+
+        ModuleRenderConfig const& render_config() const
+        {
+            return _render_config;
+        }
+
+        Sample& sample_period() const
+        {
+            if (!_sample_period) {
+                throw std::logic_error("module sample_period is unavailable");
+            }
+
+            return *_sample_period;
         }
 
         TypeErasedModule (*load_fn() const)(void*, std::string_view)
@@ -136,7 +138,9 @@ namespace iv {
             GraphBuilder builder = context.builder().derive_nested_builder();
             ModuleContext isolated_context(
                 builder,
-                context.system(),
+                context.target_factory(),
+                context.render_config(),
+                &context.sample_period(),
                 context.load_fn(),
                 context.load_user_data()
             );

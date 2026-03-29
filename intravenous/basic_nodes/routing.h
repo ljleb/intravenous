@@ -83,33 +83,9 @@ namespace iv {
         void tick_block(TickBlockContext<DetachWriterNode> const& ctx) const
         {
             auto& state = ctx.state();
-            auto const& samples = state.samples;
-            auto const n = samples.size();
-
-            auto block = ctx.inputs[0].get_block(ctx.block_size);
-
-            auto const* src1 = block.first.data();
-            auto const n1 = block.first.size();
-
-            auto const* src2 = block.second.data();
-            auto const n2 = block.second.size();
-
-            auto const total = ctx.block_size;
-            auto const start = ctx.index & (n - 1);
-
-            auto* dst1 = samples.data() + start;
-            auto const d1 = std::min(total, n - start); // before ring wrap
-            auto* dst2 = samples.data();
-
-            auto const a = std::min(n1, d1); // first  -> dst1
-            auto const b = n1 - a;           // first  -> dst2
-            auto const c = d1 - a;           // second -> dst1
-            auto const d = n2 - c;           // second -> dst2
-
-            std::copy_n(src1,     a, dst1);
-            std::copy_n(src1 + a, b, dst2);
-            std::copy_n(src2,     c, dst1 + a);
-            std::copy_n(src2 + c, d, dst2);
+            auto const& src = ctx.inputs[0].get_block(ctx.block_size);
+            auto const& dst = make_block_view(state.samples, ctx.index & (state.samples.size() - 1), ctx.block_size);
+            src.copy_to(dst);
         }
     };
 
@@ -143,27 +119,13 @@ namespace iv {
             auto const& samples = state.samples;
             auto const n = samples.size();
 
-            auto block = ctx.outputs[0].get_block(ctx.block_size);
-
-            auto* dst1 = block.first.data();
-            auto const n1 = block.first.size();
-            auto* dst2 = block.second.data();
-
             auto const total = ctx.block_size;
             auto const start = (ctx.index + n - loop_block_size) & (n - 1);
-
-            auto const src1 = std::min(total, n - start); // until ring wrap
-            auto const src2 = total - src1;               // after ring wrap
-
-            auto const a = std::min(src1, n1); // src1 -> first
-            auto const b = src1 - a;           // src1 -> second
-            auto const c = n1 - a;             // src2 -> first
-            auto const d = src2 - c;           // src2 -> second
-
-            std::copy_n(samples.data() + start,     a, dst1);
-            std::copy_n(samples.data() + start + a, b, dst2);
-            std::copy_n(samples.data(),             c, dst1 + a);
-            std::copy_n(samples.data() + c,         d, dst2 + b);
+            BlockView<Sample const> const samples_block {
+                std::span<Sample const>(samples.data() + start, std::min(total, n - start)),
+                std::span<Sample const>(samples.data(), total - std::min(total, n - start)),
+            };
+            ctx.outputs[0].push_block(samples_block);
         }
     };
 

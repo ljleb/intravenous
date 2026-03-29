@@ -256,6 +256,7 @@ int main()
         reloaded.initialize(&original);
         auto& reloaded_state = *static_cast<Movable::State*>(reloaded.state_ptr(0));
 
+        iv::test::require(original.initialized_nodes.empty(), "move reload should transfer old release ownership");
         iv::test::require(reloaded_state.initialized == 1, "move should preserve initialized count");
         iv::test::require(reloaded_state.moved == 1, "move should run when layout is compatible");
         iv::test::require(reloaded_state.scratch.size() == 2, "moved node local span should be patched");
@@ -281,6 +282,7 @@ int main()
         reloaded.initialize(&original);
         auto& reloaded_state = *static_cast<AutoMovable::State*>(reloaded.state_ptr(0));
 
+        iv::test::require(original.initialized_nodes.empty(), "fallback reload should transfer old release ownership");
         iv::test::require(original_state.value == nullptr, "state move construction should transfer unique ownership");
         iv::test::require(reloaded_state.value != nullptr, "reloaded state should receive moved ownership");
         iv::test::require(*reloaded_state.value == 41, "moved state value should be preserved");

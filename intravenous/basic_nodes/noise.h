@@ -140,7 +140,7 @@ namespace iv {
         explicit DeterministicUniformAESNoise(std::optional<uint64_t> seed = {})
         : _seed(make_seed(seed))
         {
-            assert(haveAESNI() && "This machine does not have the AES-NI instruction set, use a different noise node.");
+            IV_ASSERT(haveAESNI(), "This machine does not have the AES-NI instruction set, use a different noise node.");
         }
 
         auto inputs() const
@@ -324,7 +324,7 @@ namespace iv {
         , _mean(mean)
         , _std(std)
         {
-            assert(haveAESNI() && "This machine does not have the AES-NI instruction set, use a different noise node.");
+            IV_ASSERT(haveAESNI(), "This machine does not have the AES-NI instruction set, use a different noise node.");
         }
 
         auto outputs() const

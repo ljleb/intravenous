@@ -3,7 +3,6 @@
 #include "devices/channel_buffer_sink.h"
 #include "graph_node.h"
 #include "module_test_utils.h"
-#include "runtime/system.h"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +10,27 @@
 #include <vector>
 
 namespace {
+    struct BufferSink {
+        iv::Sample* destination;
+        size_t size;
+
+        auto inputs() const
+        {
+            return std::array<iv::InputConfig, 1>{};
+        }
+
+        void tick_block(iv::TickBlockContext<BufferSink> const& ctx) const
+        {
+            auto block = ctx.inputs[0].get_block(ctx.block_size);
+            for (size_t i = 0; i < ctx.block_size; ++i) {
+                size_t const index = ctx.index + i;
+                if (index < size) {
+                    destination[index] = block[i];
+                }
+            }
+        }
+    };
+
     struct BlockOnlyCounter {
         struct State {
             iv::Sample value = 0.0f;
@@ -21,25 +41,19 @@ namespace {
             return std::array<iv::OutputConfig, 1>{};
         }
 
-        template<class Allocator>
-        void init_buffer(Allocator& allocator) const
-        {
-            (void)allocator.template new_object<State>();
-        }
-
         size_t max_block_size() const
         {
             return 16;
         }
 
-        void tick_block(iv::BlockTickState const& state) const
+        void tick_block(iv::TickBlockContext<BlockOnlyCounter> const& ctx) const
         {
-            auto& counter = state.get_state<State>();
+            auto& counter = ctx.state();
             std::array<iv::Sample, 16> block {};
-            for (size_t sample = 0; sample < state.block_size; ++sample) {
+            for (size_t sample = 0; sample < ctx.block_size; ++sample) {
                 block[sample] = counter.value ++;
             }
-            state.outputs[0].push_block(std::span<iv::Sample const>(block.data(), state.block_size));
+            ctx.outputs[0].push_block(std::span<iv::Sample const>(block.data(), ctx.block_size));
         }
     };
 
@@ -59,26 +73,30 @@ namespace {
             return 8;
         }
 
-        void tick_block(iv::BlockTickState const& state) const
+        void tick_block(iv::TickBlockContext<BlockPassthrough> const& ctx) const
         {
-            state.outputs[0].push_block(state.inputs[0].get_block(state.block_size));
+            ctx.outputs[0].push_block(ctx.inputs[0].get_block(ctx.block_size));
         }
     };
 
-    iv::NodeProcessor make_feedback_processor(iv::Sample* destination, size_t size)
+    iv::NodeExecutor make_feedback_processor(iv::AudioDevice& audio_device, iv::Sample* destination, size_t size)
     {
         iv::GraphBuilder g;
 
         auto const integrator = g.node<iv::Integrator>();
         auto const warper = g.node<iv::Warper>();
-        auto const sink = g.node<iv::BufferSink>(destination, size);
+        auto const sink = g.node<BufferSink>(destination, size);
 
         integrator(warper["aliased"].detach(), 440.0f * 2.0f, 1.0f / 48000.0f);
         warper(integrator + 0.05f);
         sink(warper["anti_aliased"] * 0.2f);
         g.outputs();
 
-        return iv::NodeProcessor(iv::TypeErasedNode(g.build()), {}, size);
+        return iv::NodeExecutor::create(
+            iv::TypeErasedNode(g.build()),
+            {},
+            iv::ExecutionTargets(iv::test::make_audio_device_provider(audio_device))
+        );
     }
 
     void require_close(
@@ -109,8 +127,10 @@ int main()
         std::array<iv::Sample, sample_count> samplewise {};
         std::array<iv::Sample, sample_count> blockwise {};
 
-        auto sample_processor = make_feedback_processor(samplewise.data(), samplewise.size());
-        auto block_processor = make_feedback_processor(blockwise.data(), blockwise.size());
+        iv::AudioDevice sample_device({ .max_block_frames = sample_count }, false);
+        iv::AudioDevice block_device({ .max_block_frames = sample_count }, false);
+        auto sample_processor = make_feedback_processor(sample_device, samplewise.data(), samplewise.size());
+        auto block_processor = make_feedback_processor(block_device, blockwise.data(), blockwise.size());
 
         iv::test::run_processor_ticks(sample_processor, sample_count);
 
@@ -130,17 +150,23 @@ int main()
         std::array<iv::Sample, sample_count> samplewise {};
         std::array<iv::Sample, sample_count> blockwise {};
 
-        auto make_counter_processor = [](iv::Sample* destination, size_t size) {
+        auto make_counter_processor = [](iv::AudioDevice& audio_device, iv::Sample* destination, size_t size) {
             iv::GraphBuilder g;
             auto const counter = g.node<BlockOnlyCounter>();
-            auto const sink = g.node<iv::BufferSink>(destination, size);
+            auto const sink = g.node<BufferSink>(destination, size);
             sink(counter);
             g.outputs();
-            return iv::NodeProcessor(iv::TypeErasedNode(g.build()), {}, size);
+            return iv::NodeExecutor::create(
+                iv::TypeErasedNode(g.build()),
+                {},
+                iv::ExecutionTargets(iv::test::make_audio_device_provider(audio_device))
+            );
         };
 
-        auto sample_processor = make_counter_processor(samplewise.data(), samplewise.size());
-        auto block_processor = make_counter_processor(blockwise.data(), blockwise.size());
+        iv::AudioDevice sample_device({ .max_block_frames = sample_count }, false);
+        iv::AudioDevice block_device({ .max_block_frames = sample_count }, false);
+        auto sample_processor = make_counter_processor(sample_device, samplewise.data(), samplewise.size());
+        auto block_processor = make_counter_processor(block_device, blockwise.data(), blockwise.size());
 
         iv::test::run_processor_ticks(sample_processor, sample_count);
         std::array<size_t, 2> const counter_blocks { 8, 8 };
@@ -154,19 +180,25 @@ int main()
         std::array<iv::Sample, sample_count> expected {};
         std::array<iv::Sample, sample_count> actual {};
 
-        auto make_passthrough_processor = [](iv::Sample* destination, size_t size) {
+        auto make_passthrough_processor = [](iv::AudioDevice& audio_device, iv::Sample* destination, size_t size) {
             iv::GraphBuilder g;
             auto const counter = g.node<BlockOnlyCounter>();
             auto const passthrough = g.node<BlockPassthrough>();
-            auto const sink = g.node<iv::BufferSink>(destination, size);
+            auto const sink = g.node<BufferSink>(destination, size);
             passthrough(counter);
             sink(passthrough);
             g.outputs();
-            return iv::NodeProcessor(iv::TypeErasedNode(g.build()), {}, size);
+            return iv::NodeExecutor::create(
+                iv::TypeErasedNode(g.build()),
+                {},
+                iv::ExecutionTargets(iv::test::make_audio_device_provider(audio_device))
+            );
         };
 
-        auto expected_processor = make_passthrough_processor(expected.data(), expected.size());
-        auto actual_processor = make_passthrough_processor(actual.data(), actual.size());
+        iv::AudioDevice expected_device({ .max_block_frames = sample_count }, false);
+        iv::AudioDevice actual_device({ .max_block_frames = sample_count }, false);
+        auto expected_processor = make_passthrough_processor(expected_device, expected.data(), expected.size());
+        auto actual_processor = make_passthrough_processor(actual_device, actual.data(), actual.size());
 
         iv::test::run_processor_ticks(expected_processor, sample_count);
         std::array<size_t, 1> const passthrough_blocks { sample_count };
@@ -182,48 +214,55 @@ int main()
         iv::Sample a = 0.25f;
         iv::Sample b = 0.5f;
 
-        auto make_wrapped_processor = [&](iv::System& system) {
+        auto make_wrapped_processor = [&](iv::AudioDevice& audio_device) {
             iv::GraphBuilder g;
             auto const src_a = g.node<iv::ValueSource>(&a);
             auto const src_b = g.node<iv::ValueSource>(&b);
-            auto const sink_a = g.node<iv::SharedAccumulatingSink>(system.audio_device().sink_id(0));
-            auto const sink_b = g.node<iv::SharedAccumulatingSink>(system.audio_device().sink_id(0));
+            auto const sink_a = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+                .device_id = 0,
+                .channel = 0,
+            });
+            auto const sink_b = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+                .device_id = 0,
+                .channel = 0,
+            });
             sink_a(src_a);
             sink_b(src_b);
             g.outputs();
 
-            system.activate_root(true);
-            return system.make_processor(iv::TypeErasedNode(g.build()));
+            return iv::NodeExecutor::create(
+                iv::TypeErasedNode(g.build()),
+                {},
+                iv::ExecutionTargets(iv::test::make_audio_device_provider(audio_device))
+            );
         };
 
-        iv::System sample_system(
+        iv::AudioDevice sample_device(
             iv::RenderConfig{
                 .sample_rate = 48000,
                 .num_channels = 1,
                 .max_block_frames = samplewise.size(),
             },
-            false,
             false
         );
-        iv::System block_system(
+        iv::AudioDevice block_device(
             iv::RenderConfig{
                 .sample_rate = 48000,
                 .num_channels = 1,
                 .max_block_frames = blockwise.size(),
             },
-            false,
             false
         );
 
-        auto sample_processor = make_wrapped_processor(sample_system);
-        auto block_processor = make_wrapped_processor(block_system);
+        auto sample_processor = make_wrapped_processor(sample_device);
+        auto block_processor = make_wrapped_processor(block_device);
 
         iv::test::run_processor_ticks(sample_processor, samplewise.size());
         std::array<size_t, 2> const wrapped_blocks { 8, 8 };
         iv::test::run_processor_blocks(block_processor, wrapped_blocks);
 
-        std::copy_n(sample_system.audio_device().output_block(0).begin(), samplewise.size(), samplewise.begin());
-        std::copy_n(block_system.audio_device().output_block(0).begin(), blockwise.size(), blockwise.begin());
+        std::copy_n(sample_processor.execution_targets().audio_device(0, 0).output_block().begin(), samplewise.size(), samplewise.begin());
+        std::copy_n(block_processor.execution_targets().audio_device(0, 0).output_block().begin(), blockwise.size(), blockwise.begin());
 
         require_close(samplewise, blockwise, 0.0f, "wrapped graph block execution diverged");
     }
@@ -236,57 +275,65 @@ int main()
         iv::Sample a = 0.25f;
         iv::Sample b = 0.5f;
 
-        auto make_wrapped_processor = [&](iv::System& system) {
+        auto make_wrapped_processor = [&](iv::AudioDevice& audio_device) {
             iv::GraphBuilder g;
             auto const src_a = g.node<iv::ValueSource>(&a);
             auto const src_b = g.node<iv::ValueSource>(&b);
-            auto const sink_a = g.node<iv::SharedAccumulatingSink>(system.audio_device().sink_id(0));
-            auto const sink_b = g.node<iv::SharedAccumulatingSink>(system.audio_device().sink_id(0));
+            auto const sink_a = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+                .device_id = 0,
+                .channel = 0,
+            });
+            auto const sink_b = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+                .device_id = 0,
+                .channel = 0,
+            });
             sink_a(src_a);
             sink_b(src_b);
             g.outputs();
 
-            system.activate_root(true);
-            return system.make_processor(iv::TypeErasedNode(g.build()));
+            return iv::NodeExecutor::create(
+                iv::TypeErasedNode(g.build()),
+                {},
+                iv::ExecutionTargets(iv::test::make_audio_device_provider(audio_device))
+            );
         };
 
-        iv::System sample_system(
+        iv::AudioDevice sample_device(
             iv::RenderConfig{
                 .sample_rate = 48000,
                 .num_channels = 1,
                 .max_block_frames = 15,
             },
-            false,
             false
         );
-        iv::System block_system(
+        iv::AudioDevice block_device(
             iv::RenderConfig{
                 .sample_rate = 48000,
                 .num_channels = 1,
                 .max_block_frames = 15,
             },
-            false,
             false
         );
 
-        auto sample_processor = make_wrapped_processor(sample_system);
-        auto block_processor = make_wrapped_processor(block_system);
+        auto sample_processor = make_wrapped_processor(sample_device);
+        auto block_processor = make_wrapped_processor(block_device);
 
         iv::test::run_processor_ticks(sample_processor, samplewise.size());
         std::array<size_t, 4> const wrapped_blocks { 8, 4, 2, 1 };
         iv::test::run_processor_blocks(block_processor, wrapped_blocks);
 
-        std::copy_n(sample_system.audio_device().output_block(0).begin(), samplewise.size(), samplewise.begin());
-        std::copy_n(block_system.audio_device().output_block(0).begin(), blockwise.size(), blockwise.begin());
+        std::copy_n(sample_processor.execution_targets().audio_device(0, 0).output_block().begin(), samplewise.size(), samplewise.begin());
+        std::copy_n(block_processor.execution_targets().audio_device(0, 0).output_block().begin(), blockwise.size(), blockwise.begin());
 
         require_close(samplewise, blockwise, 0.0f, "wrapped graph mismatched callback execution diverged");
     }
 
     {
         std::array<iv::Sample, 8> buffer {};
-        auto processor = make_feedback_processor(buffer.data(), buffer.size());
+        iv::AudioDevice audio_device({ .max_block_frames = buffer.size() }, false);
+        auto processor = make_feedback_processor(audio_device, buffer.data(), buffer.size());
         iv::test::expect_failure(
-            [&] { processor.tick_block({}, 0, 3); },
+            [&] { processor.tick_block(0, 3); },
             "power of 2",
             "non-power-of-2 block size should fail"
         );

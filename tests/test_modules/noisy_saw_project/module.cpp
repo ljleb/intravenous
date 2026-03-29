@@ -39,10 +39,10 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
 {
     using namespace iv;
     GraphBuilder& g = context.builder();
-    ModuleSystem const& system = context.system();
+    auto const& targets = context.target_factory();
     auto voice_module = context.load("iv.test.noisy_saw_voice");
 
-    auto const dt = g.node<ValueSource>(&system.sample_period());
+    auto const dt = g.node<ValueSource>(&context.sample_period());
     SignalRef first_noise;
 
     auto const valhalla = juce::vst(g, "thing", "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
@@ -61,7 +61,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         "r0",
     };
 
-    for (size_t channel = 0; channel < system.render_config().num_channels; ++channel) {
+    for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
         auto const noise = g.subgraph(noise_voice);
         if (channel == 0) {
             first_noise = noise;
@@ -69,7 +69,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
 
         auto const voice = g.node(voice_module.builder());
         auto const shared_noise = g.node<Interpolation>();
-        auto const sink = system.sink(g, channel);
+        auto const sink = targets.sink(g, channel);
 
         noise(dt);
         shared_noise(first_noise, noise, 1.0);

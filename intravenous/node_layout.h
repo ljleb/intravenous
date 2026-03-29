@@ -2,6 +2,7 @@
 
 #include "node_traits.h"
 #include "node_resources.h"
+#include "execution_targets.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -33,9 +34,9 @@ namespace iv {
     struct NodeStorage;
 
     struct NodeLifecycleCallbacks {
-        void (*move_fn)(void const*, size_t, NodeStorage&, NodeStorage const&) = nullptr;
-        void (*initialize_fn)(void const*, size_t, NodeStorage&) = nullptr;
-        void (*release_fn)(void const*, size_t, NodeStorage&) = nullptr;
+        void (*move_fn)(void const*, size_t, NodeStorage&, NodeStorage const&, ExecutionTargets*) = nullptr;
+        void (*initialize_fn)(void const*, size_t, NodeStorage&, ExecutionTargets*) = nullptr;
+        void (*release_fn)(void const*, size_t, NodeStorage&, ExecutionTargets*) = nullptr;
         void (*default_construct_state_fn)(void*) = nullptr;
         void (*move_construct_state_fn)(void*, void*) = nullptr;
         void (*destroy_state_fn)(void*) = nullptr;
@@ -46,6 +47,7 @@ namespace iv {
             enum class Kind {
                 state,
                 local_array,
+                nested_nodes,
             };
 
             Kind kind = Kind::state;
@@ -57,6 +59,7 @@ namespace iv {
             size_t element_count = 0;
             void const* element_type = nullptr;
             void (*assign_span_fn)(void* state_base, ptrdiff_t field_offset, void* data, size_t count) = nullptr;
+            std::vector<size_t> nested_node_indices;
         };
 
         struct ArrayBinding {
@@ -98,11 +101,17 @@ namespace iv {
         template<typename Marker, typename A>
         void local_array(size_t node_index, Marker const*, std::span<A> const*, size_t);
 
+        template<typename Marker>
+        void nested_nodes(size_t node_index, Marker const*, std::span<std::byte*> const*, std::vector<size_t>);
+
         template<typename A>
         void export_array(size_t node_index, std::string id, std::span<A> const*);
 
         template<typename A>
         void import_array(size_t node_index, std::string id, std::span<A> const*);
+
+        template<typename A>
+        void require_export_array(size_t node_index, std::string id);
 
         template<typename A>
         bool has_import_array(std::string const& id) const;
@@ -115,6 +124,12 @@ namespace iv {
         {}
 
         size_t max_block_size() const;
+
+        template<typename A>
+        static void const* array_type_token()
+        {
+            return type_token<A>();
+        }
 
         NodeLayout build() &&;
 
@@ -165,9 +180,11 @@ namespace iv {
 
         std::span<std::byte> buffer() const;
         void* state_ptr(size_t node_index) const;
+        template<typename A>
+        std::span<A const> resolve_exported_array_storage(std::string const& id) const;
         bool can_move_from(NodeStorage const& previous, size_t node_index) const;
-        void initialize(NodeStorage const* previous = nullptr);
-        void release();
+        void initialize(NodeStorage const* previous = nullptr, ExecutionTargets* execution_targets = nullptr);
+        void release(ExecutionTargets* execution_targets = nullptr);
     };
 
     template<typename Node>
@@ -182,6 +199,8 @@ namespace iv {
         NodeLayoutBuilder* _builder;
         size_t _node_index;
         State const* _state_marker;
+        mutable std::vector<size_t> _direct_nested_node_indices;
+        mutable size_t _nested_node_cursor = 0;
 
     public:
         explicit DeclarationContext(NodeLayoutBuilder& builder, Node const& node);
@@ -202,12 +221,22 @@ namespace iv {
         void import_array(std::string id, std::span<A> const& span) const;
 
         template<typename A>
+        void require_export_array(std::string id) const;
+
+        template<typename A>
         bool has_import_array(std::string const& id) const;
 
         template<typename A>
         bool has_export_array(std::string const& id) const;
 
+        void nested_node_states(std::span<std::byte*> const& nodes) const;
+
         size_t max_block_size() const;
+
+        size_t node_index() const
+        {
+            return _node_index;
+        }
     };
 
     template<typename Node>
@@ -223,14 +252,18 @@ namespace iv {
 
     public:
         ResourceContext const& resources;
+        ExecutionTargets* execution_targets = nullptr;
 
-        explicit InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources);
+        explicit InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources, ExecutionTargets* execution_targets = nullptr);
 
         template<typename Node2>
         InitializationContext(InitializationContext<Node2> const& ctx);
 
         std::add_lvalue_reference_t<State> state() const
         requires(!std::is_void_v<State>);
+
+        template<typename A>
+        std::span<A const> resolve_exported_array_storage(std::string const& id) const;
     };
 
     template<typename Node>
@@ -246,8 +279,9 @@ namespace iv {
 
     public:
         ResourceContext const& resources;
+        ExecutionTargets* execution_targets = nullptr;
 
-        explicit ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources);
+        explicit ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources, ExecutionTargets* execution_targets = nullptr);
 
         template<typename Node2>
         ReleaseContext(ReleaseContext<Node2> const& ctx);
@@ -271,13 +305,15 @@ namespace iv {
 
     public:
         ResourceContext const& resources;
+        ExecutionTargets* execution_targets = nullptr;
 
         explicit MoveContext(
             NodeStorage& storage,
             void* state,
             NodeStorage const& previous_storage,
             void* previous_state,
-            ResourceContext const& resources
+            ResourceContext const& resources,
+            ExecutionTargets* execution_targets = nullptr
         );
 
         template<typename Node2>
@@ -332,7 +368,9 @@ namespace iv {
     template<typename Node2>
     inline DeclarationContext<Node>::DeclarationContext(DeclarationContext<Node2> const& ctx, Node const& node)
     : DeclarationContext<Node>(*ctx._builder, node)
-    {}
+    {
+        ctx._direct_nested_node_indices.push_back(_node_index);
+    }
 
     template<typename Node>
     inline NoCopy<typename DeclarationContext<Node>::State> const& DeclarationContext<Node>::state() const
@@ -364,6 +402,13 @@ namespace iv {
 
     template<typename Node>
     template<typename A>
+    inline void DeclarationContext<Node>::require_export_array(std::string id) const
+    {
+        _builder->template require_export_array<A>(_node_index, std::move(id));
+    }
+
+    template<typename Node>
+    template<typename A>
     inline bool DeclarationContext<Node>::has_import_array(std::string const& id) const
     {
         return _builder->template has_import_array<A>(id);
@@ -374,6 +419,18 @@ namespace iv {
     inline bool DeclarationContext<Node>::has_export_array(std::string const& id) const
     {
         return _builder->template has_export_array<A>(id);
+    }
+
+    template<typename Node>
+    inline void DeclarationContext<Node>::nested_node_states(std::span<std::byte*> const& nodes) const
+    {
+        std::vector<size_t> nested_node_indices;
+        nested_node_indices.reserve(_direct_nested_node_indices.size() - _nested_node_cursor);
+        for (size_t i = _nested_node_cursor; i < _direct_nested_node_indices.size(); ++i) {
+            nested_node_indices.push_back(_direct_nested_node_indices[i]);
+        }
+        _nested_node_cursor = _direct_nested_node_indices.size();
+        _builder->nested_nodes(_node_index, _state_marker, &nodes, std::move(nested_node_indices));
     }
 
     template<typename Node>
@@ -399,6 +456,20 @@ namespace iv {
         }
         record.node_type = type_token<Node>();
         record.lifecycle = make_lifecycle_callbacks<Node>();
+        if constexpr (std::is_void_v<typename NodeState<Node>::Type>) {
+            size_t const offset = align_up(_storage_size, 1);
+            record.state_offset = static_cast<ptrdiff_t>(offset);
+            record.state_size = 0;
+            _storage_size = offset + 1;
+
+            NodeLayout::Region region;
+            region.kind = NodeLayout::Region::Kind::state;
+            region.owner_node = node_index;
+            region.storage_offset = offset;
+            region.size = 0;
+            region.alignment = 1;
+            _regions.push_back(region);
+        }
         _nodes.push_back(std::move(record));
         return node_index;
     }
@@ -454,6 +525,38 @@ namespace iv {
         _regions.push_back(region);
     }
 
+    template<typename Marker>
+    void NodeLayoutBuilder::nested_nodes(
+        size_t node_index,
+        Marker const* state_marker,
+        std::span<std::byte*> const* span,
+        std::vector<size_t> nested_node_indices
+    )
+    {
+        auto const state_base = reinterpret_cast<uintptr_t>(state_marker);
+        auto const field_ptr = reinterpret_cast<uintptr_t>(span);
+
+        NodeLayout::Region region;
+        region.kind = NodeLayout::Region::Kind::nested_nodes;
+        region.owner_node = node_index;
+        region.state_field_offset = static_cast<ptrdiff_t>(field_ptr - state_base);
+        region.storage_offset = align_up(_storage_size, alignof(std::byte*));
+        region.size = sizeof(std::byte*) * nested_node_indices.size();
+        region.alignment = alignof(std::byte*);
+        region.element_count = nested_node_indices.size();
+        region.element_type = type_token<std::byte*>();
+        region.assign_span_fn = [](void* state_base_ptr, ptrdiff_t field_offset, void* data, size_t count_value) {
+            auto& span_ref = *reinterpret_cast<std::span<std::byte*>*>(static_cast<std::byte*>(state_base_ptr) + field_offset);
+            span_ref = { static_cast<std::byte**>(data), count_value };
+        };
+        region.nested_node_indices = std::move(nested_node_indices);
+
+        _storage_alignment = std::max(_storage_alignment, size_t(alignof(std::byte*)));
+        _storage_size = region.storage_offset + region.size;
+
+        _regions.push_back(std::move(region));
+    }
+
     template<typename A>
     void NodeLayoutBuilder::export_array(size_t node_index, std::string id, std::span<A> const* span)
     {
@@ -493,6 +596,19 @@ namespace iv {
                 auto& span_ref = *reinterpret_cast<std::span<A>*>(static_cast<std::byte*>(state_base_ptr) + offset);
                 span_ref = { static_cast<A*>(data), count_value };
             },
+            .read_span_fn = nullptr,
+        });
+    }
+
+    template<typename A>
+    void NodeLayoutBuilder::require_export_array(size_t node_index, std::string id)
+    {
+        _imports.push_back({
+            .owner_node = node_index,
+            .id = std::move(id),
+            .state_field_offset = 0,
+            .element_type = type_token<A>(),
+            .assign_span_fn = nullptr,
             .read_span_fn = nullptr,
         });
     }
@@ -602,46 +718,49 @@ namespace iv {
         }
 
         if constexpr (requires(Node const& node, MoveContext<Node> ctx) { node.move(ctx); }) {
-            callbacks.move_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, NodeStorage const& previous_storage) {
+            callbacks.move_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, NodeStorage const& previous_storage, ExecutionTargets* execution_targets) {
                 void* state = storage.state_ptr(node_index);
                 void* previous_state = previous_storage.state_ptr(node_index);
                 if constexpr (std::is_empty_v<Node>) {
+                    (void) node_ptr;
                     Node node {};
-                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources);
+                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, execution_targets);
                     node.move(ctx);
                 } else {
                     auto const& node = *static_cast<Node const*>(node_ptr);
-                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources);
+                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, execution_targets);
                     node.move(ctx);
                 }
             };
         }
 
         if constexpr (requires(Node const& node, InitializationContext<Node> ctx) { node.initialize(ctx); }) {
-            callbacks.initialize_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage) {
+            callbacks.initialize_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, ExecutionTargets* execution_targets) {
                 void* state = storage.state_ptr(node_index);
                 if constexpr (std::is_empty_v<Node>) {
+                    (void)node_ptr;
                     Node node {};
-                    InitializationContext<Node> ctx(storage, state, *storage.resources);
+                    InitializationContext<Node> ctx(storage, state, *storage.resources, execution_targets);
                     node.initialize(ctx);
                 } else {
                     auto const& node = *static_cast<Node const*>(node_ptr);
-                    InitializationContext<Node> ctx(storage, state, *storage.resources);
+                    InitializationContext<Node> ctx(storage, state, *storage.resources, execution_targets);
                     node.initialize(ctx);
                 }
             };
         }
 
         if constexpr (requires(Node const& node, ReleaseContext<Node> ctx) { node.release(ctx); }) {
-            callbacks.release_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage) {
+            callbacks.release_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, ExecutionTargets* execution_targets) {
                 void* state = storage.state_ptr(node_index);
                 if constexpr (std::is_empty_v<Node>) {
+                    (void)node_ptr;
                     Node node {};
-                    ReleaseContext<Node> ctx(storage, state, *storage.resources);
+                    ReleaseContext<Node> ctx(storage, state, *storage.resources, execution_targets);
                     node.release(ctx);
                 } else {
                     auto const& node = *static_cast<Node const*>(node_ptr);
-                    ReleaseContext<Node> ctx(storage, state, *storage.resources);
+                    ReleaseContext<Node> ctx(storage, state, *storage.resources, execution_targets);
                     node.release(ctx);
                 }
             };
@@ -734,10 +853,39 @@ namespace iv {
 
     inline void* NodeStorage::state_ptr(size_t node_index) const
     {
-        if (!layout || node_index >= layout->nodes.size() || layout->nodes[node_index].state_size == 0) {
+        if (!layout || node_index >= layout->nodes.size()) {
             return nullptr;
         }
-        return storage.get() + layout->nodes[node_index].state_offset;
+        auto const& node = layout->nodes[node_index];
+        if (node.state_offset < 0) {
+            return nullptr;
+        }
+        return storage.get() + node.state_offset;
+    }
+
+    template<typename A>
+    inline std::span<A const> NodeStorage::resolve_exported_array_storage(std::string const& id) const
+    {
+        if (!layout) {
+            return {};
+        }
+
+        auto export_it = std::find_if(
+            layout->exported_arrays.begin(),
+            layout->exported_arrays.end(),
+            [&](auto const& export_endpoint) {
+                return export_endpoint.id == id && export_endpoint.element_type == NodeLayoutBuilder::array_type_token<A>();
+            }
+        );
+        if (export_it == layout->exported_arrays.end() || !export_it->read_span_fn) {
+            return {};
+        }
+
+        void* data = nullptr;
+        size_t count = 0;
+        void* export_state = state_ptr(export_it->owner_node);
+        export_it->read_span_fn(export_state, export_it->state_field_offset, data, count);
+        return { static_cast<A const*>(data), count };
     }
 
     inline bool NodeStorage::can_move_from(NodeStorage const& previous, size_t node_index) const
@@ -795,7 +943,7 @@ namespace iv {
             next_region(*previous.layout, node_index, previous_index) == previous.layout->regions.size();
     }
 
-    inline void NodeStorage::initialize(NodeStorage const* previous)
+    inline void NodeStorage::initialize(NodeStorage const* previous, ExecutionTargets* execution_targets)
     {
         if (!layout || !resources) {
             return;
@@ -824,12 +972,22 @@ namespace iv {
         }
 
         for (auto const& region : layout->regions) {
-            if (region.kind != NodeLayout::Region::Kind::local_array || !region.assign_span_fn) {
+            if (
+                (region.kind != NodeLayout::Region::Kind::local_array &&
+                 region.kind != NodeLayout::Region::Kind::nested_nodes) ||
+                !region.assign_span_fn
+            ) {
                 continue;
             }
             void* state = state_ptr(region.owner_node);
             void* data = storage.get() + region.storage_offset;
             region.assign_span_fn(state, region.state_field_offset, data, region.element_count);
+            if (region.kind == NodeLayout::Region::Kind::nested_nodes) {
+                auto* nested_nodes = static_cast<std::byte**>(data);
+                for (size_t i = 0; i < region.nested_node_indices.size(); ++i) {
+                    nested_nodes[i] = static_cast<std::byte*>(state_ptr(region.nested_node_indices[i]));
+                }
+            }
         }
 
         for (auto const& import_endpoint : layout->imported_arrays) {
@@ -859,12 +1017,12 @@ namespace iv {
         for (size_t node_index : layout->initialize_order) {
             auto const& record = layout->nodes[node_index];
             if (previous && record.lifecycle.move_fn && can_move_from(*previous, node_index)) {
-                record.lifecycle.move_fn(record.node.get(), node_index, *this, *previous);
+                record.lifecycle.move_fn(record.node.get(), node_index, *this, *previous, execution_targets);
             } else {
                 if (previous && previous->layout && node_index < previous->layout->nodes.size()) {
                     auto const& previous_record = previous->layout->nodes[node_index];
                     if (previous_record.lifecycle.release_fn) {
-                        previous_record.lifecycle.release_fn(previous_record.node.get(), node_index, const_cast<NodeStorage&>(*previous));
+                        previous_record.lifecycle.release_fn(previous_record.node.get(), node_index, const_cast<NodeStorage&>(*previous), execution_targets);
                     }
                     auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
                     previous_initialized_nodes.erase(
@@ -873,14 +1031,14 @@ namespace iv {
                     );
                 }
                 if (record.lifecycle.initialize_fn) {
-                    record.lifecycle.initialize_fn(record.node.get(), node_index, *this);
+                    record.lifecycle.initialize_fn(record.node.get(), node_index, *this, execution_targets);
                 }
             }
             initialized_nodes.push_back(node_index);
         }
     }
 
-    inline void NodeStorage::release()
+    inline void NodeStorage::release(ExecutionTargets* execution_targets)
     {
         if (!layout || !resources) {
             return;
@@ -890,17 +1048,18 @@ namespace iv {
             size_t const node_index = *it;
             auto const& record = layout->nodes[node_index];
             if (record.lifecycle.release_fn) {
-                record.lifecycle.release_fn(record.node.get(), node_index, *this);
+                record.lifecycle.release_fn(record.node.get(), node_index, *this, execution_targets);
             }
         }
         initialized_nodes.clear();
     }
 
     template<typename Node>
-    inline InitializationContext<Node>::InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources_)
+    inline InitializationContext<Node>::InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources_, ExecutionTargets* execution_targets_)
     : _storage(&storage)
     , _state(state)
     , resources(resources_)
+    , execution_targets(execution_targets_)
     {}
 
     template<typename Node>
@@ -909,6 +1068,7 @@ namespace iv {
     : _storage(ctx._storage)
     , _state(ctx._state)
     , resources(ctx.resources)
+    , execution_targets(ctx.execution_targets)
     {}
 
     template<typename Node>
@@ -919,10 +1079,18 @@ namespace iv {
     }
 
     template<typename Node>
-    inline ReleaseContext<Node>::ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources_)
+    template<typename A>
+    inline std::span<A const> InitializationContext<Node>::resolve_exported_array_storage(std::string const& id) const
+    {
+        return _storage->template resolve_exported_array_storage<A>(id);
+    }
+
+    template<typename Node>
+    inline ReleaseContext<Node>::ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources_, ExecutionTargets* execution_targets_)
     : _storage(&storage)
     , _state(state)
     , resources(resources_)
+    , execution_targets(execution_targets_)
     {}
 
     template<typename Node>
@@ -931,6 +1099,7 @@ namespace iv {
     : _storage(ctx._storage)
     , _state(ctx._state)
     , resources(ctx.resources)
+    , execution_targets(ctx.execution_targets)
     {}
 
     template<typename Node>
@@ -946,13 +1115,15 @@ namespace iv {
         void* state,
         NodeStorage const& previous_storage,
         void* previous_state,
-        ResourceContext const& resources_
+        ResourceContext const& resources_,
+        ExecutionTargets* execution_targets_
     )
     : _storage(&storage)
     , _state(state)
     , _previous_storage(&previous_storage)
     , _previous_state(previous_state)
     , resources(resources_)
+    , execution_targets(execution_targets_)
     {}
 
     template<typename Node>
@@ -963,6 +1134,7 @@ namespace iv {
     , _previous_storage(ctx._previous_storage)
     , _previous_state(ctx._previous_state)
     , resources(ctx.resources)
+    , execution_targets(ctx.execution_targets)
     {}
 
     template<typename Node>
