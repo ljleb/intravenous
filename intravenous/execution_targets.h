@@ -189,6 +189,7 @@ namespace iv {
         struct AudioDeviceProvider {
             void* owner;
             AudioDevice* (*device_fn)(void* owner, size_t device_id);
+            size_t (*preferred_block_size_fn)(void* owner) = nullptr;
         };
 
     private:
@@ -202,6 +203,14 @@ namespace iv {
             if (!_audio_device_provider.device_fn) {
                 throw std::logic_error("ExecutionTargets requires an audio device provider");
             }
+        }
+
+        size_t preferred_block_size_hint() const
+        {
+            if (_audio_device_provider.preferred_block_size_fn) {
+                return _audio_device_provider.preferred_block_size_fn(_audio_device_provider.owner);
+            }
+            return MAX_BLOCK_SIZE;
         }
 
         AudioDeviceExecutionTarget& audio_device(size_t device_id, size_t channel)

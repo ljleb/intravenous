@@ -10,12 +10,13 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace iv {
     class NodeExecutor {
-        TypeErasedNode _root;
         std::vector<ModuleRef> _module_refs;
+        TypeErasedNode _root;
         ResourceContext _resources;
         ExecutionTargets _execution_targets;
         NodeLayout _layout;
@@ -23,9 +24,15 @@ namespace iv {
         size_t _max_block_size;
         bool _shutdown_requested = false;
 
+        void rebind_storage_metadata()
+        {
+            _storage.layout = &_layout;
+            _storage.resources = &_resources;
+        }
+
         static size_t choose_block_size(TypeErasedNode const& root, ExecutionTargets const& execution_targets)
         {
-            size_t block_size = root.max_block_size();
+            size_t block_size = std::min(root.max_block_size(), execution_targets.preferred_block_size_hint());
             for (auto const& target : execution_targets.all()) {
                 block_size = std::min(block_size, target.preferred_block_size());
             }
@@ -37,11 +44,63 @@ namespace iv {
         {
             NodeLayoutBuilder builder(max_block_size);
             DeclarationContext<TypeErasedNode> ctx(builder, root);
-            do_declare(root, ctx);
+            root.declare(ctx);
             return std::move(builder).build();
         }
 
     public:
+        ~NodeExecutor()
+        {
+            try {
+                _storage.release(&_execution_targets);
+            } catch (std::exception const& e) {
+                debug_log(std::string("node teardown release failed: ") + e.what());
+            } catch (...) {
+                debug_log("node teardown release failed");
+            }
+        }
+
+        NodeExecutor(NodeExecutor&& other) noexcept
+        : _module_refs(std::move(other._module_refs))
+        , _root(std::move(other._root))
+        , _resources(std::move(other._resources))
+        , _execution_targets(std::move(other._execution_targets))
+        , _layout(std::move(other._layout))
+        , _storage(std::move(other._storage))
+        , _max_block_size(other._max_block_size)
+        , _shutdown_requested(other._shutdown_requested)
+        {
+            rebind_storage_metadata();
+        }
+
+        NodeExecutor& operator=(NodeExecutor&& other) noexcept
+        {
+            if (this == &other) {
+                return *this;
+            }
+
+            try {
+                _storage.release(&_execution_targets);
+            } catch (std::exception const& e) {
+                debug_log(std::string("node move-assignment release failed: ") + e.what());
+            } catch (...) {
+                debug_log("node move-assignment release failed");
+            }
+
+            _module_refs = std::move(other._module_refs);
+            _root = std::move(other._root);
+            _resources = std::move(other._resources);
+            _execution_targets = std::move(other._execution_targets);
+            _layout = std::move(other._layout);
+            _storage = std::move(other._storage);
+            _max_block_size = other._max_block_size;
+            _shutdown_requested = other._shutdown_requested;
+            rebind_storage_metadata();
+            return *this;
+        }
+        NodeExecutor(NodeExecutor const&) = delete;
+        NodeExecutor& operator=(NodeExecutor const&) = delete;
+
         static NodeExecutor create(
             TypeErasedNode root,
             ResourceContext resources,
@@ -53,10 +112,28 @@ namespace iv {
                 throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
             }
 
-            NodeLayout layout = make_layout(root, root.max_block_size());
-            NodeStorage storage = layout.create_storage(resources);
-            storage.initialize(nullptr, &execution_targets);
             size_t max_block_size = choose_block_size(root, execution_targets);
+            NodeLayout layout;
+            try {
+                layout = make_layout(root, max_block_size);
+            } catch (...) {
+                throw std::runtime_error("failed to create node executor: make_layout");
+            }
+
+            NodeStorage storage;
+            try {
+                storage = layout.create_storage(resources);
+            } catch (...) {
+                throw std::runtime_error("failed to create node executor: create_storage");
+            }
+
+            try {
+                storage.initialize(nullptr, &execution_targets);
+            } catch (std::exception const& e) {
+                throw std::runtime_error(std::string("failed to create node executor: initialize_storage: ") + e.what());
+            } catch (...) {
+                throw std::runtime_error("failed to create node executor: initialize_storage");
+            }
 
             return NodeExecutor(
                 std::move(root),
@@ -78,8 +155,8 @@ namespace iv {
             NodeStorage storage,
             size_t max_block_size
         ) :
-            _root(std::move(root)),
             _module_refs(std::move(module_refs)),
+            _root(std::move(root)),
             _resources(std::move(resources)),
             _execution_targets(std::move(execution_targets)),
             _layout(std::move(layout)),
@@ -89,6 +166,7 @@ namespace iv {
             if (get_num_inputs(_root) != 0 || get_num_outputs(_root) != 0) {
                 throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
             }
+            rebind_storage_metadata();
         }
 
         void tick_block(size_t index, size_t block_size)
@@ -106,15 +184,21 @@ namespace iv {
                 target.begin_block(index, block_size);
             }
 
-            _root.tick_block({
-                TickContext<TypeErasedNode> {
-                    .inputs = {},
-                    .outputs = {},
-                    .buffer = _storage.buffer(),
-                },
-                index,
-                block_size
-            });
+            try {
+                _root.tick_block({
+                    TickContext<TypeErasedNode> {
+                        .inputs = {},
+                        .outputs = {},
+                        .buffer = _storage.buffer(),
+                    },
+                    index,
+                    block_size
+                });
+            } catch (std::exception const& e) {
+                throw std::runtime_error(std::string("node executor tick failed: ") + e.what());
+            } catch (...) {
+                throw std::runtime_error("node executor tick failed");
+            }
 
             for (auto const& target : targets) {
                 target.end_block(index, block_size);
@@ -138,9 +222,28 @@ namespace iv {
                 throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
             }
 
-            NodeLayout next_layout = make_layout(root, root.max_block_size());
-            NodeStorage next_storage = next_layout.create_storage(_resources);
-            next_storage.initialize(nullptr, &_execution_targets);
+            size_t next_max_block_size = choose_block_size(root, _execution_targets);
+            NodeLayout next_layout;
+            try {
+                next_layout = make_layout(root, next_max_block_size);
+            } catch (...) {
+                throw std::runtime_error("failed to reload node executor: make_layout");
+            }
+
+            NodeStorage next_storage;
+            try {
+                next_storage = next_layout.create_storage(_resources);
+            } catch (...) {
+                throw std::runtime_error("failed to reload node executor: create_storage");
+            }
+
+            try {
+                next_storage.initialize(nullptr, &_execution_targets);
+            } catch (std::exception const& e) {
+                throw std::runtime_error(std::string("failed to reload node executor: initialize_storage: ") + e.what());
+            } catch (...) {
+                throw std::runtime_error("failed to reload node executor: initialize_storage");
+            }
 
             _storage.release(&_execution_targets);
 
@@ -148,7 +251,8 @@ namespace iv {
             _module_refs = std::move(module_refs);
             _layout = std::move(next_layout);
             _storage = std::move(next_storage);
-            _max_block_size = choose_block_size(_root, _execution_targets);
+            rebind_storage_metadata();
+            _max_block_size = next_max_block_size;
         }
 
         void reload(ModuleLoader::LoadedGraph loaded_graph)

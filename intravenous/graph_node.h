@@ -16,16 +16,18 @@ namespace iv {
         decltype(GraphBuildArtifact::edges) _edges;
         std::vector<InputConfig> _public_inputs;
         std::vector<OutputConfig> _public_outputs;
-        std::vector<size_t> _public_output_sample_offsets;
+        std::vector<PortBufferPlan> _public_output_buffer_plans;
         size_t _internal_latency;
+        std::vector<std::string> _node_ids;
 
         explicit Graph(GraphBuildArtifact artifact) :
             _scc_wrappers(std::move(artifact.scc_wrappers)),
             _edges(std::move(artifact.edges)),
             _public_inputs(std::move(artifact.public_inputs)),
             _public_outputs(std::move(artifact.public_outputs)),
-            _public_output_sample_offsets(make_input_sample_offsets(artifact.public_output_sample_sizes)),
-            _internal_latency(artifact.internal_latency)
+            _public_output_buffer_plans(std::move(artifact.public_output_buffer_plans)),
+            _internal_latency(artifact.internal_latency),
+            _node_ids(std::move(artifact.node_ids))
         {}
 
         struct State {
@@ -70,21 +72,34 @@ namespace iv {
         {
             auto const& state = ctx.state();
             ctx.local_array(state.ingress_outputs, num_inputs());
+            for (GraphEdge const& edge : _edges) {
+                if (edge.source.node == GRAPH_ID) {
+                    ctx.require_export_array<SharedPortData>(
+                        port_data_export_id(_node_ids[edge.target.node], edge.target.port)
+                    );
+                }
+            }
             for (auto const& scc : _scc_wrappers) {
                 do_declare(scc, ctx);
             }
             ctx.nested_node_states(state.scc_states);
             ctx.local_array(state.egress_port_data, num_outputs());
-            ctx.local_array(state.egress_samples, _public_output_sample_offsets.empty() ? 0 : _public_output_sample_offsets.back());
+            auto const output_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _public_output_buffer_plans);
+            auto const output_sample_offsets = make_input_sample_offsets(output_sample_sizes);
+            ctx.local_array(state.egress_samples, output_sample_offsets.empty() ? 0 : output_sample_offsets.back());
             ctx.local_array(state.egress_inputs, num_outputs());
-            ctx.export_array(graph_port_data_export_id(), state.egress_port_data);
+            for (size_t output_i = 0; output_i < num_outputs(); ++output_i) {
+                ctx.export_array_slice(graph_port_data_export_id(output_i), state.egress_port_data, output_i, 1);
+            }
         }
 
         void initialize(InitializationContext<Graph> const& ctx) const
         {
             auto& state = ctx.state();
+            auto const output_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _public_output_buffer_plans);
+            auto const output_sample_offsets = make_input_sample_offsets(output_sample_sizes);
             for (size_t output_i = 0; output_i < num_outputs(); ++output_i) {
-                auto samples = input_sample_buffer(state.egress_samples, _public_output_sample_offsets, output_i);
+                auto samples = input_sample_buffer(state.egress_samples, output_sample_offsets, output_i);
                 std::fill(samples.begin(), samples.end(), Sample(0));
                 std::construct_at(&state.egress_port_data[output_i], samples, 0);
                 std::construct_at(&state.egress_inputs[output_i], state.egress_port_data[output_i], 0);
@@ -93,9 +108,10 @@ namespace iv {
             for (GraphEdge const& edge : _edges) {
                 if (edge.source.node == GRAPH_ID) {
                     auto consumer_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
-                        port_data_export_id(std::to_string(edge.target.node))
+                        port_data_export_id(_node_ids[edge.target.node], edge.target.port)
                     );
-                    std::construct_at(&state.ingress_outputs[edge.source.port], const_cast<SharedPortData&>(consumer_port_data[edge.target.port]), 0);
+                    IV_ASSERT(consumer_port_data.size() == 1, "graph ingress wiring must resolve exactly one SharedPortData entry");
+                    std::construct_at(&state.ingress_outputs[edge.source.port], const_cast<SharedPortData&>(consumer_port_data[0]), 0);
                 }
             }
         }
@@ -124,15 +140,28 @@ namespace iv {
             size_t block_size
         ) const
         {
-            do_tick_block(_scc_wrappers[scc_index], {
-                TickContext<GraphSccWrapper> {
-                    .inputs = {},
-                    .outputs = {},
-                    .buffer = remaining_buffer(ctx.buffer, ctx.state().scc_states[scc_index]),
-                },
-                ctx.index,
-                block_size
-            });
+            auto const& state = ctx.state();
+            IV_ASSERT(scc_index < state.scc_states.size(), "graph SCC state index out of bounds");
+            IV_ASSERT(state.scc_states[scc_index] != nullptr, "graph SCC state pointer must not be null");
+            auto* const buffer_begin = ctx.buffer.data();
+            auto* const buffer_end = buffer_begin + ctx.buffer.size();
+            IV_ASSERT(
+                state.scc_states[scc_index] >= buffer_begin && state.scc_states[scc_index] <= buffer_end,
+                "graph SCC state pointer must point inside the enclosing graph buffer"
+            );
+            try {
+                do_tick_block(_scc_wrappers[scc_index], {
+                    TickContext<GraphSccWrapper> {
+                        .inputs = {},
+                        .outputs = {},
+                        .buffer = remaining_buffer(ctx.buffer, state.scc_states[scc_index]),
+                    },
+                    ctx.index,
+                    block_size
+                });
+            } catch (std::exception const& e) {
+                throw std::logic_error("graph tick failed for SCC " + std::to_string(scc_index) + ": " + e.what());
+            }
         }
 
     };

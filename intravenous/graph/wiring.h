@@ -10,16 +10,25 @@
 #include <vector>
 
 namespace iv {
-    inline std::string port_data_export_id(std::string_view node_id)
+    struct PortBufferPlan {
+        size_t connection_max_block_size;
+        size_t corrected_latency;
+        size_t input_history;
+        size_t output_history;
+    };
+
+    inline std::string port_data_export_id(std::string_view node_id, size_t input_port)
     {
         std::string id = "port_data:";
         id += node_id;
+        id += ":";
+        id += std::to_string(input_port);
         return id;
     }
 
-    inline std::string graph_port_data_export_id()
+    inline std::string graph_port_data_export_id(size_t input_port)
     {
-        return port_data_export_id("graph");
+        return port_data_export_id("graph", input_port);
     }
 
     inline size_t calculate_port_buffer_size(
@@ -31,6 +40,29 @@ namespace iv {
     {
         size_t const min_size = block_size + latency + std::max(input_history, output_history);
         return next_power_of_2(min_size);
+    }
+
+    inline size_t calculate_port_buffer_size(size_t host_block_size, PortBufferPlan const& plan)
+    {
+        return calculate_port_buffer_size(
+            std::min(host_block_size, plan.connection_max_block_size),
+            plan.corrected_latency,
+            plan.input_history,
+            plan.output_history
+        );
+    }
+
+    inline std::vector<size_t> resolve_port_buffer_sizes(
+        size_t host_block_size,
+        std::span<PortBufferPlan const> plans
+    )
+    {
+        std::vector<size_t> sizes;
+        sizes.reserve(plans.size());
+        for (auto const& plan : plans) {
+            sizes.push_back(calculate_port_buffer_size(host_block_size, plan));
+        }
+        return sizes;
     }
 
     inline std::vector<size_t> make_input_sample_offsets(std::span<size_t const> input_buffer_sizes)

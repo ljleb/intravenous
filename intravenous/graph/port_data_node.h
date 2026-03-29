@@ -12,18 +12,16 @@
 namespace iv {
     struct GraphPortDataNode {
         std::vector<InputConfig> _inputs;
-        std::vector<size_t> _input_sample_sizes;
-        std::vector<size_t> _input_sample_offsets;
+        std::vector<PortBufferPlan> _input_buffer_plans;
         std::string _node_id;
 
         explicit GraphPortDataNode(
             std::span<InputConfig const> inputs,
-            std::vector<size_t> input_sample_sizes,
+            std::vector<PortBufferPlan> input_buffer_plans,
             std::string node_id
         ) :
             _inputs(inputs.begin(), inputs.end()),
-            _input_sample_sizes(std::move(input_sample_sizes)),
-            _input_sample_offsets(make_input_sample_offsets(_input_sample_sizes)),
+            _input_buffer_plans(std::move(input_buffer_plans)),
             _node_id(std::move(node_id))
         {}
 
@@ -36,15 +34,21 @@ namespace iv {
         {
             auto const& state = ctx.state();
             ctx.local_array(state.port_data, _inputs.size());
-            ctx.local_array(state.samples, _input_sample_offsets.empty() ? 0 : _input_sample_offsets.back());
-            ctx.export_array(port_data_export_id(_node_id), state.port_data);
+            auto const input_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _input_buffer_plans);
+            auto const input_sample_offsets = make_input_sample_offsets(input_sample_sizes);
+            ctx.local_array(state.samples, input_sample_offsets.empty() ? 0 : input_sample_offsets.back());
+            for (size_t input_i = 0; input_i < _inputs.size(); ++input_i) {
+                ctx.export_array_slice(port_data_export_id(_node_id, input_i), state.port_data, input_i, 1);
+            }
         }
 
         void initialize(InitializationContext<GraphPortDataNode> const& ctx) const
         {
             auto& state = ctx.state();
+            auto const input_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _input_buffer_plans);
+            auto const input_sample_offsets = make_input_sample_offsets(input_sample_sizes);
             for (size_t input_i = 0; input_i < _inputs.size(); ++input_i) {
-                auto samples = input_sample_buffer(state.samples, _input_sample_offsets, input_i);
+                auto samples = input_sample_buffer(state.samples, input_sample_offsets, input_i);
                 std::fill(samples.begin(), samples.end(), _inputs[input_i].default_value);
                 std::construct_at(&state.port_data[input_i], samples, 0);
             }

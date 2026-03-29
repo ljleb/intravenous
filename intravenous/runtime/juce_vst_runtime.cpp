@@ -394,6 +394,10 @@ namespace iv {
         }
 
         auto& live_instance = *static_cast<JuceVstRuntimeManager::LiveInstance*>(live_instance_ptr);
+        live_instance.prepare(
+            live_instance.prepared_sample_rate > 0.0 ? live_instance.prepared_sample_rate : 48000.0,
+            state.block_size
+        );
         std::lock_guard lock(live_instance.mutex);
 
         auto& buffer = live_instance.audio_buffer;

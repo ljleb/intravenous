@@ -6,6 +6,7 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <vector>
 
 int main()
@@ -45,6 +46,7 @@ int main()
             {},
             iv::ExecutionTargets(iv::test::make_audio_device_provider(audio_device))
         );
+        iv::test::require(executor.max_block_size() == channel.size(), "unexpected executor max block size");
         executor.tick_block(0, channel.size());
 
         auto block = executor.execution_targets().audio_device(0, 0).output_block();

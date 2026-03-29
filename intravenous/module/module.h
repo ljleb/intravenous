@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
+#include <exception>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
@@ -181,7 +183,7 @@ namespace iv {
 extern "C" {
     [[maybe_unused]] static constexpr uint32_t IV_MODULE_ABI_VERSION_V1 = 1;
 
-    using iv_module_build_fn_v1 = void (*)(iv::ModuleContext const&);
+    using iv_module_build_fn_v1 = char const* (*)(iv::ModuleContext const&);
 
     struct iv_module_descriptor_v1 {
         uint32_t abi_version;
@@ -201,10 +203,23 @@ extern "C" {
 #define IV_EXPORT_MODULE(module_id, module_fn) \
     extern "C" IV_MODULE_EXPORT iv_module_descriptor_v1 const* iv_get_module_descriptor_v1() \
     { \
+        static thread_local char iv_module_last_error[2048]; \
         static iv_module_descriptor_v1 descriptor { \
             IV_MODULE_ABI_VERSION_V1, \
             module_id, \
-            [](iv::ModuleContext const& context) -> void { module_fn(context); }, \
+            [](iv::ModuleContext const& context) -> char const* { \
+                try { \
+                    iv_module_last_error[0] = '\0'; \
+                    module_fn(context); \
+                    return nullptr; \
+                } catch (std::exception const& e) { \
+                    std::snprintf(iv_module_last_error, sizeof(iv_module_last_error), "%s", e.what()); \
+                    return iv_module_last_error; \
+                } catch (...) { \
+                    std::snprintf(iv_module_last_error, sizeof(iv_module_last_error), "%s", "non-std exception"); \
+                    return iv_module_last_error; \
+                } \
+            }, \
         }; \
         return &descriptor; \
     }

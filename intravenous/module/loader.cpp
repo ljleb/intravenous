@@ -507,7 +507,9 @@ namespace iv {
                 if (auto found = binaries_by_id.find(resolved.id); found != binaries_by_id.end()) {
                     auto binary = found->second;
                     return TypeErasedModule([binary](ModuleContext const& context) {
-                        return binary->descriptor->build(context);
+                        if (char const* error = binary->descriptor->build(context)) {
+                            throw std::runtime_error(error);
+                        }
                     });
                 }
 
@@ -515,7 +517,9 @@ namespace iv {
                 binaries_by_id.emplace(resolved.id, binary);
                 module_refs.push_back(binary);
                 return TypeErasedModule([binary](ModuleContext const& context) {
-                    return binary->descriptor->build(context);
+                    if (char const* error = binary->descriptor->build(context)) {
+                        throw std::runtime_error(error);
+                    }
                 });
             }
 
@@ -988,7 +992,19 @@ namespace iv {
                 &session
             );
             TypeErasedModule root_module = session.load_module(root.id);
-            TypeErasedNode built_root = root_module.builder(context).build();
+            TypeErasedNode built_root = [&]() -> TypeErasedNode {
+                try {
+                    return root_module.builder(context).build();
+                } catch (std::exception const& e) {
+                    throw std::runtime_error(
+                        "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "': " + e.what()
+                    );
+                } catch (...) {
+                    throw std::runtime_error(
+                        "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "'"
+                    );
+                }
+            }();
             session.ensure_loaded_binary_dependencies();
 
             return LoadedGraph(

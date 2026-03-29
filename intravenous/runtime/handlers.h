@@ -1,9 +1,9 @@
 #pragma once
 
+#include "../compat.h"
+
 #include <cstdlib>
 #include <exception>
-#include <iostream>
-#include <stacktrace>
 #include <csignal>
 
 #if defined(_WIN32)
@@ -20,22 +20,24 @@ namespace iv {
 
     [[noreturn]] inline void terminate_with_stacktrace()
     {
-        std::cerr << "\nstd::terminate called\n";
+        auto& out = diagnostic_stream();
+        out << "\nstd::terminate called\n";
 
         if (auto ep = std::current_exception()) {
             try {
                 std::rethrow_exception(ep);
             } catch (std::exception const& e) {
-                std::cerr << std::stacktrace::current() << '\n';
-                std::cerr << "uncaught exception: " << e.what() << '\n';
+                print_stacktrace(out);
+                out << "uncaught exception: " << e.what() << '\n';
             } catch (...) {
-                std::cerr << std::stacktrace::current() << '\n';
-                std::cerr << "uncaught non-std exception\n";
+                print_stacktrace(out);
+                out << "uncaught non-std exception\n";
             }
         } else {
-            std::cerr << std::stacktrace::current() << '\n';
-            std::cerr << "no active exception\n";
+            print_stacktrace(out);
+            out << "no active exception\n";
         }
+        out.flush();
 
         std::abort();
     }
@@ -43,10 +45,13 @@ namespace iv {
 #if defined(_WIN32)
     inline LONG WINAPI unhandled_exception_stacktrace_filter(EXCEPTION_POINTERS* info)
     {
-        std::cerr << "\nunhandled exception 0x" << std::hex
-                  << (info ? info->ExceptionRecord->ExceptionCode : 0)
-                  << std::dec << '\n';
-        std::cerr << std::stacktrace::current() << '\n';
+        auto& out = diagnostic_stream();
+        out << '\n';
+        print_stacktrace(out);
+        out << "unhandled exception 0x" << std::hex
+            << (info ? info->ExceptionRecord->ExceptionCode : 0)
+            << std::dec << '\n';
+        out.flush();
         std::abort();
     }
 #endif

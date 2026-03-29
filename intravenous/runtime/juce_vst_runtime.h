@@ -13,8 +13,8 @@ namespace iv {
     class JuceVstRuntimeSupport {
         JuceVstRuntimeManager* _manager = nullptr;
         double _sample_rate = 0.0;
-        ResourceContext _resources;
         ResourceContext::VstResources _vst_resources;
+        ResourceContext _resources;
 
     public:
         JuceVstRuntimeSupport() = default;

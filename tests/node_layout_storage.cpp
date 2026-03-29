@@ -1,5 +1,10 @@
 #include "node_lifecycle.h"
 #include "module_test_utils.h"
+#include "basic_nodes/type_erased.h"
+#include "graph_node.h"
+#include "graph/node_wrapper.h"
+#include "devices/channel_buffer_sink.h"
+#include "basic_nodes/buffers.h"
 
 #include <array>
 #include <cstdint>
@@ -12,6 +17,31 @@ namespace {
     inline iv::ResourceContext make_resources()
     {
         return iv::ResourceContext {};
+    }
+
+    inline void require_graph_storage_tree_is_patched(iv::NodeStorage& storage)
+    {
+        auto& root_state = *static_cast<iv::TypeErasedNode::State*>(storage.state_ptr(0));
+        iv::test::require(root_state.nested_nodes.size() == 1, "root type-erased graph should expose one nested graph child");
+        iv::test::require(root_state.nested_nodes[0] != nullptr, "graph child state should be patched");
+
+        auto& graph_state = *reinterpret_cast<iv::Graph::State*>(root_state.nested_nodes[0]);
+        iv::test::require(!graph_state.scc_states.empty(), "graph should expose SCC child states");
+        for (size_t scc_i = 0; scc_i < graph_state.scc_states.size(); ++scc_i) {
+            iv::test::require(graph_state.scc_states[scc_i] != nullptr, "graph SCC child state should be patched");
+            auto& scc_state = *reinterpret_cast<iv::GraphSccWrapper::State*>(graph_state.scc_states[scc_i]);
+            iv::test::require(!scc_state.node_states.empty(), "SCC should expose wrapper child states");
+            for (size_t node_i = 0; node_i < scc_state.node_states.size(); ++node_i) {
+                iv::test::require(scc_state.node_states[node_i] != nullptr, "SCC wrapper child state should be patched");
+                auto& wrapper_state = *reinterpret_cast<iv::GraphNodeWrapper::State*>(scc_state.node_states[node_i]);
+                iv::test::require(wrapper_state.nested_nodes.size() == 2, "wrapper should expose port-data and nested-node children");
+                iv::test::require(wrapper_state.nested_nodes[0] != nullptr, "wrapper port-data child state should be patched");
+                iv::test::require(wrapper_state.nested_nodes[1] != nullptr, "wrapper nested executable child state should be patched");
+                auto& erased_state = *reinterpret_cast<iv::TypeErasedNode::State*>(wrapper_state.nested_nodes[1]);
+                iv::test::require(erased_state.nested_nodes.size() == 1, "wrapper nested type-erased state should expose one direct child");
+                iv::test::require(erased_state.nested_nodes[0] != nullptr, "wrapper concrete child state should be patched");
+            }
+        }
     }
 
     struct Producer {
@@ -176,6 +206,45 @@ namespace {
             state.released += 1;
         }
     };
+
+    struct NestedLeaf {
+        struct State {
+            int marker = 17;
+        };
+    };
+
+    struct NestedParent {
+        struct State {
+            std::span<std::byte*> nested;
+        };
+
+        void declare(iv::DeclarationContext<NestedParent> const& ctx) const
+        {
+            auto const& state = ctx.state();
+            NestedLeaf a;
+            NestedLeaf b;
+            do_declare(a, ctx);
+            do_declare(b, ctx);
+            ctx.nested_node_states(state.nested);
+        }
+    };
+
+    struct StatefulTickingNode {
+        struct State {
+            int initialized = 0;
+            int ticked = 0;
+        };
+
+        void initialize(iv::InitializationContext<StatefulTickingNode> const& ctx) const
+        {
+            ctx.state().initialized += 1;
+        }
+
+        void tick_block(iv::TickBlockContext<StatefulTickingNode> const& ctx) const
+        {
+            ctx.state().ticked += static_cast<int>(ctx.block_size);
+        }
+    };
 }
 
 int main()
@@ -290,6 +359,165 @@ int main()
         iv::test::require(reloaded_state.released == 1, "fallback release should run on the previous state");
         iv::test::require(reloaded_state.scratch[0] == 41, "initialize should repopulate scratch[0] after repatching");
         iv::test::require(reloaded_state.scratch[1] == 2, "initialize should observe incremented initialized count");
+    }
+
+    {
+        iv::NodeLayoutBuilder builder(4);
+        NestedParent node;
+        iv::do_declare(node, builder);
+
+        iv::NodeLayout layout = std::move(builder).build();
+        auto resources = make_resources();
+        iv::NodeStorage storage = layout.create_storage(resources);
+        storage.initialize();
+
+        auto& state = *static_cast<NestedParent::State*>(storage.state_ptr(0));
+        iv::test::require(state.nested.size() == 2, "nested_node_states should record directly declared child nodes");
+        iv::test::require(state.nested[0] != nullptr, "first nested node state pointer should be patched");
+        iv::test::require(state.nested[1] != nullptr, "second nested node state pointer should be patched");
+        auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0]);
+        auto& second = *reinterpret_cast<NestedLeaf::State*>(state.nested[1]);
+        iv::test::require(first.marker == 17, "first nested node state should be addressable");
+        iv::test::require(second.marker == 17, "second nested node state should be addressable");
+    }
+
+    {
+        iv::NodeLayoutBuilder builder(8);
+        iv::TypeErasedNode node = StatefulTickingNode {};
+        iv::do_declare(node, builder);
+
+        iv::NodeLayout layout = std::move(builder).build();
+        auto resources = make_resources();
+        iv::NodeStorage storage = layout.create_storage(resources);
+        storage.initialize();
+
+        auto& erased_state = *static_cast<iv::TypeErasedNode::State*>(storage.state_ptr(0));
+        iv::test::require(erased_state.nested_nodes.size() == 1, "type-erased node should record exactly one nested child");
+        iv::test::require(erased_state.nested_nodes[0] != nullptr, "type-erased nested child state pointer should be patched");
+
+        node.tick_block({
+            iv::TickContext<iv::TypeErasedNode> {
+                .inputs = {},
+                .outputs = {},
+                .buffer = storage.buffer(),
+            },
+            0,
+            8,
+        });
+
+        auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(erased_state.nested_nodes[0]);
+        iv::test::require(nested_state.initialized == 1, "type-erased nested child should initialize once");
+        iv::test::require(nested_state.ticked == 8, "type-erased nested child should tick through nested state");
+    }
+
+    {
+        iv::GraphNodeWrapper wrapper(
+            iv::TypeErasedNode(StatefulTickingNode {}),
+            {},
+            "standalone",
+            {}
+        );
+
+        iv::NodeLayoutBuilder builder(8);
+        iv::do_declare(wrapper, builder);
+        iv::NodeLayout layout = std::move(builder).build();
+        auto resources = make_resources();
+        iv::NodeStorage storage = layout.create_storage(resources);
+        storage.initialize();
+
+        auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
+        iv::test::require(wrapper_state.nested_nodes.size() == 2, "standalone wrapper should expose two direct children");
+        iv::test::require(wrapper_state.nested_nodes[0] != nullptr, "standalone wrapper port-data child state should be patched");
+        iv::test::require(wrapper_state.nested_nodes[1] != nullptr, "standalone wrapper nested executable child state should be patched");
+    }
+
+    {
+        iv::GraphNodeWrapper wrapper(
+            iv::TypeErasedNode(iv::AudioDeviceSink{
+                .device_id = 0,
+                .channel = 0,
+            }),
+            {
+                iv::PortBufferPlan {
+                    .connection_max_block_size = 8,
+                    .corrected_latency = 0,
+                    .input_history = 0,
+                    .output_history = 0,
+                }
+            },
+            "standalone_sink",
+            {}
+        );
+
+        iv::NodeLayoutBuilder builder(8);
+        iv::do_declare(wrapper, builder);
+        iv::NodeLayout layout = std::move(builder).build();
+        auto resources = make_resources();
+        iv::NodeStorage storage = layout.create_storage(resources);
+        storage.initialize();
+
+        auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
+        iv::test::require(wrapper_state.nested_nodes.size() == 2, "standalone sink wrapper should expose two direct children");
+        iv::test::require(wrapper_state.nested_nodes[0] != nullptr, "standalone sink wrapper port-data child state should be patched");
+        iv::test::require(wrapper_state.nested_nodes[1] != nullptr, "standalone sink wrapper nested executable child state should be patched");
+        auto& erased_state = *reinterpret_cast<iv::TypeErasedNode::State*>(wrapper_state.nested_nodes[1]);
+        iv::test::require(erased_state.nested_nodes.size() == 1, "standalone sink wrapper nested type-erased state should expose one direct child");
+        iv::test::require(erased_state.nested_nodes[0] != nullptr, "standalone sink wrapper concrete child state should be patched");
+
+        iv::do_tick_block(wrapper, {
+            iv::TickContext<iv::GraphNodeWrapper> {
+                .inputs = wrapper_state.inputs,
+                .outputs = wrapper_state.outputs,
+                .buffer = storage.buffer(),
+            },
+            0,
+            8,
+        });
+
+        iv::test::require(erased_state.nested_nodes.size() == 1, "standalone sink wrapper nested type-erased state should survive one tick");
+        iv::test::require(erased_state.nested_nodes[0] != nullptr, "standalone sink wrapper concrete child state should survive one tick");
+    }
+
+    {
+        iv::Sample a = 0.25f;
+        iv::Sample b = 0.5f;
+
+        iv::GraphBuilder g;
+        auto const src_a = g.node<iv::ValueSource>(&a);
+        auto const src_b = g.node<iv::ValueSource>(&b);
+        auto const sink_a = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+            .device_id = 0,
+            .channel = 0,
+        });
+        auto const sink_b = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+            .device_id = 0,
+            .channel = 0,
+        });
+        sink_a(src_a);
+        sink_b(src_b);
+        g.outputs();
+
+        iv::TypeErasedNode root = iv::TypeErasedNode(g.build());
+        iv::NodeLayoutBuilder builder(8);
+        iv::do_declare(root, builder);
+        iv::NodeLayout layout = std::move(builder).build();
+        auto resources = make_resources();
+        iv::NodeStorage storage = layout.create_storage(resources);
+        storage.initialize();
+
+        require_graph_storage_tree_is_patched(storage);
+
+        root.tick_block({
+            iv::TickContext<iv::TypeErasedNode> {
+                .inputs = {},
+                .outputs = {},
+                .buffer = storage.buffer(),
+            },
+            0,
+            8,
+        });
+
+        require_graph_storage_tree_is_patched(storage);
     }
 
     return 0;

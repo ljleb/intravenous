@@ -32,7 +32,7 @@ int main()
     auto processor_a = std::make_unique<iv::NodeExecutor>(
         iv::NodeExecutor::create(
             std::move(graph_a.root),
-            iv::ResourceContext{},
+            iv::test::make_resource_context(audio_device),
             iv::ExecutionTargets(iv::test::make_audio_device_provider(audio_device)),
             std::move(graph_a.module_refs)
         )
@@ -61,7 +61,7 @@ int main()
     auto processor_b = std::make_unique<iv::NodeExecutor>(
         iv::NodeExecutor::create(
             std::move(graph_b.root),
-            iv::ResourceContext{},
+            iv::test::make_resource_context(audio_device),
             iv::ExecutionTargets(iv::test::make_audio_device_provider(audio_device)),
             std::move(graph_b.module_refs)
         )
@@ -70,6 +70,8 @@ int main()
     iv::test::require(processor_a->num_module_refs() != 0, "old processor should still own module refs");
     iv::test::require(processor_b->num_module_refs() != 0, "new processor should own module refs");
     iv::test::require(dependency_count >= 2, "dependency graph should include nested module");
+    processor_b.reset();
+    processor_a.reset();
 
     return 0;
 }

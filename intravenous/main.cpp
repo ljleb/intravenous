@@ -3,6 +3,7 @@
 #include "module/search_paths.h"
 #include "module/watcher.h"
 #include "runtime/handlers.h"
+#include "runtime/juce_vst_runtime.h"
 #include "runtime/reload_worker.h"
 #include "node_executor.h"
 
@@ -43,7 +44,10 @@ namespace {
                     return nullptr;
                 }
                 return static_cast<iv::AudioDevice*>(owner);
-            }
+            },
+            .preferred_block_size_fn = [](void* owner) -> size_t {
+                return static_cast<iv::AudioDevice*>(owner)->scheduling_block_size();
+            },
         };
     }
 
@@ -51,9 +55,19 @@ namespace {
     {
         // TODO: Bootstrap currently assumes one output-device provider up front.
         // Move target/device negotiation out of main() once executor/runtime bootstrap is cleaned up.
+        iv::ResourceContext resources {};
+#if IV_ENABLE_JUCE_VST
+        static iv::JuceVstRuntimeManager juce_vst_runtime_manager;
+        static std::unique_ptr<iv::JuceVstRuntimeSupport> juce_vst_runtime_support;
+        juce_vst_runtime_support = std::make_unique<iv::JuceVstRuntimeSupport>(
+            juce_vst_runtime_manager,
+            audio_device.config().sample_rate
+        );
+        resources = juce_vst_runtime_support->resources();
+#endif
         return iv::NodeExecutor::create(
             std::move(loaded_graph.root),
-            {},
+            std::move(resources),
             iv::ExecutionTargets(make_audio_device_provider(audio_device)),
             std::move(loaded_graph.module_refs)
         );

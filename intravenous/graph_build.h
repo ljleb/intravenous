@@ -26,10 +26,22 @@ namespace iv::details {
 
     struct PreparedGraph {
         std::vector<TypeErasedNode> nodes;
+        std::vector<std::string> node_ids;
         std::unordered_set<GraphEdge> edges;
         std::unordered_map<PortId, DetachedInfo> detached_info_by_source;
         std::unordered_set<PortId> detached_reader_outputs;
     };
+
+    inline std::string generated_node_id(std::string_view builder_id, size_t generated_index)
+    {
+        std::string id(builder_id);
+        if (!id.empty()) {
+            id += ".";
+        }
+        id += "generated.";
+        id += std::to_string(generated_index);
+        return id;
+    }
 
     inline auto make_source_target_edge_maps(PreparedGraph const& g)
     {
@@ -45,7 +57,7 @@ namespace iv::details {
         return std::make_tuple(std::move(source_of), std::move(target_of));
     }
 
-    inline void expand_hyperedge_ports(PreparedGraph& g)
+    inline void expand_hyperedge_ports(PreparedGraph& g, std::string_view builder_id)
     {
         std::unordered_map<PortId, std::vector<GraphEdge>> reverse_edges_map;
         for (GraphEdge const& edge : g.edges)
@@ -67,6 +79,7 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 g.nodes.emplace_back(Sum(port_arity));
+                g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const sum_node = g.nodes.size() - 1;
 
                 for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
@@ -99,6 +112,7 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 g.nodes.emplace_back(Broadcast(port_arity));
+                g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const broadcast_node = g.nodes.size() - 1;
 
                 for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
@@ -112,7 +126,7 @@ namespace iv::details {
         }
     }
 
-    inline void stub_dangling_ports(PreparedGraph& g, size_t num_public_inputs)
+    inline void stub_dangling_ports(PreparedGraph& g, size_t num_public_inputs, std::string_view builder_id)
     {
         auto [source_of, target_of] = make_source_target_edge_maps(g);
 
@@ -128,6 +142,7 @@ namespace iv::details {
                 if (auto it = target_of.find(this_port); it == target_of.end())
                 {
                     g.nodes.emplace_back(DummySink());
+                    g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     size_t const new_node = g.nodes.size() - 1;
                     g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
                 }
@@ -183,12 +198,16 @@ namespace iv::details {
         size_t const num_nodes = g.nodes.size();
 
         std::vector<TypeErasedNode> sorted_nodes;
+        std::vector<std::string> sorted_node_ids;
         sorted_nodes.reserve(num_nodes);
+        sorted_node_ids.reserve(num_nodes);
         for (size_t old_i = 0; old_i < num_nodes; ++old_i)
         {
             sorted_nodes.push_back(std::move(g.nodes[sorted[old_i]]));
+            sorted_node_ids.push_back(std::move(g.node_ids[sorted[old_i]]));
         }
         g.nodes.swap(sorted_nodes);
+        g.node_ids.swap(sorted_node_ids);
 
         std::vector<size_t> reverse_sorted(num_nodes);
         for (size_t new_i = 0; new_i < num_nodes; ++new_i) {
@@ -620,6 +639,7 @@ namespace iv::details {
 
     inline GraphBuildArtifact build_graph_artifact(
         std::vector<TypeErasedNode> nodes,
+        std::vector<std::string> node_ids,
         std::unordered_set<GraphEdge> edges,
         std::vector<DetachedInfo> detached,
         GraphExecutionPlan execution_plan,
@@ -639,11 +659,9 @@ namespace iv::details {
 
         std::vector<InputConfig> private_input_configs(public_outputs.size());
         OutputConfig private_outputs_config;
-        size_t const host_block_size = MAX_BLOCK_SIZE;
-
         LatencyAccumulator latency_accumulator;
-        std::vector<std::vector<size_t>> node_input_sample_sizes(nodes.size());
-        std::vector<size_t> public_output_sample_sizes(public_outputs.size());
+        std::vector<std::vector<PortBufferPlan>> node_input_buffer_plans(nodes.size());
+        std::vector<PortBufferPlan> public_output_buffer_plans(public_outputs.size());
 
         for (size_t node_i = 0; node_i < nodes.size() + 1; ++node_i) {
             if (node_i < nodes.size()) {
@@ -652,7 +670,6 @@ namespace iv::details {
 
                 for (size_t input_i = 0; input_i < input_configs.size(); ++input_i) {
                     PortId const this_input { node_i, input_i };
-                    size_t num_port_samples = 0;
 
                     if (auto it = source_of.find(this_input); it != source_of.end()) {
                         size_t const output_node_i = it->second.node;
@@ -661,17 +678,20 @@ namespace iv::details {
                             ? private_outputs_config
                             : nodes[output_node_i].outputs()[output_port_i];
                         size_t const corrected_latency = latency_accumulator.delay_input(this_input, output_config.latency);
-                        num_port_samples = calculate_port_buffer_size(
-                            connection_block_size(it->second, this_input, host_block_size, execution_plan),
-                            corrected_latency,
-                            input_configs[input_i].history,
-                            output_config.history
-                        );
+                        node_input_buffer_plans[node_i].push_back({
+                            .connection_max_block_size = connection_block_size(it->second, this_input, MAX_BLOCK_SIZE, execution_plan),
+                            .corrected_latency = corrected_latency,
+                            .input_history = input_configs[input_i].history,
+                            .output_history = output_config.history,
+                        });
                     } else {
-                        num_port_samples = calculate_port_buffer_size(host_block_size, 0, input_configs[input_i].history, 0);
+                        node_input_buffer_plans[node_i].push_back({
+                            .connection_max_block_size = MAX_BLOCK_SIZE,
+                            .corrected_latency = 0,
+                            .input_history = input_configs[input_i].history,
+                            .output_history = 0,
+                        });
                     }
-
-                    node_input_sample_sizes[node_i].push_back(num_port_samples);
                 }
             } else {
                 std::vector<InputConfig> input_configs(public_outputs.size());
@@ -685,14 +705,19 @@ namespace iv::details {
                             ? private_outputs_config
                             : nodes[output_node_i].outputs()[output_port_i];
                         size_t const corrected_latency = latency_accumulator.delay_input(this_input, output_config.latency);
-                        public_output_sample_sizes[input_i] = calculate_port_buffer_size(
-                            connection_block_size(it->second, this_input, host_block_size, execution_plan),
-                            corrected_latency,
-                            input_configs[input_i].history,
-                            output_config.history
-                        );
+                        public_output_buffer_plans[input_i] = {
+                            .connection_max_block_size = connection_block_size(it->second, this_input, MAX_BLOCK_SIZE, execution_plan),
+                            .corrected_latency = corrected_latency,
+                            .input_history = input_configs[input_i].history,
+                            .output_history = output_config.history,
+                        };
                     } else {
-                        public_output_sample_sizes[input_i] = calculate_port_buffer_size(host_block_size, 0, input_configs[input_i].history, 0);
+                        public_output_buffer_plans[input_i] = {
+                            .connection_max_block_size = MAX_BLOCK_SIZE,
+                            .corrected_latency = 0,
+                            .input_history = input_configs[input_i].history,
+                            .output_history = 0,
+                        };
                     }
                 }
             }
@@ -705,13 +730,10 @@ namespace iv::details {
             .execution_plan = std::move(execution_plan),
             .public_inputs = std::move(public_inputs),
             .public_outputs = std::move(public_outputs),
-            .public_output_sample_sizes = std::move(public_output_sample_sizes),
+            .public_output_buffer_plans = std::move(public_output_buffer_plans),
             .internal_latency = 0,
-            .node_ids = std::vector<std::string>(nodes.size()),
+            .node_ids = std::move(node_ids),
         };
-        for (size_t node_i = 0; node_i < artifact.node_ids.size(); ++node_i) {
-            artifact.node_ids[node_i] = std::to_string(node_i);
-        }
         artifact.scc_wrappers.reserve(artifact.execution_plan.region_order.size());
         for (size_t ordered_scc_i = 0; ordered_scc_i < artifact.execution_plan.region_order.size(); ++ordered_scc_i) {
             size_t const region_i = artifact.execution_plan.region_order[ordered_scc_i];
@@ -728,13 +750,11 @@ namespace iv::details {
                     if (it != target_of.end()) {
                         if (it->second.node == GRAPH_ID) {
                             output_targets.push_back({
-                                .port_data_id = graph_port_data_export_id(),
-                                .input_port = it->second.port,
+                                .port_data_id = graph_port_data_export_id(it->second.port),
                             });
                         } else {
                             output_targets.push_back({
-                                .port_data_id = port_data_export_id(artifact.node_ids[it->second.node]),
-                                .input_port = it->second.port,
+                                .port_data_id = port_data_export_id(artifact.node_ids[it->second.node], it->second.port),
                             });
                         }
                     } else {
@@ -743,7 +763,7 @@ namespace iv::details {
                 }
                 region_nodes.emplace_back(
                     std::move(nodes[global_i]),
-                    std::move(node_input_sample_sizes[global_i]),
+                    std::move(node_input_buffer_plans[global_i]),
                     artifact.node_ids[global_i],
                     std::move(output_targets)
                 );

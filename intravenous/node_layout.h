@@ -1,5 +1,6 @@
 #pragma once
 
+#include "compat.h"
 #include "node_traits.h"
 #include "node_resources.h"
 #include "execution_targets.h"
@@ -12,7 +13,9 @@
 #include <new>
 #include <span>
 #include <string>
+#include <sstream>
 #include <type_traits>
+#include <typeinfo>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -66,7 +69,10 @@ namespace iv {
             size_t owner_node = 0;
             std::string id;
             ptrdiff_t state_field_offset = 0;
+            size_t slice_offset = 0;
+            size_t slice_count = 0;
             void const* element_type = nullptr;
+            size_t element_size = 0;
             void (*assign_span_fn)(void* state_base, ptrdiff_t field_offset, void* data, size_t count) = nullptr;
             void (*read_span_fn)(void const* state_base, ptrdiff_t field_offset, void*& data, size_t& count) = nullptr;
         };
@@ -74,6 +80,7 @@ namespace iv {
         struct NodeRecord {
             std::shared_ptr<void> node;
             void const* node_type = nullptr;
+            char const* node_type_name = nullptr;
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
             std::vector<size_t> dependencies;
@@ -82,6 +89,7 @@ namespace iv {
 
         size_t storage_size = 0;
         size_t storage_alignment = 1;
+        size_t max_block_size = 1;
         std::vector<NodeRecord> nodes;
         std::vector<Region> regions;
         std::vector<ArrayBinding> imported_arrays;
@@ -108,6 +116,9 @@ namespace iv {
         void export_array(size_t node_index, std::string id, std::span<A> const*);
 
         template<typename A>
+        void export_array_slice(size_t node_index, std::string id, std::span<A> const*, size_t offset, size_t count);
+
+        template<typename A>
         void import_array(size_t node_index, std::string id, std::span<A> const*);
 
         template<typename A>
@@ -131,13 +142,25 @@ namespace iv {
             return type_token<A>();
         }
 
+        static void log_node_event(char const* event, NodeLayout::NodeRecord const& record, size_t node_index)
+        {
+            if constexpr (!debug_logging_enabled) {
+                return;
+            }
+
+            std::ostringstream oss;
+            oss << "node " << event
+                << ": index=" << node_index
+                << " type=" << (record.node_type_name ? record.node_type_name : "<unknown>");
+            debug_log(oss.str());
+        }
+
         NodeLayout build() &&;
 
     private:
         size_t _max_block_size = 1;
         size_t _storage_size = 0;
         size_t _storage_alignment = 1;
-        std::unordered_map<void const*, size_t> _node_indices;
         std::vector<NodeLayout::NodeRecord> _nodes;
         std::vector<NodeLayout::Region> _regions;
         std::vector<NodeLayout::ArrayBinding> _imports;
@@ -179,6 +202,7 @@ namespace iv {
         ~NodeStorage();
 
         std::span<std::byte> buffer() const;
+        size_t max_block_size() const;
         void* state_ptr(size_t node_index) const;
         template<typename A>
         std::span<A const> resolve_exported_array_storage(std::string const& id) const;
@@ -218,6 +242,9 @@ namespace iv {
         void export_array(std::string id, std::span<A> const& span) const;
 
         template<typename A>
+        void export_array_slice(std::string id, std::span<A> const& span, size_t offset, size_t count) const;
+
+        template<typename A>
         void import_array(std::string id, std::span<A> const& span) const;
 
         template<typename A>
@@ -236,6 +263,11 @@ namespace iv {
         size_t node_index() const
         {
             return _node_index;
+        }
+
+        size_t pending_direct_nested_node_count() const
+        {
+            return _direct_nested_node_indices.size() - _nested_node_cursor;
         }
     };
 
@@ -261,6 +293,16 @@ namespace iv {
 
         std::add_lvalue_reference_t<State> state() const
         requires(!std::is_void_v<State>);
+
+        NodeStorage& storage() const
+        {
+            return *_storage;
+        }
+
+        size_t max_block_size() const
+        {
+            return _storage->max_block_size();
+        }
 
         template<typename A>
         std::span<A const> resolve_exported_array_storage(std::string const& id) const;
@@ -395,6 +437,13 @@ namespace iv {
 
     template<typename Node>
     template<typename A>
+    inline void DeclarationContext<Node>::export_array_slice(std::string id, std::span<A> const& span, size_t offset, size_t count) const
+    {
+        _builder->export_array_slice(_node_index, std::move(id), &span, offset, count);
+    }
+
+    template<typename Node>
+    template<typename A>
     inline void DeclarationContext<Node>::import_array(std::string id, std::span<A> const& span) const
     {
         _builder->import_array(_node_index, std::move(id), &span);
@@ -442,19 +491,14 @@ namespace iv {
     template<typename Node>
     size_t NodeLayoutBuilder::register_node(Node const& node)
     {
-        auto const key = static_cast<void const*>(std::addressof(node));
-        if (auto it = _node_indices.find(key); it != _node_indices.end()) {
-            return it->second;
-        }
-
         size_t const node_index = _nodes.size();
-        _node_indices.emplace(key, node_index);
 
         NodeLayout::NodeRecord record;
         if constexpr (!std::is_empty_v<Node>) {
             record.node = std::make_shared<Node>(node);
         }
         record.node_type = type_token<Node>();
+        record.node_type_name = typeid(Node).name();
         record.lifecycle = make_lifecycle_callbacks<Node>();
         if constexpr (std::is_void_v<typename NodeState<Node>::Type>) {
             size_t const offset = align_up(_storage_size, 1);
@@ -569,10 +613,38 @@ namespace iv {
             .owner_node = node_index,
             .id = std::move(id),
             .state_field_offset = field_offset,
+            .slice_offset = 0,
+            .slice_count = 0,
             .element_type = type_token<A>(),
+            .element_size = sizeof(A),
             .assign_span_fn = nullptr,
             .read_span_fn = [](void const* state_base_ptr, ptrdiff_t offset, void*& data, size_t& count_value) {
                 auto const& span_ref = *reinterpret_cast<std::span<A> const*>(static_cast<std::byte const*>(state_base_ptr) + offset);
+                data = span_ref.data();
+                count_value = span_ref.size();
+            },
+        });
+    }
+
+    template<typename A>
+    void NodeLayoutBuilder::export_array_slice(size_t node_index, std::string id, std::span<A> const* span, size_t offset, size_t count)
+    {
+        constexpr uintptr_t fictitious_base = 0x10000;
+        auto const state_base = fictitious_base + _nodes[node_index].state_offset;
+        auto const field_ptr = reinterpret_cast<uintptr_t>(span);
+        auto const field_offset = static_cast<ptrdiff_t>(field_ptr - state_base);
+
+        _exports.push_back({
+            .owner_node = node_index,
+            .id = std::move(id),
+            .state_field_offset = field_offset,
+            .slice_offset = offset,
+            .slice_count = count,
+            .element_type = type_token<A>(),
+            .element_size = sizeof(A),
+            .assign_span_fn = nullptr,
+            .read_span_fn = [](void const* state_base_ptr, ptrdiff_t field_offset_value, void*& data, size_t& count_value) {
+                auto const& span_ref = *reinterpret_cast<std::span<A> const*>(static_cast<std::byte const*>(state_base_ptr) + field_offset_value);
                 data = span_ref.data();
                 count_value = span_ref.size();
             },
@@ -591,7 +663,10 @@ namespace iv {
             .owner_node = node_index,
             .id = std::move(id),
             .state_field_offset = field_offset,
+            .slice_offset = 0,
+            .slice_count = 0,
             .element_type = type_token<A>(),
+            .element_size = sizeof(A),
             .assign_span_fn = [](void* state_base_ptr, ptrdiff_t offset, void* data, size_t count_value) {
                 auto& span_ref = *reinterpret_cast<std::span<A>*>(static_cast<std::byte*>(state_base_ptr) + offset);
                 span_ref = { static_cast<A*>(data), count_value };
@@ -607,7 +682,10 @@ namespace iv {
             .owner_node = node_index,
             .id = std::move(id),
             .state_field_offset = 0,
+            .slice_offset = 0,
+            .slice_count = 0,
             .element_type = type_token<A>(),
+            .element_size = sizeof(A),
             .assign_span_fn = nullptr,
             .read_span_fn = nullptr,
         });
@@ -639,6 +717,7 @@ namespace iv {
         NodeLayout layout;
         layout.storage_size = _storage_size;
         layout.storage_alignment = _storage_alignment;
+        layout.max_block_size = _max_block_size;
         layout.nodes = std::move(_nodes);
         layout.regions = std::move(_regions);
         layout.imported_arrays = std::move(_imports);
@@ -840,6 +919,7 @@ namespace iv {
             for (auto it = constructed_nodes.rbegin(); it != constructed_nodes.rend(); ++it) {
                 auto const& node = layout->nodes[*it];
                 if (node.state_size != 0 && node.lifecycle.destroy_state_fn) {
+                    NodeLayoutBuilder::log_node_event("destroyed", node, *it);
                     node.lifecycle.destroy_state_fn(state_ptr(*it));
                 }
             }
@@ -849,6 +929,11 @@ namespace iv {
     inline std::span<std::byte> NodeStorage::buffer() const
     {
         return { storage.get(), layout ? layout->storage_size : 0 };
+    }
+
+    inline size_t NodeStorage::max_block_size() const
+    {
+        return layout ? layout->max_block_size : 1;
     }
 
     inline void* NodeStorage::state_ptr(size_t node_index) const
@@ -885,6 +970,13 @@ namespace iv {
         size_t count = 0;
         void* export_state = state_ptr(export_it->owner_node);
         export_it->read_span_fn(export_state, export_it->state_field_offset, data, count);
+        if (export_it->slice_offset > count) {
+            return {};
+        }
+        data = static_cast<std::byte*>(data) + (export_it->slice_offset * export_it->element_size);
+        count = (export_it->slice_count == 0)
+            ? (count - export_it->slice_offset)
+            : std::min(export_it->slice_count, count - export_it->slice_offset);
         return { static_cast<A const*>(data), count };
     }
 
@@ -983,9 +1075,24 @@ namespace iv {
             void* data = storage.get() + region.storage_offset;
             region.assign_span_fn(state, region.state_field_offset, data, region.element_count);
             if (region.kind == NodeLayout::Region::Kind::nested_nodes) {
+                auto const& assigned_span = *reinterpret_cast<std::span<std::byte*> const*>(
+                    static_cast<std::byte*>(state) + region.state_field_offset
+                );
+                if (assigned_span.size() != region.element_count) {
+                    throw std::logic_error(
+                        "nested node span assignment failed for owner node " + std::to_string(region.owner_node) +
+                        " (expected count=" + std::to_string(region.element_count) +
+                        ", actual count=" + std::to_string(assigned_span.size()) + ")"
+                    );
+                }
                 auto* nested_nodes = static_cast<std::byte**>(data);
                 for (size_t i = 0; i < region.nested_node_indices.size(); ++i) {
-                    nested_nodes[i] = static_cast<std::byte*>(state_ptr(region.nested_node_indices[i]));
+                    auto* nested_state = static_cast<std::byte*>(state_ptr(region.nested_node_indices[i]));
+                    IV_ASSERT(
+                        nested_state != nullptr,
+                        "nested child state pointer must resolve during storage initialization"
+                    );
+                    nested_nodes[i] = nested_state;
                 }
             }
         }
@@ -1006,6 +1113,15 @@ namespace iv {
             if (export_it != layout->exported_arrays.end() && export_it->read_span_fn) {
                 void* export_state = state_ptr(export_it->owner_node);
                 export_it->read_span_fn(export_state, export_it->state_field_offset, data, count);
+                if (export_it->slice_offset <= count) {
+                    data = static_cast<std::byte*>(data) + (export_it->slice_offset * export_it->element_size);
+                    count = (export_it->slice_count == 0)
+                        ? (count - export_it->slice_offset)
+                        : std::min(export_it->slice_count, count - export_it->slice_offset);
+                } else {
+                    data = nullptr;
+                    count = 0;
+                }
             }
 
             if (import_endpoint.assign_span_fn) {
@@ -1016,13 +1132,27 @@ namespace iv {
 
         for (size_t node_index : layout->initialize_order) {
             auto const& record = layout->nodes[node_index];
+            bool const moved_state =
+                previous &&
+                can_move_from(*previous, node_index) &&
+                record.lifecycle.move_construct_state_fn != nullptr;
+
             if (previous && record.lifecycle.move_fn && can_move_from(*previous, node_index)) {
                 record.lifecycle.move_fn(record.node.get(), node_index, *this, *previous, execution_targets);
+                auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
+                previous_initialized_nodes.erase(
+                    std::remove(previous_initialized_nodes.begin(), previous_initialized_nodes.end(), node_index),
+                    previous_initialized_nodes.end()
+                );
             } else {
                 if (previous && previous->layout && node_index < previous->layout->nodes.size()) {
                     auto const& previous_record = previous->layout->nodes[node_index];
                     if (previous_record.lifecycle.release_fn) {
-                        previous_record.lifecycle.release_fn(previous_record.node.get(), node_index, const_cast<NodeStorage&>(*previous), execution_targets);
+                        if (moved_state) {
+                            previous_record.lifecycle.release_fn(previous_record.node.get(), node_index, *this, execution_targets);
+                        } else {
+                            previous_record.lifecycle.release_fn(previous_record.node.get(), node_index, const_cast<NodeStorage&>(*previous), execution_targets);
+                        }
                     }
                     auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
                     previous_initialized_nodes.erase(
@@ -1031,9 +1161,20 @@ namespace iv {
                     );
                 }
                 if (record.lifecycle.initialize_fn) {
-                    record.lifecycle.initialize_fn(record.node.get(), node_index, *this, execution_targets);
+                    try {
+                        record.lifecycle.initialize_fn(record.node.get(), node_index, *this, execution_targets);
+                    } catch (std::exception const& e) {
+                        throw std::runtime_error(
+                            "node initialize failed at index " + std::to_string(node_index) + ": " + e.what()
+                        );
+                    } catch (...) {
+                        throw std::runtime_error(
+                            "node initialize failed at index " + std::to_string(node_index)
+                        );
+                    }
                 }
             }
+            NodeLayoutBuilder::log_node_event(moved_state ? "moved" : "created", record, node_index);
             initialized_nodes.push_back(node_index);
         }
     }

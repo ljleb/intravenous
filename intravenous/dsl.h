@@ -318,17 +318,20 @@ namespace iv {
 
             details::PreparedGraph g{
                 .nodes = {},
+                .node_ids = {},
                 .edges = _edges,
                 .detached_info_by_source = _detached_info_by_source,
                 .detached_reader_outputs = _detached_reader_outputs,
             };
             g.nodes.reserve(_nodes.size());
+            g.node_ids.reserve(_nodes.size());
             for (auto const& node : _nodes) {
                 g.nodes.push_back(node.materialize(detach_id_offset));
+                g.node_ids.push_back(debug_node_id(g.node_ids.size()));
             }
 
-            details::expand_hyperedge_ports(g);
-            details::stub_dangling_ports(g, _public_inputs.size());
+            details::expand_hyperedge_ports(g, _builder_id.value);
+            details::stub_dangling_ports(g, _public_inputs.size(), _builder_id.value);
             details::validate_graph(g, _public_inputs.size(), _public_outputs.size());
             details::validate_detached_edges(g, _builder_id.value);
             details::sort_nodes_or_error(g, _builder_id.value);
@@ -346,6 +349,7 @@ namespace iv {
 
             return Graph(details::build_graph_artifact(
                 std::move(g.nodes),
+                std::move(g.node_ids),
                 std::move(g.edges),
                 std::move(detached),
                 std::move(execution_plan),

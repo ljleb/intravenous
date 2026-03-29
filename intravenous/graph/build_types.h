@@ -2,6 +2,7 @@
 
 #include "scc_wrapper.h"
 #include "types.h"
+#include "wiring.h"
 
 #include <cstddef>
 #include <string>
@@ -16,8 +17,8 @@ namespace iv {
         GraphExecutionPlan execution_plan;
         std::vector<InputConfig> public_inputs;
         std::vector<OutputConfig> public_outputs;
-        std::vector<size_t> public_output_sample_sizes;
-        size_t internal_latency = 0;
+        std::vector<PortBufferPlan> public_output_buffer_plans;
+        size_t internal_latency;
         std::vector<std::string> node_ids;
     };
 }

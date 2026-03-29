@@ -310,13 +310,15 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void push_block(BlockView<Sample> samples)
         {
-            samples.copy_to(get_block(samples.size()));
+            size_t const start = (_position + _shared_data.latency) & (buffer_size() - 1);
+            samples.copy_to(make_block_view(_shared_data.buffer, start, samples.size()));
             _position = (_position + samples.size()) & (buffer_size() - 1);
         }
 
         IV_FORCEINLINE constexpr void push_block(BlockView<Sample const> samples)
         {
-            samples.copy_to(get_block(samples.size()));
+            size_t const start = (_position + _shared_data.latency) & (buffer_size() - 1);
+            samples.copy_to(make_block_view(_shared_data.buffer, start, samples.size()));
             _position = (_position + samples.size()) & (buffer_size() - 1);
         }
 

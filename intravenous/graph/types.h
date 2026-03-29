@@ -45,7 +45,7 @@ namespace iv {
     struct GraphRegion {
         std::vector<size_t> nodes;
         std::vector<size_t> execution_order;
-        size_t max_block_size = MAX_BLOCK_SIZE;
+        size_t max_block_size;
     };
 
     struct GraphExecutionPlan {

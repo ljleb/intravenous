@@ -4,6 +4,7 @@
 #include "module/loader.h"
 #include "node_executor.h"
 #include "runtime/handlers.h"
+#include "runtime/juce_vst_runtime.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -172,7 +173,10 @@ namespace iv::test {
                     return nullptr;
                 }
                 return static_cast<iv::AudioDevice*>(owner);
-            }
+            },
+            .preferred_block_size_fn = [](void* owner) -> size_t {
+                return static_cast<iv::AudioDevice*>(owner)->scheduling_block_size();
+            },
         };
     }
 
@@ -185,6 +189,21 @@ namespace iv::test {
         };
     }
 
+    inline iv::ResourceContext make_resource_context(iv::AudioDevice const& audio_device)
+    {
+        iv::ResourceContext resources {};
+#if IV_ENABLE_JUCE_VST
+        static iv::JuceVstRuntimeManager juce_vst_runtime_manager;
+        static std::vector<std::unique_ptr<iv::JuceVstRuntimeSupport>> juce_vst_runtime_supports;
+        juce_vst_runtime_supports.push_back(std::make_unique<iv::JuceVstRuntimeSupport>(
+            juce_vst_runtime_manager,
+            static_cast<double>(audio_device.config().sample_rate)
+        ));
+        resources = juce_vst_runtime_supports.back()->resources();
+#endif
+        return resources;
+    }
+
     inline iv::NodeExecutor make_executor(iv::ModuleLoader& loader, iv::AudioDevice& audio_device, std::filesystem::path const& module_path)
     {
         auto graph = loader.load_root(
@@ -193,14 +212,15 @@ namespace iv::test {
             &audio_device.sample_period()
         );
 
-        iv::ResourceContext resources {};
+        auto resources = make_resource_context(audio_device);
         iv::ExecutionTargets execution_targets(make_audio_device_provider(audio_device));
-        return iv::NodeExecutor::create(
+        auto executor = iv::NodeExecutor::create(
             std::move(graph.root),
             std::move(resources),
             std::move(execution_targets),
             std::move(graph.module_refs)
         );
+        return executor;
     }
 
     template<typename Executor>

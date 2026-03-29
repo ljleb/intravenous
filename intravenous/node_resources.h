@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <stdexcept>
 
 namespace iv {
     struct JuceVstWrapperSpec;
@@ -14,9 +15,13 @@ namespace iv {
 
             UniqueResource create(JuceVstWrapperSpec const& descriptor) const
             {
-                return create_juce_vst_fn
-                    ? create_juce_vst_fn(owner, descriptor)
-                    : UniqueResource(nullptr, +[](void*) {});
+                if (!create_juce_vst_fn) {
+                    throw std::logic_error("VST resource callback is unavailable");
+                }
+                if (!owner) {
+                    throw std::logic_error("VST resource owner is null");
+                }
+                return create_juce_vst_fn(owner, descriptor);
             }
         };
 
