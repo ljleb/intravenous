@@ -1,6 +1,7 @@
 #pragma once
 
 #include "node_traits.h"
+#include "node_resources.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -25,26 +26,18 @@ namespace iv {
     template<typename Node>
     struct ReleaseContext;
 
-    struct ResourceContext {
-        struct VstResources {
-            template<typename Descriptor>
-            void* create(Descriptor const& descriptor) const
-            {
-                (void)descriptor;
-                return nullptr;
-            }
-        };
-
-        VstResources const& vst;
-    };
+    template<typename Node>
+    struct MoveContext;
 
     struct NodeLayout;
     struct NodeStorage;
 
     struct NodeLifecycleCallbacks {
+        void (*move_fn)(void const*, size_t, NodeStorage&, NodeStorage const&) = nullptr;
         void (*initialize_fn)(void const*, size_t, NodeStorage&) = nullptr;
         void (*release_fn)(void const*, size_t, NodeStorage&) = nullptr;
-        void (*construct_state_fn)(void*) = nullptr;
+        void (*default_construct_state_fn)(void*) = nullptr;
+        void (*move_construct_state_fn)(void*, void*) = nullptr;
         void (*destroy_state_fn)(void*) = nullptr;
     };
 
@@ -77,6 +70,7 @@ namespace iv {
 
         struct NodeRecord {
             std::shared_ptr<void> node;
+            void const* node_type = nullptr;
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
             std::vector<size_t> dependencies;
@@ -158,6 +152,7 @@ namespace iv {
         NodeLayout const* layout = nullptr;
         ResourceContext const* resources = nullptr;
         std::unique_ptr<std::byte[], StorageDeleter> storage {};
+        std::vector<size_t> constructed_nodes;
         std::vector<size_t> initialized_nodes;
 
         NodeStorage() = default;
@@ -170,7 +165,8 @@ namespace iv {
 
         std::span<std::byte> buffer() const;
         void* state_ptr(size_t node_index) const;
-        void initialize();
+        bool can_move_from(NodeStorage const& previous, size_t node_index) const;
+        void initialize(NodeStorage const* previous = nullptr);
         void release();
     };
 
@@ -260,6 +256,40 @@ namespace iv {
         requires(!std::is_void_v<State>);
     };
 
+    template<typename Node>
+    struct MoveContext {
+        template<typename>
+        friend struct MoveContext;
+
+        using State = typename NodeState<Node>::Type;
+
+    private:
+        NodeStorage* _storage;
+        void* _state = nullptr;
+        NodeStorage const* _previous_storage;
+        void* _previous_state = nullptr;
+
+    public:
+        ResourceContext const& resources;
+
+        explicit MoveContext(
+            NodeStorage& storage,
+            void* state,
+            NodeStorage const& previous_storage,
+            void* previous_state,
+            ResourceContext const& resources
+        );
+
+        template<typename Node2>
+        MoveContext(MoveContext<Node2> const& ctx);
+
+        std::add_lvalue_reference_t<State> state() const
+        requires(!std::is_void_v<State>);
+
+        std::add_lvalue_reference_t<State> previous_state() const
+        requires(!std::is_void_v<State>);
+    };
+
     namespace details {
         template <typename Node>
         concept has_declare = requires(Node node, DeclarationContext<Node> ctx)
@@ -277,6 +307,12 @@ namespace iv {
         concept has_release = requires(Node node, ReleaseContext<Node> ctx)
         {
             node.release(ctx);
+        };
+
+        template <typename Node>
+        concept has_move = requires(Node node, MoveContext<Node> ctx)
+        {
+            node.move(ctx);
         };
     }
 
@@ -361,6 +397,7 @@ namespace iv {
         if constexpr (!std::is_empty_v<Node>) {
             record.node = std::make_shared<Node>(node);
         }
+        record.node_type = type_token<Node>();
         record.lifecycle = make_lifecycle_callbacks<Node>();
         _nodes.push_back(std::move(record));
         return node_index;
@@ -551,11 +588,32 @@ namespace iv {
 
         if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
             using State = typename NodeState<Node>::Type;
-            callbacks.construct_state_fn = [](void* ptr) {
+            callbacks.default_construct_state_fn = [](void* ptr) {
                 new (ptr) State();
             };
+            if constexpr (std::is_move_constructible_v<State>) {
+                callbacks.move_construct_state_fn = [](void* ptr, void* previous_ptr) {
+                    new (ptr) State(std::move(*static_cast<State*>(previous_ptr)));
+                };
+            }
             callbacks.destroy_state_fn = [](void* ptr) {
                 std::destroy_at(static_cast<State*>(ptr));
+            };
+        }
+
+        if constexpr (requires(Node const& node, MoveContext<Node> ctx) { node.move(ctx); }) {
+            callbacks.move_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, NodeStorage const& previous_storage) {
+                void* state = storage.state_ptr(node_index);
+                void* previous_state = previous_storage.state_ptr(node_index);
+                if constexpr (std::is_empty_v<Node>) {
+                    Node node {};
+                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources);
+                    node.move(ctx);
+                } else {
+                    auto const& node = *static_cast<Node const*>(node_ptr);
+                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources);
+                    node.move(ctx);
+                }
             };
         }
 
@@ -621,12 +679,148 @@ namespace iv {
             StorageDeleter { storage_alignment }
         };
         std::fill_n(storage.get(), layout_.storage_size, std::byte {});
+    }
 
-        for (size_t node_index = 0; node_index < layout->nodes.size(); ++node_index) {
-            auto const& node = layout->nodes[node_index];
-            if (node.state_size != 0 && node.lifecycle.construct_state_fn) {
-                node.lifecycle.construct_state_fn(state_ptr(node_index));
+    inline NodeStorage::NodeStorage(NodeStorage&& other) noexcept
+    : layout(other.layout)
+    , resources(other.resources)
+    , storage(std::move(other.storage))
+    , constructed_nodes(std::move(other.constructed_nodes))
+    , initialized_nodes(std::move(other.initialized_nodes))
+    {
+        other.layout = nullptr;
+        other.resources = nullptr;
+        other.constructed_nodes.clear();
+        other.initialized_nodes.clear();
+    }
+
+    inline NodeStorage& NodeStorage::operator=(NodeStorage&& other) noexcept
+    {
+        if (this == &other) {
+            return *this;
+        }
+
+        release();
+        layout = other.layout;
+        resources = other.resources;
+        storage = std::move(other.storage);
+        constructed_nodes = std::move(other.constructed_nodes);
+        initialized_nodes = std::move(other.initialized_nodes);
+
+        other.layout = nullptr;
+        other.resources = nullptr;
+        other.constructed_nodes.clear();
+        other.initialized_nodes.clear();
+        return *this;
+    }
+
+    inline NodeStorage::~NodeStorage()
+    {
+        release();
+        if (layout) {
+            for (auto it = constructed_nodes.rbegin(); it != constructed_nodes.rend(); ++it) {
+                auto const& node = layout->nodes[*it];
+                if (node.state_size != 0 && node.lifecycle.destroy_state_fn) {
+                    node.lifecycle.destroy_state_fn(state_ptr(*it));
+                }
             }
+        }
+    }
+
+    inline std::span<std::byte> NodeStorage::buffer() const
+    {
+        return { storage.get(), layout ? layout->storage_size : 0 };
+    }
+
+    inline void* NodeStorage::state_ptr(size_t node_index) const
+    {
+        if (!layout || node_index >= layout->nodes.size() || layout->nodes[node_index].state_size == 0) {
+            return nullptr;
+        }
+        return storage.get() + layout->nodes[node_index].state_offset;
+    }
+
+    inline bool NodeStorage::can_move_from(NodeStorage const& previous, size_t node_index) const
+    {
+        if (!layout || !previous.layout) {
+            return false;
+        }
+        if (node_index >= layout->nodes.size() || node_index >= previous.layout->nodes.size()) {
+            return false;
+        }
+
+        auto const& node = layout->nodes[node_index];
+        auto const& previous_node = previous.layout->nodes[node_index];
+        if (node.node_type != previous_node.node_type || node.state_size != previous_node.state_size) {
+            return false;
+        }
+
+        auto next_region = [](NodeLayout const& layout_ref, size_t owner_node, size_t start_index) -> size_t {
+            for (size_t i = start_index; i < layout_ref.regions.size(); ++i) {
+                if (layout_ref.regions[i].owner_node == owner_node) {
+                    return i;
+                }
+            }
+            return layout_ref.regions.size();
+        };
+
+        size_t current_index = next_region(*layout, node_index, 0);
+        size_t previous_index = next_region(*previous.layout, node_index, 0);
+
+        while (current_index < layout->regions.size() && previous_index < previous.layout->regions.size()) {
+            auto const& current_region = layout->regions[current_index];
+            auto const& previous_region = previous.layout->regions[previous_index];
+
+            if (current_region.owner_node != node_index || previous_region.owner_node != node_index) {
+                break;
+            }
+
+            if (
+                current_region.kind != previous_region.kind ||
+                current_region.state_field_offset != previous_region.state_field_offset ||
+                current_region.size != previous_region.size ||
+                current_region.alignment != previous_region.alignment ||
+                current_region.element_count != previous_region.element_count ||
+                current_region.element_type != previous_region.element_type
+            ) {
+                return false;
+            }
+
+            current_index = next_region(*layout, node_index, current_index + 1);
+            previous_index = next_region(*previous.layout, node_index, previous_index + 1);
+        }
+
+        return
+            next_region(*layout, node_index, current_index) == layout->regions.size() &&
+            next_region(*previous.layout, node_index, previous_index) == previous.layout->regions.size();
+    }
+
+    inline void NodeStorage::initialize(NodeStorage const* previous)
+    {
+        if (!layout || !resources) {
+            return;
+        }
+
+        constructed_nodes.clear();
+        initialized_nodes.clear();
+        for (size_t node_index = 0; node_index < layout->nodes.size(); ++node_index) {
+            auto const& record = layout->nodes[node_index];
+            if (record.state_size == 0) {
+                continue;
+            }
+
+            void* state = state_ptr(node_index);
+            if (
+                previous &&
+                can_move_from(*previous, node_index) &&
+                record.lifecycle.move_construct_state_fn
+            ) {
+                record.lifecycle.move_construct_state_fn(state, previous->state_ptr(node_index));
+            } else if (record.lifecycle.default_construct_state_fn) {
+                record.lifecycle.default_construct_state_fn(state);
+            }
+
+            constructed_nodes.push_back(node_index);
         }
 
         for (auto const& region : layout->regions) {
@@ -661,74 +855,26 @@ namespace iv {
                 import_endpoint.assign_span_fn(import_state, import_endpoint.state_field_offset, data, count);
             }
         }
-    }
 
-    inline NodeStorage::NodeStorage(NodeStorage&& other) noexcept
-    : layout(other.layout)
-    , resources(other.resources)
-    , storage(std::move(other.storage))
-    , initialized_nodes(std::move(other.initialized_nodes))
-    {
-        other.layout = nullptr;
-        other.resources = nullptr;
-        other.initialized_nodes.clear();
-    }
-
-    inline NodeStorage& NodeStorage::operator=(NodeStorage&& other) noexcept
-    {
-        if (this == &other) {
-            return *this;
-        }
-
-        release();
-        layout = other.layout;
-        resources = other.resources;
-        storage = std::move(other.storage);
-        initialized_nodes = std::move(other.initialized_nodes);
-
-        other.layout = nullptr;
-        other.resources = nullptr;
-        other.initialized_nodes.clear();
-        return *this;
-    }
-
-    inline NodeStorage::~NodeStorage()
-    {
-        release();
-        if (layout) {
-            for (auto it = layout->initialize_order.rbegin(); it != layout->initialize_order.rend(); ++it) {
-                auto const& node = layout->nodes[*it];
-                if (node.state_size != 0 && node.lifecycle.destroy_state_fn) {
-                    node.lifecycle.destroy_state_fn(state_ptr(*it));
-                }
-            }
-        }
-    }
-
-    inline std::span<std::byte> NodeStorage::buffer() const
-    {
-        return { storage.get(), layout ? layout->storage_size : 0 };
-    }
-
-    inline void* NodeStorage::state_ptr(size_t node_index) const
-    {
-        if (!layout || node_index >= layout->nodes.size() || layout->nodes[node_index].state_size == 0) {
-            return nullptr;
-        }
-        return storage.get() + layout->nodes[node_index].state_offset;
-    }
-
-    inline void NodeStorage::initialize()
-    {
-        if (!layout || !resources) {
-            return;
-        }
-
-        initialized_nodes.clear();
         for (size_t node_index : layout->initialize_order) {
             auto const& record = layout->nodes[node_index];
-            if (record.lifecycle.initialize_fn) {
-                record.lifecycle.initialize_fn(record.node.get(), node_index, *this);
+            if (previous && record.lifecycle.move_fn && can_move_from(*previous, node_index)) {
+                record.lifecycle.move_fn(record.node.get(), node_index, *this, *previous);
+            } else {
+                if (previous && previous->layout && node_index < previous->layout->nodes.size()) {
+                    auto const& previous_record = previous->layout->nodes[node_index];
+                    if (previous_record.lifecycle.release_fn) {
+                        previous_record.lifecycle.release_fn(previous_record.node.get(), node_index, const_cast<NodeStorage&>(*previous));
+                    }
+                    auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
+                    previous_initialized_nodes.erase(
+                        std::remove(previous_initialized_nodes.begin(), previous_initialized_nodes.end(), node_index),
+                        previous_initialized_nodes.end()
+                    );
+                }
+                if (record.lifecycle.initialize_fn) {
+                    record.lifecycle.initialize_fn(record.node.get(), node_index, *this);
+                }
             }
             initialized_nodes.push_back(node_index);
         }
@@ -792,5 +938,44 @@ namespace iv {
     requires(!std::is_void_v<State>)
     {
         return *static_cast<State*>(_state);
+    }
+
+    template<typename Node>
+    inline MoveContext<Node>::MoveContext(
+        NodeStorage& storage,
+        void* state,
+        NodeStorage const& previous_storage,
+        void* previous_state,
+        ResourceContext const& resources_
+    )
+    : _storage(&storage)
+    , _state(state)
+    , _previous_storage(&previous_storage)
+    , _previous_state(previous_state)
+    , resources(resources_)
+    {}
+
+    template<typename Node>
+    template<typename Node2>
+    inline MoveContext<Node>::MoveContext(MoveContext<Node2> const& ctx)
+    : _storage(ctx._storage)
+    , _state(ctx._state)
+    , _previous_storage(ctx._previous_storage)
+    , _previous_state(ctx._previous_state)
+    , resources(ctx.resources)
+    {}
+
+    template<typename Node>
+    inline std::add_lvalue_reference_t<typename MoveContext<Node>::State> MoveContext<Node>::state() const
+    requires(!std::is_void_v<State>)
+    {
+        return *static_cast<State*>(_state);
+    }
+
+    template<typename Node>
+    inline std::add_lvalue_reference_t<typename MoveContext<Node>::State> MoveContext<Node>::previous_state() const
+    requires(!std::is_void_v<State>)
+    {
+        return *static_cast<State*>(_previous_state);
     }
 }

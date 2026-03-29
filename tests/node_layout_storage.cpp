@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -10,8 +11,7 @@
 namespace {
     inline iv::ResourceContext make_resources()
     {
-        static iv::ResourceContext::VstResources vst {};
-        return iv::ResourceContext { vst };
+        return iv::ResourceContext {};
     }
 
     struct Producer {
@@ -104,6 +104,78 @@ namespace {
             }
         }
     };
+
+    struct Movable {
+        struct State {
+            std::span<int> scratch;
+            int initialized = 0;
+            int moved = 0;
+            int released = 0;
+        };
+
+        void declare(iv::DeclarationContext<Movable> const& ctx) const
+        {
+            auto const& state = ctx.state();
+            ctx.local_array(state.scratch, 2);
+        }
+
+        void initialize(iv::InitializationContext<Movable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.initialized += 1;
+            state.scratch[0] = 7;
+            state.scratch[1] = 9;
+        }
+
+        void move(iv::MoveContext<Movable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            auto const& previous = ctx.previous_state();
+            state.moved = previous.moved + 1;
+            state.initialized = previous.initialized;
+            state.released = previous.released;
+            state.scratch[0] = previous.scratch[0];
+            state.scratch[1] = previous.scratch[1];
+        }
+
+        void release(iv::ReleaseContext<Movable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.released += 1;
+        }
+    };
+
+    struct AutoMovable {
+        struct State {
+            std::span<int> scratch;
+            std::unique_ptr<int> value;
+            int initialized = 0;
+            int released = 0;
+        };
+
+        void declare(iv::DeclarationContext<AutoMovable> const& ctx) const
+        {
+            auto const& state = ctx.state();
+            ctx.local_array(state.scratch, 2);
+        }
+
+        void initialize(iv::InitializationContext<AutoMovable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.initialized += 1;
+            if (!state.value) {
+                state.value = std::make_unique<int>(41);
+            }
+            state.scratch[0] = *state.value;
+            state.scratch[1] = state.initialized;
+        }
+
+        void release(iv::ReleaseContext<AutoMovable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.released += 1;
+        }
+    };
 }
 
 int main()
@@ -164,6 +236,58 @@ int main()
         iv::test::require(state.scratch[0] == 0, "local scratch[0] should match initialization");
         iv::test::require(state.scratch[1] == 10, "local scratch[1] should match initialization");
         iv::test::require(state.scratch[2] == 20, "local scratch[2] should match initialization");
+    }
+
+    {
+        iv::NodeLayoutBuilder builder(4);
+        Movable node;
+        iv::do_declare(node, builder);
+
+        iv::NodeLayout layout = std::move(builder).build();
+        auto resources = make_resources();
+
+        iv::NodeStorage original = layout.create_storage(resources);
+        original.initialize();
+        auto& original_state = *static_cast<Movable::State*>(original.state_ptr(0));
+        iv::test::require(original_state.initialized == 1, "movable node should initialize once");
+        iv::test::require(original_state.moved == 0, "movable node should not move on first initialization");
+
+        iv::NodeStorage reloaded = layout.create_storage(resources);
+        reloaded.initialize(&original);
+        auto& reloaded_state = *static_cast<Movable::State*>(reloaded.state_ptr(0));
+
+        iv::test::require(reloaded_state.initialized == 1, "move should preserve initialized count");
+        iv::test::require(reloaded_state.moved == 1, "move should run when layout is compatible");
+        iv::test::require(reloaded_state.scratch.size() == 2, "moved node local span should be patched");
+        iv::test::require(reloaded_state.scratch[0] == 7, "move should preserve scratch[0]");
+        iv::test::require(reloaded_state.scratch[1] == 9, "move should preserve scratch[1]");
+    }
+
+    {
+        iv::NodeLayoutBuilder builder(4);
+        AutoMovable node;
+        iv::do_declare(node, builder);
+
+        iv::NodeLayout layout = std::move(builder).build();
+        auto resources = make_resources();
+
+        iv::NodeStorage original = layout.create_storage(resources);
+        original.initialize();
+        auto& original_state = *static_cast<AutoMovable::State*>(original.state_ptr(0));
+        iv::test::require(original_state.value != nullptr, "auto-movable node should own a value after initialize");
+        iv::test::require(*original_state.value == 41, "auto-movable node should initialize owned value");
+
+        iv::NodeStorage reloaded = layout.create_storage(resources);
+        reloaded.initialize(&original);
+        auto& reloaded_state = *static_cast<AutoMovable::State*>(reloaded.state_ptr(0));
+
+        iv::test::require(original_state.value == nullptr, "state move construction should transfer unique ownership");
+        iv::test::require(reloaded_state.value != nullptr, "reloaded state should receive moved ownership");
+        iv::test::require(*reloaded_state.value == 41, "moved state value should be preserved");
+        iv::test::require(reloaded_state.initialized == 2, "fallback initialize should still run after state move construction");
+        iv::test::require(reloaded_state.released == 1, "fallback release should run on the previous state");
+        iv::test::require(reloaded_state.scratch[0] == 41, "initialize should repopulate scratch[0] after repatching");
+        iv::test::require(reloaded_state.scratch[1] == 2, "initialize should observe incremented initialized count");
     }
 
     return 0;

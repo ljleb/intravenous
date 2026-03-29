@@ -33,4 +33,14 @@ namespace iv {
             node.release(node_ctx);
         }
     }
+
+    template<typename Node, typename Ctx>
+    constexpr void do_move(Node const& node, Ctx& ctx)
+    {
+        MoveContext<Node> node_ctx(ctx);
+        if constexpr (details::has_move<Node>)
+        {
+            node.move(node_ctx);
+        }
+    }
 }

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "dsl.h"
-#include "node_def.h"
+#include "node_lifecycle.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -53,37 +53,27 @@ namespace iv {
         size_t preferred_audio_output_streams = 1;
     };
 
-    struct JuceVstProbeRequest {
-        std::string resource_id;
-        JuceVstPluginConfig plugin;
-    };
-
     struct JuceVstWrapperSpec {
-        std::string resource_id;
         JuceVstPluginConfig plugin;
         JuceVstSchema schema;
     };
 
-    JuceVstWrapperSpec probe_juce_vst(JuceVstProbeRequest request);
+    JuceVstWrapperSpec probe_juce_vst(JuceVstPluginConfig request);
 
     namespace juce {
         inline NodeRef vst(
             GraphBuilder& g,
-            std::string resource_id,
             std::filesystem::path plugin_path,
             std::string plugin_identifier = {},
             size_t preferred_audio_input_streams = 1,
             size_t preferred_audio_output_streams = 1
         )
         {
-            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstProbeRequest{
-                .resource_id = std::move(resource_id),
-                .plugin = JuceVstPluginConfig{
-                    .plugin_path = std::move(plugin_path),
-                    .plugin_identifier = std::move(plugin_identifier),
-                    .preferred_audio_input_streams = preferred_audio_input_streams,
-                    .preferred_audio_output_streams = preferred_audio_output_streams,
-                },
+            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstPluginConfig{
+                .plugin_path = std::move(plugin_path),
+                .plugin_identifier = std::move(plugin_identifier),
+                .preferred_audio_input_streams = preferred_audio_input_streams,
+                .preferred_audio_output_streams = preferred_audio_output_streams,
             }));
         }
     }
@@ -93,7 +83,7 @@ namespace iv {
 
     public:
         struct State {
-            void* plugin_instance;
+            UniqueResource plugin_instance { nullptr, +[](void*) {} };
         };
 
         explicit JuceVstWrapper(JuceVstWrapperSpec spec) :
@@ -136,7 +126,7 @@ namespace iv {
             state.plugin_instance = ctx.resources.vst.create(*_spec);
         }
 
-        void tick_block(TickBlockContext<JuceVstWrapper> const& state) const;
+        void tick_block(TickBlockContext<JuceVstWrapper> const& ctx) const;
     };
 #endif
 }

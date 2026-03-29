@@ -5,8 +5,6 @@
 
 #include <mutex>
 #include <memory>
-#include <string>
-#include <unordered_map>
 
 namespace iv {
 #if IV_ENABLE_JUCE_VST
@@ -15,7 +13,8 @@ namespace iv {
     class JuceVstRuntimeSupport {
         JuceVstRuntimeManager* _manager = nullptr;
         double _sample_rate = 0.0;
-        std::shared_ptr<void> _session;
+        ResourceContext _resources;
+        ResourceContext::VstResources _vst_resources;
 
     public:
         JuceVstRuntimeSupport() = default;
@@ -24,6 +23,11 @@ namespace iv {
         explicit operator bool() const
         {
             return _manager != nullptr;
+        }
+
+        ResourceContext const& resources() const
+        {
+            return _resources;
         }
 
         void register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder);
@@ -38,9 +42,10 @@ namespace iv {
         JuceVstRuntimeManager& operator=(JuceVstRuntimeManager const&) = delete;
 
         struct LiveInstance;
-        struct Session;
-
-        std::shared_ptr<Session> make_session(double sample_rate);
+        UniqueResource create_instance(
+            JuceVstWrapperSpec const& spec,
+            double sample_rate
+        );
 
     private:
         friend class JuceVstRuntimeSupport;
@@ -52,13 +57,6 @@ namespace iv {
 
         std::unique_ptr<Impl> _impl;
         std::mutex _mutex;
-        std::unordered_map<std::string, std::unique_ptr<LiveInstance>> _instances;
-
-        LiveInstance* acquire_instance(
-            Session& session,
-            std::shared_ptr<JuceVstWrapperSpec const> const& spec,
-            size_t block_size
-        );
     };
 
     void tick_juce_vst_wrapper(
