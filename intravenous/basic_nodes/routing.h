@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 
 #include <array>
 #include <string>
@@ -40,7 +40,7 @@ namespace iv {
             return _num_outputs;
         }
 
-        void tick(TickContext<Broadcast> const& state) const
+        void tick(TickSampleContext<Broadcast> const& state) const
         {
             Sample sample = state.inputs[0].get();
             for (auto& out : state.outputs) {
@@ -173,7 +173,7 @@ namespace iv {
             return std::array<InputConfig, 1>{};
         }
 
-        void tick(TickContext<DummySink> const&) const
+        void tick(TickSampleContext<DummySink> const&) const
         {}
     };
 }

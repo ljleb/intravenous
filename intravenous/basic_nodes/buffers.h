@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 #include <array>
 #include <cassert>
 
@@ -44,7 +44,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickContext<BufferSource> const& ctx) const
+        void tick(TickSampleContext<BufferSource> const& ctx) const
         {
             auto& out = ctx.outputs[0];
             if (ctx.index < _time_offset) {

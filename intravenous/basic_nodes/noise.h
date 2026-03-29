@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 
 #include "math/erfinv.h"
 #include "random123/aes.h"
@@ -42,14 +42,14 @@ namespace iv {
             std::uniform_real_distribution<Sample::storage> distribution;
         };
 
-        void initialize(InitializationContext<UniformNoise> ctx) const
+        void initialize(InitializationContext<UniformNoise> const& ctx) const
         {
             auto& state = ctx.state();
             state.generator.seed(_seed);
             state.distribution = std::uniform_real_distribution<Sample::storage>(_min, _max);
         }
 
-        void tick(TickContext<UniformNoise> const& ctx) const
+        void tick(TickSampleContext<UniformNoise> const& ctx) const
         {
             auto& state = ctx.state();
             ctx.outputs[0].push((state.distribution)(state.generator));
@@ -97,7 +97,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickContext<DeterministicUniformNoise> const& state) const
+        void tick(TickSampleContext<DeterministicUniformNoise> const& state) const
         {
             auto const min = state.inputs[0].get();
             auto const max = state.inputs[1].get();
@@ -156,7 +156,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickContext<DeterministicUniformAESNoise> const& state) const
+        void tick(TickSampleContext<DeterministicUniformAESNoise> const& state) const
         {
             auto const min = state.inputs[0].get();
             auto const max = state.inputs[1].get();
@@ -186,7 +186,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickContext<UniformToCauchy> const& state) const
+        void tick(TickSampleContext<UniformToCauchy> const& state) const
         {
             Sample uniform = state.inputs[0].get();
             state.outputs[0].push(_x0 + _gamma * std::tanf(std::numbers::pi_v<float> * uniform * 0.5));
@@ -243,7 +243,7 @@ namespace iv {
             }
         }
 
-        void tick(TickContext<UniformToPower> const& ctx) const
+        void tick(TickSampleContext<UniformToPower> const& ctx) const
         {
             auto& state = ctx.state();
             Sample uniform = ctx.inputs[0].get() * 0.5 + 0.5;
@@ -274,7 +274,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickContext<UniformToGaussian> const& state) const
+        void tick(TickSampleContext<UniformToGaussian> const& state) const
         {
             Sample uniform = state.inputs[0].get();
             Sample normal = std::numbers::sqrt2_v<float> * erfinvf(uniform);
@@ -332,7 +332,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickContext<DeterministicGaussianAESNoise> const& state) const
+        void tick(TickSampleContext<DeterministicGaussianAESNoise> const& state) const
         {
             Rng::ctr_type counter = make_index(state.index);
             unsigned int uniform_uint = _generator(counter, _seed)[0];

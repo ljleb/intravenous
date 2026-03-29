@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 #include "math/polyblep.h"
 #include <array>
 #include <cmath>
@@ -23,7 +23,7 @@ namespace iv {
             };
         }
 
-        void tick(TickContext<Warper> const& state) const
+        void tick(TickSampleContext<Warper> const& state) const
         {
             auto const& in = state.inputs[0];
             auto const& in_threshold = state.inputs[1];
@@ -71,7 +71,7 @@ namespace iv {
             return std::array { OutputConfig { "integral" } };
         }
 
-        void tick(TickContext<Integrator> const& state) const
+        void tick(TickSampleContext<Integrator> const& state) const
         {
             auto const f_prev = state.inputs[0].get();
             auto const f = state.inputs[1].get();
@@ -95,7 +95,7 @@ namespace iv {
             return std::array { OutputConfig { "out" } };
         }
 
-        void tick(TickContext<Interpolation> const& state) const
+        void tick(TickSampleContext<Interpolation> const& state) const
         {
             Sample a = state.inputs[0].get();
             Sample b = state.inputs[1].get();

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 #include <array>
 #include <numbers>
 
@@ -16,7 +16,7 @@ namespace iv {
             return std::array<OutputConfig, 2>{};
         }
 
-        void tick(TickContext<WhackIirThing> const& ctx) const
+        void tick(TickSampleContext<WhackIirThing> const& ctx) const
         {
             Sample in_dry = ctx.inputs[0].get();
             Sample in_control = ctx.inputs[1].get();
@@ -52,7 +52,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickContext<SimpleIirHighPass> const& ctx) const
+        void tick(TickSampleContext<SimpleIirHighPass> const& ctx) const
         {
             auto& in = ctx.inputs[0];
             auto const ctrl = ctx.inputs[1].get();
@@ -91,7 +91,7 @@ namespace iv {
             return std::array { OutputConfig { "out" } };
         }
 
-        void tick(TickContext<SimpleIirLowPass> const& ctx) const
+        void tick(TickSampleContext<SimpleIirLowPass> const& ctx) const
         {
             auto& in_port = ctx.inputs[0];
             auto const ctrl = ctx.inputs[1].get();

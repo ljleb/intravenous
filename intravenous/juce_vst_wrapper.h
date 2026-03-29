@@ -1,7 +1,7 @@
 #pragma once
 
 #include "dsl.h"
-#include "node.h"
+#include "node_def.h"
 
 #include <cstdint>
 #include <filesystem>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 
 #include <array>
 #include <string>
@@ -27,7 +27,7 @@ namespace iv {
             ctx.import_array(resource_id, state.buffer);
         }
 
-        void tick(TickContext<SharedAccumulatingSink> const& ctx) const
+        void tick(TickSampleContext<SharedAccumulatingSink> const& ctx) const
         {
             auto& sink_state = ctx.state();
             if (sink_state.buffer.empty()) {

@@ -1,6 +1,6 @@
 ﻿#pragma once
 #include "basic_nodes/type_erased.h"
-#include "node.h"
+#include "node_lifecycle.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -124,8 +124,8 @@ namespace iv {
         using Nodes = std::vector<TypeErasedNode>;
         using Edges = std::unordered_set<GraphEdge>;
 
-        struct GraphState : public NodeState<TypeErasedNode> {
-            std::span<NodeState<TypeErasedNode>> node_states;
+        struct GraphState : public NodeContext<TypeErasedNode> {
+            std::span<NodeContext<TypeErasedNode>> node_states;
         };
 
         Nodes _nodes;
@@ -336,7 +336,7 @@ namespace iv {
 
             auto allocate_node_state = [&](auto const& node, size_t node_i)
             {
-                NodeState& node_state = node_state_for(allocator, graph_state, node_i);
+                NodeContext& node_state = node_state_for(allocator, graph_state, node_i);
                 auto [input_configs, output_configs] = make_node_configs(
                     node,
                     node_i,
@@ -414,7 +414,7 @@ namespace iv {
                 // memory was allocated, now let's initialize it
                 auto initialize_node_state = [&](auto const& node, size_t node_i)
                 {
-                    NodeState& node_state = node_state_for(allocator, graph_state, node_i);
+                    NodeContext& node_state = node_state_for(allocator, graph_state, node_i);
                     auto [input_configs, output_configs] = make_node_configs(
                         node,
                         node_i,
@@ -744,7 +744,7 @@ namespace iv {
                 return;
             }
             _node.tick_block({
-                NodeState<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer_span },
+                NodeContext<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer_span },
                 index,
                 block_size
             });

@@ -267,3 +267,33 @@ endif()
 target_link_libraries(intravenous_block_processing PRIVATE intravenous_module_runtime)
 
 add_test(NAME intravenous_block_processing COMMAND intravenous_block_processing)
+
+add_executable(intravenous_node_layout_storage
+    node_layout_storage.cpp
+    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
+)
+
+target_compile_features(intravenous_node_layout_storage PRIVATE cxx_std_23)
+set_target_properties(intravenous_node_layout_storage PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+
+target_include_directories(intravenous_node_layout_storage PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenous
+)
+
+target_include_directories(intravenous_node_layout_storage SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenous/third_party
+)
+
+if(MSVC)
+    target_compile_options(intravenous_node_layout_storage PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(intravenous_node_layout_storage PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+target_link_libraries(intravenous_node_layout_storage PRIVATE intravenous_module_runtime)
+
+add_test(NAME intravenous_node_layout_storage COMMAND intravenous_node_layout_storage)

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 
 #include <ranges>
 #include <array>
@@ -50,7 +50,7 @@ namespace iv {
             state.w[0] = 1.f;
         }
 
-        void tick(TickContext<NlmsPredictor> const& ctx) const
+        void tick(TickSampleContext<NlmsPredictor> const& ctx) const
         {
             auto& state = ctx.state();
             auto& in = ctx.inputs[0];
@@ -137,7 +137,7 @@ namespace iv {
             std::ranges::fill(state.b1, Sample{});
         }
 
-        void tick(TickContext<TanhResidualPredictor> const& ctx) const
+        void tick(TickSampleContext<TanhResidualPredictor> const& ctx) const
         {
             State& s = ctx.state();
             auto& in = ctx.inputs[0];
@@ -256,7 +256,7 @@ namespace iv {
             std::ranges::fill(state.b2, Sample{});
         }
 
-        void tick(TickContext<TanhResidualAR2Predictor> const& ctx) const
+        void tick(TickSampleContext<TanhResidualAR2Predictor> const& ctx) const
         {
             State& state = ctx.state();
             auto& in = ctx.inputs[0];
@@ -376,7 +376,7 @@ namespace iv {
             alloc.fill_n(s.w, 0.f);
         }
 
-        void tick(TickContext<PolyResidualPredictor> const& ctx) const
+        void tick(TickSampleContext<PolyResidualPredictor> const& ctx) const
         {
             State& s = st(ctx.buffer);
             auto& in = ctx.inputs[0];

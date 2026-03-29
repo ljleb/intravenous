@@ -1,4 +1,7 @@
-#include "node.h"
+#pragma once
+
+#include "sample.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstring>

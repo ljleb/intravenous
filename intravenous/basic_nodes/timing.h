@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 #include <array>
 
 namespace iv {
@@ -39,7 +39,7 @@ namespace iv {
             std::ranges::fill(state.memory, Sample{});
         }
 
-        void tick(TickContext<Latency> const& ctx) const
+        void tick(TickSampleContext<Latency> const& ctx) const
         {
             auto& state = ctx.state();
             size_t const mask = state.memory.size() - 1;

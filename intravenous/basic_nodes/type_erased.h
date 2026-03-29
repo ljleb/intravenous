@@ -1,7 +1,7 @@
 #pragma once
 
 #include "alligator.h"
-#include "node.h"
+#include "node_lifecycle.h"
 
 #include <array>
 #include <memory>
@@ -17,7 +17,7 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickContext<Constant> const& state)
+        void tick(TickSampleContext<Constant> const& state)
         {
             state.outputs[0].push(_value);
         }
@@ -31,7 +31,7 @@ namespace iv {
         size_t _max_block_size;
         void (*_declare_fn)(void*, DeclarationContext<TypeErasedNode> const&);
         void (*_initialize_fn)(void*, InitializationContext<TypeErasedNode> const&);
-        void (*_tick_fn)(void*, TickContext<TypeErasedNode> const&);
+        void (*_tick_fn)(void*, TickSampleContext<TypeErasedNode> const&);
         void (*_tick_block_fn)(void*, TickBlockContext<TypeErasedNode> const&);
 
     public:
@@ -46,7 +46,7 @@ namespace iv {
                 _initialize_fn = [](void*, InitializationContext<TypeErasedNode> const& ctx) {
                     return do_initialize(Node{}, ctx);
                 };
-                _tick_fn = [](void*, TickContext<TypeErasedNode> const& ctx) {
+                _tick_fn = [](void*, TickSampleContext<TypeErasedNode> const& ctx) {
                     do_tick(Node{}, ctx);
                 };
                 _tick_block_fn = [](void*, TickBlockContext<TypeErasedNode> const& ctx) {
@@ -60,7 +60,7 @@ namespace iv {
                 _initialize_fn = [](void* node, InitializationContext<TypeErasedNode> const& ctx) {
                     return do_initialize(*static_cast<Node*>(node), ctx);
                 };
-                _tick_fn = [](void* node, TickContext<TypeErasedNode> const& ctx) {
+                _tick_fn = [](void* node, TickSampleContext<TypeErasedNode> const& ctx) {
                     do_tick(*static_cast<Node*>(node), ctx);
                 };
                 _tick_block_fn = [](void* node, TickBlockContext<TypeErasedNode> const& ctx) {
@@ -104,7 +104,7 @@ namespace iv {
             return _initialize_fn(_node.get(), ctx);
         }
 
-        void tick(TickContext<TypeErasedNode> const& ctx)
+        void tick(TickSampleContext<TypeErasedNode> const& ctx)
         {
             _tick_fn(_node.get(), ctx);
         }

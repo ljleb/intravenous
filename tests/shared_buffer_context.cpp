@@ -1,5 +1,5 @@
 #include "alligator.h"
-#include "node.h"
+#include "sample.h"
 #include "module_test_utils.h"
 
 #include <cstdint>

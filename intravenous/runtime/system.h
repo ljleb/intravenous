@@ -47,19 +47,9 @@ namespace iv {
 #if IV_ENABLE_JUCE_VST
             juce_vst_runtime.register_runtime_buffers(allocator, builder);
 #endif
-            size_t const num_channels = render_session.config().num_channels;
+            (void)allocator;
+            (void)builder;
             sink_bindings.clear();
-
-            for (size_t channel = 0; channel < num_channels; ++channel) {
-                auto const& sink_id = render_session.sink_id(channel);
-                if (!builder.template has_import_array<Sample>(sink_id)) {
-                    continue;
-                }
-
-                auto buffer = allocator.template new_array<Sample>(render_session.sink_buffer_size());
-                builder.bind_import_array(sink_id, buffer);
-                sink_bindings.push_back({ channel, buffer });
-            }
         }
 
         size_t max_block_size() const
@@ -122,7 +112,7 @@ namespace iv {
                 while (chunk_remaining != 0) {
                     size_t chunk_size = prev_power_of_2(chunk_remaining);
                     root.tick_block({
-                        NodeState<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer },
+                        NodeContext<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer },
                         block_index,
                         chunk_size,
                     });
@@ -175,22 +165,9 @@ namespace iv {
                 juce_vst_runtime.register_runtime_buffers(allocator, builder);
             }
 #endif
+            (void)allocator;
+            (void)builder;
             sink_bindings.clear();
-
-            size_t const ring_size = size_t(1) << size_t(std::ceil(std::log2(std::max<size_t>(builder.max_block_size(), size_t(1)))));
-            for (size_t channel = 0; channel < config.num_channels; ++channel) {
-                if (channel >= sink_ids.size()) {
-                    continue;
-                }
-                std::string const& id = sink_ids[channel];
-                if (!builder.has_import_array<Sample>(id)) {
-                    continue;
-                }
-
-                auto buffer = allocator.template new_array<Sample>(ring_size);
-                builder.bind_import_array(id, buffer);
-                sink_bindings.push_back({ channel, buffer, {} });
-            }
         }
 
         size_t max_block_size(TypeErasedNode const&, size_t requested_max_block_size) const
@@ -229,7 +206,7 @@ namespace iv {
         {
             clear_window(index, block_size);
             root.tick_block({
-                NodeState<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer },
+                NodeContext<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer },
                 index,
                 block_size
             });
@@ -301,7 +278,7 @@ namespace iv {
         )
         {
             root.tick_block({
-                NodeState<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer },
+                NodeContext<TypeErasedNode> { .inputs = {}, .outputs = {}, .buffer = buffer },
                 index,
                 block_size
             });
