@@ -119,12 +119,6 @@ namespace iv {
 
         void tick_block(TickBlockContext<Graph> const& ctx) const
         {
-            // if (ctx.block_size == 0) {
-            //     return;
-            // }
-            // validate_block_size(ctx.block_size, "Graph::tick_block requires a power-of-2 block size");
-
-            // auto const start_time = std::chrono::steady_clock::now();
             auto& state = ctx.state();
             push_input_blocks_to_private_outputs(state.ingress_outputs, ctx.inputs, ctx.block_size);
 
