@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -19,6 +20,8 @@
 #endif
 
 namespace iv {
+    inline void debug_log(std::string_view message);
+
     inline bool env_flag_enabled(char const* name)
     {
         char const* value = std::getenv(name);
@@ -101,6 +104,48 @@ namespace iv {
             return text.contains(value);
         }
         return true;
+    }
+
+    inline bool node_timing_enabled()
+    {
+#if defined(NDEBUG)
+        return false;
+#else
+        return env_flag_enabled("IV_NODE_TIMING");
+#endif
+    }
+
+    inline long long node_timing_threshold_us()
+    {
+        if (char const* value = std::getenv("IV_NODE_TIMING_US"); value && *value) {
+            try {
+                return std::max(0ll, std::stoll(value));
+            } catch (...) {
+                return 1000;
+            }
+        }
+        return 1000;
+    }
+
+    inline void maybe_log_node_timing(std::string const& message, std::chrono::steady_clock::duration duration)
+    {
+        if (!node_timing_enabled()) {
+            return;
+        }
+
+        auto const elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+        if (elapsed_us < node_timing_threshold_us()) {
+            return;
+        }
+
+        if (char const* value = std::getenv("IV_TRACE_FILTER"); value && *value) {
+            std::string_view filter(value);
+            if (!std::string_view(message).contains(filter)) {
+                return;
+            }
+        }
+
+        debug_log(message + " elapsed_us=" + std::to_string(elapsed_us));
     }
 
     inline void debug_log(std::string_view message)

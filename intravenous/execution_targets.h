@@ -1,15 +1,19 @@
 #pragma once
 
-#include "devices/audio_device.h"
 #include "compat.h"
+#include "devices/audio_device.h"
+#include "wav.h"
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <sstream>
 #include <span>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -277,6 +281,171 @@ namespace iv {
         }
     };
 
+    class WavFileExecutionTarget {
+        std::filesystem::path _path;
+        size_t _sample_rate;
+        std::vector<std::vector<std::span<Sample>>> _channel_sinks;
+        std::vector<std::vector<Sample>> _channel_data;
+
+    public:
+        WavFileExecutionTarget(std::filesystem::path path, size_t sample_rate)
+        : _path(std::move(path))
+        , _sample_rate(sample_rate)
+        {}
+
+        ~WavFileExecutionTarget()
+        {
+            flush_to_disk();
+        }
+
+        size_t preferred_block_size() const
+        {
+            return MAX_BLOCK_SIZE;
+        }
+
+        std::filesystem::path const& path() const
+        {
+            return _path;
+        }
+
+        void begin_block(size_t block_index, size_t block_size)
+        {
+            for (auto const& sinks : _channel_sinks) {
+                for (auto const& sink : sinks) {
+                    if (sink.empty()) {
+                        continue;
+                    }
+                    for (size_t frame = 0; frame < block_size; ++frame) {
+                        sink[(block_index + frame) & (sink.size() - 1)] = 0.0f;
+                    }
+                }
+            }
+        }
+
+        void end_block(size_t block_index, size_t block_size)
+        {
+            size_t channel_count = _channel_sinks.size();
+            if (channel_count == 0) {
+                return;
+            }
+
+            size_t const block_end = block_index + block_size;
+            for (size_t channel = 0; channel < channel_count; ++channel) {
+                auto& output = ensure_channel_data(channel);
+                if (output.size() < block_end) {
+                    output.resize(block_end, 0.0f);
+                }
+
+                for (auto const& sink : _channel_sinks[channel]) {
+                    if (sink.empty()) {
+                        continue;
+                    }
+                    for (size_t frame = 0; frame < block_size; ++frame) {
+                        size_t const global_index = block_index + frame;
+                        output[global_index] += sink[global_index & (sink.size() - 1)];
+                    }
+                }
+            }
+        }
+
+        void register_sink(size_t channel, std::span<Sample> buffer)
+        {
+            ensure_channel(channel);
+            auto& sinks = _channel_sinks[channel];
+            for (auto const& sink : sinks) {
+                if (AudioDeviceExecutionTarget::same_span(sink, buffer)) {
+                    return;
+                }
+            }
+            sinks.push_back(buffer);
+        }
+
+        void update_sink(size_t channel, std::span<Sample> previous_buffer, std::span<Sample> buffer)
+        {
+            ensure_channel(channel);
+            auto& sinks = _channel_sinks[channel];
+            for (auto& sink : sinks) {
+                if (AudioDeviceExecutionTarget::same_span(sink, previous_buffer)) {
+                    sink = buffer;
+                    return;
+                }
+            }
+            sinks.push_back(buffer);
+        }
+
+        void unregister_sink(size_t channel, std::span<Sample> buffer)
+        {
+            if (channel >= _channel_sinks.size()) {
+                return;
+            }
+            auto& sinks = _channel_sinks[channel];
+            sinks.erase(
+                std::remove_if(
+                    sinks.begin(),
+                    sinks.end(),
+                    [&](std::span<Sample> const& sink) {
+                        return AudioDeviceExecutionTarget::same_span(sink, buffer);
+                    }
+                ),
+                sinks.end()
+            );
+        }
+
+    private:
+        void ensure_channel(size_t channel)
+        {
+            if (_channel_sinks.size() <= channel) {
+                _channel_sinks.resize(channel + 1);
+            }
+            if (_channel_data.size() <= channel) {
+                _channel_data.resize(channel + 1);
+            }
+        }
+
+        std::vector<Sample>& ensure_channel_data(size_t channel)
+        {
+            ensure_channel(channel);
+            return _channel_data[channel];
+        }
+
+        void flush_to_disk() const
+        {
+            size_t channel_count = _channel_data.size();
+            if (channel_count == 0) {
+                return;
+            }
+
+            size_t frame_count = 0;
+            for (auto const& channel : _channel_data) {
+                frame_count = std::max(frame_count, channel.size());
+            }
+            if (frame_count == 0) {
+                return;
+            }
+
+            if (_path.has_parent_path()) {
+                std::filesystem::create_directories(_path.parent_path());
+            }
+            if (channel_count > 2) {
+                throw std::logic_error("WavFileExecutionTarget currently supports up to 2 channels");
+            }
+
+            std::vector<Sample> left(frame_count, 0.0f);
+            std::vector<Sample> right(frame_count, 0.0f);
+
+            if (!_channel_data.empty()) {
+                auto const& source = _channel_data[0];
+                std::copy(source.begin(), source.end(), left.begin());
+            }
+            if (_channel_data.size() >= 2) {
+                auto const& source = _channel_data[1];
+                std::copy(source.begin(), source.end(), right.begin());
+            }
+
+            write_wav(_path.string(), left, right, static_cast<std::uint32_t>(_sample_rate));
+        }
+    };
+
     class ExecutionTargets {
     public:
         struct AudioDeviceProvider {
@@ -293,10 +462,13 @@ namespace iv {
         };
         std::vector<DevicePlaybackEntry> _device_playbacks;
         std::vector<std::shared_ptr<AudioDeviceExecutionTarget>> _audio_device_targets;
+        size_t _sample_rate = 48000;
+        std::vector<std::shared_ptr<WavFileExecutionTarget>> _file_targets;
 
     public:
-        explicit ExecutionTargets(AudioDeviceProvider audio_device_provider)
+        explicit ExecutionTargets(AudioDeviceProvider audio_device_provider, size_t sample_rate = 48000)
         : _audio_device_provider(audio_device_provider)
+        , _sample_rate(sample_rate)
         {
             if (!_audio_device_provider.device_fn) {
                 throw std::logic_error("ExecutionTargets requires an audio device provider");
@@ -339,12 +511,28 @@ namespace iv {
                 });
             }
 
+            playback.register_render_client();
             auto target = std::make_shared<AudioDeviceExecutionTarget>(
                 std::move(device_id),
                 channel,
                 std::move(playback)
             );
             _audio_device_targets.push_back(target);
+            return *target;
+        }
+
+        WavFileExecutionTarget& file(std::filesystem::path const& path, size_t channel)
+        {
+            (void)channel;
+            std::filesystem::path const normalized = std::filesystem::absolute(path).lexically_normal();
+            for (auto const& target : _file_targets) {
+                if (target->path() == normalized) {
+                    return *target;
+                }
+            }
+
+            auto target = std::make_shared<WavFileExecutionTarget>(normalized, _sample_rate);
+            _file_targets.push_back(target);
             return *target;
         }
 
@@ -370,8 +558,11 @@ namespace iv {
         std::vector<TypeErasedExecutionTarget> all() const
         {
             std::vector<TypeErasedExecutionTarget> targets;
-            targets.reserve(_audio_device_targets.size());
+            targets.reserve(_audio_device_targets.size() + _file_targets.size());
             for (auto const& target : _audio_device_targets) {
+                targets.emplace_back(target);
+            }
+            for (auto const& target : _file_targets) {
                 targets.emplace_back(target);
             }
             return targets;

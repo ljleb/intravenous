@@ -4,6 +4,7 @@
 #include "graph/wiring.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <sstream>
 #include <span>
@@ -34,7 +35,7 @@ namespace iv {
         {}
 
         struct State {
-            std::span<std::byte*> scc_states;
+            std::span<std::span<std::byte>> scc_states;
             std::span<OutputPort> ingress_outputs;
             std::span<SharedPortData> egress_port_data;
             std::span<Sample> egress_samples;
@@ -86,11 +87,11 @@ namespace iv {
                 do_declare(scc, ctx);
             }
             ctx.nested_node_states(state.scc_states);
+            ctx.local_array(state.egress_inputs, num_outputs());
             ctx.local_array(state.egress_port_data, num_outputs());
             auto const output_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _public_output_buffer_plans);
             auto const output_sample_offsets = make_input_sample_offsets(output_sample_sizes);
             ctx.local_array(state.egress_samples, output_sample_offsets.empty() ? 0 : output_sample_offsets.back());
-            ctx.local_array(state.egress_inputs, num_outputs());
             ctx.export_array(graph_port_data_export_id(_graph_id), state.egress_port_data);
         }
 
@@ -119,21 +120,23 @@ namespace iv {
 
         void tick_block(TickBlockContext<Graph> const& ctx) const
         {
-            if (ctx.block_size == 0) {
-                return;
-            }
-            validate_block_size(ctx.block_size, "Graph::tick_block requires a power-of-2 block size");
+            // if (ctx.block_size == 0) {
+            //     return;
+            // }
+            // validate_block_size(ctx.block_size, "Graph::tick_block requires a power-of-2 block size");
 
+            // auto const start_time = std::chrono::steady_clock::now();
             auto& state = ctx.state();
             push_input_blocks_to_private_outputs(state.ingress_outputs, ctx.inputs, ctx.block_size);
-            log_graph_port_trace("trace.graph.ingress", state.ingress_outputs, ctx.index, ctx.block_size);
+            // log_graph_port_trace("trace.graph.ingress", state.ingress_outputs, ctx.index, ctx.block_size);
 
             for (size_t scc_index = 0; scc_index < _scc_wrappers.size(); ++scc_index) {
                 tick_scc(scc_index, ctx, ctx.block_size);
             }
 
-            log_graph_port_trace("trace.graph.egress", state.egress_inputs, ctx.index, ctx.block_size);
+            // log_graph_port_trace("trace.graph.egress", state.egress_inputs, ctx.index, ctx.block_size);
             push_private_inputs_to_output_blocks(ctx.outputs, state.egress_inputs, ctx.block_size);
+            // maybe_log_timing(ctx, std::chrono::steady_clock::now() - start_time);
         }
 
     private:
@@ -236,27 +239,33 @@ namespace iv {
         ) const
         {
             auto const& state = ctx.state();
-            IV_ASSERT(scc_index < state.scc_states.size(), "graph SCC state index out of bounds");
-            IV_ASSERT(state.scc_states[scc_index] != nullptr, "graph SCC state pointer must not be null");
-            auto* const buffer_begin = ctx.buffer.data();
-            auto* const buffer_end = buffer_begin + ctx.buffer.size();
-            IV_ASSERT(
-                state.scc_states[scc_index] >= buffer_begin && state.scc_states[scc_index] <= buffer_end,
-                "graph SCC state pointer must point inside the enclosing graph buffer"
-            );
-            try {
+            // IV_ASSERT(scc_index < state.scc_states.size(), "graph SCC state index out of bounds");
+            // IV_ASSERT(state.scc_states[scc_index].data() != nullptr, "graph SCC state pointer must not be null");
+            // auto* const buffer_begin = ctx.buffer.data();
+            // auto* const buffer_end = buffer_begin + ctx.buffer.size();
+            // IV_ASSERT(
+            //     state.scc_states[scc_index].data() >= buffer_begin && state.scc_states[scc_index].data() <= buffer_end,
+            //     "graph SCC state pointer must point inside the enclosing graph buffer"
+            // );
+            // try {
                 do_tick_block(_scc_wrappers[scc_index], {
-                    TickContext<GraphSccWrapper> {
-                        .inputs = {},
-                        .outputs = {},
-                        .buffer = remaining_buffer(ctx.buffer, state.scc_states[scc_index]),
-                    },
+                    TickContext<GraphSccWrapper> { .inputs = {}, .outputs = {}, .buffer = state.scc_states[scc_index] },
                     ctx.index,
-                    block_size
+                    block_size,
                 });
-            } catch (std::exception const& e) {
-                throw std::logic_error("graph tick failed for SCC " + std::to_string(scc_index) + ": " + e.what());
-            }
+            // } catch (std::exception const& e) {
+            //     throw std::logic_error("graph tick failed for SCC " + std::to_string(scc_index) + ": " + e.what());
+            // }
+        }
+
+        void maybe_log_timing(TickBlockContext<Graph> const& ctx, std::chrono::steady_clock::duration duration) const
+        {
+            std::ostringstream oss;
+            oss << "trace.graph.timing: id=" << _graph_id
+                << " index=" << ctx.index
+                << " size=" << ctx.block_size
+                << " nodes=" << _node_ids.size();
+            iv::maybe_log_node_timing(oss.str(), duration);
         }
 
     };

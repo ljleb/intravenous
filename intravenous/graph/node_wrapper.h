@@ -6,6 +6,7 @@
 #include "wiring.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <memory>
@@ -50,7 +51,7 @@ namespace iv {
             std::span<SharedPortData> disconnected_output_port_data;
             std::span<Sample> disconnected_output_samples;
             std::span<OutputPort> outputs;
-            std::span<std::byte*> nested_nodes;
+            std::span<std::span<std::byte>> nested_nodes;
         };
 
         auto inputs() const
@@ -151,32 +152,36 @@ namespace iv {
         void tick_block(TickBlockContext<GraphNodeWrapper> const& ctx) const
         {
             auto& state = ctx.state();
-            IV_ASSERT(state.nested_nodes.size() == 2, "graph node wrapper must own exactly port-data and nested-node state pointers");
-            IV_ASSERT(state.nested_nodes[0] != nullptr, "graph node wrapper port-data state pointer must not be null");
-            IV_ASSERT(state.nested_nodes[1] != nullptr, "graph node wrapper nested-node state pointer must not be null");
-            auto* const buffer_begin = ctx.buffer.data();
-            auto* const buffer_end = buffer_begin + ctx.buffer.size();
-            IV_ASSERT(
-                state.nested_nodes[0] >= buffer_begin && state.nested_nodes[0] <= buffer_end,
-                "graph node wrapper port-data state pointer must point inside the enclosing node buffer"
-            );
-            IV_ASSERT(
-                state.nested_nodes[1] >= buffer_begin && state.nested_nodes[1] <= buffer_end,
-                "graph node wrapper nested-node state pointer must point inside the enclosing node buffer"
-            );
-            try {
-                trace_block_inputs(ctx, state.inputs);
-                tick_nested_node(
-                    _node,
-                    state.nested_nodes[1],
-                    ctx,
-                    state.inputs,
-                    state.outputs
-                );
-                trace_block_outputs(ctx, state.outputs);
-            } catch (std::exception const& e) {
-                throw std::logic_error("graph node wrapper tick failed for node '" + _node_id + "': " + e.what());
-            }
+            // IV_ASSERT(state.nested_nodes.size() == 2, "graph node wrapper must own exactly port-data and nested-node state pointers");
+            // IV_ASSERT(state.nested_nodes[0].data() != nullptr, "graph node wrapper port-data state pointer must not be null");
+            // IV_ASSERT(state.nested_nodes[1].data() != nullptr, "graph node wrapper nested-node state pointer must not be null");
+            // auto* const buffer_begin = ctx.buffer.data();
+            // auto* const buffer_end = buffer_begin + ctx.buffer.size();
+            // IV_ASSERT(
+            //     state.nested_nodes[0].data() >= buffer_begin && state.nested_nodes[0].data() <= buffer_end,
+            //     "graph node wrapper port-data state pointer must point inside the enclosing node buffer"
+            // );
+            // IV_ASSERT(
+            //     state.nested_nodes[1].data() >= buffer_begin && state.nested_nodes[1].data() <= buffer_end,
+            //     "graph node wrapper nested-node state pointer must point inside the enclosing node buffer"
+            // );
+            // auto const start_time = std::chrono::steady_clock::now();
+            // try {
+                // trace_block_inputs(ctx, state.inputs);
+                _node.tick_block({
+                    TickContext<TypeErasedNode> {
+                        .inputs = state.inputs,
+                        .outputs = state.outputs,
+                        .buffer = state.nested_nodes[1],
+                    },
+                    ctx.index,
+                    ctx.block_size
+                });
+                // trace_block_outputs(ctx, state.outputs);
+            // } catch (std::exception const& e) {
+            //     throw std::logic_error("graph node wrapper tick failed for node '" + _node_id + "': " + e.what());
+            // }
+            // maybe_log_timing(ctx, std::chrono::steady_clock::now() - start_time);
         }
 
     private:
@@ -266,6 +271,16 @@ namespace iv {
             }
 
             debug_log(oss.str());
+        }
+
+        void maybe_log_timing(TickBlockContext<GraphNodeWrapper> const& ctx, std::chrono::steady_clock::duration duration) const
+        {
+            std::ostringstream oss;
+            oss << "trace.node.timing: id=" << _node_id
+                << " type=" << _node.type_name()
+                << " index=" << ctx.index
+                << " size=" << ctx.block_size;
+            iv::maybe_log_node_timing(oss.str(), duration);
         }
     };
 }

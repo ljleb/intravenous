@@ -108,7 +108,7 @@ namespace iv {
         void local_array(size_t node_index, Marker const*, std::span<A> const*, size_t);
 
         template<typename Marker>
-        void nested_nodes(size_t node_index, Marker const*, std::span<std::byte*> const*, std::vector<size_t>);
+        void nested_nodes(size_t node_index, Marker const*, std::span<std::span<std::byte>> const*, std::vector<size_t>);
 
         template<typename A>
         void export_array(size_t node_index, std::string id, std::span<A> const*);
@@ -242,7 +242,7 @@ namespace iv {
         template<typename A>
         bool has_export_array(std::string const& id) const;
 
-        void nested_node_states(std::span<std::byte*> const& nodes) const;
+        void nested_node_states(std::span<std::span<std::byte>> const& nodes) const;
 
         size_t max_block_size() const;
 
@@ -450,7 +450,7 @@ namespace iv {
     }
 
     template<typename Node>
-    inline void DeclarationContext<Node>::nested_node_states(std::span<std::byte*> const& nodes) const
+    inline void DeclarationContext<Node>::nested_node_states(std::span<std::span<std::byte>> const& nodes) const
     {
         std::vector<size_t> nested_node_indices;
         nested_node_indices.reserve(_direct_nested_node_indices.size() - _nested_node_cursor);
@@ -552,7 +552,7 @@ namespace iv {
     void NodeLayoutBuilder::nested_nodes(
         size_t node_index,
         Marker const* state_marker,
-        std::span<std::byte*> const* span,
+        std::span<std::span<std::byte>> const* span,
         std::vector<size_t> nested_node_indices
     )
     {
@@ -563,18 +563,18 @@ namespace iv {
         region.kind = NodeLayout::Region::Kind::nested_nodes;
         region.owner_node = node_index;
         region.state_field_offset = static_cast<ptrdiff_t>(field_ptr - state_base);
-        region.storage_offset = align_up(_storage_size, alignof(std::byte*));
-        region.size = sizeof(std::byte*) * nested_node_indices.size();
-        region.alignment = alignof(std::byte*);
+        region.storage_offset = align_up(_storage_size, alignof(std::span<std::byte>));
+        region.size = sizeof(std::span<std::byte>) * nested_node_indices.size();
+        region.alignment = alignof(std::span<std::byte>);
         region.element_count = nested_node_indices.size();
-        region.element_type = type_token<std::byte*>();
+        region.element_type = type_token<std::span<std::byte>>();
         region.assign_span_fn = [](void* state_base_ptr, ptrdiff_t field_offset, void* data, size_t count_value) {
-            auto& span_ref = *reinterpret_cast<std::span<std::byte*>*>(static_cast<std::byte*>(state_base_ptr) + field_offset);
-            span_ref = { static_cast<std::byte**>(data), count_value };
+            auto& span_ref = *reinterpret_cast<std::span<std::span<std::byte>>*>(static_cast<std::byte*>(state_base_ptr) + field_offset);
+            span_ref = { static_cast<std::span<std::byte>*>(data), count_value };
         };
         region.nested_node_indices = std::move(nested_node_indices);
 
-        _storage_alignment = std::max(_storage_alignment, size_t(alignof(std::byte*)));
+        _storage_alignment = std::max(_storage_alignment, size_t(alignof(std::span<std::byte>)));
         _storage_size = region.storage_offset + region.size;
 
         _regions.push_back(std::move(region));
@@ -1016,7 +1016,7 @@ namespace iv {
             void* data = storage.get() + region.storage_offset;
             region.assign_span_fn(state, region.state_field_offset, data, region.element_count);
             if (region.kind == NodeLayout::Region::Kind::nested_nodes) {
-                auto const& assigned_span = *reinterpret_cast<std::span<std::byte*> const*>(
+                auto const& assigned_span = *reinterpret_cast<std::span<std::span<std::byte>> const*>(
                     static_cast<std::byte*>(state) + region.state_field_offset
                 );
                 if (assigned_span.size() != region.element_count) {
@@ -1026,14 +1026,14 @@ namespace iv {
                         ", actual count=" + std::to_string(assigned_span.size()) + ")"
                     );
                 }
-                auto* nested_nodes = static_cast<std::byte**>(data);
+                auto* nested_nodes = static_cast<std::span<std::byte>*>(data);
                 for (size_t i = 0; i < region.nested_node_indices.size(); ++i) {
                     auto* nested_state = static_cast<std::byte*>(state_ptr(region.nested_node_indices[i]));
                     IV_ASSERT(
                         nested_state != nullptr,
                         "nested child state pointer must resolve during storage initialization"
                     );
-                    nested_nodes[i] = nested_state;
+                    nested_nodes[i] = { nested_state, static_cast<size_t>((storage.get() + layout->storage_size) - nested_state) };
                 }
             }
         }

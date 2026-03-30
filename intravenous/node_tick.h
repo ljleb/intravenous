@@ -53,7 +53,7 @@ namespace iv {
     }
 
     template<typename Node>
-    std::add_lvalue_reference_t<typename TickContext<Node>::State> TickContext<Node>::state() const
+    IV_FORCEINLINE std::add_lvalue_reference_t<typename TickContext<Node>::State> TickContext<Node>::state() const
     requires(!std::is_void_v<State>)
     {
         void* ptr = buffer.data();
@@ -62,12 +62,12 @@ namespace iv {
     }
 
     template<typename Node>
-    TickSampleContext<Node>::TickSampleContext(TickContext<Node> base, size_t index)
+    IV_FORCEINLINE TickSampleContext<Node>::TickSampleContext(TickContext<Node> base, size_t index)
     : TickContext<Node>(base), index(index)
     {}
 
     template<typename Node>
-    TickBlockContext<Node>::TickBlockContext(
+    IV_FORCEINLINE TickBlockContext<Node>::TickBlockContext(
         TickContext<Node> base,
         size_t index,
         size_t block_size
@@ -80,7 +80,7 @@ namespace iv {
     template<typename Node>
     void do_tick_block(Node const& node, TickBlockContext<Node> const& state);
 
-    inline std::span<std::byte> remaining_buffer(std::span<std::byte> buffer, std::byte* state_base)
+    IV_FORCEINLINE std::span<std::byte> remaining_buffer(std::span<std::byte> buffer, std::byte* state_base)
     {
         if (!state_base) {
             throw std::logic_error("nested node state pointer cannot be null");
@@ -101,7 +101,7 @@ namespace iv {
     }
 
     template<typename NestedNode, typename OuterNode>
-    TickContext<NestedNode> make_nested_tick_context(
+    IV_FORCEINLINE TickContext<NestedNode> make_nested_tick_context(
         TickContext<OuterNode> const& outer,
         std::byte* nested_state,
         std::span<InputPort> inputs,
@@ -116,7 +116,7 @@ namespace iv {
     }
 
     template<typename Node>
-    void do_tick(Node const& node, TickSampleContext<Node> const& ctx)
+    IV_FORCEINLINE void do_tick(Node const& node, TickSampleContext<Node> const& ctx)
     {
         if constexpr (details::has_tick<Node>)
         {
@@ -138,7 +138,7 @@ namespace iv {
     }
 
     template<typename Node>
-    void do_tick_block(Node const& node, TickBlockContext<Node> const& ctx)
+    IV_FORCEINLINE void do_tick_block(Node const& node, TickBlockContext<Node> const& ctx)
     {
         if (ctx.block_size == 0) {
             return;

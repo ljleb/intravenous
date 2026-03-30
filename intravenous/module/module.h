@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
@@ -27,16 +28,19 @@ namespace iv {
     class ModuleTargetFactory {
         void* _user_data = nullptr;
         NodeRef (*_sink_fn)(void*, GraphBuilder&, size_t, size_t) = nullptr;
+        NodeRef (*_file_fn)(void*, GraphBuilder&, size_t, std::filesystem::path const&) = nullptr;
 
     public:
         ModuleTargetFactory() = default;
 
         ModuleTargetFactory(
             void* user_data,
-            NodeRef (*sink_fn)(void*, GraphBuilder&, size_t, size_t)
+            NodeRef (*sink_fn)(void*, GraphBuilder&, size_t, size_t),
+            NodeRef (*file_fn)(void*, GraphBuilder&, size_t, std::filesystem::path const&)
         ) :
             _user_data(user_data),
-            _sink_fn(sink_fn)
+            _sink_fn(sink_fn),
+            _file_fn(file_fn)
         {}
 
         NodeRef sink(GraphBuilder& builder, size_t channel, size_t device_id = 0) const
@@ -46,6 +50,15 @@ namespace iv {
             }
 
             return _sink_fn(_user_data, builder, channel, device_id);
+        }
+
+        NodeRef file(GraphBuilder& builder, size_t channel, std::filesystem::path const& path) const
+        {
+            if (!_file_fn) {
+                throw std::logic_error("module file target callback is unavailable");
+            }
+
+            return _file_fn(_user_data, builder, channel, path);
         }
     };
 

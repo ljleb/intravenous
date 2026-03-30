@@ -1,8 +1,10 @@
 #pragma once
 
 #include "ports.h"
+#include "compat.h"
 #include "third_party/miniaudio/miniaudio.h"
 
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -13,6 +15,15 @@
 #include <vector>
 
 namespace iv {
+    inline bool audio_timing_enabled()
+    {
+#if defined(NDEBUG)
+        return false;
+#else
+        return env_flag_enabled("IV_AUDIO_TIMING");
+#endif
+    }
+
     struct RenderConfig {
         size_t sample_rate = 48000;
         size_t num_channels = 2;
@@ -29,6 +40,7 @@ namespace iv {
         size_t (*_active_block_frames_fn)(void const*) = nullptr;
         void (*_mix_sink_block_fn)(void*, size_t, std::span<Sample const>, size_t, size_t) = nullptr;
         void (*_finish_tick_fn)(void*, size_t) = nullptr;
+        void (*_register_render_client_fn)(void*) = nullptr;
         std::span<Sample const> (*_output_block_fn)(void const*, size_t) = nullptr;
         bool (*_is_shutdown_requested_fn)(void const*) = nullptr;
         void (*_request_shutdown_fn)(void*) = nullptr;
@@ -59,6 +71,9 @@ namespace iv {
             }),
             _finish_tick_fn([](void* state_ptr, size_t global_index) {
                 static_cast<State*>(state_ptr)->finish_tick(global_index);
+            }),
+            _register_render_client_fn([](void* state_ptr) {
+                static_cast<State*>(state_ptr)->register_render_client();
             }),
             _output_block_fn([](void const* state_ptr, size_t channel) {
                 return static_cast<State const*>(state_ptr)->output_block(channel);
@@ -111,6 +126,11 @@ namespace iv {
             _finish_tick_fn(_state.get(), global_index);
         }
 
+        void register_render_client()
+        {
+            _register_render_client_fn(_state.get());
+        }
+
         std::span<Sample const> output_block(size_t channel) const
         {
             return _output_block_fn(_state.get(), channel);
@@ -134,6 +154,7 @@ namespace iv {
             size_t active_block_start_index = 0;
             size_t active_block_end_index = 0;
             bool shutdown_requested = false;
+            size_t render_client_count = 0;
 
             explicit FakeAudioPlayback(RenderConfig config_) :
                 config(config_),
@@ -184,6 +205,11 @@ namespace iv {
             void finish_tick(size_t)
             {}
 
+            void register_render_client()
+            {
+                ++render_client_count;
+            }
+
             std::span<Sample const> output_block(size_t channel) const
             {
                 return planar_storage.at(channel);
@@ -212,6 +238,8 @@ namespace iv {
             bool render_in_progress = false;
             bool render_finished = false;
             bool block_open = false;
+            size_t render_client_count = 0;
+            size_t pending_render_clients = 0;
 
             RenderConfig config;
             std::vector<std::vector<Sample>> planar_storage;
@@ -221,6 +249,9 @@ namespace iv {
             size_t requested_channels = 0;
             size_t active_block_start_index = 0;
             size_t active_block_end_index = 0;
+            std::chrono::steady_clock::time_point callback_request_time {};
+            std::chrono::steady_clock::time_point render_begin_time {};
+            std::chrono::steady_clock::time_point render_finish_time {};
             std::mutex mutex;
             std::condition_variable cv;
 
@@ -259,11 +290,13 @@ namespace iv {
                     return;
                 }
 
+                auto const request_time = std::chrono::steady_clock::now();
                 self->requested_frames = frame_count;
                 self->requested_channels = device->playback.channels;
                 self->render_requested = true;
                 self->render_in_progress = false;
                 self->render_finished = false;
+                self->callback_request_time = request_time;
                 self->cv.notify_all();
 
                 self->cv.wait(lock, [&] {
@@ -273,6 +306,27 @@ namespace iv {
                 if (self->shutdown_requested) {
                     self->write_silence(out, frame_count, device->playback.channels);
                     return;
+                }
+
+                if (audio_timing_enabled()) {
+                    auto const finish_time = self->render_finish_time;
+                    auto const begin_time = self->render_begin_time;
+                    auto const total_us = std::chrono::duration_cast<std::chrono::microseconds>(finish_time - request_time).count();
+                    auto const dispatch_us = std::chrono::duration_cast<std::chrono::microseconds>(begin_time - request_time).count();
+                    auto const render_us = std::chrono::duration_cast<std::chrono::microseconds>(finish_time - begin_time).count();
+                    auto const budget_us = static_cast<long long>(
+                        (static_cast<double>(frame_count) * 1000000.0) /
+                        static_cast<double>(self->config.sample_rate)
+                    );
+                    if (total_us > budget_us / 2) {
+                        debug_log(
+                            "audio timing: frames=" + std::to_string(frame_count) +
+                            " budget_us=" + std::to_string(budget_us) +
+                            " total_us=" + std::to_string(total_us) +
+                            " dispatch_us=" + std::to_string(dispatch_us) +
+                            " render_us=" + std::to_string(render_us)
+                        );
+                    }
                 }
 
                 self->interleave_to(out);
@@ -359,8 +413,10 @@ namespace iv {
 
                 render_requested = false;
                 render_in_progress = true;
+                render_begin_time = std::chrono::steady_clock::now();
                 clear_staging(requested_channels, requested_frames);
                 block_open = true;
+                pending_render_clients = std::max<size_t>(1, render_client_count);
                 active_block_start_index = global_index;
                 active_block_end_index = global_index + requested_frames;
             }
@@ -398,15 +454,21 @@ namespace iv {
                 if (!block_open || global_index + 1 < active_block_end_index) {
                     return;
                 }
-                block_open = false;
 
                 {
                     std::lock_guard lock(mutex);
                     if (shutdown_requested || !render_in_progress) {
                         return;
                     }
+                    if (pending_render_clients > 1) {
+                        --pending_render_clients;
+                        return;
+                    }
+                    pending_render_clients = 0;
+                    block_open = false;
                     render_in_progress = false;
                     render_finished = true;
+                    render_finish_time = std::chrono::steady_clock::now();
                 }
                 cv.notify_all();
             }
@@ -428,6 +490,12 @@ namespace iv {
                     shutdown_requested = true;
                 }
                 cv.notify_all();
+            }
+
+            void register_render_client()
+            {
+                std::lock_guard lock(mutex);
+                ++render_client_count;
             }
 
         private:

@@ -93,10 +93,10 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     //     // {"Mode", 0.1},
     // });
 
-    auto const val_idx = std::array {
-        "l0",
-        "r0",
-    };
+    // auto const val_idx = std::array {
+    //     "l0",
+    //     "r0",
+    // };
 
     for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
         auto const noise = g.subgraph(noise_voice);
@@ -112,7 +112,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         shared_noise(first_noise, noise, 1.0);
         // valhalla({{val_idx[channel], 1.0 * voice["feedback"].detach(4)}});
         voice({
-            {"noise", 0.1*shared_noise},
+            {"noise", 0.5*shared_noise},
             {"dt", dt},
             {"feedback", voice["feedback"].detach()},
             // {"feedback", valhalla[val_idx[channel]]},

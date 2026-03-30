@@ -585,6 +585,14 @@ namespace iv {
             });
         }
 
+        static NodeRef file_from_context(void*, GraphBuilder& builder, size_t channel, std::filesystem::path const& path)
+        {
+            return builder.node<FileSink>(FileSink{
+                .path = path,
+                .channel = channel,
+            });
+        }
+
         ResolvedModule resolve_module_path(std::filesystem::path const& requested_path) const
         {
             std::filesystem::path normalized = normalize_path(requested_path);
@@ -981,7 +989,8 @@ namespace iv {
             GraphBuilder builder;
             ModuleTargetFactory target_factory(
                 &session,
-                &Impl::sink_from_context
+                &Impl::sink_from_context,
+                &Impl::file_from_context
             );
             ModuleContext context(
                 builder,

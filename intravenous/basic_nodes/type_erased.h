@@ -40,7 +40,7 @@ namespace iv {
 
     public:
         struct State {
-            std::span<std::byte*> nested_nodes;
+            std::span<std::span<std::byte>> nested_nodes;
         };
 
         TypeErasedNode() = default;
@@ -75,60 +75,50 @@ namespace iv {
                 };
                 _initialize_fn = [](void*, InitializationContext<TypeErasedNode> const& ctx) {
                     auto& state = ctx.state();
-                    if (state.nested_nodes.size() != 1 || state.nested_nodes[0] == nullptr) {
+                    if (state.nested_nodes.size() != 1 || state.nested_nodes[0].data() == nullptr) {
                         std::ostringstream oss;
                         oss << "type-erased node has invalid nested state during initialize"
                             << " (count=" << state.nested_nodes.size()
                             << ", span_data=" << static_cast<void*>(state.nested_nodes.data());
                         if (!state.nested_nodes.empty()) {
-                            oss << ", child=" << static_cast<void*>(state.nested_nodes[0]);
+                            oss << ", child=" << static_cast<void*>(state.nested_nodes[0].data());
                         }
                         oss << ")";
                         throw std::logic_error(oss.str());
                     }
                     auto* const self_state = reinterpret_cast<std::byte*>(std::addressof(state));
-                    if (state.nested_nodes[0] < self_state) {
+                    if (state.nested_nodes[0].data() < self_state) {
                         std::ostringstream oss;
                         oss << "type-erased nested node state pointer must not precede the type-erased state"
                             << " (self=" << static_cast<void*>(self_state)
-                            << ", child=" << static_cast<void*>(state.nested_nodes[0]) << ")";
+                            << ", child=" << static_cast<void*>(state.nested_nodes[0].data()) << ")";
                         throw std::logic_error(oss.str());
                     }
                 };
                 _tick_fn = [](void*, TickSampleContext<TypeErasedNode> const& ctx) {
                     auto& state = ctx.state();
                     IV_ASSERT(state.nested_nodes.size() == 1, "type-erased node must own exactly one nested node state");
-                    IV_ASSERT(state.nested_nodes[0] != nullptr, "type-erased nested node state pointer must not be null");
+                    IV_ASSERT(state.nested_nodes[0].data() != nullptr, "type-erased nested node state pointer must not be null");
                     do_tick(Node{}, TickSampleContext<Node> {
-                        make_nested_tick_context<Node>(
-                            static_cast<TickContext<TypeErasedNode> const&>(ctx),
-                            state.nested_nodes[0],
-                            ctx.inputs,
-                            ctx.outputs
-                        ),
+                        TickContext<Node> { .inputs = ctx.inputs, .outputs = ctx.outputs, .buffer = state.nested_nodes[0] },
                         ctx.index,
                     });
                 };
                 _tick_block_fn = [](void*, TickBlockContext<TypeErasedNode> const& ctx) {
                     auto& state = ctx.state();
-                    if (state.nested_nodes.size() != 1 || state.nested_nodes[0] == nullptr) {
-                        std::ostringstream oss;
-                        oss << "type-erased node has invalid nested state"
-                            << " (count=" << state.nested_nodes.size()
-                            << ", span_data=" << static_cast<void*>(state.nested_nodes.data());
-                        if (!state.nested_nodes.empty()) {
-                            oss << ", child=" << static_cast<void*>(state.nested_nodes[0]);
-                        }
-                        oss << ")";
-                        throw std::logic_error(oss.str());
-                    }
+                    // if (state.nested_nodes.size() != 1 || state.nested_nodes[0].data() == nullptr) {
+                    //     std::ostringstream oss;
+                    //     oss << "type-erased node has invalid nested state"
+                    //         << " (count=" << state.nested_nodes.size()
+                    //         << ", span_data=" << static_cast<void*>(state.nested_nodes.data());
+                    //     if (!state.nested_nodes.empty()) {
+                    //         oss << ", child=" << static_cast<void*>(state.nested_nodes[0].data());
+                    //     }
+                    //     oss << ")";
+                    //     throw std::logic_error(oss.str());
+                    // }
                     do_tick_block(Node{}, TickBlockContext<Node> {
-                        make_nested_tick_context<Node>(
-                            static_cast<TickContext<TypeErasedNode> const&>(ctx),
-                            state.nested_nodes[0],
-                            ctx.inputs,
-                            ctx.outputs
-                        ),
+                        TickContext<Node> { .inputs = ctx.inputs, .outputs = ctx.outputs, .buffer = state.nested_nodes[0] },
                         ctx.index,
                         ctx.block_size,
                     });
@@ -151,60 +141,50 @@ namespace iv {
                 };
                 _initialize_fn = [](void*, InitializationContext<TypeErasedNode> const& ctx) {
                     auto& state = ctx.state();
-                    if (state.nested_nodes.size() != 1 || state.nested_nodes[0] == nullptr) {
+                    if (state.nested_nodes.size() != 1 || state.nested_nodes[0].data() == nullptr) {
                         std::ostringstream oss;
                         oss << "type-erased node has invalid nested state during initialize"
                             << " (count=" << state.nested_nodes.size()
                             << ", span_data=" << static_cast<void*>(state.nested_nodes.data());
                         if (!state.nested_nodes.empty()) {
-                            oss << ", child=" << static_cast<void*>(state.nested_nodes[0]);
+                            oss << ", child=" << static_cast<void*>(state.nested_nodes[0].data());
                         }
                         oss << ")";
                         throw std::logic_error(oss.str());
                     }
                     auto* const self_state = reinterpret_cast<std::byte*>(std::addressof(state));
-                    if (state.nested_nodes[0] < self_state) {
+                    if (state.nested_nodes[0].data() < self_state) {
                         std::ostringstream oss;
                         oss << "type-erased nested node state pointer must not precede the type-erased state"
                             << " (self=" << static_cast<void*>(self_state)
-                            << ", child=" << static_cast<void*>(state.nested_nodes[0]) << ")";
+                            << ", child=" << static_cast<void*>(state.nested_nodes[0].data()) << ")";
                         throw std::logic_error(oss.str());
                     }
                 };
                 _tick_fn = [](void* node, TickSampleContext<TypeErasedNode> const& ctx) {
                     auto& state = ctx.state();
                     IV_ASSERT(state.nested_nodes.size() == 1, "type-erased node must own exactly one nested node state");
-                    IV_ASSERT(state.nested_nodes[0] != nullptr, "type-erased nested node state pointer must not be null");
+                    IV_ASSERT(state.nested_nodes[0].data() != nullptr, "type-erased nested node state pointer must not be null");
                     do_tick(*static_cast<Node*>(node), TickSampleContext<Node> {
-                        make_nested_tick_context<Node>(
-                            static_cast<TickContext<TypeErasedNode> const&>(ctx),
-                            state.nested_nodes[0],
-                            ctx.inputs,
-                            ctx.outputs
-                        ),
+                        TickContext<Node> { .inputs = ctx.inputs, .outputs = ctx.outputs, .buffer = state.nested_nodes[0] },
                         ctx.index,
                     });
                 };
                 _tick_block_fn = [](void* node, TickBlockContext<TypeErasedNode> const& ctx) {
                     auto& state = ctx.state();
-                    if (state.nested_nodes.size() != 1 || state.nested_nodes[0] == nullptr) {
-                        std::ostringstream oss;
-                        oss << "type-erased node has invalid nested state"
-                            << " (count=" << state.nested_nodes.size()
-                            << ", span_data=" << static_cast<void*>(state.nested_nodes.data());
-                        if (!state.nested_nodes.empty()) {
-                            oss << ", child=" << static_cast<void*>(state.nested_nodes[0]);
-                        }
-                        oss << ")";
-                        throw std::logic_error(oss.str());
-                    }
+                    // if (state.nested_nodes.size() != 1 || state.nested_nodes[0].data() == nullptr) {
+                    //     std::ostringstream oss;
+                    //     oss << "type-erased node has invalid nested state"
+                    //         << " (count=" << state.nested_nodes.size()
+                    //         << ", span_data=" << static_cast<void*>(state.nested_nodes.data());
+                    //     if (!state.nested_nodes.empty()) {
+                    //         oss << ", child=" << static_cast<void*>(state.nested_nodes[0].data());
+                    //     }
+                    //     oss << ")";
+                    //     throw std::logic_error(oss.str());
+                    // }
                     do_tick_block(*static_cast<Node*>(node), TickBlockContext<Node> {
-                        make_nested_tick_context<Node>(
-                            static_cast<TickContext<TypeErasedNode> const&>(ctx),
-                            state.nested_nodes[0],
-                            ctx.inputs,
-                            ctx.outputs
-                        ),
+                        TickContext<Node> { .inputs = ctx.inputs, .outputs = ctx.outputs, .buffer = state.nested_nodes[0] },
                         ctx.index,
                         ctx.block_size,
                     });

@@ -5,7 +5,7 @@
 
 namespace iv {
     template<typename OuterNode>
-    inline void tick_nested_node(
+    IV_FORCEINLINE void tick_nested_node(
         TypeErasedNode const& node,
         std::byte* nested_state,
         TickBlockContext<OuterNode> const& outer,

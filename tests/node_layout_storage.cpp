@@ -23,23 +23,23 @@ namespace {
     {
         auto& root_state = *static_cast<iv::TypeErasedNode::State*>(storage.state_ptr(0));
         iv::test::require(root_state.nested_nodes.size() == 1, "root type-erased graph should expose one nested graph child");
-        iv::test::require(root_state.nested_nodes[0] != nullptr, "graph child state should be patched");
+        iv::test::require(root_state.nested_nodes[0].data() != nullptr, "graph child state should be patched");
 
-        auto& graph_state = *reinterpret_cast<iv::Graph::State*>(root_state.nested_nodes[0]);
+        auto& graph_state = *reinterpret_cast<iv::Graph::State*>(root_state.nested_nodes[0].data());
         iv::test::require(!graph_state.scc_states.empty(), "graph should expose SCC child states");
         for (size_t scc_i = 0; scc_i < graph_state.scc_states.size(); ++scc_i) {
-            iv::test::require(graph_state.scc_states[scc_i] != nullptr, "graph SCC child state should be patched");
-            auto& scc_state = *reinterpret_cast<iv::GraphSccWrapper::State*>(graph_state.scc_states[scc_i]);
+            iv::test::require(graph_state.scc_states[scc_i].data() != nullptr, "graph SCC child state should be patched");
+            auto& scc_state = *reinterpret_cast<iv::GraphSccWrapper::State*>(graph_state.scc_states[scc_i].data());
             iv::test::require(!scc_state.node_states.empty(), "SCC should expose wrapper child states");
             for (size_t node_i = 0; node_i < scc_state.node_states.size(); ++node_i) {
-                iv::test::require(scc_state.node_states[node_i] != nullptr, "SCC wrapper child state should be patched");
-                auto& wrapper_state = *reinterpret_cast<iv::GraphNodeWrapper::State*>(scc_state.node_states[node_i]);
+                iv::test::require(scc_state.node_states[node_i].data() != nullptr, "SCC wrapper child state should be patched");
+                auto& wrapper_state = *reinterpret_cast<iv::GraphNodeWrapper::State*>(scc_state.node_states[node_i].data());
                 iv::test::require(wrapper_state.nested_nodes.size() == 2, "wrapper should expose port-data and nested-node children");
-                iv::test::require(wrapper_state.nested_nodes[0] != nullptr, "wrapper port-data child state should be patched");
-                iv::test::require(wrapper_state.nested_nodes[1] != nullptr, "wrapper nested executable child state should be patched");
-                auto& erased_state = *reinterpret_cast<iv::TypeErasedNode::State*>(wrapper_state.nested_nodes[1]);
+                iv::test::require(wrapper_state.nested_nodes[0].data() != nullptr, "wrapper port-data child state should be patched");
+                iv::test::require(wrapper_state.nested_nodes[1].data() != nullptr, "wrapper nested executable child state should be patched");
+                auto& erased_state = *reinterpret_cast<iv::TypeErasedNode::State*>(wrapper_state.nested_nodes[1].data());
                 iv::test::require(erased_state.nested_nodes.size() == 1, "wrapper nested type-erased state should expose one direct child");
-                iv::test::require(erased_state.nested_nodes[0] != nullptr, "wrapper concrete child state should be patched");
+                iv::test::require(erased_state.nested_nodes[0].data() != nullptr, "wrapper concrete child state should be patched");
             }
         }
     }
@@ -215,7 +215,7 @@ namespace {
 
     struct NestedParent {
         struct State {
-            std::span<std::byte*> nested;
+            std::span<std::span<std::byte>> nested;
         };
 
         void declare(iv::DeclarationContext<NestedParent> const& ctx) const
@@ -373,10 +373,10 @@ int main()
 
         auto& state = *static_cast<NestedParent::State*>(storage.state_ptr(0));
         iv::test::require(state.nested.size() == 2, "nested_node_states should record directly declared child nodes");
-        iv::test::require(state.nested[0] != nullptr, "first nested node state pointer should be patched");
-        iv::test::require(state.nested[1] != nullptr, "second nested node state pointer should be patched");
-        auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0]);
-        auto& second = *reinterpret_cast<NestedLeaf::State*>(state.nested[1]);
+        iv::test::require(state.nested[0].data() != nullptr, "first nested node state pointer should be patched");
+        iv::test::require(state.nested[1].data() != nullptr, "second nested node state pointer should be patched");
+        auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0].data());
+        auto& second = *reinterpret_cast<NestedLeaf::State*>(state.nested[1].data());
         iv::test::require(first.marker == 17, "first nested node state should be addressable");
         iv::test::require(second.marker == 17, "second nested node state should be addressable");
     }
@@ -393,7 +393,7 @@ int main()
 
         auto& erased_state = *static_cast<iv::TypeErasedNode::State*>(storage.state_ptr(0));
         iv::test::require(erased_state.nested_nodes.size() == 1, "type-erased node should record exactly one nested child");
-        iv::test::require(erased_state.nested_nodes[0] != nullptr, "type-erased nested child state pointer should be patched");
+        iv::test::require(erased_state.nested_nodes[0].data() != nullptr, "type-erased nested child state pointer should be patched");
 
         node.tick_block({
             iv::TickContext<iv::TypeErasedNode> {
@@ -405,7 +405,7 @@ int main()
             8,
         });
 
-        auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(erased_state.nested_nodes[0]);
+        auto& nested_state = *reinterpret_cast<StatefulTickingNode::State*>(erased_state.nested_nodes[0].data());
         iv::test::require(nested_state.initialized == 1, "type-erased nested child should initialize once");
         iv::test::require(nested_state.ticked == 8, "type-erased nested child should tick through nested state");
     }
@@ -427,8 +427,8 @@ int main()
 
         auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
         iv::test::require(wrapper_state.nested_nodes.size() == 2, "standalone wrapper should expose two direct children");
-        iv::test::require(wrapper_state.nested_nodes[0] != nullptr, "standalone wrapper port-data child state should be patched");
-        iv::test::require(wrapper_state.nested_nodes[1] != nullptr, "standalone wrapper nested executable child state should be patched");
+        iv::test::require(wrapper_state.nested_nodes[0].data() != nullptr, "standalone wrapper port-data child state should be patched");
+        iv::test::require(wrapper_state.nested_nodes[1].data() != nullptr, "standalone wrapper nested executable child state should be patched");
     }
 
     {
@@ -458,11 +458,11 @@ int main()
 
         auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
         iv::test::require(wrapper_state.nested_nodes.size() == 2, "standalone sink wrapper should expose two direct children");
-        iv::test::require(wrapper_state.nested_nodes[0] != nullptr, "standalone sink wrapper port-data child state should be patched");
-        iv::test::require(wrapper_state.nested_nodes[1] != nullptr, "standalone sink wrapper nested executable child state should be patched");
-        auto& erased_state = *reinterpret_cast<iv::TypeErasedNode::State*>(wrapper_state.nested_nodes[1]);
+        iv::test::require(wrapper_state.nested_nodes[0].data() != nullptr, "standalone sink wrapper port-data child state should be patched");
+        iv::test::require(wrapper_state.nested_nodes[1].data() != nullptr, "standalone sink wrapper nested executable child state should be patched");
+        auto& erased_state = *reinterpret_cast<iv::TypeErasedNode::State*>(wrapper_state.nested_nodes[1].data());
         iv::test::require(erased_state.nested_nodes.size() == 1, "standalone sink wrapper nested type-erased state should expose one direct child");
-        iv::test::require(erased_state.nested_nodes[0] != nullptr, "standalone sink wrapper concrete child state should be patched");
+        iv::test::require(erased_state.nested_nodes[0].data() != nullptr, "standalone sink wrapper concrete child state should be patched");
 
         iv::do_tick_block(wrapper, {
             iv::TickContext<iv::GraphNodeWrapper> {
@@ -475,7 +475,7 @@ int main()
         });
 
         iv::test::require(erased_state.nested_nodes.size() == 1, "standalone sink wrapper nested type-erased state should survive one tick");
-        iv::test::require(erased_state.nested_nodes[0] != nullptr, "standalone sink wrapper concrete child state should survive one tick");
+        iv::test::require(erased_state.nested_nodes[0].data() != nullptr, "standalone sink wrapper concrete child state should survive one tick");
     }
 
     {
