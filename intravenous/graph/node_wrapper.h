@@ -82,10 +82,10 @@ namespace iv {
         {
             auto const& state = ctx.state();
             ctx.nested_node_states(state.nested_nodes);
-            do_declare(_port_data_node, ctx);
             ctx.local_array(state.inputs, _inputs.size());
-            do_declare(_node, ctx);
             ctx.local_array(state.outputs, _outputs.size());
+            do_declare(_port_data_node, ctx);
+            do_declare(_node, ctx);
 
             if (!_inputs.empty()) {
                 ctx.require_export_array<SharedPortData>(port_data_export_id(_node_id));
