@@ -17,18 +17,16 @@ namespace iv {
         size_t output_history;
     };
 
-    inline std::string port_data_export_id(std::string_view node_id, size_t input_port)
+    inline std::string port_data_export_id(std::string_view node_id)
     {
         std::string id = "port_data:";
         id += node_id;
-        id += ":";
-        id += std::to_string(input_port);
         return id;
     }
 
-    inline std::string graph_port_data_export_id(size_t input_port)
+    inline std::string graph_port_data_export_id(std::string_view graph_id)
     {
-        return port_data_export_id("graph", input_port);
+        return port_data_export_id(graph_id);
     }
 
     inline size_t calculate_port_buffer_size(

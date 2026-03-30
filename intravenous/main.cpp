@@ -61,7 +61,7 @@ namespace {
         static std::unique_ptr<iv::JuceVstRuntimeSupport> juce_vst_runtime_support;
         juce_vst_runtime_support = std::make_unique<iv::JuceVstRuntimeSupport>(
             juce_vst_runtime_manager,
-            audio_device.config().sample_rate
+            static_cast<double>(audio_device.config().sample_rate)
         );
         resources = juce_vst_runtime_support->resources();
 #endif

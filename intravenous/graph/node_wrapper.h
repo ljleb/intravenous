@@ -6,8 +6,10 @@
 #include "wiring.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <memory>
+#include <sstream>
 #include <span>
 #include <string>
 #include <utility>
@@ -16,6 +18,7 @@
 namespace iv {
     struct GraphOutputTarget {
         std::string port_data_id;
+        size_t port_index = 0;
     };
 
     struct GraphNodeWrapper {
@@ -84,8 +87,8 @@ namespace iv {
         {
             auto const& state = ctx.state();
             ctx.local_array(state.inputs, _inputs.size());
-            for (size_t input_i = 0; input_i < _inputs.size(); ++input_i) {
-                ctx.require_export_array<SharedPortData>(port_data_export_id(_node_id, input_i));
+            if (!_inputs.empty()) {
+                ctx.require_export_array<SharedPortData>(port_data_export_id(_node_id));
             }
             for (auto const& target : _output_targets) {
                 if (!target.port_data_id.empty()) {
@@ -105,10 +108,10 @@ namespace iv {
             auto& state = ctx.state();
             for (size_t input_i = 0; input_i < _inputs.size(); ++input_i) {
                 auto port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
-                    port_data_export_id(_node_id, input_i)
+                    port_data_export_id(_node_id)
                 );
-                IV_ASSERT(port_data.size() == 1, "graph node wrapper input wiring must resolve exactly one SharedPortData entry");
-                std::construct_at(&state.inputs[input_i], const_cast<SharedPortData&>(port_data[0]), _inputs[input_i].history);
+                IV_ASSERT(input_i < port_data.size(), "graph node wrapper input wiring must resolve the requested SharedPortData entry");
+                std::construct_at(&state.inputs[input_i], const_cast<SharedPortData&>(port_data[input_i]), _inputs[input_i].history);
             }
 
             for (size_t output_i = 0; output_i < _outputs.size(); ++output_i) {
@@ -128,17 +131,18 @@ namespace iv {
                     continue;
                 }
                 auto target_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(target.port_data_id);
-                if (target_port_data.size() != 1) {
+                if (target.port_index >= target_port_data.size()) {
                     throw std::logic_error(
                         "graph output target wiring is unresolved for node '" + _node_id +
                         "' output " + std::to_string(output_i) +
                         " -> '" + target.port_data_id +
-                        "', resolved size = " + std::to_string(target_port_data.size())
+                        "'[" + std::to_string(target.port_index) +
+                        "], resolved size = " + std::to_string(target_port_data.size())
                     );
                 }
                 std::construct_at(
                     &state.outputs[output_i],
-                    const_cast<SharedPortData&>(target_port_data[0]),
+                    const_cast<SharedPortData&>(target_port_data[target.port_index]),
                     _outputs[output_i].history
                 );
             }
@@ -161,6 +165,7 @@ namespace iv {
                 "graph node wrapper nested-node state pointer must point inside the enclosing node buffer"
             );
             try {
+                trace_block_inputs(ctx, state.inputs);
                 tick_nested_node(
                     _node,
                     state.nested_nodes[1],
@@ -168,9 +173,99 @@ namespace iv {
                     state.inputs,
                     state.outputs
                 );
+                trace_block_outputs(ctx, state.outputs);
             } catch (std::exception const& e) {
                 throw std::logic_error("graph node wrapper tick failed for node '" + _node_id + "': " + e.what());
             }
+        }
+
+    private:
+        void trace_block_outputs(TickBlockContext<GraphNodeWrapper> const& ctx, std::span<OutputPort> outputs) const
+        {
+            if (!sample_trace_enabled()) {
+                return;
+            }
+            constexpr std::string_view prefix = "trace.node.samples";
+            if (!sample_trace_matches(prefix) && !sample_trace_matches(_node_id) && !sample_trace_matches(_node.type_name())) {
+                return;
+            }
+
+            std::ostringstream oss;
+            oss << prefix << ": id=" << _node_id
+                << " type=" << _node.type_name()
+                << " index=" << ctx.index
+                << " size=" << ctx.block_size;
+
+            for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
+                auto block = outputs[output_i].get_block(ctx.block_size);
+                Sample max_abs = 0.0f;
+                for (Sample sample : block) {
+                    max_abs = std::max(max_abs, Sample(std::abs(sample)));
+                }
+
+                oss << " out" << output_i << "=[";
+                size_t emitted = 0;
+                for (Sample sample : block) {
+                    if (emitted == 4) {
+                        break;
+                    }
+                    if (emitted != 0) {
+                        oss << ", ";
+                    }
+                    oss << sample;
+                    ++emitted;
+                }
+                if (block.size() > 4) {
+                    oss << ", ...";
+                }
+                oss << "] max=" << max_abs;
+            }
+
+            debug_log(oss.str());
+        }
+
+        void trace_block_inputs(TickBlockContext<GraphNodeWrapper> const& ctx, std::span<InputPort> inputs) const
+        {
+            if (!sample_trace_enabled()) {
+                return;
+            }
+            constexpr std::string_view prefix = "trace.node.inputs";
+            if (!sample_trace_matches(prefix) && !sample_trace_matches(_node_id) && !sample_trace_matches(_node.type_name())) {
+                return;
+            }
+
+            std::ostringstream oss;
+            oss << prefix << ": id=" << _node_id
+                << " type=" << _node.type_name()
+                << " index=" << ctx.index
+                << " size=" << ctx.block_size;
+
+            for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
+                auto block = inputs[input_i].get_block(ctx.block_size);
+                Sample max_abs = 0.0f;
+                for (Sample sample : block) {
+                    max_abs = std::max(max_abs, Sample(std::abs(sample)));
+                }
+
+                oss << " in" << input_i << "=[";
+                size_t emitted = 0;
+                for (Sample sample : block) {
+                    if (emitted == 4) {
+                        break;
+                    }
+                    if (emitted != 0) {
+                        oss << ", ";
+                    }
+                    oss << sample;
+                    ++emitted;
+                }
+                if (block.size() > 4) {
+                    oss << ", ...";
+                }
+                oss << "] max=" << max_abs;
+            }
+
+            debug_log(oss.str());
         }
     };
 }

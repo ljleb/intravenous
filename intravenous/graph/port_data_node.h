@@ -37,9 +37,7 @@ namespace iv {
             auto const input_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _input_buffer_plans);
             auto const input_sample_offsets = make_input_sample_offsets(input_sample_sizes);
             ctx.local_array(state.samples, input_sample_offsets.empty() ? 0 : input_sample_offsets.back());
-            for (size_t input_i = 0; input_i < _inputs.size(); ++input_i) {
-                ctx.export_array_slice(port_data_export_id(_node_id, input_i), state.port_data, input_i, 1);
-            }
+            ctx.export_array(port_data_export_id(_node_id), state.port_data);
         }
 
         void initialize(InitializationContext<GraphPortDataNode> const& ctx) const

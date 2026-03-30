@@ -388,7 +388,8 @@ namespace iv {
 
                 for (size_t frame = 0; frame < frames; ++frame) {
                     size_t const global_index = block_start + frame;
-                    planar_storage[channel][frame] += sink_buffer[global_index & (sink_buffer.size() - 1)];
+                    size_t const local_frame = global_index - active_block_start_index;
+                    planar_storage[channel][local_frame] += sink_buffer[global_index & (sink_buffer.size() - 1)];
                 }
             }
 

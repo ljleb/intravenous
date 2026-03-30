@@ -3,10 +3,46 @@
 #include "basic_nodes/filters.h"
 #include "basic_nodes/shaping.h"
 #include "basic_nodes/buffers.h"
-#include "basic_nodes/type_erased.h"
 #include "juce_vst_wrapper.h"
 
-#include <filesystem>
+#include <iostream>
+#include <string>
+
+// struct DebugProbe {
+//     std::string label;
+
+//     auto inputs() const
+//     {
+//         return std::array {
+//             iv::InputConfig { "in" },
+//         };
+//     }
+
+//     auto outputs() const
+//     {
+//         return std::array {
+//             iv::OutputConfig { "out" },
+//         };
+//     }
+
+//     void tick_block(iv::TickBlockContext<DebugProbe> const& ctx) const
+//     {
+//         auto input = ctx.inputs[0].get_block(ctx.block_size);
+//         ctx.outputs[0].push_block(input);
+
+//         iv::Sample max_abs = 0;
+//         for (iv::Sample sample : input) {
+//             max_abs = std::max(max_abs, static_cast<iv::Sample>(std::abs(sample)));
+//         }
+//         if (max_abs == 0) {
+//             std::cerr
+//                 << "DebugProbe silence: label=" << label
+//                 << " index=" << ctx.index
+//                 << " size=" << ctx.block_size
+//                 << '\n';
+//         }
+//     }
+// };
 
 inline void noise_voice(iv::GraphBuilder& g)
 {
@@ -46,22 +82,16 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     auto voice_module = context.load("iv.test.noisy_saw_voice");
 
     auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto const zero = g.node<Constant>(Constant{0.0f});
     SignalRef first_noise;
-    constexpr auto valhalla_path = "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3";
-    auto const has_valhalla = std::filesystem::exists(valhalla_path);
-    auto const valhalla = has_valhalla ? juce::vst(g, valhalla_path) : NodeRef();
-    if (has_valhalla) {
-        // info(valhalla.node());
-        valhalla({
-            {"Mix", 0.004},
-            {"DelayWarp", 1.0},
-            {"Delay_Ms", 0.0001},
-            {"Density", 1.0},
-            {"Feedback", 0.0},
-            // {"Mode", 0.1},
-        });
-    }
+    // auto const valhalla = juce::vst(g, "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
+    // valhalla({
+    //     {"Mix", 0.004},
+    //     {"DelayWarp", 1.0},
+    //     {"Delay_Ms", 0.0001},
+    //     {"Density", 1.0},
+    //     {"Feedback", 0.0},
+    //     // {"Mode", 0.1},
+    // });
 
     auto const val_idx = std::array {
         "l0",
@@ -77,18 +107,15 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         auto const voice = g.node(voice_module.builder());
         auto const shared_noise = g.node<Interpolation>();
         auto const sink = targets.sink(g, channel);
-        SignalRef feedback = zero;
 
         noise(dt);
         shared_noise(first_noise, noise, 1.0);
-        if (has_valhalla) {
-            valhalla({{val_idx[channel], 1.0 * voice["feedback"].detach(1 << 9)}});
-            feedback = valhalla[val_idx[channel]];
-        }
+        // valhalla({{val_idx[channel], 1.0 * voice["feedback"].detach(4)}});
         voice({
-            {"noise", 0.0*shared_noise},
+            {"noise", 0.1*shared_noise},
             {"dt", dt},
-            {"feedback", feedback},
+            {"feedback", voice["feedback"].detach()},
+            // {"feedback", valhalla[val_idx[channel]]},
         });
         sink(voice["out"]);
     }

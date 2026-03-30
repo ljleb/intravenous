@@ -6,6 +6,7 @@
 #include "module/loader.h"
 
 #include <algorithm>
+#include <bit>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -16,7 +17,7 @@
 namespace iv {
     class NodeExecutor {
         std::vector<ModuleRef> _module_refs;
-        TypeErasedNode _root;
+        std::unique_ptr<TypeErasedNode> _root;
         ResourceContext _resources;
         ExecutionTargets _execution_targets;
         NodeLayout _layout;
@@ -112,10 +113,11 @@ namespace iv {
                 throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
             }
 
-            size_t max_block_size = choose_block_size(root, execution_targets);
+            auto root_ptr = std::make_unique<TypeErasedNode>(std::move(root));
+            size_t max_block_size = choose_block_size(*root_ptr, execution_targets);
             NodeLayout layout;
             try {
-                layout = make_layout(root, max_block_size);
+                layout = make_layout(*root_ptr, max_block_size);
             } catch (...) {
                 throw std::runtime_error("failed to create node executor: make_layout");
             }
@@ -136,7 +138,7 @@ namespace iv {
             }
 
             return NodeExecutor(
-                std::move(root),
+                std::move(root_ptr),
                 std::move(module_refs),
                 std::move(resources),
                 std::move(execution_targets),
@@ -147,7 +149,7 @@ namespace iv {
         }
 
         NodeExecutor(
-            TypeErasedNode root,
+            std::unique_ptr<TypeErasedNode> root,
             std::vector<ModuleRef> module_refs,
             ResourceContext resources,
             ExecutionTargets execution_targets,
@@ -163,7 +165,7 @@ namespace iv {
             _storage(std::move(storage)),
             _max_block_size(max_block_size)
         {
-            if (get_num_inputs(_root) != 0 || get_num_outputs(_root) != 0) {
+            if (get_num_inputs(*_root) != 0 || get_num_outputs(*_root) != 0) {
                 throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
             }
             rebind_storage_metadata();
@@ -185,7 +187,7 @@ namespace iv {
             }
 
             try {
-                _root.tick_block({
+                _root->tick_block({
                     TickContext<TypeErasedNode> {
                         .inputs = {},
                         .outputs = {},
@@ -222,10 +224,11 @@ namespace iv {
                 throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
             }
 
-            size_t next_max_block_size = choose_block_size(root, _execution_targets);
+            auto next_root = std::make_unique<TypeErasedNode>(std::move(root));
+            size_t next_max_block_size = choose_block_size(*next_root, _execution_targets);
             NodeLayout next_layout;
             try {
-                next_layout = make_layout(root, next_max_block_size);
+                next_layout = make_layout(*next_root, next_max_block_size);
             } catch (...) {
                 throw std::runtime_error("failed to reload node executor: make_layout");
             }
@@ -247,7 +250,7 @@ namespace iv {
 
             _storage.release(&_execution_targets);
 
-            _root = std::move(root);
+            _root = std::move(next_root);
             _module_refs = std::move(module_refs);
             _layout = std::move(next_layout);
             _storage = std::move(next_storage);
@@ -262,8 +265,41 @@ namespace iv {
 
         void execute(std::function<std::optional<ModuleLoader::LoadedGraph>()> poll_reload = {})
         {
-            for (size_t global_index = 0; !is_shutdown_requested(); global_index += _max_block_size) {
-                tick_block(global_index, _max_block_size);
+            size_t global_index = 0;
+            while (!is_shutdown_requested()) {
+                auto targets = _execution_targets.all();
+                for (auto const& target : targets) {
+                    target.begin_block(global_index, _max_block_size);
+                }
+
+                size_t remaining = _execution_targets.active_block_frames_or(_max_block_size);
+                size_t block_index = global_index;
+                while (remaining > 0) {
+                    size_t const chunk_size = std::min(_max_block_size, std::bit_floor(remaining));
+
+                    try {
+                        _root->tick_block({
+                            TickContext<TypeErasedNode> {
+                                .inputs = {},
+                                .outputs = {},
+                                .buffer = _storage.buffer(),
+                            },
+                            block_index,
+                            chunk_size
+                        });
+                    } catch (std::exception const& e) {
+                        throw std::runtime_error(std::string("node executor tick failed: ") + e.what());
+                    } catch (...) {
+                        throw std::runtime_error("node executor tick failed");
+                    }
+
+                    for (auto const& target : targets) {
+                        target.end_block(block_index, chunk_size);
+                    }
+
+                    block_index += chunk_size;
+                    remaining -= chunk_size;
+                }
 
                 if (poll_reload) {
                     auto next_reload = poll_reload();
@@ -271,6 +307,7 @@ namespace iv {
                         reload(std::move(*next_reload));
                     }
                 }
+                global_index = block_index;
             }
         }
 
@@ -286,7 +323,7 @@ namespace iv {
 
         TypeErasedNode const& root() const
         {
-            return _root;
+            return *_root;
         }
 
         ExecutionTargets& execution_targets()

@@ -638,6 +638,7 @@ namespace iv::details {
     }
 
     inline GraphBuildArtifact build_graph_artifact(
+        std::string graph_id,
         std::vector<TypeErasedNode> nodes,
         std::vector<std::string> node_ids,
         std::unordered_set<GraphEdge> edges,
@@ -724,6 +725,7 @@ namespace iv::details {
         }
 
         GraphBuildArtifact artifact {
+            .graph_id = std::move(graph_id),
             .scc_wrappers = {},
             .edges = std::move(edges),
             .detached = std::move(detached),
@@ -734,54 +736,6 @@ namespace iv::details {
             .internal_latency = 0,
             .node_ids = std::move(node_ids),
         };
-        artifact.scc_wrappers.reserve(artifact.execution_plan.region_order.size());
-        for (size_t ordered_scc_i = 0; ordered_scc_i < artifact.execution_plan.region_order.size(); ++ordered_scc_i) {
-            size_t const region_i = artifact.execution_plan.region_order[ordered_scc_i];
-            auto const& region = artifact.execution_plan.regions[region_i];
-            std::vector<GraphNodeWrapper> region_nodes;
-            region_nodes.reserve(region.execution_order.size());
-
-            for (size_t global_i : region.execution_order) {
-                std::vector<GraphOutputTarget> output_targets;
-                auto outputs = nodes[global_i].outputs();
-                output_targets.reserve(outputs.size());
-                for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
-                    auto it = target_of.find({ global_i, output_i });
-                    if (it != target_of.end()) {
-                        if (it->second.node == GRAPH_ID) {
-                            output_targets.push_back({
-                                .port_data_id = graph_port_data_export_id(it->second.port),
-                            });
-                        } else {
-                            output_targets.push_back({
-                                .port_data_id = port_data_export_id(artifact.node_ids[it->second.node], it->second.port),
-                            });
-                        }
-                    } else {
-                        output_targets.push_back({});
-                    }
-                }
-                region_nodes.emplace_back(
-                    std::move(nodes[global_i]),
-                    std::move(node_input_buffer_plans[global_i]),
-                    artifact.node_ids[global_i],
-                    std::move(output_targets)
-                );
-            }
-
-            size_t internal_latency = 0;
-            // TODO: solve SCC-local internal latency explicitly instead of collapsing to the max child latency.
-            for (auto const& node : region_nodes) {
-                internal_latency = std::max(internal_latency, node.internal_latency());
-            }
-
-            artifact.scc_wrappers.emplace_back(
-                std::move(region_nodes),
-                region.max_block_size,
-                internal_latency
-            );
-        }
-
         {
             std::unordered_map<PortId, PortId> artifact_target_of;
             for (GraphEdge const& edge : artifact.edges) {
@@ -818,6 +772,56 @@ namespace iv::details {
                 graph_global_latency = std::max(graph_global_latency, input_global_latencies[{ GRAPH_ID, input_port }]);
             }
             artifact.internal_latency = std::max(max_latency, graph_global_latency);
+        }
+
+        artifact.scc_wrappers.reserve(artifact.execution_plan.region_order.size());
+        for (size_t ordered_scc_i = 0; ordered_scc_i < artifact.execution_plan.region_order.size(); ++ordered_scc_i) {
+            size_t const region_i = artifact.execution_plan.region_order[ordered_scc_i];
+            auto const& region = artifact.execution_plan.regions[region_i];
+            std::vector<GraphNodeWrapper> region_nodes;
+            region_nodes.reserve(region.execution_order.size());
+
+            for (size_t global_i : region.execution_order) {
+                std::vector<GraphOutputTarget> output_targets;
+                auto outputs = nodes[global_i].outputs();
+                output_targets.reserve(outputs.size());
+                for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
+                    auto it = target_of.find({ global_i, output_i });
+                    if (it != target_of.end()) {
+                        if (it->second.node == GRAPH_ID) {
+                            output_targets.push_back({
+                                .port_data_id = graph_port_data_export_id(artifact.graph_id),
+                                .port_index = it->second.port,
+                            });
+                        } else {
+                            output_targets.push_back({
+                                .port_data_id = port_data_export_id(artifact.node_ids[it->second.node]),
+                                .port_index = it->second.port,
+                            });
+                        }
+                    } else {
+                        output_targets.push_back({});
+                    }
+                }
+                region_nodes.emplace_back(
+                    std::move(nodes[global_i]),
+                    std::move(node_input_buffer_plans[global_i]),
+                    artifact.node_ids[global_i],
+                    std::move(output_targets)
+                );
+            }
+
+            size_t internal_latency = 0;
+            // TODO: solve SCC-local internal latency explicitly instead of collapsing to the max child latency.
+            for (auto const& node : region_nodes) {
+                internal_latency = std::max(internal_latency, node.internal_latency());
+            }
+
+            artifact.scc_wrappers.emplace_back(
+                std::move(region_nodes),
+                region.max_block_size,
+                internal_latency
+            );
         }
 
         return artifact;

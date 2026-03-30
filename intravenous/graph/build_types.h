@@ -11,6 +11,7 @@
 
 namespace iv {
     struct GraphBuildArtifact {
+        std::string graph_id;
         std::vector<GraphSccWrapper> scc_wrappers;
         std::unordered_set<GraphEdge> edges;
         std::vector<DetachedInfo> detached;

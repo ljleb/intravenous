@@ -32,7 +32,7 @@ namespace iv {
         std::vector<OutputConfig> _outputs;
         size_t _internal_latency;
         size_t _max_block_size;
-        NodeStoragePtr (*_clone_fn)(void const*) = nullptr;
+        char const* _type_name = "<unknown>";
         void (*_declare_fn)(void*, DeclarationContext<TypeErasedNode> const&);
         void (*_initialize_fn)(void*, InitializationContext<TypeErasedNode> const&);
         void (*_tick_fn)(void*, TickSampleContext<TypeErasedNode> const&);
@@ -44,37 +44,8 @@ namespace iv {
         };
 
         TypeErasedNode() = default;
-
-        TypeErasedNode(TypeErasedNode const& other) :
-            _node(other._clone_fn && other._node ? other._clone_fn(other._node.get()) : NodeStoragePtr(nullptr, +[](void*) {})),
-            _inputs(other._inputs),
-            _outputs(other._outputs),
-            _internal_latency(other._internal_latency),
-            _max_block_size(other._max_block_size),
-            _clone_fn(other._clone_fn),
-            _declare_fn(other._declare_fn),
-            _initialize_fn(other._initialize_fn),
-            _tick_fn(other._tick_fn),
-            _tick_block_fn(other._tick_block_fn)
-        {}
-
-        TypeErasedNode& operator=(TypeErasedNode const& other)
-        {
-            if (this == &other) {
-                return *this;
-            }
-            _node = other._clone_fn && other._node ? other._clone_fn(other._node.get()) : NodeStoragePtr(nullptr, +[](void*) {});
-            _inputs = other._inputs;
-            _outputs = other._outputs;
-            _internal_latency = other._internal_latency;
-            _max_block_size = other._max_block_size;
-            _clone_fn = other._clone_fn;
-            _declare_fn = other._declare_fn;
-            _initialize_fn = other._initialize_fn;
-            _tick_fn = other._tick_fn;
-            _tick_block_fn = other._tick_block_fn;
-            return *this;
-        }
+        TypeErasedNode(TypeErasedNode const&) = delete;
+        TypeErasedNode& operator=(TypeErasedNode const&) = delete;
 
         TypeErasedNode(TypeErasedNode&&) noexcept = default;
         TypeErasedNode& operator=(TypeErasedNode&&) noexcept = default;
@@ -86,11 +57,11 @@ namespace iv {
             _outputs.assign_range(get_outputs(node));
             _internal_latency = get_internal_latency(node);
             _max_block_size = get_max_block_size(node);
+            _type_name = typeid(Node).name();
             validate_max_block_size(_max_block_size, "node max_block_size() must be a power of 2");
 
             if constexpr (std::is_empty_v<Node>) {
                 _node = NodeStoragePtr(nullptr, +[](void*) {});
-                _clone_fn = nullptr;
                 _declare_fn = [](void*, DeclarationContext<TypeErasedNode> const& ctx) {
                     auto const& state = ctx.state();
                     do_declare(Node{}, ctx);
@@ -167,12 +138,6 @@ namespace iv {
                     new Node(std::move(node)),
                     +[](void* ptr) { delete static_cast<Node*>(ptr); }
                 );
-                _clone_fn = [](void const* node) -> NodeStoragePtr {
-                    return NodeStoragePtr(
-                        new Node(*static_cast<Node const*>(node)),
-                        +[](void* ptr) { delete static_cast<Node*>(ptr); }
-                    );
-                };
                 _declare_fn = [](void* node, DeclarationContext<TypeErasedNode> const& ctx) {
                     auto const& state = ctx.state();
                     do_declare(*static_cast<Node*>(node), ctx);
@@ -265,6 +230,11 @@ namespace iv {
         size_t max_block_size() const
         {
             return _max_block_size;
+        }
+
+        char const* type_name() const
+        {
+            return _type_name;
         }
 
         void declare(DeclarationContext<TypeErasedNode> const& ctx) const

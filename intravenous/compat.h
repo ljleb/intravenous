@@ -1,10 +1,13 @@
 #pragma once
 
 #include <cstdlib>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <stacktrace>
+#include <string>
 #include <string_view>
 
 #if defined(_MSC_VER)
@@ -16,6 +19,20 @@
 #endif
 
 namespace iv {
+    inline bool env_flag_enabled(char const* name)
+    {
+        char const* value = std::getenv(name);
+        if (!value || !*value) {
+            return false;
+        }
+
+        std::string normalized(value);
+        for (char& c : normalized) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return normalized != "0" && normalized != "false" && normalized != "no" && normalized != "off";
+    }
+
     inline std::ostream& diagnostic_stream()
     {
         static std::mutex mutex;
@@ -48,9 +65,47 @@ namespace iv {
     inline constexpr bool debug_logging_enabled = true;
 #endif
 
-    inline void debug_log(std::string_view message)
+    inline bool debug_logging_requested()
     {
         if constexpr (!debug_logging_enabled) {
+            return false;
+        }
+        return env_flag_enabled("IV_DEBUG_LOG");
+    }
+
+    inline bool sample_trace_enabled()
+    {
+        if constexpr (!debug_logging_enabled) {
+            return false;
+        }
+        return env_flag_enabled("IV_TRACE_SAMPLES");
+    }
+
+    inline std::optional<std::string_view> sample_trace_filter()
+    {
+        if (!sample_trace_enabled()) {
+            return std::nullopt;
+        }
+        if (char const* value = std::getenv("IV_TRACE_FILTER"); value && *value) {
+            return std::string_view(value);
+        }
+        return std::nullopt;
+    }
+
+    inline bool sample_trace_matches(std::string_view text)
+    {
+        if (!sample_trace_enabled()) {
+            return false;
+        }
+        if (char const* value = std::getenv("IV_TRACE_FILTER"); value && *value) {
+            return text.contains(value);
+        }
+        return true;
+    }
+
+    inline void debug_log(std::string_view message)
+    {
+        if (!debug_logging_requested()) {
             return;
         }
 

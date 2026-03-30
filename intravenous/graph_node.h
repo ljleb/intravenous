@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <sstream>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,7 @@
 
 namespace iv {
     struct Graph {
+        std::string _graph_id;
         std::vector<GraphSccWrapper> _scc_wrappers;
         decltype(GraphBuildArtifact::edges) _edges;
         std::vector<InputConfig> _public_inputs;
@@ -21,6 +23,7 @@ namespace iv {
         std::vector<std::string> _node_ids;
 
         explicit Graph(GraphBuildArtifact artifact) :
+            _graph_id(std::move(artifact.graph_id)),
             _scc_wrappers(std::move(artifact.scc_wrappers)),
             _edges(std::move(artifact.edges)),
             _public_inputs(std::move(artifact.public_inputs)),
@@ -75,7 +78,7 @@ namespace iv {
             for (GraphEdge const& edge : _edges) {
                 if (edge.source.node == GRAPH_ID) {
                     ctx.require_export_array<SharedPortData>(
-                        port_data_export_id(_node_ids[edge.target.node], edge.target.port)
+                        port_data_export_id(_node_ids[edge.target.node])
                     );
                 }
             }
@@ -88,9 +91,7 @@ namespace iv {
             auto const output_sample_offsets = make_input_sample_offsets(output_sample_sizes);
             ctx.local_array(state.egress_samples, output_sample_offsets.empty() ? 0 : output_sample_offsets.back());
             ctx.local_array(state.egress_inputs, num_outputs());
-            for (size_t output_i = 0; output_i < num_outputs(); ++output_i) {
-                ctx.export_array_slice(graph_port_data_export_id(output_i), state.egress_port_data, output_i, 1);
-            }
+            ctx.export_array(graph_port_data_export_id(_graph_id), state.egress_port_data);
         }
 
         void initialize(InitializationContext<Graph> const& ctx) const
@@ -108,10 +109,10 @@ namespace iv {
             for (GraphEdge const& edge : _edges) {
                 if (edge.source.node == GRAPH_ID) {
                     auto consumer_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
-                        port_data_export_id(_node_ids[edge.target.node], edge.target.port)
+                        port_data_export_id(_node_ids[edge.target.node])
                     );
-                    IV_ASSERT(consumer_port_data.size() == 1, "graph ingress wiring must resolve exactly one SharedPortData entry");
-                    std::construct_at(&state.ingress_outputs[edge.source.port], const_cast<SharedPortData&>(consumer_port_data[0]), 0);
+                    IV_ASSERT(edge.target.port < consumer_port_data.size(), "graph ingress wiring must resolve the requested SharedPortData entry");
+                    std::construct_at(&state.ingress_outputs[edge.source.port], const_cast<SharedPortData&>(consumer_port_data[edge.target.port]), 0);
                 }
             }
         }
@@ -125,15 +126,109 @@ namespace iv {
 
             auto& state = ctx.state();
             push_input_blocks_to_private_outputs(state.ingress_outputs, ctx.inputs, ctx.block_size);
+            log_graph_port_trace("trace.graph.ingress", state.ingress_outputs, ctx.index, ctx.block_size);
 
             for (size_t scc_index = 0; scc_index < _scc_wrappers.size(); ++scc_index) {
                 tick_scc(scc_index, ctx, ctx.block_size);
             }
 
+            log_graph_port_trace("trace.graph.egress", state.egress_inputs, ctx.index, ctx.block_size);
             push_private_inputs_to_output_blocks(ctx.outputs, state.egress_inputs, ctx.block_size);
         }
 
     private:
+        void log_graph_port_trace(
+            char const* stem,
+            std::span<OutputPort const> ports,
+            size_t index,
+            size_t block_size
+        ) const
+        {
+            if (!sample_trace_enabled()) {
+                return;
+            }
+
+            std::ostringstream message;
+            message << stem << ": index=" << index << " size=" << block_size;
+            if (!_node_ids.empty()) {
+                message << " nodes=" << _node_ids.size();
+            }
+
+            auto const preview_count = std::min<size_t>(block_size, 4);
+            for (size_t port_i = 0; port_i < ports.size(); ++port_i) {
+                auto samples = ports[port_i].get_block(block_size);
+                Sample max_abs = 0;
+                for (Sample sample : samples) {
+                    max_abs = std::max(max_abs, static_cast<Sample>(std::abs(sample)));
+                }
+                message << " out" << port_i << "=[";
+                for (size_t sample_i = 0; sample_i < preview_count; ++sample_i) {
+                    if (sample_i != 0) {
+                        message << ", ";
+                    }
+                    message << samples[sample_i];
+                }
+                if (samples.size() > preview_count) {
+                    if (preview_count != 0) {
+                        message << ", ";
+                    }
+                    message << "...";
+                }
+                message << "] max=" << max_abs;
+            }
+
+            auto const text = message.str();
+            if (sample_trace_matches(text)) {
+                debug_log(text);
+            }
+        }
+
+        void log_graph_port_trace(
+            char const* stem,
+            std::span<InputPort const> ports,
+            size_t index,
+            size_t block_size
+        ) const
+        {
+            if (!sample_trace_enabled()) {
+                return;
+            }
+
+            std::ostringstream message;
+            message << stem << ": index=" << index << " size=" << block_size;
+            if (!_node_ids.empty()) {
+                message << " nodes=" << _node_ids.size();
+            }
+
+            auto const preview_count = std::min<size_t>(block_size, 4);
+            for (size_t port_i = 0; port_i < ports.size(); ++port_i) {
+                auto samples = ports[port_i].get_block(block_size);
+                Sample max_abs = 0;
+                for (Sample sample : samples) {
+                    max_abs = std::max(max_abs, static_cast<Sample>(std::abs(sample)));
+                }
+                message << " in" << port_i << "=[";
+                for (size_t sample_i = 0; sample_i < preview_count; ++sample_i) {
+                    if (sample_i != 0) {
+                        message << ", ";
+                    }
+                    message << samples[sample_i];
+                }
+                if (samples.size() > preview_count) {
+                    if (preview_count != 0) {
+                        message << ", ";
+                    }
+                    message << "...";
+                }
+                message << "] max=" << max_abs;
+            }
+
+            auto const text = message.str();
+            if (sample_trace_matches(text)) {
+                debug_log(text);
+            }
+        }
+
         void tick_scc(
             size_t scc_index,
             TickBlockContext<Graph> const& ctx,

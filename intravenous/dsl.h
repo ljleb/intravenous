@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <initializer_list>
 #include <memory>
 #include <stdexcept>
@@ -47,7 +48,7 @@ namespace iv {
     struct BuilderNode {
         std::vector<InputConfig> input_configs;
         std::vector<OutputConfig> output_configs;
-        std::function<TypeErasedNode(size_t)> materialize;
+        std::move_only_function<TypeErasedNode(size_t) const> materialize;
 
         std::vector<InputConfig> const& inputs() const
         {
@@ -348,6 +349,7 @@ namespace iv {
             auto execution_plan = details::build_execution_plan(g.nodes, g.edges, detached);
 
             return Graph(details::build_graph_artifact(
+                _builder_id.value,
                 std::move(g.nodes),
                 std::move(g.node_ids),
                 std::move(g.edges),

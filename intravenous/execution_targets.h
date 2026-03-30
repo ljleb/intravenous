@@ -1,10 +1,13 @@
 #pragma once
 
 #include "devices/audio_device.h"
+#include "compat.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <memory>
+#include <sstream>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -61,9 +64,9 @@ namespace iv {
         AudioDeviceExecutionTarget(
             size_t device_id,
             size_t channel,
-            AudioDevice& device
+            AudioDevicePlayback playback
         )
-        : _playback(device.make_playback())
+        : _playback(std::move(playback))
         , _device_id(std::move(device_id))
         , _channel(channel)
         {}
@@ -81,6 +84,21 @@ namespace iv {
         size_t preferred_block_size() const
         {
             return _playback.preferred_block_size();
+        }
+
+        size_t active_block_start() const
+        {
+            return _playback.active_block_start();
+        }
+
+        size_t active_block_end() const
+        {
+            return _playback.active_block_end();
+        }
+
+        size_t active_block_frames() const
+        {
+            return _playback.active_block_frames();
         }
 
         std::span<Sample const> output_block() const
@@ -175,12 +193,87 @@ namespace iv {
 
         void mix_sinks(size_t block_start, size_t frames)
         {
-            for (auto const& sink : _sinks) {
+            for (size_t sink_i = 0; sink_i < _sinks.size(); ++sink_i) {
+                auto const& sink = _sinks[sink_i];
                 if (sink.empty()) {
                     continue;
                 }
+                trace_sink_input(sink_i, sink, block_start, frames);
                 _playback.mix_sink_block(_channel, sink, block_start, frames);
             }
+            trace_mixed_output(block_start, frames);
+        }
+
+        void trace_sink_input(size_t sink_index, std::span<Sample> sink, size_t block_start, size_t frames)
+        {
+            constexpr std::string_view prefix = "trace.sink.input";
+            if (!sample_trace_matches(prefix)) {
+                return;
+            }
+
+            Sample max_abs = 0.0f;
+            std::ostringstream oss;
+            oss << prefix << ": device=" << _device_id
+                << " channel=" << _channel
+                << " sink=" << sink_index
+                << " start=" << block_start
+                << " frames=" << frames
+                << " samples=[";
+
+            size_t emitted = 0;
+            for (size_t frame = 0; frame < frames; ++frame) {
+                Sample sample = sink[(block_start + frame) & (sink.size() - 1)];
+                max_abs = std::max(max_abs, Sample(std::abs(sample)));
+                if (emitted < 4) {
+                    if (emitted != 0) {
+                        oss << ", ";
+                    }
+                    oss << sample;
+                    ++emitted;
+                }
+            }
+            if (frames > 4) {
+                oss << ", ...";
+            }
+            oss << "] max=" << max_abs;
+            debug_log(oss.str());
+        }
+
+        void trace_mixed_output(size_t block_start, size_t frames)
+        {
+            constexpr std::string_view prefix = "trace.audio.mix";
+            if (!sample_trace_matches(prefix)) {
+                return;
+            }
+
+            auto block = _playback.output_block(_channel);
+            Sample max_abs = 0.0f;
+            size_t emitted = 0;
+
+            std::ostringstream oss;
+            oss << prefix << ": device=" << _device_id
+                << " channel=" << _channel
+                << " start=" << block_start
+                << " frames=" << frames
+                << " sinks=" << _sinks.size()
+                << " samples=[";
+
+            for (size_t frame = 0; frame < std::min(frames, block.size()); ++frame) {
+                Sample sample = block[frame];
+                max_abs = std::max(max_abs, Sample(std::abs(sample)));
+                if (emitted < 4) {
+                    if (emitted != 0) {
+                        oss << ", ";
+                    }
+                    oss << sample;
+                    ++emitted;
+                }
+            }
+            if (frames > 4) {
+                oss << ", ...";
+            }
+            oss << "] max=" << max_abs;
+            debug_log(oss.str());
         }
     };
 
@@ -194,6 +287,11 @@ namespace iv {
 
     private:
         AudioDeviceProvider _audio_device_provider;
+        struct DevicePlaybackEntry {
+            size_t device_id;
+            AudioDevicePlayback playback;
+        };
+        std::vector<DevicePlaybackEntry> _device_playbacks;
         std::vector<std::shared_ptr<AudioDeviceExecutionTarget>> _audio_device_targets;
 
     public:
@@ -226,13 +324,47 @@ namespace iv {
                 throw std::logic_error("ExecutionTargets audio device provider returned null");
             }
 
+            AudioDevicePlayback playback;
+            for (auto const& entry : _device_playbacks) {
+                if (entry.device_id == device_id) {
+                    playback = entry.playback;
+                    break;
+                }
+            }
+            if (!playback) {
+                playback = device->make_playback();
+                _device_playbacks.push_back({
+                    .device_id = device_id,
+                    .playback = playback,
+                });
+            }
+
             auto target = std::make_shared<AudioDeviceExecutionTarget>(
                 std::move(device_id),
                 channel,
-                *device
+                std::move(playback)
             );
             _audio_device_targets.push_back(target);
             return *target;
+        }
+
+        size_t active_block_frames_or(size_t fallback) const
+        {
+            if (_audio_device_targets.empty()) {
+                return fallback;
+            }
+
+            size_t const start = _audio_device_targets.front()->active_block_start();
+            size_t const end = _audio_device_targets.front()->active_block_end();
+            for (auto const& target : _audio_device_targets) {
+                if (
+                    target->active_block_start() != start ||
+                    target->active_block_end() != end
+                ) {
+                    throw std::logic_error("ExecutionTargets audio targets disagree on active block window");
+                }
+            }
+            return end - start;
         }
 
         std::vector<TypeErasedExecutionTarget> all() const
