@@ -47,11 +47,9 @@ namespace iv {
         {}
 
         struct State {
-            std::span<InputPort> inputs;
-            std::span<SharedPortData> disconnected_output_port_data;
-            std::span<Sample> disconnected_output_samples;
-            std::span<OutputPort> outputs;
             std::span<std::span<std::byte>> nested_nodes;
+            std::span<InputPort> inputs;
+            std::span<OutputPort> outputs;
         };
 
         auto inputs() const
@@ -87,7 +85,12 @@ namespace iv {
         void declare(DeclarationContext<GraphNodeWrapper> const& ctx) const
         {
             auto const& state = ctx.state();
+            ctx.nested_node_states(state.nested_nodes);
+            do_declare(_port_data_node, ctx);
             ctx.local_array(state.inputs, _inputs.size());
+            do_declare(_node, ctx);
+            ctx.local_array(state.outputs, _outputs.size());
+
             if (!_inputs.empty()) {
                 ctx.require_export_array<SharedPortData>(port_data_export_id(_node_id));
             }
@@ -96,40 +99,26 @@ namespace iv {
                     ctx.require_export_array<SharedPortData>(target.port_data_id);
                 }
             }
-            ctx.local_array(state.disconnected_output_port_data, _outputs.size());
-            ctx.local_array(state.disconnected_output_samples, _outputs.size());
-            ctx.local_array(state.outputs, _outputs.size());
-            do_declare(_port_data_node, ctx);
-            do_declare(_node, ctx);
-            ctx.nested_node_states(state.nested_nodes);
         }
 
         void initialize(InitializationContext<GraphNodeWrapper> const& ctx) const
         {
             auto& state = ctx.state();
+            auto input_port_data = _inputs.empty()
+                ? std::span<SharedPortData const>()
+                : ctx.template resolve_exported_array_storage<SharedPortData>(port_data_export_id(_node_id));
             for (size_t input_i = 0; input_i < _inputs.size(); ++input_i) {
-                auto port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
-                    port_data_export_id(_node_id)
-                );
-                IV_ASSERT(input_i < port_data.size(), "graph node wrapper input wiring must resolve the requested SharedPortData entry");
-                std::construct_at(&state.inputs[input_i], const_cast<SharedPortData&>(port_data[input_i]), _inputs[input_i].history);
+                IV_ASSERT(input_i < input_port_data.size(), "graph node wrapper input wiring must resolve the requested SharedPortData entry");
+                std::construct_at(&state.inputs[input_i], const_cast<SharedPortData&>(input_port_data[input_i]), _inputs[input_i].history);
             }
 
             for (size_t output_i = 0; output_i < _outputs.size(); ++output_i) {
                 auto const& target = _output_targets[output_i];
                 if (target.port_data_id.empty()) {
-                    state.disconnected_output_samples[output_i] = Sample(0);
-                    std::construct_at(
-                        &state.disconnected_output_port_data[output_i],
-                        std::span<Sample>(&state.disconnected_output_samples[output_i], 1),
-                        0
+                    throw std::logic_error(
+                        "graph node wrapper output wiring is missing for node '" + _node_id +
+                        "' output " + std::to_string(output_i) + "'"
                     );
-                    std::construct_at(
-                        &state.outputs[output_i],
-                        state.disconnected_output_port_data[output_i],
-                        _outputs[output_i].history
-                    );
-                    continue;
                 }
                 auto target_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(target.port_data_id);
                 if (target.port_index >= target_port_data.size()) {

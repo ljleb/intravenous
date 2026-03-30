@@ -45,10 +45,10 @@ namespace iv {
         void declare(DeclarationContext<GraphSccWrapper> const& ctx) const
         {
             auto const& state = ctx.state();
+            ctx.nested_node_states(state.node_states);
             for (auto const& node : _nodes) {
                 do_declare(node, ctx);
             }
-            ctx.nested_node_states(state.node_states);
         }
 
         void tick_block(TickBlockContext<GraphSccWrapper> const& ctx) const

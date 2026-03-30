@@ -76,6 +76,17 @@ namespace iv {
         {
             auto const& state = ctx.state();
             ctx.local_array(state.ingress_outputs, num_inputs());
+            ctx.nested_node_states(state.scc_states);
+            for (auto const& scc : _scc_wrappers) {
+                do_declare(scc, ctx);
+            }
+            ctx.local_array(state.egress_inputs, num_outputs());
+            ctx.local_array(state.egress_port_data, num_outputs());
+            auto const output_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _public_output_buffer_plans);
+            auto const output_sample_offsets = make_input_sample_offsets(output_sample_sizes);
+            ctx.local_array(state.egress_samples, output_sample_offsets.empty() ? 0 : output_sample_offsets.back());
+
+            ctx.export_array(graph_port_data_export_id(_graph_id), state.egress_port_data);
             for (GraphEdge const& edge : _edges) {
                 if (edge.source.node == GRAPH_ID) {
                     ctx.require_export_array<SharedPortData>(
@@ -83,16 +94,6 @@ namespace iv {
                     );
                 }
             }
-            for (auto const& scc : _scc_wrappers) {
-                do_declare(scc, ctx);
-            }
-            ctx.nested_node_states(state.scc_states);
-            ctx.local_array(state.egress_inputs, num_outputs());
-            ctx.local_array(state.egress_port_data, num_outputs());
-            auto const output_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _public_output_buffer_plans);
-            auto const output_sample_offsets = make_input_sample_offsets(output_sample_sizes);
-            ctx.local_array(state.egress_samples, output_sample_offsets.empty() ? 0 : output_sample_offsets.back());
-            ctx.export_array(graph_port_data_export_id(_graph_id), state.egress_port_data);
         }
 
         void initialize(InitializationContext<Graph> const& ctx) const
@@ -131,7 +132,11 @@ namespace iv {
             // log_graph_port_trace("trace.graph.ingress", state.ingress_outputs, ctx.index, ctx.block_size);
 
             for (size_t scc_index = 0; scc_index < _scc_wrappers.size(); ++scc_index) {
-                tick_scc(scc_index, ctx, ctx.block_size);
+                do_tick_block(_scc_wrappers[scc_index], {
+                    TickContext<GraphSccWrapper> { .inputs = {}, .outputs = {}, .buffer = state.scc_states[scc_index] },
+                    ctx.index,
+                    ctx.block_size,
+                });
             }
 
             // log_graph_port_trace("trace.graph.egress", state.egress_inputs, ctx.index, ctx.block_size);
@@ -248,11 +253,6 @@ namespace iv {
             //     "graph SCC state pointer must point inside the enclosing graph buffer"
             // );
             // try {
-                do_tick_block(_scc_wrappers[scc_index], {
-                    TickContext<GraphSccWrapper> { .inputs = {}, .outputs = {}, .buffer = state.scc_states[scc_index] },
-                    ctx.index,
-                    block_size,
-                });
             // } catch (std::exception const& e) {
             //     throw std::logic_error("graph tick failed for SCC " + std::to_string(scc_index) + ": " + e.what());
             // }
