@@ -92,14 +92,13 @@ namespace iv {
 
         struct BuilderIdentity {
             std::string value;
-            size_t next_child_id = 0;
 
             BuilderIdentity() = default;
             explicit BuilderIdentity(std::string value_) :
                 value(value_)
             {}
 
-            std::string debug_node_id(size_t index) const
+            std::string child_id(size_t index) const
             {
                 std::string nested_path = value;
                 if (!nested_path.empty()) {
@@ -109,15 +108,6 @@ namespace iv {
                 return nested_path;
             }
 
-            std::string allocate_child_path()
-            {
-                std::string nested_path = value;
-                if (!nested_path.empty()) {
-                    nested_path += ".";
-                }
-                nested_path += std::to_string(next_child_id++);
-                return nested_path;
-            }
         };
 
         BuilderIdentity _builder_id;
@@ -149,15 +139,13 @@ namespace iv {
 
         GraphBuilder derive_nested_builder()
         {
-            return GraphBuilder(
-                BuilderIdentity(_builder_id.allocate_child_path())
-            );
+            return GraphBuilder(BuilderIdentity(_builder_id.child_id(_nodes.size())));
         }
 
-        std::string debug_node_id(size_t index) const
+        std::string node_id(size_t index) const
         {
             IV_ASSERT(index < _nodes.size(), "node index out of bounds");
-            return _builder_id.debug_node_id(index);
+            return _builder_id.child_id(index);
         }
 
         SignalRef input()
@@ -208,6 +196,15 @@ namespace iv {
 
         NodeRef node(GraphBuilder child)
         {
+            std::string expected_builder_id = _builder_id.child_id(_nodes.size());
+
+            if (child._builder_id.value != expected_builder_id) {
+                details::error(
+                    "builder " + _builder_id.value + ": nested builder id '" + child._builder_id.value +
+                    "' does not match insertion site '" + expected_builder_id + "'"
+                );
+            }
+
             if (!child._outputs_defined) {
                 details::error(
                     "builder " + child._builder_id.value + ": g.outputs(...) must be called before insertion"
@@ -328,7 +325,7 @@ namespace iv {
             g.node_ids.reserve(_nodes.size());
             for (auto const& node : _nodes) {
                 g.nodes.push_back(node.materialize(detach_id_offset));
-                g.node_ids.push_back(debug_node_id(g.node_ids.size()));
+                g.node_ids.push_back(node_id(g.node_ids.size()));
             }
 
             details::expand_hyperedge_ports(g, _builder_id.value);
@@ -620,7 +617,7 @@ namespace iv {
         if (node_index == GRAPH_ID) {
             return "graph input " + std::to_string(output_port) + " in builder " + graph_builder->_builder_id.value;
         }
-        return "signal at address " + graph_builder->debug_node_id(node_index) + ":" + std::to_string(output_port);
+        return "signal at address " + graph_builder->node_id(node_index) + ":" + std::to_string(output_port);
     }
 
     inline NodeRef::NodeRef(GraphBuilder& graph_builder, size_t index) :
@@ -790,6 +787,6 @@ namespace iv {
         if (!_graph_builder) {
             return "empty node";
         }
-        return "node at address " + _graph_builder->debug_node_id(_index);
+        return "node at address " + _graph_builder->node_id(_index);
     }
 }

@@ -4,9 +4,7 @@
 #include "graph/wiring.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
-#include <sstream>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -129,7 +127,6 @@ namespace iv {
             // auto const start_time = std::chrono::steady_clock::now();
             auto& state = ctx.state();
             push_input_blocks_to_private_outputs(state.ingress_outputs, ctx.inputs, ctx.block_size);
-            // log_graph_port_trace("trace.graph.ingress", state.ingress_outputs, ctx.index, ctx.block_size);
 
             for (size_t scc_index = 0; scc_index < _scc_wrappers.size(); ++scc_index) {
                 do_tick_block(_scc_wrappers[scc_index], {
@@ -139,134 +136,7 @@ namespace iv {
                 });
             }
 
-            // log_graph_port_trace("trace.graph.egress", state.egress_inputs, ctx.index, ctx.block_size);
             push_private_inputs_to_output_blocks(ctx.outputs, state.egress_inputs, ctx.block_size);
-            // maybe_log_timing(ctx, std::chrono::steady_clock::now() - start_time);
         }
-
-    private:
-        void log_graph_port_trace(
-            char const* stem,
-            std::span<OutputPort const> ports,
-            size_t index,
-            size_t block_size
-        ) const
-        {
-            if (!sample_trace_enabled()) {
-                return;
-            }
-
-            std::ostringstream message;
-            message << stem << ": index=" << index << " size=" << block_size;
-            if (!_node_ids.empty()) {
-                message << " nodes=" << _node_ids.size();
-            }
-
-            auto const preview_count = std::min<size_t>(block_size, 4);
-            for (size_t port_i = 0; port_i < ports.size(); ++port_i) {
-                auto samples = ports[port_i].get_block(block_size);
-                Sample max_abs = 0;
-                for (Sample sample : samples) {
-                    max_abs = std::max(max_abs, static_cast<Sample>(std::abs(sample)));
-                }
-                message << " out" << port_i << "=[";
-                for (size_t sample_i = 0; sample_i < preview_count; ++sample_i) {
-                    if (sample_i != 0) {
-                        message << ", ";
-                    }
-                    message << samples[sample_i];
-                }
-                if (samples.size() > preview_count) {
-                    if (preview_count != 0) {
-                        message << ", ";
-                    }
-                    message << "...";
-                }
-                message << "] max=" << max_abs;
-            }
-
-            auto const text = message.str();
-            if (sample_trace_matches(text)) {
-                debug_log(text);
-            }
-        }
-
-        void log_graph_port_trace(
-            char const* stem,
-            std::span<InputPort const> ports,
-            size_t index,
-            size_t block_size
-        ) const
-        {
-            if (!sample_trace_enabled()) {
-                return;
-            }
-
-            std::ostringstream message;
-            message << stem << ": index=" << index << " size=" << block_size;
-            if (!_node_ids.empty()) {
-                message << " nodes=" << _node_ids.size();
-            }
-
-            auto const preview_count = std::min<size_t>(block_size, 4);
-            for (size_t port_i = 0; port_i < ports.size(); ++port_i) {
-                auto samples = ports[port_i].get_block(block_size);
-                Sample max_abs = 0;
-                for (Sample sample : samples) {
-                    max_abs = std::max(max_abs, static_cast<Sample>(std::abs(sample)));
-                }
-                message << " in" << port_i << "=[";
-                for (size_t sample_i = 0; sample_i < preview_count; ++sample_i) {
-                    if (sample_i != 0) {
-                        message << ", ";
-                    }
-                    message << samples[sample_i];
-                }
-                if (samples.size() > preview_count) {
-                    if (preview_count != 0) {
-                        message << ", ";
-                    }
-                    message << "...";
-                }
-                message << "] max=" << max_abs;
-            }
-
-            auto const text = message.str();
-            if (sample_trace_matches(text)) {
-                debug_log(text);
-            }
-        }
-
-        void tick_scc(
-            size_t scc_index,
-            TickBlockContext<Graph> const& ctx,
-            size_t block_size
-        ) const
-        {
-            auto const& state = ctx.state();
-            // IV_ASSERT(scc_index < state.scc_states.size(), "graph SCC state index out of bounds");
-            // IV_ASSERT(state.scc_states[scc_index].data() != nullptr, "graph SCC state pointer must not be null");
-            // auto* const buffer_begin = ctx.buffer.data();
-            // auto* const buffer_end = buffer_begin + ctx.buffer.size();
-            // IV_ASSERT(
-            //     state.scc_states[scc_index].data() >= buffer_begin && state.scc_states[scc_index].data() <= buffer_end,
-            //     "graph SCC state pointer must point inside the enclosing graph buffer"
-            // );
-            // try {
-            // } catch (std::exception const& e) {
-            //     throw std::logic_error("graph tick failed for SCC " + std::to_string(scc_index) + ": " + e.what());
-            // }
-        }
-
-        void maybe_log_timing(TickBlockContext<Graph> const& ctx, std::chrono::steady_clock::duration duration) const
-        {
-            std::ostringstream oss;
-            oss << "trace.graph.timing: id=" << _graph_id
-                << " index=" << ctx.index
-                << " size=" << ctx.block_size
-                << " nodes=" << _node_ids.size();
-            iv::maybe_log_node_timing(oss.str(), duration);
-        }
-
     };
 }

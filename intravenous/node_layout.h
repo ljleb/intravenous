@@ -108,7 +108,7 @@ namespace iv {
         void local_array(size_t node_index, Marker const*, std::span<A> const*, size_t);
 
         template<typename Marker>
-        void nested_nodes(size_t node_index, Marker const*, std::span<std::span<std::byte>> const*);
+        void nested_nodes(size_t node_index, Marker const*, std::span<std::span<std::byte>> const*, std::vector<size_t>);
 
         template<typename A>
         void export_array(size_t node_index, std::string id, std::span<A> const*);
@@ -130,7 +130,6 @@ namespace iv {
         {}
 
         size_t max_block_size() const;
-        void record_direct_nested_child(size_t owner_node, size_t child_node);
 
         template<typename A>
         static void const* array_type_token()
@@ -155,7 +154,6 @@ namespace iv {
         std::vector<NodeLayout::Region> _regions;
         std::vector<NodeLayout::ArrayBinding> _imports;
         std::vector<NodeLayout::ArrayBinding> _exports;
-        std::vector<std::vector<size_t>> _direct_nested_children;
 
         template<typename Node>
         static NodeLifecycleCallbacks make_lifecycle_callbacks();
@@ -215,9 +213,11 @@ namespace iv {
         size_t _node_index;
         State const* _state_marker;
         mutable std::vector<size_t> _direct_nested_node_indices;
+        mutable std::span<std::span<std::byte>> const* _nested_nodes_field = nullptr;
 
     public:
         explicit DeclarationContext(NodeLayoutBuilder& builder, Node const& node);
+        ~DeclarationContext();
 
         template<typename Node2>
         DeclarationContext(DeclarationContext<Node2> const& ctx, Node const& node);
@@ -394,12 +394,19 @@ namespace iv {
     }
 
     template<typename Node>
+    inline DeclarationContext<Node>::~DeclarationContext()
+    {
+        if (_nested_nodes_field) {
+            _builder->nested_nodes(_node_index, _state_marker, _nested_nodes_field, _direct_nested_node_indices);
+        }
+    }
+
+    template<typename Node>
     template<typename Node2>
     inline DeclarationContext<Node>::DeclarationContext(DeclarationContext<Node2> const& ctx, Node const& node)
     : DeclarationContext<Node>(*ctx._builder, node)
     {
         ctx._direct_nested_node_indices.push_back(_node_index);
-        ctx._builder->record_direct_nested_child(ctx._node_index, _node_index);
     }
 
     template<typename Node>
@@ -454,7 +461,7 @@ namespace iv {
     template<typename Node>
     inline void DeclarationContext<Node>::nested_node_states(std::span<std::span<std::byte>> const& nodes) const
     {
-        _builder->nested_nodes(_node_index, _state_marker, &nodes);
+        _nested_nodes_field = &nodes;
     }
 
     template<typename Node>
@@ -490,7 +497,6 @@ namespace iv {
             _regions.push_back(region);
         }
         _nodes.push_back(std::move(record));
-        _direct_nested_children.emplace_back();
         return node_index;
     }
 
@@ -549,7 +555,8 @@ namespace iv {
     void NodeLayoutBuilder::nested_nodes(
         size_t node_index,
         Marker const* state_marker,
-        std::span<std::span<std::byte>> const* span
+        std::span<std::span<std::byte>> const* span,
+        std::vector<size_t> nested_node_indices
     )
     {
         auto const state_base = reinterpret_cast<uintptr_t>(state_marker);
@@ -559,17 +566,19 @@ namespace iv {
         region.kind = NodeLayout::Region::Kind::nested_nodes;
         region.owner_node = node_index;
         region.state_field_offset = static_cast<ptrdiff_t>(field_ptr - state_base);
-        region.storage_offset = _storage_size;
-        region.size = 0;
+        region.storage_offset = align_up(_storage_size, alignof(std::span<std::byte>));
+        region.size = sizeof(std::span<std::byte>) * nested_node_indices.size();
         region.alignment = alignof(std::span<std::byte>);
-        region.element_count = 0;
+        region.element_count = nested_node_indices.size();
         region.element_type = type_token<std::span<std::byte>>();
         region.assign_span_fn = [](void* state_base_ptr, ptrdiff_t field_offset, void* data, size_t count_value) {
             auto& span_ref = *reinterpret_cast<std::span<std::span<std::byte>>*>(static_cast<std::byte*>(state_base_ptr) + field_offset);
             span_ref = { static_cast<std::span<std::byte>*>(data), count_value };
         };
+        region.nested_node_indices = std::move(nested_node_indices);
 
         _storage_alignment = std::max(_storage_alignment, size_t(alignof(std::span<std::byte>)));
+        _storage_size = region.storage_offset + region.size;
 
         _regions.push_back(std::move(region));
     }
@@ -654,11 +663,6 @@ namespace iv {
         return _max_block_size;
     }
 
-    inline void NodeLayoutBuilder::record_direct_nested_child(size_t owner_node, size_t child_node)
-    {
-        _direct_nested_children[owner_node].push_back(child_node);
-    }
-
     inline NodeLayout NodeLayoutBuilder::build() &&
     {
         NodeLayout layout;
@@ -669,26 +673,6 @@ namespace iv {
         layout.regions = std::move(_regions);
         layout.imported_arrays = std::move(_imports);
         layout.exported_arrays = std::move(_exports);
-
-        for (auto& region : layout.regions) {
-            if (region.kind == NodeLayout::Region::Kind::nested_nodes) {
-                region.nested_node_indices = _direct_nested_children[region.owner_node];
-                region.element_count = region.nested_node_indices.size();
-                region.size = sizeof(std::span<std::byte>) * region.element_count;
-            }
-        }
-
-        layout.storage_size = 0;
-        layout.storage_alignment = 1;
-        for (auto& region : layout.regions) {
-            region.storage_offset = align_up(layout.storage_size, region.alignment);
-            layout.storage_alignment = std::max(layout.storage_alignment, region.alignment);
-            layout.storage_size = region.storage_offset + region.size;
-            if (region.kind == NodeLayout::Region::Kind::state) {
-                layout.nodes[region.owner_node].state_offset = static_cast<ptrdiff_t>(region.storage_offset);
-                layout.nodes[region.owner_node].state_size = region.size;
-            }
-        }
 
         for (auto const& import_binding : layout.imported_arrays) {
             for (auto const& export_binding : layout.exported_arrays) {

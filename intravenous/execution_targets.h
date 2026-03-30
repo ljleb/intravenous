@@ -5,11 +5,9 @@
 #include "wav.h"
 
 #include <algorithm>
-#include <cmath>
 #include <filesystem>
 #include <functional>
 #include <memory>
-#include <sstream>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -197,87 +195,12 @@ namespace iv {
 
         void mix_sinks(size_t block_start, size_t frames)
         {
-            for (size_t sink_i = 0; sink_i < _sinks.size(); ++sink_i) {
-                auto const& sink = _sinks[sink_i];
+            for (auto const& sink : _sinks) {
                 if (sink.empty()) {
                     continue;
                 }
-                trace_sink_input(sink_i, sink, block_start, frames);
                 _playback.mix_sink_block(_channel, sink, block_start, frames);
             }
-            trace_mixed_output(block_start, frames);
-        }
-
-        void trace_sink_input(size_t sink_index, std::span<Sample> sink, size_t block_start, size_t frames)
-        {
-            constexpr std::string_view prefix = "trace.sink.input";
-            if (!sample_trace_matches(prefix)) {
-                return;
-            }
-
-            Sample max_abs = 0.0f;
-            std::ostringstream oss;
-            oss << prefix << ": device=" << _device_id
-                << " channel=" << _channel
-                << " sink=" << sink_index
-                << " start=" << block_start
-                << " frames=" << frames
-                << " samples=[";
-
-            size_t emitted = 0;
-            for (size_t frame = 0; frame < frames; ++frame) {
-                Sample sample = sink[(block_start + frame) & (sink.size() - 1)];
-                max_abs = std::max(max_abs, Sample(std::abs(sample)));
-                if (emitted < 4) {
-                    if (emitted != 0) {
-                        oss << ", ";
-                    }
-                    oss << sample;
-                    ++emitted;
-                }
-            }
-            if (frames > 4) {
-                oss << ", ...";
-            }
-            oss << "] max=" << max_abs;
-            debug_log(oss.str());
-        }
-
-        void trace_mixed_output(size_t block_start, size_t frames)
-        {
-            constexpr std::string_view prefix = "trace.audio.mix";
-            if (!sample_trace_matches(prefix)) {
-                return;
-            }
-
-            auto block = _playback.output_block(_channel);
-            Sample max_abs = 0.0f;
-            size_t emitted = 0;
-
-            std::ostringstream oss;
-            oss << prefix << ": device=" << _device_id
-                << " channel=" << _channel
-                << " start=" << block_start
-                << " frames=" << frames
-                << " sinks=" << _sinks.size()
-                << " samples=[";
-
-            for (size_t frame = 0; frame < std::min(frames, block.size()); ++frame) {
-                Sample sample = block[frame];
-                max_abs = std::max(max_abs, Sample(std::abs(sample)));
-                if (emitted < 4) {
-                    if (emitted != 0) {
-                        oss << ", ";
-                    }
-                    oss << sample;
-                    ++emitted;
-                }
-            }
-            if (frames > 4) {
-                oss << ", ...";
-            }
-            oss << "] max=" << max_abs;
-            debug_log(oss.str());
         }
     };
 

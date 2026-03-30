@@ -26,7 +26,9 @@ namespace iv {
 
     inline std::string graph_port_data_export_id(std::string_view graph_id)
     {
-        return port_data_export_id(graph_id);
+        std::string id = "graph_port_data:";
+        id += graph_id;
+        return id;
     }
 
     inline size_t calculate_port_buffer_size(

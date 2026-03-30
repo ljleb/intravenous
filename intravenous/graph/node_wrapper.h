@@ -6,11 +6,7 @@
 #include "wiring.h"
 
 #include <algorithm>
-#include <chrono>
-#include <cmath>
 #include <stdexcept>
-#include <memory>
-#include <sstream>
 #include <span>
 #include <string>
 #include <utility>
@@ -166,110 +162,6 @@ namespace iv {
                     ctx.index,
                     ctx.block_size
                 });
-                // trace_block_outputs(ctx, state.outputs);
-            // } catch (std::exception const& e) {
-            //     throw std::logic_error("graph node wrapper tick failed for node '" + _node_id + "': " + e.what());
-            // }
-            // maybe_log_timing(ctx, std::chrono::steady_clock::now() - start_time);
-        }
-
-    private:
-        void trace_block_outputs(TickBlockContext<GraphNodeWrapper> const& ctx, std::span<OutputPort> outputs) const
-        {
-            if (!sample_trace_enabled()) {
-                return;
-            }
-            constexpr std::string_view prefix = "trace.node.samples";
-            if (!sample_trace_matches(prefix) && !sample_trace_matches(_node_id) && !sample_trace_matches(_node.type_name())) {
-                return;
-            }
-
-            std::ostringstream oss;
-            oss << prefix << ": id=" << _node_id
-                << " type=" << _node.type_name()
-                << " index=" << ctx.index
-                << " size=" << ctx.block_size;
-
-            for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
-                auto block = outputs[output_i].get_block(ctx.block_size);
-                Sample max_abs = 0.0f;
-                for (Sample sample : block) {
-                    max_abs = std::max(max_abs, Sample(std::abs(sample)));
-                }
-
-                oss << " out" << output_i << "=[";
-                size_t emitted = 0;
-                for (Sample sample : block) {
-                    if (emitted == 4) {
-                        break;
-                    }
-                    if (emitted != 0) {
-                        oss << ", ";
-                    }
-                    oss << sample;
-                    ++emitted;
-                }
-                if (block.size() > 4) {
-                    oss << ", ...";
-                }
-                oss << "] max=" << max_abs;
-            }
-
-            debug_log(oss.str());
-        }
-
-        void trace_block_inputs(TickBlockContext<GraphNodeWrapper> const& ctx, std::span<InputPort> inputs) const
-        {
-            if (!sample_trace_enabled()) {
-                return;
-            }
-            constexpr std::string_view prefix = "trace.node.inputs";
-            if (!sample_trace_matches(prefix) && !sample_trace_matches(_node_id) && !sample_trace_matches(_node.type_name())) {
-                return;
-            }
-
-            std::ostringstream oss;
-            oss << prefix << ": id=" << _node_id
-                << " type=" << _node.type_name()
-                << " index=" << ctx.index
-                << " size=" << ctx.block_size;
-
-            for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
-                auto block = inputs[input_i].get_block(ctx.block_size);
-                Sample max_abs = 0.0f;
-                for (Sample sample : block) {
-                    max_abs = std::max(max_abs, Sample(std::abs(sample)));
-                }
-
-                oss << " in" << input_i << "=[";
-                size_t emitted = 0;
-                for (Sample sample : block) {
-                    if (emitted == 4) {
-                        break;
-                    }
-                    if (emitted != 0) {
-                        oss << ", ";
-                    }
-                    oss << sample;
-                    ++emitted;
-                }
-                if (block.size() > 4) {
-                    oss << ", ...";
-                }
-                oss << "] max=" << max_abs;
-            }
-
-            debug_log(oss.str());
-        }
-
-        void maybe_log_timing(TickBlockContext<GraphNodeWrapper> const& ctx, std::chrono::steady_clock::duration duration) const
-        {
-            std::ostringstream oss;
-            oss << "trace.node.timing: id=" << _node_id
-                << " type=" << _node.type_name()
-                << " index=" << ctx.index
-                << " size=" << ctx.block_size;
-            iv::maybe_log_node_timing(oss.str(), duration);
         }
     };
 }

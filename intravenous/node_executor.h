@@ -44,8 +44,10 @@ namespace iv {
         static NodeLayout make_layout(TypeErasedNode const& root, size_t max_block_size)
         {
             NodeLayoutBuilder builder(max_block_size);
-            DeclarationContext<TypeErasedNode> ctx(builder, root);
-            root.declare(ctx);
+            {
+                DeclarationContext<TypeErasedNode> ctx(builder, root);
+                root.declare(ctx);
+            }
             return std::move(builder).build();
         }
 
@@ -54,10 +56,7 @@ namespace iv {
         {
             try {
                 _storage.release(&_execution_targets);
-            } catch (std::exception const& e) {
-                debug_log(std::string("node teardown release failed: ") + e.what());
             } catch (...) {
-                debug_log("node teardown release failed");
             }
         }
 
@@ -82,10 +81,7 @@ namespace iv {
 
             try {
                 _storage.release(&_execution_targets);
-            } catch (std::exception const& e) {
-                debug_log(std::string("node move-assignment release failed: ") + e.what());
             } catch (...) {
-                debug_log("node move-assignment release failed");
             }
 
             _module_refs = std::move(other._module_refs);
@@ -118,6 +114,8 @@ namespace iv {
             NodeLayout layout;
             try {
                 layout = make_layout(*root_ptr, max_block_size);
+            } catch (std::exception const& e) {
+                throw std::runtime_error(std::string("failed to create node executor: make_layout: ") + e.what());
             } catch (...) {
                 throw std::runtime_error("failed to create node executor: make_layout");
             }
@@ -125,6 +123,8 @@ namespace iv {
             NodeStorage storage;
             try {
                 storage = layout.create_storage(resources);
+            } catch (std::exception const& e) {
+                throw std::runtime_error(std::string("failed to create node executor: create_storage: ") + e.what());
             } catch (...) {
                 throw std::runtime_error("failed to create node executor: create_storage");
             }
@@ -229,6 +229,8 @@ namespace iv {
             NodeLayout next_layout;
             try {
                 next_layout = make_layout(*next_root, next_max_block_size);
+            } catch (std::exception const& e) {
+                throw std::runtime_error(std::string("failed to reload node executor: make_layout: ") + e.what());
             } catch (...) {
                 throw std::runtime_error("failed to reload node executor: make_layout");
             }
@@ -236,6 +238,8 @@ namespace iv {
             NodeStorage next_storage;
             try {
                 next_storage = next_layout.create_storage(_resources);
+            } catch (std::exception const& e) {
+                throw std::runtime_error(std::string("failed to reload node executor: create_storage: ") + e.what());
             } catch (...) {
                 throw std::runtime_error("failed to reload node executor: create_storage");
             }

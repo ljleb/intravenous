@@ -4,7 +4,6 @@
 #include "compat.h"
 #include "third_party/miniaudio/miniaudio.h"
 
-#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -15,15 +14,6 @@
 #include <vector>
 
 namespace iv {
-    inline bool audio_timing_enabled()
-    {
-#if defined(NDEBUG)
-        return false;
-#else
-        return env_flag_enabled("IV_AUDIO_TIMING");
-#endif
-    }
-
     struct RenderConfig {
         size_t sample_rate = 48000;
         size_t num_channels = 2;
@@ -306,27 +296,6 @@ namespace iv {
                 if (self->shutdown_requested) {
                     self->write_silence(out, frame_count, device->playback.channels);
                     return;
-                }
-
-                if (audio_timing_enabled()) {
-                    auto const finish_time = self->render_finish_time;
-                    auto const begin_time = self->render_begin_time;
-                    auto const total_us = std::chrono::duration_cast<std::chrono::microseconds>(finish_time - request_time).count();
-                    auto const dispatch_us = std::chrono::duration_cast<std::chrono::microseconds>(begin_time - request_time).count();
-                    auto const render_us = std::chrono::duration_cast<std::chrono::microseconds>(finish_time - begin_time).count();
-                    auto const budget_us = static_cast<long long>(
-                        (static_cast<double>(frame_count) * 1000000.0) /
-                        static_cast<double>(self->config.sample_rate)
-                    );
-                    if (total_us > budget_us / 2) {
-                        debug_log(
-                            "audio timing: frames=" + std::to_string(frame_count) +
-                            " budget_us=" + std::to_string(budget_us) +
-                            " total_us=" + std::to_string(total_us) +
-                            " dispatch_us=" + std::to_string(dispatch_us) +
-                            " render_us=" + std::to_string(render_us)
-                        );
-                    }
                 }
 
                 self->interleave_to(out);

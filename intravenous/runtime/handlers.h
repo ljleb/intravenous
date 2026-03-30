@@ -51,6 +51,15 @@ namespace iv {
         out << "unhandled exception 0x" << std::hex
             << (info ? info->ExceptionRecord->ExceptionCode : 0)
             << std::dec << '\n';
+        if (auto ep = std::current_exception()) {
+            try {
+                std::rethrow_exception(ep);
+            } catch (std::exception const& e) {
+                out << "uncaught exception: " << e.what() << '\n';
+            } catch (...) {
+                out << "uncaught non-std exception\n";
+            }
+        }
         out.flush();
         std::abort();
     }
