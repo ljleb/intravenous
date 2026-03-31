@@ -7,10 +7,10 @@
 #include <vector>
 
 namespace iv {
-    struct BufferId {
+    struct DetachArrayId {
         size_t id;
 
-        BufferId(size_t id): id(id) {}
+        DetachArrayId(size_t id): id(id) {}
 
         operator std::string() const {
             return "detach:" + std::to_string(id);
@@ -50,7 +50,7 @@ namespace iv {
     };
 
     struct DetachWriterNode {
-        BufferId id;
+        DetachArrayId id;
         size_t loop_block_size = 1;
 
         struct State {
@@ -90,7 +90,7 @@ namespace iv {
     };
 
     struct DetachReaderNode {
-        BufferId id;
+        DetachArrayId id;
         size_t loop_block_size = 1;
 
         struct State {

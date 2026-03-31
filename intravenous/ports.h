@@ -85,7 +85,7 @@ namespace iv {
             return size() == 0;
         }
 
-        constexpr A operator[](size_t index) const
+        constexpr A& operator[](size_t index) const
         {
             return index < first.size()
                 ? first[index]
@@ -284,14 +284,13 @@ namespace iv {
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
         {
-            if (sample_offset > block_size) {
-                return {};
-            }
-
+            size_t const available = _shared_data.latency + _history + 1;
+            size_t const count = std::min(block_size, available - sample_offset);
             size_t const start = (
-                _position + _shared_data.latency + buffer_size() - block_size + sample_offset
+                _position + _shared_data.latency + buffer_size() - (sample_offset + count)
             ) & (buffer_size() - 1);
-            return make_block_view(_shared_data.buffer, start, block_size - sample_offset);
+
+            return make_block_view(_shared_data.buffer, start, count);
         }
 
         IV_FORCEINLINE constexpr void push(Sample value)
@@ -303,9 +302,16 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void push_block(std::span<Sample const> samples)
         {
-            for (Sample const& sample : samples) {
-                push(sample);
-            }
+            size_t const start = (_position + _shared_data.latency) & (buffer_size() - 1);
+            size_t const n = samples.size();
+
+            size_t const first_count = std::min(n, _shared_data.buffer.size() - start);
+            std::copy_n(samples.data(), first_count, _shared_data.buffer.data() + start);
+
+            size_t const second_count = n - first_count;
+            std::copy_n(samples.data() + first_count, second_count, _shared_data.buffer.data());
+
+            _position = (_position + n) & (buffer_size() - 1);
         }
 
         IV_FORCEINLINE constexpr void push_block(BlockView<Sample> samples)

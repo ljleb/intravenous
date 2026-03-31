@@ -156,13 +156,38 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickSampleContext<DeterministicUniformAESNoise> const& state) const
+        void tick_block(TickBlockContext<DeterministicUniformAESNoise> const& ctx) const
         {
-            auto const min = state.inputs[0].get();
-            auto const max = state.inputs[1].get();
-            Rng::ctr_type counter = make_index(state.index);
-            unsigned int uniform_uint = _generator(counter, _seed)[0];
-            state.outputs[0].push(r123::u01<Sample>(uniform_uint) * (max - min) + min);
+            auto const min = ctx.inputs[0].get();
+            auto const max = ctx.inputs[1].get();
+            auto const scale = max - min;
+
+            auto const start = ctx.index;
+            auto const end   = start + ctx.block_size;
+
+            auto const first_group = start >> 2;
+            auto const last_group  = (end - 1) >> 2;
+
+            auto const to_sample = [&](uint32_t x) -> Sample {
+                return r123::u01<Sample>(x) * scale + min;
+            };
+
+            for (uint64_t group = first_group; group <= last_group; ++group) {
+                auto const r = _generator(make_index(group), _seed);
+
+                auto const tmp = std::to_array({
+                    to_sample(r[0]),
+                    to_sample(r[1]),
+                    to_sample(r[2]),
+                    to_sample(r[3]),
+                });
+
+                auto const first_lane = (group == first_group) ? (start & 3u) : 0u;
+                auto const last_lane  = (group == last_group)  ? ((end - 1) & 3u) : 3u;
+
+                std::span<Sample const> span{tmp.data() + first_lane, last_lane - first_lane + 1};
+                ctx.outputs[0].push_block(span);
+            }
         }
     };
 
@@ -201,6 +226,8 @@ namespace iv {
     public:
         struct State {
             std::span<Sample> weights;
+            ptrdiff_t min;
+            ptrdiff_t sign;
         };
 
         explicit UniformToPower(ptrdiff_t min = -5, ptrdiff_t max = 4, Sample lambda = 0.5)
@@ -223,7 +250,7 @@ namespace iv {
         {
             auto const& state = ctx.state();
 
-            size_t range = std::max<ptrdiff_t>(0, _max - _min);
+            size_t range = static_cast<size_t>(std::abs(_max - _min)) + 1;
             ctx.local_array(state.weights, range);
         }
 
@@ -241,16 +268,29 @@ namespace iv {
             for (size_t i = 0; i < state.weights.size(); ++i) {
                 state.weights[i] /= total;
             }
+            Sample cumsum = 0;
+            for (size_t i = 0; i < state.weights.size(); ++i) {
+                cumsum += state.weights[i];
+                state.weights[i] = cumsum;
+            }
+
+            state.min = _min;
+            state.sign = (_max >= _min) ? 1 : -1;
         }
 
         void tick(TickSampleContext<UniformToPower> const& ctx) const
         {
             auto& state = ctx.state();
-            Sample uniform = ctx.inputs[0].get() * 0.5 + 0.5;
-            size_t discrete = static_cast<size_t>(
+            auto const uniform = std::clamp<Sample>(
+                ctx.inputs[0].get() * Sample{0.5} + Sample{0.5},
+                Sample{0},
+                std::nextafter(Sample{1}, Sample{0})
+            );
+            auto const discrete = static_cast<size_t>(
                 std::lower_bound(state.weights.begin(), state.weights.end(), uniform) - state.weights.begin()
             );
-            ctx.outputs[0].push(std::exp2f(static_cast<Sample>(discrete)));
+            auto const exponent = state.min + static_cast<ptrdiff_t>(discrete) * state.sign;
+            ctx.outputs[0].push(std::exp2f(static_cast<Sample>(exponent)));
         }
     };
 

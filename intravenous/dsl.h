@@ -178,9 +178,9 @@ namespace iv {
 
             auto materialize = [node_value = std::move(node_value)]([[maybe_unused]] size_t detach_id_offset) {
                 if constexpr (std::same_as<StoredNode, DetachWriterNode>) {
-                    return TypeErasedNode(DetachWriterNode{ BufferId(node_value.id.id + detach_id_offset) });
+                    return TypeErasedNode(DetachWriterNode{ DetachArrayId(node_value.id.id + detach_id_offset) });
                 } else if constexpr (std::same_as<StoredNode, DetachReaderNode>) {
-                    return TypeErasedNode(DetachReaderNode{ BufferId(node_value.id.id + detach_id_offset) });
+                    return TypeErasedNode(DetachReaderNode{ DetachArrayId(node_value.id.id + detach_id_offset) });
                 } else {
                     return TypeErasedNode(node_value);
                 }
