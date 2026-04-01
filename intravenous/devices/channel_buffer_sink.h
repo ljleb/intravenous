@@ -35,8 +35,8 @@ namespace iv {
             }
 
             auto& state = ctx.state();
-            auto& target = ctx.execution_targets->audio_device(device_id, channel);
-            target.register_sink(state.buffer);
+            auto& target = ctx.execution_targets.audio_device(device_id, channel);
+            target.register_sink(channel, state.buffer);
         }
 
         void move(MoveContext<AudioDeviceSink> const& ctx) const
@@ -47,8 +47,8 @@ namespace iv {
 
             auto& state = ctx.state();
             auto& previous = ctx.previous_state();
-            auto& target = ctx.execution_targets->audio_device(device_id, channel);
-            target.update_sink(previous.buffer, state.buffer);
+            auto& target = ctx.execution_targets.audio_device(device_id, channel);
+            target.update_sink(channel, previous.buffer, state.buffer);
         }
 
         void release(ReleaseContext<AudioDeviceSink> const& ctx) const
@@ -58,8 +58,8 @@ namespace iv {
             }
 
             auto& state = ctx.state();
-            auto& target = ctx.execution_targets->audio_device(device_id, channel);
-            target.unregister_sink(state.buffer);
+            auto& target = ctx.execution_targets.audio_device(device_id, channel);
+            target.unregister_sink(channel, state.buffer);
         }
 
         void tick(TickSampleContext<AudioDeviceSink> const& ctx) const
@@ -101,7 +101,7 @@ namespace iv {
             }
 
             auto& state = ctx.state();
-            auto& target = ctx.execution_targets->file(path, channel);
+            auto& target = ctx.execution_targets.file(path, channel);
             target.register_sink(channel, state.buffer);
         }
 
@@ -113,7 +113,7 @@ namespace iv {
 
             auto& state = ctx.state();
             auto& previous = ctx.previous_state();
-            auto& target = ctx.execution_targets->file(path, channel);
+            auto& target = ctx.execution_targets.file(path, channel);
             target.update_sink(channel, previous.buffer, state.buffer);
         }
 
@@ -124,7 +124,7 @@ namespace iv {
             }
 
             auto& state = ctx.state();
-            auto& target = ctx.execution_targets->file(path, channel);
+            auto& target = ctx.execution_targets.file(path, channel);
             target.unregister_sink(channel, state.buffer);
         }
 

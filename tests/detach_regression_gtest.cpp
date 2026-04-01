@@ -3,9 +3,10 @@
 #include "graph_node.h"
 #include "module_test_utils.h"
 
+#include <gtest/gtest.h>
+
 #include <array>
 #include <cmath>
-#include <iostream>
 #include <vector>
 
 namespace {
@@ -43,10 +44,8 @@ namespace {
     }
 }
 
-int main()
+TEST(DetachRegression, ProducesFiniteNonZeroOutput)
 {
-    iv::test::install_crash_handlers();
-
     iv::Sample dt_value = 1.0f / 48000.0f;
     iv::Sample noise_a = 0.125f;
     iv::Sample noise_b = -0.25f;
@@ -80,16 +79,15 @@ int main()
     executor.tick_block(0, output.size());
 
     bool saw_non_zero = false;
-    for (iv::Sample sample : output) {
+    for (size_t i = 0; i < output.size(); ++i) {
+        iv::Sample const sample = output[i];
         if (!std::isfinite(sample)) {
-            std::cerr << "detach regression produced non-finite output\n";
-            return 1;
+            FAIL() << "non-finite output at sample " << i << ": " << sample;
         }
         if (sample != 0.0f) {
             saw_non_zero = true;
         }
     }
 
-    iv::test::require(saw_non_zero, "detach regression should produce non-zero output");
-    return 0;
+    EXPECT_TRUE(saw_non_zero);
 }

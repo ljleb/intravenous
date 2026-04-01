@@ -1,13 +1,13 @@
 #include "module_test_utils.h"
 
+#include <gtest/gtest.h>
+
 #if !defined(_WIN32)
 #include <cstdlib>
 #endif
 
-int main()
+TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 {
-    iv::test::install_crash_handlers();
-
     auto const fixtures = iv::test::test_modules_root();
     auto const runtime_root = iv::test::runtime_modules_root();
     auto const project_src = fixtures / "noisy_saw_project";
@@ -49,17 +49,14 @@ int main()
     auto const voice_cache_before = iv::test::write_time(voice_cache);
 
 #if IV_ENABLE_JUCE_VST
-    iv::test::require(
-        !std::filesystem::exists(project_workspace / "build" / "_deps" / "juce" / "JUCEConfig.cmake"),
-        "juce-enabled runtime module should reuse the core runtime's JUCE support instead of configuring its own _deps/juce tree"
-    );
+    EXPECT_FALSE(std::filesystem::exists(project_workspace / "build" / "_deps" / "juce" / "JUCEConfig.cmake"));
 #endif
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto project_needle = std::string("SignalRef first_noise;");
     auto project_replacement = std::string("SignalRef first_noise;\n        // behavior source marker");
-    iv::test::require(project_source.contains(project_needle), "project fixture missing source marker");
+    ASSERT_NE(project_source.find(project_needle), std::string::npos);
     project_source.replace(project_source.find(project_needle), project_needle.size(), project_replacement);
     iv::test::write_text(project_dst / "module.cpp", project_source);
 
@@ -72,14 +69,14 @@ int main()
         (void)graph;
     }
 
-    iv::test::require(iv::test::write_time(project_cache) == project_cache_before, "source edit should not reconfigure root module");
-    iv::test::require(iv::test::write_time(voice_cache) == voice_cache_before, "source edit should not reconfigure dependency module");
+    EXPECT_EQ(iv::test::write_time(project_cache), project_cache_before);
+    EXPECT_EQ(iv::test::write_time(voice_cache), voice_cache_before);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto voice_needle = std::string("warper[\"anti_aliased\"] * amplitude");
     auto voice_replacement = std::string("warper[\"anti_aliased\"] * amplitude/* behavior dependency marker*/");
-    iv::test::require(voice_source.contains(voice_needle), "voice fixture missing source marker");
+    ASSERT_NE(voice_source.find(voice_needle), std::string::npos);
     voice_source.replace(voice_source.find(voice_needle), voice_needle.size(), voice_replacement);
     iv::test::write_text(voice_dst / "module.cpp", voice_source);
 
@@ -95,8 +92,8 @@ int main()
         (void)graph;
     }
 
-    iv::test::require(iv::test::write_time(project_cache) == project_cache_mid, "nested source edit should not reconfigure root module");
-    iv::test::require(iv::test::write_time(voice_cache) == voice_cache_mid, "nested source edit should not reconfigure dependency module");
+    EXPECT_EQ(iv::test::write_time(project_cache), project_cache_mid);
+    EXPECT_EQ(iv::test::write_time(voice_cache), voice_cache_mid);
 
     {
         auto graph = loader.load_root(
@@ -124,15 +121,12 @@ int main()
         (void)graph;
     }
 
-    iv::test::require(
-        iv::test::write_time(local_configure_signature) > local_configure_before,
-        "local CMake edit should force reconfigure"
-    );
+    EXPECT_GT(iv::test::write_time(local_configure_signature), local_configure_before);
 
     if (auto ninja_path = std::getenv("IV_RUNTIME_MODULE_PREFER_NINJA"); ninja_path == nullptr || std::string_view(ninja_path) != "0") {
         auto configured = iv::test::read_text(project_workspace / "generator.txt");
         if (configured == "Ninja") {
-            iv::test::require(std::filesystem::exists(project_workspace / "build" / "build.ninja"), "ninja workspace should contain build.ninja");
+            EXPECT_TRUE(std::filesystem::exists(project_workspace / "build" / "build.ninja"));
         }
     }
 
@@ -152,12 +146,10 @@ int main()
         (void)graph;
     }
     auto fallback_generator = iv::test::read_text(local_workspace / "generator.txt");
-    iv::test::require(fallback_generator != "Ninja", "ninja disable flag should force non-ninja generator");
+    EXPECT_NE(fallback_generator, "Ninja");
 #if defined(_WIN32)
     _putenv_s("IV_RUNTIME_MODULE_PREFER_NINJA", "");
 #else
     unsetenv("IV_RUNTIME_MODULE_PREFER_NINJA");
 #endif
-
-    return 0;
 }

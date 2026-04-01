@@ -58,18 +58,6 @@ namespace iv {
         validate_block_size(block_size, message);
     }
 
-    IV_FORCEINLINE size_t prev_power_of_2(size_t n)
-    {
-        if (n == 0) {
-            return 0;
-        }
-        size_t power = 1;
-        while ((power << 1) != 0 && (power << 1) <= n) {
-            power <<= 1;
-        }
-        return power;
-    }
-
     template<typename A>
     struct BlockView {
         std::span<A> first {};

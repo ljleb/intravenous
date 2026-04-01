@@ -1,11 +1,10 @@
 #include "module_test_utils.h"
-
 #include "module/watcher.h"
 
-int main()
-{
-    iv::test::install_crash_handlers();
+#include <gtest/gtest.h>
 
+TEST(ModuleWatcher, ObservesDependencyEdits)
+{
     auto const fixtures = iv::test::test_modules_root();
     auto const runtime_root = iv::test::runtime_modules_root() / "module_watcher";
     auto const project_src = fixtures / "noisy_saw_project";
@@ -28,14 +27,14 @@ int main()
 
     auto watcher = iv::make_dependency_watcher();
     watcher->update(graph.dependencies);
-    iv::test::require(!watcher->has_changes(), "watcher should be clean before edits");
+    EXPECT_FALSE(watcher->has_changes());
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
     auto needle = std::string("warper[\"anti_aliased\"] * amplitude");
     auto replacement = std::string("warper[\"anti_aliased\"] * amplitude/* watcher marker*/");
-    iv::test::require(source.contains(needle), "watch fixture did not contain expected marker");
+    ASSERT_NE(source.find(needle), std::string::npos);
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text(module_cpp, source);
 
@@ -48,6 +47,5 @@ int main()
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    iv::test::require(saw_change, "watcher did not observe dependency edit");
-    return 0;
+    EXPECT_TRUE(saw_change);
 }

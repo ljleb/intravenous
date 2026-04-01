@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <cmath>
 #include <numbers>
 
@@ -37,7 +37,7 @@ namespace iv
             p = std::fmaf(p, t, 8.86226892e-1f); //  0x1.c5bf88p-1 
         }
         r = a * p;
-        float err = std::erff(r) - a;     // compute residual in [−1,1]
+        float err = std::erff(r) - a;     // compute residual in [-1,1]
         r = r - err * (std::sqrtf(std::numbers::pi_v<float>) * std::expf(-r * r)); // one Newton correction for erfinv
         return r;
     }

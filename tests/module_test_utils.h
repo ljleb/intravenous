@@ -1,6 +1,7 @@
 #pragma once
 
 #include "devices/audio_device.h"
+#include "fake_audio_device.h"
 #include "module/loader.h"
 #include "node_executor.h"
 #include "runtime/handlers.h"
@@ -19,6 +20,26 @@
 #include <thread>
 
 namespace iv::test {
+    inline iv::LogicalAudioDevice& audio_device_ref(iv::LogicalAudioDevice& audio_device)
+    {
+        return audio_device;
+    }
+
+    inline iv::LogicalAudioDevice const& audio_device_ref(iv::LogicalAudioDevice const& audio_device)
+    {
+        return audio_device;
+    }
+
+    inline iv::LogicalAudioDevice& audio_device_ref(iv::test::FakeAudioDevice& audio_device)
+    {
+        return audio_device.device();
+    }
+
+    inline iv::LogicalAudioDevice const& audio_device_ref(iv::test::FakeAudioDevice const& audio_device)
+    {
+        return audio_device.device();
+    }
+
     inline std::filesystem::path repo_root()
     {
         return std::filesystem::path(__FILE__).parent_path().parent_path();
@@ -164,47 +185,60 @@ namespace iv::test {
         return iv::ModuleLoader(repo_root(), std::move(extra_roots));
     }
 
-    inline iv::ExecutionTargets::AudioDeviceProvider make_audio_device_provider(iv::AudioDevice& audio_device)
+    template<typename Device>
+    inline iv::ExecutionTargetRegistry::AudioDeviceProvider make_audio_device_provider(Device& audio_device)
     {
-        return iv::ExecutionTargets::AudioDeviceProvider{
-            .owner = &audio_device,
-            .device_fn = [](void* owner, size_t device_id) -> iv::AudioDevice* {
+        auto& erased_device = audio_device_ref(audio_device);
+        return iv::ExecutionTargetRegistry::AudioDeviceProvider{
+            .owner = &erased_device,
+            .device_fn = [](void* owner, size_t device_id) -> iv::LogicalAudioDevice* {
                 if (device_id != 0) {
                     return nullptr;
                 }
-                return static_cast<iv::AudioDevice*>(owner);
+                return static_cast<iv::LogicalAudioDevice*>(owner);
             },
             .preferred_block_size_fn = [](void* owner) -> size_t {
-                return static_cast<iv::AudioDevice*>(owner)->scheduling_block_size();
+                return static_cast<iv::LogicalAudioDevice*>(owner)->config().preferred_block_size;
             },
         };
     }
 
-    inline iv::ModuleRenderConfig module_render_config(iv::AudioDevice const& audio_device)
+    template<typename Device>
+    inline iv::ModuleRenderConfig module_render_config(Device const& audio_device)
     {
+        auto const& erased_device = audio_device_ref(audio_device);
         return iv::ModuleRenderConfig{
-            .sample_rate = audio_device.config().sample_rate,
-            .num_channels = audio_device.config().num_channels,
-            .max_block_frames = audio_device.config().max_block_frames,
+            .sample_rate = erased_device.config().sample_rate,
+            .num_channels = erased_device.config().num_channels,
+            .max_block_frames = erased_device.config().max_block_frames,
         };
     }
 
-    inline iv::ResourceContext make_resource_context(iv::AudioDevice const& audio_device)
+    template<typename Device>
+    inline iv::ResourceContext make_resource_context(Device const& audio_device)
     {
+        auto const& erased_device = audio_device_ref(audio_device);
         iv::ResourceContext resources {};
 #if IV_ENABLE_JUCE_VST
         static iv::JuceVstRuntimeManager juce_vst_runtime_manager;
         static std::vector<std::unique_ptr<iv::JuceVstRuntimeSupport>> juce_vst_runtime_supports;
         juce_vst_runtime_supports.push_back(std::make_unique<iv::JuceVstRuntimeSupport>(
             juce_vst_runtime_manager,
-            static_cast<double>(audio_device.config().sample_rate)
+            static_cast<double>(erased_device.config().sample_rate)
         ));
         resources = juce_vst_runtime_supports.back()->resources();
 #endif
         return resources;
     }
 
-    inline iv::NodeExecutor make_executor(iv::ModuleLoader& loader, iv::AudioDevice& audio_device, std::filesystem::path const& module_path)
+    template<typename Device>
+    inline iv::NodeExecutor make_executor(
+        Device& audio_device,
+        iv::ExecutionTargetRegistry& execution_target_registry,
+        size_t executor_id,
+        iv::ModuleLoader& loader,
+        std::filesystem::path const& module_path
+    )
     {
         auto graph = loader.load_root(
             module_path,
@@ -213,14 +247,26 @@ namespace iv::test {
         );
 
         auto resources = make_resource_context(audio_device);
-        iv::ExecutionTargets execution_targets(make_audio_device_provider(audio_device));
         auto executor = iv::NodeExecutor::create(
             std::move(graph.root),
             std::move(resources),
-            std::move(execution_targets),
+            execution_target_registry,
+            executor_id,
             std::move(graph.module_refs)
         );
         return executor;
+    }
+
+    template<typename Device>
+    inline iv::NodeExecutor make_executor(
+        iv::ModuleLoader& loader,
+        Device& audio_device,
+        iv::ExecutionTargetRegistry& execution_target_registry,
+        size_t executor_id,
+        std::filesystem::path const& module_path
+    )
+    {
+        return make_executor(audio_device, execution_target_registry, executor_id, loader, module_path);
     }
 
     template<typename Executor>

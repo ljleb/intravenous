@@ -38,9 +38,9 @@ namespace iv {
     struct NodeStorage;
 
     struct NodeLifecycleCallbacks {
-        void (*move_fn)(void const*, size_t, NodeStorage&, NodeStorage const&, ExecutionTargets*) = nullptr;
-        void (*initialize_fn)(void const*, size_t, NodeStorage&, ExecutionTargets*) = nullptr;
-        void (*release_fn)(void const*, size_t, NodeStorage&, ExecutionTargets*) = nullptr;
+        void (*move_fn)(void const*, size_t, NodeStorage&, NodeStorage const&, ExecutionTargetRegistry*, size_t) = nullptr;
+        void (*initialize_fn)(void const*, size_t, NodeStorage&, ExecutionTargetRegistry*, size_t) = nullptr;
+        void (*release_fn)(void const*, size_t, NodeStorage&, ExecutionTargetRegistry*, size_t) = nullptr;
         void (*default_construct_state_fn)(void*) = nullptr;
         void (*move_construct_state_fn)(void*, void*) = nullptr;
         void (*destroy_state_fn)(void*) = nullptr;
@@ -199,8 +199,8 @@ namespace iv {
         template<typename A>
         std::span<A const> resolve_exported_array_storage(std::string const& id) const;
         bool can_move_from(NodeStorage const& previous, size_t node_index) const;
-        void initialize(NodeStorage const* previous = nullptr, ExecutionTargets* execution_targets = nullptr);
-        void release(ExecutionTargets* execution_targets = nullptr);
+        void initialize(NodeStorage const* previous = nullptr, ExecutionTargetRegistry* execution_targets = nullptr, size_t executor_id = 0);
+        void release(ExecutionTargetRegistry* execution_targets = nullptr, size_t executor_id = 0);
     };
 
     template<typename Node>
@@ -275,9 +275,10 @@ namespace iv {
 
     public:
         ResourceContext const& resources;
-        ExecutionTargets* execution_targets = nullptr;
+        ExecutionTargetRegistrar execution_targets;
+        size_t executor_id;
 
-        explicit InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources, ExecutionTargets* execution_targets = nullptr);
+        explicit InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources, ExecutionTargetRegistry* execution_targets = nullptr, size_t executor_id = 0);
 
         template<typename Node2>
         InitializationContext(InitializationContext<Node2> const& ctx);
@@ -312,9 +313,10 @@ namespace iv {
 
     public:
         ResourceContext const& resources;
-        ExecutionTargets* execution_targets = nullptr;
+        ExecutionTargetRegistrar execution_targets;
+        size_t executor_id;
 
-        explicit ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources, ExecutionTargets* execution_targets = nullptr);
+        explicit ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources, ExecutionTargetRegistry* execution_targets = nullptr, size_t executor_id = 0);
 
         template<typename Node2>
         ReleaseContext(ReleaseContext<Node2> const& ctx);
@@ -338,7 +340,8 @@ namespace iv {
 
     public:
         ResourceContext const& resources;
-        ExecutionTargets* execution_targets = nullptr;
+        ExecutionTargetRegistrar execution_targets;
+        size_t executor_id;
 
         explicit MoveContext(
             NodeStorage& storage,
@@ -346,7 +349,8 @@ namespace iv {
             NodeStorage const& previous_storage,
             void* previous_state,
             ResourceContext const& resources,
-            ExecutionTargets* execution_targets = nullptr
+            ExecutionTargetRegistry* execution_targets = nullptr,
+            size_t executor_id = 0
         );
 
         template<typename Node2>
@@ -767,49 +771,49 @@ namespace iv {
         }
 
         if constexpr (requires(Node const& node, MoveContext<Node> ctx) { node.move(ctx); }) {
-            callbacks.move_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, NodeStorage const& previous_storage, ExecutionTargets* execution_targets) {
+            callbacks.move_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, NodeStorage const& previous_storage, ExecutionTargetRegistry* execution_targets, size_t executor_id) {
                 void* state = storage.state_ptr(node_index);
                 void* previous_state = previous_storage.state_ptr(node_index);
                 if constexpr (std::is_empty_v<Node>) {
                     (void) node_ptr;
                     Node node {};
-                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, execution_targets);
+                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, execution_targets, executor_id);
                     node.move(ctx);
                 } else {
                     auto const& node = *static_cast<Node const*>(node_ptr);
-                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, execution_targets);
+                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, execution_targets, executor_id);
                     node.move(ctx);
                 }
             };
         }
 
         if constexpr (requires(Node const& node, InitializationContext<Node> ctx) { node.initialize(ctx); }) {
-            callbacks.initialize_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, ExecutionTargets* execution_targets) {
+            callbacks.initialize_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, ExecutionTargetRegistry* execution_targets, size_t executor_id) {
                 void* state = storage.state_ptr(node_index);
                 if constexpr (std::is_empty_v<Node>) {
                     (void)node_ptr;
                     Node node {};
-                    InitializationContext<Node> ctx(storage, state, *storage.resources, execution_targets);
+                    InitializationContext<Node> ctx(storage, state, *storage.resources, execution_targets, executor_id);
                     node.initialize(ctx);
                 } else {
                     auto const& node = *static_cast<Node const*>(node_ptr);
-                    InitializationContext<Node> ctx(storage, state, *storage.resources, execution_targets);
+                    InitializationContext<Node> ctx(storage, state, *storage.resources, execution_targets, executor_id);
                     node.initialize(ctx);
                 }
             };
         }
 
         if constexpr (requires(Node const& node, ReleaseContext<Node> ctx) { node.release(ctx); }) {
-            callbacks.release_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, ExecutionTargets* execution_targets) {
+            callbacks.release_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, ExecutionTargetRegistry* execution_targets, size_t executor_id) {
                 void* state = storage.state_ptr(node_index);
                 if constexpr (std::is_empty_v<Node>) {
                     (void)node_ptr;
                     Node node {};
-                    ReleaseContext<Node> ctx(storage, state, *storage.resources, execution_targets);
+                    ReleaseContext<Node> ctx(storage, state, *storage.resources, execution_targets, executor_id);
                     node.release(ctx);
                 } else {
                     auto const& node = *static_cast<Node const*>(node_ptr);
-                    ReleaseContext<Node> ctx(storage, state, *storage.resources, execution_targets);
+                    ReleaseContext<Node> ctx(storage, state, *storage.resources, execution_targets, executor_id);
                     node.release(ctx);
                 }
             };
@@ -998,7 +1002,7 @@ namespace iv {
             next_region(*previous.layout, node_index, previous_index) == previous.layout->regions.size();
     }
 
-    inline void NodeStorage::initialize(NodeStorage const* previous, ExecutionTargets* execution_targets)
+    inline void NodeStorage::initialize(NodeStorage const* previous, ExecutionTargetRegistry* execution_targets, size_t executor_id)
     {
         if (!layout || !resources) {
             return;
@@ -1092,7 +1096,7 @@ namespace iv {
                 record.lifecycle.move_construct_state_fn != nullptr;
 
             if (previous && record.lifecycle.move_fn && can_move_from(*previous, node_index)) {
-                record.lifecycle.move_fn(record.node, node_index, *this, *previous, execution_targets);
+                record.lifecycle.move_fn(record.node, node_index, *this, *previous, execution_targets, executor_id);
                 auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
                 previous_initialized_nodes.erase(
                     std::remove(previous_initialized_nodes.begin(), previous_initialized_nodes.end(), node_index),
@@ -1103,9 +1107,9 @@ namespace iv {
                     auto const& previous_record = previous->layout->nodes[node_index];
                     if (previous_record.lifecycle.release_fn) {
                         if (moved_state) {
-                            previous_record.lifecycle.release_fn(previous_record.node, node_index, *this, execution_targets);
+                            previous_record.lifecycle.release_fn(previous_record.node, node_index, *this, execution_targets, executor_id);
                         } else {
-                            previous_record.lifecycle.release_fn(previous_record.node, node_index, const_cast<NodeStorage&>(*previous), execution_targets);
+                            previous_record.lifecycle.release_fn(previous_record.node, node_index, const_cast<NodeStorage&>(*previous), execution_targets, executor_id);
                         }
                     }
                     auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
@@ -1116,7 +1120,7 @@ namespace iv {
                 }
                 if (record.lifecycle.initialize_fn) {
                     try {
-                        record.lifecycle.initialize_fn(record.node, node_index, *this, execution_targets);
+                        record.lifecycle.initialize_fn(record.node, node_index, *this, execution_targets, executor_id);
                     } catch (std::exception const& e) {
                         throw std::runtime_error(
                             "node initialize failed at index " + std::to_string(node_index) + ": " + e.what()
@@ -1133,7 +1137,7 @@ namespace iv {
         }
     }
 
-    inline void NodeStorage::release(ExecutionTargets* execution_targets)
+    inline void NodeStorage::release(ExecutionTargetRegistry* execution_targets, size_t executor_id)
     {
         if (!layout || !resources) {
             return;
@@ -1143,19 +1147,20 @@ namespace iv {
             size_t const node_index = *it;
             auto const& record = layout->nodes[node_index];
             if (record.lifecycle.release_fn) {
-                record.lifecycle.release_fn(record.node, node_index, *this, execution_targets);
+                record.lifecycle.release_fn(record.node, node_index, *this, execution_targets, executor_id);
             }
         }
         initialized_nodes.clear();
     }
 
     template<typename Node>
-    inline InitializationContext<Node>::InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources_, ExecutionTargets* execution_targets_)
-    : _storage(&storage)
-    , _state(state)
-    , resources(resources_)
-    , execution_targets(execution_targets_)
-    {}
+    inline InitializationContext<Node>::InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources_, ExecutionTargetRegistry* execution_targets_, size_t executor_id_)
+      : _storage(&storage)
+      , _state(state)
+      , resources(resources_)
+      , execution_targets(execution_targets_, executor_id_)
+      , executor_id(executor_id_)
+      {}
 
     template<typename Node>
     template<typename Node2>
@@ -1164,6 +1169,7 @@ namespace iv {
     , _state(ctx._state)
     , resources(ctx.resources)
     , execution_targets(ctx.execution_targets)
+    , executor_id(ctx.executor_id)
     {}
 
     template<typename Node>
@@ -1181,12 +1187,13 @@ namespace iv {
     }
 
     template<typename Node>
-    inline ReleaseContext<Node>::ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources_, ExecutionTargets* execution_targets_)
-    : _storage(&storage)
-    , _state(state)
-    , resources(resources_)
-    , execution_targets(execution_targets_)
-    {}
+    inline ReleaseContext<Node>::ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources_, ExecutionTargetRegistry* execution_targets_, size_t executor_id_)
+      : _storage(&storage)
+      , _state(state)
+      , resources(resources_)
+      , execution_targets(execution_targets_, executor_id_)
+      , executor_id(executor_id_)
+      {}
 
     template<typename Node>
     template<typename Node2>
@@ -1195,6 +1202,7 @@ namespace iv {
     , _state(ctx._state)
     , resources(ctx.resources)
     , execution_targets(ctx.execution_targets)
+    , executor_id(ctx.executor_id)
     {}
 
     template<typename Node>
@@ -1211,15 +1219,17 @@ namespace iv {
         NodeStorage const& previous_storage,
         void* previous_state,
         ResourceContext const& resources_,
-        ExecutionTargets* execution_targets_
+        ExecutionTargetRegistry* execution_targets_,
+        size_t executor_id_
     )
-    : _storage(&storage)
-    , _state(state)
-    , _previous_storage(&previous_storage)
-    , _previous_state(previous_state)
-    , resources(resources_)
-    , execution_targets(execution_targets_)
-    {}
+      : _storage(&storage)
+      , _state(state)
+      , _previous_storage(&previous_storage)
+      , _previous_state(previous_state)
+      , resources(resources_)
+      , execution_targets(execution_targets_, executor_id_)
+      , executor_id(executor_id_)
+      {}
 
     template<typename Node>
     template<typename Node2>
@@ -1230,6 +1240,7 @@ namespace iv {
     , _previous_state(ctx._previous_state)
     , resources(ctx.resources)
     , execution_targets(ctx.execution_targets)
+    , executor_id(ctx.executor_id)
     {}
 
     template<typename Node>

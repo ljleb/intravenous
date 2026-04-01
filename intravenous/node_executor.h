@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <bit>
 #include <functional>
-#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -16,13 +15,21 @@
 
 namespace iv {
     class NodeExecutor {
+        struct PreparedState {
+            TypeErasedNode root;
+            NodeLayout layout;
+            NodeStorage storage;
+            size_t max_block_size = 0;
+        };
+
         std::vector<ModuleRef> _module_refs;
-        std::unique_ptr<TypeErasedNode> _root;
+        TypeErasedNode _root;
         ResourceContext _resources;
-        ExecutionTargets _execution_targets;
+        ExecutionTargetRegistry* _execution_target_registry = nullptr;
         NodeLayout _layout;
         NodeStorage _storage;
         size_t _max_block_size;
+        size_t _executor_id = 0;
         bool _shutdown_requested = false;
 
         void rebind_storage_metadata()
@@ -31,11 +38,22 @@ namespace iv {
             _storage.resources = &_resources;
         }
 
-        static size_t choose_block_size(TypeErasedNode const& root, ExecutionTargets const& execution_targets)
+        static void validate_root_interface(TypeErasedNode const& root)
         {
-            size_t block_size = std::min(root.max_block_size(), execution_targets.preferred_block_size_hint());
-            for (auto const& target : execution_targets.all()) {
+            if (get_num_inputs(root) != 0 || get_num_outputs(root) != 0) {
+                throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
+            }
+        }
+
+        static size_t choose_block_size(TypeErasedNode const& root, ExecutionTargetRegistry const& execution_target_registry, size_t executor_id)
+        {
+            size_t block_size = std::min(root.max_block_size(), execution_target_registry.preferred_block_size_hint());
+            execution_target_registry.for_each_target(executor_id, [&](auto const& target) {
                 block_size = std::min(block_size, target.preferred_block_size());
+            });
+            block_size = std::bit_floor(block_size);
+            if (block_size == 0) {
+                throw std::logic_error("NodeExecutor max block size must be non-zero");
             }
             validate_max_block_size(block_size, "NodeExecutor max block size must be a power of 2");
             return block_size;
@@ -51,12 +69,83 @@ namespace iv {
             return std::move(builder).build();
         }
 
+        static PreparedState prepare_state(
+            TypeErasedNode root,
+            ResourceContext const& resources,
+            ExecutionTargetRegistry& execution_target_registry,
+            size_t executor_id,
+            char const* operation,
+            bool initialize_storage = true
+        )
+        {
+            validate_root_interface(root);
+
+            PreparedState prepared;
+            prepared.root = std::move(root);
+            prepared.max_block_size = choose_block_size(prepared.root, execution_target_registry, executor_id);
+            try {
+                prepared.layout = make_layout(prepared.root, prepared.max_block_size);
+            } catch (std::exception const& e) {
+                throw std::runtime_error(std::string("failed to ") + operation + " node executor: make_layout: " + e.what());
+            } catch (...) {
+                throw std::runtime_error(std::string("failed to ") + operation + " node executor: make_layout");
+            }
+
+            try {
+                prepared.storage = prepared.layout.create_storage(resources);
+            } catch (std::exception const& e) {
+                throw std::runtime_error(std::string("failed to ") + operation + " node executor: create_storage: " + e.what());
+            } catch (...) {
+                throw std::runtime_error(std::string("failed to ") + operation + " node executor: create_storage");
+            }
+
+            if (initialize_storage) {
+                try {
+                    prepared.storage.initialize(nullptr, &execution_target_registry, executor_id);
+                } catch (std::exception const& e) {
+                    throw std::runtime_error(std::string("failed to ") + operation + " node executor: initialize_storage: " + e.what());
+                } catch (...) {
+                    throw std::runtime_error(std::string("failed to ") + operation + " node executor: initialize_storage");
+                }
+            }
+
+            return prepared;
+        }
+
+        void run_block(size_t index, size_t block_size)
+        {
+            _execution_target_registry->begin_block(_executor_id, index, block_size);
+
+            try {
+                _root.tick_block({
+                    TickContext<TypeErasedNode> {
+                        .inputs = {},
+                        .outputs = {},
+                        .buffer = _storage.buffer(),
+                    },
+                    index,
+                    block_size
+                });
+            } catch (std::exception const& e) {
+                _execution_target_registry->request_shutdown(_executor_id);
+                throw std::runtime_error(std::string("node executor tick failed: ") + e.what());
+            } catch (...) {
+                _execution_target_registry->request_shutdown(_executor_id);
+                throw std::runtime_error("node executor tick failed");
+            }
+
+            _execution_target_registry->end_block(_executor_id, index, block_size);
+        }
+
     public:
         ~NodeExecutor()
         {
             try {
-                _storage.release(&_execution_targets);
+                _storage.release(_execution_target_registry, _executor_id);
             } catch (...) {
+            }
+            if (_execution_target_registry) {
+                _execution_target_registry->unregister_executor(_executor_id);
             }
         }
 
@@ -64,12 +153,15 @@ namespace iv {
         : _module_refs(std::move(other._module_refs))
         , _root(std::move(other._root))
         , _resources(std::move(other._resources))
-        , _execution_targets(std::move(other._execution_targets))
+        , _execution_target_registry(other._execution_target_registry)
         , _layout(std::move(other._layout))
         , _storage(std::move(other._storage))
         , _max_block_size(other._max_block_size)
+        , _executor_id(other._executor_id)
         , _shutdown_requested(other._shutdown_requested)
         {
+            other._execution_target_registry = nullptr;
+            other._executor_id = 0;
             rebind_storage_metadata();
         }
 
@@ -80,18 +172,24 @@ namespace iv {
             }
 
             try {
-                _storage.release(&_execution_targets);
+                _storage.release(_execution_target_registry, _executor_id);
             } catch (...) {
+            }
+            if (_execution_target_registry) {
+                _execution_target_registry->unregister_executor(_executor_id);
             }
 
             _module_refs = std::move(other._module_refs);
             _root = std::move(other._root);
             _resources = std::move(other._resources);
-            _execution_targets = std::move(other._execution_targets);
+            _execution_target_registry = other._execution_target_registry;
             _layout = std::move(other._layout);
             _storage = std::move(other._storage);
             _max_block_size = other._max_block_size;
+            _executor_id = other._executor_id;
             _shutdown_requested = other._shutdown_requested;
+            other._execution_target_registry = nullptr;
+            other._executor_id = 0;
             rebind_storage_metadata();
             return *this;
         }
@@ -101,73 +199,52 @@ namespace iv {
         static NodeExecutor create(
             TypeErasedNode root,
             ResourceContext resources,
-            ExecutionTargets execution_targets,
+            ExecutionTargetRegistry& execution_target_registry,
+            size_t executor_id,
             std::vector<ModuleRef> module_refs = {}
         )
         {
-            if (get_num_inputs(root) != 0 || get_num_outputs(root) != 0) {
-                throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
-            }
-
-            auto root_ptr = std::make_unique<TypeErasedNode>(std::move(root));
-            size_t max_block_size = choose_block_size(*root_ptr, execution_targets);
-            NodeLayout layout;
+            execution_target_registry.register_executor(executor_id);
             try {
-                layout = make_layout(*root_ptr, max_block_size);
-            } catch (std::exception const& e) {
-                throw std::runtime_error(std::string("failed to create node executor: make_layout: ") + e.what());
-            } catch (...) {
-                throw std::runtime_error("failed to create node executor: make_layout");
-            }
+                auto prepared = prepare_state(std::move(root), resources, execution_target_registry, executor_id, "create");
+                execution_target_registry.validate_executor_block_size(executor_id, prepared.max_block_size);
 
-            NodeStorage storage;
-            try {
-                storage = layout.create_storage(resources);
-            } catch (std::exception const& e) {
-                throw std::runtime_error(std::string("failed to create node executor: create_storage: ") + e.what());
+                return NodeExecutor(
+                    std::move(prepared.root),
+                    std::move(module_refs),
+                    std::move(resources),
+                    execution_target_registry,
+                    std::move(prepared.layout),
+                    std::move(prepared.storage),
+                    prepared.max_block_size,
+                    executor_id
+                );
             } catch (...) {
-                throw std::runtime_error("failed to create node executor: create_storage");
+                execution_target_registry.unregister_executor(executor_id);
+                throw;
             }
-
-            try {
-                storage.initialize(nullptr, &execution_targets);
-            } catch (std::exception const& e) {
-                throw std::runtime_error(std::string("failed to create node executor: initialize_storage: ") + e.what());
-            } catch (...) {
-                throw std::runtime_error("failed to create node executor: initialize_storage");
-            }
-
-            return NodeExecutor(
-                std::move(root_ptr),
-                std::move(module_refs),
-                std::move(resources),
-                std::move(execution_targets),
-                std::move(layout),
-                std::move(storage),
-                max_block_size
-            );
         }
 
         NodeExecutor(
-            std::unique_ptr<TypeErasedNode> root,
+            TypeErasedNode root,
             std::vector<ModuleRef> module_refs,
             ResourceContext resources,
-            ExecutionTargets execution_targets,
+            ExecutionTargetRegistry& execution_target_registry,
             NodeLayout layout,
             NodeStorage storage,
-            size_t max_block_size
+            size_t max_block_size,
+            size_t executor_id
         ) :
             _module_refs(std::move(module_refs)),
             _root(std::move(root)),
             _resources(std::move(resources)),
-            _execution_targets(std::move(execution_targets)),
+            _execution_target_registry(&execution_target_registry),
             _layout(std::move(layout)),
             _storage(std::move(storage)),
-            _max_block_size(max_block_size)
+            _max_block_size(max_block_size),
+            _executor_id(executor_id)
         {
-            if (get_num_inputs(*_root) != 0 || get_num_outputs(*_root) != 0) {
-                throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
-            }
+            validate_root_interface(_root);
             rebind_storage_metadata();
         }
 
@@ -181,85 +258,43 @@ namespace iv {
                 throw std::logic_error("NodeExecutor block size exceeds max block size");
             }
 
-            auto targets = _execution_targets.all();
-            for (auto const& target : targets) {
-                target.begin_block(index, block_size);
-            }
-
-            try {
-                _root->tick_block({
-                    TickContext<TypeErasedNode> {
-                        .inputs = {},
-                        .outputs = {},
-                        .buffer = _storage.buffer(),
-                    },
-                    index,
-                    block_size
-                });
-            } catch (std::exception const& e) {
-                throw std::runtime_error(std::string("node executor tick failed: ") + e.what());
-            } catch (...) {
-                throw std::runtime_error("node executor tick failed");
-            }
-
-            for (auto const& target : targets) {
-                target.end_block(index, block_size);
-            }
+            run_block(index, block_size);
         }
 
         void request_shutdown()
         {
             _shutdown_requested = true;
-            _execution_targets.request_shutdown();
+            if (_execution_target_registry) {
+                _execution_target_registry->request_shutdown(_executor_id);
+            }
         }
 
         bool is_shutdown_requested() const
         {
-            return _shutdown_requested || _execution_targets.is_shutdown_requested();
+            return _shutdown_requested || (_execution_target_registry && _execution_target_registry->is_shutdown_requested(_executor_id));
         }
 
         void reload(TypeErasedNode root, std::vector<ModuleRef> module_refs = {})
         {
-            if (get_num_inputs(root) != 0 || get_num_outputs(root) != 0) {
-                throw std::logic_error("NodeExecutor root must have 0 public inputs and outputs");
-            }
+            auto prepared = prepare_state(std::move(root), _resources, *_execution_target_registry, _executor_id, "reload", false);
+            _execution_target_registry->validate_executor_block_size(_executor_id, prepared.max_block_size);
 
-            auto next_root = std::make_unique<TypeErasedNode>(std::move(root));
-            size_t next_max_block_size = choose_block_size(*next_root, _execution_targets);
-            NodeLayout next_layout;
+            _execution_target_registry->clear_audio_state_for_executor(_executor_id);
+            _storage.release(_execution_target_registry, _executor_id);
             try {
-                next_layout = make_layout(*next_root, next_max_block_size);
-            } catch (std::exception const& e) {
-                throw std::runtime_error(std::string("failed to reload node executor: make_layout: ") + e.what());
-            } catch (...) {
-                throw std::runtime_error("failed to reload node executor: make_layout");
-            }
-
-            NodeStorage next_storage;
-            try {
-                next_storage = next_layout.create_storage(_resources);
-            } catch (std::exception const& e) {
-                throw std::runtime_error(std::string("failed to reload node executor: create_storage: ") + e.what());
-            } catch (...) {
-                throw std::runtime_error("failed to reload node executor: create_storage");
-            }
-
-            try {
-                next_storage.initialize(nullptr, &_execution_targets);
+                prepared.storage.initialize(nullptr, _execution_target_registry, _executor_id);
             } catch (std::exception const& e) {
                 throw std::runtime_error(std::string("failed to reload node executor: initialize_storage: ") + e.what());
             } catch (...) {
                 throw std::runtime_error("failed to reload node executor: initialize_storage");
             }
 
-            _storage.release(&_execution_targets);
-
-            _root = std::move(next_root);
+            _root = std::move(prepared.root);
             _module_refs = std::move(module_refs);
-            _layout = std::move(next_layout);
-            _storage = std::move(next_storage);
+            _layout = std::move(prepared.layout);
+            _storage = std::move(prepared.storage);
             rebind_storage_metadata();
-            _max_block_size = next_max_block_size;
+            _max_block_size = prepared.max_block_size;
         }
 
         void reload(ModuleLoader::LoadedGraph loaded_graph)
@@ -269,41 +304,13 @@ namespace iv {
 
         void execute(std::function<std::optional<ModuleLoader::LoadedGraph>()> poll_reload = {})
         {
-            size_t global_index = 0;
             while (!is_shutdown_requested()) {
-                auto targets = _execution_targets.all();
-                for (auto const& target : targets) {
-                    target.begin_block(global_index, _max_block_size);
+                auto work_item = _execution_target_registry->wait_for_work(_executor_id, _max_block_size);
+                if (!work_item.has_value()) {
+                    break;
                 }
 
-                size_t remaining = _execution_targets.active_block_frames_or(_max_block_size);
-                size_t block_index = global_index;
-                while (remaining > 0) {
-                    size_t const chunk_size = std::min(_max_block_size, std::bit_floor(remaining));
-
-                    try {
-                        _root->tick_block({
-                            TickContext<TypeErasedNode> {
-                                .inputs = {},
-                                .outputs = {},
-                                .buffer = _storage.buffer(),
-                            },
-                            block_index,
-                            chunk_size
-                        });
-                    } catch (std::exception const& e) {
-                        throw std::runtime_error(std::string("node executor tick failed: ") + e.what());
-                    } catch (...) {
-                        throw std::runtime_error("node executor tick failed");
-                    }
-
-                    for (auto const& target : targets) {
-                        target.end_block(block_index, chunk_size);
-                    }
-
-                    block_index += chunk_size;
-                    remaining -= chunk_size;
-                }
+                run_block(work_item->first, work_item->second);
 
                 if (poll_reload) {
                     auto next_reload = poll_reload();
@@ -311,7 +318,6 @@ namespace iv {
                         reload(std::move(*next_reload));
                     }
                 }
-                global_index = block_index;
             }
         }
 
@@ -327,12 +333,12 @@ namespace iv {
 
         TypeErasedNode const& root() const
         {
-            return *_root;
+            return _root;
         }
 
-        ExecutionTargets& execution_targets()
+        ExecutionTargetRegistry& execution_target_registry()
         {
-            return _execution_targets;
+            return *_execution_target_registry;
         }
 
         NodeLayout const& layout() const

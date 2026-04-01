@@ -1,9 +1,9 @@
 #include "module_test_utils.h"
 
-int main()
-{
-    iv::test::install_crash_handlers();
+#include <gtest/gtest.h>
 
+TEST(ModuleLoaderReload, OldAndNewProcessorsRetainModuleRefs)
+{
     auto const repo = iv::test::repo_root();
     auto const fixtures = iv::test::test_modules_root();
     auto const runtime_root = iv::test::runtime_modules_root();
@@ -46,7 +46,7 @@ int main()
     auto source = iv::test::read_text(module_cpp);
     auto needle = std::string("warper[\"anti_aliased\"] * amplitude");
     auto replacement = std::string("warper[\"anti_aliased\"] * amplitude/* reload marker*/");
-    iv::test::require(source.contains(needle), "reload fixture did not contain expected marker");
+    ASSERT_NE(source.find(needle), std::string::npos);
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text(module_cpp, source);
 
@@ -70,11 +70,7 @@ int main()
         )
     );
     iv::test::run_processor_ticks(*processor_b);
-    iv::test::require(processor_a->num_module_refs() != 0, "old processor should still own module refs");
-    iv::test::require(processor_b->num_module_refs() != 0, "new processor should own module refs");
-    iv::test::require(dependency_count >= 2, "dependency graph should include nested module");
-    processor_b.reset();
-    processor_a.reset();
-
-    return 0;
+    EXPECT_NE(processor_a->num_module_refs(), 0u);
+    EXPECT_NE(processor_b->num_module_refs(), 0u);
+    EXPECT_GE(dependency_count, 2u);
 }

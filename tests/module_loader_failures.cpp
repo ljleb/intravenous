@@ -11,7 +11,7 @@ int main()
     std::filesystem::create_directories(runtime_root);
 
     {
-        iv::AudioDevice audio_device({}, false);
+        iv::test::FakeAudioDevice audio_device;
         auto loader = iv::test::make_loader();
         auto missing_dir = runtime_root / "missing_entry";
         std::filesystem::create_directories(missing_dir);
@@ -24,7 +24,7 @@ int main()
     }
 
     {
-        iv::AudioDevice audio_device({}, false);
+        iv::test::FakeAudioDevice audio_device;
         auto loader = iv::test::make_loader();
 
         iv::test::expect_failure(
@@ -35,7 +35,7 @@ int main()
     }
 
     {
-        iv::AudioDevice audio_device({}, false);
+        iv::test::FakeAudioDevice audio_device;
         auto loader = iv::test::make_loader();
 
         iv::test::expect_failure(
@@ -46,7 +46,7 @@ int main()
     }
 
     {
-        iv::AudioDevice audio_device({}, false);
+        iv::test::FakeAudioDevice audio_device;
         auto loader = iv::test::make_loader();
 
         iv::test::expect_failure(
@@ -57,7 +57,7 @@ int main()
     }
 
     {
-        iv::AudioDevice audio_device({}, false);
+        iv::test::FakeAudioDevice audio_device;
         auto loader = iv::test::make_loader({ fixtures, iv::test::duplicate_modules_root() });
 
         iv::test::expect_failure(

@@ -128,6 +128,16 @@ namespace {
             .stddev_us = std::sqrt(sq_sum / static_cast<double>(sorted.size())),
         };
     }
+
+    void request_tick_and_drain(iv::test::FakeAudioDevice& audio_device, iv::NodeExecutor& executor, size_t index, size_t block_size)
+    {
+        audio_device.device().begin_requested_block(index, block_size);
+        executor.tick_block(index, block_size);
+        if (!audio_device.device().wait_until_block_ready()) {
+            throw std::runtime_error("benchmark device block did not become ready");
+        }
+        audio_device.device().finish_requested_block();
+    }
 }
 
 int main(int argc, char** argv)
@@ -137,18 +147,18 @@ int main(int argc, char** argv)
     try {
         Options const options = parse_args(argc, argv);
 
-        iv::AudioDevice audio_device(
+        iv::test::FakeAudioDevice audio_device(
             iv::RenderConfig{
                 .sample_rate = 48000,
                 .num_channels = 2,
                 .max_block_frames = 4096,
                 .preferred_block_size = 256,
-            },
-            false
+            }
         );
 
         iv::ModuleLoader loader = iv::test::make_loader();
-        iv::NodeExecutor executor = iv::test::make_executor(loader, audio_device, options.module_path);
+        iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
+        iv::NodeExecutor executor = iv::test::make_executor(loader, audio_device, execution_targets, 1, options.module_path);
 
         size_t const block_size = options.block_size == 0 ? executor.max_block_size() : options.block_size;
         iv::validate_block_size(block_size, "benchmark block size must be a power of 2");
@@ -161,7 +171,7 @@ int main(int argc, char** argv)
 
         size_t index = 0;
         for (size_t i = 0; i < options.warmup_blocks; ++i) {
-            executor.tick_block(index, block_size);
+            request_tick_and_drain(audio_device, executor, index, block_size);
             index += block_size;
         }
 
@@ -172,7 +182,7 @@ int main(int argc, char** argv)
         auto const measure_begin = clock::now();
         while (true) {
             auto const tick_begin = clock::now();
-            executor.tick_block(index, block_size);
+            request_tick_and_drain(audio_device, executor, index, block_size);
             auto const tick_end = clock::now();
             index += block_size;
 
