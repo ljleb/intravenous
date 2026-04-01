@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dsl.h"
+#include "node_lifecycle.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -52,44 +53,29 @@ namespace iv {
         size_t preferred_audio_output_streams = 1;
     };
 
-    struct JuceVstProbeRequest {
-        std::string resource_id;
-        JuceVstPluginConfig plugin;
-    };
-
     struct JuceVstWrapperSpec {
-        std::string resource_id;
         JuceVstPluginConfig plugin;
         JuceVstSchema schema;
     };
 
-    JuceVstWrapperSpec probe_juce_vst(JuceVstProbeRequest request);
+    JuceVstWrapperSpec probe_juce_vst(JuceVstPluginConfig request);
 
     namespace juce {
         inline NodeRef vst(
             GraphBuilder& g,
-            std::string resource_id,
             std::filesystem::path plugin_path,
             std::string plugin_identifier = {},
             size_t preferred_audio_input_streams = 1,
             size_t preferred_audio_output_streams = 1
         )
         {
-            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstProbeRequest{
-                .resource_id = std::move(resource_id),
-                .plugin = JuceVstPluginConfig{
-                    .plugin_path = std::move(plugin_path),
-                    .plugin_identifier = std::move(plugin_identifier),
-                    .preferred_audio_input_streams = preferred_audio_input_streams,
-                    .preferred_audio_output_streams = preferred_audio_output_streams,
-                },
+            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstPluginConfig{
+                .plugin_path = std::move(plugin_path),
+                .plugin_identifier = std::move(plugin_identifier),
+                .preferred_audio_input_streams = preferred_audio_input_streams,
+                .preferred_audio_output_streams = preferred_audio_output_streams,
             }));
         }
-    }
-
-    namespace juce_details {
-        std::string make_juce_vst_runtime_resource_id(std::string_view resource_id);
-        std::string make_juce_vst_spec_buffer_id(std::string_view resource_id);
     }
 
     class JuceVstWrapper {
@@ -97,7 +83,7 @@ namespace iv {
 
     public:
         struct State {
-            void** runtime_slot = nullptr;
+            UniqueResource plugin_instance { nullptr, +[](void*) {} };
         };
 
         explicit JuceVstWrapper(JuceVstWrapperSpec spec) :
@@ -134,20 +120,13 @@ namespace iv {
             return outputs;
         }
 
-        template<class Allocator>
-        void init_buffer(Allocator& allocator, InitBufferContext& context) const
+        void initialize(InitializationContext<JuceVstWrapper> const& ctx) const
         {
-            State& state = allocator.template new_object<State>();
-            auto spec_slot = context.template register_init_buffer<JuceVstWrapperSpec>(
-                juce_details::make_juce_vst_spec_buffer_id(_spec->resource_id),
-                1
-            );
-            spec_slot[0] = *_spec;
-            auto slots = context.template use_tick_buffer<void*>(juce_details::make_juce_vst_runtime_resource_id(_spec->resource_id));
-            allocator.assign(state.runtime_slot, slots.data());
+            auto& state = ctx.state();
+            state.plugin_instance = ctx.resources.vst.create(*_spec);
         }
 
-        void tick_block(BlockTickState const& state) const;
+        void tick_block(TickBlockContext<JuceVstWrapper> const& ctx) const;
     };
 #endif
 }

@@ -27,12 +27,16 @@ int main()
     std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.noisy_saw_voice", voice_dst));
     std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst));
 
-    iv::System system({}, false, false);
+    iv::test::FakeAudioDevice audio_device;
     iv::ModuleLoader loader(iv::test::repo_root(), { runtime_root });
 
     {
-        auto graph = loader.load_root(project_dst, system);
-        system.activate_root(graph.sink_count != 0);
+        auto graph = loader.load_root(
+            project_dst,
+            iv::test::module_render_config(audio_device),
+            &audio_device.sample_period()
+        );
+        (void)graph;
     }
 
     auto const project_workspace = iv::test::runtime_module_workspace("iv.test.noisy_saw_project", project_dst);
@@ -60,8 +64,12 @@ int main()
     iv::test::write_text(project_dst / "module.cpp", project_source);
 
     {
-        auto graph = loader.load_root(project_dst, system);
-        system.activate_root(graph.sink_count != 0);
+        auto graph = loader.load_root(
+            project_dst,
+            iv::test::module_render_config(audio_device),
+            &audio_device.sample_period()
+        );
+        (void)graph;
     }
 
     iv::test::require(iv::test::write_time(project_cache) == project_cache_before, "source edit should not reconfigure root module");
@@ -79,16 +87,24 @@ int main()
     auto const voice_cache_mid = iv::test::write_time(voice_cache);
 
     {
-        auto graph = loader.load_root(project_dst, system);
-        system.activate_root(graph.sink_count != 0);
+        auto graph = loader.load_root(
+            project_dst,
+            iv::test::module_render_config(audio_device),
+            &audio_device.sample_period()
+        );
+        (void)graph;
     }
 
     iv::test::require(iv::test::write_time(project_cache) == project_cache_mid, "nested source edit should not reconfigure root module");
     iv::test::require(iv::test::write_time(voice_cache) == voice_cache_mid, "nested source edit should not reconfigure dependency module");
 
     {
-        auto graph = loader.load_root(local_dst, system);
-        system.activate_root(graph.sink_count != 0);
+        auto graph = loader.load_root(
+            local_dst,
+            iv::test::module_render_config(audio_device),
+            &audio_device.sample_period()
+        );
+        (void)graph;
     }
 
     auto const local_configure_signature = local_workspace / "configure.signature";
@@ -100,8 +116,12 @@ int main()
     iv::test::write_text(local_dst / "CMakeLists.txt", local_cmake);
 
     {
-        auto graph = loader.load_root(local_dst, system);
-        system.activate_root(graph.sink_count != 0);
+        auto graph = loader.load_root(
+            local_dst,
+            iv::test::module_render_config(audio_device),
+            &audio_device.sample_period()
+        );
+        (void)graph;
     }
 
     iv::test::require(
@@ -124,8 +144,12 @@ int main()
 #endif
     {
         iv::ModuleLoader fallback_loader(iv::test::repo_root(), { runtime_root });
-        auto graph = fallback_loader.load_root(local_dst, system);
-        system.activate_root(graph.sink_count != 0);
+        auto graph = fallback_loader.load_root(
+            local_dst,
+            iv::test::module_render_config(audio_device),
+            &audio_device.sample_period()
+        );
+        (void)graph;
     }
     auto fallback_generator = iv::test::read_text(local_workspace / "generator.txt");
     iv::test::require(fallback_generator != "Ninja", "ninja disable flag should force non-ninja generator");

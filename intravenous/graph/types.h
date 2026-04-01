@@ -1,0 +1,78 @@
+#pragma once
+
+#include "../ports.h"
+
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <unordered_map>
+#include <vector>
+
+namespace iv {
+    struct PortId {
+        size_t node;
+        size_t port;
+
+        PortId(size_t node = 0, size_t port = 0) :
+            node(node), port(port)
+        {}
+
+        bool operator==(PortId const&) const = default;
+    };
+
+    struct GraphEdge {
+        PortId source, target;
+
+        GraphEdge(PortId source = {}, PortId target = {}) :
+            source(source), target(target)
+        {}
+
+        bool operator==(GraphEdge const&) const = default;
+    };
+
+    struct DetachedInfo {
+        size_t detach_id = 0;
+        PortId original_source;
+        size_t writer_node = std::numeric_limits<size_t>::max();
+        PortId reader_output;
+        size_t loop_block_size = 1;
+
+        bool operator==(DetachedInfo const&) const = default;
+    };
+
+    inline constexpr size_t GRAPH_ID = std::numeric_limits<size_t>::max();
+
+    struct GraphRegion {
+        std::vector<size_t> nodes;
+        std::vector<size_t> execution_order;
+        size_t max_block_size;
+    };
+
+    struct GraphExecutionPlan {
+        std::vector<GraphRegion> regions;
+        std::vector<size_t> node_to_region;
+        std::vector<size_t> region_order;
+    };
+}
+
+template<>
+struct std::hash<iv::PortId>
+{
+    std::hash<size_t> size_t_hash;
+
+    std::size_t operator()(const iv::PortId& p) const
+    {
+        return size_t_hash(p.node) ^ (~size_t_hash(p.port) - 1);
+    }
+};
+
+template<>
+struct std::hash<iv::GraphEdge>
+{
+    std::hash<iv::PortId> port_id_hash;
+
+    std::size_t operator()(const iv::GraphEdge& e) const
+    {
+        return port_id_hash(e.source) ^ (~port_id_hash(e.target) - 1);
+    }
+};

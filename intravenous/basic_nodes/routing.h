@@ -1,16 +1,16 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 
 #include <array>
 #include <string>
 #include <vector>
 
 namespace iv {
-    struct BufferId {
+    struct DetachArrayId {
         size_t id;
 
-        BufferId(size_t id): id(id) {}
+        DetachArrayId(size_t id): id(id) {}
 
         operator std::string() const {
             return "detach:" + std::to_string(id);
@@ -40,7 +40,7 @@ namespace iv {
             return _num_outputs;
         }
 
-        void tick(TickState const& state)
+        void tick(TickSampleContext<Broadcast> const& state) const
         {
             Sample sample = state.inputs[0].get();
             for (auto& out : state.outputs) {
@@ -50,11 +50,11 @@ namespace iv {
     };
 
     struct DetachWriterNode {
-        BufferId id;
+        DetachArrayId id;
         size_t loop_block_size = 1;
 
         struct State {
-            std::span<Sample> slot;
+            std::span<Sample> samples;
         };
 
         auto inputs() const
@@ -62,45 +62,39 @@ namespace iv {
             return std::array<InputConfig, 1>{};
         }
 
-        template<class Alloc>
-        void init_buffer(Alloc& alloc, InitBufferContext& ctx) const
-        {
-            State& st = alloc.template new_object<State>();
-            auto span = alloc.template new_array<Sample>(ctx.max_block_size);
-            alloc.fill_n(span, Sample{ 0 });
-            ctx.register_tick_buffer(id, span);
-            alloc.assign(st.slot, span);
-        }
-
         size_t max_block_size() const
         {
             return loop_block_size;
         }
 
-        void tick(TickState const& ts) const
+        void declare(DeclarationContext<DetachWriterNode> const& ctx) const
         {
-            auto& st = ts.get_state<State>();
-            size_t const slot_index = ts.index & (st.slot.size() - 1);
-            Sample const value = ts.inputs[0].get();
-            st.slot[slot_index] = value;
+            auto const& state = ctx.state();
+            ctx.local_array(state.samples, ctx.max_block_size());
+            ctx.export_array(id, state.samples);
         }
 
-        void tick_block(BlockTickState const& ts) const
+        void initialize(InitializationContext<DetachWriterNode> const& ctx) const
         {
-            auto& st = ts.get_state<State>();
-            auto block = ts.inputs[0].get_block(ts.block_size);
-            for (size_t sample = 0; sample < ts.block_size; ++sample) {
-                st.slot[(ts.index + sample) & (st.slot.size() - 1)] = block[sample];
-            }
+            auto& state = ctx.state();
+            std::ranges::fill(state.samples, Sample{});
+        }
+
+        void tick_block(TickBlockContext<DetachWriterNode> const& ctx) const
+        {
+            auto& state = ctx.state();
+            auto const& src = ctx.inputs[0].get_block(ctx.block_size);
+            auto const& dst = make_block_view(state.samples, ctx.index & (state.samples.size() - 1), ctx.block_size);
+            src.copy_to(dst);
         }
     };
 
     struct DetachReaderNode {
-        BufferId id;
+        DetachArrayId id;
         size_t loop_block_size = 1;
 
         struct State {
-            std::span<Sample> slot;
+            std::span<Sample> samples;
         };
 
         auto outputs() const
@@ -108,37 +102,30 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        template<class Alloc>
-        void init_buffer(Alloc& alloc, InitBufferContext& ctx) const
-        {
-            State& st = alloc.template new_object<State>();
-            auto span = ctx.template use_tick_buffer<Sample>(id);
-            alloc.assign(st.slot, span);
-        }
-
         size_t max_block_size() const
         {
             return loop_block_size;
         }
 
-        void tick(TickState const& ts) const
+        void declare(DeclarationContext<DetachReaderNode> const& ctx) const
         {
-            auto& st = ts.get_state<State>();
-            size_t const slot_index = (ts.index + st.slot.size() - loop_block_size) & (st.slot.size() - 1);
-            Sample const value = st.slot[slot_index];
-            ts.outputs[0].push(value);
+            auto const& state = ctx.state();
+            ctx.import_array(id, state.samples);
         }
 
-        void tick_block(BlockTickState const& ts) const
+        void tick_block(TickBlockContext<DetachReaderNode> const& ctx) const
         {
-            auto& st = ts.get_state<State>();
-            std::vector<Sample> block(ts.block_size);
-            for (size_t sample = 0; sample < ts.block_size; ++sample) {
-                block[sample] = st.slot[
-                    (ts.index + sample + st.slot.size() - loop_block_size) & (st.slot.size() - 1)
-                ];
-            }
-            ts.outputs[0].push_block(block);
+            auto& state = ctx.state();
+            auto const& samples = state.samples;
+            auto const n = samples.size();
+
+            auto const total = ctx.block_size;
+            auto const start = (ctx.index + n - loop_block_size) & (n - 1);
+            BlockView<Sample const> const samples_block {
+                std::span<Sample const>(samples.data() + start, std::min(total, n - start)),
+                std::span<Sample const>(samples.data(), total - std::min(total, n - start)),
+            };
+            ctx.outputs[0].push_block(samples_block);
         }
     };
 
@@ -148,7 +135,7 @@ namespace iv {
             return std::array<InputConfig, 1>{};
         }
 
-        void tick(TickState const&) const
+        void tick(TickSampleContext<DummySink> const&) const
         {}
     };
 }

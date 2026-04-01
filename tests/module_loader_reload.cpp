@@ -17,13 +17,27 @@ int main()
     iv::test::copy_directory(reload_src, reload_dst);
     iv::test::copy_directory(voice_src, voice_dst);
 
-    iv::System system({}, false, false);
+    iv::test::FakeAudioDevice audio_device;
     iv::ModuleLoader loader(repo, { runtime_root });
 
-    auto graph_a = loader.load_root(reload_dst, system);
-    system.activate_root(graph_a.sink_count != 0);
-    auto processor_a = std::make_unique<iv::NodeProcessor>(
-        system.make_processor(std::move(graph_a.root), std::move(graph_a.module_refs))
+    auto graph_a = loader.load_root(
+        reload_dst,
+        iv::ModuleRenderConfig{
+            .sample_rate = audio_device.config().sample_rate,
+            .num_channels = audio_device.config().num_channels,
+            .max_block_frames = audio_device.config().max_block_frames,
+        },
+        &audio_device.sample_period()
+    );
+    iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
+    auto processor_a = std::make_unique<iv::NodeExecutor>(
+        iv::NodeExecutor::create(
+            std::move(graph_a.root),
+            iv::test::make_resource_context(audio_device),
+            execution_targets,
+            1,
+            std::move(graph_a.module_refs)
+        )
     );
     iv::test::run_processor_ticks(*processor_a);
 
@@ -36,16 +50,31 @@ int main()
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text(module_cpp, source);
 
-    auto graph_b = loader.load_root(reload_dst, system);
+    auto graph_b = loader.load_root(
+        reload_dst,
+        iv::ModuleRenderConfig{
+            .sample_rate = audio_device.config().sample_rate,
+            .num_channels = audio_device.config().num_channels,
+            .max_block_frames = audio_device.config().max_block_frames,
+        },
+        &audio_device.sample_period()
+    );
     auto dependency_count = graph_b.dependencies.size();
-    system.activate_root(graph_b.sink_count != 0);
-    auto processor_b = std::make_unique<iv::NodeProcessor>(
-        system.make_processor(std::move(graph_b.root), std::move(graph_b.module_refs))
+    auto processor_b = std::make_unique<iv::NodeExecutor>(
+        iv::NodeExecutor::create(
+            std::move(graph_b.root),
+            iv::test::make_resource_context(audio_device),
+            execution_targets,
+            2,
+            std::move(graph_b.module_refs)
+        )
     );
     iv::test::run_processor_ticks(*processor_b);
     iv::test::require(processor_a->num_module_refs() != 0, "old processor should still own module refs");
     iv::test::require(processor_b->num_module_refs() != 0, "new processor should own module refs");
     iv::test::require(dependency_count >= 2, "dependency graph should include nested module");
+    processor_b.reset();
+    processor_a.reset();
 
     return 0;
 }

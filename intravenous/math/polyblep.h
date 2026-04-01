@@ -1,5 +1,5 @@
 #pragma once
-#include "node.h"
+#include "../sample.h"
 #include "compat.h"
 #include <cmath>
 

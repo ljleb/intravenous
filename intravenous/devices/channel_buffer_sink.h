@@ -1,14 +1,15 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 
 #include <array>
+#include <filesystem>
 #include <string>
-#include <utility>
 
 namespace iv {
-    struct SharedAccumulatingSink {
-        std::string resource_id;
+    struct AudioDeviceSink {
+        size_t device_id = 0;
+        size_t channel = 0;
 
         struct State {
             std::span<Sample> buffer;
@@ -21,22 +22,120 @@ namespace iv {
             };
         }
 
-        template<class Allocator>
-        void init_buffer(Allocator& alloc, InitBufferContext& context) const
+        void declare(DeclarationContext<AudioDeviceSink> const& ctx) const
         {
-            State& state = alloc.template new_object<State>();
-            auto buffer = context.template use_tick_buffer<Sample>(resource_id);
-            alloc.assign(state.buffer, buffer);
+            auto const& state = ctx.state();
+            ctx.local_array(state.buffer, ctx.max_block_size());
         }
 
-        void tick(TickState const& state) const
+        void initialize(InitializationContext<AudioDeviceSink> const& ctx) const
         {
-            auto& sink_state = state.get_state<State>();
+            if (!ctx.execution_targets) {
+                return;
+            }
+
+            auto& state = ctx.state();
+            auto& target = ctx.execution_targets.audio_device(device_id, channel);
+            target.register_sink(channel, state.buffer);
+        }
+
+        void move(MoveContext<AudioDeviceSink> const& ctx) const
+        {
+            if (!ctx.execution_targets) {
+                return;
+            }
+
+            auto& state = ctx.state();
+            auto& previous = ctx.previous_state();
+            auto& target = ctx.execution_targets.audio_device(device_id, channel);
+            target.update_sink(channel, previous.buffer, state.buffer);
+        }
+
+        void release(ReleaseContext<AudioDeviceSink> const& ctx) const
+        {
+            if (!ctx.execution_targets) {
+                return;
+            }
+
+            auto& state = ctx.state();
+            auto& target = ctx.execution_targets.audio_device(device_id, channel);
+            target.unregister_sink(channel, state.buffer);
+        }
+
+        void tick(TickSampleContext<AudioDeviceSink> const& ctx) const
+        {
+            auto& sink_state = ctx.state();
             if (sink_state.buffer.empty()) {
                 return;
             }
 
-            sink_state.buffer[state.index & (sink_state.buffer.size() - 1)] += state.inputs[0].get();
+            sink_state.buffer[ctx.index & (sink_state.buffer.size() - 1)] += ctx.inputs[0].get();
+        }
+    };
+
+    struct FileSink {
+        std::filesystem::path path;
+        size_t channel = 0;
+
+        struct State {
+            std::span<Sample> buffer;
+        };
+
+        auto inputs() const
+        {
+            return std::array{
+                InputConfig{ "in" }
+            };
+        }
+
+        void declare(DeclarationContext<FileSink> const& ctx) const
+        {
+            auto const& state = ctx.state();
+            ctx.local_array(state.buffer, ctx.max_block_size());
+        }
+
+        void initialize(InitializationContext<FileSink> const& ctx) const
+        {
+            if (!ctx.execution_targets) {
+                return;
+            }
+
+            auto& state = ctx.state();
+            auto& target = ctx.execution_targets.file(path, channel);
+            target.register_sink(channel, state.buffer);
+        }
+
+        void move(MoveContext<FileSink> const& ctx) const
+        {
+            if (!ctx.execution_targets) {
+                return;
+            }
+
+            auto& state = ctx.state();
+            auto& previous = ctx.previous_state();
+            auto& target = ctx.execution_targets.file(path, channel);
+            target.update_sink(channel, previous.buffer, state.buffer);
+        }
+
+        void release(ReleaseContext<FileSink> const& ctx) const
+        {
+            if (!ctx.execution_targets) {
+                return;
+            }
+
+            auto& state = ctx.state();
+            auto& target = ctx.execution_targets.file(path, channel);
+            target.unregister_sink(channel, state.buffer);
+        }
+
+        void tick(TickSampleContext<FileSink> const& ctx) const
+        {
+            auto& sink_state = ctx.state();
+            if (sink_state.buffer.empty()) {
+                return;
+            }
+
+            sink_state.buffer[ctx.index & (sink_state.buffer.size() - 1)] += ctx.inputs[0].get();
         }
     };
 }

@@ -7,25 +7,31 @@ int main()
     auto const fixtures = iv::test::test_modules_root();
 
     {
-        iv::System system({}, false, false);
+        iv::test::FakeAudioDevice audio_device;
         auto loader = iv::test::make_loader();
-        iv::NodeProcessor processor = iv::test::make_processor(
+        iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
+        iv::NodeExecutor executor = iv::test::make_executor(
             loader,
-            system,
+            audio_device,
+            execution_targets,
+            1,
             fixtures / "noisy_saw_project" / "module.cpp"
         );
-        iv::test::run_processor_ticks(processor);
+        iv::test::run_processor_ticks(executor);
     }
 
     {
-        iv::System system({}, false, false);
+        iv::test::FakeAudioDevice audio_device;
         auto loader = iv::test::make_loader();
-        iv::NodeProcessor processor = iv::test::make_processor(
+        iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
+        iv::NodeExecutor executor = iv::test::make_executor(
             loader,
-            system,
+            audio_device,
+            execution_targets,
+            1,
             fixtures / "local_cmake"
         );
-        iv::test::run_processor_ticks(processor);
+        iv::test::run_processor_ticks(executor);
     }
 
     {
@@ -34,14 +40,17 @@ int main()
         iv::test::copy_directory(fixtures / "noisy_saw_project", moved_root / "project");
         iv::test::copy_directory(fixtures / "noisy_saw_voice", moved_root / "voice");
 
-        iv::System system({}, false, false);
+        iv::test::FakeAudioDevice audio_device;
         auto loader = iv::test::make_loader({ moved_root });
-        iv::NodeProcessor processor = iv::test::make_processor(
+        iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
+        iv::NodeExecutor executor = iv::test::make_executor(
             loader,
-            system,
+            audio_device,
+            execution_targets,
+            1,
             moved_root / "project"
         );
-        iv::test::run_processor_ticks(processor);
+        iv::test::run_processor_ticks(executor);
     }
 
     return 0;

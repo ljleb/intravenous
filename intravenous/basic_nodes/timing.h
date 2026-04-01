@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node.h"
+#include "node_lifecycle.h"
 #include <array>
 
 namespace iv {
@@ -8,8 +8,12 @@ namespace iv {
         size_t _latency;
 
     public:
-        constexpr explicit Latency(size_t latency = 1) :
-            _latency(latency)
+        struct State {
+            std::span<Sample> memory;
+        };
+
+        constexpr explicit Latency(size_t latency = 1)
+        : _latency(latency)
         {}
 
         constexpr auto inputs() const
@@ -19,12 +23,29 @@ namespace iv {
 
         constexpr auto outputs() const
         {
-            return std::array { OutputConfig { .latency = _latency } };
+            return std::array<OutputConfig, 1>{};
         }
 
-        void tick(TickState const& state)
+        void declare(DeclarationContext<Latency> const& ctx) const
         {
-            state.outputs[0].push(state.inputs[0].get());
+            auto const& state = ctx.state();
+            size_t const min_size = _latency + ctx.max_block_size();
+            ctx.local_array(state.memory, next_power_of_2(min_size));
+        }
+
+        void initialize(InitializationContext<Latency> const& ctx) const
+        {
+            auto& state = ctx.state();
+            std::ranges::fill(state.memory, Sample{});
+        }
+
+        void tick(TickSampleContext<Latency> const& ctx) const
+        {
+            auto& state = ctx.state();
+            size_t const mask = state.memory.size() - 1;
+
+            state.memory[(ctx.index + _latency) & mask] = ctx.inputs[0].get();
+            ctx.outputs[0].push(state.memory[ctx.index & mask]);
         }
     };
 }

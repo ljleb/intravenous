@@ -1,7 +1,6 @@
 #include "module/loader.h"
 
 #include "devices/channel_buffer_sink.h"
-#include "runtime/system.h"
 
 #include <algorithm>
 #include <chrono>
@@ -451,8 +450,7 @@ namespace iv {
 
         struct BuildSession {
             Impl* impl = nullptr;
-            System* system = nullptr;
-            std::vector<std::shared_ptr<void>> module_refs;
+            std::vector<ModuleRef> module_refs;
             std::vector<ModuleDependency> dependencies;
             std::unordered_map<std::string, std::shared_ptr<LoadedBinary>> binaries_by_id;
             std::unordered_map<std::string, ResolvedModule> registry;
@@ -509,7 +507,9 @@ namespace iv {
                 if (auto found = binaries_by_id.find(resolved.id); found != binaries_by_id.end()) {
                     auto binary = found->second;
                     return TypeErasedModule([binary](ModuleContext const& context) {
-                        return binary->descriptor->build(context);
+                        if (char const* error = binary->descriptor->build(context)) {
+                            throw std::runtime_error(error);
+                        }
                     });
                 }
 
@@ -517,7 +517,9 @@ namespace iv {
                 binaries_by_id.emplace(resolved.id, binary);
                 module_refs.push_back(binary);
                 return TypeErasedModule([binary](ModuleContext const& context) {
-                    return binary->descriptor->build(context);
+                    if (char const* error = binary->descriptor->build(context)) {
+                        throw std::runtime_error(error);
+                    }
                 });
             }
 
@@ -577,9 +579,18 @@ namespace iv {
         {
             auto& session = *static_cast<BuildSession*>(session_ptr);
             ++session.sink_count;
-            return builder.node<SharedAccumulatingSink>(
-                session.system->audio_device().sink_id(channel, device_id)
-            );
+            return builder.node<AudioDeviceSink>(AudioDeviceSink{
+                .device_id = device_id,
+                .channel = channel,
+            });
+        }
+
+        static NodeRef file_from_context(void*, GraphBuilder& builder, size_t channel, std::filesystem::path const& path)
+        {
+            return builder.node<FileSink>(FileSink{
+                .path = path,
+                .channel = channel,
+            });
         }
 
         ResolvedModule resolve_module_path(std::filesystem::path const& requested_path) const
@@ -956,7 +967,11 @@ namespace iv {
             });
         }
 
-        LoadedGraph load_root(std::filesystem::path const& module_path, System& system) const
+        LoadedGraph load_root(
+            std::filesystem::path const& module_path,
+            ModuleRenderConfig render_config,
+            Sample* sample_period
+        ) const
         {
             ResolvedModule root = resolve_module_path(module_path);
             std::vector<std::filesystem::path> search_roots { root.module_dir };
@@ -968,24 +983,37 @@ namespace iv {
 
             BuildSession session;
             session.impl = const_cast<Impl*>(this);
-            session.system = &system;
             session.registry = discover_registry(search_roots);
             session.search_roots = search_roots;
 
             GraphBuilder builder;
-            ModuleSystem module_system(
+            ModuleTargetFactory target_factory(
                 &session,
-                ModuleRenderConfig {
-                    .sample_rate = system.render_config().sample_rate,
-                    .num_channels = system.render_config().num_channels,
-                    .max_block_frames = system.render_config().max_block_frames,
-                },
-                &system.sample_period(),
-                &Impl::sink_from_context
+                &Impl::sink_from_context,
+                &Impl::file_from_context
             );
-            ModuleContext context(builder, module_system, &Impl::load_from_context, &session);
+            ModuleContext context(
+                builder,
+                target_factory,
+                render_config,
+                sample_period,
+                &Impl::load_from_context,
+                &session
+            );
             TypeErasedModule root_module = session.load_module(root.id);
-            TypeErasedNode built_root = root_module.builder(context).build();
+            TypeErasedNode built_root = [&]() -> TypeErasedNode {
+                try {
+                    return root_module.builder(context).build();
+                } catch (std::exception const& e) {
+                    throw std::runtime_error(
+                        "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "': " + e.what()
+                    );
+                } catch (...) {
+                    throw std::runtime_error(
+                        "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "'"
+                    );
+                }
+            }();
             session.ensure_loaded_binary_dependencies();
 
             return LoadedGraph(
@@ -1001,7 +1029,7 @@ namespace iv {
 
     ModuleLoader::LoadedGraph::LoadedGraph(
         TypeErasedNode root_,
-        std::vector<std::shared_ptr<void>> module_refs_,
+        std::vector<ModuleRef> module_refs_,
         std::filesystem::path module_path_,
         std::string module_id_,
         std::vector<ModuleDependency> dependencies_,
@@ -1023,9 +1051,13 @@ namespace iv {
     ModuleLoader::ModuleLoader(ModuleLoader&&) noexcept = default;
     ModuleLoader& ModuleLoader::operator=(ModuleLoader&&) noexcept = default;
 
-    ModuleLoader::LoadedGraph ModuleLoader::load_root(std::filesystem::path const& module_path, System& system) const
+    ModuleLoader::LoadedGraph ModuleLoader::load_root(
+        std::filesystem::path const& module_path,
+        ModuleRenderConfig render_config,
+        Sample* sample_period
+    ) const
     {
-        return _impl->load_root(module_path, system);
+        return _impl->load_root(module_path, render_config, sample_period);
     }
 
     std::vector<std::filesystem::path> const& ModuleLoader::extra_search_roots() const

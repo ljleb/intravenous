@@ -5,8 +5,6 @@
 
 #include <mutex>
 #include <memory>
-#include <string>
-#include <unordered_map>
 
 namespace iv {
 #if IV_ENABLE_JUCE_VST
@@ -15,7 +13,8 @@ namespace iv {
     class JuceVstRuntimeSupport {
         JuceVstRuntimeManager* _manager = nullptr;
         double _sample_rate = 0.0;
-        std::shared_ptr<void> _session;
+        ResourceContext::VstResources _vst_resources;
+        ResourceContext _resources;
 
     public:
         JuceVstRuntimeSupport() = default;
@@ -26,7 +25,12 @@ namespace iv {
             return _manager != nullptr;
         }
 
-        void register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context);
+        ResourceContext const& resources() const
+        {
+            return _resources;
+        }
+
+        void register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder);
     };
 
     class JuceVstRuntimeManager {
@@ -38,33 +42,27 @@ namespace iv {
         JuceVstRuntimeManager& operator=(JuceVstRuntimeManager const&) = delete;
 
         struct LiveInstance;
-        struct Session;
-
-        std::shared_ptr<Session> make_session(double sample_rate);
+        UniqueResource create_instance(
+            JuceVstWrapperSpec const& spec,
+            double sample_rate
+        );
 
     private:
         friend class JuceVstRuntimeSupport;
         friend void tick_juce_vst_wrapper(
             JuceVstWrapperSpec const& spec,
             void* live_instance,
-            BlockTickState const& state
+            TickBlockContext<JuceVstWrapper> const& state
         );
 
         std::unique_ptr<Impl> _impl;
         std::mutex _mutex;
-        std::unordered_map<std::string, std::unique_ptr<LiveInstance>> _instances;
-
-        LiveInstance* acquire_instance(
-            Session& session,
-            std::shared_ptr<JuceVstWrapperSpec const> const& spec,
-            size_t block_size
-        );
     };
 
     void tick_juce_vst_wrapper(
         JuceVstWrapperSpec const& spec,
         void* live_instance,
-        BlockTickState const& state
+        TickBlockContext<JuceVstWrapper> const& state
     );
 #endif
 }

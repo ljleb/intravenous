@@ -7,7 +7,7 @@ int main()
     iv::test::install_crash_handlers();
 
     auto const fixtures = iv::test::test_modules_root();
-    auto const runtime_root = iv::test::runtime_modules_root();
+    auto const runtime_root = iv::test::runtime_modules_root() / "module_watcher";
     auto const project_src = fixtures / "noisy_saw_project";
     auto const project_dst = runtime_root / "watch_target";
     auto const voice_src = fixtures / "noisy_saw_voice";
@@ -18,9 +18,13 @@ int main()
     iv::test::copy_directory(project_src, project_dst);
     iv::test::copy_directory(voice_src, voice_dst);
 
-    iv::System system({}, false, false);
+    iv::test::FakeAudioDevice audio_device;
     auto loader = iv::test::make_loader({ runtime_root });
-    auto graph = loader.load_root(project_dst, system);
+    auto graph = loader.load_root(
+        project_dst,
+        iv::test::module_render_config(audio_device),
+        &audio_device.sample_period()
+    );
 
     auto watcher = iv::make_dependency_watcher();
     watcher->update(graph.dependencies);

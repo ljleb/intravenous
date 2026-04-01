@@ -3,12 +3,12 @@
 #include "basic_nodes/arithmetic.h"
 #include "graph_build.h"
 #include "graph_node.h"
-#include "node.h"
 
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <initializer_list>
 #include <memory>
 #include <stdexcept>
@@ -48,7 +48,7 @@ namespace iv {
     struct BuilderNode {
         std::vector<InputConfig> input_configs;
         std::vector<OutputConfig> output_configs;
-        std::function<TypeErasedNode(size_t)> materialize;
+        std::move_only_function<TypeErasedNode(size_t) const> materialize;
 
         std::vector<InputConfig> const& inputs() const
         {
@@ -92,14 +92,13 @@ namespace iv {
 
         struct BuilderIdentity {
             std::string value;
-            size_t next_child_id = 0;
 
             BuilderIdentity() = default;
             explicit BuilderIdentity(std::string value_) :
                 value(value_)
             {}
 
-            std::string debug_node_id(size_t index) const
+            std::string child_id(size_t index) const
             {
                 std::string nested_path = value;
                 if (!nested_path.empty()) {
@@ -109,22 +108,13 @@ namespace iv {
                 return nested_path;
             }
 
-            std::string allocate_child_path()
-            {
-                std::string nested_path = value;
-                if (!nested_path.empty()) {
-                    nested_path += ".";
-                }
-                nested_path += std::to_string(next_child_id++);
-                return nested_path;
-            }
         };
 
         BuilderIdentity _builder_id;
         size_t _next_detach_id = 0;
 
         std::vector<BuilderNode> _nodes;
-        Graph::Edges _edges;
+        std::unordered_set<GraphEdge> _edges;
         std::unordered_set<PortId> _placed_input_ports;
 
         std::vector<InputConfig> _public_inputs;
@@ -149,15 +139,13 @@ namespace iv {
 
         GraphBuilder derive_nested_builder()
         {
-            return GraphBuilder(
-                BuilderIdentity(_builder_id.allocate_child_path())
-            );
+            return GraphBuilder(BuilderIdentity(_builder_id.child_id(_nodes.size())));
         }
 
-        std::string debug_node_id(size_t index) const
+        std::string node_id(size_t index) const
         {
-            assert(index < _nodes.size() && "node index out of bounds");
-            return _builder_id.debug_node_id(index);
+            IV_ASSERT(index < _nodes.size(), "node index out of bounds");
+            return _builder_id.child_id(index);
         }
 
         SignalRef input()
@@ -190,9 +178,9 @@ namespace iv {
 
             auto materialize = [node_value = std::move(node_value)]([[maybe_unused]] size_t detach_id_offset) {
                 if constexpr (std::same_as<StoredNode, DetachWriterNode>) {
-                    return TypeErasedNode(DetachWriterNode{ BufferId(node_value.id.id + detach_id_offset) });
+                    return TypeErasedNode(DetachWriterNode{ DetachArrayId(node_value.id.id + detach_id_offset) });
                 } else if constexpr (std::same_as<StoredNode, DetachReaderNode>) {
-                    return TypeErasedNode(DetachReaderNode{ BufferId(node_value.id.id + detach_id_offset) });
+                    return TypeErasedNode(DetachReaderNode{ DetachArrayId(node_value.id.id + detach_id_offset) });
                 } else {
                     return TypeErasedNode(node_value);
                 }
@@ -208,6 +196,15 @@ namespace iv {
 
         NodeRef node(GraphBuilder child)
         {
+            std::string expected_builder_id = _builder_id.child_id(_nodes.size());
+
+            if (child._builder_id.value != expected_builder_id) {
+                details::error(
+                    "builder " + _builder_id.value + ": nested builder id '" + child._builder_id.value +
+                    "' does not match insertion site '" + expected_builder_id + "'"
+                );
+            }
+
             if (!child._outputs_defined) {
                 details::error(
                     "builder " + child._builder_id.value + ": g.outputs(...) must be called before insertion"
@@ -319,17 +316,20 @@ namespace iv {
 
             details::PreparedGraph g{
                 .nodes = {},
+                .node_ids = {},
                 .edges = _edges,
                 .detached_info_by_source = _detached_info_by_source,
                 .detached_reader_outputs = _detached_reader_outputs,
             };
             g.nodes.reserve(_nodes.size());
+            g.node_ids.reserve(_nodes.size());
             for (auto const& node : _nodes) {
                 g.nodes.push_back(node.materialize(detach_id_offset));
+                g.node_ids.push_back(node_id(g.node_ids.size()));
             }
 
-            details::expand_hyperedge_ports(g);
-            details::stub_dangling_ports(g, _public_inputs.size());
+            details::expand_hyperedge_ports(g, _builder_id.value);
+            details::stub_dangling_ports(g, _public_inputs.size(), _builder_id.value);
             details::validate_graph(g, _public_inputs.size(), _public_outputs.size());
             details::validate_detached_edges(g, _builder_id.value);
             details::sort_nodes_or_error(g, _builder_id.value);
@@ -345,14 +345,16 @@ namespace iv {
             }();
             auto execution_plan = details::build_execution_plan(g.nodes, g.edges, detached);
 
-            return Graph(
+            return Graph(details::build_graph_artifact(
+                _builder_id.value,
                 std::move(g.nodes),
+                std::move(g.node_ids),
                 std::move(g.edges),
                 std::move(detached),
                 std::move(execution_plan),
                 _public_inputs,
                 _public_outputs
-            );
+            ));
         }
 
     private:
@@ -615,7 +617,7 @@ namespace iv {
         if (node_index == GRAPH_ID) {
             return "graph input " + std::to_string(output_port) + " in builder " + graph_builder->_builder_id.value;
         }
-        return "signal at address " + graph_builder->debug_node_id(node_index) + ":" + std::to_string(output_port);
+        return "signal at address " + graph_builder->node_id(node_index) + ":" + std::to_string(output_port);
     }
 
     inline NodeRef::NodeRef(GraphBuilder& graph_builder, size_t index) :
@@ -785,6 +787,6 @@ namespace iv {
         if (!_graph_builder) {
             return "empty node";
         }
-        return "node at address " + _graph_builder->debug_node_id(_index);
+        return "node at address " + _graph_builder->node_id(_index);
     }
 }

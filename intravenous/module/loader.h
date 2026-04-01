@@ -9,7 +9,7 @@
 #include <vector>
 
 namespace iv {
-    class System;
+    using ModuleRef = std::shared_ptr<void>;
 
     class ModuleLoader {
         class Impl;
@@ -17,7 +17,7 @@ namespace iv {
 
     public:
         struct LoadedGraph {
-            std::vector<std::shared_ptr<void>> module_refs;
+            std::vector<ModuleRef> module_refs;
             TypeErasedNode root;
             std::filesystem::path module_path;
             std::string module_id;
@@ -26,7 +26,7 @@ namespace iv {
 
             LoadedGraph(
                 TypeErasedNode root_,
-                std::vector<std::shared_ptr<void>> module_refs_,
+                std::vector<ModuleRef> module_refs_,
                 std::filesystem::path module_path_,
                 std::string module_id_,
                 std::vector<ModuleDependency> dependencies_,
@@ -45,7 +45,11 @@ namespace iv {
         ModuleLoader(ModuleLoader const&) = delete;
         ModuleLoader& operator=(ModuleLoader const&) = delete;
 
-        LoadedGraph load_root(std::filesystem::path const& module_path, System& system) const;
+        LoadedGraph load_root(
+            std::filesystem::path const& module_path,
+            ModuleRenderConfig render_config = {},
+            Sample* sample_period = nullptr
+        ) const;
         std::vector<std::filesystem::path> const& extra_search_roots() const;
     };
 }

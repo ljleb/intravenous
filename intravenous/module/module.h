@@ -4,6 +4,9 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
+#include <exception>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
@@ -15,31 +18,84 @@ namespace iv {
     class LoadedModule;
 
     struct ModuleRenderConfig {
+        // TODO: This is still a bootstrap/runtime hint passed into module loading.
+        // The long-term source of truth should come from executor-target negotiation.
         size_t sample_rate = 48000;
         size_t num_channels = 2;
         size_t max_block_frames = 4096;
     };
 
-    class ModuleSystem {
+    class ModuleTargetFactory {
         void* _user_data = nullptr;
-        ModuleRenderConfig _render_config;
-        Sample* _sample_period = nullptr;
         NodeRef (*_sink_fn)(void*, GraphBuilder&, size_t, size_t) = nullptr;
+        NodeRef (*_file_fn)(void*, GraphBuilder&, size_t, std::filesystem::path const&) = nullptr;
 
     public:
-        ModuleSystem() = default;
+        ModuleTargetFactory() = default;
 
-        ModuleSystem(
+        ModuleTargetFactory(
             void* user_data,
-            ModuleRenderConfig render_config,
-            Sample* sample_period,
-            NodeRef (*sink_fn)(void*, GraphBuilder&, size_t, size_t)
+            NodeRef (*sink_fn)(void*, GraphBuilder&, size_t, size_t),
+            NodeRef (*file_fn)(void*, GraphBuilder&, size_t, std::filesystem::path const&)
         ) :
             _user_data(user_data),
+            _sink_fn(sink_fn),
+            _file_fn(file_fn)
+        {}
+
+        NodeRef sink(GraphBuilder& builder, size_t channel, size_t device_id = 0) const
+        {
+            if (!_sink_fn) {
+                throw std::logic_error("module audio sink callback is unavailable");
+            }
+
+            return _sink_fn(_user_data, builder, channel, device_id);
+        }
+
+        NodeRef file(GraphBuilder& builder, size_t channel, std::filesystem::path const& path) const
+        {
+            if (!_file_fn) {
+                throw std::logic_error("module file target callback is unavailable");
+            }
+
+            return _file_fn(_user_data, builder, channel, path);
+        }
+    };
+
+    class ModuleContext {
+        GraphBuilder* _builder = nullptr;
+        ModuleTargetFactory _target_factory;
+        ModuleRenderConfig _render_config;
+        Sample* _sample_period = nullptr;
+        TypeErasedModule (*_load_fn)(void*, std::string_view) = nullptr;
+        void* _load_user_data = nullptr;
+
+    public:
+        ModuleContext(
+            GraphBuilder& builder,
+            ModuleTargetFactory target_factory = {},
+            ModuleRenderConfig render_config = {},
+            Sample* sample_period = nullptr,
+            TypeErasedModule (*load_fn)(void*, std::string_view) = nullptr,
+            void* load_user_data = nullptr
+        ) :
+            _builder(&builder),
+            _target_factory(std::move(target_factory)),
             _render_config(render_config),
             _sample_period(sample_period),
-            _sink_fn(sink_fn)
+            _load_fn(load_fn),
+            _load_user_data(load_user_data)
         {}
+
+        GraphBuilder& builder() const
+        {
+            return *_builder;
+        }
+
+        ModuleTargetFactory const& target_factory() const
+        {
+            return _target_factory;
+        }
 
         ModuleRenderConfig const& render_config() const
         {
@@ -53,45 +109,6 @@ namespace iv {
             }
 
             return *_sample_period;
-        }
-
-        NodeRef sink(GraphBuilder& builder, size_t channel, size_t device_id = 0) const
-        {
-            if (!_sink_fn) {
-                throw std::logic_error("module audio sink callback is unavailable");
-            }
-
-            return _sink_fn(_user_data, builder, channel, device_id);
-        }
-    };
-
-    class ModuleContext {
-        GraphBuilder* _builder = nullptr;
-        ModuleSystem _system;
-        TypeErasedModule (*_load_fn)(void*, std::string_view) = nullptr;
-        void* _load_user_data = nullptr;
-
-    public:
-        ModuleContext(
-            GraphBuilder& builder,
-            ModuleSystem system = {},
-            TypeErasedModule (*load_fn)(void*, std::string_view) = nullptr,
-            void* load_user_data = nullptr
-        ) :
-            _builder(&builder),
-            _system(std::move(system)),
-            _load_fn(load_fn),
-            _load_user_data(load_user_data)
-        {}
-
-        GraphBuilder& builder() const
-        {
-            return *_builder;
-        }
-
-        ModuleSystem const& system() const
-        {
-            return _system;
         }
 
         TypeErasedModule (*load_fn() const)(void*, std::string_view)
@@ -136,7 +153,9 @@ namespace iv {
             GraphBuilder builder = context.builder().derive_nested_builder();
             ModuleContext isolated_context(
                 builder,
-                context.system(),
+                context.target_factory(),
+                context.render_config(),
+                &context.sample_period(),
                 context.load_fn(),
                 context.load_user_data()
             );
@@ -177,7 +196,7 @@ namespace iv {
 extern "C" {
     [[maybe_unused]] static constexpr uint32_t IV_MODULE_ABI_VERSION_V1 = 1;
 
-    using iv_module_build_fn_v1 = void (*)(iv::ModuleContext const&);
+    using iv_module_build_fn_v1 = char const* (*)(iv::ModuleContext const&);
 
     struct iv_module_descriptor_v1 {
         uint32_t abi_version;
@@ -197,10 +216,23 @@ extern "C" {
 #define IV_EXPORT_MODULE(module_id, module_fn) \
     extern "C" IV_MODULE_EXPORT iv_module_descriptor_v1 const* iv_get_module_descriptor_v1() \
     { \
+        static thread_local char iv_module_last_error[2048]; \
         static iv_module_descriptor_v1 descriptor { \
             IV_MODULE_ABI_VERSION_V1, \
             module_id, \
-            [](iv::ModuleContext const& context) -> void { module_fn(context); }, \
+            [](iv::ModuleContext const& context) -> char const* { \
+                try { \
+                    iv_module_last_error[0] = '\0'; \
+                    module_fn(context); \
+                    return nullptr; \
+                } catch (std::exception const& e) { \
+                    std::snprintf(iv_module_last_error, sizeof(iv_module_last_error), "%s", e.what()); \
+                    return iv_module_last_error; \
+                } catch (...) { \
+                    std::snprintf(iv_module_last_error, sizeof(iv_module_last_error), "%s", "non-std exception"); \
+                    return iv_module_last_error; \
+                } \
+            }, \
         }; \
         return &descriptor; \
     }

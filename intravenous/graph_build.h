@@ -2,7 +2,10 @@
 
 #include "basic_nodes/routing.h"
 #include "basic_nodes/arithmetic.h"
-#include "graph_node.h"
+#include "basic_nodes/type_erased.h"
+#include "graph/build_types.h"
+#include "graph/types.h"
+#include "graph/wiring.h"
 
 #include <algorithm>
 #include <deque>
@@ -22,11 +25,23 @@ namespace iv::details {
     }
 
     struct PreparedGraph {
-        Graph::Nodes nodes;
-        Graph::Edges edges;
+        std::vector<TypeErasedNode> nodes;
+        std::vector<std::string> node_ids;
+        std::unordered_set<GraphEdge> edges;
         std::unordered_map<PortId, DetachedInfo> detached_info_by_source;
         std::unordered_set<PortId> detached_reader_outputs;
     };
+
+    inline std::string generated_node_id(std::string_view builder_id, size_t generated_index)
+    {
+        std::string id(builder_id);
+        if (!id.empty()) {
+            id += ".";
+        }
+        id += "generated.";
+        id += std::to_string(generated_index);
+        return id;
+    }
 
     inline auto make_source_target_edge_maps(PreparedGraph const& g)
     {
@@ -42,7 +57,7 @@ namespace iv::details {
         return std::make_tuple(std::move(source_of), std::move(target_of));
     }
 
-    inline void expand_hyperedge_ports(PreparedGraph& g)
+    inline void expand_hyperedge_ports(PreparedGraph& g, std::string_view builder_id)
     {
         std::unordered_map<PortId, std::vector<GraphEdge>> reverse_edges_map;
         for (GraphEdge const& edge : g.edges)
@@ -64,6 +79,7 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 g.nodes.emplace_back(Sum(port_arity));
+                g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const sum_node = g.nodes.size() - 1;
 
                 for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
@@ -96,6 +112,7 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 g.nodes.emplace_back(Broadcast(port_arity));
+                g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const broadcast_node = g.nodes.size() - 1;
 
                 for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
@@ -109,7 +126,7 @@ namespace iv::details {
         }
     }
 
-    inline void stub_dangling_ports(PreparedGraph& g, size_t num_public_inputs)
+    inline void stub_dangling_ports(PreparedGraph& g, size_t num_public_inputs, std::string_view builder_id)
     {
         auto [source_of, target_of] = make_source_target_edge_maps(g);
 
@@ -125,6 +142,7 @@ namespace iv::details {
                 if (auto it = target_of.find(this_port); it == target_of.end())
                 {
                     g.nodes.emplace_back(DummySink());
+                    g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     size_t const new_node = g.nodes.size() - 1;
                     g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
                 }
@@ -179,20 +197,24 @@ namespace iv::details {
     {
         size_t const num_nodes = g.nodes.size();
 
-        Graph::Nodes sorted_nodes;
+        std::vector<TypeErasedNode> sorted_nodes;
+        std::vector<std::string> sorted_node_ids;
         sorted_nodes.reserve(num_nodes);
+        sorted_node_ids.reserve(num_nodes);
         for (size_t old_i = 0; old_i < num_nodes; ++old_i)
         {
             sorted_nodes.push_back(std::move(g.nodes[sorted[old_i]]));
+            sorted_node_ids.push_back(std::move(g.node_ids[sorted[old_i]]));
         }
         g.nodes.swap(sorted_nodes);
+        g.node_ids.swap(sorted_node_ids);
 
         std::vector<size_t> reverse_sorted(num_nodes);
         for (size_t new_i = 0; new_i < num_nodes; ++new_i) {
             reverse_sorted[sorted[new_i]] = new_i;
         }
 
-        Graph::Edges sorted_edges;
+        std::unordered_set<GraphEdge> sorted_edges;
         sorted_edges.reserve(g.edges.size());
         for (GraphEdge edge : g.edges)
         {
@@ -337,7 +359,7 @@ namespace iv::details {
 
     inline GraphExecutionPlan build_execution_plan(
         std::vector<TypeErasedNode> const& nodes,
-        Graph::Edges const& edges,
+        std::unordered_set<GraphEdge> const& edges,
         std::vector<DetachedInfo> const& detached
     )
     {
@@ -539,5 +561,269 @@ namespace iv::details {
         }
 
         return plan;
+    }
+
+    class LatencyAccumulator {
+        std::unordered_map<PortId, size_t> _input_port_global_latencies;
+
+    public:
+        template<typename NodeLike, typename TargetMap>
+        void align_latencies(
+            NodeLike const& node,
+            size_t node_i,
+            std::span<InputConfig const> input_configs,
+            std::span<OutputConfig const> output_configs,
+            TargetMap const& target_of
+        )
+        {
+            size_t node_global_latency = 0;
+            for (size_t in_port = 0; in_port < input_configs.size(); ++in_port) {
+                node_global_latency = std::max(node_global_latency, _input_port_global_latencies[{ node_i, in_port }]);
+            }
+
+            if (node_i == GRAPH_ID) {
+                return;
+            }
+
+            node_global_latency += get_internal_latency(node);
+            for (size_t out_port = 0; out_port < output_configs.size(); ++out_port) {
+                size_t const output_latency = node_global_latency + output_configs[out_port].latency;
+                if (auto it = target_of.find({ node_i, out_port }); it != target_of.end()) {
+                    _input_port_global_latencies[it->second] = output_latency;
+                }
+            }
+        }
+
+        size_t delay_input(PortId input, size_t extra_delay)
+        {
+            return _input_port_global_latencies.at(input) += extra_delay;
+        }
+    };
+
+    inline auto make_node_configs(
+        auto const& node,
+        size_t node_i,
+        std::span<InputConfig const> graph_private_inputs
+    )
+    {
+        std::vector<InputConfig> input_configs;
+        std::vector<OutputConfig> output_configs;
+
+        if (node_i == GRAPH_ID) {
+            input_configs.assign(graph_private_inputs.begin(), graph_private_inputs.end());
+        } else {
+            auto const inputs = get_inputs(node);
+            auto const outputs = get_outputs(node);
+            input_configs.assign(inputs.begin(), inputs.end());
+            output_configs.assign(outputs.begin(), outputs.end());
+        }
+
+        return std::make_pair(std::move(input_configs), std::move(output_configs));
+    }
+
+    inline size_t connection_block_size(
+        PortId source,
+        PortId target,
+        size_t host_block_size,
+        GraphExecutionPlan const& plan
+    )
+    {
+        auto region_block = [&](size_t node) {
+            if (node == GRAPH_ID) {
+                return host_block_size;
+            }
+            return std::min(host_block_size, plan.regions[plan.node_to_region[node]].max_block_size);
+        };
+        return std::max(region_block(source.node), region_block(target.node));
+    }
+
+    inline GraphBuildArtifact build_graph_artifact(
+        std::string graph_id,
+        std::vector<TypeErasedNode> nodes,
+        std::vector<std::string> node_ids,
+        std::unordered_set<GraphEdge> edges,
+        std::vector<DetachedInfo> detached,
+        GraphExecutionPlan execution_plan,
+        std::vector<InputConfig> public_inputs,
+        std::vector<OutputConfig> public_outputs
+    )
+    {
+        auto [source_of, target_of] = [&] {
+            std::unordered_map<PortId, PortId> source_of_;
+            std::unordered_map<PortId, PortId> target_of_;
+            for (GraphEdge const& edge : edges) {
+                source_of_[edge.target] = edge.source;
+                target_of_[edge.source] = edge.target;
+            }
+            return std::make_tuple(std::move(source_of_), std::move(target_of_));
+        }();
+
+        std::vector<InputConfig> private_input_configs(public_outputs.size());
+        OutputConfig private_outputs_config;
+        LatencyAccumulator latency_accumulator;
+        std::vector<std::vector<PortBufferPlan>> node_input_buffer_plans(nodes.size());
+        std::vector<PortBufferPlan> public_output_buffer_plans(public_outputs.size());
+
+        for (size_t node_i = 0; node_i < nodes.size() + 1; ++node_i) {
+            if (node_i < nodes.size()) {
+                auto [input_configs, output_configs] = make_node_configs(nodes[node_i], node_i, private_input_configs);
+                latency_accumulator.align_latencies(nodes[node_i], node_i, input_configs, output_configs, target_of);
+
+                for (size_t input_i = 0; input_i < input_configs.size(); ++input_i) {
+                    PortId const this_input { node_i, input_i };
+
+                    if (auto it = source_of.find(this_input); it != source_of.end()) {
+                        size_t const output_node_i = it->second.node;
+                        size_t const output_port_i = it->second.port;
+                        OutputConfig const output_config = (output_node_i == GRAPH_ID)
+                            ? private_outputs_config
+                            : nodes[output_node_i].outputs()[output_port_i];
+                        size_t const corrected_latency = latency_accumulator.delay_input(this_input, output_config.latency);
+                        node_input_buffer_plans[node_i].push_back({
+                            .connection_max_block_size = connection_block_size(it->second, this_input, MAX_BLOCK_SIZE, execution_plan),
+                            .corrected_latency = corrected_latency,
+                            .input_history = input_configs[input_i].history,
+                            .output_history = output_config.history,
+                        });
+                    } else {
+                        node_input_buffer_plans[node_i].push_back({
+                            .connection_max_block_size = MAX_BLOCK_SIZE,
+                            .corrected_latency = 0,
+                            .input_history = input_configs[input_i].history,
+                            .output_history = 0,
+                        });
+                    }
+                }
+            } else {
+                std::vector<InputConfig> input_configs(public_outputs.size());
+
+                for (size_t input_i = 0; input_i < input_configs.size(); ++input_i) {
+                    PortId const this_input { GRAPH_ID, input_i };
+                    if (auto it = source_of.find(this_input); it != source_of.end()) {
+                        size_t const output_node_i = it->second.node;
+                        size_t const output_port_i = it->second.port;
+                        OutputConfig const output_config = (output_node_i == GRAPH_ID)
+                            ? private_outputs_config
+                            : nodes[output_node_i].outputs()[output_port_i];
+                        size_t const corrected_latency = latency_accumulator.delay_input(this_input, output_config.latency);
+                        public_output_buffer_plans[input_i] = {
+                            .connection_max_block_size = connection_block_size(it->second, this_input, MAX_BLOCK_SIZE, execution_plan),
+                            .corrected_latency = corrected_latency,
+                            .input_history = input_configs[input_i].history,
+                            .output_history = output_config.history,
+                        };
+                    } else {
+                        public_output_buffer_plans[input_i] = {
+                            .connection_max_block_size = MAX_BLOCK_SIZE,
+                            .corrected_latency = 0,
+                            .input_history = input_configs[input_i].history,
+                            .output_history = 0,
+                        };
+                    }
+                }
+            }
+        }
+
+        GraphBuildArtifact artifact {
+            .graph_id = std::move(graph_id),
+            .scc_wrappers = {},
+            .edges = std::move(edges),
+            .detached = std::move(detached),
+            .execution_plan = std::move(execution_plan),
+            .public_inputs = std::move(public_inputs),
+            .public_outputs = std::move(public_outputs),
+            .public_output_buffer_plans = std::move(public_output_buffer_plans),
+            .internal_latency = 0,
+            .node_ids = std::move(node_ids),
+        };
+        {
+            std::unordered_map<PortId, PortId> artifact_target_of;
+            for (GraphEdge const& edge : artifact.edges) {
+                artifact_target_of[edge.source] = edge.target;
+            }
+
+            std::unordered_map<PortId, size_t> input_global_latencies;
+            size_t max_latency = 0;
+
+            auto process_node = [&](TypeErasedNode const& node, size_t node_i) {
+                size_t node_global_latency = 0;
+                auto node_inputs = node.inputs();
+                for (size_t input_port = 0; input_port < node_inputs.size(); ++input_port) {
+                    node_global_latency = std::max(node_global_latency, input_global_latencies[{ node_i, input_port }]);
+                }
+
+                node_global_latency += node.internal_latency();
+                auto node_outputs = node.outputs();
+                for (size_t output_port = 0; output_port < node_outputs.size(); ++output_port) {
+                    if (auto it = artifact_target_of.find({ node_i, output_port }); it != artifact_target_of.end()) {
+                        size_t const new_latency = node_global_latency + node_outputs[output_port].latency;
+                        max_latency = std::max(max_latency, new_latency);
+                        input_global_latencies[it->second] = new_latency;
+                    }
+                }
+            };
+
+            for (size_t node_i = 0; node_i < nodes.size(); ++node_i) {
+                process_node(nodes[node_i], node_i);
+            }
+
+            size_t graph_global_latency = 0;
+            for (size_t input_port = 0; input_port < artifact.public_outputs.size(); ++input_port) {
+                graph_global_latency = std::max(graph_global_latency, input_global_latencies[{ GRAPH_ID, input_port }]);
+            }
+            artifact.internal_latency = std::max(max_latency, graph_global_latency);
+        }
+
+        artifact.scc_wrappers.reserve(artifact.execution_plan.region_order.size());
+        for (size_t ordered_scc_i = 0; ordered_scc_i < artifact.execution_plan.region_order.size(); ++ordered_scc_i) {
+            size_t const region_i = artifact.execution_plan.region_order[ordered_scc_i];
+            auto const& region = artifact.execution_plan.regions[region_i];
+            std::vector<GraphNodeWrapper> region_nodes;
+            region_nodes.reserve(region.execution_order.size());
+
+            for (size_t global_i : region.execution_order) {
+                std::vector<GraphOutputTarget> output_targets;
+                auto outputs = nodes[global_i].outputs();
+                output_targets.reserve(outputs.size());
+                for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
+                    auto it = target_of.find({ global_i, output_i });
+                    if (it != target_of.end()) {
+                        if (it->second.node == GRAPH_ID) {
+                            output_targets.push_back({
+                                .port_data_id = graph_port_data_export_id(artifact.graph_id),
+                                .port_index = it->second.port,
+                            });
+                        } else {
+                            output_targets.push_back({
+                                .port_data_id = port_data_export_id(artifact.node_ids[it->second.node]),
+                                .port_index = it->second.port,
+                            });
+                        }
+                    } else {
+                        output_targets.push_back({});
+                    }
+                }
+                region_nodes.emplace_back(
+                    std::move(nodes[global_i]),
+                    std::move(node_input_buffer_plans[global_i]),
+                    artifact.node_ids[global_i],
+                    std::move(output_targets)
+                );
+            }
+
+            size_t internal_latency = 0;
+            // TODO: solve SCC-local internal latency explicitly instead of collapsing to the max child latency.
+            for (auto const& node : region_nodes) {
+                internal_latency = std::max(internal_latency, node.internal_latency());
+            }
+
+            artifact.scc_wrappers.emplace_back(
+                std::move(region_nodes),
+                region.max_block_size,
+                internal_latency
+            );
+        }
+
+        return artifact;
     }
 }

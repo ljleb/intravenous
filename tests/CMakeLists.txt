@@ -1,269 +1,113 @@
-add_executable(intravenous_architecture_smoke
-    architecture_smoke.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
+include(FetchContent)
+include(GoogleTest)
+
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
 )
+FetchContent_MakeAvailable(googletest)
 
-target_compile_features(intravenous_architecture_smoke PRIVATE cxx_std_23)
-set_target_properties(intravenous_architecture_smoke PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
+function(add_iv_gtest target source)
+    add_executable(${target}
+        ${source}
+        ${PROJECT_SOURCE_DIR}/intravenious/third_party/miniaudio/miniaudio.c
+    )
 
-target_include_directories(intravenous_architecture_smoke PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
-)
+    target_compile_features(${target} PRIVATE cxx_std_23)
+    set_target_properties(${target} PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
 
-target_include_directories(intravenous_architecture_smoke SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
-)
+    target_include_directories(${target} PRIVATE
+        ${PROJECT_SOURCE_DIR}/intravenious
+    )
 
-if(MSVC)
-    target_compile_options(intravenous_architecture_smoke PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous_architecture_smoke PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+    target_include_directories(${target} SYSTEM PRIVATE
+        ${PROJECT_SOURCE_DIR}/intravenious/third_party
+    )
 
-target_link_libraries(intravenous_architecture_smoke PRIVATE intravenous_module_runtime)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 
-add_test(NAME intravenous_architecture_smoke COMMAND intravenous_architecture_smoke)
+    target_link_libraries(${target} PRIVATE
+        GTest::gtest_main
+        intravenous_module_runtime
+    )
 
-add_executable(intravenous_module_loader_variants
-    module_loader_variants.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
-)
+    gtest_discover_tests(${target})
+endfunction()
 
-target_compile_features(intravenous_module_loader_variants PRIVATE cxx_std_23)
-set_target_properties(intravenous_module_loader_variants PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
+add_iv_gtest(intravenious_architecture_smoke_tests architecture_smoke_gtest.cpp)
+add_iv_gtest(intravenious_module_loader_variants_tests module_loader_variants_gtest.cpp)
+add_iv_gtest(intravenious_module_loader_failures_tests module_loader_failures_gtest.cpp)
+add_iv_gtest(intravenious_module_loader_reload_tests module_loader_reload_gtest.cpp)
+add_iv_gtest(intravenious_module_build_behavior_tests module_build_behavior_gtest.cpp)
+add_iv_gtest(intravenious_module_watcher_tests module_watcher_gtest.cpp)
+add_iv_gtest(intravenious_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
+add_iv_gtest(intravenious_detach_regression_tests detach_regression_gtest.cpp)
 
-target_include_directories(intravenous_module_loader_variants PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
-)
-
-target_include_directories(intravenous_module_loader_variants SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
-)
-
-if(MSVC)
-    target_compile_options(intravenous_module_loader_variants PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous_module_loader_variants PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-target_link_libraries(intravenous_module_loader_variants PRIVATE intravenous_module_runtime)
-
-add_test(NAME intravenous_module_loader_variants COMMAND intravenous_module_loader_variants)
-
-add_executable(intravenous_module_loader_failures
-    module_loader_failures.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
-)
-
-target_compile_features(intravenous_module_loader_failures PRIVATE cxx_std_23)
-set_target_properties(intravenous_module_loader_failures PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
-
-target_include_directories(intravenous_module_loader_failures PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
-)
-
-target_include_directories(intravenous_module_loader_failures SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
-)
-
-if(MSVC)
-    target_compile_options(intravenous_module_loader_failures PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous_module_loader_failures PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-target_link_libraries(intravenous_module_loader_failures PRIVATE intravenous_module_runtime)
-
-add_test(NAME intravenous_module_loader_failures COMMAND intravenous_module_loader_failures)
-
-add_executable(intravenous_module_loader_reload
-    module_loader_reload.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
-)
-
-target_compile_features(intravenous_module_loader_reload PRIVATE cxx_std_23)
-set_target_properties(intravenous_module_loader_reload PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
-
-target_include_directories(intravenous_module_loader_reload PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
-)
-
-target_include_directories(intravenous_module_loader_reload SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
-)
-
-if(MSVC)
-    target_compile_options(intravenous_module_loader_reload PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous_module_loader_reload PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-target_link_libraries(intravenous_module_loader_reload PRIVATE intravenous_module_runtime)
-
-add_test(NAME intravenous_module_loader_reload COMMAND intravenous_module_loader_reload)
-
-add_executable(intravenous_module_watcher
-    module_watcher.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
-)
-
-target_compile_features(intravenous_module_watcher PRIVATE cxx_std_23)
-set_target_properties(intravenous_module_watcher PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
-
-target_include_directories(intravenous_module_watcher PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
-)
-
-target_include_directories(intravenous_module_watcher SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
-)
-
-if(MSVC)
-    target_compile_options(intravenous_module_watcher PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous_module_watcher PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-target_link_libraries(intravenous_module_watcher PRIVATE intravenous_module_runtime)
-
-add_test(NAME intravenous_module_watcher COMMAND intravenous_module_watcher)
-
-add_executable(intravenous_module_build_behavior
-    module_build_behavior.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
-)
-
-target_compile_features(intravenous_module_build_behavior PRIVATE cxx_std_23)
-set_target_properties(intravenous_module_build_behavior PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
-
-target_include_directories(intravenous_module_build_behavior PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
-)
-
-target_include_directories(intravenous_module_build_behavior SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
-)
-
-if(MSVC)
-    target_compile_options(intravenous_module_build_behavior PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous_module_build_behavior PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-target_link_libraries(intravenous_module_build_behavior PRIVATE intravenous_module_runtime)
-
-add_test(NAME intravenous_module_build_behavior COMMAND intravenous_module_build_behavior)
-
-add_executable(intravenous_shared_buffer_context
-    shared_buffer_context.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
-)
-
-target_compile_features(intravenous_shared_buffer_context PRIVATE cxx_std_23)
-set_target_properties(intravenous_shared_buffer_context PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
-
-target_include_directories(intravenous_shared_buffer_context PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
-)
-
-target_include_directories(intravenous_shared_buffer_context SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
-)
-
-if(MSVC)
-    target_compile_options(intravenous_shared_buffer_context PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous_shared_buffer_context PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-target_link_libraries(intravenous_shared_buffer_context PRIVATE intravenous_module_runtime)
-
-add_test(NAME intravenous_shared_buffer_context COMMAND intravenous_shared_buffer_context)
-
-add_executable(intravenous_detach_regression
-    detach_regression.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
-)
-
-target_compile_features(intravenous_detach_regression PRIVATE cxx_std_23)
-set_target_properties(intravenous_detach_regression PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
-
-target_include_directories(intravenous_detach_regression PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
-)
-
-target_include_directories(intravenous_detach_regression SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
-)
-
-if(MSVC)
-    target_compile_options(intravenous_detach_regression PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenous_detach_regression PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-target_link_libraries(intravenous_detach_regression PRIVATE intravenous_module_runtime)
-
-add_test(NAME intravenous_detach_regression COMMAND intravenous_detach_regression)
-
-add_executable(intravenous_block_processing
+add_executable(intravenious_block_processing
     block_processing.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
+    ${PROJECT_SOURCE_DIR}/intravenious/third_party/miniaudio/miniaudio.c
 )
 
-target_compile_features(intravenous_block_processing PRIVATE cxx_std_23)
-set_target_properties(intravenous_block_processing PROPERTIES
+target_compile_features(intravenious_block_processing PRIVATE cxx_std_23)
+set_target_properties(intravenious_block_processing PROPERTIES
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
 
-target_include_directories(intravenous_block_processing PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
+target_include_directories(intravenious_block_processing PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenious
 )
 
-target_include_directories(intravenous_block_processing SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
+target_include_directories(intravenious_block_processing SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenious/third_party
 )
 
 if(MSVC)
-    target_compile_options(intravenous_block_processing PRIVATE /W4 /permissive-)
+    target_compile_options(intravenious_block_processing PRIVATE /W4 /permissive-)
 else()
-    target_compile_options(intravenous_block_processing PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(intravenious_block_processing PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-target_link_libraries(intravenous_block_processing PRIVATE intravenous_module_runtime)
+target_link_libraries(intravenious_block_processing PRIVATE intravenous_module_runtime)
 
-add_test(NAME intravenous_block_processing COMMAND intravenous_block_processing)
+add_test(NAME intravenious_block_processing COMMAND intravenious_block_processing)
+
+add_executable(intravenious_node_layout_storage
+    node_layout_storage.cpp
+    ${PROJECT_SOURCE_DIR}/intravenious/third_party/miniaudio/miniaudio.c
+)
+
+target_compile_features(intravenious_node_layout_storage PRIVATE cxx_std_23)
+set_target_properties(intravenious_node_layout_storage PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+
+target_include_directories(intravenious_node_layout_storage PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenious
+)
+
+target_include_directories(intravenious_node_layout_storage SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenious/third_party
+)
+
+if(MSVC)
+    target_compile_options(intravenious_node_layout_storage PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(intravenious_node_layout_storage PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+target_link_libraries(intravenious_node_layout_storage PRIVATE intravenous_module_runtime)
+
+add_test(NAME intravenious_node_layout_storage COMMAND intravenious_node_layout_storage)

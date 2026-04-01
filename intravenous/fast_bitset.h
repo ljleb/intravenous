@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <array>
 #include <cstdint>
 #include <bit>
@@ -26,7 +26,7 @@ namespace iv {
             data_.fill(0);
         }
 
-        // forward‑only const iterator
+        // forward-only const iterator
         class const_iterator {
             const FastBitset* bs_;
             size_t word_idx_;

@@ -10,7 +10,6 @@
 #include <cmath>
 #include <limits>
 #include <mutex>
-#include <unordered_map>
 #include <utility>
 
 namespace iv {
@@ -243,18 +242,6 @@ namespace iv {
             return spec;
         }
 
-        bool compatible_specs(JuceVstWrapperSpec const& a, JuceVstWrapperSpec const& b)
-        {
-            return
-                canonical_plugin_path(a.plugin.plugin_path) == canonical_plugin_path(b.plugin.plugin_path) &&
-                a.plugin.plugin_identifier == b.plugin.plugin_identifier &&
-                a.plugin.preferred_audio_input_streams == b.plugin.preferred_audio_input_streams &&
-                a.plugin.preferred_audio_output_streams == b.plugin.preferred_audio_output_streams &&
-                a.schema.fingerprint == b.schema.fingerprint &&
-                a.schema.audio_inputs == b.schema.audio_inputs &&
-                a.schema.audio_outputs == b.schema.audio_outputs;
-        }
-
         struct ParameterBinding {
             ::juce::AudioProcessorParameter* parameter = nullptr;
             float last_value = std::numeric_limits<float>::quiet_NaN();
@@ -269,7 +256,6 @@ namespace iv {
         std::vector<ParameterBinding> parameter_bindings;
         double prepared_sample_rate = 0.0;
         int prepared_block_size = 0;
-        size_t ref_count = 0;
         std::mutex mutex;
 
         void prepare(double sample_rate, size_t block_size)
@@ -297,36 +283,6 @@ namespace iv {
         }
     };
 
-    struct JuceVstRuntimeManager::Session {
-        JuceVstRuntimeManager* manager = nullptr;
-        double sample_rate = 0.0;
-        std::unordered_map<std::string, LiveInstance*> active_instances;
-
-        ~Session()
-        {
-            if (!manager) {
-                return;
-            }
-
-            std::lock_guard lock(manager->_mutex);
-            for (auto const& [resource_id, _] : active_instances) {
-                auto it = manager->_instances.find(resource_id);
-                if (it == manager->_instances.end()) {
-                    continue;
-                }
-                auto& instance = it->second;
-                if (instance->ref_count != 0) {
-                    --instance->ref_count;
-                }
-                if (instance->ref_count == 0) {
-                    instance->plugin->suspendProcessing(true);
-                    instance->plugin->releaseResources();
-                    manager->_instances.erase(it);
-                }
-            }
-        }
-    };
-
     struct JuceVstRuntimeManager::Impl {
         ::juce::AudioPluginFormatManager format_manager;
 
@@ -342,49 +298,33 @@ namespace iv {
 
     JuceVstRuntimeManager::~JuceVstRuntimeManager() = default;
 
-    std::shared_ptr<JuceVstRuntimeManager::Session> JuceVstRuntimeManager::make_session(double sample_rate)
-    {
-        auto session = std::make_shared<Session>();
-        session->manager = this;
-        session->sample_rate = sample_rate;
-        return session;
-    }
-
     JuceVstRuntimeSupport::JuceVstRuntimeSupport(JuceVstRuntimeManager& manager, double sample_rate) :
         _manager(&manager),
         _sample_rate(sample_rate),
-        _session(manager.make_session(sample_rate))
+        _vst_resources{
+            .owner = this,
+            .create_juce_vst_fn = [](void* owner, JuceVstWrapperSpec const& spec) {
+                auto& support = *static_cast<JuceVstRuntimeSupport*>(owner);
+                return support._manager->create_instance(spec, support._sample_rate);
+            },
+        },
+        _resources { .vst = _vst_resources }
     {}
 
-    namespace juce_details {
-        std::string make_juce_vst_runtime_resource_id(std::string_view resource_id)
-        {
-            return "juce_vst_instance:" + std::string(resource_id);
-        }
-
-        std::string make_juce_vst_spec_buffer_id(std::string_view resource_id)
-        {
-            return "juce_vst_spec:" + std::string(resource_id);
-        }
-    }
-
-    JuceVstWrapperSpec probe_juce_vst(JuceVstProbeRequest request)
+    JuceVstWrapperSpec probe_juce_vst(JuceVstPluginConfig request)
     {
-        if (request.resource_id.empty()) {
-            throw std::logic_error("probe_juce_vst requires a non-empty resource_id");
-        }
-
         ::juce::AudioPluginFormatManager format_manager;
         format_manager.addDefaultFormats();
 
-        ::juce::PluginDescription const description = resolve_plugin_description(format_manager, request.plugin);
-        auto instance = create_plugin_instance(format_manager, request.plugin, 48000.0, 512);
-        configure_audio_layout(*instance, request.plugin);
+        ::juce::PluginDescription const description = resolve_plugin_description(format_manager, request);
+        auto instance = create_plugin_instance(format_manager, request, 48000.0, 512);
+        configure_audio_layout(*instance, request);
 
         JuceVstWrapperSpec spec;
-        spec.resource_id = std::move(request.resource_id);
-        spec.plugin.plugin_path = std::filesystem::weakly_canonical(request.plugin.plugin_path);
+        spec.plugin.plugin_path = std::filesystem::weakly_canonical(request.plugin_path);
         spec.plugin.plugin_identifier = description.createIdentifierString().toStdString();
+        spec.plugin.preferred_audio_input_streams = request.preferred_audio_input_streams;
+        spec.plugin.preferred_audio_output_streams = request.preferred_audio_output_streams;
         spec.schema.audio_inputs = static_cast<size_t>(instance->getTotalNumInputChannels());
         spec.schema.audio_outputs = static_cast<size_t>(instance->getTotalNumOutputChannels());
         spec.schema.audio_input_names.reserve(spec.schema.audio_inputs);
@@ -408,85 +348,45 @@ namespace iv {
         return spec;
     }
 
-    JuceVstRuntimeManager::LiveInstance* JuceVstRuntimeManager::acquire_instance(
-        Session& session,
-        std::shared_ptr<JuceVstWrapperSpec const> const& spec,
-        size_t block_size
+    UniqueResource JuceVstRuntimeManager::create_instance(
+        JuceVstWrapperSpec const& spec,
+        double sample_rate
     )
     {
         std::lock_guard lock(_mutex);
-        auto it = _instances.find(spec->resource_id);
-        if (it != _instances.end()) {
-            auto& existing = it->second;
-            if (!compatible_specs(*existing->spec, *spec)) {
-                throw std::logic_error("JuceVstWrapper resource_id '" + spec->resource_id + "' was reused with an incompatible plugin configuration");
-            }
-            existing->prepare(session.sample_rate, block_size);
-            if (!session.active_instances.contains(spec->resource_id)) {
-                ++existing->ref_count;
-                session.active_instances.emplace(spec->resource_id, existing.get());
-            }
-            return existing.get();
-        }
-
         auto instance = create_plugin_instance(
             _impl->format_manager,
-            spec->plugin,
-            session.sample_rate,
-            static_cast<int>(block_size)
+            spec.plugin,
+            sample_rate > 0.0 ? sample_rate : 48000.0,
+            512
         );
-        configure_audio_layout(*instance, spec->plugin);
+        configure_audio_layout(*instance, spec.plugin);
 
         auto live = std::make_unique<LiveInstance>();
-        live->spec = spec;
+        live->spec = std::make_shared<JuceVstWrapperSpec const>(spec);
         live->plugin = std::move(instance);
         live->parameter_bindings.reserve(live->plugin->getParameters().size());
         for (auto* parameter : live->plugin->getParameters()) {
             live->parameter_bindings.push_back(ParameterBinding{ parameter, std::numeric_limits<float>::quiet_NaN() });
         }
-        live->prepare(session.sample_rate, block_size);
-        live->ref_count = 1;
-
-        LiveInstance* result = live.get();
-        _instances.emplace(spec->resource_id, std::move(live));
-        session.active_instances.emplace(spec->resource_id, result);
-        return result;
+        return UniqueResource(
+            live.release(),
+            +[](void* ptr) {
+                delete static_cast<LiveInstance*>(ptr);
+            }
+        );
     }
 
-    void JuceVstRuntimeSupport::register_runtime_buffers(TypeErasedAllocator allocator, InitBufferContext& context)
+    void JuceVstRuntimeSupport::register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder)
     {
-        if (!_manager || !_session) {
-            return;
-        }
-
-        auto session = std::static_pointer_cast<JuceVstRuntimeManager::Session>(_session);
-        constexpr std::string_view prefix = "juce_vst_instance:";
-        for (auto const& [runtime_id, record] : context.tick_buffers) {
-            if (!record.used || !runtime_id.starts_with(prefix)) {
-                continue;
-            }
-            std::string const resource_id = runtime_id.substr(prefix.size());
-            auto const spec_buffer_id = juce_details::make_juce_vst_spec_buffer_id(resource_id);
-            if (!context.has_init_buffer(spec_buffer_id)) {
-                throw std::logic_error("JuceVstWrapper resource_id '" + resource_id + "' did not publish its probe spec");
-            }
-            auto spec_slot = context.template use_init_buffer<JuceVstWrapperSpec>(spec_buffer_id);
-            auto spec = std::make_shared<JuceVstWrapperSpec const>(spec_slot[0]);
-
-            auto slots = allocator.template new_array<void*>(1);
-            context.register_tick_buffer(runtime_id, slots);
-
-            if (allocator.can_allocate() && !slots.empty()) {
-                slots[0] = nullptr;
-                slots[0] = _manager->acquire_instance(*session, spec, context.max_block_size);
-            }
-        }
+        (void)allocator;
+        (void)builder;
     }
 
     void tick_juce_vst_wrapper(
         JuceVstWrapperSpec const& spec,
         void* live_instance_ptr,
-        BlockTickState const& state
+        TickBlockContext<JuceVstWrapper> const& state
     )
     {
         if (live_instance_ptr == nullptr) {
@@ -494,6 +394,10 @@ namespace iv {
         }
 
         auto& live_instance = *static_cast<JuceVstRuntimeManager::LiveInstance*>(live_instance_ptr);
+        live_instance.prepare(
+            live_instance.prepared_sample_rate > 0.0 ? live_instance.prepared_sample_rate : 48000.0,
+            state.block_size
+        );
         std::lock_guard lock(live_instance.mutex);
 
         auto& buffer = live_instance.audio_buffer;
@@ -527,13 +431,9 @@ namespace iv {
         }
     }
 
-    void JuceVstWrapper::tick_block(BlockTickState const& state) const
+    void JuceVstWrapper::tick_block(TickBlockContext<JuceVstWrapper> const& ctx) const
     {
-        State& wrapper_state = state.get_state<State>();
-        void* live_instance = (wrapper_state.runtime_slot && *wrapper_state.runtime_slot)
-            ? *wrapper_state.runtime_slot
-            : nullptr;
-        tick_juce_vst_wrapper(*_spec, live_instance, state);
+        tick_juce_vst_wrapper(*_spec, ctx.state().plugin_instance.get(), ctx);
     }
 }
 

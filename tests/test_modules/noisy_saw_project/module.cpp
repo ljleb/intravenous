@@ -39,29 +39,13 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
 {
     using namespace iv;
     GraphBuilder& g = context.builder();
-    ModuleSystem const& system = context.system();
+    auto const& targets = context.target_factory();
     auto voice_module = context.load("iv.test.noisy_saw_voice");
 
-    auto const dt = g.node<ValueSource>(&system.sample_period());
+    auto const dt = g.node<ValueSource>(&context.sample_period());
     SignalRef first_noise;
 
-    auto const valhalla = juce::vst(g, "thing", "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
-    info(valhalla.node());
-    valhalla({
-        {"Mix", 0.004},
-        {"DelayWarp", 1.0},
-        {"Delay_Ms", 0.0001},
-        {"Density", 1.0},
-        {"Feedback", 0.0},
-        // {"Mode", 0.1},
-    });
-
-    auto const val_idx = std::array {
-        "l0",
-        "r0",
-    };
-
-    for (size_t channel = 0; channel < system.render_config().num_channels; ++channel) {
+    for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
         auto const noise = g.subgraph(noise_voice);
         if (channel == 0) {
             first_noise = noise;
@@ -69,15 +53,14 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
 
         auto const voice = g.node(voice_module.builder());
         auto const shared_noise = g.node<Interpolation>();
-        auto const sink = system.sink(g, channel);
+        auto const sink = targets.sink(g, channel);
 
         noise(dt);
         shared_noise(first_noise, noise, 1.0);
-        valhalla({{val_idx[channel], 1.0 * voice["feedback"].detach(1 << 9)}});
         voice({
-            {"noise", 0.0*shared_noise},
+            {"noise", 0.5*shared_noise},
             {"dt", dt},
-            {"feedback", valhalla[val_idx[channel]]},
+            {"feedback", voice["feedback"].detach()},
         });
         sink(voice["out"]);
     }

@@ -67,10 +67,6 @@ function(iv_configure_juce)
 endfunction()
 
 add_library(intravenous_module_runtime STATIC
-    basic_nodes/filters.cpp
-    basic_nodes/noise.cpp
-    basic_nodes/predictors.cpp
-    basic_nodes/shaping.cpp
     module/loader.cpp
     module/watcher.cpp
 )
