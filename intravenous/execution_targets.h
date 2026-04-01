@@ -474,6 +474,24 @@ namespace iv {
             if (contribution.size() != mixed_samples) {
                 throw std::logic_error("BufferedAudioDeviceTarget mixed block size mismatch");
             }
+            if (expected_contributors == 0) {
+                throw std::logic_error("BufferedAudioDeviceTarget expected contributor count must be non-zero");
+            }
+
+            if (expected_contributors == 1 && can_append_directly(block_index, block_size)) {
+                if (_buffered_frames == 0) {
+                    _buffer_start_frame = block_index;
+                }
+                if (_buffered_frames + block_size > _buffer_capacity_frames) {
+                    throw std::logic_error("BufferedAudioDeviceTarget overflowed its device buffer");
+                }
+
+                clear_block_region(block_index, block_size);
+                accumulate_block_region(block_index, block_size, contribution);
+                _buffered_frames += block_size;
+                try_submit_requested_block();
+                return;
+            }
 
             auto& pending = pending_slot(block_index, block_size);
             if (!pending.occupied) {
@@ -633,6 +651,18 @@ namespace iv {
             }
             _buffer_start_frame += frame_count;
             _buffered_frames -= frame_count;
+        }
+
+        bool can_append_directly(size_t block_index, size_t block_size) const
+        {
+            if (_next_append_block_index.has_value()) {
+                return false;
+            }
+            if (_buffered_frames == 0) {
+                return true;
+            }
+            return block_index == _buffer_start_frame + _buffered_frames &&
+                _buffered_frames + block_size <= _buffer_capacity_frames;
         }
 
         void clear_block_region(size_t block_index, size_t block_size)
