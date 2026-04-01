@@ -921,7 +921,7 @@ namespace iv {
                 }
             }
 
-            auto target = std::make_unique<WavFileExecutionTarget>(normalized, _sample_rate);
+            auto target = std::make_unique<WavFileExecutionTarget>(normalized, file_target_sample_rate_locked(executor));
             size_t const target_index = _file_targets.size();
             _file_targets.push_back(std::move(target));
             _file_target_active.push_back(true);
@@ -1065,19 +1065,17 @@ namespace iv {
 
         bool all_devices_ready_locked(ExecutorState const& executor, size_t block_size)
         {
-            bool has_active_device = false;
             for (size_t device_id : executor.device_ids) {
                 auto device_it = _device_states.find(device_id);
                 if (device_it == _device_states.end() || device_it->second.active_target_count == 0) {
                     continue;
                 }
-                has_active_device = true;
                 device_it->second.buffered_target.try_submit_requested_block();
                 if (!device_it->second.buffered_target.is_ready_for_next_block(block_size)) {
                     return false;
                 }
             }
-            return has_active_device;
+            return true;
         }
 
     public:
@@ -1119,6 +1117,20 @@ namespace iv {
                 std::forward_as_tuple(device_id),
                 std::forward_as_tuple(*device)
             ).first->second;
+        }
+
+        size_t file_target_sample_rate_locked(ExecutorState const& executor)
+        {
+            for (size_t device_id : executor.device_ids) {
+                auto& device_state = get_device_state_locked(device_id);
+                return device_state.device->config().sample_rate;
+            }
+
+            if (auto* default_device = _audio_device_provider.device_fn(_audio_device_provider.owner, 0)) {
+                return default_device->config().sample_rate;
+            }
+
+            return _sample_rate;
         }
 
         ExecutorState& require_executor_locked(size_t executor_id)

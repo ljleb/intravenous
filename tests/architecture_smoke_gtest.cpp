@@ -8,11 +8,15 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <future>
 #include <stdexcept>
 #include <string_view>
 
 namespace {
     constexpr auto kBlockReadyTimeout = std::chrono::milliseconds(100);
+    constexpr auto kAsyncWaitTimeout = std::chrono::milliseconds(50);
 
     void expect_constant_block(std::span<iv::Sample const> block, iv::Sample expected)
     {
@@ -115,6 +119,29 @@ namespace {
     void expect_zero_output(iv::test::FakeAudioDevice const& audio_device, size_t channel = 0)
     {
         expect_constant_block(audio_device.output_block(channel), 0.0f);
+    }
+
+    std::uint32_t read_wav_sample_rate(std::filesystem::path const& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        EXPECT_TRUE(static_cast<bool>(in)) << "failed to open wav file: " << path.string();
+        if (!in) {
+            return 0;
+        }
+
+        std::array<unsigned char, 28> header {};
+        in.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+        EXPECT_GE(in.gcount(), static_cast<std::streamsize>(header.size()))
+            << "wav file too small: " << path.string();
+        if (in.gcount() < static_cast<std::streamsize>(header.size())) {
+            return 0;
+        }
+
+        return
+            static_cast<std::uint32_t>(header[24]) |
+            (static_cast<std::uint32_t>(header[25]) << 8) |
+            (static_cast<std::uint32_t>(header[26]) << 16) |
+            (static_cast<std::uint32_t>(header[27]) << 24);
     }
 }
 
@@ -432,4 +459,68 @@ TEST(ArchitectureSmoke, ReloadReplacesAudioContribution)
     request_tick_and_wait(audio_device, executor, 8, 8);
     expect_constant_block(audio_device.output_block(), 0.5f);
     audio_device.device().finish_requested_block();
+}
+
+TEST(ArchitectureSmoke, RegistryReadyCheckDoesNotBlockWithoutAudioTargets)
+{
+    iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
+    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    execution_target_registry.register_executor(1);
+    execution_target_registry.validate_executor_block_size(1, 8);
+
+    auto wait_result = std::async(std::launch::async, [&] {
+        return execution_target_registry.sync_block(1, std::nullopt, 0, 8);
+    });
+
+    EXPECT_EQ(wait_result.wait_for(kAsyncWaitTimeout), std::future_status::ready)
+        << "sync_block should not wait forever when an executor has no active audio devices";
+
+    execution_target_registry.unregister_executor(1);
+    (void)wait_result.wait_for(kBlockReadyTimeout);
+}
+
+TEST(ArchitectureSmoke, FileSinkUsesDeviceSampleRateForWavOutput)
+{
+    iv::Sample value = 0.25f;
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 44100,
+            .num_channels = 1,
+            .max_block_frames = 8,
+            .preferred_block_size = 8,
+        }
+    );
+
+    auto output_path = iv::test::repo_root() / "build" / "architecture_smoke_file_sink.wav";
+    std::error_code ec;
+    std::filesystem::remove(output_path, ec);
+
+    {
+        iv::GraphBuilder g;
+        auto const src = g.node<iv::ValueSource>(&value);
+        auto const sink = g.node<iv::FileSink>(iv::FileSink{
+            .path = output_path,
+            .channel = 0,
+        });
+        sink(src);
+        g.outputs();
+
+        iv::ExecutionTargetRegistry execution_target_registry(
+            iv::test::make_audio_device_provider(audio_device),
+            48000
+        );
+        auto executor = iv::NodeExecutor::create(
+            iv::TypeErasedNode(g.build()),
+            {},
+            execution_target_registry,
+            1
+        );
+
+        executor.tick_block(0, 8);
+    }
+
+    ASSERT_TRUE(std::filesystem::exists(output_path)) << output_path.string();
+    EXPECT_EQ(read_wav_sample_rate(output_path), audio_device.config().sample_rate);
+
+    std::filesystem::remove(output_path, ec);
 }
