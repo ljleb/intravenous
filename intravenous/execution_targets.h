@@ -133,12 +133,12 @@ namespace iv {
             return a.data() == b.data() && a.size() == b.size();
         }
 
-        void begin_block(size_t block_index, size_t block_size)
+        void clear_block(size_t block_index, size_t block_size)
         {
             clear_sinks(block_index, block_size);
         }
 
-        void end_block(size_t block_index, size_t block_size)
+        void mix_block(size_t block_index, size_t block_size)
         {
             mix_chunk(block_index, block_size);
         }
@@ -250,7 +250,7 @@ namespace iv {
             return _path;
         }
 
-        void begin_block(size_t block_index, size_t block_size)
+        void clear_block(size_t block_index, size_t block_size)
         {
             for (auto const& sink_entry : _sinks) {
                 auto const& sink = sink_entry.buffer;
@@ -263,7 +263,7 @@ namespace iv {
             }
         }
 
-        void end_block(size_t block_index, size_t block_size)
+        void capture_block(size_t block_index, size_t block_size)
         {
             size_t channel_count = _channel_sink_counts.size();
             if (channel_count == 0) {
@@ -509,7 +509,7 @@ namespace iv {
             }
         }
 
-        bool needs_graph_frames(size_t graph_block_size) const
+        bool is_ready_for_next_block(size_t graph_block_size) const
         {
             auto requested = _device->requested_block();
             if (!requested.has_value()) {
@@ -638,23 +638,28 @@ namespace iv {
         void clear_block_region(size_t block_index, size_t block_size)
         {
             size_t const channels = _device->config().num_channels;
-            for (size_t frame = 0; frame < block_size; ++frame) {
-                size_t const destination_frame = block_index + frame;
-                size_t const destination_offset = (destination_frame & (_buffer_capacity_frames - 1)) * channels;
-                std::fill_n(_buffered_audio.data() + destination_offset, channels, 0.0f);
+            size_t const start_frame = block_index & (_buffer_capacity_frames - 1);
+            size_t const samples = block_size * channels;
+            size_t const contiguous_samples = std::min(samples, (_buffer_capacity_frames - start_frame) * channels);
+
+            std::fill_n(_buffered_audio.data() + start_frame * channels, contiguous_samples, 0.0f);
+            if (contiguous_samples < samples) {
+                std::fill_n(_buffered_audio.data(), samples - contiguous_samples, 0.0f);
             }
         }
 
         void accumulate_block_region(size_t block_index, size_t block_size, std::span<Sample const> contribution)
         {
             size_t const channels = _device->config().num_channels;
-            for (size_t frame = 0; frame < block_size; ++frame) {
-                size_t const destination_frame = block_index + frame;
-                size_t const destination_offset = (destination_frame & (_buffer_capacity_frames - 1)) * channels;
-                size_t const source_offset = frame * channels;
-                for (size_t channel = 0; channel < channels; ++channel) {
-                    _buffered_audio[destination_offset + channel] += contribution[source_offset + channel];
-                }
+            size_t const start_frame = block_index & (_buffer_capacity_frames - 1);
+            size_t const samples = block_size * channels;
+            size_t const contiguous_samples = std::min(samples, (_buffer_capacity_frames - start_frame) * channels);
+
+            for (size_t sample = 0; sample < contiguous_samples; ++sample) {
+                _buffered_audio[start_frame * channels + sample] += contribution[sample];
+            }
+            for (size_t sample = contiguous_samples; sample < samples; ++sample) {
+                _buffered_audio[sample - contiguous_samples] += contribution[sample];
             }
         }
 
@@ -713,25 +718,35 @@ namespace iv {
         };
 
     private:
+        struct ExecutorState {
+            std::vector<size_t> audio_target_indices;
+            std::vector<size_t> file_target_indices;
+            std::vector<size_t> device_ids;
+        };
+
+        struct DeviceState {
+            LogicalAudioDevice* device = nullptr;
+            BufferedAudioDeviceTarget buffered_target;
+            size_t active_target_count = 0;
+
+            explicit DeviceState(LogicalAudioDevice& device)
+            : device(&device)
+            , buffered_target(device)
+            {}
+        };
+
         AudioDeviceProvider _audio_device_provider;
         RequestNotification _request_notification;
         size_t _sample_rate = 48000;
-        mutable std::mutex _mutex;
-        std::unordered_set<size_t> _registered_executors;
-        std::unordered_map<size_t, size_t> _executor_next_block_indices;
+        mutable std::unique_ptr<std::mutex> _mutex = std::make_unique<std::mutex>();
+        std::unordered_map<size_t, ExecutorState> _executors;
         std::optional<size_t> _shared_executor_block_size;
-        std::vector<std::shared_ptr<AudioDeviceExecutionTarget>> _audio_device_targets;
-        std::vector<bool> _audio_device_target_active;
-        std::unordered_map<std::uint64_t, size_t> _audio_device_target_indices;
-        std::unordered_map<size_t, std::vector<size_t>> _device_audio_target_indices;
-        std::unordered_map<size_t, std::vector<size_t>> _executor_audio_target_indices;
-        std::unordered_map<size_t, std::vector<size_t>> _executor_audio_device_ids;
-        std::unordered_map<size_t, size_t> _device_active_audio_target_counts;
-        std::unordered_map<size_t, LogicalAudioDevice*> _devices;
-        std::unordered_map<size_t, BufferedAudioDeviceTarget> _buffered_audio_device_targets;
-        std::vector<std::shared_ptr<WavFileExecutionTarget>> _file_targets;
+        std::vector<std::unique_ptr<AudioDeviceExecutionTarget>> _audio_targets;
+        std::vector<bool> _audio_target_active;
+        std::unordered_map<std::uint64_t, size_t> _audio_target_indices;
+        std::unordered_map<size_t, DeviceState> _device_states;
+        std::vector<std::unique_ptr<WavFileExecutionTarget>> _file_targets;
         std::vector<bool> _file_target_active;
-        std::unordered_map<size_t, std::vector<size_t>> _executor_file_target_indices;
 
     public:
         explicit ExecutionTargetRegistry(AudioDeviceProvider audio_device_provider, size_t sample_rate = 48000, RequestNotification request_notification = std::make_shared<std::condition_variable>())
@@ -747,19 +762,23 @@ namespace iv {
             }
         }
 
+        ExecutionTargetRegistry(ExecutionTargetRegistry&&) noexcept = default;
+        ExecutionTargetRegistry& operator=(ExecutionTargetRegistry&&) noexcept = default;
+        ExecutionTargetRegistry(ExecutionTargetRegistry const&) = delete;
+        ExecutionTargetRegistry& operator=(ExecutionTargetRegistry const&) = delete;
+
         void register_executor(size_t executor_id)
         {
-            std::scoped_lock lock(_mutex);
-            if (!_registered_executors.insert(executor_id).second) {
+            std::scoped_lock lock(*_mutex);
+            if (!_executors.emplace(executor_id, ExecutorState{}).second) {
                 throw std::logic_error("ExecutionTargetRegistry executor id is already registered");
             }
-            _executor_next_block_indices[executor_id] = 0;
         }
 
         void validate_executor_block_size(size_t executor_id, size_t block_size)
         {
-            std::scoped_lock lock(_mutex);
-            require_registered_executor_locked(executor_id);
+            std::scoped_lock lock(*_mutex);
+            require_executor_locked(executor_id);
             if (_shared_executor_block_size.has_value() && *_shared_executor_block_size != block_size) {
                 throw std::logic_error("ExecutionTargetRegistry requires all executors to use the same block size");
             }
@@ -777,76 +796,61 @@ namespace iv {
         AudioDeviceExecutionTarget& resolve_audio_device_target(size_t executor_id, size_t device_id, size_t channel)
         {
             (void)channel;
-            std::scoped_lock lock(_mutex);
-            require_registered_executor_locked(executor_id);
+            std::scoped_lock lock(*_mutex);
+            auto& executor = require_executor_locked(executor_id);
 
             auto key = audio_target_key(executor_id, device_id);
-            if (auto it = _audio_device_target_indices.find(key); it != _audio_device_target_indices.end()) {
-                return *_audio_device_targets[it->second];
+            if (auto it = _audio_target_indices.find(key); it != _audio_target_indices.end()) {
+                return *_audio_targets[it->second];
             }
 
-            auto* device = get_audio_device_locked(device_id);
-            if (!device) {
-                throw std::logic_error("ExecutionTargetRegistry audio device provider returned null");
-            }
+            auto& device = get_device_state_locked(device_id);
 
-            auto target = std::make_shared<AudioDeviceExecutionTarget>(device_id, device->config());
-            size_t const target_index = _audio_device_targets.size();
-            _audio_device_targets.push_back(target);
-            _audio_device_target_active.push_back(true);
-            _audio_device_target_indices.emplace(key, target_index);
-            _device_audio_target_indices[device_id].push_back(target_index);
-            _executor_audio_target_indices[executor_id].push_back(target_index);
-            auto& executor_device_ids = _executor_audio_device_ids[executor_id];
-            if (std::find(executor_device_ids.begin(), executor_device_ids.end(), device_id) == executor_device_ids.end()) {
-                executor_device_ids.push_back(device_id);
+            auto target = std::make_unique<AudioDeviceExecutionTarget>(device_id, device.device->config());
+            size_t const target_index = _audio_targets.size();
+            _audio_targets.push_back(std::move(target));
+            _audio_target_active.push_back(true);
+            _audio_target_indices.emplace(key, target_index);
+            executor.audio_target_indices.push_back(target_index);
+            if (std::find(executor.device_ids.begin(), executor.device_ids.end(), device_id) == executor.device_ids.end()) {
+                executor.device_ids.push_back(device_id);
             }
-            ++_device_active_audio_target_counts[device_id];
-            if (!_buffered_audio_device_targets.contains(device_id)) {
-                _buffered_audio_device_targets.emplace(device_id, BufferedAudioDeviceTarget(*device));
-            }
-            return *target;
+            ++device.active_target_count;
+            return *_audio_targets.back();
         }
 
         void unregister_executor(size_t executor_id)
         {
-            std::scoped_lock lock(_mutex);
-            if (!_registered_executors.contains(executor_id)) {
+            std::scoped_lock lock(*_mutex);
+            auto executor_it = _executors.find(executor_id);
+            if (executor_it == _executors.end()) {
                 return;
             }
 
-            if (auto it = _executor_audio_target_indices.find(executor_id); it != _executor_audio_target_indices.end()) {
-                for (size_t target_index : it->second) {
-                    if (target_index >= _audio_device_targets.size()) {
-                        continue;
-                    }
-                    _audio_device_target_active[target_index] = false;
-                    auto const& target = _audio_device_targets[target_index];
-                    if (!target) {
-                        continue;
-                    }
-                    auto active_count_it = _device_active_audio_target_counts.find(target->device_id());
-                    if (active_count_it != _device_active_audio_target_counts.end() && active_count_it->second > 0) {
-                        --active_count_it->second;
-                    }
-                    _audio_device_target_indices.erase(audio_target_key(executor_id, target->device_id()));
+            for (size_t target_index : executor_it->second.audio_target_indices) {
+                if (target_index >= _audio_targets.size() || !_audio_target_active[target_index]) {
+                    continue;
                 }
-                _executor_audio_target_indices.erase(it);
-            }
-            _executor_audio_device_ids.erase(executor_id);
-
-            if (auto it = _executor_file_target_indices.find(executor_id); it != _executor_file_target_indices.end()) {
-                for (size_t target_index : it->second) {
-                    if (target_index < _file_target_active.size()) {
-                        _file_target_active[target_index] = false;
-                    }
+                _audio_target_active[target_index] = false;
+                auto const& target = _audio_targets[target_index];
+                if (!target) {
+                    continue;
                 }
-                _executor_file_target_indices.erase(it);
+                auto device_it = _device_states.find(target->device_id());
+                if (device_it != _device_states.end() && device_it->second.active_target_count > 0) {
+                    --device_it->second.active_target_count;
+                }
+                _audio_target_indices.erase(audio_target_key(executor_id, target->device_id()));
             }
 
-            _registered_executors.erase(executor_id);
-            _executor_next_block_indices.erase(executor_id);
-            if (_registered_executors.empty()) {
+            for (size_t target_index : executor_it->second.file_target_indices) {
+                if (target_index < _file_target_active.size()) {
+                    _file_target_active[target_index] = false;
+                }
+            }
+
+            _executors.erase(executor_it);
+            if (_executors.empty()) {
                 _shared_executor_block_size.reset();
             }
             _request_notification->notify_all();
@@ -854,208 +858,131 @@ namespace iv {
 
         void clear_audio_state_for_executor(size_t executor_id)
         {
-            std::scoped_lock lock(_mutex);
-            auto local_audio_it = _executor_audio_target_indices.find(executor_id);
-            if (local_audio_it == _executor_audio_target_indices.end()) {
+            std::scoped_lock lock(*_mutex);
+            auto executor_it = _executors.find(executor_id);
+            if (executor_it == _executors.end()) {
                 return;
             }
 
-            std::unordered_set<size_t> device_ids;
-            for (size_t target_index : local_audio_it->second) {
-                if (target_index >= _audio_device_targets.size() || !_audio_device_target_active[target_index]) {
-                    continue;
-                }
-                auto const& target = _audio_device_targets[target_index];
-                if (target) {
-                    device_ids.insert(target->device_id());
-                }
-            }
-
-            for (size_t device_id : device_ids) {
-                if (auto it = _buffered_audio_device_targets.find(device_id); it != _buffered_audio_device_targets.end()) {
-                    it->second.clear();
+            for (size_t device_id : executor_it->second.device_ids) {
+                auto it = _device_states.find(device_id);
+                if (it != _device_states.end()) {
+                    it->second.buffered_target.clear();
                 }
             }
 
             _request_notification->notify_all();
-        }
-
-        void begin_block(size_t executor_id, size_t block_index, size_t block_size)
-        {
-            auto audio_indices = local_audio_target_indices(executor_id);
-            for (size_t target_index : audio_indices) {
-                auto const& target = _audio_device_targets[target_index];
-                if (target && _audio_device_target_active[target_index]) {
-                    target->begin_block(block_index, block_size);
-                }
-            }
-
-            auto file_indices = local_file_target_indices(executor_id);
-            for (size_t target_index : file_indices) {
-                auto const& target = _file_targets[target_index];
-                if (target && _file_target_active[target_index]) {
-                    target->begin_block(block_index, block_size);
-                }
-            }
         }
 
         WavFileExecutionTarget& resolve_file_target(size_t executor_id, std::filesystem::path const& path, size_t channel)
         {
             (void)channel;
             std::filesystem::path const normalized = std::filesystem::absolute(path).lexically_normal();
-            std::scoped_lock lock(_mutex);
-            require_registered_executor_locked(executor_id);
+            std::scoped_lock lock(*_mutex);
+            auto& executor = require_executor_locked(executor_id);
 
-            if (auto it = _executor_file_target_indices.find(executor_id); it != _executor_file_target_indices.end()) {
-                for (size_t target_index : it->second) {
-                    if (target_index >= _file_targets.size() || !_file_target_active[target_index]) {
-                        continue;
-                    }
-                    auto const& target = _file_targets[target_index];
-                    if (target && target->path() == normalized) {
-                        return *target;
-                    }
+            for (size_t target_index : executor.file_target_indices) {
+                if (target_index >= _file_targets.size() || !_file_target_active[target_index]) {
+                    continue;
                 }
-            }
-
-            auto target = std::make_shared<WavFileExecutionTarget>(normalized, _sample_rate);
-            size_t const target_index = _file_targets.size();
-            _file_targets.push_back(target);
-            _file_target_active.push_back(true);
-            _executor_file_target_indices[executor_id].push_back(target_index);
-            return *target;
-        }
-
-        void end_block(size_t executor_id, size_t block_index, size_t block_size)
-        {
-            auto file_indices = local_file_target_indices(executor_id);
-            for (size_t target_index : file_indices) {
                 auto const& target = _file_targets[target_index];
-                if (target && _file_target_active[target_index]) {
-                    target->end_block(block_index, block_size);
+                if (target && target->path() == normalized) {
+                    return *target;
                 }
             }
 
-            std::scoped_lock lock(_mutex);
-
-            auto local_audio_it = _executor_audio_target_indices.find(executor_id);
-            if (local_audio_it == _executor_audio_target_indices.end()) {
-                return;
-            }
-
-            for (size_t target_index : local_audio_it->second) {
-                if (target_index >= _audio_device_targets.size()) {
-                    continue;
-                }
-                if (!_audio_device_target_active[target_index]) {
-                    continue;
-                }
-
-                auto const& target = _audio_device_targets[target_index];
-                if (!target) {
-                    continue;
-                }
-
-                target->end_block(block_index, block_size);
-
-                size_t const device_id = target->device_id();
-                auto* device = get_audio_device_locked(device_id);
-                if (!device) {
-                    continue;
-                }
-
-                size_t const expected_contributors = _device_active_audio_target_counts[device_id];
-
-                auto buffered_device_it = _buffered_audio_device_targets.find(device_id);
-                if (buffered_device_it == _buffered_audio_device_targets.end()) {
-                    throw std::logic_error("ExecutionTargetRegistry missing buffered audio device target");
-                }
-
-                buffered_device_it->second.accept_contribution(
-                    target_index,
-                    block_index,
-                    block_size,
-                    expected_contributors,
-                    target->mixed_block(block_size)
-                );
-            }
-
-            _request_notification->notify_all();
+            auto target = std::make_unique<WavFileExecutionTarget>(normalized, _sample_rate);
+            size_t const target_index = _file_targets.size();
+            _file_targets.push_back(std::move(target));
+            _file_target_active.push_back(true);
+            executor.file_target_indices.push_back(target_index);
+            return *_file_targets.back();
         }
 
-        std::optional<std::pair<size_t, size_t>> wait_for_work(size_t executor_id, size_t block_size)
+        bool sync_block(size_t executor_id, std::optional<size_t> completed_block_index, size_t next_block_index, size_t block_size, bool wait_until_ready = true)
         {
-            std::unique_lock lock(_mutex);
-            auto local_device_it = _executor_audio_device_ids.find(executor_id);
-            if (local_device_it == _executor_audio_device_ids.end() || local_device_it->second.empty()) {
-                return std::nullopt;
+            auto const* executor = find_executor(executor_id);
+            if (!executor) {
+                return false;
             }
 
-            while (!_is_shutdown_requested_locked(executor_id)) {
-                bool any_hungry_device = false;
-
-                for (size_t device_id : local_device_it->second) {
-                    auto active_count_it = _device_active_audio_target_counts.find(device_id);
-                    if (active_count_it == _device_active_audio_target_counts.end() || active_count_it->second == 0) {
-                        continue;
-                    }
-
-                    auto buffered_device_it = _buffered_audio_device_targets.find(device_id);
-                    if (buffered_device_it == _buffered_audio_device_targets.end()) {
-                        continue;
-                    }
-
-                    buffered_device_it->second.try_submit_requested_block();
-                    if (buffered_device_it->second.needs_graph_frames(block_size)) {
-                        any_hungry_device = true;
+            if (completed_block_index.has_value()) {
+                for (size_t target_index : executor->file_target_indices) {
+                    auto const& target = _file_targets[target_index];
+                    if (target && _file_target_active[target_index]) {
+                        target->capture_block(*completed_block_index, block_size);
                     }
                 }
 
-                if (any_hungry_device) {
-                    size_t const next_block_index = _executor_next_block_indices[executor_id];
-                    _executor_next_block_indices[executor_id] = next_block_index + block_size;
-                    return std::pair{ next_block_index, block_size };
+                for (size_t target_index : executor->audio_target_indices) {
+                    if (target_index < _audio_targets.size() && _audio_target_active[target_index]) {
+                        auto const& target = _audio_targets[target_index];
+                        target->mix_block(*completed_block_index, block_size);
+                    }
+                }
+
+                std::scoped_lock lock(*_mutex);
+                for (size_t target_index : executor->audio_target_indices) {
+                    if (target_index >= _audio_targets.size() || !_audio_target_active[target_index]) {
+                        continue;
+                    }
+
+                    auto const& target = _audio_targets[target_index];
+                    auto device_it = _device_states.find(target->device_id());
+                    if (device_it == _device_states.end()) {
+                        throw std::logic_error("ExecutionTargetRegistry missing buffered audio device target");
+                    }
+                    device_it->second.buffered_target.accept_contribution(
+                        target_index,
+                        *completed_block_index,
+                        block_size,
+                        device_it->second.active_target_count,
+                        target->mixed_block(block_size)
+                    );
+                }
+                _request_notification->notify_all();
+            }
+
+            clear_next_block(*executor, next_block_index, block_size);
+            if (!wait_until_ready) {
+                return true;
+            }
+
+            std::unique_lock lock(*_mutex);
+            while (true) {
+                executor = find_executor_locked(executor_id);
+                if (!executor) {
+                    return false;
+                }
+                if (_is_shutdown_requested_locked(*executor)) {
+                    return false;
+                }
+                if (all_devices_ready_locked(*executor, block_size)) {
+                    return true;
                 }
 
                 _request_notification->wait(lock, [&] {
-                    if (_is_shutdown_requested_locked(executor_id)) {
-                        return true;
-                    }
-
-                    auto it = _executor_audio_device_ids.find(executor_id);
-                    if (it == _executor_audio_device_ids.end() || it->second.empty()) {
-                        return true;
-                    }
-
-                    for (size_t device_id : it->second) {
-                        auto active_count_it = _device_active_audio_target_counts.find(device_id);
-                        if (active_count_it == _device_active_audio_target_counts.end() || active_count_it->second == 0) {
-                            continue;
-                        }
-                        auto buffered_device_it = _buffered_audio_device_targets.find(device_id);
-                        if (buffered_device_it != _buffered_audio_device_targets.end() &&
-                            buffered_device_it->second.needs_graph_frames(block_size)) {
-                            return true;
-                        }
-                    }
-
-                    return false;
+                    auto current = find_executor_locked(executor_id);
+                    return !current || _is_shutdown_requested_locked(*current) || all_devices_ready_locked(*current, block_size);
                 });
             }
-
-            return std::nullopt;
         }
 
         template<typename F>
         void for_each_target(size_t executor_id, F&& f) const
         {
-            for (size_t target_index : local_audio_target_indices(executor_id)) {
-                auto const& target = _audio_device_targets[target_index];
-                if (target && _audio_device_target_active[target_index]) {
+            auto const* executor = find_executor(executor_id);
+            if (!executor) {
+                return;
+            }
+
+            for (size_t target_index : executor->audio_target_indices) {
+                auto const& target = _audio_targets[target_index];
+                if (target && _audio_target_active[target_index]) {
                     f(*target);
                 }
             }
-            for (size_t target_index : local_file_target_indices(executor_id)) {
+            for (size_t target_index : executor->file_target_indices) {
                 auto const& target = _file_targets[target_index];
                 if (target && _file_target_active[target_index]) {
                     f(*target);
@@ -1066,17 +993,20 @@ namespace iv {
         template<typename F>
         void for_each_target_reverse(size_t executor_id, F&& f) const
         {
-            auto file_indices = local_file_target_indices(executor_id);
-            for (auto it = file_indices.rbegin(); it != file_indices.rend(); ++it) {
+            auto const* executor = find_executor(executor_id);
+            if (!executor) {
+                return;
+            }
+
+            for (auto it = executor->file_target_indices.rbegin(); it != executor->file_target_indices.rend(); ++it) {
                 auto const& target = _file_targets[*it];
                 if (target && _file_target_active[*it]) {
                     f(*target);
                 }
             }
-            auto audio_indices = local_audio_target_indices(executor_id);
-            for (auto it = audio_indices.rbegin(); it != audio_indices.rend(); ++it) {
-                auto const& target = _audio_device_targets[*it];
-                if (target && _audio_device_target_active[*it]) {
+            for (auto it = executor->audio_target_indices.rbegin(); it != executor->audio_target_indices.rend(); ++it) {
+                auto const& target = _audio_targets[*it];
+                if (target && _audio_target_active[*it]) {
                     f(*target);
                 }
             }
@@ -1084,54 +1014,55 @@ namespace iv {
 
         bool is_shutdown_requested(size_t executor_id) const
         {
-            std::scoped_lock lock(_mutex);
-            return _is_shutdown_requested_locked(executor_id);
+            std::scoped_lock lock(*_mutex);
+            auto const* executor = find_executor_locked(executor_id);
+            return executor && _is_shutdown_requested_locked(*executor);
         }
 
     private:
-        bool _is_shutdown_requested_locked(size_t executor_id) const
+        bool _is_shutdown_requested_locked(ExecutorState const& executor) const
         {
-            auto local_audio_it = _executor_audio_target_indices.find(executor_id);
-            if (local_audio_it == _executor_audio_target_indices.end()) {
-                return false;
-            }
-
-            for (size_t target_index : local_audio_it->second) {
-                if (target_index >= _audio_device_targets.size() || !_audio_device_target_active[target_index]) {
-                    continue;
-                }
-                auto const& target = _audio_device_targets[target_index];
-                if (!target) {
-                    continue;
-                }
-                auto* device = const_cast<ExecutionTargetRegistry*>(this)->get_audio_device_locked(target->device_id());
-                if (device && device->is_shutdown_requested()) {
+            for (size_t device_id : executor.device_ids) {
+                auto device_it = _device_states.find(device_id);
+                if (device_it != _device_states.end() &&
+                    device_it->second.active_target_count != 0 &&
+                    device_it->second.device->is_shutdown_requested()) {
                     return true;
                 }
             }
             return false;
         }
 
+        bool all_devices_ready_locked(ExecutorState const& executor, size_t block_size)
+        {
+            bool has_active_device = false;
+            for (size_t device_id : executor.device_ids) {
+                auto device_it = _device_states.find(device_id);
+                if (device_it == _device_states.end() || device_it->second.active_target_count == 0) {
+                    continue;
+                }
+                has_active_device = true;
+                device_it->second.buffered_target.try_submit_requested_block();
+                if (!device_it->second.buffered_target.is_ready_for_next_block(block_size)) {
+                    return false;
+                }
+            }
+            return has_active_device;
+        }
+
     public:
         void request_shutdown(size_t executor_id)
         {
-            std::scoped_lock lock(_mutex);
-            auto local_audio_it = _executor_audio_target_indices.find(executor_id);
-            if (local_audio_it == _executor_audio_target_indices.end()) {
+            std::scoped_lock lock(*_mutex);
+            auto const* executor = find_executor_locked(executor_id);
+            if (!executor) {
                 return;
             }
 
-            for (size_t target_index : local_audio_it->second) {
-                if (target_index >= _audio_device_targets.size() || !_audio_device_target_active[target_index]) {
-                    continue;
-                }
-                auto const& target = _audio_device_targets[target_index];
-                if (!target) {
-                    continue;
-                }
-                auto* device = get_audio_device_locked(target->device_id());
-                if (device) {
-                    device->request_shutdown();
+            for (size_t device_id : executor->device_ids) {
+                auto device_it = _device_states.find(device_id);
+                if (device_it != _device_states.end() && device_it->second.active_target_count != 0) {
+                    device_it->second.device->request_shutdown();
                 }
             }
             _request_notification->notify_all();
@@ -1143,42 +1074,60 @@ namespace iv {
             return (static_cast<std::uint64_t>(executor_id) << 32) | static_cast<std::uint64_t>(device_id);
         }
 
-        LogicalAudioDevice* get_audio_device_locked(size_t device_id)
+        DeviceState& get_device_state_locked(size_t device_id)
         {
-            if (auto it = _devices.find(device_id); it != _devices.end()) {
+            if (auto it = _device_states.find(device_id); it != _device_states.end()) {
                 return it->second;
             }
 
             auto* device = _audio_device_provider.device_fn(_audio_device_provider.owner, device_id);
-            if (device) {
-                _devices.emplace(device_id, device);
+            if (!device) {
+                throw std::logic_error("ExecutionTargetRegistry audio device provider returned null");
             }
-            return device;
+            return _device_states.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(device_id),
+                std::forward_as_tuple(*device)
+            ).first->second;
         }
 
-        void require_registered_executor_locked(size_t executor_id) const
+        ExecutorState& require_executor_locked(size_t executor_id)
         {
-            if (!_registered_executors.contains(executor_id)) {
+            auto it = _executors.find(executor_id);
+            if (it == _executors.end()) {
                 throw std::logic_error("ExecutionTargetRegistry executor id is not registered");
             }
+            return it->second;
         }
 
-        std::vector<size_t> const& local_audio_target_indices(size_t executor_id) const
+        ExecutorState const* find_executor(size_t executor_id) const
         {
-            static std::vector<size_t> const empty;
-            if (auto it = _executor_audio_target_indices.find(executor_id); it != _executor_audio_target_indices.end()) {
-                return it->second;
-            }
-            return empty;
+            std::scoped_lock lock(*_mutex);
+            return find_executor_locked(executor_id);
         }
 
-        std::vector<size_t> const& local_file_target_indices(size_t executor_id) const
+        ExecutorState const* find_executor_locked(size_t executor_id) const
         {
-            static std::vector<size_t> const empty;
-            if (auto it = _executor_file_target_indices.find(executor_id); it != _executor_file_target_indices.end()) {
-                return it->second;
+            if (auto it = _executors.find(executor_id); it != _executors.end()) {
+                return &it->second;
             }
-            return empty;
+            return nullptr;
+        }
+
+        void clear_next_block(ExecutorState const& executor, size_t block_index, size_t block_size) const
+        {
+            for (size_t target_index : executor.audio_target_indices) {
+                auto const& target = _audio_targets[target_index];
+                if (target && _audio_target_active[target_index]) {
+                    target->clear_block(block_index, block_size);
+                }
+            }
+            for (size_t target_index : executor.file_target_indices) {
+                auto const& target = _file_targets[target_index];
+                if (target && _file_target_active[target_index]) {
+                    target->clear_block(block_index, block_size);
+                }
+            }
         }
     };
 

@@ -114,8 +114,6 @@ namespace iv {
 
         void run_block(size_t index, size_t block_size)
         {
-            _execution_target_registry->begin_block(_executor_id, index, block_size);
-
             try {
                 _root.tick_block({
                     TickContext<TypeErasedNode> {
@@ -133,8 +131,6 @@ namespace iv {
                 _execution_target_registry->request_shutdown(_executor_id);
                 throw std::runtime_error("node executor tick failed");
             }
-
-            _execution_target_registry->end_block(_executor_id, index, block_size);
         }
 
     public:
@@ -258,7 +254,9 @@ namespace iv {
                 throw std::logic_error("NodeExecutor block size exceeds max block size");
             }
 
+            _execution_target_registry->sync_block(_executor_id, std::nullopt, index, block_size, false);
             run_block(index, block_size);
+            _execution_target_registry->sync_block(_executor_id, index, index + block_size, block_size, false);
         }
 
         void request_shutdown()
@@ -304,19 +302,24 @@ namespace iv {
 
         void execute(std::function<std::optional<ModuleLoader::LoadedGraph>()> poll_reload = {})
         {
+            size_t block_index = 0;
+            if (!_execution_target_registry->sync_block(_executor_id, std::nullopt, block_index, _max_block_size)) {
+                return;
+            }
             while (!is_shutdown_requested()) {
-                auto work_item = _execution_target_registry->wait_for_work(_executor_id, _max_block_size);
-                if (!work_item.has_value()) {
-                    break;
-                }
-
-                run_block(work_item->first, work_item->second);
+                run_block(block_index, _max_block_size);
 
                 if (poll_reload) {
                     auto next_reload = poll_reload();
                     if (next_reload.has_value()) {
                         reload(std::move(*next_reload));
                     }
+                }
+
+                size_t const completed_block_index = block_index;
+                block_index += _max_block_size;
+                if (!_execution_target_registry->sync_block(_executor_id, completed_block_index, block_index, _max_block_size)) {
+                    break;
                 }
             }
         }

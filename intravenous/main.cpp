@@ -16,12 +16,12 @@
 #include <vector>
 
 namespace {
-    iv::NodeExecutor* executor = nullptr;
+    iv::NodeExecutor* executor_state = nullptr;
 
     void request_shutdown()
     {
-        if (executor) {
-            executor->request_shutdown();
+        if (executor_state) {
+            executor_state->request_shutdown();
         }
     }
 
@@ -126,7 +126,7 @@ int main(int argc, char** argv)
 
     iv::ExecutionTargetRegistry execution_targets(make_audio_device_provider(*audio_device), 48000, request_notification);
     auto executor_storage = make_executor(*audio_device, execution_targets, 1, std::move(loaded_graph));
-    executor = &executor_storage;
+    executor_state = &executor_storage;
 
     iv::ReloadWorker reload_worker(
         loader,
@@ -142,7 +142,7 @@ int main(int argc, char** argv)
     );
     reload_worker.start();
 
-    executor->execute([&]() -> std::optional<iv::ModuleLoader::LoadedGraph> {
+    executor_state->execute([&]() -> std::optional<iv::ModuleLoader::LoadedGraph> {
         if (auto exception = reload_worker.take_exception()) {
             std::rethrow_exception(exception);
         }
