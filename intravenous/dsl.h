@@ -48,7 +48,7 @@ namespace iv {
     struct BuilderNode {
         std::vector<InputConfig> input_configs;
         std::vector<OutputConfig> output_configs;
-        std::move_only_function<TypeErasedNode(size_t) const> materialize;
+        std::function<TypeErasedNode(size_t)> materialize;
 
         std::vector<InputConfig> const& inputs() const
         {
@@ -194,30 +194,25 @@ namespace iv {
             return NodeRef(*this, _nodes.size() - 1);
         }
 
-        NodeRef node(GraphBuilder child)
+        NodeRef node(GraphBuilder const& child)
         {
             std::string expected_builder_id = _builder_id.child_id(_nodes.size());
+            GraphBuilder child_copy = child;
+            child_copy._builder_id = BuilderIdentity(expected_builder_id);
 
-            if (child._builder_id.value != expected_builder_id) {
+            if (!child_copy._outputs_defined) {
                 details::error(
-                    "builder " + _builder_id.value + ": nested builder id '" + child._builder_id.value +
-                    "' does not match insertion site '" + expected_builder_id + "'"
-                );
-            }
-
-            if (!child._outputs_defined) {
-                details::error(
-                    "builder " + child._builder_id.value + ": g.outputs(...) must be called before insertion"
+                    "builder " + child_copy._builder_id.value + ": g.outputs(...) must be called before insertion"
                 );
             }
 
             size_t const child_detach_offset = _next_detach_id;
-            _next_detach_id += child._next_detach_id;
+            _next_detach_id += child_copy._next_detach_id;
 
             _nodes.emplace_back(BuilderNode{
-                .input_configs = child._public_inputs,
-                .output_configs = child._public_outputs,
-                .materialize = [child = std::make_shared<GraphBuilder>(std::move(child)), child_detach_offset](size_t parent_detach_offset) {
+                .input_configs = child_copy._public_inputs,
+                .output_configs = child_copy._public_outputs,
+                .materialize = [child = std::make_shared<GraphBuilder>(std::move(child_copy)), child_detach_offset](size_t parent_detach_offset) {
                     return TypeErasedNode(child->build(parent_detach_offset + child_detach_offset));
                 },
             });
