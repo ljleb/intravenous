@@ -6,11 +6,13 @@
 
 #include <array>
 #include <cassert>
+#include <concepts>
 #include <cstddef>
 #include <functional>
 #include <memory>
 #include <initializer_list>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -24,6 +26,8 @@
 namespace iv {
     class GraphBuilder;
     class NodeRef;
+    template<class Node>
+    class TypedNodeRef;
     template<class Node>
     class StructuredNodeRef;
 
@@ -68,32 +72,89 @@ namespace iv {
     };
 
     namespace details {
+        template<typename Inputs>
+        struct fixed_input_count : std::integral_constant<size_t, std::dynamic_extent> {};
+
+        template<size_t N>
+        struct fixed_input_count<std::array<InputConfig, N>> : std::integral_constant<size_t, N> {};
+
+        template<size_t N>
+        struct fixed_input_count<std::span<InputConfig const, N>> : std::integral_constant<size_t, N> {};
+
+        template<size_t N>
+        struct fixed_input_count<std::span<InputConfig, N>> : std::integral_constant<size_t, N> {};
+
+        template<typename Node>
+        inline constexpr size_t fixed_input_count_v = fixed_input_count<
+            std::remove_cvref_t<decltype(get_inputs(std::declval<Node const&>()))>
+        >::value;
+
+        template<>
+        inline constexpr size_t fixed_input_count_v<void> = std::dynamic_extent;
+
+        template<typename Node>
+        inline constexpr bool has_fixed_input_count_v =
+            (fixed_input_count_v<Node> != std::dynamic_extent);
+
         template<typename Outputs>
-        struct fixed_output_count : std::integral_constant<size_t, 0> {};
+        struct fixed_output_count : std::integral_constant<size_t, std::dynamic_extent> {};
 
         template<size_t N>
         struct fixed_output_count<std::array<OutputConfig, N>> : std::integral_constant<size_t, N> {};
+
+        template<size_t N>
+        struct fixed_output_count<std::span<OutputConfig const, N>> : std::integral_constant<size_t, N> {};
+
+        template<size_t N>
+        struct fixed_output_count<std::span<OutputConfig, N>> : std::integral_constant<size_t, N> {};
 
         template<typename Node>
         inline constexpr size_t fixed_output_count_v = fixed_output_count<
             std::remove_cvref_t<decltype(get_outputs(std::declval<Node const&>()))>
         >::value;
 
+        template<>
+        inline constexpr size_t fixed_output_count_v<void> = std::dynamic_extent;
+
+        template<typename Node>
+        inline constexpr bool has_fixed_output_count_v =
+            (fixed_output_count_v<Node> != std::dynamic_extent);
+
+        template<typename Node>
+        inline constexpr bool should_preserve_node_type_v =
+            has_fixed_input_count_v<std::remove_cvref_t<Node>>
+            || has_fixed_output_count_v<std::remove_cvref_t<Node>>;
+
         template<typename Node>
         using node_ref_for_t = std::conditional_t<
-            (fixed_output_count_v<std::remove_cvref_t<Node>> != 0),
+            has_fixed_output_count_v<std::remove_cvref_t<Node>>,
             StructuredNodeRef<std::remove_cvref_t<Node>>,
-            NodeRef
+            std::conditional_t<
+                should_preserve_node_type_v<std::remove_cvref_t<Node>>,
+                TypedNodeRef<std::remove_cvref_t<Node>>,
+                NodeRef
+            >
         >;
     }
 
-    class NodeRef {
+    template<class Derived, class Node = void>
+    class NodeRefBase {
+    protected:
         GraphBuilder* _graph_builder{};
         size_t _index{};
 
+    private:
+        Derived const& derived() const
+        {
+            return static_cast<Derived const&>(*this);
+        }
+
     public:
-        NodeRef() = default;
-        explicit NodeRef(GraphBuilder& graph_builder, size_t index);
+        NodeRefBase() = default;
+        explicit NodeRefBase(GraphBuilder& graph_builder, size_t index) :
+            _graph_builder(&graph_builder),
+            _index(index)
+        {}
 
         BuilderNode const& node() const;
 
@@ -102,104 +163,73 @@ namespace iv {
         operator SignalRef() const;
 
         template<class... Refs>
-        NodeRef operator()(Refs&&... refs) const;
-        NodeRef operator()(std::initializer_list<NamedRef> refs) const;
+        requires(std::same_as<Node, void> || !details::has_fixed_input_count_v<Node> || sizeof...(Refs) <= details::fixed_input_count_v<Node>)
+        Derived operator()(Refs&&... refs) const;
+
+        template<class... Refs>
+        requires(!std::same_as<Node, void> && details::has_fixed_input_count_v<Node> && sizeof...(Refs) > details::fixed_input_count_v<Node>)
+        Derived operator()(Refs&&... refs) const = delete;
+
+        Derived operator()(std::initializer_list<NamedRef> refs) const;
 
         SignalRef detach(size_t loop_block_size = 1) const;
 
         std::string to_string() const;
     };
 
+    class NodeRef : public NodeRefBase<NodeRef> {
+    public:
+        using NodeRefBase<NodeRef>::NodeRefBase;
+    };
+
     template<class Node>
-    class StructuredNodeRef {
-        static constexpr size_t output_count = details::fixed_output_count_v<Node>;
-        static_assert(output_count != 0, "StructuredNodeRef requires a fixed output count > 0");
-
-        std::array<SignalRef, output_count> _outputs{};
-
-        SignalRef any_output() const
-        {
-            return _outputs[0];
-        }
-
-        NodeRef as_node_ref() const
-        {
-            auto const output = any_output();
-            return NodeRef(*output.graph_builder, output.node_index);
-        }
+    class TypedNodeRef : public NodeRefBase<TypedNodeRef<Node>, std::remove_cvref_t<Node>> {
+        using Base = NodeRefBase<TypedNodeRef<Node>, std::remove_cvref_t<Node>>;
 
     public:
         using NodeType = std::remove_cvref_t<Node>;
-
-        StructuredNodeRef() = default;
-        explicit StructuredNodeRef(GraphBuilder& graph_builder, size_t index) :
-            _outputs([&]<size_t... I>(std::index_sequence<I...>) {
-                return std::array<SignalRef, output_count>{
-                    SignalRef(graph_builder, index, I)...
-                };
-            }(std::make_index_sequence<output_count>{}))
-        {}
-
-        BuilderNode const& node() const
-        {
-            return as_node_ref().node();
-        }
-
-        SignalRef operator[](size_t output_index) const
-        {
-            as_node_ref()[output_index];
-        }
-
-        SignalRef operator[](std::string_view output_name) const
-        {
-            return as_node_ref()[output_name];
-        }
+        using Base::Base;
 
         operator NodeRef() const
         {
-            return as_node_ref();
+            if (!this->_graph_builder) {
+                return NodeRef();
+            }
+            return NodeRef(*this->_graph_builder, this->_index);
         }
+    };
 
-        operator SignalRef() const
-        {
-            return as_node_ref();
-        }
+    template<class Node>
+    class StructuredNodeRef : public TypedNodeRef<Node> {
+        static constexpr size_t output_count = details::fixed_output_count_v<Node>;
+        static_assert(details::has_fixed_output_count_v<Node>, "StructuredNodeRef requires a fixed output count");
+        using Base = TypedNodeRef<Node>;
 
-        template<class... Refs>
-        StructuredNodeRef operator()(Refs&&... refs) const
-        {
-            as_node_ref()(std::forward<Refs>(refs)...);
-            return *this;
-        }
+    public:
+        using NodeType = std::remove_cvref_t<Node>;
+        using Base::Base;
 
-        StructuredNodeRef operator()(std::initializer_list<NamedRef> refs) const
-        {
-            as_node_ref()(refs);
-            return *this;
-        }
-
-        SignalRef detach(size_t loop_block_size = 1) const
-        {
-            return as_node_ref().detach(loop_block_size);
-        }
-
-        std::string to_string() const
-        {
-            return as_node_ref().to_string();
-        }
+        StructuredNodeRef() = default;
+        explicit StructuredNodeRef(GraphBuilder& graph_builder, size_t index) :
+            Base(graph_builder, index)
+        {}
 
         template<size_t I>
         SignalRef get() const
         {
             static_assert(I < output_count);
-            return _outputs[I];
+            if (!this->_graph_builder) {
+                details::error("attempted to use a null NodeRef");
+            }
+            return SignalRef(*this->_graph_builder, this->_index, I);
         }
     };
 
     using DetachedSignalInfo = DetachedInfo;
 
     class GraphBuilder {
-        friend class NodeRef;
+        template<class Derived, class Node>
+        friend class NodeRefBase;
         friend struct SignalRef;
 
         struct BuilderIdentity {
@@ -303,8 +333,10 @@ namespace iv {
                 .output_configs = std::vector<OutputConfig>(std::begin(outputs), std::end(outputs)),
                 .materialize = std::move(materialize),
             });
-            if constexpr (details::fixed_output_count_v<StoredNode> != 0) {
+            if constexpr (details::has_fixed_output_count_v<StoredNode>) {
                 return StructuredNodeRef<StoredNode>(*this, _nodes.size() - 1);
+            } else if constexpr (details::should_preserve_node_type_v<StoredNode>) {
+                return TypedNodeRef<StoredNode>(*this, _nodes.size() - 1);
             } else {
                 return NodeRef(*this, _nodes.size() - 1);
             }
@@ -901,12 +933,8 @@ namespace iv {
         return "signal at address " + graph_builder->node_id(node_index) + ":" + std::to_string(output_port);
     }
 
-    inline NodeRef::NodeRef(GraphBuilder& graph_builder, size_t index) :
-        _graph_builder(&graph_builder),
-        _index(index)
-    {}
-
-    inline BuilderNode const& NodeRef::node() const
+    template<class Derived, class Node>
+    inline BuilderNode const& NodeRefBase<Derived, Node>::node() const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -914,7 +942,8 @@ namespace iv {
         return _graph_builder->_nodes[_index];
     }
 
-    inline SignalRef NodeRef::operator[](size_t output_index) const
+    template<class Derived, class Node>
+    inline SignalRef NodeRefBase<Derived, Node>::operator[](size_t output_index) const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -922,7 +951,8 @@ namespace iv {
         return SignalRef(*_graph_builder, _index, output_index);
     }
 
-    inline SignalRef NodeRef::operator[](std::string_view output_name) const
+    template<class Derived, class Node>
+    inline SignalRef NodeRefBase<Derived, Node>::operator[](std::string_view output_name) const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -940,7 +970,8 @@ namespace iv {
         );
     }
 
-    inline NodeRef::operator SignalRef() const
+    template<class Derived, class Node>
+    inline NodeRefBase<Derived, Node>::operator SignalRef() const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -954,8 +985,10 @@ namespace iv {
         return SignalRef(*_graph_builder, _index, 0);
     }
 
+    template<class Derived, class Node>
     template<class... Refs>
-    NodeRef NodeRef::operator()(Refs&&... refs) const
+    requires(std::same_as<Node, void> || !details::has_fixed_input_count_v<Node> || sizeof...(Refs) <= details::fixed_input_count_v<Node>)
+    Derived NodeRefBase<Derived, Node>::operator()(Refs&&... refs) const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -998,10 +1031,11 @@ namespace iv {
             });
         }
 
-        return *this;
+        return derived();
     }
 
-    inline NodeRef NodeRef::operator()(std::initializer_list<NamedRef> refs) const
+    template<class Derived, class Node>
+    inline Derived NodeRefBase<Derived, Node>::operator()(std::initializer_list<NamedRef> refs) const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
@@ -1055,15 +1089,17 @@ namespace iv {
             }
         }
 
-        return *this;
+        return derived();
     }
 
-    inline SignalRef NodeRef::detach(size_t loop_block_size) const
+    template<class Derived, class Node>
+    inline SignalRef NodeRefBase<Derived, Node>::detach(size_t loop_block_size) const
     {
         return static_cast<SignalRef>(*this).detach(loop_block_size);
     }
 
-    inline std::string NodeRef::to_string() const
+    template<class Derived, class Node>
+    inline std::string NodeRefBase<Derived, Node>::to_string() const
     {
         if (!_graph_builder) {
             return "empty node";

@@ -1,5 +1,6 @@
 #include "devices/channel_buffer_sink.h"
 #include "basic_nodes/buffers.h"
+#include "dsl.h"
 #include "graph_node.h"
 #include "module_test_utils.h"
 
@@ -18,6 +19,12 @@ namespace {
     constexpr auto kBlockReadyTimeout = std::chrono::milliseconds(100);
     constexpr auto kAsyncWaitTimeout = std::chrono::milliseconds(50);
 
+    template<typename Ref, typename... Args>
+    concept NodeRefInvocable = requires(Ref ref, Args... args)
+    {
+        ref(args...);
+    };
+
     struct UnaryPassthrough {
         auto inputs() const
         {
@@ -34,6 +41,11 @@ namespace {
             ctx.outputs[0].push(ctx.inputs[0].get());
         }
     };
+
+    static_assert(iv::details::fixed_input_count_v<UnaryPassthrough> == 1);
+    static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SignalRef>);
+    static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SignalRef, iv::SignalRef>);
+    static_assert(std::same_as<iv::details::node_ref_for_t<iv::Broadcast>, iv::TypedNodeRef<iv::Broadcast>>);
 
     void expect_constant_block(std::span<iv::Sample const> block, iv::Sample expected)
     {
