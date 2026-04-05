@@ -821,6 +821,31 @@ namespace iv {
         );
     }
 
+    template<class L, class R>
+    requires (
+        SignalLike<L> &&
+        std::convertible_to<std::remove_cvref_t<R>, NodeRef>
+    )
+    SignalRef operator>>(L&& lhs, R&& rhs)
+    {
+        SignalRef source = std::forward<L>(lhs);
+        NodeRef target = static_cast<NodeRef>(std::forward<R>(rhs));
+
+        auto const inputs = get_inputs(target.node());
+        auto const outputs = get_outputs(target.node());
+
+        if (inputs.size() != 1 || outputs.size() != 1) {
+            details::error(
+                "operator>> requires rhs to have exactly 1 input and 1 output; got " +
+                std::to_string(inputs.size()) + " inputs and " +
+                std::to_string(outputs.size()) + " outputs on " + target.to_string()
+            );
+        }
+
+        target(source);
+        return static_cast<SignalRef>(target);
+    }
+
     inline SignalRef::SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
         graph_builder(&graph_builder_),
         node_index(node_index),
