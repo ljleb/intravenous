@@ -782,22 +782,26 @@ namespace iv::details {
             region_nodes.reserve(region.execution_order.size());
 
             for (size_t global_i : region.execution_order) {
-                std::vector<GraphOutputTarget> output_targets;
+                std::vector<std::string> output_targets;
                 auto outputs = nodes[global_i].outputs();
                 output_targets.reserve(outputs.size());
                 for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
                     auto it = target_of.find({ global_i, output_i });
                     if (it != target_of.end()) {
                         if (it->second.node == GRAPH_ID) {
-                            output_targets.push_back({
-                                .port_data_id = graph_port_data_export_id(artifact.graph_id),
-                                .port_index = it->second.port,
-                            });
+                            output_targets.push_back(
+                                graph_port_data_export_id(
+                                    artifact.graph_id,
+                                    it->second.port
+                                )
+                            );
                         } else {
-                            output_targets.push_back({
-                                .port_data_id = port_data_export_id(artifact.node_ids[it->second.node]),
-                                .port_index = it->second.port,
-                            });
+                            output_targets.push_back(
+                                port_data_export_id(
+                                    artifact.node_ids[it->second.node],
+                                    it->second.port
+                                )
+                            );
                         }
                     } else {
                         output_targets.push_back({});

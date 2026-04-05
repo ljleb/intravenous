@@ -51,7 +51,7 @@ namespace iv {
             enum class Kind {
                 state,
                 local_array,
-                nested_nodes,
+                nested_node_states,
             };
 
             Kind kind = Kind::state;
@@ -564,7 +564,7 @@ namespace iv {
         auto const field_ptr = reinterpret_cast<uintptr_t>(span);
 
         NodeLayout::Region region;
-        region.kind = NodeLayout::Region::Kind::nested_nodes;
+        region.kind = NodeLayout::Region::Kind::nested_node_states;
         region.owner_node = node_index;
         region.state_field_offset = static_cast<ptrdiff_t>(field_ptr - state_base);
         region.size = 0;
@@ -585,7 +585,7 @@ namespace iv {
     {
         IV_ASSERT(region_index < _regions.size(), "nested nodes region index out of bounds");
         auto& region = _regions[region_index];
-        IV_ASSERT(region.kind == NodeLayout::Region::Kind::nested_nodes, "region must be a nested nodes region");
+        IV_ASSERT(region.kind == NodeLayout::Region::Kind::nested_node_states, "region must be a nested nodes region");
 
         region.size = sizeof(std::span<std::byte>) * nested_node_indices.size();
         region.element_count = nested_node_indices.size();
@@ -1033,7 +1033,7 @@ namespace iv {
         for (auto const& region : layout->regions) {
             if (
                 (region.kind != NodeLayout::Region::Kind::local_array &&
-                 region.kind != NodeLayout::Region::Kind::nested_nodes) ||
+                 region.kind != NodeLayout::Region::Kind::nested_node_states) ||
                 !region.assign_span_fn
             ) {
                 continue;
@@ -1041,7 +1041,7 @@ namespace iv {
             void* state = state_ptr(region.owner_node);
             void* data = storage.get() + region.storage_offset;
             region.assign_span_fn(state, region.state_field_offset, data, region.element_count);
-            if (region.kind == NodeLayout::Region::Kind::nested_nodes) {
+            if (region.kind == NodeLayout::Region::Kind::nested_node_states) {
                 auto const& assigned_span = *reinterpret_cast<std::span<std::span<std::byte>> const*>(
                     static_cast<std::byte*>(state) + region.state_field_offset
                 );
@@ -1052,14 +1052,14 @@ namespace iv {
                         ", actual count=" + std::to_string(assigned_span.size()) + ")"
                     );
                 }
-                auto* nested_nodes = static_cast<std::span<std::byte>*>(data);
+                auto* nested_node_states = static_cast<std::span<std::byte>*>(data);
                 for (size_t i = 0; i < region.nested_node_indices.size(); ++i) {
                     auto* nested_state = static_cast<std::byte*>(state_ptr(region.nested_node_indices[i]));
                     IV_ASSERT(
                         nested_state != nullptr,
                         "nested child state pointer must resolve during storage initialization"
                     );
-                    nested_nodes[i] = { nested_state, static_cast<size_t>((storage.get() + layout->storage_size) - nested_state) };
+                    nested_node_states[i] = { nested_state, static_cast<size_t>((storage.get() + layout->storage_size) - nested_state) };
                 }
             }
         }

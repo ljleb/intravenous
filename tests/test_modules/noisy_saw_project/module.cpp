@@ -5,6 +5,10 @@
 #include "basic_nodes/buffers.h"
 #include "juce_vst_wrapper.h"
 
+#include <array>
+#include <iostream>
+#include <string>
+
 inline void noise_voice(iv::GraphBuilder& g)
 {
     using namespace iv;

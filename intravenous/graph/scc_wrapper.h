@@ -24,7 +24,7 @@ namespace iv {
         {}
 
         struct State {
-            std::span<std::span<std::byte>> node_states;
+            std::span<std::span<std::byte>> nested_node_states;
         };
 
         size_t num_nodes() const
@@ -45,7 +45,7 @@ namespace iv {
         void declare(DeclarationContext<GraphSccWrapper> const& ctx) const
         {
             auto const& state = ctx.state();
-            ctx.nested_node_states(state.node_states);
+            ctx.nested_node_states(state.nested_node_states);
             for (auto const& node : _nodes) {
                 do_declare(node, ctx);
             }
@@ -54,7 +54,6 @@ namespace iv {
         void tick_block(TickBlockContext<GraphSccWrapper> const& ctx) const
         {
             auto& state = ctx.state();
-            // todo: remove in favor of a solved block size during scheduling
             size_t const scc_block_size = std::min(ctx.block_size, _block_size);
 
             for (size_t offset = 0; offset < ctx.block_size; offset += scc_block_size) {
@@ -63,7 +62,7 @@ namespace iv {
                         TickContext<GraphNodeWrapper> {
                             .inputs = {},
                             .outputs = {},
-                            .buffer = state.node_states[node_i],
+                            .buffer = state.nested_node_states[node_i],
                         },
                         ctx.index + offset,
                         scc_block_size

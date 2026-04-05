@@ -91,3 +91,27 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
 
     EXPECT_TRUE(saw_non_zero);
 }
+
+TEST(DetachRegression, NestedFeedbackWithoutDetachStillFailsAfterFlattening)
+{
+    iv::GraphBuilder graph;
+    auto const recursive = graph.subgraph([](iv::GraphBuilder& nested) {
+        auto const integrator = nested.node<iv::Integrator>();
+        integrator(integrator);
+        nested.outputs(integrator);
+    });
+    (void)recursive;
+    graph.outputs();
+
+    try {
+        graph.build();
+    } catch (std::logic_error const& e) {
+        EXPECT_NE(
+            std::string_view(e.what()).find("graph contains a cycle"),
+            std::string_view::npos
+        );
+        return;
+    }
+
+    FAIL() << "expected nested cycle without detach() to fail";
+}
