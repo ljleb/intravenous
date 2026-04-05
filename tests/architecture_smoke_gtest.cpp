@@ -16,6 +16,8 @@
 #include <string_view>
 
 namespace {
+    using namespace iv::literals;
+
     constexpr auto kBlockReadyTimeout = std::chrono::milliseconds(100);
     constexpr auto kAsyncWaitTimeout = std::chrono::milliseconds(50);
 
@@ -23,6 +25,24 @@ namespace {
     concept NodeRefInvocable = requires(Ref ref, Args... args)
     {
         ref(args...);
+    };
+
+    template<typename L, typename R>
+    concept ShiftRightInvocable = requires(L lhs, R rhs)
+    {
+        lhs >> rhs;
+    };
+
+    template<typename L, typename R>
+    concept ShiftLeftInvocable = requires(L lhs, R rhs)
+    {
+        lhs << rhs;
+    };
+
+    template<typename T>
+    concept BitNotInvocable = requires(T value)
+    {
+        ~value;
     };
 
     struct UnaryPassthrough {
@@ -42,9 +62,75 @@ namespace {
         }
     };
 
+    struct MixedInputsNode {
+        auto inputs() const
+        {
+            return std::array {
+                iv::InputConfig { .name = "in" },
+                iv::InputConfig { .name = "cutoff" },
+                iv::InputConfig { .name = "resonance" },
+            };
+        }
+
+        auto outputs() const
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+
+        void tick(iv::TickSampleContext<MixedInputsNode> const& ctx) const
+        {
+            ctx.outputs[0].push(ctx.inputs[0].get() + ctx.inputs[1].get() + ctx.inputs[2].get());
+        }
+    };
+
     static_assert(iv::details::fixed_input_count_v<UnaryPassthrough> == 1);
     static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SignalRef>);
+    static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SignalRef>())>);
     static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SignalRef, iv::SignalRef>);
+    static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SignalRef>()), iv::SignalRef>);
+    static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SignalRef>()), decltype("in"_P = std::declval<iv::SignalRef>())>);
+    static_assert(NodeRefInvocable<
+        iv::StructuredNodeRef<MixedInputsNode>,
+        iv::SignalRef,
+        decltype("cutoff"_P = std::declval<iv::SignalRef>()),
+        decltype("resonance"_P = std::declval<iv::SignalRef>())
+    >);
+    static_assert(NodeRefInvocable<
+        iv::StructuredNodeRef<MixedInputsNode>,
+        iv::SignalRef,
+        iv::SignalRef,
+        decltype("resonance"_P = std::declval<iv::SignalRef>())
+    >);
+    static_assert(!NodeRefInvocable<
+        iv::StructuredNodeRef<MixedInputsNode>,
+        decltype("cutoff"_P = std::declval<iv::SignalRef>()),
+        iv::SignalRef
+    >);
+    static_assert(!NodeRefInvocable<
+        iv::StructuredNodeRef<MixedInputsNode>,
+        iv::SignalRef,
+        decltype("cutoff"_P = std::declval<iv::SignalRef>()),
+        iv::SignalRef
+    >);
+    static_assert(!NodeRefInvocable<
+        iv::StructuredNodeRef<MixedInputsNode>,
+        iv::SignalRef,
+        decltype("cutoff"_P = std::declval<iv::SignalRef>()),
+        decltype("cutoff"_P = std::declval<iv::SignalRef>())
+    >);
+    static_assert(!NodeRefInvocable<
+        iv::StructuredNodeRef<MixedInputsNode>,
+        iv::SignalRef,
+        iv::SignalRef,
+        iv::SignalRef,
+        decltype("resonance"_P = std::declval<iv::SignalRef>())
+    >);
+    static_assert(ShiftRightInvocable<iv::SignalRef, iv::StructuredNodeRef<UnaryPassthrough>>);
+    static_assert(ShiftLeftInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SignalRef>);
+    static_assert(ShiftLeftInvocable<decltype("value"_P), iv::StructuredNodeRef<UnaryPassthrough>>);
+    static_assert(ShiftRightInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("value"_P)>);
+    static_assert(BitNotInvocable<iv::SignalRef>);
+    static_assert(BitNotInvocable<iv::StructuredNodeRef<UnaryPassthrough>>);
     static_assert(std::same_as<iv::details::node_ref_for_t<iv::Broadcast>, iv::TypedNodeRef<iv::Broadcast>>);
 
     void expect_constant_block(std::span<iv::Sample const> block, iv::Sample expected)

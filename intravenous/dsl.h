@@ -12,6 +12,7 @@
 #include <memory>
 #include <initializer_list>
 #include <memory>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -52,6 +53,52 @@ namespace iv {
         NamedRef(std::string_view name, SignalRef signal): name(name), value(signal) {}
         NamedRef(std::string_view name, Sample sample): name(name), value(sample) {}
     };
+
+    template<size_t N>
+    struct fixed_string {
+        char value[N];
+
+        constexpr fixed_string(char const (&str)[N])
+        {
+            std::ranges::copy(str, value);
+        }
+
+        constexpr std::string_view view() const
+        {
+            return std::string_view(value, N - 1);
+        }
+    };
+
+    template<size_t N>
+    fixed_string(char const (&)[N]) -> fixed_string<N>;
+
+    template<fixed_string Name, class T>
+    struct NamedArg {
+        using value_type = T;
+        static constexpr auto name = Name;
+
+        T value;
+    };
+
+    template<fixed_string Name>
+    struct PortName {
+        template<class T>
+        constexpr auto operator=(T&& value) const
+        {
+            return NamedArg<Name, std::remove_cvref_t<T>>{ std::forward<T>(value) };
+        }
+    };
+
+    template<fixed_string Name>
+    inline constexpr PortName<Name> named{};
+
+    namespace literals {
+        template<fixed_string Name>
+        consteval auto operator""_P()
+        {
+            return PortName<Name>{};
+        }
+    }
 
     struct BuilderNode {
         std::vector<InputConfig> input_configs;
@@ -135,6 +182,73 @@ namespace iv {
                 NodeRef
             >
         >;
+
+        template<class T>
+        struct is_named_arg : std::false_type {};
+
+        template<fixed_string Name, class T>
+        struct is_named_arg<NamedArg<Name, T>> : std::true_type {};
+
+        template<class T>
+        inline constexpr bool is_named_arg_v = is_named_arg<std::remove_cvref_t<T>>::value;
+
+        template<class... Args>
+        inline constexpr size_t positional_arg_count_v = (size_t{0} + ... + size_t(!is_named_arg_v<Args>));
+
+        template<class... Args>
+        inline constexpr size_t named_arg_count_v = (size_t{0} + ... + size_t(is_named_arg_v<Args>));
+
+        template<class... Args>
+        consteval bool named_args_follow_positionals_only()
+        {
+            bool seen_named = false;
+            bool valid = true;
+            ((valid = valid && (!seen_named || is_named_arg_v<Args>),
+              seen_named = seen_named || is_named_arg_v<Args>), ...);
+            return valid;
+        }
+
+        template<class... Args>
+        inline constexpr bool named_args_follow_positionals_only_v =
+            named_args_follow_positionals_only<Args...>();
+
+        template<class A, class B>
+        inline constexpr bool same_named_port_v = false;
+
+        template<fixed_string A, class TA, fixed_string B, class TB>
+        inline constexpr bool same_named_port_v<NamedArg<A, TA>, NamedArg<B, TB>> = (A.view() == B.view());
+
+        template<class Arg, class... Rest>
+        inline constexpr bool named_port_not_in_rest_v =
+            (!same_named_port_v<std::remove_cvref_t<Arg>, std::remove_cvref_t<Rest>> && ...);
+
+        template<class... Args>
+        struct unique_named_args : std::true_type {};
+
+        template<class Arg, class... Rest>
+        struct unique_named_args<Arg, Rest...> : std::bool_constant<
+            (!is_named_arg_v<Arg> || named_port_not_in_rest_v<Arg, Rest...>)
+            && unique_named_args<Rest...>::value
+        > {};
+
+        template<class... Args>
+        inline constexpr bool unique_named_args_v = unique_named_args<Args...>::value;
+
+        template<class Node, class... Args>
+        inline constexpr bool accepts_total_arg_count_v =
+            std::same_as<Node, void>
+            || !has_fixed_input_count_v<Node>
+            || (positional_arg_count_v<Args...> + named_arg_count_v<Args...>) <= fixed_input_count_v<Node>;
+
+        template<class... Args>
+        inline constexpr bool valid_node_call_args_v =
+            named_args_follow_positionals_only_v<Args...>
+            && unique_named_args_v<Args...>;
+
+        template<class Node, class... Args>
+        concept node_call_enabled =
+            valid_node_call_args_v<Args...>
+            && accepts_total_arg_count_v<Node, Args...>;
     }
 
     template<class Derived, class Node = void>
@@ -162,15 +276,13 @@ namespace iv {
         SignalRef operator[](std::string_view output_name) const;
         operator SignalRef() const;
 
-        template<class... Refs>
-        requires(std::same_as<Node, void> || !details::has_fixed_input_count_v<Node> || sizeof...(Refs) <= details::fixed_input_count_v<Node>)
-        Derived operator()(Refs&&... refs) const;
+        template<class... Args>
+        requires(details::node_call_enabled<Node, Args...>)
+        Derived operator()(Args&&... args) const;
 
-        template<class... Refs>
-        requires(!std::same_as<Node, void> && details::has_fixed_input_count_v<Node> && sizeof...(Refs) > details::fixed_input_count_v<Node>)
-        Derived operator()(Refs&&... refs) const = delete;
-
-        Derived operator()(std::initializer_list<NamedRef> refs) const;
+        template<class... Args>
+        requires(!details::node_call_enabled<Node, Args...>)
+        Derived operator()(Args&&... args) const = delete;
 
         SignalRef detach(size_t loop_block_size = 1) const;
 
@@ -853,12 +965,27 @@ namespace iv {
         );
     }
 
+    inline SignalRef operator~(SignalRef signal)
+    {
+        return signal.detach();
+    }
+
+    template<class T>
+    requires (
+        std::convertible_to<std::remove_cvref_t<T>, SignalRef> &&
+        !std::same_as<std::remove_cvref_t<T>, SignalRef>
+    )
+    SignalRef operator~(T&& value)
+    {
+        return static_cast<SignalRef>(std::forward<T>(value)).detach();
+    }
+
     template<class L, class R>
     requires (
         SignalLike<L> &&
         std::convertible_to<std::remove_cvref_t<R>, NodeRef>
     )
-    SignalRef operator>>(L&& lhs, R&& rhs)
+    SignalRef connect_unary_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
         SignalRef source = std::forward<L>(lhs);
         NodeRef target = static_cast<NodeRef>(std::forward<R>(rhs));
@@ -868,7 +995,7 @@ namespace iv {
 
         if (inputs.size() != 1 || outputs.size() != 1) {
             details::error(
-                "operator>> requires rhs to have exactly 1 input and 1 output; got " +
+                std::string(op_name) + " requires target to have exactly 1 input and 1 output; got " +
                 std::to_string(inputs.size()) + " inputs and " +
                 std::to_string(outputs.size()) + " outputs on " + target.to_string()
             );
@@ -876,6 +1003,42 @@ namespace iv {
 
         target(source);
         return static_cast<SignalRef>(target);
+    }
+
+    template<class L, class R>
+    requires (
+        SignalLike<L> &&
+        std::convertible_to<std::remove_cvref_t<R>, NodeRef>
+    )
+    SignalRef operator>>(L&& lhs, R&& rhs)
+    {
+        return connect_unary_node(std::forward<L>(lhs), std::forward<R>(rhs), "operator>>");
+    }
+
+    template<class L, class R>
+    requires (
+        std::convertible_to<std::remove_cvref_t<L>, NodeRef> &&
+        SignalLike<R>
+    )
+    SignalRef operator<<(L&& lhs, R&& rhs)
+    {
+        return connect_unary_node(std::forward<R>(rhs), std::forward<L>(lhs), "operator<<");
+    }
+
+    template<fixed_string Name, class R>
+    requires std::convertible_to<std::remove_cvref_t<R>, NodeRef>
+    SignalRef operator<<(PortName<Name>, R&& rhs)
+    {
+        NodeRef node = static_cast<NodeRef>(std::forward<R>(rhs));
+        return node[Name.view()];
+    }
+
+    template<class L, fixed_string Name>
+    requires std::convertible_to<std::remove_cvref_t<L>, NodeRef>
+    SignalRef operator>>(L&& lhs, PortName<Name>)
+    {
+        NodeRef node = static_cast<NodeRef>(std::forward<L>(lhs));
+        return node[Name.view()];
     }
 
     inline SignalRef::SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
@@ -986,28 +1149,25 @@ namespace iv {
     }
 
     template<class Derived, class Node>
-    template<class... Refs>
-    requires(std::same_as<Node, void> || !details::has_fixed_input_count_v<Node> || sizeof...(Refs) <= details::fixed_input_count_v<Node>)
-    Derived NodeRefBase<Derived, Node>::operator()(Refs&&... refs) const
+    template<class... Args>
+    requires(details::node_call_enabled<Node, Args...>)
+    Derived NodeRefBase<Derived, Node>::operator()(Args&&... args) const
     {
         if (!_graph_builder) {
             details::error("attempted to use a null NodeRef");
         }
-        std::array<SignalRef, sizeof...(Refs)> refs_array{
-            _graph_builder->lift_to_signal(std::forward<Refs>(refs))...
-        };
 
         auto const inputs = get_inputs(node());
-        if (sizeof...(Refs) > inputs.size()) {
-            details::error(
-                to_string() + " "
-                "has at most " + std::to_string(inputs.size()) + " inputs, "
-                "got " + std::to_string(sizeof...(Refs))
-            );
-        }
+        size_t positional_input_port = 0;
 
-        for (size_t input_port = 0; input_port < refs_array.size(); ++input_port) {
-            auto const& ref = refs_array[input_port];
+        auto connect_input = [&](SignalRef ref, size_t input_port) {
+            if (input_port >= inputs.size()) {
+                details::error(
+                    to_string() + " "
+                    "has at most " + std::to_string(inputs.size()) + " inputs, "
+                    "got " + std::to_string(input_port + 1)
+                );
+            }
 
             if (ref.graph_builder != _graph_builder) {
                 details::error(
@@ -1029,65 +1189,36 @@ namespace iv {
                 ref,
                 PortId{ _index, input_port },
             });
-        }
+        };
 
-        return derived();
-    }
+        auto connect_named = [&](auto&& named_arg) {
+            using NamedArgT = std::remove_cvref_t<decltype(named_arg)>;
+            constexpr std::string_view name = NamedArgT::name.view();
 
-    template<class Derived, class Node>
-    inline Derived NodeRefBase<Derived, Node>::operator()(std::initializer_list<NamedRef> refs) const
-    {
-        if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
-        }
+            auto const signal = _graph_builder->lift_to_signal(named_arg.value);
 
-        auto inputs = get_inputs(node());
-
-        for (auto const& ref : refs) {
-            if (ref.name.empty()) {
-                details::error(
-                    "named inputs must not use empty names on " + to_string()
-                );
-            }
-
-            auto const signal = _graph_builder->lift_to_signal(ref);
-
-            if (signal.graph_builder != _graph_builder) {
-                details::error(
-                    signal.to_string() + " "
-                    "does not belong to the same builder as " + to_string()
-                );
-            }
-
-            bool placed = false;
             for (size_t input_port = 0; input_port < inputs.size(); ++input_port) {
-                if (ref.name != inputs[input_port].name) continue;
-
-                PortId const input_port_id = {_index, input_port};
-                if (_graph_builder->_placed_input_ports.contains(input_port_id)) {
-                    details::error(
-                        "input port " + std::string(inputs[input_port].name) + " of " + to_string() + " "
-                        "was already placed in the graph"
-                    );
+                if (inputs[input_port].name == name) {
+                    connect_input(signal, input_port);
+                    return;
                 }
-
-                _graph_builder->_placed_input_ports.insert(input_port_id);
-                _graph_builder->_edges.emplace(GraphEdge{
-                    signal,
-                    PortId { _index, input_port },
-                });
-
-                placed = true;
-                break;
             }
 
-            if (!placed) {
-                details::error(
-                    "an input port named '" + std::string(ref.name) + "' "
-                    "does not exist on " + to_string()
-                );
+            details::error(
+                "an input port named '" + std::string(name) + "' "
+                "does not exist on " + to_string()
+            );
+        };
+
+        auto const process_arg = [&](auto&& arg) {
+            if constexpr (details::is_named_arg_v<decltype(arg)>) {
+                connect_named(std::forward<decltype(arg)>(arg));
+            } else {
+                connect_input(_graph_builder->lift_to_signal(std::forward<decltype(arg)>(arg)), positional_input_port++);
             }
-        }
+        };
+
+        (process_arg(std::forward<Args>(args)), ...);
 
         return derived();
     }

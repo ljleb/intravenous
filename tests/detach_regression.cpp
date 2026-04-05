@@ -9,6 +9,8 @@
 #include <vector>
 
 namespace {
+    using namespace iv::literals;
+
     struct BufferSink {
         iv::Sample* destination;
         size_t size;
@@ -64,8 +66,8 @@ int main()
     });
     auto const sink = graph.node<BufferSink>(output.data(), output.size());
 
-    voice_a({ {"dt", dt}, {"noise", src_a} });
-    voice_b({ {"dt", dt}, {"noise", src_b} });
+    voice_a("dt"_P = dt, "noise"_P = src_a);
+    voice_b("dt"_P = dt, "noise"_P = src_b);
     sink(voice_a + voice_b);
     graph.outputs();
 

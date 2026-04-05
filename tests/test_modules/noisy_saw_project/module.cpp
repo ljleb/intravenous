@@ -12,6 +12,7 @@
 inline void noise_voice(iv::GraphBuilder& g)
 {
     using namespace iv;
+    using namespace iv::literals;
     auto const dt = g.input("dt", 1.0);
 
     auto const level_knob = 1.5;
@@ -26,7 +27,7 @@ inline void noise_voice(iv::GraphBuilder& g)
     auto const u_to_c = g.node<UniformToCauchy>(0.0, 0.01);
     auto const interp = g.node<Interpolation>();
 
-    generator({ {"min", -1}, {"max", 1} });
+    generator("min"_P = -1, "max"_P = 1);
 
     u_to_c(generator);
     u_to_n(generator);
@@ -42,6 +43,7 @@ inline void noise_voice(iv::GraphBuilder& g)
 inline void noisy_saw_project(iv::ModuleContext const& context)
 {
     using namespace iv;
+    using namespace iv::literals;
     GraphBuilder& g = context.builder();
     auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
@@ -60,12 +62,12 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
 
         noise(dt);
         shared_noise(first_noise, noise, 1.0);
-        voice({
-            {"noise", 0.5*shared_noise},
-            {"dt", dt},
-            {"feedback", voice["feedback"].detach()},
-        });
-        sink(voice["out"]);
+        voice(
+            "noise"_P = 0.5*shared_noise,
+            "dt"_P = dt,
+            "feedback"_P = ~("feedback"_P << voice)
+        );
+        sink("out"_P << voice);
     }
 
     g.outputs();
