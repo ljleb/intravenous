@@ -11,18 +11,18 @@
 
 namespace iv {
     struct GraphPortDataNode {
-        std::vector<InputConfig> _inputs;
-        std::vector<PortBufferPlan> _input_buffer_plans;
-        std::string _node_id;
+        std::string _port_data_id;
+        InputConfig _input;
+        PortBufferPlan _input_buffer_plan;
 
         explicit GraphPortDataNode(
-            std::span<InputConfig const> inputs,
-            std::vector<PortBufferPlan> input_buffer_plans,
-            std::string node_id
+            std::string port_data_id,
+            InputConfig input,
+            PortBufferPlan input_buffer_plan
         ) :
-            _inputs(inputs.begin(), inputs.end()),
-            _input_buffer_plans(std::move(input_buffer_plans)),
-            _node_id(std::move(node_id))
+            _port_data_id(std::move(port_data_id)),
+            _input(std::move(input)),
+            _input_buffer_plan(input_buffer_plan)
         {}
 
         struct State {
@@ -33,23 +33,19 @@ namespace iv {
         void declare(DeclarationContext<GraphPortDataNode> const& ctx) const
         {
             auto const& state = ctx.state();
-            ctx.local_array(state.port_data, _inputs.size());
-            auto const input_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _input_buffer_plans);
-            auto const input_sample_offsets = make_input_sample_offsets(input_sample_sizes);
-            ctx.local_array(state.samples, input_sample_offsets.empty() ? 0 : input_sample_offsets.back());
-            ctx.export_array(port_data_export_id(_node_id), state.port_data);
+            ctx.local_array(state.port_data, 1);
+            ctx.local_array(
+                state.samples,
+                calculate_port_buffer_size(ctx.max_block_size(), _input_buffer_plan)
+            );
+            ctx.export_array(_port_data_id, state.port_data);
         }
 
         void initialize(InitializationContext<GraphPortDataNode> const& ctx) const
         {
             auto& state = ctx.state();
-            auto const input_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _input_buffer_plans);
-            auto const input_sample_offsets = make_input_sample_offsets(input_sample_sizes);
-            for (size_t input_i = 0; input_i < _inputs.size(); ++input_i) {
-                auto samples = input_sample_buffer(state.samples, input_sample_offsets, input_i);
-                std::fill(samples.begin(), samples.end(), _inputs[input_i].default_value);
-                std::construct_at(&state.port_data[input_i], samples, 0);
-            }
+            std::fill(state.samples.begin(), state.samples.end(), _input.default_value);
+            std::construct_at(&state.port_data[0], state.samples, 0);
         }
     };
 }

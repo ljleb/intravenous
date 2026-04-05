@@ -24,10 +24,26 @@ namespace iv {
         return id;
     }
 
+    inline std::string port_data_export_id(std::string_view node_id, size_t port_index)
+    {
+        std::string id = port_data_export_id(node_id);
+        id += ":";
+        id += std::to_string(port_index);
+        return id;
+    }
+
     inline std::string graph_port_data_export_id(std::string_view graph_id)
     {
         std::string id = "graph_port_data:";
         id += graph_id;
+        return id;
+    }
+
+    inline std::string graph_port_data_export_id(std::string_view graph_id, size_t port_index)
+    {
+        std::string id = graph_port_data_export_id(graph_id);
+        id += ":";
+        id += std::to_string(port_index);
         return id;
     }
 

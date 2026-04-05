@@ -5,6 +5,10 @@
 #include "basic_nodes/buffers.h"
 #include "juce_vst_wrapper.h"
 
+#include <array>
+#include <iostream>
+#include <string>
+
 inline void noise_voice(iv::GraphBuilder& g)
 {
     using namespace iv;
@@ -39,10 +43,9 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
 {
     using namespace iv;
     GraphBuilder& g = context.builder();
-    auto const& targets = context.target_factory();
-    auto voice_module = context.load("iv.test.noisy_saw_voice");
-
+    auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
+    auto const voice_builder = context.load_builder("iv.test.noisy_saw_voice");
     SignalRef first_noise;
 
     for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
@@ -51,9 +54,9 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             first_noise = noise;
         }
 
-        auto const voice = g.node(voice_module.builder());
+        auto const voice = g.node(voice_builder);
         auto const shared_noise = g.node<Interpolation>();
-        auto const sink = targets.sink(g, channel);
+        auto const sink = io.sink(g, channel);
 
         noise(dt);
         shared_noise(first_noise, noise, 1.0);

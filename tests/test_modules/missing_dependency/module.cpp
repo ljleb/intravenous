@@ -4,8 +4,7 @@ namespace iv {
     void missing_dependency(ModuleContext const& context)
     {
         auto& g = context.builder();
-        auto dep = context.load("iv.test.this_does_not_exist");
-        auto const voice = g.node(dep.builder());
+        auto const voice = context.load("iv.test.this_does_not_exist");
         g.outputs(voice);
     }
 }

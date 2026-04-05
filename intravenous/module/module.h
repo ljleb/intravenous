@@ -15,7 +15,6 @@
 
 namespace iv {
     class TypeErasedModule;
-    class LoadedModule;
 
     struct ModuleRenderConfig {
         // TODO: This is still a bootstrap/runtime hint passed into module loading.
@@ -121,7 +120,8 @@ namespace iv {
             return _load_user_data;
         }
 
-        LoadedModule load(std::string_view id) const;
+        NodeRef load(std::string_view id) const;
+        GraphBuilder load_builder(std::string_view id) const;
     };
 
     class TypeErasedModule {
@@ -164,24 +164,7 @@ namespace iv {
         }
     };
 
-    class LoadedModule {
-        TypeErasedModule _module;
-        ModuleContext _context;
-
-    public:
-        LoadedModule(TypeErasedModule module, ModuleContext context) :
-            _module(std::move(module)),
-            _context(std::move(context))
-        {
-        }
-
-        GraphBuilder builder() const
-        {
-            return _module.builder(_context);
-        }
-    };
-
-    inline LoadedModule ModuleContext::load(std::string_view id) const
+    inline GraphBuilder ModuleContext::load_builder(std::string_view id) const
     {
         if (!_load_fn) {
             throw std::logic_error(
@@ -189,7 +172,12 @@ namespace iv {
             );
         }
 
-        return LoadedModule(_load_fn(_load_user_data, id), *this);
+        return _load_fn(_load_user_data, id).builder(*this);
+    }
+
+    inline NodeRef ModuleContext::load(std::string_view id) const
+    {
+        return _builder->node(load_builder(id));
     }
 }
 

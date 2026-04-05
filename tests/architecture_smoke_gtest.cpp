@@ -274,6 +274,45 @@ TEST(ArchitectureSmoke, RequestedBlockMismatchDoesNotSatisfyActiveRequest)
     audio_device.device().finish_requested_block();
 }
 
+TEST(ArchitectureSmoke, SubgraphPassthroughFlattensToDirectSignalPath)
+{
+    iv::Sample value = 0.375f;
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 1,
+            .max_block_frames = 8,
+        }
+    );
+
+    iv::GraphBuilder g;
+    auto const src = g.node<iv::ValueSource>(&value);
+    auto const passthrough = g.subgraph([](iv::GraphBuilder& nested) {
+        auto const input = nested.input();
+        nested.outputs(input);
+    });
+    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+        .device_id = 0,
+        .channel = 0,
+    });
+    passthrough(src);
+    sink(passthrough);
+    g.outputs();
+
+    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    iv::NodeExecutor executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build()),
+        {},
+        execution_target_registry,
+        1
+    );
+
+    request_tick_and_wait(audio_device, executor, 0, 8);
+
+    expect_constant_block(audio_device.output_block(), value);
+    audio_device.device().finish_requested_block();
+}
+
 TEST(ArchitectureSmoke, ExactRequestedBlockBecomesReady)
 {
     iv::Sample value = 0.75f;

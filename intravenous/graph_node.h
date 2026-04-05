@@ -14,20 +14,24 @@ namespace iv {
     struct Graph {
         std::string _graph_id;
         std::vector<GraphSccWrapper> _scc_wrappers;
+        std::vector<GraphPortDataNode> _egress_port_data_nodes;
         decltype(GraphBuildArtifact::edges) _edges;
         std::vector<InputConfig> _public_inputs;
         std::vector<OutputConfig> _public_outputs;
-        std::vector<PortBufferPlan> _public_output_buffer_plans;
         size_t _internal_latency;
         std::vector<std::string> _node_ids;
 
         explicit Graph(GraphBuildArtifact artifact) :
             _graph_id(std::move(artifact.graph_id)),
             _scc_wrappers(std::move(artifact.scc_wrappers)),
+            _egress_port_data_nodes(make_egress_port_data_nodes(
+                _graph_id,
+                artifact.public_outputs.size(),
+                artifact.public_output_buffer_plans
+            )),
             _edges(std::move(artifact.edges)),
             _public_inputs(std::move(artifact.public_inputs)),
             _public_outputs(std::move(artifact.public_outputs)),
-            _public_output_buffer_plans(std::move(artifact.public_output_buffer_plans)),
             _internal_latency(artifact.internal_latency),
             _node_ids(std::move(artifact.node_ids))
         {}
@@ -35,10 +39,36 @@ namespace iv {
         struct State {
             std::span<std::span<std::byte>> scc_states;
             std::span<OutputPort> ingress_outputs;
-            std::span<SharedPortData> egress_port_data;
-            std::span<Sample> egress_samples;
             std::span<InputPort> egress_inputs;
         };
+
+        static std::vector<GraphPortDataNode> make_egress_port_data_nodes(
+            std::string const& graph_id,
+            size_t num_outputs,
+            std::span<PortBufferPlan const> output_buffer_plans
+        )
+        {
+            IV_ASSERT(num_outputs == output_buffer_plans.size(), "graph egress port data must have one buffer plan per output");
+
+            std::vector<GraphPortDataNode> port_data_nodes;
+            port_data_nodes.reserve(num_outputs);
+            for (size_t output_i = 0; output_i < num_outputs; ++output_i) {
+                port_data_nodes.emplace_back(
+                    graph_port_data_export_id(graph_id, output_i),
+                    InputConfig{},
+                    output_buffer_plans[output_i]
+                );
+            }
+            return port_data_nodes;
+        }
+
+        std::string ingress_target_export_id(PortId target) const
+        {
+            if (target.node == GRAPH_ID) {
+                return graph_port_data_export_id(_graph_id, target.port);
+            }
+            return port_data_export_id(_node_ids[target.node], target.port);
+        }
 
         auto inputs() const
         {
@@ -78,17 +108,19 @@ namespace iv {
             for (auto const& scc : _scc_wrappers) {
                 do_declare(scc, ctx);
             }
+            for (auto const& port_data_node : _egress_port_data_nodes) {
+                do_declare(port_data_node, ctx);
+            }
             ctx.local_array(state.egress_inputs, num_outputs());
-            ctx.local_array(state.egress_port_data, num_outputs());
-            auto const output_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _public_output_buffer_plans);
-            auto const output_sample_offsets = make_input_sample_offsets(output_sample_sizes);
-            ctx.local_array(state.egress_samples, output_sample_offsets.empty() ? 0 : output_sample_offsets.back());
-
-            ctx.export_array(graph_port_data_export_id(_graph_id), state.egress_port_data);
+            for (size_t output_i = 0; output_i < num_outputs(); ++output_i) {
+                ctx.require_export_array<SharedPortData>(
+                    graph_port_data_export_id(_graph_id, output_i)
+                );
+            }
             for (GraphEdge const& edge : _edges) {
                 if (edge.source.node == GRAPH_ID) {
                     ctx.require_export_array<SharedPortData>(
-                        port_data_export_id(_node_ids[edge.target.node])
+                        ingress_target_export_id(edge.target)
                     );
                 }
             }
@@ -97,22 +129,21 @@ namespace iv {
         void initialize(InitializationContext<Graph> const& ctx) const
         {
             auto& state = ctx.state();
-            auto const output_sample_sizes = resolve_port_buffer_sizes(ctx.max_block_size(), _public_output_buffer_plans);
-            auto const output_sample_offsets = make_input_sample_offsets(output_sample_sizes);
             for (size_t output_i = 0; output_i < num_outputs(); ++output_i) {
-                auto samples = input_sample_buffer(state.egress_samples, output_sample_offsets, output_i);
-                std::fill(samples.begin(), samples.end(), Sample(0));
-                std::construct_at(&state.egress_port_data[output_i], samples, 0);
-                std::construct_at(&state.egress_inputs[output_i], state.egress_port_data[output_i], 0);
+                auto egress_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
+                    graph_port_data_export_id(_graph_id, output_i)
+                );
+                IV_ASSERT(!egress_port_data.empty(), "graph egress wiring must resolve the requested SharedPortData entry");
+                std::construct_at(&state.egress_inputs[output_i], const_cast<SharedPortData&>(egress_port_data[0]), 0);
             }
 
             for (GraphEdge const& edge : _edges) {
                 if (edge.source.node == GRAPH_ID) {
                     auto consumer_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
-                        port_data_export_id(_node_ids[edge.target.node])
+                        ingress_target_export_id(edge.target)
                     );
-                    IV_ASSERT(edge.target.port < consumer_port_data.size(), "graph ingress wiring must resolve the requested SharedPortData entry");
-                    std::construct_at(&state.ingress_outputs[edge.source.port], const_cast<SharedPortData&>(consumer_port_data[edge.target.port]), 0);
+                    IV_ASSERT(!consumer_port_data.empty(), "graph ingress wiring must resolve the requested SharedPortData entry");
+                    std::construct_at(&state.ingress_outputs[edge.source.port], const_cast<SharedPortData&>(consumer_port_data[0]), 0);
                 }
             }
         }
