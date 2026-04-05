@@ -200,7 +200,6 @@ namespace iv {
         {
             std::filesystem::file_time_type latest {};
             bool saw_file = false;
-
             for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
                 if (!entry.is_regular_file()) {
                     continue;
@@ -418,7 +417,6 @@ namespace iv {
                 if (!entry.is_regular_file()) {
                     continue;
                 }
-
                 if (normalize_path(entry.path()) == local_cmake) {
                     continue;
                 }

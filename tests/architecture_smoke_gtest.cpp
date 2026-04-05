@@ -3,6 +3,7 @@
 #include "dsl.h"
 #include "graph_node.h"
 #include "module_test_utils.h"
+#include "node_layout.h"
 
 #include <gtest/gtest.h>
 
@@ -12,7 +13,9 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <iostream>
 #include <stdexcept>
+#include <unordered_map>
 #include <string_view>
 
 namespace {
@@ -547,6 +550,89 @@ TEST(ArchitectureSmoke, DirectoryModuleRetainsModuleRefsAndRuns)
     EXPECT_NE(processor.num_module_refs(), 0u);
     iv::test::run_processor_ticks(processor);
     EXPECT_FALSE(processor.is_shutdown_requested());
+}
+
+TEST(ArchitectureSmoke, DirectoryModuleEventArrayBindingsResolve)
+{
+    iv::test::FakeAudioDevice audio_device;
+    auto loader = iv::test::make_loader();
+    auto loaded = loader.load_root(
+        iv::test::test_modules_root() / "noisy_saw_project",
+        iv::test::module_render_config(audio_device),
+        &audio_device.sample_period()
+    );
+
+    iv::NodeLayoutBuilder builder(8);
+    {
+        iv::DeclarationContext<iv::TypeErasedNode> ctx(builder, loaded.root);
+        loaded.root.declare(ctx);
+    }
+    auto layout = std::move(builder).build();
+
+    auto const event_type = iv::NodeLayoutBuilder::array_type_token<iv::EventSharedPortData>();
+
+    std::vector<std::string> exported_event_ids;
+    for (auto const& binding : layout.exported_arrays) {
+        if (binding.element_type == event_type) {
+            exported_event_ids.push_back(binding.id);
+        }
+    }
+    std::sort(exported_event_ids.begin(), exported_event_ids.end());
+
+    std::vector<std::string> missing_event_ids;
+    for (auto const& binding : layout.imported_arrays) {
+        if (binding.element_type != event_type) {
+            continue;
+        }
+        if (std::find(exported_event_ids.begin(), exported_event_ids.end(), binding.id) == exported_event_ids.end()) {
+            missing_event_ids.push_back(binding.id);
+        }
+    }
+    std::sort(missing_event_ids.begin(), missing_event_ids.end());
+    missing_event_ids.erase(std::unique(missing_event_ids.begin(), missing_event_ids.end()), missing_event_ids.end());
+
+    std::unordered_map<std::string, size_t> exported_event_id_counts;
+    for (auto const& id : exported_event_ids) {
+        ++exported_event_id_counts[id];
+    }
+    std::vector<std::string> duplicate_exported_event_ids;
+    for (auto const& [id, count] : exported_event_id_counts) {
+        if (count > 1) {
+            duplicate_exported_event_ids.push_back(id + " x" + std::to_string(count));
+        }
+    }
+    std::sort(duplicate_exported_event_ids.begin(), duplicate_exported_event_ids.end());
+
+    if (!missing_event_ids.empty()) {
+        std::cerr << "missing exported EventSharedPortData ids:\n";
+        for (auto const& id : missing_event_ids) {
+            std::cerr << "  " << id << '\n';
+        }
+    }
+    if (!duplicate_exported_event_ids.empty()) {
+        std::cerr << "duplicate exported EventSharedPortData ids:\n";
+        for (auto const& id : duplicate_exported_event_ids) {
+            std::cerr << "  " << id << '\n';
+        }
+    }
+
+    if (!missing_event_ids.empty()) {
+        std::ostringstream out;
+        out << "missing exported EventSharedPortData ids:\n";
+        for (auto const& id : missing_event_ids) {
+            out << id << '\n';
+        }
+        FAIL() << out.str();
+    }
+
+    if (!duplicate_exported_event_ids.empty()) {
+        std::ostringstream out;
+        out << "duplicate exported EventSharedPortData ids:\n";
+        for (auto const& id : duplicate_exported_event_ids) {
+            out << id << '\n';
+        }
+        FAIL() << out.str();
+    }
 }
 
 TEST(ArchitectureSmoke, DuplicateExecutorIdIsRejected)

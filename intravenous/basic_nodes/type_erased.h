@@ -1,6 +1,5 @@
 #pragma once
 
-#include "alligator.h"
 #include "node_lifecycle.h"
 
 #include <array>
@@ -78,6 +77,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .event_streams = ctx.event_streams,
                             .buffer = state.nested_node_states[0]
                         },
                         ctx.index,
@@ -91,6 +91,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .event_streams = ctx.event_streams,
                             .buffer = state.nested_node_states[0]
                         },
                         ctx.index,
@@ -115,6 +116,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .event_streams = ctx.event_streams,
                             .buffer = state.nested_node_states[0]
                         },
                         ctx.index,
@@ -128,6 +130,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .event_streams = ctx.event_streams,
                             .buffer = state.nested_node_states[0]
                         },
                         ctx.index,

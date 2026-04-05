@@ -74,9 +74,9 @@ namespace iv {
 
         void tick_block(TickBlockContext<BroadcastEvent> const& ctx) const
         {
-            auto events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            auto events = ctx.event_inputs[0].get_block(ctx.event_stream_storage(), ctx.index, ctx.block_size);
             for (auto& output : ctx.event_outputs) {
-                output.push_block(events, ctx.index, ctx.block_size);
+                output.push_block(ctx.event_stream_storage(), events, ctx.index, ctx.block_size);
             }
         }
     };
@@ -107,8 +107,8 @@ namespace iv {
         void tick_block(TickBlockContext<EventConcatenation> const& ctx) const
         {
             for (auto const& input : ctx.event_inputs) {
-                input.for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
-                    ctx.event_outputs[0].push(event.value, event.time, ctx.index, ctx.block_size);
+                input.for_each_in_block(ctx.event_stream_storage(), ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
+                    ctx.event_outputs[0].push(ctx.event_stream_storage(), event.value, event.time, ctx.index, ctx.block_size);
                 });
             }
         }

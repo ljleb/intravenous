@@ -817,29 +817,23 @@ namespace iv {
 
     class EventInputPort {
         EventSharedPortData _shared_data;
-        EventStreamStorage* _storage = nullptr;
 
     public:
         EventInputPort() = default;
 
-        explicit EventInputPort(
-            EventSharedPortData shared_data,
-            EventStreamStorage& storage
-        ) :
-            _shared_data(shared_data),
-            _storage(&storage)
+        explicit EventInputPort(EventSharedPortData shared_data) :
+            _shared_data(shared_data)
         {}
 
-        EventBlockView get_block(size_t block_index, size_t block_size) const
+        EventBlockView get_block(EventStreamStorage& storage, size_t block_index, size_t block_size) const
         {
-            IV_ASSERT(_storage, "EventInputPort must be bound before use");
-            return _storage->block(_shared_data.stream_id, block_index, block_size);
+            return storage.block(_shared_data.stream_id, block_index, block_size);
         }
 
         template<typename Fn>
-        void for_each_in_block(size_t block_index, size_t block_size, Fn&& fn) const
+        void for_each_in_block(EventStreamStorage& storage, size_t block_index, size_t block_size, Fn&& fn) const
         {
-            get_block(block_index, block_size).for_each(std::forward<Fn>(fn));
+            get_block(storage, block_index, block_size).for_each(std::forward<Fn>(fn));
         }
 
         EventTypeId type() const
@@ -853,37 +847,31 @@ namespace iv {
         EventTypeId _source_type {};
         bool _has_conversion = false;
         EventConversionPlan _conversion {};
-        EventStreamStorage* _storage = nullptr;
 
     public:
         EventOutputPort() = default;
 
         explicit EventOutputPort(
             EventSharedPortData shared_data,
-            EventTypeId source_type,
-            EventStreamStorage& storage
+            EventTypeId source_type
         ) :
             _shared_data(shared_data),
-            _source_type(source_type),
-            _storage(&storage)
+            _source_type(source_type)
         {}
 
         explicit EventOutputPort(
             EventSharedPortData shared_data,
             EventTypeId source_type,
-            EventConversionPlan const& conversion,
-            EventStreamStorage& storage
+            EventConversionPlan const& conversion
         ) :
             _shared_data(shared_data),
             _source_type(source_type),
             _has_conversion(true),
-            _conversion(conversion),
-            _storage(&storage)
+            _conversion(conversion)
         {}
 
-        void push(Event event, size_t sample_offset, size_t block_index, size_t block_size) const
+        void push(EventStreamStorage& storage, Event event, size_t sample_offset, size_t block_index, size_t block_size) const
         {
-            IV_ASSERT(_storage, "EventOutputPort must be bound before use");
             (void)block_size;
             TimedEvent const timed_event {
                 .time = block_index + sample_offset,
@@ -891,37 +879,37 @@ namespace iv {
             };
             if (_has_conversion) {
                 EventConversionRegistry::instance().convert(_conversion, timed_event, [&](TimedEvent const& converted) {
-                    _storage->append(_shared_data.stream_id, converted);
+                    storage.append(_shared_data.stream_id, converted);
                 });
             } else {
-                _storage->append(_shared_data.stream_id, timed_event);
+                storage.append(_shared_data.stream_id, timed_event);
             }
         }
 
-        void push_block(EventBlockView const& events, size_t block_index, size_t block_size) const
+        void push_block(EventStreamStorage& storage, EventBlockView const& events, size_t block_index, size_t block_size) const
         {
             (void)block_size;
             bool const can_move =
                 !_has_conversion &&
-                events.storage() == _storage &&
+                events.storage() == &storage &&
                 events.block_index() == block_index &&
                 events.type() == _shared_data.type;
 
             if (can_move) {
                 for (size_t ref : events.refs()) {
-                    _storage->append_existing(_shared_data.stream_id, ref);
+                    storage.append_existing(_shared_data.stream_id, ref);
                 }
                 return;
             }
 
             events.for_each([&](TimedEvent const& event, size_t) {
-                push(event.value, event.time, block_index, block_size);
+                push(storage, event.value, event.time, block_index, block_size);
             });
         }
 
-        void append_block(EventBlockView const& events, size_t block_index, size_t block_size) const
+        void append_block(EventStreamStorage& storage, EventBlockView const& events, size_t block_index, size_t block_size) const
         {
-            push_block(events, block_index, block_size);
+            push_block(storage, events, block_index, block_size);
         }
 
         EventTypeId source_type() const

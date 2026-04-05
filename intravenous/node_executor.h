@@ -17,6 +17,8 @@ namespace iv {
     class NodeExecutor {
         struct PreparedState {
             TypeErasedNode root;
+            ResourceContext resources;
+            std::unique_ptr<EventStreamStorage> event_stream_storage;
             NodeLayout layout;
             NodeStorage storage;
             size_t max_block_size = 0;
@@ -25,7 +27,7 @@ namespace iv {
         std::vector<ModuleRef> _module_refs;
         TypeErasedNode _root;
         ResourceContext _resources;
-        EventStreamStorage _event_stream_storage;
+        std::unique_ptr<EventStreamStorage> _event_stream_storage;
         ExecutionTargetRegistry* _execution_target_registry = nullptr;
         NodeLayout _layout;
         NodeStorage _storage;
@@ -37,7 +39,7 @@ namespace iv {
         {
             _storage.layout = &_layout;
             _storage.resources = &_resources;
-            _resources.event_streams = &_event_stream_storage;
+            _resources.event_streams = _event_stream_storage.get();
         }
 
         static void validate_root_interface(TypeErasedNode const& root)
@@ -73,17 +75,25 @@ namespace iv {
 
         static PreparedState prepare_state(
             TypeErasedNode root,
-            ResourceContext const& resources,
+            ResourceContext resources,
             ExecutionTargetRegistry& execution_target_registry,
             size_t executor_id,
             char const* operation,
-            bool initialize_storage = true
+            bool initialize_storage = true,
+            EventStreamStorage* event_stream_storage = nullptr
         )
         {
             validate_root_interface(root);
 
             PreparedState prepared;
             prepared.root = std::move(root);
+            prepared.resources = std::move(resources);
+            if (event_stream_storage) {
+                prepared.resources.event_streams = event_stream_storage;
+            } else {
+                prepared.event_stream_storage = std::make_unique<EventStreamStorage>();
+                prepared.resources.event_streams = prepared.event_stream_storage.get();
+            }
             prepared.max_block_size = choose_block_size(prepared.root, execution_target_registry, executor_id);
             try {
                 prepared.layout = make_layout(prepared.root, prepared.max_block_size);
@@ -94,7 +104,7 @@ namespace iv {
             }
 
             try {
-                prepared.storage = prepared.layout.create_storage(resources);
+                prepared.storage = prepared.layout.create_storage(prepared.resources);
             } catch (std::exception const& e) {
                 throw std::runtime_error(std::string("failed to ") + operation + " node executor: create_storage: " + e.what());
             } catch (...) {
@@ -123,6 +133,7 @@ namespace iv {
                         .outputs = {},
                         .event_inputs = {},
                         .event_outputs = {},
+                        .event_streams = _event_stream_storage.get(),
                         .buffer = _storage.buffer(),
                     },
                     index,
@@ -153,6 +164,7 @@ namespace iv {
         : _module_refs(std::move(other._module_refs))
         , _root(std::move(other._root))
         , _resources(std::move(other._resources))
+        , _event_stream_storage(std::move(other._event_stream_storage))
         , _execution_target_registry(other._execution_target_registry)
         , _layout(std::move(other._layout))
         , _storage(std::move(other._storage))
@@ -182,6 +194,7 @@ namespace iv {
             _module_refs = std::move(other._module_refs);
             _root = std::move(other._root);
             _resources = std::move(other._resources);
+            _event_stream_storage = std::move(other._event_stream_storage);
             _execution_target_registry = other._execution_target_registry;
             _layout = std::move(other._layout);
             _storage = std::move(other._storage);
@@ -212,7 +225,8 @@ namespace iv {
                 return NodeExecutor(
                     std::move(prepared.root),
                     std::move(module_refs),
-                    std::move(resources),
+                    std::move(prepared.resources),
+                    std::move(prepared.event_stream_storage),
                     execution_target_registry,
                     std::move(prepared.layout),
                     std::move(prepared.storage),
@@ -229,6 +243,7 @@ namespace iv {
             TypeErasedNode root,
             std::vector<ModuleRef> module_refs,
             ResourceContext resources,
+            std::unique_ptr<EventStreamStorage> event_stream_storage,
             ExecutionTargetRegistry& execution_target_registry,
             NodeLayout layout,
             NodeStorage storage,
@@ -238,6 +253,7 @@ namespace iv {
             _module_refs(std::move(module_refs)),
             _root(std::move(root)),
             _resources(std::move(resources)),
+            _event_stream_storage(std::move(event_stream_storage)),
             _execution_target_registry(&execution_target_registry),
             _layout(std::move(layout)),
             _storage(std::move(storage)),
@@ -278,7 +294,15 @@ namespace iv {
 
         void reload(TypeErasedNode root, std::vector<ModuleRef> module_refs = {})
         {
-            auto prepared = prepare_state(std::move(root), _resources, *_execution_target_registry, _executor_id, "reload", false);
+            auto prepared = prepare_state(
+                std::move(root),
+                _resources,
+                *_execution_target_registry,
+                _executor_id,
+                "reload",
+                false,
+                _event_stream_storage.get()
+            );
             _execution_target_registry->validate_executor_block_size(_executor_id, prepared.max_block_size);
 
             _execution_target_registry->clear_audio_state_for_executor(_executor_id);

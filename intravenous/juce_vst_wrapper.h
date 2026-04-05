@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dsl.h"
+#include "juce_midi_input.h"
 #include "node_lifecycle.h"
 
 #include <cstdint>
@@ -22,7 +23,10 @@ namespace iv {
         template<typename... Args>
         NodeRef vst(Args&&...)
         {
-            static_assert(false, "iv::juce::vst(...) requires JUCE VST support. Configure the project with JUCE available so IV_ENABLE_JUCE_VST=1.");
+            static_assert(
+                details::dependent_false_v<Args...>,
+                "iv::juce::vst(...) requires JUCE VST support. Configure the project with JUCE available so IV_ENABLE_JUCE_VST=1."
+            );
             return NodeRef();
         }
 #endif
@@ -106,6 +110,13 @@ namespace iv {
                 });
             }
             return inputs;
+        }
+
+        auto event_inputs() const
+        {
+            return std::array<EventInputConfig, 1> {{
+                { .name = "midi", .type = EventTypeId::midi }
+            }};
         }
 
         std::vector<OutputConfig> outputs() const

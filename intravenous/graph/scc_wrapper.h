@@ -64,6 +64,7 @@ namespace iv {
                             .outputs = {},
                             .event_inputs = {},
                             .event_outputs = {},
+                            .event_streams = ctx.event_streams,
                             .buffer = state.nested_node_states[node_i],
                         },
                         ctx.index + offset,

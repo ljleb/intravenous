@@ -2,14 +2,19 @@
 
 #if IV_ENABLE_JUCE_VST
 
+#include "../juce_midi_input.h"
 #include "../juce_vst_wrapper.h"
 
+#include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <deque>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <utility>
 
 namespace iv {
@@ -59,6 +64,20 @@ namespace iv {
         std::string make_audio_port_name(size_t channel)
         {
             return std::string(channel % 2 == 0 ? "l" : "r") + std::to_string(channel / 2);
+        }
+
+        MidiEvent make_iv_midi_event(::juce::MidiMessage const& message)
+        {
+            MidiEvent midi {};
+            auto const* raw = message.getRawData();
+            int const raw_size = message.getRawDataSize();
+            if (raw == nullptr || raw_size <= 0 || raw_size > static_cast<int>(midi.bytes.size())) {
+                return {};
+            }
+
+            std::copy_n(raw, static_cast<size_t>(raw_size), midi.bytes.begin());
+            midi.size = static_cast<std::uint8_t>(raw_size);
+            return midi;
         }
 
         size_t saturating_stream_channels(size_t streams)
@@ -246,6 +265,65 @@ namespace iv {
             ::juce::AudioProcessorParameter* parameter = nullptr;
             float last_value = std::numeric_limits<float>::quiet_NaN();
         };
+
+        ::juce::MidiDeviceInfo resolve_midi_input_device(std::string const& device_query)
+        {
+            auto const devices = ::juce::MidiInput::getAvailableDevices();
+            if (devices.isEmpty()) {
+                throw std::runtime_error("no JUCE MIDI input devices are available");
+            }
+
+            auto find_exact_identifier = [&](std::string const& query) -> std::optional<::juce::MidiDeviceInfo> {
+                for (auto const& device : devices) {
+                    if (device.identifier.toStdString() == query) {
+                        return device;
+                    }
+                }
+                return std::nullopt;
+            };
+
+            auto find_exact_name = [&](std::string const& query) -> std::optional<::juce::MidiDeviceInfo> {
+                for (auto const& device : devices) {
+                    if (device.name.toStdString() == query) {
+                        return device;
+                    }
+                }
+                return std::nullopt;
+            };
+
+            auto find_contains = [&](std::string const& query) -> std::optional<::juce::MidiDeviceInfo> {
+                if (query.empty()) {
+                    return std::nullopt;
+                }
+                auto const query_text = ::juce::String(query);
+                for (auto const& device : devices) {
+                    if (device.name.containsIgnoreCase(query_text) || device.identifier.containsIgnoreCase(query_text)) {
+                        return device;
+                    }
+                }
+                return std::nullopt;
+            };
+
+            if (device_query.empty()) {
+                auto const default_device = ::juce::MidiInput::getDefaultDevice();
+                if (!default_device.identifier.isEmpty()) {
+                    return default_device;
+                }
+                return devices.getFirst();
+            }
+
+            if (auto match = find_exact_identifier(device_query)) {
+                return *match;
+            }
+            if (auto match = find_exact_name(device_query)) {
+                return *match;
+            }
+            if (auto match = find_contains(device_query)) {
+                return *match;
+            }
+
+            throw std::runtime_error("JUCE MIDI input device was not found: " + device_query);
+        }
     }
 
     struct JuceVstRuntimeManager::LiveInstance {
@@ -292,6 +370,40 @@ namespace iv {
         }
     };
 
+    struct JuceVstRuntimeManager::LiveMidiInput : ::juce::MidiInputCallback {
+        struct PendingMessage {
+            int64_t sample_time = 0;
+            MidiEvent midi {};
+        };
+
+        std::unique_ptr<::juce::MidiInput> input;
+        double sample_rate = 48000.0;
+        std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
+        std::mutex mutex;
+        std::deque<PendingMessage> pending_messages;
+
+        void handleIncomingMidiMessage(::juce::MidiInput*, ::juce::MidiMessage const& message) override
+        {
+            MidiEvent const midi = make_iv_midi_event(message);
+            if (midi.size == 0) {
+                return;
+            }
+
+            double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+            int64_t const sample_time = static_cast<int64_t>(std::floor(seconds * sample_rate));
+
+            std::lock_guard lock(mutex);
+            pending_messages.push_back(PendingMessage {
+                .sample_time = sample_time,
+                .midi = midi,
+            });
+        }
+
+        void handlePartialSysexMessage(::juce::MidiInput*, ::juce::uint8 const*, int, double) override
+        {
+        }
+    };
+
     JuceVstRuntimeManager::JuceVstRuntimeManager() :
         _impl(std::make_unique<Impl>())
     {}
@@ -308,7 +420,17 @@ namespace iv {
                 return support._manager->create_instance(spec, support._sample_rate);
             },
         },
-        _resources { .vst = _vst_resources }
+        _midi_input_resources{
+            .owner = this,
+            .create_juce_midi_input_fn = [](void* owner, JuceMidiInputSpec const& spec) {
+                auto& support = *static_cast<JuceVstRuntimeSupport*>(owner);
+                return support._manager->create_midi_input(spec, support._sample_rate);
+            },
+        },
+        _resources {
+            .vst = _vst_resources,
+            .midi_input = _midi_input_resources,
+        }
     {}
 
     JuceVstWrapperSpec probe_juce_vst(JuceVstPluginConfig request)
@@ -377,10 +499,38 @@ namespace iv {
         );
     }
 
-    void JuceVstRuntimeSupport::register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder)
+    UniqueResource JuceVstRuntimeManager::create_midi_input(
+        JuceMidiInputSpec const& spec,
+        double sample_rate
+    )
     {
-        (void)allocator;
-        (void)builder;
+        auto live = std::make_unique<LiveMidiInput>();
+        live->sample_rate = sample_rate > 0.0 ? sample_rate : 48000.0;
+        live->start_time = std::chrono::steady_clock::now();
+
+        auto const device = resolve_midi_input_device(spec.device_query);
+        live->input = ::juce::MidiInput::openDevice(device.identifier, live.get());
+        if (!live->input) {
+            throw std::runtime_error(
+                "JUCE failed to open MIDI input device '" + device.name.toStdString() +
+                "' (" + device.identifier.toStdString() + ")"
+            );
+        }
+        live->input->start();
+
+        return UniqueResource(
+            live.release(),
+            +[](void* ptr) {
+                if (ptr == nullptr) {
+                    return;
+                }
+                auto* live_input = static_cast<LiveMidiInput*>(ptr);
+                if (live_input->input) {
+                    live_input->input->stop();
+                }
+                delete live_input;
+            }
+        );
     }
 
     void tick_juce_vst_wrapper(
@@ -422,6 +572,17 @@ namespace iv {
         }
 
         live_instance.midi_buffer.clear();
+        state.event_inputs[0].for_each_in_block(state.event_stream_storage(), state.index, state.block_size, [&](TimedEvent const& event, size_t) {
+            auto const* midi = std::get_if<MidiEvent>(&event.value);
+            if (midi == nullptr || midi->size == 0) {
+                return;
+            }
+            live_instance.midi_buffer.addEvent(
+                midi->bytes.data(),
+                midi->size,
+                static_cast<int>(event.time)
+            );
+        });
         live_instance.plugin->processBlock(buffer, live_instance.midi_buffer);
 
         for (size_t channel = 0; channel < spec.schema.audio_outputs; ++channel) {
@@ -434,6 +595,40 @@ namespace iv {
     void JuceVstWrapper::tick_block(TickBlockContext<JuceVstWrapper> const& ctx) const
     {
         tick_juce_vst_wrapper(*_spec, ctx.state().plugin_instance.get(), ctx);
+    }
+
+    void tick_juce_midi_input_source(
+        JuceMidiInputSpec const&,
+        void* live_instance_ptr,
+        TickBlockContext<JuceMidiInputSource> const& ctx
+    )
+    {
+        if (live_instance_ptr == nullptr) {
+            throw std::logic_error("JuceMidiInputSource was ticked without a bound runtime input");
+        }
+
+        auto& live_input = *static_cast<JuceVstRuntimeManager::LiveMidiInput*>(live_instance_ptr);
+        int64_t const block_start = static_cast<int64_t>(ctx.index);
+        int64_t const block_end = static_cast<int64_t>(ctx.index + ctx.block_size);
+
+        std::lock_guard lock(live_input.mutex);
+        while (!live_input.pending_messages.empty()) {
+            auto const& pending = live_input.pending_messages.front();
+            if (pending.sample_time >= block_end) {
+                break;
+            }
+
+            size_t const sample_offset = pending.sample_time <= block_start
+                ? 0
+                : static_cast<size_t>(pending.sample_time - block_start);
+            ctx.event_outputs[0].push(ctx.event_stream_storage(), pending.midi, sample_offset, ctx.index, ctx.block_size);
+            live_input.pending_messages.pop_front();
+        }
+    }
+
+    void JuceMidiInputSource::tick_block(TickBlockContext<JuceMidiInputSource> const& ctx) const
+    {
+        tick_juce_midi_input_source(*_spec, ctx.state().live_input.get(), ctx);
     }
 }
 

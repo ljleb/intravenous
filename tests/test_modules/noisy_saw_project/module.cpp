@@ -3,6 +3,7 @@
 #include "basic_nodes/filters.h"
 #include "basic_nodes/shaping.h"
 #include "basic_nodes/buffers.h"
+#include "basic_nodes/midi.h"
 #include "juce_vst_wrapper.h"
 
 #include <array>
@@ -12,7 +13,6 @@
 inline void noise_voice(iv::GraphBuilder& g)
 {
     using namespace iv;
-    using namespace iv::literals;
     auto const dt = g.input("dt", 1.0);
 
     auto const level_knob = 1.5;
@@ -43,12 +43,12 @@ inline void noise_voice(iv::GraphBuilder& g)
 inline void noisy_saw_project(iv::ModuleContext const& context)
 {
     using namespace iv;
-    using namespace iv::literals;
     GraphBuilder& g = context.builder();
     auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
     auto const voice_builder = context.load_builder("iv.test.noisy_saw_voice");
     SignalRef first_noise;
+    auto midi = juce::midi_input(g) >> events;
 
     for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
         auto const noise = g.subgraph(noise_voice);
@@ -60,14 +60,20 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         auto const shared_noise = g.node<Interpolation>();
         auto const sink = io.sink(g, channel);
 
+        auto const frequency = g.node<MidiPitch>();
+        auto const gate = g.node<MidiGate>();
+        frequency >> events << midi;
+        gate >> events << midi;
+
         noise(dt);
         shared_noise(first_noise, noise, 1.0);
         voice(
-            "noise"_P = 0.5*shared_noise,
+            "noise"_P = shared_noise * 0.1,
+            "frequency"_P = frequency,
             "dt"_P = dt,
             "feedback"_P = ~("feedback"_P << voice)
         );
-        sink("out"_P << voice);
+        sink(("out"_P << voice) * gate);
     }
 
     g.outputs();

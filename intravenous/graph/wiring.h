@@ -160,24 +160,26 @@ namespace iv {
     inline void push_input_events_to_private_outputs(
         std::span<EventOutputPort> private_outputs,
         std::span<EventInputPort> public_inputs,
+        EventStreamStorage& storage,
         size_t block_index,
         size_t block_size
     )
     {
         for (size_t i = 0; i < public_inputs.size(); ++i) {
-            private_outputs[i].push_block(public_inputs[i].get_block(block_index, block_size), block_index, block_size);
+            private_outputs[i].push_block(storage, public_inputs[i].get_block(storage, block_index, block_size), block_index, block_size);
         }
     }
 
     inline void push_private_input_events_to_output_events(
         std::span<EventOutputPort> public_outputs,
         std::span<EventInputPort> private_inputs,
+        EventStreamStorage& storage,
         size_t block_index,
         size_t block_size
     )
     {
         for (size_t i = 0; i < public_outputs.size(); ++i) {
-            public_outputs[i].push_block(private_inputs[i].get_block(block_index, block_size), block_index, block_size);
+            public_outputs[i].push_block(storage, private_inputs[i].get_block(storage, block_index, block_size), block_index, block_size);
         }
     }
 }

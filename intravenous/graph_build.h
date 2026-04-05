@@ -288,6 +288,19 @@ namespace iv::details {
             }
         }
 
+        for (GraphEventEdge const& edge : g.event_edges)
+        {
+            if (edge.source.node == GRAPH_ID) continue;
+            if (edge.target.node == GRAPH_ID) continue;
+
+            size_t const u = edge.source.node;
+            size_t const v = edge.target.node;
+
+            if (outgoing[u].insert(v).second) {
+                ++indegree[v];
+            }
+        }
+
         return std::make_pair(std::move(outgoing), std::move(indegree));
     }
 
@@ -323,6 +336,18 @@ namespace iv::details {
             sorted_edges.insert(edge);
         }
         g.edges.swap(sorted_edges);
+
+        std::unordered_set<GraphEventEdge> sorted_event_edges;
+        sorted_event_edges.reserve(g.event_edges.size());
+        for (GraphEventEdge edge : g.event_edges)
+        {
+            if (edge.source.node != GRAPH_ID)
+                edge.source.node = reverse_sorted[edge.source.node];
+            if (edge.target.node != GRAPH_ID)
+                edge.target.node = reverse_sorted[edge.target.node];
+            sorted_event_edges.insert(std::move(edge));
+        }
+        g.event_edges.swap(sorted_event_edges);
 
         for (auto& [_, info] : g.detached_info_by_source)
         {
@@ -458,6 +483,7 @@ namespace iv::details {
     inline GraphExecutionPlan build_execution_plan(
         std::vector<TypeErasedNode> const& nodes,
         std::unordered_set<GraphEdge> const& edges,
+        std::unordered_set<GraphEventEdge> const& event_edges,
         std::vector<DetachedInfo> const& detached
     )
     {
@@ -472,6 +498,13 @@ namespace iv::details {
         std::unordered_map<PortId, std::vector<PortId>> consumers;
         for (auto const& edge : edges) {
             consumers[edge.source].push_back(edge.target);
+            if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
+                continue;
+            }
+            outgoing[edge.source.node].push_back(edge.target.node);
+        }
+
+        for (auto const& edge : event_edges) {
             if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
                 continue;
             }
@@ -587,6 +620,16 @@ namespace iv::details {
                 local_outgoing_sets[edge.source.node].insert(edge.target.node);
             }
 
+            for (auto const& edge : event_edges) {
+                if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
+                    continue;
+                }
+                if (!region_nodes.contains(edge.source.node) || !region_nodes.contains(edge.target.node)) {
+                    continue;
+                }
+                local_outgoing_sets[edge.source.node].insert(edge.target.node);
+            }
+
             for (size_t node : region.nodes) {
                 auto& targets = local_outgoing[node];
                 auto const& unique_targets = local_outgoing_sets[node];
@@ -630,6 +673,17 @@ namespace iv::details {
         std::vector<std::unordered_set<size_t>> region_outgoing(plan.regions.size());
         std::vector<size_t> indegree(plan.regions.size(), 0);
         for (auto const& edge : edges) {
+            if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
+                continue;
+            }
+            size_t const u = plan.node_to_region[edge.source.node];
+            size_t const v = plan.node_to_region[edge.target.node];
+            if (u != v && region_outgoing[u].insert(v).second) {
+                ++indegree[v];
+            }
+        }
+
+        for (auto const& edge : event_edges) {
             if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
                 continue;
             }

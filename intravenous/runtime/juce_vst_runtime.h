@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../graph_node.h"
+#include "../juce_midi_input.h"
 #include "../juce_vst_wrapper.h"
 
 #include <mutex>
@@ -14,6 +15,7 @@ namespace iv {
         JuceVstRuntimeManager* _manager = nullptr;
         double _sample_rate = 0.0;
         ResourceContext::VstResources _vst_resources;
+        ResourceContext::MidiInputResources _midi_input_resources;
         ResourceContext _resources;
 
     public:
@@ -29,8 +31,6 @@ namespace iv {
         {
             return _resources;
         }
-
-        void register_runtime_buffers(TypeErasedAllocator allocator, NodeLayoutBuilder& builder);
     };
 
     class JuceVstRuntimeManager {
@@ -47,12 +47,20 @@ namespace iv {
             double sample_rate
         );
 
+        struct LiveMidiInput;
+        UniqueResource create_midi_input(JuceMidiInputSpec const& spec, double sample_rate);
+
     private:
         friend class JuceVstRuntimeSupport;
         friend void tick_juce_vst_wrapper(
             JuceVstWrapperSpec const& spec,
             void* live_instance,
             TickBlockContext<JuceVstWrapper> const& state
+        );
+        friend void tick_juce_midi_input_source(
+            JuceMidiInputSpec const& spec,
+            void* live_instance,
+            TickBlockContext<JuceMidiInputSource> const& state
         );
 
         std::unique_ptr<Impl> _impl;
@@ -63,6 +71,12 @@ namespace iv {
         JuceVstWrapperSpec const& spec,
         void* live_instance,
         TickBlockContext<JuceVstWrapper> const& state
+    );
+
+    void tick_juce_midi_input_source(
+        JuceMidiInputSpec const& spec,
+        void* live_instance,
+        TickBlockContext<JuceMidiInputSource> const& state
     );
 #endif
 }

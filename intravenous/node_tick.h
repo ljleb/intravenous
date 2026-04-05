@@ -1,6 +1,7 @@
 #pragma once
 
 #include "node_traits.h"
+#include "node_resources.h"
 
 #include <sstream>
 #include <memory>
@@ -13,12 +14,21 @@ namespace iv {
         std::span<OutputPort> outputs;
         std::span<EventInputPort> event_inputs;
         std::span<EventOutputPort> event_outputs;
+        EventStreamStorage* event_streams = nullptr;
         std::span<std::byte> buffer;
 
         using State = typename NodeState<Node>::Type;
 
         std::add_lvalue_reference_t<State> state() const
         requires(!std::is_void_v<State>);
+
+        EventStreamStorage& event_stream_storage() const
+        {
+            if (!event_streams) {
+                throw std::logic_error("event stream storage is unavailable");
+            }
+            return *event_streams;
+        }
     };
 
     template<typename Node>
@@ -117,6 +127,7 @@ namespace iv {
             .outputs = outputs,
             .event_inputs = event_inputs,
             .event_outputs = event_outputs,
+            .event_streams = outer.event_streams,
             .buffer = remaining_buffer(outer.buffer, nested_state),
         };
     }

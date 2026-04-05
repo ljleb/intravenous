@@ -104,6 +104,12 @@ namespace iv {
     template<fixed_string Name>
     inline constexpr PortName<Name> named{};
 
+    struct EventPortsTag {};
+    struct SamplePortsTag {};
+
+    inline constexpr EventPortsTag events {};
+    inline constexpr SamplePortsTag samples {};
+
     namespace literals {
         template<fixed_string Name>
         consteval auto operator""_P()
@@ -111,6 +117,8 @@ namespace iv {
             return PortName<Name>{};
         }
     }
+
+    using namespace literals;
 
     struct BuilderNode {
         std::vector<InputConfig> input_configs;
@@ -218,11 +226,20 @@ namespace iv {
         template<class T>
         inline constexpr bool is_named_arg_v = is_named_arg<std::remove_cvref_t<T>>::value;
 
-        template<class... Args>
-        inline constexpr size_t positional_arg_count_v = (size_t{0} + ... + size_t(!is_named_arg_v<Args>));
+        template<class T>
+        inline constexpr bool is_event_like_v = std::convertible_to<std::remove_cvref_t<T>, EventRef>;
 
-        template<class... Args>
-        inline constexpr size_t named_arg_count_v = (size_t{0} + ... + size_t(is_named_arg_v<Args>));
+        template<class T>
+        inline constexpr bool arg_is_event_v = is_event_like_v<T>;
+
+        template<fixed_string Name, class T>
+        inline constexpr bool arg_is_event_v<NamedArg<Name, T>> = is_event_like_v<T>;
+
+        enum class call_domain {
+            signal,
+            event,
+            mixed,
+        };
 
         template<class... Args>
         consteval bool named_args_follow_positionals_only()
@@ -260,16 +277,33 @@ namespace iv {
         template<class... Args>
         inline constexpr bool unique_named_args_v = unique_named_args<Args...>::value;
 
+        template<class... Args>
+        inline constexpr bool has_event_args_v = (false || ... || arg_is_event_v<std::remove_cvref_t<Args>>);
+
+        template<class... Args>
+        inline constexpr bool has_signal_args_v = (false || ... || !arg_is_event_v<std::remove_cvref_t<Args>>);
+
+        template<class... Args>
+        inline constexpr call_domain call_domain_v =
+            has_event_args_v<Args...>
+                ? (has_signal_args_v<Args...> ? call_domain::mixed : call_domain::event)
+                : call_domain::signal;
+
+        template<class... Args>
+        inline constexpr size_t arg_count_v = sizeof...(Args);
+
         template<class Node, class... Args>
         inline constexpr bool accepts_total_arg_count_v =
             std::same_as<Node, void>
+            || call_domain_v<Args...> == call_domain::event
             || !has_fixed_input_count_v<Node>
-            || (positional_arg_count_v<Args...> + named_arg_count_v<Args...>) <= fixed_input_count_v<Node>;
+            || arg_count_v<Args...> <= fixed_input_count_v<Node>;
 
         template<class... Args>
         inline constexpr bool valid_node_call_args_v =
             named_args_follow_positionals_only_v<Args...>
-            && unique_named_args_v<Args...>;
+            && unique_named_args_v<Args...>
+            && call_domain_v<Args...> != call_domain::mixed;
 
         template<class Node, class... Args>
         concept node_call_enabled =
@@ -282,6 +316,8 @@ namespace iv {
     protected:
         GraphBuilder* _graph_builder{};
         size_t _index{};
+
+        friend class EventPortView;
 
     private:
         Derived const& derived() const
@@ -300,8 +336,6 @@ namespace iv {
 
         SignalRef operator[](size_t output_index) const;
         SignalRef operator[](std::string_view output_name) const;
-        EventRef event(size_t output_index) const;
-        EventRef event(std::string_view output_name) const;
         operator SignalRef() const;
 
         template<class... Args>
@@ -320,6 +354,64 @@ namespace iv {
     class NodeRef : public NodeRefBase<NodeRef> {
     public:
         using NodeRefBase<NodeRef>::NodeRefBase;
+    };
+
+    class EventPortView {
+        NodeRef _node;
+
+        EventRef event_ref(size_t output_index) const
+        {
+            auto outputs = get_event_outputs(_node.node());
+            if (output_index >= outputs.size()) {
+                details::error(
+                    "event output port " + std::to_string(output_index) + " of "
+                    + _node.to_string() + " is out of bounds"
+                );
+            }
+            return EventRef(*_node._graph_builder, _node._index, output_index);
+        }
+
+        EventRef event_ref(std::string_view output_name) const
+        {
+            auto outputs = get_event_outputs(_node.node());
+            for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
+                if (outputs[output_port].name == output_name) {
+                    return EventRef(*_node._graph_builder, _node._index, output_port);
+                }
+            }
+
+            details::error(
+                "an event output port named '" + std::string(output_name) + "' "
+                "does not exist on " + _node.to_string()
+            );
+        }
+
+    public:
+        EventPortView() = default;
+
+        explicit EventPortView(NodeRef node) :
+            _node(std::move(node))
+        {}
+
+        EventRef operator[](size_t output_index) const
+        {
+            return event_ref(output_index);
+        }
+
+        EventRef operator[](std::string_view output_name) const
+        {
+            return event_ref(output_name);
+        }
+
+        std::string to_string() const
+        {
+            return _node.to_string();
+        }
+
+        NodeRef const& node() const
+        {
+            return _node;
+        }
     };
 
     template<class Node>
@@ -895,7 +987,7 @@ namespace iv {
                 }
                 return detached_info;
             }();
-            auto execution_plan = details::build_execution_plan(g.nodes, g.edges, detached);
+            auto execution_plan = details::build_execution_plan(g.nodes, g.edges, g.event_edges, detached);
 
             return Graph(details::build_graph_artifact(
                 _builder_id.value,
@@ -1148,15 +1240,23 @@ namespace iv {
         auto const inputs = get_inputs(target.node());
         auto const outputs = get_outputs(target.node());
 
-        if (inputs.size() != 1 || outputs.size() != 1) {
+        if (inputs.size() != 1) {
             details::error(
-                std::string(op_name) + " requires target to have exactly 1 input and 1 output; got " +
-                std::to_string(inputs.size()) + " inputs and " +
-                std::to_string(outputs.size()) + " outputs on " + target.to_string()
+                std::string(op_name) + " requires target to have exactly 1 input; got " +
+                std::to_string(inputs.size()) + " inputs on " + target.to_string()
             );
         }
 
         target(source);
+        if (outputs.empty()) {
+            return source;
+        }
+        if (outputs.size() != 1) {
+            details::error(
+                std::string(op_name) + " requires target to have at most 1 output when used as an expression; got " +
+                std::to_string(outputs.size()) + " outputs on " + target.to_string()
+            );
+        }
         return static_cast<SignalRef>(target);
     }
 
@@ -1180,6 +1280,49 @@ namespace iv {
         return connect_unary_node(std::forward<R>(rhs), std::forward<L>(lhs), "operator<<");
     }
 
+    inline EventRef connect_unary_event_node(EventPortView const& source, EventPortView const& target, std::string_view op_name)
+    {
+        auto const source_event_outputs = get_event_outputs(source.node().node());
+        auto const event_inputs = get_event_inputs(target.node().node());
+        auto const event_outputs = get_event_outputs(target.node().node());
+
+        if (source_event_outputs.size() != 1) {
+            details::error(
+                std::string(op_name) + " requires source to have exactly 1 event output; got " +
+                std::to_string(source_event_outputs.size()) + " event outputs on " + source.to_string()
+            );
+        }
+
+        if (event_inputs.size() != 1) {
+            details::error(
+                std::string(op_name) + " requires target to have exactly 1 event input; got " +
+                std::to_string(event_inputs.size()) + " event inputs on " + target.to_string()
+            );
+        }
+
+        target.node()(source[0]);
+        if (event_outputs.empty()) {
+            return source[0];
+        }
+        if (event_outputs.size() != 1) {
+            details::error(
+                std::string(op_name) + " requires target to have at most 1 event output when used as an expression; got " +
+                std::to_string(event_outputs.size()) + " event outputs on " + target.to_string()
+            );
+        }
+        return target[0];
+    }
+
+    inline EventRef operator>>(EventPortView const& lhs, EventPortView const& rhs)
+    {
+        return connect_unary_event_node(lhs, rhs, "operator>>");
+    }
+
+    inline EventRef operator<<(EventPortView const& lhs, EventPortView const& rhs)
+    {
+        return connect_unary_event_node(rhs, lhs, "operator<<");
+    }
+
     template<fixed_string Name, class R>
     requires std::convertible_to<std::remove_cvref_t<R>, NodeRef>
     SignalRef operator<<(PortName<Name>, R&& rhs)
@@ -1194,6 +1337,56 @@ namespace iv {
     {
         NodeRef node = static_cast<NodeRef>(std::forward<L>(lhs));
         return node[Name.view()];
+    }
+
+    template<class T>
+    requires std::convertible_to<std::remove_cvref_t<T>, NodeRef>
+    EventPortView operator>>(T&& node, EventPortsTag)
+    {
+        return EventPortView(static_cast<NodeRef>(std::forward<T>(node)));
+    }
+
+    template<class T>
+    requires std::convertible_to<std::remove_cvref_t<T>, NodeRef>
+    EventPortView operator<<(EventPortsTag, T&& node)
+    {
+        return EventPortView(static_cast<NodeRef>(std::forward<T>(node)));
+    }
+
+    template<class T>
+    requires std::convertible_to<std::remove_cvref_t<T>, NodeRef>
+    NodeRef operator>>(T&& node, SamplePortsTag)
+    {
+        return static_cast<NodeRef>(std::forward<T>(node));
+    }
+
+    template<class T>
+    requires std::convertible_to<std::remove_cvref_t<T>, NodeRef>
+    NodeRef operator<<(SamplePortsTag, T&& node)
+    {
+        return static_cast<NodeRef>(std::forward<T>(node));
+    }
+
+    inline NodeRef operator>>(EventPortView const& view, SamplePortsTag)
+    {
+        return view.node();
+    }
+
+    inline NodeRef operator<<(SamplePortsTag, EventPortView const& view)
+    {
+        return view.node();
+    }
+
+    template<fixed_string Name>
+    EventRef operator<<(PortName<Name>, EventPortView const& view)
+    {
+        return view[Name.view()];
+    }
+
+    template<fixed_string Name>
+    EventRef operator>>(EventPortView const& view, PortName<Name>)
+    {
+        return view[Name.view()];
     }
 
     inline SignalRef::SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
@@ -1334,34 +1527,6 @@ namespace iv {
     }
 
     template<class Derived, class Node>
-    inline EventRef NodeRefBase<Derived, Node>::event(size_t output_index) const
-    {
-        if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
-        }
-        return EventRef(*_graph_builder, _index, output_index);
-    }
-
-    template<class Derived, class Node>
-    inline EventRef NodeRefBase<Derived, Node>::event(std::string_view output_name) const
-    {
-        if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
-        }
-        auto outputs = get_event_outputs(node());
-        for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
-            if (outputs[output_port].name == output_name) {
-                return EventRef(*_graph_builder, _index, output_port);
-            }
-        }
-
-        details::error(
-            "an event output port named '" + std::string(output_name) + "' "
-            "does not exist on " + to_string()
-        );
-    }
-
-    template<class Derived, class Node>
     inline NodeRefBase<Derived, Node>::operator SignalRef() const
     {
         if (!_graph_builder) {
@@ -1385,10 +1550,11 @@ namespace iv {
             details::error("attempted to use a null NodeRef");
         }
 
+        constexpr auto call_domain = details::call_domain_v<Args...>;
         auto const inputs = get_inputs(node());
-        size_t positional_input_port = 0;
+        auto const event_inputs = get_event_inputs(node());
 
-        auto connect_input = [&](SignalRef ref, size_t input_port) {
+        auto connect_input = [&](SignalRef ref, size_t input_port, std::string_view input_name = {}) {
             if (input_port >= inputs.size()) {
                 details::error(
                     to_string() + " "
@@ -1407,7 +1573,7 @@ namespace iv {
             PortId const input_port_id = {_index, input_port};
             if (_graph_builder->_placed_input_ports.contains(input_port_id)) {
                 details::error(
-                    "input port " + std::string(inputs[input_port].name) + " of " + to_string() + " "
+                    "input port " + std::string(input_name.empty() ? inputs[input_port].name : input_name) + " of " + to_string() + " "
                     "was already placed in the graph"
                 );
             }
@@ -1419,16 +1585,58 @@ namespace iv {
             });
         };
 
+        auto connect_event = [&](EventRef ref, size_t input_port, std::string_view input_name = {}) {
+            if (input_port >= event_inputs.size()) {
+                details::error(
+                    to_string() + " "
+                    "has at most " + std::to_string(event_inputs.size()) + " event inputs, "
+                    "got " + std::to_string(input_port + 1)
+                );
+            }
+            if (ref.graph_builder != _graph_builder) {
+                details::error(
+                    ref.to_string() + " "
+                    "does not belong to the same builder as " + to_string()
+                );
+            }
+
+            PortId const input_port_id = { _index, input_port };
+            if (_graph_builder->_placed_event_input_ports.contains(input_port_id)) {
+                details::error(
+                    "event input port " + std::string(input_name.empty() ? event_inputs[input_port].name : input_name) + " of " + to_string() + " "
+                    "was already placed in the graph"
+                );
+            }
+
+            auto const source_type = (ref.node_index == GRAPH_ID)
+                ? _graph_builder->_public_event_inputs[ref.output_port].type
+                : _graph_builder->_nodes[ref.node_index].event_output_configs[ref.output_port].type;
+
+            _graph_builder->_placed_event_input_ports.insert(input_port_id);
+            _graph_builder->_event_edges.emplace(GraphEventEdge{
+                PortId{ ref.node_index, ref.output_port },
+                PortId{ _index, input_port },
+                EventConversionRegistry::instance().plan(source_type, event_inputs[input_port].type)
+            });
+        };
+
         auto connect_named = [&](auto&& named_arg) {
             using NamedArgT = std::remove_cvref_t<decltype(named_arg)>;
             constexpr std::string_view name = NamedArgT::name.view();
 
-            auto const signal = _graph_builder->lift_to_signal(named_arg.value);
-
-            for (size_t input_port = 0; input_port < inputs.size(); ++input_port) {
-                if (inputs[input_port].name == name) {
-                    connect_input(signal, input_port);
-                    return;
+            if constexpr (call_domain == details::call_domain::event) {
+                for (size_t input_port = 0; input_port < event_inputs.size(); ++input_port) {
+                    if (event_inputs[input_port].name == name) {
+                        connect_event(static_cast<EventRef>(named_arg.value), input_port, name);
+                        return;
+                    }
+                }
+            } else {
+                for (size_t input_port = 0; input_port < inputs.size(); ++input_port) {
+                    if (inputs[input_port].name == name) {
+                        connect_input(_graph_builder->lift_to_signal(named_arg.value), input_port, name);
+                        return;
+                    }
                 }
             }
 
@@ -1438,11 +1646,14 @@ namespace iv {
             );
         };
 
+        size_t positional_port = 0;
         auto const process_arg = [&](auto&& arg) {
             if constexpr (details::is_named_arg_v<decltype(arg)>) {
                 connect_named(std::forward<decltype(arg)>(arg));
+            } else if constexpr (call_domain == details::call_domain::event) {
+                connect_event(static_cast<EventRef>(std::forward<decltype(arg)>(arg)), positional_port++);
             } else {
-                connect_input(_graph_builder->lift_to_signal(std::forward<decltype(arg)>(arg)), positional_input_port++);
+                connect_input(_graph_builder->lift_to_signal(std::forward<decltype(arg)>(arg)), positional_port++);
             }
         };
 

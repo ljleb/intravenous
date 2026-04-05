@@ -219,7 +219,7 @@ namespace iv {
                     graph_event_port_data_export_id(_graph_id, output_i)
                 );
                 IV_ASSERT(!egress_port_data.empty(), "graph egress event wiring must resolve the requested EventSharedPortData entry");
-                std::construct_at(&state.egress_event_inputs[output_i], egress_port_data[0], ctx.resources.event_stream_storage());
+                std::construct_at(&state.egress_event_inputs[output_i], egress_port_data[0]);
             }
 
             for (GraphEdge const& edge : _edges) {
@@ -241,8 +241,7 @@ namespace iv {
                         &state.ingress_event_outputs[edge.source.port],
                         consumer_port_data[0],
                         _public_event_inputs[edge.source.port].type,
-                        edge.conversion,
-                        ctx.resources.event_stream_storage()
+                        edge.conversion
                     );
                 }
             }
@@ -252,12 +251,15 @@ namespace iv {
         {
             auto& state = ctx.state();
             push_input_blocks_to_private_outputs(state.ingress_outputs, ctx.inputs, ctx.block_size);
-            push_input_events_to_private_outputs(
-                state.ingress_event_outputs,
-                ctx.event_inputs,
-                ctx.index,
-                ctx.block_size
-            );
+            if (!state.ingress_event_outputs.empty()) {
+                push_input_events_to_private_outputs(
+                    state.ingress_event_outputs,
+                    ctx.event_inputs,
+                    ctx.event_stream_storage(),
+                    ctx.index,
+                    ctx.block_size
+                );
+            }
 
             for (size_t scc_index = 0; scc_index < _scc_wrappers.size(); ++scc_index) {
                 do_tick_block(_scc_wrappers[scc_index], {
@@ -266,6 +268,7 @@ namespace iv {
                         .outputs = {},
                         .event_inputs = {},
                         .event_outputs = {},
+                        .event_streams = ctx.event_streams,
                         .buffer = state.scc_states[scc_index]
                     },
                     ctx.index,
@@ -274,12 +277,15 @@ namespace iv {
             }
 
             push_private_inputs_to_output_blocks(ctx.outputs, state.egress_inputs, ctx.block_size);
-            push_private_input_events_to_output_events(
-                ctx.event_outputs,
-                state.egress_event_inputs,
-                ctx.index,
-                ctx.block_size
-            );
+            if (!state.egress_event_inputs.empty()) {
+                push_private_input_events_to_output_events(
+                    ctx.event_outputs,
+                    state.egress_event_inputs,
+                    ctx.event_stream_storage(),
+                    ctx.index,
+                    ctx.block_size
+                );
+            }
         }
     };
 }
