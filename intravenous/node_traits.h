@@ -63,6 +63,30 @@ namespace iv {
         };
 
         template <typename Node>
+        concept has_event_outputs = requires(Node node, std::span<EventOutputConfig const> outputs)
+        {
+            outputs = node.event_outputs();
+        };
+
+        template <typename Node>
+        concept has_num_event_outputs = requires(Node node, size_t num_outputs)
+        {
+            num_outputs = node.num_event_outputs();
+        };
+
+        template <typename Node>
+        concept has_event_inputs = requires(Node node, std::span<EventInputConfig const> inputs)
+        {
+            inputs = node.event_inputs();
+        };
+
+        template <typename Node>
+        concept has_num_event_inputs = requires(Node node, size_t num_inputs)
+        {
+            num_inputs = node.num_event_inputs();
+        };
+
+        template <typename Node>
         concept has_num_inputs = requires(Node node, size_t num_inputs)
         {
             num_inputs = node.num_inputs();
@@ -130,6 +154,58 @@ namespace iv {
         else
         {
             return get_inputs(node).size();
+        }
+    }
+
+    template<typename Node>
+    constexpr auto get_event_outputs(Node const& node)
+    {
+        if constexpr (details::has_event_outputs<Node>)
+        {
+            return node.event_outputs();
+        }
+        else
+        {
+            return std::span<EventOutputConfig, 0>{};
+        }
+    }
+
+    template<typename Node>
+    constexpr auto get_num_event_outputs(Node const& node)
+    {
+        if constexpr (details::has_num_event_outputs<Node>)
+        {
+            return node.num_event_outputs();
+        }
+        else
+        {
+            return get_event_outputs(node).size();
+        }
+    }
+
+    template<typename Node>
+    constexpr auto get_event_inputs(Node const& node)
+    {
+        if constexpr (details::has_event_inputs<Node>)
+        {
+            return node.event_inputs();
+        }
+        else
+        {
+            return std::span<EventInputConfig, 0>{};
+        }
+    }
+
+    template<typename Node>
+    constexpr auto get_num_event_inputs(Node const& node)
+    {
+        if constexpr (details::has_num_event_inputs<Node>)
+        {
+            return node.num_event_inputs();
+        }
+        else
+        {
+            return get_event_inputs(node).size();
         }
     }
 

@@ -49,6 +49,71 @@ namespace iv {
         }
     };
 
+    class BroadcastEvent {
+        size_t _num_outputs;
+
+    public:
+        explicit BroadcastEvent(size_t num_outputs) :
+            _num_outputs(num_outputs)
+        {}
+
+        auto event_inputs() const
+        {
+            return std::array<EventInputConfig, 1>{};
+        }
+
+        auto event_outputs() const
+        {
+            return std::vector<EventOutputConfig>(_num_outputs);
+        }
+
+        auto num_event_outputs() const
+        {
+            return _num_outputs;
+        }
+
+        void tick_block(TickBlockContext<BroadcastEvent> const& ctx) const
+        {
+            auto events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            for (auto& output : ctx.event_outputs) {
+                output.push_block(events, ctx.index, ctx.block_size);
+            }
+        }
+    };
+
+    class EventConcatenation {
+        size_t _num_inputs;
+
+    public:
+        explicit EventConcatenation(size_t num_inputs) :
+            _num_inputs(num_inputs)
+        {}
+
+        auto event_inputs() const
+        {
+            return std::vector<EventInputConfig>(_num_inputs);
+        }
+
+        auto event_outputs() const
+        {
+            return std::array<EventOutputConfig, 1>{};
+        }
+
+        auto num_event_inputs() const
+        {
+            return _num_inputs;
+        }
+
+        void tick_block(TickBlockContext<EventConcatenation> const& ctx) const
+        {
+            for (auto const& input : ctx.event_inputs) {
+                input.for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
+                    ctx.event_outputs[0].push(event.value, event.time, ctx.index, ctx.block_size);
+                });
+            }
+        }
+    };
+
     struct DetachWriterNode {
         DetachArrayId id;
         size_t loop_block_size = 1;
@@ -136,6 +201,16 @@ namespace iv {
         }
 
         void tick(TickSampleContext<DummySink> const&) const
+        {}
+    };
+
+    struct DummyEventSink {
+        auto event_inputs() const
+        {
+            return std::array<EventInputConfig, 1>{};
+        }
+
+        void tick_block(TickBlockContext<DummyEventSink> const&) const
         {}
     };
 }

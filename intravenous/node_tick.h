@@ -11,6 +11,8 @@ namespace iv {
     struct TickContext {
         std::span<InputPort> inputs;
         std::span<OutputPort> outputs;
+        std::span<EventInputPort> event_inputs;
+        std::span<EventOutputPort> event_outputs;
         std::span<std::byte> buffer;
 
         using State = typename NodeState<Node>::Type;
@@ -105,12 +107,16 @@ namespace iv {
         TickContext<OuterNode> const& outer,
         std::byte* nested_state,
         std::span<InputPort> inputs,
-        std::span<OutputPort> outputs
+        std::span<OutputPort> outputs,
+        std::span<EventInputPort> event_inputs = {},
+        std::span<EventOutputPort> event_outputs = {}
     )
     {
         return TickContext<NestedNode> {
             .inputs = inputs,
             .outputs = outputs,
+            .event_inputs = event_inputs,
+            .event_outputs = event_outputs,
             .buffer = remaining_buffer(outer.buffer, nested_state),
         };
     }

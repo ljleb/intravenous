@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <span>
 #include <vector>
 
 namespace {
@@ -76,6 +77,29 @@ namespace {
         void tick_block(iv::TickBlockContext<BlockPassthrough> const& ctx) const
         {
             ctx.outputs[0].push_block(ctx.inputs[0].get_block(ctx.block_size));
+        }
+    };
+
+    struct TriggerPassthrough {
+        auto event_inputs() const
+        {
+            return std::array<iv::EventInputConfig, 1> {{
+                { .name = "in", .type = iv::EventTypeId::trigger }
+            }};
+        }
+
+        auto event_outputs() const
+        {
+            return std::array<iv::EventOutputConfig, 1> {{
+                { .name = "out", .type = iv::EventTypeId::trigger }
+            }};
+        }
+
+        void tick_block(iv::TickBlockContext<TriggerPassthrough> const& ctx) const
+        {
+            ctx.event_inputs[0].for_each_in_block(ctx.index, ctx.block_size, [&](iv::TimedEvent const& event, size_t) {
+                ctx.event_outputs[0].push(event.value, event.time, ctx.index, ctx.block_size);
+            });
         }
     };
 
@@ -375,6 +399,385 @@ int main()
             "power of 2",
             "non-power-of-2 block size should fail"
         );
+    }
+
+    {
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData shared(storage.allocate(iv::EventTypeId::boundary), iv::EventTypeId::boundary);
+        iv::EventOutputPort output(
+            shared,
+            iv::EventTypeId::trigger,
+            iv::EventConversionRegistry::instance().plan(iv::EventTypeId::trigger, iv::EventTypeId::boundary),
+            storage
+        );
+        iv::EventInputPort input(shared, storage);
+
+        output.push(iv::TriggerEvent {}, 0, 0, 1);
+
+        auto first_block = input.get_block(0, 1);
+        iv::test::require(first_block.size() == 1, "trigger->boundary should emit one begin boundary in the current block");
+        iv::test::require(std::get<iv::BoundaryEvent>(first_block[0].value).is_begin, "first converted boundary should be begin");
+        iv::test::require(first_block[0].time == 0, "first converted boundary should be reindexed to the local block");
+
+        auto second_block = input.get_block(1, 1);
+        iv::test::require(second_block.size() == 1, "trigger->boundary should emit one end boundary in the following block");
+        iv::test::require(!std::get<iv::BoundaryEvent>(second_block[0].value).is_begin, "second converted boundary should be end");
+        iv::test::require(second_block[0].time == 0, "second converted boundary should be reindexed in the next block");
+    }
+
+    {
+        std::cerr << "event-test: conversion-plans\n";
+        auto const same_type = iv::EventConversionRegistry::instance().plan(iv::EventTypeId::trigger, iv::EventTypeId::trigger);
+        iv::test::require(same_type.steps.empty(), "same-type event conversion plan should be empty");
+
+        auto const midi_to_boundary = iv::EventConversionRegistry::instance().plan(iv::EventTypeId::midi, iv::EventTypeId::boundary);
+        iv::test::require(midi_to_boundary.steps.size() == 1, "midi->boundary should use the direct conversion path");
+        iv::test::require(
+            midi_to_boundary.steps[0] == iv::EventConversionStepId::midi_to_boundary,
+            "midi->boundary should prefer the direct lower-assumption conversion"
+        );
+
+        auto const boundary_to_midi = iv::EventConversionRegistry::instance().plan(iv::EventTypeId::boundary, iv::EventTypeId::midi);
+        iv::test::require(boundary_to_midi.steps.size() == 1, "boundary->midi should use the direct conversion path");
+        iv::test::require(
+            boundary_to_midi.steps[0] == iv::EventConversionStepId::boundary_to_midi,
+            "boundary->midi should prefer the direct lower-assumption conversion"
+        );
+
+        iv::test::expect_failure(
+            [&] {
+                (void)iv::EventConversionRegistry::instance().plan(static_cast<iv::EventTypeId>(99), iv::EventTypeId::trigger);
+            },
+            "invalid event type",
+            "invalid event type should fail event conversion planning clearly"
+        );
+    }
+
+    {
+        std::cerr << "event-test: broadcast-mixed-targets\n";
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventOutputPort output(shared, iv::EventTypeId::trigger, storage);
+        iv::EventInputPort input(shared, storage);
+
+        output.push(iv::TriggerEvent {}, 2, 0, 8);
+        output.push(iv::TriggerEvent {}, 6, 0, 8);
+
+        auto first_window = input.get_block(0, 4);
+        iv::test::require(first_window.size() == 1, "first sub-block should only observe the first trigger");
+        iv::test::require(first_window[0].time == 2, "first sub-block trigger should keep local offset");
+
+        auto second_window = input.get_block(4, 4);
+        iv::test::require(second_window.size() == 1, "second sub-block should only observe the second trigger");
+        iv::test::require(second_window[0].time == 2, "second sub-block trigger should be reindexed relative to the later block");
+    }
+
+    {
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventOutputPort output(shared, iv::EventTypeId::trigger, storage);
+        iv::EventInputPort input(shared, storage);
+
+        output.push(iv::TriggerEvent {}, 3, 0, 4);
+        output.push(iv::TriggerEvent {}, 0, 4, 4);
+
+        auto first_window = input.get_block(0, 4);
+        iv::test::require(first_window.size() == 1, "first block should include events before the block end only");
+        iv::test::require(first_window[0].time == 3, "first block event should keep its local offset at the inclusive lower edge");
+
+        auto second_window = input.get_block(4, 4);
+        iv::test::require(second_window.size() == 1, "second block should include events at its start");
+        iv::test::require(second_window[0].time == 0, "event at block boundary should appear at local offset zero in the next block");
+    }
+
+    {
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventOutputPort output(shared, iv::EventTypeId::trigger, storage);
+        iv::EventInputPort input(shared, storage);
+
+        output.push(iv::TriggerEvent {}, 1, 0, 8);
+        output.push(iv::TriggerEvent {}, 5, 0, 8);
+
+        std::vector<size_t> first_times;
+        input.for_each_in_block(0, 4, [&](iv::TimedEvent const& event, size_t) {
+            first_times.push_back(event.time);
+        });
+
+        std::vector<size_t> second_times;
+        input.for_each_in_block(4, 4, [&](iv::TimedEvent const& event, size_t) {
+            second_times.push_back(event.time);
+        });
+
+        iv::test::require(first_times.size() == 1, "callback block iteration should observe the earlier event");
+        iv::test::require(first_times[0] == 1, "callback block iteration should reindex the earlier event locally");
+        iv::test::require(second_times.size() == 1, "callback block iteration should observe the later event");
+        iv::test::require(second_times[0] == 1, "callback block iteration should reindex the later event locally");
+    }
+
+    {
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventOutputPort output(shared, iv::EventTypeId::trigger, storage);
+        iv::EventInputPort input(shared, storage);
+
+        output.push(iv::TriggerEvent {}, 3, 0, 8);
+
+        auto block = input.get_block(0, 8);
+        iv::test::require(block.size() == 1, "identity event write should preserve one trigger");
+        iv::test::require(std::holds_alternative<iv::TriggerEvent>(block[0].value), "identity event write should preserve trigger type");
+        iv::test::require(block[0].time == 3, "identity event write should preserve local time");
+    }
+
+    {
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventOutputPort output(
+            shared,
+            iv::EventTypeId::midi,
+            iv::EventConversionRegistry::instance().plan(iv::EventTypeId::midi, iv::EventTypeId::trigger),
+            storage
+        );
+        iv::EventInputPort input(shared, storage);
+
+        output.push(iv::MidiEvent { .bytes = { 0x90, 60, 100 }, .size = 3 }, 1, 0, 8);
+        output.push(iv::MidiEvent { .bytes = { 0x80, 60, 0 }, .size = 3 }, 2, 0, 8);
+
+        auto block = input.get_block(0, 8);
+        iv::test::require(block.size() == 1, "midi->trigger should ignore note-off events");
+        iv::test::require(std::holds_alternative<iv::TriggerEvent>(block[0].value), "midi->trigger should produce a trigger");
+        iv::test::require(block[0].time == 1, "midi->trigger should preserve note-on timing");
+    }
+
+    {
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData shared(storage.allocate(iv::EventTypeId::midi), iv::EventTypeId::midi);
+        iv::EventOutputPort output(
+            shared,
+            iv::EventTypeId::boundary,
+            iv::EventConversionRegistry::instance().plan(iv::EventTypeId::boundary, iv::EventTypeId::midi),
+            storage
+        );
+        iv::EventInputPort input(shared, storage);
+
+        output.push(iv::BoundaryEvent { .is_begin = true }, 2, 0, 8);
+        output.push(iv::BoundaryEvent { .is_begin = false }, 5, 0, 8);
+
+        auto block = input.get_block(0, 8);
+        iv::test::require(block.size() == 2, "boundary->midi should preserve one message per boundary");
+        auto const first = std::get<iv::MidiEvent>(block[0].value);
+        auto const second = std::get<iv::MidiEvent>(block[1].value);
+        iv::test::require(first.size == 3 && first.bytes[0] == 0x90, "boundary begin should become note-on midi");
+        iv::test::require(second.size == 3 && second.bytes[0] == 0x80, "boundary end should become note-off midi");
+    }
+
+    {
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData source_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventSharedPortData out_a_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventSharedPortData out_b_shared(storage.allocate(iv::EventTypeId::boundary), iv::EventTypeId::boundary);
+        iv::EventOutputPort source_output(source_shared, iv::EventTypeId::trigger, storage);
+        iv::EventInputPort source_input(source_shared, storage);
+        iv::EventOutputPort out_a(out_a_shared, iv::EventTypeId::trigger, storage);
+        iv::EventOutputPort out_b(
+            out_b_shared,
+            iv::EventTypeId::trigger,
+            iv::EventConversionRegistry::instance().plan(iv::EventTypeId::trigger, iv::EventTypeId::boundary),
+            storage
+        );
+        iv::EventInputPort in_a(out_a_shared, storage);
+        iv::EventInputPort in_b(out_b_shared, storage);
+
+        source_output.push(iv::TriggerEvent {}, 1, 0, 8);
+        source_output.push(iv::TriggerEvent {}, 7, 0, 8);
+
+        iv::BroadcastEvent node(2);
+        std::array<iv::EventInputPort, 1> inputs { source_input };
+        std::array<iv::EventOutputPort, 2> outputs { out_a, out_b };
+        node.tick_block({
+            iv::TickContext<iv::BroadcastEvent> {
+                .inputs = {},
+                .outputs = {},
+                .event_inputs = inputs,
+                .event_outputs = outputs,
+                .buffer = {},
+            },
+            0,
+            8,
+        });
+
+        {
+            auto block_a = in_a.get_block(0, 8);
+            iv::test::require(block_a.size() == 2, "BroadcastEvent should duplicate all source events to output A");
+            iv::test::require(block_a[0].time == 1 && block_a[1].time == 7, "BroadcastEvent should preserve event timing on output A");
+        }
+        {
+            auto block_b = in_b.get_block(0, 8);
+            iv::test::require(block_b.size() == 3, "BroadcastEvent should convert events independently per output");
+            iv::test::require(std::holds_alternative<iv::BoundaryEvent>(block_b[0].value), "BroadcastEvent output B should receive boundary events after conversion");
+            iv::test::require(std::get<iv::BoundaryEvent>(block_b[0].value).is_begin, "BroadcastEvent output B should emit begin boundaries first");
+            iv::test::require(block_b[0].time == 1, "BroadcastEvent should preserve the first converted begin boundary timing");
+            iv::test::require(!std::get<iv::BoundaryEvent>(block_b[1].value).is_begin && block_b[1].time == 2, "BroadcastEvent should emit the matching end boundary when it remains in the block");
+            iv::test::require(std::get<iv::BoundaryEvent>(block_b[2].value).is_begin && block_b[2].time == 7, "BroadcastEvent should keep later begin boundaries in the source block");
+        }
+
+        out_a.push(iv::TriggerEvent {}, 7, 0, 8);
+        {
+            auto block_a = in_a.get_block(0, 8);
+            iv::test::require(block_a.size() == 3, "BroadcastEvent output A should accept later independent appends");
+        }
+        {
+            auto unchanged_block_b = in_b.get_block(0, 8);
+            iv::test::require(unchanged_block_b.size() == 3, "BroadcastEvent output B should remain unaffected by output A after broadcast");
+        }
+        {
+            auto spill_block_b = in_b.get_block(8, 8);
+            iv::test::require(spill_block_b.size() == 1, "BroadcastEvent converted output should preserve delayed end events into the next block");
+            iv::test::require(!std::get<iv::BoundaryEvent>(spill_block_b[0].value).is_begin && spill_block_b[0].time == 0, "BroadcastEvent converted output should emit the spilled end boundary in the next block");
+        }
+    }
+
+    {
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData in_a_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventSharedPortData in_b_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventSharedPortData out_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventOutputPort src_a(in_a_shared, iv::EventTypeId::trigger, storage);
+        iv::EventOutputPort src_b(in_b_shared, iv::EventTypeId::trigger, storage);
+        iv::EventInputPort in_a(in_a_shared, storage);
+        iv::EventInputPort in_b(in_b_shared, storage);
+        iv::EventOutputPort out(out_shared, iv::EventTypeId::trigger, storage);
+        iv::EventInputPort merged(out_shared, storage);
+
+        src_a.push(iv::TriggerEvent {}, 2, 0, 8);
+        src_b.push(iv::TriggerEvent {}, 2, 0, 8);
+        src_b.push(iv::TriggerEvent {}, 5, 0, 8);
+
+        iv::EventConcatenation node(2);
+        std::array<iv::EventInputPort, 2> inputs { in_a, in_b };
+        std::array<iv::EventOutputPort, 1> outputs { out };
+        node.tick_block({
+            iv::TickContext<iv::EventConcatenation> {
+                .inputs = {},
+                .outputs = {},
+                .event_inputs = inputs,
+                .event_outputs = outputs,
+                .buffer = {},
+            },
+            0,
+            8,
+        });
+
+        auto block = merged.get_block(0, 8);
+        iv::test::require(block.size() == 3, "EventConcatenation should preserve all input events");
+        iv::test::require(block[0].time == 2, "EventConcatenation should preserve first input event timing");
+        iv::test::require(block[1].time == 2, "EventConcatenation should append second input same-time event after first input");
+        iv::test::require(block[2].time == 5, "EventConcatenation should preserve later input event timing");
+    }
+
+    {
+        auto collect_absolute = [](iv::EventInputPort const& input, std::span<size_t const> blocks) {
+            std::vector<size_t> absolute;
+            size_t index = 0;
+            for (size_t block_size : blocks) {
+                auto block = input.get_block(index, block_size);
+                for (size_t i = 0; i < block.size(); ++i) {
+                    absolute.push_back(index + block[i].time);
+                }
+                index += block_size;
+            }
+            return absolute;
+        };
+
+        iv::EventStreamStorage storage_a;
+        iv::EventSharedPortData shared_a(storage_a.allocate(iv::EventTypeId::boundary), iv::EventTypeId::boundary);
+        iv::EventOutputPort output_a(
+            shared_a,
+            iv::EventTypeId::trigger,
+            iv::EventConversionRegistry::instance().plan(iv::EventTypeId::trigger, iv::EventTypeId::boundary),
+            storage_a
+        );
+        iv::EventInputPort input_a(shared_a, storage_a);
+        output_a.push(iv::TriggerEvent {}, 0, 0, 4);
+        std::array<size_t, 1> whole_blocks { 4 };
+        auto whole = collect_absolute(input_a, whole_blocks);
+
+        iv::EventStreamStorage storage_b;
+        iv::EventSharedPortData shared_b(storage_b.allocate(iv::EventTypeId::boundary), iv::EventTypeId::boundary);
+        iv::EventOutputPort output_b(
+            shared_b,
+            iv::EventTypeId::trigger,
+            iv::EventConversionRegistry::instance().plan(iv::EventTypeId::trigger, iv::EventTypeId::boundary),
+            storage_b
+        );
+        iv::EventInputPort input_b(shared_b, storage_b);
+        output_b.push(iv::TriggerEvent {}, 0, 0, 4);
+        std::array<size_t, 2> split_blocks { 2, 2 };
+        auto split = collect_absolute(input_b, split_blocks);
+
+        iv::test::require(whole == split, "event observation should be invariant under block partitioning");
+    }
+
+    {
+        std::cerr << "event-test: graph-event-metadata\n";
+        iv::GraphBuilder g;
+        auto input = g.event_input("transport", iv::EventTypeId::boundary);
+        g.event_outputs(input);
+        g.outputs();
+
+        auto graph = g.build();
+        auto inputs = graph.event_inputs();
+        auto outputs = graph.event_outputs();
+        iv::test::require(inputs.size() == 1, "graph should expose one public event input");
+        iv::test::require(outputs.size() == 1, "graph should expose one public event output");
+        iv::test::require(inputs[0].name == "transport", "graph should preserve the public event input name");
+        iv::test::require(inputs[0].type == iv::EventTypeId::boundary, "graph should preserve the public event input type");
+        iv::test::require(outputs[0].type == iv::EventTypeId::boundary, "graph should preserve the public event output type");
+    }
+
+    {
+        std::cerr << "event-test: subgraph-event-metadata\n";
+        iv::GraphBuilder child;
+        auto input = child.event_input("gate", iv::EventTypeId::trigger);
+        child.event_outputs(input);
+        child.outputs();
+
+        iv::GraphBuilder parent;
+        auto nested = parent.node(std::move(child));
+        auto const& nested_node = nested.node();
+        iv::test::require(nested_node.event_inputs().size() == 1, "subgraph placeholder should expose child public event inputs");
+        iv::test::require(nested_node.event_outputs().size() == 1, "subgraph placeholder should expose child public event outputs");
+        iv::test::require(nested_node.event_inputs()[0].name == "gate", "subgraph placeholder should preserve child event input name");
+        iv::test::require(nested_node.event_inputs()[0].type == iv::EventTypeId::trigger, "subgraph placeholder should preserve child event input type");
+        iv::test::require(nested_node.event_outputs()[0].type == iv::EventTypeId::trigger, "subgraph placeholder should preserve child event output type");
+    }
+
+    {
+        std::cerr << "event-test: event-storage-growth\n";
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData stream_a(storage.allocate(iv::EventTypeId::trigger, 1), iv::EventTypeId::trigger);
+        iv::EventSharedPortData stream_b(storage.allocate(iv::EventTypeId::trigger, 1), iv::EventTypeId::trigger);
+        iv::EventOutputPort out_a(stream_a, iv::EventTypeId::trigger, storage);
+        iv::EventOutputPort out_b(stream_b, iv::EventTypeId::trigger, storage);
+        iv::EventInputPort in_a(stream_a, storage);
+        iv::EventInputPort in_b(stream_b, storage);
+
+        for (size_t i = 0; i < 32; ++i) {
+            out_a.push(iv::TriggerEvent {}, i, 0, 64);
+        }
+        out_b.push(iv::TriggerEvent {}, 9, 0, 64);
+
+        {
+            auto block_a = in_a.get_block(0, 64);
+            iv::test::require(block_a.size() == 32, "storage growth should retain every event in the grown stream");
+            iv::test::require(block_a[0].time == 0, "storage growth should preserve the earliest event");
+            iv::test::require(block_a[31].time == 31, "storage growth should preserve the latest event after multiple reallocations");
+        }
+        {
+            auto block_b = in_b.get_block(0, 64);
+            iv::test::require(block_b.size() == 1, "storage growth in one stream should not corrupt another stream");
+            iv::test::require(block_b[0].time == 9, "other streams should preserve their events across pool growth");
+        }
     }
 
     return 0;

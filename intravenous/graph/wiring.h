@@ -47,6 +47,36 @@ namespace iv {
         return id;
     }
 
+    inline std::string event_port_data_export_id(std::string_view node_id)
+    {
+        std::string id = "event_port_data:";
+        id += node_id;
+        return id;
+    }
+
+    inline std::string event_port_data_export_id(std::string_view node_id, size_t port_index)
+    {
+        std::string id = event_port_data_export_id(node_id);
+        id += ":";
+        id += std::to_string(port_index);
+        return id;
+    }
+
+    inline std::string graph_event_port_data_export_id(std::string_view graph_id)
+    {
+        std::string id = "graph_event_port_data:";
+        id += graph_id;
+        return id;
+    }
+
+    inline std::string graph_event_port_data_export_id(std::string_view graph_id, size_t port_index)
+    {
+        std::string id = graph_event_port_data_export_id(graph_id);
+        id += ":";
+        id += std::to_string(port_index);
+        return id;
+    }
+
     inline size_t calculate_port_buffer_size(
         size_t block_size,
         size_t latency,
@@ -124,6 +154,30 @@ namespace iv {
         for (size_t i = 0; i < public_outputs.size(); ++i) {
             public_outputs[i].push_block(private_inputs[i].get_block(block_size));
             advance_input(private_inputs[i], block_size);
+        }
+    }
+
+    inline void push_input_events_to_private_outputs(
+        std::span<EventOutputPort> private_outputs,
+        std::span<EventInputPort> public_inputs,
+        size_t block_index,
+        size_t block_size
+    )
+    {
+        for (size_t i = 0; i < public_inputs.size(); ++i) {
+            private_outputs[i].push_block(public_inputs[i].get_block(block_index, block_size), block_index, block_size);
+        }
+    }
+
+    inline void push_private_input_events_to_output_events(
+        std::span<EventOutputPort> public_outputs,
+        std::span<EventInputPort> private_inputs,
+        size_t block_index,
+        size_t block_size
+    )
+    {
+        for (size_t i = 0; i < public_outputs.size(); ++i) {
+            public_outputs[i].push_block(private_inputs[i].get_block(block_index, block_size), block_index, block_size);
         }
     }
 }

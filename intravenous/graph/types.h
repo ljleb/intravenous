@@ -30,6 +30,28 @@ namespace iv {
         bool operator==(GraphEdge const&) const = default;
     };
 
+    struct GraphEventEdge {
+        PortId source, target;
+        EventConversionPlan conversion;
+
+        GraphEventEdge(
+            PortId source = {},
+            PortId target = {},
+            EventConversionPlan conversion = {}
+        ) :
+            source(source), target(target), conversion(std::move(conversion))
+        {}
+
+        bool operator==(GraphEventEdge const&) const = default;
+    };
+
+    struct EventOutputBinding {
+        std::string target;
+        EventConversionPlan conversion;
+
+        bool operator==(EventOutputBinding const&) const = default;
+    };
+
     struct DetachedInfo {
         size_t detach_id = 0;
         PortId original_source;
@@ -72,6 +94,17 @@ struct std::hash<iv::GraphEdge>
     std::hash<iv::PortId> port_id_hash;
 
     std::size_t operator()(const iv::GraphEdge& e) const
+    {
+        return port_id_hash(e.source) ^ (~port_id_hash(e.target) - 1);
+    }
+};
+
+template<>
+struct std::hash<iv::GraphEventEdge>
+{
+    std::hash<iv::PortId> port_id_hash;
+
+    std::size_t operator()(const iv::GraphEventEdge& e) const
     {
         return port_id_hash(e.source) ^ (~port_id_hash(e.target) - 1);
     }

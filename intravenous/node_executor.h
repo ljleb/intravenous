@@ -25,6 +25,7 @@ namespace iv {
         std::vector<ModuleRef> _module_refs;
         TypeErasedNode _root;
         ResourceContext _resources;
+        EventStreamStorage _event_stream_storage;
         ExecutionTargetRegistry* _execution_target_registry = nullptr;
         NodeLayout _layout;
         NodeStorage _storage;
@@ -36,6 +37,7 @@ namespace iv {
         {
             _storage.layout = &_layout;
             _storage.resources = &_resources;
+            _resources.event_streams = &_event_stream_storage;
         }
 
         static void validate_root_interface(TypeErasedNode const& root)
@@ -119,6 +121,8 @@ namespace iv {
                     TickContext<TypeErasedNode> {
                         .inputs = {},
                         .outputs = {},
+                        .event_inputs = {},
+                        .event_outputs = {},
                         .buffer = _storage.buffer(),
                     },
                     index,

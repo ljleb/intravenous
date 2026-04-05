@@ -28,6 +28,7 @@ namespace iv::details {
         std::vector<TypeErasedNode> nodes;
         std::vector<std::string> node_ids;
         std::unordered_set<GraphEdge> edges;
+        std::unordered_set<GraphEventEdge> event_edges;
         std::unordered_map<PortId, DetachedInfo> detached_info_by_source;
         std::unordered_set<PortId> detached_reader_outputs;
     };
@@ -47,14 +48,26 @@ namespace iv::details {
     {
         std::unordered_map<PortId, PortId> source_of;
         std::unordered_map<PortId, PortId> target_of;
+        std::unordered_map<PortId, GraphEventEdge> event_source_of;
+        std::unordered_map<PortId, GraphEventEdge> event_target_of;
 
         for (GraphEdge const& edge : g.edges)
         {
             source_of[edge.target] = edge.source;
             target_of[edge.source] = edge.target;
         }
+        for (GraphEventEdge const& edge : g.event_edges)
+        {
+            event_source_of[edge.target] = edge;
+            event_target_of[edge.source] = edge;
+        }
 
-        return std::make_tuple(std::move(source_of), std::move(target_of));
+        return std::make_tuple(
+            std::move(source_of),
+            std::move(target_of),
+            std::move(event_source_of),
+            std::move(event_target_of)
+        );
     }
 
     inline void expand_hyperedge_ports(PreparedGraph& g, std::string_view builder_id)
@@ -63,6 +76,11 @@ namespace iv::details {
         for (GraphEdge const& edge : g.edges)
         {
             reverse_edges_map[edge.target].push_back(edge);
+        }
+        std::unordered_map<PortId, std::vector<GraphEventEdge>> reverse_event_edges_map;
+        for (GraphEventEdge const& edge : g.event_edges)
+        {
+            reverse_event_edges_map[edge.target].push_back(edge);
         }
 
         size_t nodes_size = g.nodes.size();
@@ -92,10 +110,46 @@ namespace iv::details {
             }
         }
 
+        nodes_size = g.nodes.size();
+        for (size_t node = 0; node < nodes_size; ++node)
+        {
+            size_t const num_inputs = get_num_event_inputs(g.nodes[node]);
+            for (size_t in_port = 0; in_port < num_inputs; ++in_port)
+            {
+                auto it = reverse_event_edges_map.find({ node, in_port });
+                if (it == reverse_event_edges_map.end()) continue;
+
+                auto const& edges_to_expand = it->second;
+                size_t const port_arity = edges_to_expand.size();
+                if (port_arity <= 1) continue;
+
+                g.nodes.emplace_back(EventConcatenation(port_arity));
+                g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                size_t const concat_node = g.nodes.size() - 1;
+
+                for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
+                {
+                    GraphEventEdge const& to_rewire = edges_to_expand[out_port];
+                    g.event_edges.erase(to_rewire);
+                    g.event_edges.insert(GraphEventEdge{ to_rewire.source, { concat_node, out_port }, to_rewire.conversion });
+                }
+                g.event_edges.insert(GraphEventEdge{
+                    { concat_node, 0 },
+                    { node, in_port },
+                    EventConversionPlan{}
+                });
+            }
+        }
+
         std::unordered_map<PortId, std::vector<GraphEdge>> edges_map;
         for (GraphEdge const& edge : g.edges)
         {
             edges_map[edge.source].push_back(edge);
+        }
+        std::unordered_map<PortId, std::vector<GraphEventEdge>> event_edges_map;
+        for (GraphEventEdge const& edge : g.event_edges)
+        {
+            event_edges_map[edge.source].push_back(edge);
         }
 
         nodes_size = g.nodes.size();
@@ -124,17 +178,49 @@ namespace iv::details {
                 g.edges.insert(GraphEdge{ { node, out_port }, { broadcast_node, 0 } });
             }
         }
+
+        nodes_size = g.nodes.size();
+        for (size_t node = 0; node < nodes_size; ++node)
+        {
+            size_t const num_outputs = get_num_event_outputs(g.nodes[node]);
+            for (size_t out_port = 0; out_port < num_outputs; ++out_port)
+            {
+                auto it = event_edges_map.find({ node, out_port });
+                if (it == event_edges_map.end()) continue;
+
+                auto const& edges_to_expand = it->second;
+                size_t const port_arity = edges_to_expand.size();
+                if (port_arity <= 1) continue;
+
+                g.nodes.emplace_back(BroadcastEvent(port_arity));
+                g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                size_t const broadcast_node = g.nodes.size() - 1;
+
+                for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
+                {
+                    GraphEventEdge const& to_rewire = edges_to_expand[in_port];
+                    g.event_edges.erase(to_rewire);
+                    g.event_edges.insert(GraphEventEdge{ { broadcast_node, in_port }, to_rewire.target, to_rewire.conversion });
+                }
+                g.event_edges.insert(GraphEventEdge{
+                    { node, out_port },
+                    { broadcast_node, 0 },
+                    EventConversionPlan{}
+                });
+            }
+        }
     }
 
     inline void stub_dangling_ports(PreparedGraph& g, size_t num_public_inputs, std::string_view builder_id)
     {
-        auto [source_of, target_of] = make_source_target_edge_maps(g);
+        auto [source_of, target_of, event_source_of, event_target_of] = make_source_target_edge_maps(g);
 
         size_t const num_nodes = g.nodes.size();
         for (size_t node_id = 0; node_id < num_nodes + 1; ++node_id)
         {
             size_t const node = (node_id == num_nodes) ? GRAPH_ID : node_id;
             size_t const num_outputs = (node == GRAPH_ID) ? num_public_inputs : get_num_outputs(g.nodes[node]);
+            size_t const num_event_outputs = (node == GRAPH_ID) ? 0 : get_num_event_outputs(g.nodes[node]);
 
             for (size_t output_port = 0; output_port < num_outputs; ++output_port)
             {
@@ -145,6 +231,18 @@ namespace iv::details {
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     size_t const new_node = g.nodes.size() - 1;
                     g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
+                }
+            }
+
+            for (size_t output_port = 0; output_port < num_event_outputs; ++output_port)
+            {
+                PortId const this_port{ node, output_port };
+                if (auto it = event_target_of.find(this_port); it == event_target_of.end())
+                {
+                    g.nodes.emplace_back(DummyEventSink());
+                    g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                    size_t const new_node = g.nodes.size() - 1;
+                    g.event_edges.insert(GraphEventEdge{ this_port, { new_node, 0 }, EventConversionPlan{} });
                 }
             }
         }
@@ -642,10 +740,13 @@ namespace iv::details {
         std::vector<TypeErasedNode> nodes,
         std::vector<std::string> node_ids,
         std::unordered_set<GraphEdge> edges,
+        std::unordered_set<GraphEventEdge> event_edges,
         std::vector<DetachedInfo> detached,
         GraphExecutionPlan execution_plan,
         std::vector<InputConfig> public_inputs,
-        std::vector<OutputConfig> public_outputs
+        std::vector<OutputConfig> public_outputs,
+        std::vector<EventInputConfig> public_event_inputs,
+        std::vector<EventOutputConfig> public_event_outputs
     )
     {
         auto [source_of, target_of] = [&] {
@@ -728,10 +829,13 @@ namespace iv::details {
             .graph_id = std::move(graph_id),
             .scc_wrappers = {},
             .edges = std::move(edges),
+            .event_edges = std::move(event_edges),
             .detached = std::move(detached),
             .execution_plan = std::move(execution_plan),
             .public_inputs = std::move(public_inputs),
             .public_outputs = std::move(public_outputs),
+            .public_event_inputs = std::move(public_event_inputs),
+            .public_event_outputs = std::move(public_event_outputs),
             .public_output_buffer_plans = std::move(public_output_buffer_plans),
             .internal_latency = 0,
             .node_ids = std::move(node_ids),
@@ -783,8 +887,12 @@ namespace iv::details {
 
             for (size_t global_i : region.execution_order) {
                 std::vector<std::string> output_targets;
+                std::vector<EventOutputBinding> event_output_targets;
                 auto outputs = nodes[global_i].outputs();
+                auto event_inputs = nodes[global_i].event_inputs();
+                auto event_outputs = nodes[global_i].event_outputs();
                 output_targets.reserve(outputs.size());
+                event_output_targets.reserve(event_outputs.size());
                 for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
                     auto it = target_of.find({ global_i, output_i });
                     if (it != target_of.end()) {
@@ -807,11 +915,43 @@ namespace iv::details {
                         output_targets.push_back({});
                     }
                 }
+                for (size_t output_i = 0; output_i < event_outputs.size(); ++output_i) {
+                    auto it = std::find_if(
+                        artifact.event_edges.begin(),
+                        artifact.event_edges.end(),
+                        [&](GraphEventEdge const& edge) {
+                            return edge.source == PortId{ global_i, output_i };
+                        }
+                    );
+                    if (it != artifact.event_edges.end()) {
+                        if (it->target.node == GRAPH_ID) {
+                            event_output_targets.push_back(EventOutputBinding{
+                                .target = graph_event_port_data_export_id(
+                                    artifact.graph_id,
+                                    it->target.port
+                                ),
+                                .conversion = it->conversion,
+                            });
+                        } else {
+                            event_output_targets.push_back(EventOutputBinding{
+                                .target = event_port_data_export_id(
+                                    artifact.node_ids[it->target.node],
+                                    it->target.port
+                                ),
+                                .conversion = it->conversion,
+                            });
+                        }
+                    } else {
+                        event_output_targets.push_back(EventOutputBinding{});
+                    }
+                }
                 region_nodes.emplace_back(
                     std::move(nodes[global_i]),
                     std::move(node_input_buffer_plans[global_i]),
+                    std::vector<EventInputConfig>(event_inputs.begin(), event_inputs.end()),
                     artifact.node_ids[global_i],
-                    std::move(output_targets)
+                    std::move(output_targets),
+                    std::move(event_output_targets)
                 );
             }
 

@@ -62,6 +62,8 @@ namespace iv {
                         TickContext<GraphNodeWrapper> {
                             .inputs = {},
                             .outputs = {},
+                            .event_inputs = {},
+                            .event_outputs = {},
                             .buffer = state.nested_node_states[node_i],
                         },
                         ctx.index + offset,

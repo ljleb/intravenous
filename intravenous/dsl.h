@@ -46,6 +46,18 @@ namespace iv {
         std::string to_string() const;
     };
 
+    struct EventRef {
+        GraphBuilder* graph_builder {};
+        size_t node_index {};
+        size_t output_port {};
+
+        EventRef() = default;
+        explicit EventRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
+        operator PortId() const { return { node_index, output_port }; }
+
+        std::string to_string() const;
+    };
+
     struct NamedRef {
         std::string_view name;
         std::variant<SignalRef, Sample> value;
@@ -103,9 +115,13 @@ namespace iv {
     struct BuilderNode {
         std::vector<InputConfig> input_configs;
         std::vector<OutputConfig> output_configs;
+        std::vector<EventInputConfig> event_input_configs;
+        std::vector<EventOutputConfig> event_output_configs;
         std::function<TypeErasedNode(size_t)> materialize {};
         std::vector<std::vector<PortId>> subgraph_input_targets {};
         std::vector<PortId> subgraph_output_sources {};
+        std::vector<std::vector<PortId>> subgraph_event_input_targets {};
+        std::vector<PortId> subgraph_event_output_sources {};
 
         std::vector<InputConfig> const& inputs() const
         {
@@ -115,6 +131,16 @@ namespace iv {
         std::vector<OutputConfig> const& outputs() const
         {
             return output_configs;
+        }
+
+        std::vector<EventInputConfig> const& event_inputs() const
+        {
+            return event_input_configs;
+        }
+
+        std::vector<EventOutputConfig> const& event_outputs() const
+        {
+            return event_output_configs;
         }
     };
 
@@ -274,6 +300,8 @@ namespace iv {
 
         SignalRef operator[](size_t output_index) const;
         SignalRef operator[](std::string_view output_name) const;
+        EventRef event(size_t output_index) const;
+        EventRef event(std::string_view output_name) const;
         operator SignalRef() const;
 
         template<class... Args>
@@ -343,6 +371,7 @@ namespace iv {
         template<class Derived, class Node>
         friend class NodeRefBase;
         friend struct SignalRef;
+        friend struct EventRef;
 
         struct BuilderIdentity {
             std::string value;
@@ -369,12 +398,17 @@ namespace iv {
 
         std::vector<BuilderNode> _nodes;
         std::unordered_set<GraphEdge> _edges;
+        std::unordered_set<GraphEventEdge> _event_edges;
         std::unordered_set<PortId> _placed_input_ports;
+        std::unordered_set<PortId> _placed_event_input_ports;
 
         std::vector<InputConfig> _public_inputs;
         std::unordered_map<std::string, size_t> _input_name_to_index;
+        std::vector<EventInputConfig> _public_event_inputs;
+        std::unordered_map<std::string, size_t> _event_input_name_to_index;
 
         std::vector<OutputConfig> _public_outputs;
+        std::vector<EventOutputConfig> _public_event_outputs;
         bool _outputs_defined{ false };
 
         std::unordered_map<PortId, DetachedSignalInfo> _detached_info_by_source;
@@ -422,6 +456,20 @@ namespace iv {
             return SignalRef(*this, GRAPH_ID, _public_inputs.size() - 1);
         }
 
+        EventRef event_input(std::string_view name, EventTypeId type)
+        {
+            if (name.empty()) {
+                details::error("event input name cannot be empty");
+            }
+            if (_event_input_name_to_index.contains(std::string(name))) {
+                details::error("event input '" + std::string(name) + "' already exists");
+            }
+
+            _public_event_inputs.emplace_back(EventInputConfig { .name = std::string(name), .type = type });
+            _event_input_name_to_index.emplace(std::string(name), _public_event_inputs.size() - 1);
+            return EventRef(*this, GRAPH_ID, _public_event_inputs.size() - 1);
+        }
+
         template<class Node, class... Args>
         details::node_ref_for_t<Node> node(Args&&... args)
         {
@@ -429,6 +477,8 @@ namespace iv {
             StoredNode node_value(std::forward<Args>(args)...);
             auto inputs = get_inputs(node_value);
             auto outputs = get_outputs(node_value);
+            auto event_inputs = get_event_inputs(node_value);
+            auto event_outputs = get_event_outputs(node_value);
 
             auto materialize = [node_value = std::move(node_value)]([[maybe_unused]] size_t detach_id_offset) {
                 if constexpr (std::same_as<StoredNode, DetachWriterNode>) {
@@ -443,6 +493,8 @@ namespace iv {
             _nodes.emplace_back(BuilderNode{
                 .input_configs = std::vector<InputConfig>(std::begin(inputs), std::end(inputs)),
                 .output_configs = std::vector<OutputConfig>(std::begin(outputs), std::end(outputs)),
+                .event_input_configs = std::vector<EventInputConfig>(std::begin(event_inputs), std::end(event_inputs)),
+                .event_output_configs = std::vector<EventOutputConfig>(std::begin(event_outputs), std::end(event_outputs)),
                 .materialize = std::move(materialize),
             });
             if constexpr (details::has_fixed_output_count_v<StoredNode>) {
@@ -478,8 +530,12 @@ namespace iv {
             _nodes.emplace_back(BuilderNode{
                 .input_configs = child._public_inputs,
                 .output_configs = child._public_outputs,
+                .event_input_configs = child._public_event_inputs,
+                .event_output_configs = child._public_event_outputs,
                 .subgraph_input_targets = std::vector<std::vector<PortId>>(child._public_inputs.size()),
                 .subgraph_output_sources = std::vector<PortId>(child._public_outputs.size()),
+                .subgraph_event_input_targets = std::vector<std::vector<PortId>>(child._public_event_inputs.size()),
+                .subgraph_event_output_sources = std::vector<PortId>(child._public_event_outputs.size()),
             });
 
             for (auto const& child_node : child._nodes) {
@@ -498,6 +554,14 @@ namespace iv {
                     for (auto& source : copied_node.subgraph_output_sources) {
                         source = remap_child_port(source);
                     }
+                    for (auto& targets : copied_node.subgraph_event_input_targets) {
+                        for (auto& target : targets) {
+                            target = remap_child_port(target);
+                        }
+                    }
+                    for (auto& source : copied_node.subgraph_event_output_sources) {
+                        source = remap_child_port(source);
+                    }
                 }
                 _nodes.push_back(std::move(copied_node));
             }
@@ -513,6 +577,19 @@ namespace iv {
                     _nodes[placeholder_node].subgraph_output_sources[target.port] = source;
                 } else {
                     _edges.emplace(GraphEdge{ source, target });
+                }
+            }
+            for (GraphEventEdge const& edge : child._event_edges) {
+                PortId const source = remap_child_port(edge.source);
+                PortId const target = remap_child_port(edge.target);
+                if (source.node == placeholder_node && target.node == placeholder_node) {
+                    _nodes[placeholder_node].subgraph_event_output_sources[target.port] = source;
+                } else if (source.node == placeholder_node) {
+                    _nodes[placeholder_node].subgraph_event_input_targets[source.port].push_back(target);
+                } else if (target.node == placeholder_node) {
+                    _nodes[placeholder_node].subgraph_event_output_sources[target.port] = source;
+                } else {
+                    _event_edges.emplace(GraphEventEdge{ source, target, edge.conversion });
                 }
             }
 
@@ -540,6 +617,39 @@ namespace iv {
             }
 
             return NodeRef(*this, placeholder_node);
+        }
+
+        template<class... Refs>
+        void event_outputs(Refs&&... refs)
+        {
+            std::array<EventRef, sizeof...(Refs)> refs_array{
+                std::forward<Refs>(refs)...
+            };
+            _public_event_outputs.clear();
+            _public_event_outputs.reserve(refs_array.size());
+
+            for (size_t i = 0; i < refs_array.size(); ++i) {
+                auto const& ref = refs_array[i];
+                if (ref.graph_builder != this) {
+                    details::error(
+                        "builder " + _builder_id.value + ": event_outputs(...): "
+                        "EventRef at index " + std::to_string(i) + " "
+                        "belongs to another builder"
+                    );
+                }
+
+                auto source_type = (ref.node_index == GRAPH_ID)
+                    ? _public_event_inputs[ref.output_port].type
+                    : _nodes[ref.node_index].event_output_configs[ref.output_port].type;
+                _event_edges.emplace(GraphEventEdge{
+                    PortId{ ref.node_index, ref.output_port },
+                    PortId{ GRAPH_ID, i },
+                    EventConversionRegistry::instance().plan(source_type, source_type)
+                });
+                _public_event_outputs.emplace_back(EventOutputConfig{
+                    .type = source_type,
+                });
+            }
         }
 
         template<class Fn>
@@ -636,13 +746,18 @@ namespace iv {
                 .nodes = {},
                 .node_ids = {},
                 .edges = {},
+                .event_edges = {},
                 .detached_info_by_source = {},
                 .detached_reader_outputs = {},
             };
             std::vector<size_t> runtime_node_indices(_nodes.size(), GRAPH_ID);
             std::unordered_map<PortId, PortId> source_of;
+            std::unordered_map<PortId, GraphEventEdge> event_source_of;
             for (GraphEdge const& edge : _edges) {
                 source_of[edge.target] = edge.source;
+            }
+            for (GraphEventEdge const& edge : _event_edges) {
+                event_source_of[edge.target] = edge;
             }
 
             for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
@@ -677,6 +792,20 @@ namespace iv {
                 return self(self, passthrough_source);
             };
 
+            auto resolve_event_source = [&](auto const& self, PortId source) -> PortId {
+                if (source.node == GRAPH_ID) {
+                    return source;
+                }
+                if (_nodes[source.node].materialize) {
+                    return PortId{ runtime_node_indices[source.node], source.port };
+                }
+                PortId const passthrough_source = _nodes[source.node].subgraph_event_output_sources[source.port];
+                if (passthrough_source.node == source.node) {
+                    return self(self, event_source_of.at(passthrough_source).source);
+                }
+                return self(self, passthrough_source);
+            };
+
             auto add_target_edges = [&](auto const& self, PortId source, PortId target) -> void {
                 if (target.node == GRAPH_ID) {
                     g.edges.emplace(GraphEdge{ source, target });
@@ -691,8 +820,31 @@ namespace iv {
                 }
             };
 
+            auto add_event_target_edges = [&](auto const& self, GraphEventEdge edge, PortId target) -> void {
+                if (target.node == GRAPH_ID) {
+                    g.event_edges.emplace(GraphEventEdge{ edge.source, target, std::move(edge.conversion) });
+                    return;
+                }
+                if (_nodes[target.node].materialize) {
+                    g.event_edges.emplace(GraphEventEdge{
+                        edge.source,
+                        { runtime_node_indices[target.node], target.port },
+                        std::move(edge.conversion)
+                    });
+                    return;
+                }
+                for (PortId const child_target : _nodes[target.node].subgraph_event_input_targets[target.port]) {
+                    self(self, GraphEventEdge{ edge.source, child_target, edge.conversion }, child_target);
+                }
+            };
+
             for (GraphEdge const& edge : _edges) {
                 add_target_edges(add_target_edges, resolve_source(resolve_source, edge.source), edge.target);
+            }
+            for (GraphEventEdge const& edge : _event_edges) {
+                GraphEventEdge resolved = edge;
+                resolved.source = resolve_event_source(resolve_event_source, edge.source);
+                add_event_target_edges(add_event_target_edges, std::move(resolved), edge.target);
             }
 
             for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
@@ -750,10 +902,13 @@ namespace iv {
                 std::move(g.nodes),
                 std::move(g.node_ids),
                 std::move(g.edges),
+                std::move(g.event_edges),
                 std::move(detached),
                 std::move(execution_plan),
                 _public_inputs,
-                _public_outputs
+                _public_outputs,
+                _public_event_inputs,
+                _public_event_outputs
             ));
         }
 
@@ -1077,6 +1232,40 @@ namespace iv {
         }
     }
 
+    inline EventRef::EventRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
+        graph_builder(&graph_builder_),
+        node_index(node_index),
+        output_port(output_port)
+    {
+        if (node_index == GRAPH_ID) {
+            if (output_port >= graph_builder->_public_event_inputs.size()) {
+                details::error(
+                    "graph event input port " + std::to_string(output_port) + " "
+                    "is out of bounds in builder " + graph_builder->_builder_id.value
+                );
+            }
+            return;
+        }
+
+        if (node_index >= graph_builder->_nodes.size()) {
+            details::error(
+                "node at index " + std::to_string(node_index) + " "
+                "is out of bounds in builder " + graph_builder->_builder_id.value
+            );
+        }
+
+        auto& node = graph_builder->_nodes[node_index];
+        size_t num_outputs = node.event_output_configs.size();
+        if (output_port >= num_outputs) {
+            details::error(
+                "event output port " + std::to_string(output_port) + " of "
+                "node at index " + std::to_string(node_index) + " in "
+                "builder " + graph_builder->_builder_id.value + " "
+                "is out of bounds"
+            );
+        }
+    }
+
     inline SignalRef SignalRef::detach(size_t loop_block_size) const
     {
         if (!graph_builder) {
@@ -1094,6 +1283,17 @@ namespace iv {
             return "graph input " + std::to_string(output_port) + " in builder " + graph_builder->_builder_id.value;
         }
         return "signal at address " + graph_builder->node_id(node_index) + ":" + std::to_string(output_port);
+    }
+
+    inline std::string EventRef::to_string() const
+    {
+        if (!graph_builder) {
+            return "empty event";
+        }
+        if (node_index == GRAPH_ID) {
+            return "graph event input " + std::to_string(output_port) + " in builder " + graph_builder->_builder_id.value;
+        }
+        return "event at address " + graph_builder->node_id(node_index) + ":" + std::to_string(output_port);
     }
 
     template<class Derived, class Node>
@@ -1129,6 +1329,34 @@ namespace iv {
 
         details::error(
             "an output port named '" + std::string(output_name) + "' "
+            "does not exist on " + to_string()
+        );
+    }
+
+    template<class Derived, class Node>
+    inline EventRef NodeRefBase<Derived, Node>::event(size_t output_index) const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+        return EventRef(*_graph_builder, _index, output_index);
+    }
+
+    template<class Derived, class Node>
+    inline EventRef NodeRefBase<Derived, Node>::event(std::string_view output_name) const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+        auto outputs = get_event_outputs(node());
+        for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
+            if (outputs[output_port].name == output_name) {
+                return EventRef(*_graph_builder, _index, output_port);
+            }
+        }
+
+        details::error(
+            "an event output port named '" + std::string(output_name) + "' "
             "does not exist on " + to_string()
         );
     }
