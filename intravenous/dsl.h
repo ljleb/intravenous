@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,6 +23,9 @@
 
 namespace iv {
     class GraphBuilder;
+    class NodeRef;
+    template<class Node>
+    class StructuredNodeRef;
 
     struct SignalRef {
         GraphBuilder* graph_builder{};
@@ -63,6 +67,26 @@ namespace iv {
         }
     };
 
+    namespace details {
+        template<typename Outputs>
+        struct fixed_output_count : std::integral_constant<size_t, 0> {};
+
+        template<size_t N>
+        struct fixed_output_count<std::array<OutputConfig, N>> : std::integral_constant<size_t, N> {};
+
+        template<typename Node>
+        inline constexpr size_t fixed_output_count_v = fixed_output_count<
+            std::remove_cvref_t<decltype(get_outputs(std::declval<Node const&>()))>
+        >::value;
+
+        template<typename Node>
+        using node_ref_for_t = std::conditional_t<
+            (fixed_output_count_v<std::remove_cvref_t<Node>> != 0),
+            StructuredNodeRef<std::remove_cvref_t<Node>>,
+            NodeRef
+        >;
+    }
+
     class NodeRef {
         GraphBuilder* _graph_builder{};
         size_t _index{};
@@ -84,6 +108,92 @@ namespace iv {
         SignalRef detach(size_t loop_block_size = 1) const;
 
         std::string to_string() const;
+    };
+
+    template<class Node>
+    class StructuredNodeRef {
+        static constexpr size_t output_count = details::fixed_output_count_v<Node>;
+        static_assert(output_count != 0, "StructuredNodeRef requires a fixed output count > 0");
+
+        std::array<SignalRef, output_count> _outputs{};
+
+        SignalRef any_output() const
+        {
+            return _outputs[0];
+        }
+
+        NodeRef as_node_ref() const
+        {
+            auto const output = any_output();
+            return NodeRef(*output.graph_builder, output.node_index);
+        }
+
+    public:
+        using NodeType = std::remove_cvref_t<Node>;
+
+        StructuredNodeRef() = default;
+        explicit StructuredNodeRef(GraphBuilder& graph_builder, size_t index) :
+            _outputs([&]<size_t... I>(std::index_sequence<I...>) {
+                return std::array<SignalRef, output_count>{
+                    SignalRef(graph_builder, index, I)...
+                };
+            }(std::make_index_sequence<output_count>{}))
+        {}
+
+        BuilderNode const& node() const
+        {
+            return as_node_ref().node();
+        }
+
+        SignalRef operator[](size_t output_index) const
+        {
+            as_node_ref()[output_index];
+        }
+
+        SignalRef operator[](std::string_view output_name) const
+        {
+            return as_node_ref()[output_name];
+        }
+
+        operator NodeRef() const
+        {
+            return as_node_ref();
+        }
+
+        operator SignalRef() const
+        {
+            return as_node_ref();
+        }
+
+        template<class... Refs>
+        StructuredNodeRef operator()(Refs&&... refs) const
+        {
+            as_node_ref()(std::forward<Refs>(refs)...);
+            return *this;
+        }
+
+        StructuredNodeRef operator()(std::initializer_list<NamedRef> refs) const
+        {
+            as_node_ref()(refs);
+            return *this;
+        }
+
+        SignalRef detach(size_t loop_block_size = 1) const
+        {
+            return as_node_ref().detach(loop_block_size);
+        }
+
+        std::string to_string() const
+        {
+            return as_node_ref().to_string();
+        }
+
+        template<size_t I>
+        SignalRef get() const
+        {
+            static_assert(I < output_count);
+            return _outputs[I];
+        }
     };
 
     using DetachedSignalInfo = DetachedInfo;
@@ -171,7 +281,7 @@ namespace iv {
         }
 
         template<class Node, class... Args>
-        NodeRef node(Args&&... args)
+        details::node_ref_for_t<Node> node(Args&&... args)
         {
             using StoredNode = std::remove_cvref_t<Node>;
             StoredNode node_value(std::forward<Args>(args)...);
@@ -193,7 +303,11 @@ namespace iv {
                 .output_configs = std::vector<OutputConfig>(std::begin(outputs), std::end(outputs)),
                 .materialize = std::move(materialize),
             });
-            return NodeRef(*this, _nodes.size() - 1);
+            if constexpr (details::fixed_output_count_v<StoredNode> != 0) {
+                return StructuredNodeRef<StoredNode>(*this, _nodes.size() - 1);
+            } else {
+                return NodeRef(*this, _nodes.size() - 1);
+            }
         }
 
         NodeRef node(GraphBuilder const& child)
@@ -931,4 +1045,33 @@ namespace iv {
         }
         return "node at address " + _graph_builder->node_id(_index);
     }
+
+    template<size_t I, class Node>
+    SignalRef get(StructuredNodeRef<Node> const& node_ref)
+    {
+        return node_ref.template get<I>();
+    }
+
+    template<size_t I, class Node>
+    SignalRef get(StructuredNodeRef<Node>& node_ref)
+    {
+        return node_ref.template get<I>();
+    }
+
+    template<size_t I, class Node>
+    SignalRef get(StructuredNodeRef<Node>&& node_ref)
+    {
+        return node_ref.template get<I>();
+    }
+}
+
+namespace std {
+    template<class Node>
+    struct tuple_size<iv::StructuredNodeRef<Node>> :
+        std::integral_constant<size_t, iv::details::fixed_output_count_v<Node>> {};
+
+    template<size_t I, class Node>
+    struct tuple_element<I, iv::StructuredNodeRef<Node>> {
+        using type = iv::SignalRef;
+    };
 }
