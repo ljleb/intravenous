@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <deque>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -26,6 +27,7 @@ namespace iv::details {
 
     struct PreparedGraph {
         std::vector<TypeErasedNode> nodes;
+        std::vector<std::optional<size_t>> explicit_ttl_samples;
         std::vector<std::string> node_ids;
         std::unordered_set<GraphEdge> edges;
         std::unordered_set<GraphEventEdge> event_edges;
@@ -97,6 +99,7 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 g.nodes.emplace_back(Sum(port_arity));
+                g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const sum_node = g.nodes.size() - 1;
 
@@ -124,6 +127,7 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 g.nodes.emplace_back(EventConcatenation(port_arity));
+                g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const concat_node = g.nodes.size() - 1;
 
@@ -166,6 +170,7 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 g.nodes.emplace_back(Broadcast(port_arity));
+                g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const broadcast_node = g.nodes.size() - 1;
 
@@ -193,6 +198,7 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 g.nodes.emplace_back(BroadcastEvent(port_arity));
+                g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const broadcast_node = g.nodes.size() - 1;
 
@@ -228,6 +234,7 @@ namespace iv::details {
                 if (auto it = target_of.find(this_port); it == target_of.end())
                 {
                     g.nodes.emplace_back(DummySink());
+                    g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     size_t const new_node = g.nodes.size() - 1;
                     g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
@@ -240,6 +247,7 @@ namespace iv::details {
                 if (auto it = event_target_of.find(this_port); it == event_target_of.end())
                 {
                     g.nodes.emplace_back(DummyEventSink());
+                    g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     size_t const new_node = g.nodes.size() - 1;
                     g.event_edges.insert(GraphEventEdge{ this_port, { new_node, 0 }, EventConversionPlan{} });
@@ -309,15 +317,19 @@ namespace iv::details {
         size_t const num_nodes = g.nodes.size();
 
         std::vector<TypeErasedNode> sorted_nodes;
+        std::vector<std::optional<size_t>> sorted_explicit_ttls;
         std::vector<std::string> sorted_node_ids;
         sorted_nodes.reserve(num_nodes);
+        sorted_explicit_ttls.reserve(num_nodes);
         sorted_node_ids.reserve(num_nodes);
         for (size_t old_i = 0; old_i < num_nodes; ++old_i)
         {
             sorted_nodes.push_back(std::move(g.nodes[sorted[old_i]]));
+            sorted_explicit_ttls.push_back(std::move(g.explicit_ttl_samples[sorted[old_i]]));
             sorted_node_ids.push_back(std::move(g.node_ids[sorted[old_i]]));
         }
         g.nodes.swap(sorted_nodes);
+        g.explicit_ttl_samples.swap(sorted_explicit_ttls);
         g.node_ids.swap(sorted_node_ids);
 
         std::vector<size_t> reverse_sorted(num_nodes);
@@ -792,6 +804,7 @@ namespace iv::details {
     inline GraphBuildArtifact build_graph_artifact(
         std::string graph_id,
         std::vector<TypeErasedNode> nodes,
+        std::vector<std::optional<size_t>> explicit_ttl_samples,
         std::vector<std::string> node_ids,
         std::unordered_set<GraphEdge> edges,
         std::unordered_set<GraphEventEdge> event_edges,
@@ -1001,6 +1014,7 @@ namespace iv::details {
                 }
                 region_nodes.emplace_back(
                     std::move(nodes[global_i]),
+                    explicit_ttl_samples[global_i],
                     std::move(node_input_buffer_plans[global_i]),
                     std::vector<EventInputConfig>(event_inputs.begin(), event_inputs.end()),
                     artifact.node_ids[global_i],

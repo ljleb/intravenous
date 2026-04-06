@@ -117,6 +117,46 @@ namespace {
         {}
     };
 
+    struct DormantZeroNode {
+        int* tick_blocks = nullptr;
+        int* skip_blocks = nullptr;
+
+        auto inputs() const
+        {
+            return std::array<iv::InputConfig, 1> {{
+                { .name = "in" }
+            }};
+        }
+
+        auto outputs() const
+        {
+            return std::array<iv::OutputConfig, 1> {{
+                { .name = "out" }
+            }};
+        }
+
+        size_t ttl_samples() const
+        {
+            return 0;
+        }
+
+        void tick_block(iv::TickBlockContext<DormantZeroNode> const& ctx) const
+        {
+            if (tick_blocks) {
+                ++*tick_blocks;
+            }
+            ctx.outputs[0].push_silence(ctx.block_size);
+        }
+
+        void skip_block(iv::SkipBlockContext<DormantZeroNode> const& ctx) const
+        {
+            if (skip_blocks) {
+                ++*skip_blocks;
+            }
+            ctx.outputs[0].push_silence(ctx.block_size);
+        }
+    };
+
     iv::NodeExecutor make_feedback_processor(
         iv::ExecutionTargetRegistry& execution_target_registry,
         size_t executor_id,
@@ -302,6 +342,78 @@ int main()
         iv::test::run_processor_blocks(actual_processor, passthrough_blocks);
 
         require_close(expected, actual, 0.0f, "block-aware passthrough diverged");
+    }
+
+    {
+        std::cerr << "dormancy-test: node-enters-skip-block-when-silent-and-unchanged\n";
+
+        constexpr size_t sample_count = 16;
+        std::array<iv::Sample, sample_count> output {};
+        std::array<iv::Sample, sample_count> silence {};
+        int tick_blocks = 0;
+        int skip_blocks = 0;
+
+        auto make_processor = [&](iv::ExecutionTargetRegistry& execution_target_registry, size_t executor_id) {
+            iv::GraphBuilder g;
+            auto const input = g.node<iv::Constant>(0.0f);
+            auto const dormant = g.node<DormantZeroNode>(&tick_blocks, &skip_blocks);
+            auto const sink = g.node<BufferSink>(output.data(), output.size());
+            dormant(input);
+            sink(dormant);
+            g.outputs();
+            return iv::NodeExecutor::create(
+                iv::TypeErasedNode(g.build()),
+                {},
+                execution_target_registry,
+                executor_id
+            );
+        };
+
+        iv::test::FakeAudioDevice device({ .max_block_frames = sample_count });
+        iv::ExecutionTargetRegistry targets(iv::test::make_audio_device_provider(device));
+        auto processor = make_processor(targets, 1);
+        std::array<size_t, 2> const blocks { 8, 8 };
+        iv::test::run_processor_blocks(processor, blocks);
+
+        iv::test::require(tick_blocks == 1, "DormantZeroNode should tick only for the first silent block");
+        iv::test::require(skip_blocks == 1, "DormantZeroNode should skip the second unchanged silent block");
+        require_close(silence, output, 0.0f, "DormantZeroNode output should remain silent");
+    }
+
+    {
+        std::cerr << "dormancy-test: node-ref-no-ttl-overrides-node-default\n";
+
+        constexpr size_t sample_count = 16;
+        std::array<iv::Sample, sample_count> output {};
+        std::array<iv::Sample, sample_count> silence {};
+        int tick_blocks = 0;
+        int skip_blocks = 0;
+
+        auto make_processor = [&](iv::ExecutionTargetRegistry& execution_target_registry, size_t executor_id) {
+            iv::GraphBuilder g;
+            auto const input = g.node<iv::Constant>(0.0f);
+            auto const dormant = g.node<DormantZeroNode>(&tick_blocks, &skip_blocks).no_ttl();
+            auto const sink = g.node<BufferSink>(output.data(), output.size());
+            dormant(input);
+            sink(dormant);
+            g.outputs();
+            return iv::NodeExecutor::create(
+                iv::TypeErasedNode(g.build()),
+                {},
+                execution_target_registry,
+                executor_id
+            );
+        };
+
+        iv::test::FakeAudioDevice device({ .max_block_frames = sample_count });
+        iv::ExecutionTargetRegistry targets(iv::test::make_audio_device_provider(device));
+        auto processor = make_processor(targets, 2);
+        std::array<size_t, 2> const blocks { 8, 8 };
+        iv::test::run_processor_blocks(processor, blocks);
+
+        iv::test::require(tick_blocks == 2, "NodeRef::no_ttl should keep the node executing on both blocks");
+        iv::test::require(skip_blocks == 0, "NodeRef::no_ttl should suppress dormant skip_block execution");
+        require_close(silence, output, 0.0f, "DormantZeroNode output should remain silent");
     }
 
     {

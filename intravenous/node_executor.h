@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <bit>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -32,6 +33,7 @@ namespace iv {
         NodeLayout _layout;
         NodeStorage _storage;
         size_t _max_block_size;
+        size_t _default_silence_ttl_samples = std::numeric_limits<size_t>::max();
         size_t _executor_id = 0;
         bool _shutdown_requested = false;
 
@@ -63,9 +65,9 @@ namespace iv {
             return block_size;
         }
 
-        static NodeLayout make_layout(TypeErasedNode const& root, size_t max_block_size)
+        static NodeLayout make_layout(TypeErasedNode const& root, size_t max_block_size, size_t default_silence_ttl_samples)
         {
-            NodeLayoutBuilder builder(max_block_size);
+            NodeLayoutBuilder builder(max_block_size, default_silence_ttl_samples);
             {
                 DeclarationContext<TypeErasedNode> ctx(builder, root);
                 root.declare(ctx);
@@ -80,7 +82,8 @@ namespace iv {
             size_t executor_id,
             char const* operation,
             bool initialize_storage = true,
-            EventStreamStorage* event_stream_storage = nullptr
+            EventStreamStorage* event_stream_storage = nullptr,
+            size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max()
         )
         {
             validate_root_interface(root);
@@ -96,7 +99,11 @@ namespace iv {
             }
             prepared.max_block_size = choose_block_size(prepared.root, execution_target_registry, executor_id);
             try {
-                prepared.layout = make_layout(prepared.root, prepared.max_block_size);
+                prepared.layout = make_layout(
+                    prepared.root,
+                    prepared.max_block_size,
+                    default_silence_ttl_samples
+                );
             } catch (std::exception const& e) {
                 throw std::runtime_error(std::string("failed to ") + operation + " node executor: make_layout: " + e.what());
             } catch (...) {
@@ -169,6 +176,7 @@ namespace iv {
         , _layout(std::move(other._layout))
         , _storage(std::move(other._storage))
         , _max_block_size(other._max_block_size)
+        , _default_silence_ttl_samples(other._default_silence_ttl_samples)
         , _executor_id(other._executor_id)
         , _shutdown_requested(other._shutdown_requested)
         {
@@ -199,6 +207,7 @@ namespace iv {
             _layout = std::move(other._layout);
             _storage = std::move(other._storage);
             _max_block_size = other._max_block_size;
+            _default_silence_ttl_samples = other._default_silence_ttl_samples;
             _executor_id = other._executor_id;
             _shutdown_requested = other._shutdown_requested;
             other._execution_target_registry = nullptr;
@@ -214,12 +223,22 @@ namespace iv {
             ResourceContext resources,
             ExecutionTargetRegistry& execution_target_registry,
             size_t executor_id,
-            std::vector<ModuleRef> module_refs = {}
+            std::vector<ModuleRef> module_refs = {},
+            size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max()
         )
         {
             execution_target_registry.register_executor(executor_id);
             try {
-                auto prepared = prepare_state(std::move(root), resources, execution_target_registry, executor_id, "create");
+                auto prepared = prepare_state(
+                    std::move(root),
+                    resources,
+                    execution_target_registry,
+                    executor_id,
+                    "create",
+                    true,
+                    nullptr,
+                    default_silence_ttl_samples
+                );
                 execution_target_registry.validate_executor_block_size(executor_id, prepared.max_block_size);
 
                 return NodeExecutor(
@@ -231,12 +250,31 @@ namespace iv {
                     std::move(prepared.layout),
                     std::move(prepared.storage),
                     prepared.max_block_size,
+                    default_silence_ttl_samples,
                     executor_id
                 );
             } catch (...) {
                 execution_target_registry.unregister_executor(executor_id);
                 throw;
             }
+        }
+
+        static NodeExecutor create(
+            TypeErasedNode root,
+            ResourceContext resources,
+            ExecutionTargetRegistry& execution_target_registry,
+            size_t executor_id,
+            size_t default_silence_ttl_samples
+        )
+        {
+            return create(
+                std::move(root),
+                std::move(resources),
+                execution_target_registry,
+                executor_id,
+                {},
+                default_silence_ttl_samples
+            );
         }
 
         NodeExecutor(
@@ -248,6 +286,7 @@ namespace iv {
             NodeLayout layout,
             NodeStorage storage,
             size_t max_block_size,
+            size_t default_silence_ttl_samples,
             size_t executor_id
         ) :
             _module_refs(std::move(module_refs)),
@@ -258,6 +297,7 @@ namespace iv {
             _layout(std::move(layout)),
             _storage(std::move(storage)),
             _max_block_size(max_block_size),
+            _default_silence_ttl_samples(default_silence_ttl_samples),
             _executor_id(executor_id)
         {
             validate_root_interface(_root);
@@ -301,7 +341,8 @@ namespace iv {
                 _executor_id,
                 "reload",
                 false,
-                _event_stream_storage.get()
+                _event_stream_storage.get(),
+                _default_silence_ttl_samples
             );
             _execution_target_registry->validate_executor_block_size(_executor_id, prepared.max_block_size);
 

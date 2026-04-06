@@ -48,7 +48,9 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     auto const dt = g.node<ValueSource>(&context.sample_period());
     auto const voice_builder = context.load_builder("iv.test.noisy_saw_voice");
     SignalRef first_noise;
-    auto midi = juce::midi_input(g) >> events;
+    auto const midi = juce::midi_input(g, "V25") >> events;
+    auto const sup = juce::vst(g, "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
+    info(sup.node());
 
     for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
         auto const noise = g.subgraph(noise_voice);
@@ -73,7 +75,18 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             "dt"_P = dt,
             "feedback"_P = ~("feedback"_P << voice)
         );
-        sink(("out"_P << voice) * gate);
+        auto x = ("out"_P << voice) * gate;
+        if (channel == 0)
+        {
+            auto constexpr port = "l0"_P;
+            x = port << sup(port = x);
+        }
+        else
+        {
+            auto constexpr port = "r0"_P;
+            x = port << sup(port = x);
+        }
+        sink(x);
     }
 
     g.outputs();

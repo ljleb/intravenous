@@ -64,24 +64,6 @@ namespace iv {
 
     JuceVstWrapperSpec probe_juce_vst(JuceVstPluginConfig request);
 
-    namespace juce {
-        inline NodeRef vst(
-            GraphBuilder& g,
-            std::filesystem::path plugin_path,
-            std::string plugin_identifier = {},
-            size_t preferred_audio_input_streams = 1,
-            size_t preferred_audio_output_streams = 1
-        )
-        {
-            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstPluginConfig{
-                .plugin_path = std::move(plugin_path),
-                .plugin_identifier = std::move(plugin_identifier),
-                .preferred_audio_input_streams = preferred_audio_input_streams,
-                .preferred_audio_output_streams = preferred_audio_output_streams,
-            }));
-        }
-    }
-
     class JuceVstWrapper {
         std::shared_ptr<JuceVstWrapperSpec const> _spec;
 
@@ -139,5 +121,23 @@ namespace iv {
 
         void tick_block(TickBlockContext<JuceVstWrapper> const& ctx) const;
     };
+
+    namespace juce {
+        inline NodeRef vst(
+            GraphBuilder& g,
+            std::filesystem::path plugin_path,
+            std::string plugin_identifier = {},
+            size_t preferred_audio_input_streams = 1,
+            size_t preferred_audio_output_streams = 1
+        )
+        {
+            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstPluginConfig{
+                .plugin_path = std::move(plugin_path),
+                .plugin_identifier = std::move(plugin_identifier),
+                .preferred_audio_input_streams = preferred_audio_input_streams,
+                .preferred_audio_output_streams = preferred_audio_output_streams,
+            }));
+        }
+    }
 #endif
 }

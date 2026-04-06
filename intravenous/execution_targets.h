@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <memory>
 #include <optional>
@@ -42,6 +43,11 @@ namespace iv {
         explicit operator bool() const
         {
             return _registry != nullptr;
+        }
+
+        ExecutionTargetRegistry* registry() const
+        {
+            return _registry;
         }
 
         AudioDeviceExecutionTarget& audio_device(size_t device_id, size_t channel) const;
@@ -779,7 +785,11 @@ namespace iv {
         std::vector<bool> _file_target_active;
 
     public:
-        explicit ExecutionTargetRegistry(AudioDeviceProvider audio_device_provider, size_t sample_rate = 48000, RequestNotification request_notification = std::make_shared<std::condition_variable>())
+        explicit ExecutionTargetRegistry(
+            AudioDeviceProvider audio_device_provider,
+            size_t sample_rate = 48000,
+            RequestNotification request_notification = std::make_shared<std::condition_variable>()
+        )
         {
             _audio_device_provider = audio_device_provider;
             _request_notification = std::move(request_notification);
@@ -1121,16 +1131,21 @@ namespace iv {
 
         size_t file_target_sample_rate_locked(ExecutorState const& executor)
         {
+            size_t sample_rate = _sample_rate;
+
             for (size_t device_id : executor.device_ids) {
                 auto& device_state = get_device_state_locked(device_id);
-                return device_state.device->config().sample_rate;
+                sample_rate = device_state.device->config().sample_rate;
+                break;
             }
 
-            if (auto* default_device = _audio_device_provider.device_fn(_audio_device_provider.owner, 0)) {
-                return default_device->config().sample_rate;
+            if (sample_rate == _sample_rate) {
+                if (auto* default_device = _audio_device_provider.device_fn(_audio_device_provider.owner, 0)) {
+                    sample_rate = default_device->config().sample_rate;
+                }
             }
 
-            return _sample_rate;
+            return sample_rate;
         }
 
         ExecutorState& require_executor_locked(size_t executor_id)

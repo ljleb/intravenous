@@ -8,6 +8,7 @@
 #include "wiring.h"
 
 #include <algorithm>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -17,6 +18,7 @@
 namespace iv {
     struct GraphNodeWrapper {
         TypeErasedNode _node;
+        std::optional<size_t> _ttl_samples;
         std::string _node_id;
         std::vector<std::string> _output_targets;
         std::vector<EventOutputBinding> _event_output_targets;
@@ -25,6 +27,7 @@ namespace iv {
 
         explicit GraphNodeWrapper(
             TypeErasedNode node,
+            std::optional<size_t> ttl_samples,
             std::vector<PortBufferPlan> input_buffer_plans,
             std::vector<EventInputConfig> input_event_configs,
             std::string node_id,
@@ -32,11 +35,30 @@ namespace iv {
             std::vector<EventOutputBinding> event_output_targets
         )
         : _node(std::move(node))
+        , _ttl_samples(ttl_samples)
         , _node_id(std::move(node_id))
         , _output_targets(std::move(output_targets))
         , _event_output_targets(std::move(event_output_targets))
         , _input_port_data_nodes(make_input_port_data_nodes(_node_id, get_inputs(_node), input_buffer_plans))
         , _input_event_port_data_nodes(make_input_event_port_data_nodes(_node_id, input_event_configs))
+        {}
+
+        explicit GraphNodeWrapper(
+            TypeErasedNode node,
+            std::optional<size_t> ttl_samples,
+            std::vector<PortBufferPlan> input_buffer_plans,
+            std::string node_id,
+            std::vector<std::string> output_targets
+        ) :
+            GraphNodeWrapper(
+                std::move(node),
+                ttl_samples,
+                std::move(input_buffer_plans),
+                {},
+                std::move(node_id),
+                std::move(output_targets),
+                {}
+            )
         {}
 
         explicit GraphNodeWrapper(
@@ -47,11 +69,10 @@ namespace iv {
         ) :
             GraphNodeWrapper(
                 std::move(node),
+                std::nullopt,
                 std::move(input_buffer_plans),
-                {},
                 std::move(node_id),
-                std::move(output_targets),
-                {}
+                std::move(output_targets)
             )
         {}
 
@@ -255,6 +276,28 @@ namespace iv {
                 ctx.index,
                 ctx.block_size
             });
+        }
+
+        void skip_block(SkipBlockContext<GraphNodeWrapper> const& ctx) const
+        {
+            auto& state = ctx.state();
+            _node.skip_block({
+                TickContext<TypeErasedNode> {
+                    .inputs = state.inputs,
+                    .outputs = state.outputs,
+                    .event_inputs = state.event_inputs,
+                    .event_outputs = state.event_outputs,
+                    .event_streams = ctx.event_streams,
+                    .buffer = state.nested_node_states[state.nested_node_states.size() - 1],
+                },
+                ctx.index,
+                ctx.block_size
+            });
+        }
+
+        size_t resolve_default_ttl_samples(size_t default_ttl) const
+        {
+            return _ttl_samples.value_or(_node.ttl_samples().value_or(default_ttl));
         }
     };
 }

@@ -5,6 +5,9 @@
 #include <concepts>
 #include <cstddef>
 #include <iostream>
+#include <iterator>
+#include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -45,9 +48,10 @@ namespace iv {
     namespace details
     {
         template <typename Node>
-        concept has_outputs = requires(Node node, std::span<OutputConfig const> outputs)
+        concept has_outputs = requires(Node const& node)
         {
-            outputs = node.outputs();
+            std::begin(node.outputs());
+            std::end(node.outputs());
         };
 
         template <typename Node>
@@ -57,15 +61,17 @@ namespace iv {
         };
 
         template <typename Node>
-        concept has_inputs = requires(Node node, std::span<InputConfig const> inputs)
+        concept has_inputs = requires(Node const& node)
         {
-            inputs = node.inputs();
+            std::begin(node.inputs());
+            std::end(node.inputs());
         };
 
         template <typename Node>
-        concept has_event_outputs = requires(Node node, std::span<EventOutputConfig const> outputs)
+        concept has_event_outputs = requires(Node const& node)
         {
-            outputs = node.event_outputs();
+            std::begin(node.event_outputs());
+            std::end(node.event_outputs());
         };
 
         template <typename Node>
@@ -75,9 +81,10 @@ namespace iv {
         };
 
         template <typename Node>
-        concept has_event_inputs = requires(Node node, std::span<EventInputConfig const> inputs)
+        concept has_event_inputs = requires(Node const& node)
         {
-            inputs = node.event_inputs();
+            std::begin(node.event_inputs());
+            std::end(node.event_inputs());
         };
 
         template <typename Node>
@@ -103,6 +110,13 @@ namespace iv {
         {
             block_size = node.max_block_size();
         };
+
+        template <typename Node>
+        concept has_ttl_method = requires(Node node, std::optional<size_t> ttl)
+        {
+            ttl = node.ttl_samples();
+        };
+
     }
 
     template<typename Node>
@@ -232,6 +246,19 @@ namespace iv {
         else
         {
             return MAX_BLOCK_SIZE;
+        }
+    }
+
+    template<typename Node>
+    constexpr std::optional<size_t> get_ttl_samples(Node const& node)
+    {
+        if constexpr (details::has_ttl_method<Node>)
+        {
+            return node.ttl_samples();
+        }
+        else
+        {
+            return std::nullopt;
         }
     }
 

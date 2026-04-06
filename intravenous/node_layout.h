@@ -11,6 +11,7 @@
 #include <deque>
 #include <memory>
 #include <new>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -90,6 +91,7 @@ namespace iv {
         size_t storage_size = 0;
         size_t storage_alignment = 1;
         size_t max_block_size = 1;
+        size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max();
         std::vector<NodeRecord> nodes;
         std::vector<Region> regions;
         std::vector<ArrayBinding> imported_arrays;
@@ -133,7 +135,13 @@ namespace iv {
         : _max_block_size(max_block_size)
         {}
 
+        explicit NodeLayoutBuilder(size_t max_block_size, size_t default_silence_ttl_samples)
+        : _max_block_size(max_block_size)
+        , _default_silence_ttl_samples(default_silence_ttl_samples)
+        {}
+
         size_t max_block_size() const;
+        size_t default_silence_ttl_samples() const { return _default_silence_ttl_samples; }
 
         template<typename A>
         static void const* array_type_token()
@@ -152,6 +160,7 @@ namespace iv {
 
     private:
         size_t _max_block_size = 1;
+        size_t _default_silence_ttl_samples = std::numeric_limits<size_t>::max();
         size_t _storage_alignment = 1;
         std::vector<NodeLayout::NodeRecord> _nodes;
         std::vector<NodeLayout::Region> _regions;
@@ -294,6 +303,11 @@ namespace iv {
         size_t max_block_size() const
         {
             return _storage->max_block_size();
+        }
+
+        size_t default_silence_ttl_samples() const
+        {
+            return _storage->layout->default_silence_ttl_samples;
         }
 
         template<typename A>
@@ -679,6 +693,7 @@ namespace iv {
         NodeLayout layout;
         layout.storage_alignment = _storage_alignment;
         layout.max_block_size = _max_block_size;
+        layout.default_silence_ttl_samples = _default_silence_ttl_samples;
         layout.nodes = std::move(_nodes);
         layout.regions = std::move(_regions);
         layout.imported_arrays = std::move(_imports);

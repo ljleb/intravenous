@@ -50,6 +50,11 @@ namespace iv {
         );
     };
 
+    template<typename Node>
+    struct SkipBlockContext : public TickBlockContext<Node> {
+        using TickBlockContext<Node>::TickBlockContext;
+    };
+
     namespace details {
         template <typename Node>
         concept has_tick = requires(Node node, TickSampleContext<Node> state)
@@ -61,6 +66,12 @@ namespace iv {
         concept has_tick_block = requires(Node node, TickBlockContext<Node> state)
         {
             node.tick_block(state);
+        };
+
+        template <typename Node>
+        concept has_skip_block = requires(Node node, SkipBlockContext<Node> state)
+        {
+            node.skip_block(state);
         };
     }
 
@@ -91,6 +102,9 @@ namespace iv {
 
     template<typename Node>
     void do_tick_block(Node const& node, TickBlockContext<Node> const& state);
+
+    template<typename Node>
+    void do_skip_block(Node const& node, SkipBlockContext<Node> const& state);
 
     IV_FORCEINLINE std::span<std::byte> remaining_buffer(std::span<std::byte> buffer, std::byte* state_base)
     {
@@ -176,5 +190,27 @@ namespace iv {
                 });
             }
         }
+    }
+
+    template<typename Node>
+    IV_FORCEINLINE void do_skip_block(Node const& node, SkipBlockContext<Node> const& ctx)
+    {
+        if (ctx.block_size == 0) {
+            return;
+        }
+        validate_block_size(ctx.block_size);
+
+        if constexpr (details::has_skip_block<Node>)
+        {
+            node.skip_block(ctx);
+        }
+        else
+        {
+            for (auto& output : ctx.outputs) {
+                output.push_silence(ctx.block_size);
+            }
+        }
+
+        advance_inputs(ctx.inputs, ctx.block_size);
     }
 }

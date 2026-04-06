@@ -645,6 +645,23 @@ namespace iv {
         };
     }
 
+    IV_FORCEINLINE constexpr BlockView<Sample const> make_block_view(
+        std::span<Sample const> buffer,
+        size_t start,
+        size_t count
+    )
+    {
+        if (count == 0) {
+            return {};
+        }
+
+        size_t const first_size = std::min(count, buffer.size() - start);
+        return {
+            buffer.subspan(start, first_size),
+            buffer.subspan(0, count - first_size),
+        };
+    }
+
     struct SharedPortData {
         std::span<Sample> buffer;
         size_t latency;
@@ -784,6 +801,15 @@ namespace iv {
             _position = (_position + samples.size()) & (buffer_size() - 1);
         }
 
+        IV_FORCEINLINE constexpr void push_silence(size_t block_size)
+        {
+            size_t const start = (_position + _shared_data.latency) & (buffer_size() - 1);
+            auto block = make_block_view(_shared_data.buffer, start, block_size);
+            std::fill(block.first.begin(), block.first.end(), 0.0f);
+            std::fill(block.second.begin(), block.second.end(), 0.0f);
+            _position = (_position + block_size) & (buffer_size() - 1);
+        }
+
         IV_FORCEINLINE constexpr void update(Sample value, size_t offset = 0)
         {
             if (offset > _shared_data.latency) return;
@@ -794,6 +820,12 @@ namespace iv {
         IV_FORCEINLINE constexpr size_t position() const
         {
             return _position;
+        }
+
+        IV_FORCEINLINE constexpr BlockView<Sample const> current_block(size_t block_size) const
+        {
+            size_t const start = (_position + buffer_size() - block_size) & (buffer_size() - 1);
+            return make_block_view(std::span<Sample const>(_shared_data.buffer), start, block_size);
         }
 
         IV_FORCEINLINE constexpr size_t buffer_size() const
@@ -915,6 +947,11 @@ namespace iv {
         EventTypeId source_type() const
         {
             return _source_type;
+        }
+
+        bool empty_in_block(EventStreamStorage& storage, size_t block_index, size_t block_size) const
+        {
+            return storage.block(_shared_data.stream_id, block_index, block_size).size() == 0;
         }
     };
 

@@ -12,6 +12,7 @@
 #include <memory>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <stdexcept>
@@ -126,6 +127,9 @@ namespace iv {
         std::vector<EventInputConfig> event_input_configs;
         std::vector<EventOutputConfig> event_output_configs;
         std::function<TypeErasedNode(size_t)> materialize {};
+        std::optional<size_t> ttl_samples {};
+        size_t lowered_subgraph_begin = 0;
+        size_t lowered_subgraph_count = 0;
         std::vector<std::vector<PortId>> subgraph_input_targets {};
         std::vector<PortId> subgraph_output_sources {};
         std::vector<std::vector<PortId>> subgraph_event_input_targets {};
@@ -347,6 +351,8 @@ namespace iv {
         Derived operator()(Args&&... args) const = delete;
 
         SignalRef detach(size_t loop_block_size = 1) const;
+        Derived ttl(size_t samples) const;
+        Derived no_ttl() const;
 
         std::string to_string() const;
     };
@@ -624,6 +630,8 @@ namespace iv {
                 .output_configs = child._public_outputs,
                 .event_input_configs = child._public_event_inputs,
                 .event_output_configs = child._public_event_outputs,
+                .lowered_subgraph_begin = child_node_offset,
+                .lowered_subgraph_count = child._nodes.size(),
                 .subgraph_input_targets = std::vector<std::vector<PortId>>(child._public_inputs.size()),
                 .subgraph_output_sources = std::vector<PortId>(child._public_outputs.size()),
                 .subgraph_event_input_targets = std::vector<std::vector<PortId>>(child._public_event_inputs.size()),
@@ -836,6 +844,7 @@ namespace iv {
 
             details::PreparedGraph g{
                 .nodes = {},
+                .explicit_ttl_samples = {},
                 .node_ids = {},
                 .edges = {},
                 .event_edges = {},
@@ -858,12 +867,14 @@ namespace iv {
                 }
                 runtime_node_indices[node_i] = g.nodes.size();
                 g.nodes.push_back(_nodes[node_i].materialize(detach_id_offset));
+                g.explicit_ttl_samples.push_back(_nodes[node_i].ttl_samples);
                 g.node_ids.push_back(node_id(node_i));
             }
 
             auto materialize_placeholder_default = [&](size_t placeholder_node, size_t input_port) {
                 runtime_node_indices.push_back(g.nodes.size());
                 g.nodes.push_back(TypeErasedNode(Constant(_nodes[placeholder_node].input_configs[input_port].default_value)));
+                g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(
                     node_id(placeholder_node) + ".default." + std::to_string(input_port)
                 );
@@ -992,6 +1003,7 @@ namespace iv {
             return Graph(details::build_graph_artifact(
                 _builder_id.value,
                 std::move(g.nodes),
+                std::move(g.explicit_ttl_samples),
                 std::move(g.node_ids),
                 std::move(g.edges),
                 std::move(g.event_edges),
@@ -1666,6 +1678,31 @@ namespace iv {
     inline SignalRef NodeRefBase<Derived, Node>::detach(size_t loop_block_size) const
     {
         return static_cast<SignalRef>(*this).detach(loop_block_size);
+    }
+
+    template<class Derived, class Node>
+    inline Derived NodeRefBase<Derived, Node>::ttl(size_t ttl_samples) const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+        auto& builder_node = _graph_builder->_nodes[_index];
+        if (!builder_node.materialize && builder_node.lowered_subgraph_count != 0) {
+            size_t const begin = builder_node.lowered_subgraph_begin;
+            size_t const end = begin + builder_node.lowered_subgraph_count;
+            for (size_t node_i = begin; node_i < end; ++node_i) {
+                _graph_builder->_nodes[node_i].ttl_samples = ttl_samples;
+            }
+        } else {
+            builder_node.ttl_samples = ttl_samples;
+        }
+        return derived();
+    }
+
+    template<class Derived, class Node>
+    inline Derived NodeRefBase<Derived, Node>::no_ttl() const
+    {
+        return ttl(std::numeric_limits<size_t>::max());
     }
 
     template<class Derived, class Node>
