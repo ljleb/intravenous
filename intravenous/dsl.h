@@ -43,7 +43,7 @@ namespace iv {
         explicit SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
         operator PortId() const { return { node_index, output_port }; }
 
-        SignalRef detach(size_t loop_block_size = 1) const;
+        SignalRef detach(size_t loop_extra_latency = 1) const;
 
         std::string to_string() const;
     };
@@ -104,6 +104,12 @@ namespace iv {
 
         T value;
     };
+
+    template<fixed_string Name, class T>
+    NamedRef make_named_ref(NamedArg<Name, T> const& arg)
+    {
+        return NamedRef(Name.view(), arg.value);
+    }
 
     template<fixed_string Name>
     struct PortName {
@@ -372,7 +378,7 @@ namespace iv {
         Derived connect_event_input(size_t input_port, EventRef value) const;
         Derived connect_event_input(std::string_view input_name, EventRef value) const;
 
-        SignalRef detach(size_t loop_block_size = 1) const;
+        SignalRef detach(size_t loop_extra_latency = 1) const;
         Derived ttl(size_t samples) const;
         Derived no_ttl() const;
 
@@ -614,9 +620,15 @@ namespace iv {
 
             auto materialize = [node_value = std::move(node_value)]([[maybe_unused]] size_t detach_id_offset) {
                 if constexpr (std::same_as<StoredNode, DetachWriterNode>) {
-                    return TypeErasedNode(DetachWriterNode{ DetachArrayId(node_value.id.id + detach_id_offset) });
+                    return TypeErasedNode(DetachWriterNode{
+                        DetachArrayId(node_value.id.id + detach_id_offset),
+                        node_value.loop_extra_latency
+                    });
                 } else if constexpr (std::same_as<StoredNode, DetachReaderNode>) {
-                    return TypeErasedNode(DetachReaderNode{ DetachArrayId(node_value.id.id + detach_id_offset) });
+                    return TypeErasedNode(DetachReaderNode{
+                        DetachArrayId(node_value.id.id + detach_id_offset),
+                        node_value.loop_extra_latency
+                    });
                 } else {
                     return TypeErasedNode(node_value);
                 }
@@ -741,7 +753,7 @@ namespace iv {
                         .original_source = remap_child_port(info.original_source),
                         .writer_node = child_node_offset + info.writer_node,
                         .reader_output = remap_child_port(info.reader_output),
-                        .loop_block_size = info.loop_block_size,
+                        .loop_extra_latency = info.loop_extra_latency,
                     }
                 );
             }
@@ -814,23 +826,30 @@ namespace iv {
         }
 
         template<class... Refs>
+        requires (details::valid_node_call_args_v<Refs...> && !details::has_event_args_v<Refs...>)
         void outputs(Refs&&... refs)
         {
             if (_outputs_defined) {
                 details::error("outputs(...) was already called on builder " + _builder_id.value);
             }
 
-            std::array<SignalRef, sizeof...(Refs)> refs_array{
-                lift_to_signal(std::forward<Refs>(refs))...
-            };
             std::vector<OutputRefConfig> output_refs;
-            output_refs.reserve(refs_array.size());
-            for (auto const& ref : refs_array) {
-                output_refs.push_back(OutputRefConfig{
-                    .ref = ref,
-                    .config = {},
-                });
-            }
+            output_refs.reserve(sizeof...(Refs));
+            auto const append_ref = [&](auto&& ref) {
+                using RefT = std::remove_cvref_t<decltype(ref)>;
+                if constexpr (details::is_named_arg_v<RefT>) {
+                    output_refs.push_back(OutputRefConfig{
+                        .ref = lift_to_signal(ref.value),
+                        .config = OutputConfig{ .name = std::string(RefT::name.view()) },
+                    });
+                } else {
+                    output_refs.push_back(OutputRefConfig{
+                        .ref = lift_to_signal(std::forward<decltype(ref)>(ref)),
+                        .config = {},
+                    });
+                }
+            };
+            (append_ref(std::forward<Refs>(refs)), ...);
             outputs(std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
         }
 
@@ -839,35 +858,15 @@ namespace iv {
             if (_outputs_defined) {
                 details::error("outputs(...) was already called on builder " + _builder_id.value);
             }
-
-            _public_outputs.reserve(refs.size());
-            std::unordered_set<std::string> output_names;
-
-            size_t output_port = 0;
+            std::vector<OutputRefConfig> output_refs;
+            output_refs.reserve(refs.size());
             for (auto const& ref : refs) {
-                if (ref.name.empty()) {
-                    details::error(
-                        "builder " + _builder_id.value + ": named outputs must not use empty names"
-                    );
-                }
-
-                if (output_names.contains(std::string(ref.name))) {
-                    details::error(
-                        "builder " + _builder_id.value + ": duplicate output name '" + std::string(ref.name) + "'"
-                    );
-                }
-                output_names.insert(std::string(ref.name));
-
-                auto const signal = lift_to_signal(ref);
-
-                _edges.emplace(GraphEdge{
-                    signal,
-                    PortId{ GRAPH_ID, output_port++ },
-                    });
-                _public_outputs.emplace_back(OutputConfig{ .name = std::string(ref.name) });
+                output_refs.push_back(OutputRefConfig{
+                    .ref = lift_to_signal(ref),
+                    .config = OutputConfig{ .name = std::string(ref.name) },
+                });
             }
-
-            _outputs_defined = true;
+            outputs(std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
         }
 
         void outputs(std::span<OutputRefConfig const> refs)
@@ -878,9 +877,11 @@ namespace iv {
 
             _public_outputs.clear();
             _public_outputs.reserve(refs.size());
+            std::unordered_set<std::string> output_names;
 
             for (size_t i = 0; i < refs.size(); ++i) {
                 auto const& ref = refs[i].ref;
+                auto const& config = refs[i].config;
                 if (ref.graph_builder != this) {
                     details::error(
                         "builder " + _builder_id.value + ": outputs(...): "
@@ -889,11 +890,20 @@ namespace iv {
                     );
                 }
 
+                if (!config.name.empty()) {
+                    if (output_names.contains(config.name)) {
+                        details::error(
+                            "builder " + _builder_id.value + ": duplicate output name '" + config.name + "'"
+                        );
+                    }
+                    output_names.insert(config.name);
+                }
+
                 _edges.emplace(GraphEdge{
                     PortId{ ref.node_index, ref.output_port },
                     PortId{ GRAPH_ID, i },
                 });
-                _public_outputs.push_back(refs[i].config);
+                _public_outputs.push_back(config);
             }
 
             _outputs_defined = true;
@@ -904,42 +914,20 @@ namespace iv {
             if (_outputs_defined) {
                 details::error("outputs(...) was already called on builder " + _builder_id.value);
             }
-
-            _public_outputs.reserve(refs.size());
-            std::unordered_set<std::string> output_names;
-
-            size_t output_port = 0;
+            std::vector<OutputRefConfig> output_refs;
+            output_refs.reserve(refs.size());
             for (auto const& ref : refs) {
                 if (ref.name.empty()) {
                     details::error(
                         "builder " + _builder_id.value + ": named outputs must not use empty names"
                     );
                 }
-
-                if (output_names.contains(std::string(ref.name))) {
-                    details::error(
-                        "builder " + _builder_id.value + ": duplicate output name '" + std::string(ref.name) + "'"
-                    );
-                }
-
-                SignalRef signal = lift_to_signal(ref);
-                if (signal.graph_builder != this) {
-                    details::error(
-                        "builder " + _builder_id.value + ": outputs(...): "
-                        "SignalRef at index " + std::to_string(output_port) + " "
-                        "belongs to builder " + signal.graph_builder->_builder_id.value
-                    );
-                }
-
-                output_names.insert(std::string(ref.name));
-                _edges.emplace(GraphEdge{
-                    PortId{ signal.node_index, signal.output_port },
-                    PortId{ GRAPH_ID, output_port++ },
+                output_refs.push_back(OutputRefConfig{
+                    .ref = lift_to_signal(ref),
+                    .config = OutputConfig{ .name = std::string(ref.name) },
                 });
-                _public_outputs.emplace_back(OutputConfig{ .name = std::string(ref.name) });
             }
-
-            _outputs_defined = true;
+            outputs(std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
         }
 
         Graph build(size_t detach_id_offset = 0) const
@@ -1081,7 +1069,7 @@ namespace iv {
                     .original_source = remapped_source,
                     .writer_node = runtime_node_indices[info.writer_node],
                     .reader_output = resolve_source(resolve_source, info.reader_output),
-                    .loop_block_size = info.loop_block_size,
+                    .loop_extra_latency = info.loop_extra_latency,
                 });
             }
 
@@ -1129,7 +1117,7 @@ namespace iv {
             return std::to_string(next_root_builder_id++);
         }
 
-        SignalRef detach_signal(SignalRef signal, size_t loop_block_size)
+        SignalRef detach_signal(SignalRef signal, size_t loop_extra_latency)
         {
             if (!signal.graph_builder) {
                 details::error(
@@ -1153,28 +1141,26 @@ namespace iv {
 
             // Reuse existing detached bridge for the same source.
             if (auto it = _detached_info_by_source.find(source); it != _detached_info_by_source.end()) {
-                if (it->second.loop_block_size != loop_block_size) {
+                if (it->second.loop_extra_latency != loop_extra_latency) {
                     details::error(
-                        "builder " + _builder_id.value + ": detach loop block size conflict on " + signal.to_string()
+                        "builder " + _builder_id.value + ": detach loop extra latency conflict on " + signal.to_string()
                     );
                 }
                 PortId const reader = it->second.reader_output;
                 return SignalRef(*this, reader.node, reader.port);
             }
 
-            try {
-                validate_block_size(loop_block_size, "detach loop block size must be a power of 2");
-            } catch (std::logic_error const& e) {
-                details::error("builder " + _builder_id.value + ": " + e.what());
+            if (loop_extra_latency < 1) {
+                details::error("builder " + _builder_id.value + ": detach loop extra latency must be at least 1");
             }
 
             size_t const detach_id = _next_detach_id++;
 
-            auto writer = node<DetachWriterNode>(detach_id, loop_block_size);
+            auto writer = node<DetachWriterNode>(detach_id, loop_extra_latency);
             size_t const writer_node = _nodes.size() - 1;
             writer(signal);
 
-            auto reader = node<DetachReaderNode>(detach_id, loop_block_size);
+            auto reader = node<DetachReaderNode>(detach_id, loop_extra_latency);
             SignalRef detached = reader;
 
             _detached_info_by_source.emplace(source, DetachedSignalInfo{
@@ -1182,7 +1168,7 @@ namespace iv {
                 .original_source = source,
                 .writer_node = writer_node,
                 .reader_output = detached,
-                .loop_block_size = loop_block_size,
+                .loop_extra_latency = loop_extra_latency,
             });
             _detached_reader_outputs.insert(detached);
 
@@ -1591,12 +1577,12 @@ namespace iv {
         }
     }
 
-    inline SignalRef SignalRef::detach(size_t loop_block_size) const
+    inline SignalRef SignalRef::detach(size_t loop_extra_latency) const
     {
         if (!graph_builder) {
             details::error("attempted to detach an empty signal");
         }
-        return graph_builder->detach_signal(*this, loop_block_size);
+        return graph_builder->detach_signal(*this, loop_extra_latency);
     }
 
     inline std::string SignalRef::to_string() const
@@ -1939,9 +1925,9 @@ namespace iv {
     }
 
     template<class Derived, class Node>
-    inline SignalRef NodeRefBase<Derived, Node>::detach(size_t loop_block_size) const
+    inline SignalRef NodeRefBase<Derived, Node>::detach(size_t loop_extra_latency) const
     {
-        return static_cast<SignalRef>(*this).detach(loop_block_size);
+        return static_cast<SignalRef>(*this).detach(loop_extra_latency);
     }
 
     template<class Derived, class Node>

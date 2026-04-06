@@ -50,7 +50,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     SignalRef first_noise;
 
     auto const voice_builder = context.load_builder("iv.test.noisy_saw_voice");
-    auto const midi = juce::midi_input(g, "V25") >> events;
+    auto const midi = juce::midi_input(g) >> events;
     auto const sup = juce::vst(g, "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
     info(sup.node());
 
@@ -61,10 +61,10 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         }
 
         NodeRef shared_noise = g.node<Interpolation>();
-        auto const sink = io.sink(g, channel);
+        auto const sink = io.file(g, channel, "out.wav");
 
         noise(dt);
-        shared_noise = shared_noise(first_noise, noise, 1.0) * 0.1;
+        shared_noise = shared_noise(first_noise, noise, 1.0) * 0.0;
         auto const voice = polyphonic<16>(g, [&](NodeRef m) {
             m.connect_event_input("midi", midi);
 
@@ -72,9 +72,9 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             return voice(
                 "noise"_P = shared_noise,
                 "amplitude"_P = "amplitude"_P << m,
-                "frequency"_P = "frequency"_P << m,
+                "frequency"_P = ("frequency"_P << m),
                 "dt"_P = dt,
-                "feedback"_P = ~("feedback"_P << voice)
+                "feedback"_P = ("feedback"_P << voice)
             );
         });
 
@@ -82,12 +82,12 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         if (channel == 0)
         {
             auto constexpr port = "l0"_P;
-            x = port << sup(port = x);
+            // x = port << sup(port = x);
         }
         else
         {
             auto constexpr port = "r0"_P;
-            x = port << sup(port = x);
+            // x = port << sup(port = x);
         }
         sink(x);
     }

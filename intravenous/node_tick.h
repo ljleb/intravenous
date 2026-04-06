@@ -15,6 +15,7 @@ namespace iv {
         std::span<EventInputPort> event_inputs;
         std::span<EventOutputPort> event_outputs;
         EventStreamStorage* event_streams = nullptr;
+        size_t scc_feedback_latency = 0;
         std::span<std::byte> buffer;
 
         using State = typename NodeState<Node>::Type;
@@ -142,6 +143,7 @@ namespace iv {
             .event_inputs = event_inputs,
             .event_outputs = event_outputs,
             .event_streams = outer.event_streams,
+            .scc_feedback_latency = outer.scc_feedback_latency,
             .buffer = remaining_buffer(outer.buffer, nested_state),
         };
     }

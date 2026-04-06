@@ -9,8 +9,8 @@
             "name": "Debug with CodeLLDB",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}\\build\\intravenous\\intravenous.exe",
-            "args": [],
+            "program": "${workspaceFolder}\\build-release\\intravenous\\intravenous.exe",
+            "args": ["${workspaceFolder}\\tests\\test_modules\\noisy_saw_project"],
             "cwd": "${workspaceFolder}"
         }
     ]

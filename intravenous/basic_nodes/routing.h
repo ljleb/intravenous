@@ -191,7 +191,7 @@ namespace iv {
 
     struct DetachWriterNode {
         DetachArrayId id;
-        size_t loop_block_size = 1;
+        size_t loop_extra_latency = 1;
 
         struct State {
             std::span<Sample> samples;
@@ -202,15 +202,11 @@ namespace iv {
             return std::array<InputConfig, 1>{};
         }
 
-        size_t max_block_size() const
-        {
-            return loop_block_size;
-        }
-
         void declare(DeclarationContext<DetachWriterNode> const& ctx) const
         {
             auto const& state = ctx.state();
-            ctx.local_array(state.samples, ctx.max_block_size());
+            size_t const min_size = loop_extra_latency + ctx.max_block_size();
+            ctx.local_array(state.samples, next_power_of_2(min_size));
             ctx.export_array(id, state.samples);
         }
 
@@ -231,7 +227,7 @@ namespace iv {
 
     struct DetachReaderNode {
         DetachArrayId id;
-        size_t loop_block_size = 1;
+        size_t loop_extra_latency = 1;
 
         struct State {
             std::span<Sample> samples;
@@ -240,11 +236,6 @@ namespace iv {
         auto outputs() const
         {
             return std::array<OutputConfig, 1>{};
-        }
-
-        size_t max_block_size() const
-        {
-            return loop_block_size;
         }
 
         void declare(DeclarationContext<DetachReaderNode> const& ctx) const
@@ -260,7 +251,7 @@ namespace iv {
             auto const n = samples.size();
 
             auto const total = ctx.block_size;
-            auto const start = (ctx.index + n - loop_block_size) & (n - 1);
+            auto const start = (ctx.index + n - loop_extra_latency) & (n - 1);
             BlockView<Sample const> const samples_block {
                 std::span<Sample const>(samples.data() + start, std::min(total, n - start)),
                 std::span<Sample const>(samples.data(), total - std::min(total, n - start)),

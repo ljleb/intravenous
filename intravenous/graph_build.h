@@ -8,6 +8,7 @@
 #include "graph/wiring.h"
 
 #include <algorithm>
+#include <bit>
 #include <deque>
 #include <limits>
 #include <optional>
@@ -20,6 +21,14 @@
 #include <vector>
 
 namespace iv::details {
+    inline size_t floor_power_of_2(size_t value)
+    {
+        if (value == 0) {
+            return 0;
+        }
+        return std::bit_floor(value);
+    }
+
     [[noreturn]] inline void error(std::string msg)
     {
         throw std::logic_error(msg);
@@ -604,7 +613,7 @@ namespace iv::details {
                 if (source_region == consumer_region) {
                     plan.regions[source_region].max_block_size = std::min(
                         plan.regions[source_region].max_block_size,
-                        detached_info.loop_block_size
+                        floor_power_of_2(detached_info.loop_extra_latency)
                     );
                 }
             }
@@ -1032,7 +1041,8 @@ namespace iv::details {
             artifact.scc_wrappers.emplace_back(
                 std::move(region_nodes),
                 region.max_block_size,
-                internal_latency
+                internal_latency,
+                region.nodes.size() > 1 ? region.max_block_size : 0
             );
         }
 

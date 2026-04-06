@@ -84,9 +84,7 @@ namespace {
 
 int main(int argc, char** argv)
 {
-#ifndef NDEBUG
     iv::install_crash_handlers();
-#endif
 
     if (argc < 2) {
         auto const sep = iv::module_search_path_separator();

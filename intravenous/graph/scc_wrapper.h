@@ -16,16 +16,19 @@ namespace iv {
         std::vector<size_t> _input_constant_offsets;
         size_t _block_size;
         size_t _internal_latency;
+        size_t _scc_feedback_latency;
 
         GraphSccWrapper(
             std::vector<GraphNodeWrapper> nodes,
             size_t block_size,
-            size_t internal_latency
+            size_t internal_latency,
+            size_t scc_feedback_latency
         ) :
             _nodes(std::move(nodes)),
             _input_constant_offsets(_nodes.size() + 1, 0),
             _block_size(block_size),
-            _internal_latency(internal_latency)
+            _internal_latency(internal_latency),
+            _scc_feedback_latency(scc_feedback_latency)
         {
             for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
                 _input_constant_offsets[node_i + 1] = _input_constant_offsets[node_i] + _nodes[node_i].inputs().size();
@@ -214,6 +217,7 @@ namespace iv {
                         .event_inputs = {},
                         .event_outputs = {},
                         .event_streams = ctx.event_streams,
+                        .scc_feedback_latency = _scc_feedback_latency,
                         .buffer = state.nested_node_states[node_i],
                     };
                     auto& runtime_state = node_state(state.nested_node_states[node_i]);

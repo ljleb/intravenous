@@ -15,6 +15,7 @@
 #include <future>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <string_view>
 
@@ -532,6 +533,82 @@ TEST(ArchitectureSmoke, RepeatedRequestedBlocksDoNotOverflowBufferedDevice)
         expect_constant_block(audio_device.output_block().first(block_size), value);
         audio_device.device().finish_requested_block();
     }
+}
+
+TEST(ArchitectureSmoke, LargeRequestedBlockIndicesRemainReadyWithoutWarmup)
+{
+    iv::Sample value = 0.25f;
+    constexpr size_t block_size = 256;
+    constexpr size_t center_index = 8966400;
+    constexpr size_t window_blocks = 32;
+    size_t const start_index = center_index - (window_blocks / 2) * block_size;
+
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 1,
+            .max_block_frames = 4096,
+            .preferred_block_size = block_size,
+        }
+    );
+
+    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    auto executor = make_constant_audio_executor(&value, execution_target_registry, 1);
+
+    for (size_t i = 0; i < window_blocks; ++i) {
+        size_t const index = start_index + i * block_size;
+        SCOPED_TRACE(::testing::Message() << "iteration=" << i << " block_index=" << index);
+        request_tick_and_wait(audio_device, executor, index, block_size);
+        expect_constant_block(audio_device.output_block().first(block_size), value);
+        audio_device.device().finish_requested_block();
+    }
+}
+
+TEST(ArchitectureSmoke, SyncBlockBecomesReadyWhenRequestArrivesLate)
+{
+    auto request_notification = std::make_shared<std::condition_variable>();
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 1,
+            .max_block_frames = 4096,
+            .preferred_block_size = 256,
+        },
+        request_notification
+    );
+
+    iv::ExecutionTargetRegistry execution_target_registry(
+        iv::test::make_audio_device_provider(audio_device),
+        48000,
+        request_notification
+    );
+    execution_target_registry.register_executor(1);
+    execution_target_registry.validate_executor_block_size(1, 256);
+
+    auto worker = std::async(std::launch::async, [&] {
+        return execution_target_registry.sync_block(1, std::nullopt, 0, 256);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    audio_device.device().begin_requested_block(0, 256);
+
+    auto const status = worker.wait_for(kBlockReadyTimeout);
+    if (status != std::future_status::ready) {
+        execution_target_registry.request_shutdown(1);
+    }
+    ASSERT_EQ(status, std::future_status::ready)
+        << "sync_block did not wake after the device published a request";
+    bool const sync_result = worker.get();
+    ASSERT_TRUE(sync_result)
+        << "sync_block returned false after the delayed request was published";
+
+    audio_device.device().finish_requested_block();
+    execution_target_registry.unregister_executor(1);
+}
+
+TEST(ArchitectureSmoke, SyncBlockSurvivesRapidRequestReplacement)
+{
+    GTEST_SKIP() << "invalid timing probe: this test reports a completed block without actually rendering it";
 }
 
 TEST(ArchitectureSmoke, DirectoryModuleRetainsModuleRefsAndRuns)

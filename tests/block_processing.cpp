@@ -705,9 +705,9 @@ int main()
         iv::SharedPortData freq_c_shared(std::span<iv::Sample>(freq_c_buffer), 0);
         iv::SharedPortData amp_c_shared(std::span<iv::Sample>(amp_c_buffer), 0);
 
-        std::array<iv::OutputPort, 2> outputs_a { iv::OutputPort(freq_a_shared, 1), iv::OutputPort(amp_a_shared, 1) };
-        std::array<iv::OutputPort, 2> outputs_b { iv::OutputPort(freq_b_shared, 1), iv::OutputPort(amp_b_shared, 1) };
-        std::array<iv::OutputPort, 2> outputs_c { iv::OutputPort(freq_c_shared, 1), iv::OutputPort(amp_c_shared, 1) };
+        std::array<iv::OutputPort, 2> outputs_a { iv::OutputPort(amp_a_shared, 1), iv::OutputPort(freq_a_shared, 1) };
+        std::array<iv::OutputPort, 2> outputs_b { iv::OutputPort(amp_b_shared, 1), iv::OutputPort(freq_b_shared, 1) };
+        std::array<iv::OutputPort, 2> outputs_c { iv::OutputPort(amp_c_shared, 1), iv::OutputPort(freq_c_shared, 1) };
 
         iv::EventSharedPortData trig_a_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
         iv::EventSharedPortData trig_b_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
@@ -836,8 +836,8 @@ int main()
         iv::SharedPortData amp_a_shared(std::span<iv::Sample>(amp_a_buffer), 0);
         iv::SharedPortData freq_b_shared(std::span<iv::Sample>(freq_b_buffer), 0);
         iv::SharedPortData amp_b_shared(std::span<iv::Sample>(amp_b_buffer), 0);
-        std::array<iv::OutputPort, 2> outputs_a { iv::OutputPort(freq_a_shared, 1), iv::OutputPort(amp_a_shared, 1) };
-        std::array<iv::OutputPort, 2> outputs_b { iv::OutputPort(freq_b_shared, 1), iv::OutputPort(amp_b_shared, 1) };
+        std::array<iv::OutputPort, 2> outputs_a { iv::OutputPort(amp_a_shared, 1), iv::OutputPort(freq_a_shared, 1) };
+        std::array<iv::OutputPort, 2> outputs_b { iv::OutputPort(amp_b_shared, 1), iv::OutputPort(freq_b_shared, 1) };
         iv::EventSharedPortData trig_a_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
         iv::EventSharedPortData trig_b_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
         std::array<iv::EventOutputPort, 1> event_outputs_a { iv::EventOutputPort(trig_a_shared, iv::EventTypeId::trigger) };

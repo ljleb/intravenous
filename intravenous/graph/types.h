@@ -57,7 +57,7 @@ namespace iv {
         PortId original_source;
         size_t writer_node = std::numeric_limits<size_t>::max();
         PortId reader_output;
-        size_t loop_block_size = 1;
+        size_t loop_extra_latency = 1;
 
         bool operator==(DetachedInfo const&) const = default;
     };

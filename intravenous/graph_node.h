@@ -269,6 +269,7 @@ namespace iv {
                         .event_inputs = {},
                         .event_outputs = {},
                         .event_streams = ctx.event_streams,
+                        .scc_feedback_latency = 0,
                         .buffer = state.scc_states[scc_index]
                     },
                     ctx.index,
