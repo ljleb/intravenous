@@ -6,7 +6,7 @@
 
 struct DebugProbe {
     std::string label = "debug";
-    size_t every_n_ticks = 4800;
+    size_t every_n_ticks = 48000;
 
     auto inputs() const
     {

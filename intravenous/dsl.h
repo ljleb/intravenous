@@ -1,6 +1,7 @@
 #pragma once
 #include "basic_nodes/routing.h"
 #include "basic_nodes/arithmetic.h"
+#include "basic_nodes/midi.h"
 #include "graph_build.h"
 #include "graph_node.h"
 
@@ -61,10 +62,21 @@ namespace iv {
 
     struct NamedRef {
         std::string_view name;
-        std::variant<SignalRef, Sample> value;
+        std::variant<SignalRef, Sample, EventRef> value;
 
         NamedRef(std::string_view name, SignalRef signal): name(name), value(signal) {}
         NamedRef(std::string_view name, Sample sample): name(name), value(sample) {}
+        NamedRef(std::string_view name, EventRef event): name(name), value(event) {}
+    };
+
+    struct OutputRefConfig {
+        SignalRef ref;
+        OutputConfig config;
+    };
+
+    struct EventOutputRefConfig {
+        EventRef ref;
+        EventOutputConfig config;
     };
 
     template<size_t N>
@@ -337,10 +349,13 @@ namespace iv {
         {}
 
         BuilderNode const& node() const;
+        NodeRef node_ref() const;
 
         SignalRef operator[](size_t output_index) const;
         SignalRef operator[](std::string_view output_name) const;
         operator SignalRef() const;
+        bool input_is_connected(size_t input_port) const;
+        bool event_input_is_connected(size_t input_port) const;
 
         template<class... Args>
         requires(details::node_call_enabled<Node, Args...>)
@@ -349,6 +364,13 @@ namespace iv {
         template<class... Args>
         requires(!details::node_call_enabled<Node, Args...>)
         Derived operator()(Args&&... args) const = delete;
+
+        template<class T>
+        Derived connect_input(size_t input_port, T&& value) const;
+        template<class T>
+        Derived connect_input(std::string_view input_name, T&& value) const;
+        Derived connect_event_input(size_t input_port, EventRef value) const;
+        Derived connect_event_input(std::string_view input_name, EventRef value) const;
 
         SignalRef detach(size_t loop_block_size = 1) const;
         Derived ttl(size_t samples) const;
@@ -407,6 +429,18 @@ namespace iv {
         EventRef operator[](std::string_view output_name) const
         {
             return event_ref(output_name);
+        }
+
+        operator EventRef() const
+        {
+            auto outputs = get_event_outputs(_node.node());
+            if (outputs.size() != 1) {
+                details::error(
+                    to_string() + " "
+                    "does not have exactly 1 event output port: it cannot be implicitly converted to EventRef"
+                );
+            }
+            return event_ref(0);
         }
 
         std::string to_string() const
@@ -725,11 +759,24 @@ namespace iv {
             std::array<EventRef, sizeof...(Refs)> refs_array{
                 std::forward<Refs>(refs)...
             };
-            _public_event_outputs.clear();
-            _public_event_outputs.reserve(refs_array.size());
+            std::vector<EventOutputRefConfig> output_refs;
+            output_refs.reserve(refs_array.size());
+            for (auto const& ref : refs_array) {
+                output_refs.push_back(EventOutputRefConfig{
+                    .ref = ref,
+                    .config = {},
+                });
+            }
+            event_outputs(std::span<EventOutputRefConfig const>(output_refs.data(), output_refs.size()));
+        }
 
-            for (size_t i = 0; i < refs_array.size(); ++i) {
-                auto const& ref = refs_array[i];
+        void event_outputs(std::span<EventOutputRefConfig const> refs)
+        {
+            _public_event_outputs.clear();
+            _public_event_outputs.reserve(refs.size());
+
+            for (size_t i = 0; i < refs.size(); ++i) {
+                auto const& ref = refs[i].ref;
                 if (ref.graph_builder != this) {
                     details::error(
                         "builder " + _builder_id.value + ": event_outputs(...): "
@@ -746,9 +793,8 @@ namespace iv {
                     PortId{ GRAPH_ID, i },
                     EventConversionRegistry::instance().plan(source_type, source_type)
                 });
-                _public_event_outputs.emplace_back(EventOutputConfig{
-                    .type = source_type,
-                });
+                _public_event_outputs.emplace_back(refs[i].config);
+                _public_event_outputs.back().type = source_type;
             }
         }
 
@@ -777,27 +823,15 @@ namespace iv {
             std::array<SignalRef, sizeof...(Refs)> refs_array{
                 lift_to_signal(std::forward<Refs>(refs))...
             };
-            _public_outputs.clear();
-            _public_outputs.reserve(refs_array.size());
-
-            for (size_t i = 0; i < refs_array.size(); ++i) {
-                auto const& ref = refs_array[i];
-                if (ref.graph_builder != this) {
-                    details::error(
-                        "builder " + _builder_id.value + ": outputs(...): "
-                        "SignalRef at index " + std::to_string(i) + " "
-                        "belongs to builder " + ref.graph_builder->_builder_id.value
-                    );
-                }
-
-                _edges.emplace(GraphEdge{
-                    PortId{ ref.node_index, ref.output_port },
-                    PortId{ GRAPH_ID, i },
+            std::vector<OutputRefConfig> output_refs;
+            output_refs.reserve(refs_array.size());
+            for (auto const& ref : refs_array) {
+                output_refs.push_back(OutputRefConfig{
+                    .ref = ref,
+                    .config = {},
                 });
-                _public_outputs.emplace_back();
             }
-
-            _outputs_defined = true;
+            outputs(std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
         }
 
         void outputs(std::initializer_list<NamedRef> refs)
@@ -830,6 +864,78 @@ namespace iv {
                     signal,
                     PortId{ GRAPH_ID, output_port++ },
                     });
+                _public_outputs.emplace_back(OutputConfig{ .name = std::string(ref.name) });
+            }
+
+            _outputs_defined = true;
+        }
+
+        void outputs(std::span<OutputRefConfig const> refs)
+        {
+            if (_outputs_defined) {
+                details::error("outputs(...) was already called on builder " + _builder_id.value);
+            }
+
+            _public_outputs.clear();
+            _public_outputs.reserve(refs.size());
+
+            for (size_t i = 0; i < refs.size(); ++i) {
+                auto const& ref = refs[i].ref;
+                if (ref.graph_builder != this) {
+                    details::error(
+                        "builder " + _builder_id.value + ": outputs(...): "
+                        "SignalRef at index " + std::to_string(i) + " "
+                        "belongs to builder " + ref.graph_builder->_builder_id.value
+                    );
+                }
+
+                _edges.emplace(GraphEdge{
+                    PortId{ ref.node_index, ref.output_port },
+                    PortId{ GRAPH_ID, i },
+                });
+                _public_outputs.push_back(refs[i].config);
+            }
+
+            _outputs_defined = true;
+        }
+
+        void outputs(std::span<NamedRef const> refs)
+        {
+            if (_outputs_defined) {
+                details::error("outputs(...) was already called on builder " + _builder_id.value);
+            }
+
+            _public_outputs.reserve(refs.size());
+            std::unordered_set<std::string> output_names;
+
+            size_t output_port = 0;
+            for (auto const& ref : refs) {
+                if (ref.name.empty()) {
+                    details::error(
+                        "builder " + _builder_id.value + ": named outputs must not use empty names"
+                    );
+                }
+
+                if (output_names.contains(std::string(ref.name))) {
+                    details::error(
+                        "builder " + _builder_id.value + ": duplicate output name '" + std::string(ref.name) + "'"
+                    );
+                }
+
+                SignalRef signal = lift_to_signal(ref);
+                if (signal.graph_builder != this) {
+                    details::error(
+                        "builder " + _builder_id.value + ": outputs(...): "
+                        "SignalRef at index " + std::to_string(output_port) + " "
+                        "belongs to builder " + signal.graph_builder->_builder_id.value
+                    );
+                }
+
+                output_names.insert(std::string(ref.name));
+                _edges.emplace(GraphEdge{
+                    PortId{ signal.node_index, signal.output_port },
+                    PortId{ GRAPH_ID, output_port++ },
+                });
                 _public_outputs.emplace_back(OutputConfig{ .name = std::string(ref.name) });
             }
 
@@ -1103,10 +1209,16 @@ namespace iv {
         SignalRef lift_to_signal(NamedRef const& ref)
         {
             return std::visit([&](auto const& v) -> SignalRef {
-                return lift_to_signal(v);
+                using T = std::remove_cvref_t<decltype(v)>;
+                if constexpr (std::same_as<T, EventRef>) {
+                    details::error(
+                        "builder " + _builder_id.value + ": expected sample/signal value, got EventRef"
+                    );
+                } else {
+                    return lift_to_signal(v);
+                }
             }, ref.value);
         }
-
     };
 
     inline SignalRef lift(GraphBuilder& g, Sample value)
@@ -1151,7 +1263,7 @@ namespace iv {
 
     template<class Node, class L, class R>
     requires (Liftable<L> && Liftable<R>)
-    SignalRef make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
+    NodeRef make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
     {
         GraphBuilder* g = nullptr;
 
@@ -1182,7 +1294,7 @@ namespace iv {
 
     template<class L, class R>
     requires (Liftable<L>&& Liftable<R>)
-    SignalRef operator+(L&& lhs, R&& rhs)
+    NodeRef operator+(L&& lhs, R&& rhs)
     {
         return make_binary_op<Sum>(
             std::forward<L>(lhs),
@@ -1193,7 +1305,7 @@ namespace iv {
 
     template<class L, class R>
     requires (Liftable<L>&& Liftable<R>)
-    SignalRef operator-(L&& lhs, R&& rhs)
+    NodeRef operator-(L&& lhs, R&& rhs)
     {
         return make_binary_op<Subtract>(
             std::forward<L>(lhs),
@@ -1204,7 +1316,7 @@ namespace iv {
 
     template<class L, class R>
     requires (Liftable<L>&& Liftable<R>)
-    SignalRef operator*(L&& lhs, R&& rhs)
+    NodeRef operator*(L&& lhs, R&& rhs)
     {
         return make_binary_op<Product>(
             std::forward<L>(lhs),
@@ -1215,7 +1327,7 @@ namespace iv {
 
     template<class L, class R>
     requires (Liftable<L>&& Liftable<R>)
-    SignalRef operator/(L&& lhs, R&& rhs)
+    NodeRef operator/(L&& lhs, R&& rhs)
     {
         return make_binary_op<Quotient>(
             std::forward<L>(lhs),
@@ -1244,7 +1356,7 @@ namespace iv {
         SignalLike<L> &&
         std::convertible_to<std::remove_cvref_t<R>, NodeRef>
     )
-    SignalRef connect_unary_node(L&& lhs, R&& rhs, std::string_view op_name)
+    auto connect_unary_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
         SignalRef source = std::forward<L>(lhs);
         NodeRef target = static_cast<NodeRef>(std::forward<R>(rhs));
@@ -1261,7 +1373,11 @@ namespace iv {
 
         target(source);
         if (outputs.empty()) {
-            return source;
+            if constexpr (std::convertible_to<std::remove_cvref_t<L>, NodeRef>) {
+                return target;
+            } else {
+                return source;
+            }
         }
         if (outputs.size() != 1) {
             details::error(
@@ -1269,7 +1385,11 @@ namespace iv {
                 std::to_string(outputs.size()) + " outputs on " + target.to_string()
             );
         }
-        return static_cast<SignalRef>(target);
+        if constexpr (std::convertible_to<std::remove_cvref_t<L>, NodeRef>) {
+            return target;
+        } else {
+            return static_cast<SignalRef>(target);
+        }
     }
 
     template<class L, class R>
@@ -1277,7 +1397,7 @@ namespace iv {
         SignalLike<L> &&
         std::convertible_to<std::remove_cvref_t<R>, NodeRef>
     )
-    SignalRef operator>>(L&& lhs, R&& rhs)
+    auto operator>>(L&& lhs, R&& rhs)
     {
         return connect_unary_node(std::forward<L>(lhs), std::forward<R>(rhs), "operator>>");
     }
@@ -1287,7 +1407,7 @@ namespace iv {
         std::convertible_to<std::remove_cvref_t<L>, NodeRef> &&
         SignalLike<R>
     )
-    SignalRef operator<<(L&& lhs, R&& rhs)
+    auto operator<<(L&& lhs, R&& rhs)
     {
         return connect_unary_node(std::forward<R>(rhs), std::forward<L>(lhs), "operator<<");
     }
@@ -1312,7 +1432,7 @@ namespace iv {
             );
         }
 
-        target.node()(source[0]);
+        target.node().connect_event_input(0, source[0]);
         if (event_outputs.empty()) {
             return source[0];
         }
@@ -1511,6 +1631,15 @@ namespace iv {
     }
 
     template<class Derived, class Node>
+    inline NodeRef NodeRefBase<Derived, Node>::node_ref() const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+        return NodeRef(*_graph_builder, _index);
+    }
+
+    template<class Derived, class Node>
     inline SignalRef NodeRefBase<Derived, Node>::operator[](size_t output_index) const
     {
         if (!_graph_builder) {
@@ -1551,6 +1680,24 @@ namespace iv {
             );
         }
         return SignalRef(*_graph_builder, _index, 0);
+    }
+
+    template<class Derived, class Node>
+    inline bool NodeRefBase<Derived, Node>::input_is_connected(size_t input_port) const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+        return _graph_builder->_placed_input_ports.contains(PortId{ _index, input_port });
+    }
+
+    template<class Derived, class Node>
+    inline bool NodeRefBase<Derived, Node>::event_input_is_connected(size_t input_port) const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+        return _graph_builder->_placed_event_input_ports.contains(PortId{ _index, input_port });
     }
 
     template<class Derived, class Node>
@@ -1675,6 +1822,123 @@ namespace iv {
     }
 
     template<class Derived, class Node>
+    template<class T>
+    inline Derived NodeRefBase<Derived, Node>::connect_input(size_t input_port, T&& value) const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+
+        auto const inputs = get_inputs(node());
+        if (input_port >= inputs.size()) {
+            details::error(
+                to_string() + " "
+                "has at most " + std::to_string(inputs.size()) + " inputs, "
+                "got " + std::to_string(input_port + 1)
+            );
+        }
+
+        SignalRef ref = _graph_builder->lift_to_signal(std::forward<T>(value));
+        if (ref.graph_builder != _graph_builder) {
+            details::error(
+                ref.to_string() + " "
+                "does not belong to the same builder as " + to_string()
+            );
+        }
+
+        PortId const input_port_id{ _index, input_port };
+        if (_graph_builder->_placed_input_ports.contains(input_port_id)) {
+            details::error(
+                "input port " + inputs[input_port].name + " of " + to_string() + " "
+                "was already placed in the graph"
+            );
+        }
+
+        _graph_builder->_placed_input_ports.insert(input_port_id);
+        _graph_builder->_edges.emplace(GraphEdge{
+            ref,
+            PortId{ _index, input_port },
+        });
+        return derived();
+    }
+
+    template<class Derived, class Node>
+    template<class T>
+    inline Derived NodeRefBase<Derived, Node>::connect_input(std::string_view input_name, T&& value) const
+    {
+        auto const inputs = get_inputs(node());
+        for (size_t input_port = 0; input_port < inputs.size(); ++input_port) {
+            if (inputs[input_port].name == input_name) {
+                return connect_input(input_port, std::forward<T>(value));
+            }
+        }
+
+        details::error(
+            "an input port named '" + std::string(input_name) + "' "
+            "does not exist on " + to_string()
+        );
+    }
+
+    template<class Derived, class Node>
+    inline Derived NodeRefBase<Derived, Node>::connect_event_input(size_t input_port, EventRef value) const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+
+        auto const event_inputs = get_event_inputs(node());
+        if (input_port >= event_inputs.size()) {
+            details::error(
+                to_string() + " "
+                "has at most " + std::to_string(event_inputs.size()) + " event inputs, "
+                "got " + std::to_string(input_port + 1)
+            );
+        }
+        if (value.graph_builder != _graph_builder) {
+            details::error(
+                value.to_string() + " "
+                "does not belong to the same builder as " + to_string()
+            );
+        }
+
+        PortId const input_port_id{ _index, input_port };
+        if (_graph_builder->_placed_event_input_ports.contains(input_port_id)) {
+            details::error(
+                "event input port " + event_inputs[input_port].name + " of " + to_string() + " "
+                "was already placed in the graph"
+            );
+        }
+
+        auto const source_type = (value.node_index == GRAPH_ID)
+            ? _graph_builder->_public_event_inputs[value.output_port].type
+            : _graph_builder->_nodes[value.node_index].event_output_configs[value.output_port].type;
+
+        _graph_builder->_placed_event_input_ports.insert(input_port_id);
+        _graph_builder->_event_edges.emplace(GraphEventEdge{
+            PortId{ value.node_index, value.output_port },
+            PortId{ _index, input_port },
+            EventConversionRegistry::instance().plan(source_type, event_inputs[input_port].type)
+        });
+        return derived();
+    }
+
+    template<class Derived, class Node>
+    inline Derived NodeRefBase<Derived, Node>::connect_event_input(std::string_view input_name, EventRef value) const
+    {
+        auto const event_inputs = get_event_inputs(node());
+        for (size_t input_port = 0; input_port < event_inputs.size(); ++input_port) {
+            if (event_inputs[input_port].name == input_name) {
+                return connect_event_input(input_port, value);
+            }
+        }
+
+        details::error(
+            "an event input port named '" + std::string(input_name) + "' "
+            "does not exist on " + to_string()
+        );
+    }
+
+    template<class Derived, class Node>
     inline SignalRef NodeRefBase<Derived, Node>::detach(size_t loop_block_size) const
     {
         return static_cast<SignalRef>(*this).detach(loop_block_size);
@@ -1730,6 +1994,82 @@ namespace iv {
     SignalRef get(StructuredNodeRef<Node>&& node_ref)
     {
         return node_ref.template get<I>();
+    }
+
+    template<size_t voice_count, class Fn>
+    NodeRef polyphonic(GraphBuilder& g, Fn&& make_voice)
+    {
+        static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
+
+        std::vector<OutputConfig> output_configs;
+        std::vector<EventOutputConfig> event_output_configs;
+        NodeRef mix;
+
+        auto const same_output_config = [](OutputConfig const& a, OutputConfig const& b) {
+            return a.name == b.name
+                && a.latency == b.latency
+                && a.history == b.history;
+        };
+        auto const same_event_output_config = [](EventOutputConfig const& a, EventOutputConfig const& b) {
+            return a.name == b.name
+                && a.type == b.type;
+        };
+
+        auto connect_lane_outputs = [&](auto voice_index_c, NodeRef voice) {
+            constexpr size_t voice_index = decltype(voice_index_c)::value;
+
+            for (size_t output_port = 0; output_port < output_configs.size(); ++output_port) {
+                mix.connect_input(output_port * voice_count + voice_index, voice[output_port]);
+            }
+
+            auto voice_events = voice.node_ref() >> events;
+            for (size_t output_port = 0; output_port < event_output_configs.size(); ++output_port) {
+                mix.connect_event_input(output_port * voice_count + voice_index, voice_events[output_port]);
+            }
+        };
+
+        auto process_lane = [&](auto voice_index_c) {
+            constexpr size_t voice_index = decltype(voice_index_c)::value;
+
+            auto const midi_driver = g.node<MidiVoiceAllocator<voice_index, voice_count>>();
+            NodeRef voice = make_voice(midi_driver).node_ref();
+            auto const& voice_node = voice.node();
+            if (voice_node.materialize == nullptr && voice_node.lowered_subgraph_count == 0) {
+                details::error("iv::polyphonic callback must return a materialized node or subgraph node");
+            }
+
+            if constexpr (voice_index == 0) {
+                output_configs = voice_node.output_configs;
+                event_output_configs = voice_node.event_output_configs;
+                mix = g.node<PolyphonicMix>(voice_count, output_configs, event_output_configs).node_ref();
+            } else {
+                if (voice_node.output_configs.size() != output_configs.size()) {
+                    details::error("iv::polyphonic voice lanes must expose the same number of sample outputs");
+                }
+                for (size_t i = 0; i < output_configs.size(); ++i) {
+                    if (!same_output_config(voice_node.output_configs[i], output_configs[i])) {
+                        details::error("iv::polyphonic voice lanes must expose matching sample output configs");
+                    }
+                }
+
+                if (voice_node.event_output_configs.size() != event_output_configs.size()) {
+                    details::error("iv::polyphonic voice lanes must expose the same number of event outputs");
+                }
+                for (size_t i = 0; i < event_output_configs.size(); ++i) {
+                    if (!same_event_output_config(voice_node.event_output_configs[i], event_output_configs[i])) {
+                        details::error("iv::polyphonic voice lanes must expose matching event output configs");
+                    }
+                }
+            }
+
+            connect_lane_outputs(voice_index_c, voice);
+        };
+
+        [&]<size_t... VoiceIndices>(std::index_sequence<VoiceIndices...>) {
+            (process_lane(std::integral_constant<size_t, VoiceIndices>{}), ...);
+        }(std::make_index_sequence<voice_count>{});
+
+        return mix;
     }
 }
 

@@ -1133,10 +1133,9 @@ namespace iv {
         {
             size_t sample_rate = _sample_rate;
 
-            for (size_t device_id : executor.device_ids) {
-                auto& device_state = get_device_state_locked(device_id);
+            if (!executor.device_ids.empty()) {
+                auto& device_state = get_device_state_locked(executor.device_ids.front());
                 sample_rate = device_state.device->config().sample_rate;
-                break;
             }
 
             if (sample_rate == _sample_rate) {

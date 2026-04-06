@@ -531,6 +531,16 @@ namespace iv {
         std::span<A> first {};
         std::span<A> second {};
 
+        template<typename B = A>
+            requires (!std::is_const_v<B>)
+        constexpr operator BlockView<std::add_const_t<B>>() const
+        {
+            return {
+                std::span<std::add_const_t<B>>(first),
+                std::span<std::add_const_t<B>>(second),
+            };
+        }
+
         constexpr size_t size() const
         {
             return first.size() + second.size();
@@ -787,18 +797,34 @@ namespace iv {
             _position = (_position + n) & (buffer_size() - 1);
         }
 
-        IV_FORCEINLINE constexpr void push_block(BlockView<Sample> samples)
+        IV_FORCEINLINE constexpr void push_block(BlockView<Sample const> samples)
         {
             size_t const start = (_position + _shared_data.latency) & (buffer_size() - 1);
             samples.copy_to(make_block_view(_shared_data.buffer, start, samples.size()));
             _position = (_position + samples.size()) & (buffer_size() - 1);
         }
 
-        IV_FORCEINLINE constexpr void push_block(BlockView<Sample const> samples)
+        IV_FORCEINLINE constexpr void accumulate_block(std::span<Sample const> samples)
         {
-            size_t const start = (_position + _shared_data.latency) & (buffer_size() - 1);
-            samples.copy_to(make_block_view(_shared_data.buffer, start, samples.size()));
-            _position = (_position + samples.size()) & (buffer_size() - 1);
+            size_t const start = (
+                _position + _shared_data.latency + buffer_size() - samples.size()
+            ) & (buffer_size() - 1);
+            auto dst = make_block_view(_shared_data.buffer, start, samples.size());
+            auto src = make_block_view(samples, 0, samples.size());
+            for (size_t i = 0; i < samples.size(); ++i) {
+                dst[i] += src[i];
+            }
+        }
+
+        IV_FORCEINLINE constexpr void accumulate_block(BlockView<Sample const> samples)
+        {
+            size_t const start = (
+                _position + _shared_data.latency + buffer_size() - samples.size()
+            ) & (buffer_size() - 1);
+            auto dst = make_block_view(_shared_data.buffer, start, samples.size());
+            for (size_t i = 0; i < samples.size(); ++i) {
+                dst[i] += samples[i];
+            }
         }
 
         IV_FORCEINLINE constexpr void push_silence(size_t block_size)

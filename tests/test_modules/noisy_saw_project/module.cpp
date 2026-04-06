@@ -4,6 +4,7 @@
 #include "basic_nodes/shaping.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/midi.h"
+#include "basic_nodes/debug_probe.h"
 #include "juce_vst_wrapper.h"
 
 #include <array>
@@ -46,8 +47,9 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     GraphBuilder& g = context.builder();
     auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto const voice_builder = context.load_builder("iv.test.noisy_saw_voice");
     SignalRef first_noise;
+
+    auto const voice_builder = context.load_builder("iv.test.noisy_saw_voice");
     auto const midi = juce::midi_input(g, "V25") >> events;
     auto const sup = juce::vst(g, "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
     info(sup.node());
@@ -58,24 +60,25 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             first_noise = noise;
         }
 
-        auto const voice = g.node(voice_builder);
-        auto const shared_noise = g.node<Interpolation>();
+        NodeRef shared_noise = g.node<Interpolation>();
         auto const sink = io.sink(g, channel);
 
-        auto const frequency = g.node<MidiPitch>();
-        auto const gate = g.node<MidiGate>();
-        frequency >> events << midi;
-        gate >> events << midi;
-
         noise(dt);
-        shared_noise(first_noise, noise, 1.0);
-        voice(
-            "noise"_P = shared_noise * 0.1,
-            "frequency"_P = frequency,
-            "dt"_P = dt,
-            "feedback"_P = ~("feedback"_P << voice)
-        );
-        auto x = ("out"_P << voice) * gate;
+        shared_noise = shared_noise(first_noise, noise, 1.0) * 0.1;
+        auto const voice = polyphonic<16>(g, [&](NodeRef m) {
+            m.connect_event_input("midi", midi);
+
+            auto const voice = g.node(voice_builder);
+            return voice(
+                "noise"_P = shared_noise,
+                "amplitude"_P = "amplitude"_P << m,
+                "frequency"_P = "frequency"_P << m,
+                "dt"_P = dt,
+                "feedback"_P = ~("feedback"_P << voice)
+            );
+        });
+
+        auto x = ("out"_P << voice);
         if (channel == 0)
         {
             auto constexpr port = "l0"_P;

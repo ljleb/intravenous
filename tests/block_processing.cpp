@@ -682,6 +682,224 @@ int main()
     }
 
     {
+        std::cerr << "midi-test: voice-allocator-gap-reuse\n";
+
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData midi_shared(storage.allocate(iv::EventTypeId::midi), iv::EventTypeId::midi);
+        iv::EventOutputPort midi_source(midi_shared, iv::EventTypeId::midi);
+        iv::EventInputPort midi_input_a(midi_shared);
+        iv::EventInputPort midi_input_b(midi_shared);
+        iv::EventInputPort midi_input_c(midi_shared);
+
+        std::array<iv::Sample, 8> freq_a_buffer {};
+        std::array<iv::Sample, 8> amp_a_buffer {};
+        std::array<iv::Sample, 8> freq_b_buffer {};
+        std::array<iv::Sample, 8> amp_b_buffer {};
+        std::array<iv::Sample, 8> freq_c_buffer {};
+        std::array<iv::Sample, 8> amp_c_buffer {};
+
+        iv::SharedPortData freq_a_shared(std::span<iv::Sample>(freq_a_buffer), 0);
+        iv::SharedPortData amp_a_shared(std::span<iv::Sample>(amp_a_buffer), 0);
+        iv::SharedPortData freq_b_shared(std::span<iv::Sample>(freq_b_buffer), 0);
+        iv::SharedPortData amp_b_shared(std::span<iv::Sample>(amp_b_buffer), 0);
+        iv::SharedPortData freq_c_shared(std::span<iv::Sample>(freq_c_buffer), 0);
+        iv::SharedPortData amp_c_shared(std::span<iv::Sample>(amp_c_buffer), 0);
+
+        std::array<iv::OutputPort, 2> outputs_a { iv::OutputPort(freq_a_shared, 1), iv::OutputPort(amp_a_shared, 1) };
+        std::array<iv::OutputPort, 2> outputs_b { iv::OutputPort(freq_b_shared, 1), iv::OutputPort(amp_b_shared, 1) };
+        std::array<iv::OutputPort, 2> outputs_c { iv::OutputPort(freq_c_shared, 1), iv::OutputPort(amp_c_shared, 1) };
+
+        iv::EventSharedPortData trig_a_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventSharedPortData trig_b_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventSharedPortData trig_c_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        std::array<iv::EventOutputPort, 1> event_outputs_a { iv::EventOutputPort(trig_a_shared, iv::EventTypeId::trigger) };
+        std::array<iv::EventOutputPort, 1> event_outputs_b { iv::EventOutputPort(trig_b_shared, iv::EventTypeId::trigger) };
+        std::array<iv::EventOutputPort, 1> event_outputs_c { iv::EventOutputPort(trig_c_shared, iv::EventTypeId::trigger) };
+
+        std::array<iv::EventInputPort, 1> inputs_a { midi_input_a };
+        std::array<iv::EventInputPort, 1> inputs_b { midi_input_b };
+        std::array<iv::EventInputPort, 1> inputs_c { midi_input_c };
+
+        iv::MidiVoiceAllocator<0, 3>::State state_a {};
+        iv::MidiVoiceAllocator<1, 3>::State state_b {};
+        iv::MidiVoiceAllocator<2, 3>::State state_c {};
+
+        midi_source.push(storage, make_note_on(60, 64), 1, 0, 8);
+        midi_source.push(storage, make_note_on(64, 96), 2, 0, 8);
+        midi_source.push(storage, make_note_on(67, 127), 3, 0, 8);
+        midi_source.push(storage, make_note_off(64), 4, 0, 8);
+        midi_source.push(storage, make_note_on(69, 100), 5, 0, 8);
+
+        iv::MidiVoiceAllocator<0, 3> voice_a;
+        iv::MidiVoiceAllocator<1, 3> voice_b;
+        iv::MidiVoiceAllocator<2, 3> voice_c;
+
+        voice_a.tick_block({
+            iv::TickContext<iv::MidiVoiceAllocator<0, 3>> {
+                .inputs = {},
+                .outputs = outputs_a,
+                .event_inputs = inputs_a,
+                .event_outputs = event_outputs_a,
+                .event_streams = &storage,
+                .buffer = std::as_writable_bytes(std::span(&state_a, 1)),
+            },
+            0,
+            8,
+        });
+        voice_b.tick_block({
+            iv::TickContext<iv::MidiVoiceAllocator<1, 3>> {
+                .inputs = {},
+                .outputs = outputs_b,
+                .event_inputs = inputs_b,
+                .event_outputs = event_outputs_b,
+                .event_streams = &storage,
+                .buffer = std::as_writable_bytes(std::span(&state_b, 1)),
+            },
+            0,
+            8,
+        });
+        voice_c.tick_block({
+            iv::TickContext<iv::MidiVoiceAllocator<2, 3>> {
+                .inputs = {},
+                .outputs = outputs_c,
+                .event_inputs = inputs_c,
+                .event_outputs = event_outputs_c,
+                .event_streams = &storage,
+                .buffer = std::as_writable_bytes(std::span(&state_c, 1)),
+            },
+            0,
+            8,
+        });
+
+        {
+            std::array<iv::Sample, 8> expected_freq_a {};
+            std::array<iv::Sample, 8> expected_amp_a {};
+            std::fill(expected_freq_a.begin() + 1, expected_freq_a.end(), static_cast<iv::Sample>(iv::NOTE_NUMBER_TO_FREQUENCY[60]));
+            std::fill(expected_amp_a.begin() + 1, expected_amp_a.end(), static_cast<iv::Sample>(64.0 / 127.0));
+            require_close(expected_freq_a, freq_a_buffer, 1e-6f, "voice allocator voice 0 frequency mismatch");
+            require_close(expected_amp_a, amp_a_buffer, 1e-6f, "voice allocator voice 0 amplitude mismatch");
+        }
+
+        {
+            std::array<iv::Sample, 8> expected_freq_b {};
+            std::array<iv::Sample, 8> expected_amp_b {};
+            std::fill(expected_freq_b.begin() + 2, expected_freq_b.begin() + 5, static_cast<iv::Sample>(iv::NOTE_NUMBER_TO_FREQUENCY[64]));
+            std::fill(expected_amp_b.begin() + 2, expected_amp_b.begin() + 4, static_cast<iv::Sample>(96.0 / 127.0));
+            std::fill(expected_freq_b.begin() + 5, expected_freq_b.end(), static_cast<iv::Sample>(iv::NOTE_NUMBER_TO_FREQUENCY[69]));
+            std::fill(expected_amp_b.begin() + 5, expected_amp_b.end(), static_cast<iv::Sample>(100.0 / 127.0));
+            require_close(expected_freq_b, freq_b_buffer, 1e-6f, "voice allocator voice 1 frequency mismatch");
+            require_close(expected_amp_b, amp_b_buffer, 1e-6f, "voice allocator voice 1 amplitude mismatch");
+        }
+
+        {
+            std::array<iv::Sample, 8> expected_freq_c {};
+            std::array<iv::Sample, 8> expected_amp_c {};
+            std::fill(expected_freq_c.begin() + 3, expected_freq_c.end(), static_cast<iv::Sample>(iv::NOTE_NUMBER_TO_FREQUENCY[67]));
+            std::fill(expected_amp_c.begin() + 3, expected_amp_c.end(), 1.0f);
+            require_close(expected_freq_c, freq_c_buffer, 1e-6f, "voice allocator voice 2 frequency mismatch");
+            require_close(expected_amp_c, amp_c_buffer, 1e-6f, "voice allocator voice 2 amplitude mismatch");
+        }
+
+        {
+            iv::EventInputPort trigger_a(trig_a_shared);
+            iv::EventInputPort trigger_b(trig_b_shared);
+            iv::EventInputPort trigger_c(trig_c_shared);
+            {
+                auto block_a = trigger_a.get_block(storage, 0, 8);
+                iv::test::require(block_a.size() == 1 && block_a[0].time == 1, "voice 0 should trigger once at note-on time 1");
+            }
+            {
+                auto block_b = trigger_b.get_block(storage, 0, 8);
+                iv::test::require(block_b.size() == 2 && block_b[0].time == 2 && block_b[1].time == 5, "voice 1 should trigger on first assignment and gap reuse");
+            }
+            {
+                auto block_c = trigger_c.get_block(storage, 0, 8);
+                iv::test::require(block_c.size() == 1 && block_c[0].time == 3, "voice 2 should trigger once at note-on time 3");
+            }
+        }
+    }
+
+    {
+        std::cerr << "midi-test: voice-allocator-oldest-steal\n";
+
+        iv::EventStreamStorage storage;
+        iv::EventSharedPortData midi_shared(storage.allocate(iv::EventTypeId::midi), iv::EventTypeId::midi);
+        iv::EventOutputPort midi_source(midi_shared, iv::EventTypeId::midi);
+        std::array<iv::EventInputPort, 1> inputs_a { iv::EventInputPort(midi_shared) };
+        std::array<iv::EventInputPort, 1> inputs_b { iv::EventInputPort(midi_shared) };
+
+        std::array<iv::Sample, 8> freq_a_buffer {};
+        std::array<iv::Sample, 8> amp_a_buffer {};
+        std::array<iv::Sample, 8> freq_b_buffer {};
+        std::array<iv::Sample, 8> amp_b_buffer {};
+        iv::SharedPortData freq_a_shared(std::span<iv::Sample>(freq_a_buffer), 0);
+        iv::SharedPortData amp_a_shared(std::span<iv::Sample>(amp_a_buffer), 0);
+        iv::SharedPortData freq_b_shared(std::span<iv::Sample>(freq_b_buffer), 0);
+        iv::SharedPortData amp_b_shared(std::span<iv::Sample>(amp_b_buffer), 0);
+        std::array<iv::OutputPort, 2> outputs_a { iv::OutputPort(freq_a_shared, 1), iv::OutputPort(amp_a_shared, 1) };
+        std::array<iv::OutputPort, 2> outputs_b { iv::OutputPort(freq_b_shared, 1), iv::OutputPort(amp_b_shared, 1) };
+        iv::EventSharedPortData trig_a_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        iv::EventSharedPortData trig_b_shared(storage.allocate(iv::EventTypeId::trigger), iv::EventTypeId::trigger);
+        std::array<iv::EventOutputPort, 1> event_outputs_a { iv::EventOutputPort(trig_a_shared, iv::EventTypeId::trigger) };
+        std::array<iv::EventOutputPort, 1> event_outputs_b { iv::EventOutputPort(trig_b_shared, iv::EventTypeId::trigger) };
+
+        iv::MidiVoiceAllocator<0, 2>::State state_a {};
+        iv::MidiVoiceAllocator<1, 2>::State state_b {};
+
+        midi_source.push(storage, make_note_on(60, 100), 1, 0, 8);
+        midi_source.push(storage, make_note_on(64, 90), 2, 0, 8);
+        midi_source.push(storage, make_note_on(67, 80), 3, 0, 8);
+
+        iv::MidiVoiceAllocator<0, 2> voice_a;
+        iv::MidiVoiceAllocator<1, 2> voice_b;
+
+        voice_a.tick_block({
+            iv::TickContext<iv::MidiVoiceAllocator<0, 2>> {
+                .inputs = {},
+                .outputs = outputs_a,
+                .event_inputs = inputs_a,
+                .event_outputs = event_outputs_a,
+                .event_streams = &storage,
+                .buffer = std::as_writable_bytes(std::span(&state_a, 1)),
+            },
+            0,
+            8,
+        });
+        voice_b.tick_block({
+            iv::TickContext<iv::MidiVoiceAllocator<1, 2>> {
+                .inputs = {},
+                .outputs = outputs_b,
+                .event_inputs = inputs_b,
+                .event_outputs = event_outputs_b,
+                .event_streams = &storage,
+                .buffer = std::as_writable_bytes(std::span(&state_b, 1)),
+            },
+            0,
+            8,
+        });
+
+        {
+            std::array<iv::Sample, 8> expected_freq_a {};
+            std::array<iv::Sample, 8> expected_amp_a {};
+            std::fill(expected_freq_a.begin() + 1, expected_freq_a.begin() + 3, static_cast<iv::Sample>(iv::NOTE_NUMBER_TO_FREQUENCY[60]));
+            std::fill(expected_amp_a.begin() + 1, expected_amp_a.begin() + 3, static_cast<iv::Sample>(100.0 / 127.0));
+            std::fill(expected_freq_a.begin() + 3, expected_freq_a.end(), static_cast<iv::Sample>(iv::NOTE_NUMBER_TO_FREQUENCY[67]));
+            std::fill(expected_amp_a.begin() + 3, expected_amp_a.end(), static_cast<iv::Sample>(80.0 / 127.0));
+            require_close(expected_freq_a, freq_a_buffer, 1e-6f, "voice allocator oldest-steal voice 0 frequency mismatch");
+            require_close(expected_amp_a, amp_a_buffer, 1e-6f, "voice allocator oldest-steal voice 0 amplitude mismatch");
+        }
+
+        {
+            std::array<iv::Sample, 8> expected_freq_b {};
+            std::array<iv::Sample, 8> expected_amp_b {};
+            std::fill(expected_freq_b.begin() + 2, expected_freq_b.end(), static_cast<iv::Sample>(iv::NOTE_NUMBER_TO_FREQUENCY[64]));
+            std::fill(expected_amp_b.begin() + 2, expected_amp_b.end(), static_cast<iv::Sample>(90.0 / 127.0));
+            require_close(expected_freq_b, freq_b_buffer, 1e-6f, "voice allocator oldest-steal voice 1 frequency mismatch");
+            require_close(expected_amp_b, amp_b_buffer, 1e-6f, "voice allocator oldest-steal voice 1 amplitude mismatch");
+        }
+    }
+
+    {
         std::cerr << "event-test: conversion-plans\n";
         auto const same_type = iv::EventConversionRegistry::instance().plan(iv::EventTypeId::trigger, iv::EventTypeId::trigger);
         iv::test::require(same_type.steps.empty(), "same-type event conversion plan should be empty");

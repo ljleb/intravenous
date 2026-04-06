@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../fast_bitset.h"
 #include "../node_lifecycle.h"
 #include "../note_number_lookup_table.h"
 
@@ -37,6 +38,13 @@ namespace iv {
         inline std::uint16_t midi_pitch_bend_value(MidiEvent const& midi)
         {
             return static_cast<std::uint16_t>(midi.bytes[1]) | (static_cast<std::uint16_t>(midi.bytes[2]) << 7);
+        }
+
+        inline Sample midi_velocity_to_amplitude(MidiEvent const& midi)
+        {
+            return midi.size >= 3
+                ? static_cast<Sample>(midi.bytes[2]) / static_cast<Sample>(127.0f)
+                : static_cast<Sample>(0.0f);
         }
     }
 
@@ -221,6 +229,164 @@ namespace iv {
 
             std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(ctx.block_size), value);
             ctx.outputs[0].push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
+        }
+    };
+
+    template<size_t voice_id, size_t voice_count>
+    class MidiVoiceAllocator {
+        static_assert(voice_count > 0, "MidiVoiceAllocator requires at least one voice");
+        static_assert(voice_id < voice_count, "MidiVoiceAllocator voice id must be within voice count");
+
+        Sample _pitch_bend_range_semitones = 2.0f;
+
+        static Sample bend_multiplier(std::uint16_t bend_value, Sample bend_range)
+        {
+            double const normalized = (static_cast<int>(bend_value) - 8192) / 8192.0;
+            double const semitones = normalized * static_cast<double>(bend_range);
+            return static_cast<Sample>(std::exp2(semitones / 12.0));
+        }
+
+        static size_t find_voice_for_note(FastBitset<voice_count> const& allocated, std::array<std::uint8_t, voice_count> const& notes, std::uint8_t note)
+        {
+            for (size_t voice : allocated) {
+                if (notes[voice] == note) {
+                    return voice;
+                }
+            }
+            return voice_count;
+        }
+
+        static size_t find_oldest_voice(FastBitset<voice_count> const& allocated, std::array<std::uint32_t, voice_count> const& ages)
+        {
+            size_t selected = voice_count;
+            std::uint32_t selected_age = 0;
+            for (size_t voice : allocated) {
+                if (selected == voice_count || ages[voice] < selected_age) {
+                    selected = voice;
+                    selected_age = ages[voice];
+                }
+            }
+            return selected;
+        }
+
+        Sample current_frequency(std::uint8_t note, std::uint16_t pitch_bend) const
+        {
+            return static_cast<Sample>(NOTE_NUMBER_TO_FREQUENCY[note]) * bend_multiplier(pitch_bend, _pitch_bend_range_semitones);
+        }
+
+    public:
+        struct State {
+            FastBitset<voice_count> allocated {};
+            std::array<std::uint8_t, voice_count> notes {};
+            std::array<std::uint32_t, voice_count> ages {};
+            std::uint32_t next_age = 1;
+            std::uint16_t pitch_bend = 8192;
+            Sample amplitude = 0;
+            Sample frequency = 0;
+        };
+
+        explicit MidiVoiceAllocator(Sample pitch_bend_range_semitones = 2) :
+            _pitch_bend_range_semitones(pitch_bend_range_semitones)
+        {}
+
+        auto event_inputs() const
+        {
+            return std::array<EventInputConfig, 1> {{
+                { .name = "midi", .type = EventTypeId::midi }
+            }};
+        }
+
+        auto outputs() const
+        {
+            return std::array<OutputConfig, 2> {{
+                { .name = "amplitude" },
+                { .name = "frequency" },
+            }};
+        }
+
+        auto event_outputs() const
+        {
+            return std::array<EventOutputConfig, 1> {{
+                { .name = "trigger", .type = EventTypeId::trigger }
+            }};
+        }
+
+        void tick_block(TickBlockContext<MidiVoiceAllocator> const& ctx) const
+        {
+            auto& state = ctx.state();
+
+            auto push_until = [&](size_t until, size_t& cursor) {
+                while (cursor < until) {
+                    ctx.outputs[0].push(state.amplitude);
+                    ctx.outputs[1].push(state.frequency);
+                    ++cursor;
+                }
+            };
+
+            auto assign_voice = [&](size_t voice, std::uint8_t note, Sample amplitude, size_t event_time) {
+                bool const was_allocated = state.allocated.test(voice);
+                bool const assignment_changed = !was_allocated || state.notes[voice] != note;
+                state.allocated.set(voice);
+                state.notes[voice] = note;
+                state.ages[voice] = state.next_age++;
+                if constexpr (voice_id < voice_count) {
+                    if (voice == voice_id) {
+                        state.frequency = current_frequency(note, state.pitch_bend);
+                        state.amplitude = amplitude;
+                        if (assignment_changed) {
+                            ctx.event_outputs[0].push(ctx.event_stream_storage(), TriggerEvent {}, event_time, ctx.index, ctx.block_size);
+                        }
+                    }
+                }
+            };
+
+            auto release_voice = [&](size_t voice) {
+                state.allocated.reset(voice);
+                if constexpr (voice_id < voice_count) {
+                    if (voice == voice_id) {
+                        state.amplitude = 0.0f;
+                    }
+                }
+            };
+
+            size_t cursor = 0;
+            ctx.event_inputs[0].for_each_in_block(ctx.event_stream_storage(), ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
+                size_t const next = std::min(event.time, ctx.block_size);
+                push_until(next, cursor);
+
+                auto const* midi = std::get_if<MidiEvent>(&event.value);
+                if (!midi) {
+                    return;
+                }
+
+                if (details::midi_is_note_on(*midi)) {
+                    std::uint8_t const note = details::midi_note_number(*midi);
+                    size_t target_voice = find_voice_for_note(state.allocated, state.notes, note);
+                    if (target_voice == voice_count) {
+                        target_voice = (~state.allocated).first_set();
+                    }
+                    if (target_voice == voice_count) {
+                        target_voice = find_oldest_voice(state.allocated, state.ages);
+                    }
+                    assign_voice(target_voice, note, details::midi_velocity_to_amplitude(*midi), event.time);
+                } else if (details::midi_is_note_off(*midi)) {
+                    size_t const target_voice = find_voice_for_note(
+                        state.allocated,
+                        state.notes,
+                        details::midi_note_number(*midi)
+                    );
+                    if (target_voice != voice_count) {
+                        release_voice(target_voice);
+                    }
+                } else if (details::midi_is_pitch_bend(*midi)) {
+                    state.pitch_bend = details::midi_pitch_bend_value(*midi);
+                    if (state.allocated.test(voice_id)) {
+                        state.frequency = current_frequency(state.notes[voice_id], state.pitch_bend);
+                    }
+                }
+            });
+
+            push_until(ctx.block_size, cursor);
         }
     };
 }

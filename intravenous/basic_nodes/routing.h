@@ -114,6 +114,81 @@ namespace iv {
         }
     };
 
+    class PolyphonicMix {
+        size_t _arity;
+        std::vector<OutputConfig> _outputs;
+        std::vector<EventOutputConfig> _event_outputs;
+
+    private:
+        size_t sample_input_index(size_t output_port, size_t lane) const
+        {
+            return output_port * _arity + lane;
+        }
+
+        size_t event_input_index(size_t output_port, size_t lane) const
+        {
+            return output_port * _arity + lane;
+        }
+
+    public:
+        PolyphonicMix(
+            size_t arity,
+            std::vector<OutputConfig> outputs,
+            std::vector<EventOutputConfig> event_outputs
+        ) :
+            _arity(arity),
+            _outputs(std::move(outputs)),
+            _event_outputs(std::move(event_outputs))
+        {}
+
+        auto inputs() const
+        {
+            return std::vector<InputConfig>(_outputs.size() * _arity);
+        }
+
+        auto event_inputs() const
+        {
+            std::vector<EventInputConfig> inputs;
+            inputs.reserve(_event_outputs.size() * _arity);
+            for (auto const& output : _event_outputs) {
+                for (size_t lane = 0; lane < _arity; ++lane) {
+                    (void)lane;
+                    inputs.push_back(EventInputConfig{
+                        .type = output.type,
+                    });
+                }
+            }
+            return inputs;
+        }
+
+        std::vector<OutputConfig> const& outputs() const
+        {
+            return _outputs;
+        }
+
+        std::vector<EventOutputConfig> const& event_outputs() const
+        {
+            return _event_outputs;
+        }
+
+        void tick_block(TickBlockContext<PolyphonicMix> const& ctx) const
+        {
+            for (size_t output_port = 0; output_port < _outputs.size(); ++output_port) {
+                auto& output = ctx.outputs[output_port];
+                output.push_silence(ctx.block_size);
+                for (size_t lane = 0; lane < _arity; ++lane) {
+                    output.accumulate_block(ctx.inputs[sample_input_index(output_port, lane)].get_block(ctx.block_size));
+                }
+            }
+            for (size_t output_port = 0; output_port < _event_outputs.size(); ++output_port) {
+                for (size_t lane = 0; lane < _arity; ++lane) {
+                    auto const events = ctx.event_inputs[event_input_index(output_port, lane)].get_block(ctx.event_stream_storage(), ctx.index, ctx.block_size);
+                    ctx.event_outputs[output_port].push_block(ctx.event_stream_storage(), events, ctx.index, ctx.block_size);
+                }
+            }
+        }
+    };
+
     struct DetachWriterNode {
         DetachArrayId id;
         size_t loop_block_size = 1;
