@@ -2,6 +2,7 @@
 
 #include "node_lifecycle.h"
 #include "math/polyblep.h"
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -52,10 +53,14 @@ namespace iv {
     };
 
     struct Integrator {
+        struct State {
+            std::span<Sample> global_offsets;
+        };
+
         auto inputs() const
         {
             return std::array {
-                InputConfig { "f_prev" },
+                InputConfig { .name = "f_prev", .history = 1 },
                 InputConfig { "f" },
                 InputConfig { .name = "dt", .default_value = 1.0 },
             };
@@ -63,18 +68,40 @@ namespace iv {
 
         auto outputs() const
         {
-            return std::array { OutputConfig { "integral" } };
+            return std::array { OutputConfig { .name = "integral", .history = 1 } };
         }
 
-        void tick_block(TickBlockContext<Integrator> const& state) const
+        void declare(DeclarationContext<Integrator> const& ctx) const
         {
-            auto const f_prev = state.inputs[0].get_block(state.block_size);
-            auto const f = state.inputs[1].get_block(state.block_size);
-            auto const dt = state.inputs[2].get_block(state.block_size);
-            auto& out = state.outputs[0];
+            auto const& state = ctx.state();
+            ctx.local_array(state.global_offsets, ctx.max_block_size());
+        }
 
-            for (size_t i = 0; i < state.block_size; ++i) {
-                out.push(f_prev[i] + f[i] * dt[i]);
+        void initialize(InitializationContext<Integrator> const& ctx) const
+        {
+            auto& state = ctx.state();
+            std::fill(state.global_offsets.begin(), state.global_offsets.end(), Sample(0.0f));
+        }
+
+        void tick_block(TickBlockContext<Integrator> const& ctx) const
+        {
+            auto& state = ctx.state();
+            auto const f_prev = ctx.inputs[0].get_block(ctx.block_size);
+            auto const f = ctx.inputs[1].get_block(ctx.block_size);
+            auto const dt = ctx.inputs[2].get_block(ctx.block_size);
+            auto& out = ctx.outputs[0];
+
+            if (ctx.block_size == 0) {
+                return;
+            }
+
+            Sample target_offset = state.global_offsets[ctx.block_size - 1];
+            for (size_t i = 0; i < ctx.block_size; ++i) {
+                auto const integrand = f[i] * dt[i];
+                target_offset += integrand;
+                auto const offset_delta = target_offset - state.global_offsets[i];
+                out.push(f_prev[i] + offset_delta);
+                state.global_offsets[i] = target_offset;
             }
         }
     };

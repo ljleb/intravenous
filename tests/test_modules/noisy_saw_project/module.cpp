@@ -61,10 +61,11 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         }
 
         NodeRef shared_noise = g.node<Interpolation>();
-        auto const sink = io.file(g, channel, "out.wav");
+        // auto const sink = io.file(g, channel, "out.wav");
+        auto const sink = io.sink(g, channel);
 
         noise(dt);
-        shared_noise = shared_noise(first_noise, noise, 1.0) * 0.0;
+        shared_noise = shared_noise(first_noise, noise, 1.0) * 0.1;
         auto const voice = polyphonic<16>(g, [&](NodeRef m) {
             m.connect_event_input("midi", midi);
 

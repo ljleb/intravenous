@@ -13,15 +13,19 @@ inline void noisy_saw_voice(iv::ModuleContext const& ctx)
     auto const voice_noise = g.input("noise");
     auto const dt = g.input("dt", 1);
     auto const feedback = g.input("feedback", 1);
+
     // auto const predictor = g.node<NlmsPredictor>(4, 32);
     // auto const filter = g.node<SimpleIirLowPass>();
     // filter("cutoff"_P = 0.75, "dt"_P = dt);
 
+    auto const integrator = g.node<Integrator>();
     auto const scc_latency = 1;
     auto const warper = g.node<Warper>();
 
     // integrator(filter(predictor(feedback)), frequency * 2, dt);
-    warper(feedback + f * dt * 2 + f * dt * (scc_latency-1) + voice_noise);
+    integrator(feedback, f * 2, dt);
+    // warper(feedback + f * dt * 2 + f * dt * (scc_latency-1) + voice_noise);
+    warper(integrator + voice_noise);
     g.outputs(
         "out"_P = warper["anti_aliased"] * amplitude,
         "feedback"_P = warper["aliased"].detach(scc_latency)
