@@ -36,10 +36,10 @@ namespace {
     {
         auto const reset = 1.0f;
         auto const frequency = 220.0f;
-        auto const integrator = g.node<iv::Integrator>();
+        auto const integrator = g.node<iv::PhaseIntegrator>();
         auto const warper = g.node<iv::Warper>();
 
-        integrator(warper["aliased"].detach() * reset, frequency * 2.0f, dt);
+        integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
         warper(integrator + noise);
         g.outputs(warper["anti_aliased"] * amplitude);
     }

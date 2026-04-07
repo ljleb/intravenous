@@ -44,8 +44,8 @@ TEST(ModuleLoaderReload, OldAndNewProcessorsRetainModuleRefs)
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
-    auto needle = std::string("warper[\"anti_aliased\"] * amplitude");
-    auto replacement = std::string("warper[\"anti_aliased\"] * amplitude/* reload marker*/");
+    auto needle = std::string("\"amplitude\"_P = amplitude,");
+    auto replacement = std::string("\"amplitude\"_P = amplitude,/* reload marker*/");
     ASSERT_NE(source.find(needle), std::string::npos);
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text(module_cpp, source);

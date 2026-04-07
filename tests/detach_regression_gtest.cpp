@@ -37,10 +37,10 @@ namespace {
     {
         auto const reset = 1.0f;
         auto const frequency = 220.0f;
-        auto const integrator = g.node<iv::Integrator>();
+        auto const integrator = g.node<iv::PhaseIntegrator>();
         auto const warper = g.node<iv::Warper>();
 
-        integrator(warper["aliased"].detach() * reset, frequency * 2.0f, dt);
+        integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
         warper(integrator + noise);
         g.outputs(warper["anti_aliased"] * amplitude);
     }
@@ -98,7 +98,7 @@ TEST(DetachRegression, NestedFeedbackWithoutDetachStillFailsAfterFlattening)
 {
     iv::GraphBuilder graph;
     auto const recursive = graph.subgraph([](iv::GraphBuilder& nested) {
-        auto const integrator = nested.node<iv::Integrator>();
+        auto const integrator = nested.node<iv::PhaseIntegrator>();
         integrator(integrator);
         nested.outputs(integrator);
     });

@@ -74,8 +74,8 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
-    auto voice_needle = std::string("warper[\"anti_aliased\"] * amplitude");
-    auto voice_replacement = std::string("warper[\"anti_aliased\"] * amplitude/* behavior dependency marker*/");
+    auto voice_needle = std::string("\"amplitude\"_P = amplitude,");
+    auto voice_replacement = std::string("\"amplitude\"_P = amplitude,/* behavior dependency marker*/");
     ASSERT_NE(voice_source.find(voice_needle), std::string::npos);
     voice_source.replace(voice_source.find(voice_needle), voice_needle.size(), voice_replacement);
     iv::test::write_text(voice_dst / "module.cpp", voice_source);

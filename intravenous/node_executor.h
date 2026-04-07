@@ -16,12 +16,15 @@
 
 namespace iv {
     class NodeExecutor {
+        static constexpr size_t DEFAULT_SILENCE_TTL_BLOCKS = 16;
+
         struct PreparedState {
             TypeErasedNode root;
             ResourceContext resources;
             NodeLayout layout;
             NodeStorage storage;
             size_t max_block_size = 0;
+            size_t resolved_default_silence_ttl_samples = 0;
         };
 
         std::vector<ModuleRef> _module_refs;
@@ -31,7 +34,7 @@ namespace iv {
         NodeLayout _layout;
         NodeStorage _storage;
         size_t _max_block_size;
-        size_t _default_silence_ttl_samples = std::numeric_limits<size_t>::max();
+        size_t _default_silence_ttl_samples = 0;
         size_t _event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER;
         size_t _executor_id = 0;
         bool _shutdown_requested = false;
@@ -63,6 +66,14 @@ namespace iv {
             return block_size;
         }
 
+        static size_t resolve_default_silence_ttl_samples(size_t max_block_size, std::optional<size_t> requested_ttl_samples)
+        {
+            if (requested_ttl_samples.has_value()) {
+                return *requested_ttl_samples;
+            }
+            return max_block_size * DEFAULT_SILENCE_TTL_BLOCKS;
+        }
+
         static NodeLayout make_layout(
             TypeErasedNode const& root,
             size_t max_block_size,
@@ -85,7 +96,7 @@ namespace iv {
             size_t executor_id,
             char const* operation,
             bool initialize_storage = true,
-            size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max(),
+            std::optional<size_t> default_silence_ttl_samples = std::nullopt,
             size_t event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER
         )
         {
@@ -95,11 +106,15 @@ namespace iv {
             prepared.root = std::move(root);
             prepared.resources = std::move(resources);
             prepared.max_block_size = choose_block_size(prepared.root, execution_target_registry, executor_id);
+            prepared.resolved_default_silence_ttl_samples = resolve_default_silence_ttl_samples(
+                prepared.max_block_size,
+                default_silence_ttl_samples
+            );
             try {
                 prepared.layout = make_layout(
                     prepared.root,
                     prepared.max_block_size,
-                    default_silence_ttl_samples,
+                    prepared.resolved_default_silence_ttl_samples,
                     event_port_buffer_base_multiplier
                 );
             } catch (std::exception const& e) {
@@ -221,7 +236,7 @@ namespace iv {
             ExecutionTargetRegistry& execution_target_registry,
             size_t executor_id,
             std::vector<ModuleRef> module_refs = {},
-            size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max(),
+            std::optional<size_t> default_silence_ttl_samples = std::nullopt,
             size_t event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER
         )
         {
@@ -247,7 +262,7 @@ namespace iv {
                     std::move(prepared.layout),
                     std::move(prepared.storage),
                     prepared.max_block_size,
-                    default_silence_ttl_samples,
+                    prepared.resolved_default_silence_ttl_samples,
                     event_port_buffer_base_multiplier,
                     executor_id
                 );
@@ -272,7 +287,7 @@ namespace iv {
                 execution_target_registry,
                 executor_id,
                 {},
-                default_silence_ttl_samples,
+                std::optional<size_t>(default_silence_ttl_samples),
                 event_port_buffer_base_multiplier
             );
         }

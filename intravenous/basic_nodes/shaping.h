@@ -52,58 +52,81 @@ namespace iv {
         }
     };
 
-    struct Integrator {
+    struct PhaseIntegrator {
+        auto inputs() const
+        {
+            return std::array { InputConfig { .name = "delta" } };
+        }
+
+        auto outputs() const
+        {
+            return std::array { OutputConfig { .name = "phase", .history = 1 } };
+        }
+
+        void tick_block(TickBlockContext<PhaseIntegrator> const& ctx) const
+        {
+            auto const delta = ctx.inputs[0].get_block(ctx.block_size);
+            auto& out = ctx.outputs[0];
+
+            Sample phase = out.get();
+            for (size_t i = 0; i < ctx.block_size; ++i) {
+                phase = warp_pm1(phase + delta[i], 1.0f);
+                out.push(phase);
+            }
+        }
+    };
+
+    struct SawOscillator {
         struct State {
-            std::span<Sample> global_offsets;
+            Sample phase = 0.0f;
         };
 
         auto inputs() const
         {
             return std::array {
-                InputConfig { .name = "f_prev", .history = 1 },
-                InputConfig { "f" },
-                InputConfig { .name = "dt", .default_value = 1.0 },
+                InputConfig { .name = "phase_offset", .history = 1 },
+                InputConfig { .name = "frequency", .history = 1 },
+                InputConfig { .name = "dt", .history = 1, .default_value = 1.0 },
             };
         }
 
         auto outputs() const
         {
-            return std::array { OutputConfig { .name = "integral", .history = 1 } };
+            return std::array {
+                OutputConfig { .name = "out", .latency = 1 },
+            };
         }
 
-        void declare(DeclarationContext<Integrator> const& ctx) const
-        {
-            auto const& state = ctx.state();
-            ctx.local_array(state.global_offsets, ctx.max_block_size());
-        }
-
-        void initialize(InitializationContext<Integrator> const& ctx) const
+        void tick(TickSampleContext<SawOscillator> const& ctx) const
         {
             auto& state = ctx.state();
-            std::fill(state.global_offsets.begin(), state.global_offsets.end(), Sample(0.0f));
-        }
-
-        void tick_block(TickBlockContext<Integrator> const& ctx) const
-        {
-            auto& state = ctx.state();
-            auto const f_prev = ctx.inputs[0].get_block(ctx.block_size);
-            auto const f = ctx.inputs[1].get_block(ctx.block_size);
-            auto const dt = ctx.inputs[2].get_block(ctx.block_size);
+            auto const phi = ctx.inputs[0].get();
+            auto const f = ctx.inputs[1].get();
+            auto const dt = ctx.inputs[2].get();
             auto& out = ctx.outputs[0];
 
-            if (ctx.block_size == 0) {
-                return;
+            auto const phase_advance = f * 2 * dt;
+            auto const x0 = state.phase + phase_advance + phi;
+            auto const prev_phase_advance = ctx.inputs[1].get(1) * 2 * ctx.inputs[2].get(1);
+            auto const prev_base_phase = warp_pm1(state.phase - prev_phase_advance, 1);
+            auto const x1 = prev_base_phase + prev_phase_advance + ctx.inputs[0].get(1);
+            auto const prev_output = out.get();
+            bool const was_inside = x1 >= -1 && x1 <= 1;
+            bool const is_outside = x0 < -1 || x0 > 1;
+            bool const needs_blep = was_inside && is_outside;
+
+            auto const y0 = warp_pm1(x0, 1);
+
+            auto y0_aa = y0;
+            if (needs_blep) {
+                auto const delta = (y0 - prev_output) / 2.0f;
+                auto const left = prev_output - polyblep_error(prev_output, delta, 1, PolyblepSide::LEFT);
+                out.update(left);
+                y0_aa -= polyblep_error(y0_aa, delta, 1, PolyblepSide::RIGHT);
             }
 
-            Sample const decay = 0.0;
-            Sample target_offset = state.global_offsets[ctx.block_size - 1];
-            for (size_t i = 0; i < ctx.block_size; ++i) {
-                auto const integrand = f[i] * dt[i] + (f_prev[i] - out.get()) * decay;
-                target_offset += integrand;
-                auto const offset_delta = target_offset - state.global_offsets[i];
-                out.push(f_prev[i] + offset_delta);
-                state.global_offsets[i] = target_offset;
-            }
+            out.push(y0_aa);
+            state.phase = warp_pm1(state.phase + phase_advance, 1);
         }
     };
 
