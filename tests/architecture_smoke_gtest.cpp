@@ -834,6 +834,49 @@ TEST(ArchitectureSmoke, RegistryReadyCheckDoesNotBlockWithoutAudioTargets)
     (void)wait_result.wait_for(kBlockReadyTimeout);
 }
 
+TEST(ArchitectureSmoke, SingleExecutorExecuteSurvivesVaryingRequestSizes)
+{
+    iv::Sample value = 0.25f;
+    auto request_notification = std::make_shared<std::condition_variable>();
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 1,
+            .max_block_frames = 4096,
+            .preferred_block_size = 256,
+        },
+        request_notification
+    );
+    iv::ExecutionTargetRegistry execution_target_registry(
+        iv::test::make_audio_device_provider(audio_device),
+        48000,
+        request_notification
+    );
+    auto executor = make_constant_audio_executor(&value, execution_target_registry, 1);
+
+    auto worker = std::async(std::launch::async, [&] {
+        executor.execute();
+    });
+
+    std::array<size_t, 8> const request_sizes { 64, 128, 192, 256, 320, 384, 448, 512 };
+    size_t request_index = 0;
+
+    for (size_t iteration = 0; iteration < 512; ++iteration) {
+        size_t const request_size = request_sizes[iteration % request_sizes.size()];
+        audio_device.device().begin_requested_block(request_index, request_size);
+
+        ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout))
+            << "single-executor execute() stalled for request [" << request_index << ", " << request_size << "]";
+
+        audio_device.device().finish_requested_block();
+        request_index += request_size;
+    }
+
+    executor.request_shutdown();
+    ASSERT_EQ(worker.wait_for(kBlockReadyTimeout), std::future_status::ready)
+        << "single-executor execute() did not exit after shutdown";
+}
+
 TEST(ArchitectureSmoke, FileSinkUsesDeviceSampleRateForWavOutput)
 {
     iv::Sample value = 0.25f;

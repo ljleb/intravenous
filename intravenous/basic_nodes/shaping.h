@@ -95,9 +95,10 @@ namespace iv {
                 return;
             }
 
+            Sample const decay = 0.0;
             Sample target_offset = state.global_offsets[ctx.block_size - 1];
             for (size_t i = 0; i < ctx.block_size; ++i) {
-                auto const integrand = f[i] * dt[i];
+                auto const integrand = f[i] * dt[i] + (f_prev[i] - out.get()) * decay;
                 target_offset += integrand;
                 auto const offset_delta = target_offset - state.global_offsets[i];
                 out.push(f_prev[i] + offset_delta);
