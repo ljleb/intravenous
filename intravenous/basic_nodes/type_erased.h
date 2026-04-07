@@ -83,7 +83,6 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
-                            .event_streams = ctx.event_streams,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -98,7 +97,6 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
-                            .event_streams = ctx.event_streams,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -114,7 +112,6 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
-                            .event_streams = ctx.event_streams,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -140,7 +137,6 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
-                            .event_streams = ctx.event_streams,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -155,7 +151,6 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
-                            .event_streams = ctx.event_streams,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -171,7 +166,6 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
-                            .event_streams = ctx.event_streams,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },

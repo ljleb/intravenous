@@ -40,24 +40,47 @@ namespace iv {
     struct MidiEvent {
         std::array<std::uint8_t, 3> bytes {};
         std::uint8_t size = 0;
+
+        static constexpr size_t average_event_size_bytes()
+        {
+            return 4;
+        }
     };
 
-    struct TriggerEvent {};
+    struct TriggerEvent {
+        static constexpr size_t average_event_size_bytes()
+        {
+            return 1;
+        }
+    };
 
     struct BoundaryEvent {
         bool is_begin = false;
+
+        static constexpr size_t average_event_size_bytes()
+        {
+            return 1;
+        }
+    };
+
+    struct EmptyEvent {
+        static constexpr size_t average_event_size_bytes()
+        {
+            return 0;
+        }
     };
 
     enum class EventTypeId : unsigned int {
         midi,
         trigger,
         boundary,
+        empty,
         count,
     };
 
     using EventTime = size_t;
 
-    using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent>;
+    using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent>;
 
     struct TimedEvent {
         EventTime time = 0;
@@ -67,10 +90,13 @@ namespace iv {
     enum class EventConversionStepId : std::uint8_t {
         midi_to_trigger,
         midi_to_boundary,
+        midi_to_empty,
         trigger_to_boundary,
         trigger_to_midi,
+        trigger_to_empty,
         boundary_to_trigger,
         boundary_to_midi,
+        boundary_to_empty,
     };
 
     struct EventConversionPlan {
@@ -105,15 +131,18 @@ namespace iv {
             Score score {};
         };
 
-        static constexpr std::array<Edge, 6> edges() noexcept
+        static constexpr std::array<Edge, 9> edges() noexcept
         {
             return {{
                 { EventTypeId::midi, EventTypeId::trigger, EventConversionStepId::midi_to_trigger, { 1, 0, 1 } },
                 { EventTypeId::midi, EventTypeId::boundary, EventConversionStepId::midi_to_boundary, { 1, 0, 1 } },
+                { EventTypeId::midi, EventTypeId::empty, EventConversionStepId::midi_to_empty, { 0, 0, 1 } },
                 { EventTypeId::trigger, EventTypeId::boundary, EventConversionStepId::trigger_to_boundary, { 1, 1, 1 } },
                 { EventTypeId::trigger, EventTypeId::midi, EventConversionStepId::trigger_to_midi, { 1, 1, 1 } },
+                { EventTypeId::trigger, EventTypeId::empty, EventConversionStepId::trigger_to_empty, { 0, 0, 1 } },
                 { EventTypeId::boundary, EventTypeId::trigger, EventConversionStepId::boundary_to_trigger, { 1, 0, 1 } },
                 { EventTypeId::boundary, EventTypeId::midi, EventConversionStepId::boundary_to_midi, { 1, 1, 1 } },
+                { EventTypeId::boundary, EventTypeId::empty, EventConversionStepId::boundary_to_empty, { 0, 0, 1 } },
             }};
         }
 
@@ -174,6 +203,8 @@ namespace iv {
                     }
                 }
                 break;
+            case EventConversionStepId::midi_to_empty:
+                break;
             case EventConversionStepId::trigger_to_boundary:
                 if (std::holds_alternative<TriggerEvent>(event.value)) {
                     emit(TimedEvent { .time = event.time, .value = BoundaryEvent { .is_begin = true } });
@@ -185,6 +216,8 @@ namespace iv {
                     emit(TimedEvent { .time = event.time, .value = default_note_on() });
                     emit(TimedEvent { .time = event.time + 1, .value = default_note_off() });
                 }
+                break;
+            case EventConversionStepId::trigger_to_empty:
                 break;
             case EventConversionStepId::boundary_to_trigger:
                 if (auto boundary = std::get_if<BoundaryEvent>(&event.value); boundary && boundary->is_begin) {
@@ -198,6 +231,8 @@ namespace iv {
                         .value = boundary->is_begin ? Event(default_note_on()) : Event(default_note_off())
                     });
                 }
+                break;
+            case EventConversionStepId::boundary_to_empty:
                 break;
             }
         }
@@ -306,115 +341,8 @@ namespace iv {
         }
     };
 
-    class EventBlockView;
-
-    class EventStreamStorage {
-        struct EventRecord {
-            Event value {};
-        };
-
-        struct EventEntry {
-            size_t event_offset = 0;
-            size_t time = 0;
-        };
-
-        struct Stream {
-            EventTypeId type {};
-            size_t ref_begin = 0;
-            size_t ref_size = 0;
-            size_t ref_capacity = 0;
-        };
-
-        std::vector<EventRecord> _events;
-        std::vector<EventEntry> _entries;
-        std::vector<size_t> _refs;
-        std::vector<Stream> _streams;
-        mutable std::vector<size_t> _view_refs;
-        void ensure_stream_capacity(size_t stream_id, size_t required)
-        {
-            auto& stream = _streams[stream_id];
-            if (required <= stream.ref_capacity) {
-                return;
-            }
-
-            size_t const new_capacity = std::max<size_t>(4, next_power_of_2(required));
-            size_t const new_begin = _refs.size();
-            _refs.resize(new_begin + new_capacity);
-
-            if (stream.ref_size != 0) {
-                std::copy_n(_refs.data() + stream.ref_begin, stream.ref_size, _refs.data() + new_begin);
-            }
-
-            stream.ref_begin = new_begin;
-            stream.ref_capacity = new_capacity;
-        }
-
-        size_t append_event_record(Event event)
-        {
-            _events.push_back(EventRecord { .value = std::move(event) });
-            return _events.size() - 1;
-        }
-
-        size_t append_event_entry(size_t event_offset, size_t time)
-        {
-            _entries.push_back(EventEntry {
-                .event_offset = event_offset,
-                .time = time,
-            });
-            return _entries.size() - 1;
-        }
-
-        void append_ref(size_t stream_id, size_t ref)
-        {
-            auto& stream = _streams[stream_id];
-            ensure_stream_capacity(stream_id, stream.ref_size + 1);
-            _refs[stream.ref_begin + stream.ref_size] = ref;
-            ++stream.ref_size;
-        }
-
-        TimedEvent absolute_event(size_t ref) const
-        {
-            auto const& entry = _entries[ref];
-            return TimedEvent {
-                .time = entry.time,
-                .value = _events[entry.event_offset].value,
-            };
-        }
-
-        friend class EventBlockView;
-
-    public:
-        size_t allocate(EventTypeId type, size_t initial_capacity = 4)
-        {
-            _streams.push_back(Stream { .type = type });
-            ensure_stream_capacity(_streams.size() - 1, initial_capacity);
-            return _streams.size() - 1;
-        }
-
-        EventTypeId stream_type(size_t stream_id) const
-        {
-            return _streams[stream_id].type;
-        }
-
-        void append(size_t stream_id, TimedEvent event)
-        {
-            size_t const event_offset = append_event_record(std::move(event.value));
-            size_t const ref = append_event_entry(event_offset, event.time);
-            append_ref(stream_id, ref);
-        }
-
-        void append_existing(size_t stream_id, size_t ref)
-        {
-            append_ref(stream_id, ref);
-        }
-
-        EventBlockView block(size_t stream_id, size_t block_index, size_t block_size) const;
-    };
-
     class EventBlockView {
-        EventStreamStorage const* _storage = nullptr;
-        size_t _stream_id = 0;
-        std::span<size_t const> _refs {};
+        std::span<TimedEvent const> _events {};
         size_t _block_index = 0;
         EventTypeId _type {};
 
@@ -422,22 +350,18 @@ namespace iv {
         EventBlockView() = default;
 
         EventBlockView(
-            EventStreamStorage const& storage,
-            size_t stream_id,
-            std::span<size_t const> refs,
+            std::span<TimedEvent const> events,
             size_t block_index,
             EventTypeId type
         ) :
-            _storage(&storage),
-            _stream_id(stream_id),
-            _refs(refs),
+            _events(events),
             _block_index(block_index),
             _type(type)
         {}
 
         size_t size() const
         {
-            return _refs.size();
+            return _events.size();
         }
 
         EventTypeId type() const
@@ -450,24 +374,14 @@ namespace iv {
             return _block_index;
         }
 
-        size_t stream_id() const
+        std::span<TimedEvent const> events() const
         {
-            return _stream_id;
-        }
-
-        EventStreamStorage const* storage() const
-        {
-            return _storage;
-        }
-
-        std::span<size_t const> refs() const
-        {
-            return _refs;
+            return _events;
         }
 
         TimedEvent operator[](size_t index) const
         {
-            TimedEvent event = _storage->absolute_event(_refs[index]);
+            TimedEvent event = _events[index];
             event.time -= _block_index;
             return event;
         }
@@ -475,28 +389,40 @@ namespace iv {
         template<typename Fn>
         void for_each(Fn&& fn) const
         {
-            for (size_t i = 0; i < _refs.size(); ++i) {
-                fn((*this)[i], _refs[i]);
+            for (size_t i = 0; i < _events.size(); ++i) {
+                fn((*this)[i], i);
             }
         }
     };
 
-    inline EventBlockView EventStreamStorage::block(size_t stream_id, size_t block_index, size_t block_size) const
-    {
-        auto const& stream = _streams[stream_id];
-        _view_refs.clear();
-        _view_refs.reserve(stream.ref_size);
+    inline constexpr size_t DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER = 256;
 
-        size_t const block_end = block_index + block_size;
-        for (size_t i = 0; i < stream.ref_size; ++i) {
-            size_t const ref = _refs[stream.ref_begin + i];
-            size_t const time = _entries[ref].time;
-            if (time >= block_index && time < block_end) {
-                _view_refs.push_back(ref);
-            }
+    inline constexpr size_t average_event_size_bytes(EventTypeId type)
+    {
+        switch (type) {
+        case EventTypeId::midi:
+            return MidiEvent::average_event_size_bytes();
+        case EventTypeId::trigger:
+            return TriggerEvent::average_event_size_bytes();
+        case EventTypeId::boundary:
+            return BoundaryEvent::average_event_size_bytes();
+        case EventTypeId::empty:
+            return EmptyEvent::average_event_size_bytes();
+        case EventTypeId::count:
+            break;
+        }
+        return 0;
+    }
+
+    inline constexpr size_t calculate_event_port_buffer_capacity(size_t base_multiplier, EventTypeId type)
+    {
+        size_t const average_size = average_event_size_bytes(type);
+        if (average_size == 0 || base_multiplier == 0) {
+            return 0;
         }
 
-        return EventBlockView(*this, stream_id, std::span<size_t const>(_view_refs), block_index, stream.type);
+        size_t const budget_bytes = base_multiplier * average_size;
+        return std::max<size_t>(1, budget_bytes / sizeof(TimedEvent));
     }
 
     inline constexpr size_t MAX_BLOCK_SIZE = size_t(1) << (std::numeric_limits<size_t>::digits - 1);
@@ -861,47 +787,75 @@ namespace iv {
     };
 
     struct EventSharedPortData {
-        size_t stream_id = 0;
+        std::span<TimedEvent> buffer;
+        size_t event_count = 0;
         EventTypeId type {};
 
         constexpr EventSharedPortData(
-            size_t stream_id = 0,
+            std::span<TimedEvent> buffer = {},
+            size_t event_count = 0,
             EventTypeId type = {}
         ) :
-            stream_id(stream_id),
+            buffer(buffer),
+            event_count(event_count),
             type(type)
         {}
     };
 
     class EventInputPort {
-        EventSharedPortData _shared_data;
+        EventSharedPortData* _shared_data = nullptr;
 
     public:
         EventInputPort() = default;
 
-        explicit EventInputPort(EventSharedPortData shared_data) :
-            _shared_data(shared_data)
+        explicit EventInputPort(EventSharedPortData& shared_data) :
+            _shared_data(&shared_data)
         {}
 
-        EventBlockView get_block(EventStreamStorage& storage, size_t block_index, size_t block_size) const
+        EventBlockView get_block(size_t block_index, size_t block_size) const
         {
-            return storage.block(_shared_data.stream_id, block_index, block_size);
+            if (!_shared_data) {
+                return EventBlockView({}, block_index, EventTypeId::empty);
+            }
+
+            auto& shared_data = *_shared_data;
+            size_t const block_end = block_index + block_size;
+            size_t consumed = 0;
+            while (consumed < shared_data.event_count && shared_data.buffer[consumed].time < block_index) {
+                ++consumed;
+            }
+            if (consumed != 0) {
+                size_t const remaining = shared_data.event_count - consumed;
+                std::move(
+                    shared_data.buffer.begin() + static_cast<std::ptrdiff_t>(consumed),
+                    shared_data.buffer.begin() + static_cast<std::ptrdiff_t>(shared_data.event_count),
+                    shared_data.buffer.begin()
+                );
+                shared_data.event_count = remaining;
+            }
+
+            size_t end = 0;
+            while (end < shared_data.event_count && shared_data.buffer[end].time < block_end) {
+                ++end;
+            }
+
+            return EventBlockView(shared_data.buffer.first(end), block_index, shared_data.type);
         }
 
         template<typename Fn>
-        void for_each_in_block(EventStreamStorage& storage, size_t block_index, size_t block_size, Fn&& fn) const
+        void for_each_in_block(size_t block_index, size_t block_size, Fn&& fn) const
         {
-            get_block(storage, block_index, block_size).for_each(std::forward<Fn>(fn));
+            get_block(block_index, block_size).for_each(std::forward<Fn>(fn));
         }
 
         EventTypeId type() const
         {
-            return _shared_data.type;
+            return _shared_data ? _shared_data->type : EventTypeId::empty;
         }
     };
 
     class EventOutputPort {
-        EventSharedPortData _shared_data;
+        EventSharedPortData* _shared_data = nullptr;
         EventTypeId _source_type {};
         bool _has_conversion = false;
         EventConversionPlan _conversion {};
@@ -910,64 +864,59 @@ namespace iv {
         EventOutputPort() = default;
 
         explicit EventOutputPort(
-            EventSharedPortData shared_data,
+            EventSharedPortData& shared_data,
             EventTypeId source_type
         ) :
-            _shared_data(shared_data),
+            _shared_data(&shared_data),
             _source_type(source_type)
         {}
 
         explicit EventOutputPort(
-            EventSharedPortData shared_data,
+            EventSharedPortData& shared_data,
             EventTypeId source_type,
             EventConversionPlan const& conversion
         ) :
-            _shared_data(shared_data),
+            _shared_data(&shared_data),
             _source_type(source_type),
             _has_conversion(true),
             _conversion(conversion)
         {}
 
-        void push(EventStreamStorage& storage, Event event, size_t sample_offset, size_t block_index, size_t block_size) const
+        void push(Event event, size_t sample_offset, size_t block_index, size_t block_size) const
         {
             (void)block_size;
+            if (!_shared_data || _shared_data->buffer.empty()) {
+                return;
+            }
             TimedEvent const timed_event {
                 .time = block_index + sample_offset,
                 .value = std::move(event)
             };
+            auto append = [&](TimedEvent const& appended) {
+                if (_shared_data->event_count >= _shared_data->buffer.size()) {
+                    throw std::logic_error("event port capacity exceeded");
+                }
+                _shared_data->buffer[_shared_data->event_count++] = appended;
+            };
             if (_has_conversion) {
                 EventConversionRegistry::instance().convert(_conversion, timed_event, [&](TimedEvent const& converted) {
-                    storage.append(_shared_data.stream_id, converted);
+                    append(converted);
                 });
             } else {
-                storage.append(_shared_data.stream_id, timed_event);
+                append(timed_event);
             }
         }
 
-        void push_block(EventStreamStorage& storage, EventBlockView const& events, size_t block_index, size_t block_size) const
+        void push_block(EventBlockView const& events, size_t block_index, size_t block_size) const
         {
-            (void)block_size;
-            bool const can_move =
-                !_has_conversion &&
-                events.storage() == &storage &&
-                events.block_index() == block_index &&
-                events.type() == _shared_data.type;
-
-            if (can_move) {
-                for (size_t ref : events.refs()) {
-                    storage.append_existing(_shared_data.stream_id, ref);
-                }
-                return;
-            }
-
             events.for_each([&](TimedEvent const& event, size_t) {
-                push(storage, event.value, event.time, block_index, block_size);
+                push(event.value, event.time, block_index, block_size);
             });
         }
 
-        void append_block(EventStreamStorage& storage, EventBlockView const& events, size_t block_index, size_t block_size) const
+        void append_block(EventBlockView const& events, size_t block_index, size_t block_size) const
         {
-            push_block(storage, events, block_index, block_size);
+            push_block(events, block_index, block_size);
         }
 
         EventTypeId source_type() const
@@ -975,9 +924,12 @@ namespace iv {
             return _source_type;
         }
 
-        bool empty_in_block(EventStreamStorage& storage, size_t block_index, size_t block_size) const
+        bool empty_in_block(size_t block_index, size_t block_size) const
         {
-            return storage.block(_shared_data.stream_id, block_index, block_size).size() == 0;
+            if (!_shared_data) {
+                return true;
+            }
+            return EventInputPort(*_shared_data).get_block(block_index, block_size).size() == 0;
         }
     };
 

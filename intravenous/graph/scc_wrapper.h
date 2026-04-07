@@ -161,16 +161,13 @@ namespace iv {
             return unchanged;
         }
 
-        static bool event_inputs_unchanged(GraphNodeWrapper::State const& node_state, EventStreamStorage* storage, size_t block_index, size_t block_size)
+        static bool event_inputs_unchanged(GraphNodeWrapper::State const& node_state, size_t block_index, size_t block_size)
         {
             if (node_state.event_inputs.empty()) {
                 return true;
             }
-            if (!storage) {
-                throw std::logic_error("event stream storage is unavailable");
-            }
             for (auto const& input : node_state.event_inputs) {
-                if (input.get_block(*storage, block_index, block_size).size() != 0) {
+                if (input.get_block(block_index, block_size).size() != 0) {
                     return false;
                 }
             }
@@ -187,16 +184,13 @@ namespace iv {
             return true;
         }
 
-        static bool event_outputs_empty(GraphNodeWrapper::State const& node_state, EventStreamStorage* storage, size_t block_index, size_t block_size)
+        static bool event_outputs_empty(GraphNodeWrapper::State const& node_state, size_t block_index, size_t block_size)
         {
             if (node_state.event_outputs.empty()) {
                 return true;
             }
-            if (!storage) {
-                throw std::logic_error("event stream storage is unavailable");
-            }
             for (auto const& output : node_state.event_outputs) {
-                if (!output.empty_in_block(*storage, block_index, block_size)) {
+                if (!output.empty_in_block(block_index, block_size)) {
                     return false;
                 }
             }
@@ -207,7 +201,6 @@ namespace iv {
         {
             auto& state = ctx.state();
             size_t const scc_block_size = std::min(ctx.block_size, _block_size);
-            EventStreamStorage* const event_storage = ctx.event_streams;
 
             for (size_t offset = 0; offset < ctx.block_size; offset += scc_block_size) {
                 for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
@@ -216,7 +209,6 @@ namespace iv {
                         .outputs = {},
                         .event_inputs = {},
                         .event_outputs = {},
-                        .event_streams = ctx.event_streams,
                         .scc_feedback_latency = _scc_feedback_latency,
                         .buffer = state.nested_node_states[node_i],
                     };
@@ -225,7 +217,7 @@ namespace iv {
                     bool inputs_constant = false;
                     bool const unchanged =
                         sample_inputs_unchanged(state, runtime_state, node_i, scc_block_size, inputs_constant)
-                        && event_inputs_unchanged(runtime_state, event_storage, block_index, scc_block_size);
+                        && event_inputs_unchanged(runtime_state, block_index, scc_block_size);
                     state.dormancy.unchanged_inputs[node_i] = unchanged ? 1 : 0;
 
                     if (state.dormancy.dormant[node_i] != 0) {
@@ -256,7 +248,7 @@ namespace iv {
 
                     bool const silent =
                         sample_outputs_silent(runtime_state, scc_block_size)
-                        && event_outputs_empty(runtime_state, event_storage, block_index, scc_block_size);
+                        && event_outputs_empty(runtime_state, block_index, scc_block_size);
 
                     if (inputs_constant && silent) {
                         size_t const accumulated = state.dormancy.silent_samples_accumulated[node_i] + scc_block_size;

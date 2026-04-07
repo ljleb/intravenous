@@ -140,8 +140,15 @@ namespace iv {
         , _default_silence_ttl_samples(default_silence_ttl_samples)
         {}
 
+        explicit NodeLayoutBuilder(size_t max_block_size, size_t default_silence_ttl_samples, size_t event_port_buffer_base_multiplier)
+        : _max_block_size(max_block_size)
+        , _default_silence_ttl_samples(default_silence_ttl_samples)
+        , _event_port_buffer_base_multiplier(event_port_buffer_base_multiplier)
+        {}
+
         size_t max_block_size() const;
         size_t default_silence_ttl_samples() const { return _default_silence_ttl_samples; }
+        size_t event_port_buffer_base_multiplier() const { return _event_port_buffer_base_multiplier; }
 
         template<typename A>
         static void const* array_type_token()
@@ -161,6 +168,7 @@ namespace iv {
     private:
         size_t _max_block_size = 1;
         size_t _default_silence_ttl_samples = std::numeric_limits<size_t>::max();
+        size_t _event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER;
         size_t _storage_alignment = 1;
         std::vector<NodeLayout::NodeRecord> _nodes;
         std::vector<NodeLayout::Region> _regions;
@@ -259,6 +267,7 @@ namespace iv {
         void nested_node_states(std::span<std::span<std::byte>> const& nodes) const;
 
         size_t max_block_size() const;
+        size_t event_port_buffer_base_multiplier() const;
 
         size_t node_index() const
         {
@@ -492,6 +501,12 @@ namespace iv {
     inline size_t DeclarationContext<Node>::max_block_size() const
     {
         return _builder->max_block_size();
+    }
+
+    template<typename Node>
+    inline size_t DeclarationContext<Node>::event_port_buffer_base_multiplier() const
+    {
+        return _builder->event_port_buffer_base_multiplier();
     }
 
     template<typename Node>

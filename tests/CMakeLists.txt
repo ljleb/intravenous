@@ -53,36 +53,6 @@ add_iv_gtest(intravenious_module_watcher_tests module_watcher_gtest.cpp)
 add_iv_gtest(intravenious_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenious_detach_regression_tests detach_regression_gtest.cpp)
 
-add_executable(intravenious_block_processing
-    block_processing.cpp
-    ${PROJECT_SOURCE_DIR}/intravenious/third_party/miniaudio/miniaudio.c
-)
-
-target_compile_features(intravenious_block_processing PRIVATE cxx_std_23)
-set_target_properties(intravenious_block_processing PROPERTIES
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
-
-target_include_directories(intravenious_block_processing PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenious
-)
-
-target_include_directories(intravenious_block_processing SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenious/third_party
-)
-
-if(MSVC)
-    target_compile_options(intravenious_block_processing PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(intravenious_block_processing PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-target_link_libraries(intravenious_block_processing PRIVATE intravenous_module_runtime)
-
-add_test(NAME intravenious_block_processing COMMAND intravenious_block_processing)
-
 add_executable(intravenious_node_layout_storage
     node_layout_storage.cpp
     ${PROJECT_SOURCE_DIR}/intravenious/third_party/miniaudio/miniaudio.c

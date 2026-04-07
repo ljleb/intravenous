@@ -51,20 +51,24 @@ namespace iv {
 
     class BroadcastEvent {
         size_t _num_outputs;
+        EventTypeId _type;
 
     public:
-        explicit BroadcastEvent(size_t num_outputs) :
-            _num_outputs(num_outputs)
+        explicit BroadcastEvent(size_t num_outputs, EventTypeId type) :
+            _num_outputs(num_outputs),
+            _type(type)
         {}
 
         auto event_inputs() const
         {
-            return std::array<EventInputConfig, 1>{};
+            return std::array<EventInputConfig, 1> {{
+                { .type = _type }
+            }};
         }
 
         auto event_outputs() const
         {
-            return std::vector<EventOutputConfig>(_num_outputs);
+            return std::vector<EventOutputConfig>(_num_outputs, EventOutputConfig{ .type = _type });
         }
 
         auto num_event_outputs() const
@@ -74,29 +78,33 @@ namespace iv {
 
         void tick_block(TickBlockContext<BroadcastEvent> const& ctx) const
         {
-            auto events = ctx.event_inputs[0].get_block(ctx.event_stream_storage(), ctx.index, ctx.block_size);
+            auto events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
             for (auto& output : ctx.event_outputs) {
-                output.push_block(ctx.event_stream_storage(), events, ctx.index, ctx.block_size);
+                output.push_block(events, ctx.index, ctx.block_size);
             }
         }
     };
 
     class EventConcatenation {
         size_t _num_inputs;
+        EventTypeId _type;
 
     public:
-        explicit EventConcatenation(size_t num_inputs) :
-            _num_inputs(num_inputs)
+        explicit EventConcatenation(size_t num_inputs, EventTypeId type) :
+            _num_inputs(num_inputs),
+            _type(type)
         {}
 
         auto event_inputs() const
         {
-            return std::vector<EventInputConfig>(_num_inputs);
+            return std::vector<EventInputConfig>(_num_inputs, EventInputConfig{ .type = _type });
         }
 
         auto event_outputs() const
         {
-            return std::array<EventOutputConfig, 1>{};
+            return std::array<EventOutputConfig, 1> {{
+                { .type = _type }
+            }};
         }
 
         auto num_event_inputs() const
@@ -107,8 +115,8 @@ namespace iv {
         void tick_block(TickBlockContext<EventConcatenation> const& ctx) const
         {
             for (auto const& input : ctx.event_inputs) {
-                input.for_each_in_block(ctx.event_stream_storage(), ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
-                    ctx.event_outputs[0].push(ctx.event_stream_storage(), event.value, event.time, ctx.index, ctx.block_size);
+                input.for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
+                    ctx.event_outputs[0].push(event.value, event.time, ctx.index, ctx.block_size);
                 });
             }
         }
@@ -182,8 +190,8 @@ namespace iv {
             }
             for (size_t output_port = 0; output_port < _event_outputs.size(); ++output_port) {
                 for (size_t lane = 0; lane < _arity; ++lane) {
-                    auto const events = ctx.event_inputs[event_input_index(output_port, lane)].get_block(ctx.event_stream_storage(), ctx.index, ctx.block_size);
-                    ctx.event_outputs[output_port].push_block(ctx.event_stream_storage(), events, ctx.index, ctx.block_size);
+                    auto const events = ctx.event_inputs[event_input_index(output_port, lane)].get_block(ctx.index, ctx.block_size);
+                    ctx.event_outputs[output_port].push_block(events, ctx.index, ctx.block_size);
                 }
             }
         }
@@ -273,7 +281,9 @@ namespace iv {
     struct DummyEventSink {
         auto event_inputs() const
         {
-            return std::array<EventInputConfig, 1>{};
+            return std::array<EventInputConfig, 1> {{
+                { .type = EventTypeId::empty }
+            }};
         }
 
         void tick_block(TickBlockContext<DummyEventSink> const&) const

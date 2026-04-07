@@ -6,7 +6,6 @@
 namespace iv {
     struct JuceVstWrapperSpec;
     struct JuceMidiInputSpec;
-    class EventStreamStorage;
 
     using UniqueResource = std::unique_ptr<void, void(*)(void*)>;
 
@@ -45,14 +44,5 @@ namespace iv {
 
         VstResources vst {};
         MidiInputResources midi_input {};
-        EventStreamStorage* event_streams = nullptr;
-
-        EventStreamStorage& event_stream_storage() const
-        {
-            if (!event_streams) {
-                throw std::logic_error("event stream storage is unavailable");
-            }
-            return *event_streams;
-        }
     };
 }

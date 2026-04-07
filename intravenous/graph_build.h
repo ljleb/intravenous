@@ -135,7 +135,8 @@ namespace iv::details {
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
-                g.nodes.emplace_back(EventConcatenation(port_arity));
+                EventTypeId const concat_type = get_event_inputs(g.nodes[node])[in_port].type;
+                g.nodes.emplace_back(EventConcatenation(port_arity, concat_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const concat_node = g.nodes.size() - 1;
@@ -206,7 +207,8 @@ namespace iv::details {
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
-                g.nodes.emplace_back(BroadcastEvent(port_arity));
+                EventTypeId const broadcast_type = get_event_outputs(g.nodes[node])[out_port].type;
+                g.nodes.emplace_back(BroadcastEvent(port_arity, broadcast_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 size_t const broadcast_node = g.nodes.size() - 1;
@@ -259,7 +261,12 @@ namespace iv::details {
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     size_t const new_node = g.nodes.size() - 1;
-                    g.event_edges.insert(GraphEventEdge{ this_port, { new_node, 0 }, EventConversionPlan{} });
+                    EventTypeId const source_type = get_event_outputs(g.nodes[node])[output_port].type;
+                    g.event_edges.insert(GraphEventEdge{
+                        this_port,
+                        { new_node, 0 },
+                        EventConversionRegistry::instance().plan(source_type, EventTypeId::empty)
+                    });
                 }
             }
         }

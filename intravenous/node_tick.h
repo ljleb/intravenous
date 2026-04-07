@@ -14,7 +14,6 @@ namespace iv {
         std::span<OutputPort> outputs;
         std::span<EventInputPort> event_inputs;
         std::span<EventOutputPort> event_outputs;
-        EventStreamStorage* event_streams = nullptr;
         size_t scc_feedback_latency = 0;
         std::span<std::byte> buffer;
 
@@ -22,14 +21,6 @@ namespace iv {
 
         std::add_lvalue_reference_t<State> state() const
         requires(!std::is_void_v<State>);
-
-        EventStreamStorage& event_stream_storage() const
-        {
-            if (!event_streams) {
-                throw std::logic_error("event stream storage is unavailable");
-            }
-            return *event_streams;
-        }
     };
 
     template<typename Node>
@@ -142,7 +133,6 @@ namespace iv {
             .outputs = outputs,
             .event_inputs = event_inputs,
             .event_outputs = event_outputs,
-            .event_streams = outer.event_streams,
             .scc_feedback_latency = outer.scc_feedback_latency,
             .buffer = remaining_buffer(outer.buffer, nested_state),
         };

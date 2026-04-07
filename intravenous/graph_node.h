@@ -219,7 +219,7 @@ namespace iv {
                     graph_event_port_data_export_id(_graph_id, output_i)
                 );
                 IV_ASSERT(!egress_port_data.empty(), "graph egress event wiring must resolve the requested EventSharedPortData entry");
-                std::construct_at(&state.egress_event_inputs[output_i], egress_port_data[0]);
+                std::construct_at(&state.egress_event_inputs[output_i], const_cast<EventSharedPortData&>(egress_port_data[0]));
             }
 
             for (GraphEdge const& edge : _edges) {
@@ -239,7 +239,7 @@ namespace iv {
                     IV_ASSERT(!consumer_port_data.empty(), "graph ingress event wiring must resolve the requested EventSharedPortData entry");
                     std::construct_at(
                         &state.ingress_event_outputs[edge.source.port],
-                        consumer_port_data[0],
+                        const_cast<EventSharedPortData&>(consumer_port_data[0]),
                         _public_event_inputs[edge.source.port].type,
                         edge.conversion
                     );
@@ -255,7 +255,6 @@ namespace iv {
                 push_input_events_to_private_outputs(
                     state.ingress_event_outputs,
                     ctx.event_inputs,
-                    ctx.event_stream_storage(),
                     ctx.index,
                     ctx.block_size
                 );
@@ -268,7 +267,6 @@ namespace iv {
                         .outputs = {},
                         .event_inputs = {},
                         .event_outputs = {},
-                        .event_streams = ctx.event_streams,
                         .scc_feedback_latency = 0,
                         .buffer = state.scc_states[scc_index]
                     },
@@ -282,7 +280,6 @@ namespace iv {
                 push_private_input_events_to_output_events(
                     ctx.event_outputs,
                     state.egress_event_inputs,
-                    ctx.event_stream_storage(),
                     ctx.index,
                     ctx.block_size
                 );

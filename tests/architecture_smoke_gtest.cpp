@@ -87,6 +87,20 @@ namespace {
         }
     };
 
+    struct DisconnectedTriggerSource {
+        auto event_outputs() const
+        {
+            return std::array<iv::EventOutputConfig, 1> {{
+                { .name = "trigger", .type = iv::EventTypeId::trigger }
+            }};
+        }
+
+        void tick_block(iv::TickBlockContext<DisconnectedTriggerSource> const& ctx) const
+        {
+            ctx.event_outputs[0].push(iv::TriggerEvent{}, 0, ctx.index, ctx.block_size);
+        }
+    };
+
     static_assert(iv::details::fixed_input_count_v<UnaryPassthrough> == 1);
     static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SignalRef>);
     static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SignalRef>())>);
@@ -710,6 +724,96 @@ TEST(ArchitectureSmoke, DirectoryModuleEventArrayBindingsResolve)
         }
         FAIL() << out.str();
     }
+}
+
+TEST(ArchitectureSmoke, ConversionToEmptyDropsAllEvents)
+{
+    auto const midi_to_empty = iv::EventConversionRegistry::instance().plan(
+        iv::EventTypeId::midi,
+        iv::EventTypeId::empty
+    );
+    auto const trigger_to_empty = iv::EventConversionRegistry::instance().plan(
+        iv::EventTypeId::trigger,
+        iv::EventTypeId::empty
+    );
+    auto const boundary_to_empty = iv::EventConversionRegistry::instance().plan(
+        iv::EventTypeId::boundary,
+        iv::EventTypeId::empty
+    );
+
+    std::vector<iv::TimedEvent> converted;
+    iv::EventConversionRegistry::instance().convert(
+        midi_to_empty,
+        iv::TimedEvent {
+            .time = 3,
+            .value = iv::MidiEvent { .bytes = { 0x90, 60, 127 }, .size = 3 }
+        },
+        [&](iv::TimedEvent const& event) { converted.push_back(event); }
+    );
+    iv::EventConversionRegistry::instance().convert(
+        trigger_to_empty,
+        iv::TimedEvent {
+            .time = 4,
+            .value = iv::TriggerEvent {}
+        },
+        [&](iv::TimedEvent const& event) { converted.push_back(event); }
+    );
+    iv::EventConversionRegistry::instance().convert(
+        boundary_to_empty,
+        iv::TimedEvent {
+            .time = 5,
+            .value = iv::BoundaryEvent { .is_begin = true }
+        },
+        [&](iv::TimedEvent const& event) { converted.push_back(event); }
+    );
+
+    EXPECT_TRUE(converted.empty());
+    EXPECT_EQ(iv::calculate_event_port_buffer_capacity(256, iv::EventTypeId::empty), 0u);
+}
+
+TEST(ArchitectureSmoke, DisconnectedEventOutputUsesZeroCapacitySinkBudget)
+{
+    iv::GraphBuilder g;
+    [[maybe_unused]] auto const source = g.node<DisconnectedTriggerSource>();
+    g.outputs();
+
+    iv::TypeErasedNode root = iv::TypeErasedNode(g.build());
+    iv::NodeLayoutBuilder builder(8);
+    {
+        iv::DeclarationContext<iv::TypeErasedNode> ctx(builder, root);
+        root.declare(ctx);
+    }
+    auto layout = std::move(builder).build();
+
+    auto const timed_event_type = iv::NodeLayoutBuilder::array_type_token<iv::TimedEvent>();
+    size_t zero_capacity_event_regions = 0;
+    size_t nonzero_event_regions = 0;
+    for (auto const& region : layout.regions) {
+        if (
+            region.kind == iv::NodeLayout::Region::Kind::local_array &&
+            region.element_type == timed_event_type
+        ) {
+            if (region.element_count == 0) {
+                ++zero_capacity_event_regions;
+            } else {
+                ++nonzero_event_regions;
+            }
+        }
+    }
+
+    EXPECT_GT(zero_capacity_event_regions, 0u);
+    EXPECT_EQ(nonzero_event_regions, 0u);
+
+    iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
+    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    auto executor = iv::NodeExecutor::create(
+        std::move(root),
+        {},
+        execution_target_registry,
+        1
+    );
+
+    EXPECT_NO_THROW(executor.tick_block(0, 8));
 }
 
 TEST(ArchitectureSmoke, DuplicateExecutorIdIsRejected)

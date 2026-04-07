@@ -19,7 +19,6 @@ namespace iv {
         struct PreparedState {
             TypeErasedNode root;
             ResourceContext resources;
-            std::unique_ptr<EventStreamStorage> event_stream_storage;
             NodeLayout layout;
             NodeStorage storage;
             size_t max_block_size = 0;
@@ -28,12 +27,12 @@ namespace iv {
         std::vector<ModuleRef> _module_refs;
         TypeErasedNode _root;
         ResourceContext _resources;
-        std::unique_ptr<EventStreamStorage> _event_stream_storage;
         ExecutionTargetRegistry* _execution_target_registry = nullptr;
         NodeLayout _layout;
         NodeStorage _storage;
         size_t _max_block_size;
         size_t _default_silence_ttl_samples = std::numeric_limits<size_t>::max();
+        size_t _event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER;
         size_t _executor_id = 0;
         bool _shutdown_requested = false;
 
@@ -41,7 +40,6 @@ namespace iv {
         {
             _storage.layout = &_layout;
             _storage.resources = &_resources;
-            _resources.event_streams = _event_stream_storage.get();
         }
 
         static void validate_root_interface(TypeErasedNode const& root)
@@ -65,9 +63,14 @@ namespace iv {
             return block_size;
         }
 
-        static NodeLayout make_layout(TypeErasedNode const& root, size_t max_block_size, size_t default_silence_ttl_samples)
+        static NodeLayout make_layout(
+            TypeErasedNode const& root,
+            size_t max_block_size,
+            size_t default_silence_ttl_samples,
+            size_t event_port_buffer_base_multiplier
+        )
         {
-            NodeLayoutBuilder builder(max_block_size, default_silence_ttl_samples);
+            NodeLayoutBuilder builder(max_block_size, default_silence_ttl_samples, event_port_buffer_base_multiplier);
             {
                 DeclarationContext<TypeErasedNode> ctx(builder, root);
                 root.declare(ctx);
@@ -82,8 +85,8 @@ namespace iv {
             size_t executor_id,
             char const* operation,
             bool initialize_storage = true,
-            EventStreamStorage* event_stream_storage = nullptr,
-            size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max()
+            size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max(),
+            size_t event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER
         )
         {
             validate_root_interface(root);
@@ -91,18 +94,13 @@ namespace iv {
             PreparedState prepared;
             prepared.root = std::move(root);
             prepared.resources = std::move(resources);
-            if (event_stream_storage) {
-                prepared.resources.event_streams = event_stream_storage;
-            } else {
-                prepared.event_stream_storage = std::make_unique<EventStreamStorage>();
-                prepared.resources.event_streams = prepared.event_stream_storage.get();
-            }
             prepared.max_block_size = choose_block_size(prepared.root, execution_target_registry, executor_id);
             try {
                 prepared.layout = make_layout(
                     prepared.root,
                     prepared.max_block_size,
-                    default_silence_ttl_samples
+                    default_silence_ttl_samples,
+                    event_port_buffer_base_multiplier
                 );
             } catch (std::exception const& e) {
                 throw std::runtime_error(std::string("failed to ") + operation + " node executor: make_layout: " + e.what());
@@ -140,7 +138,6 @@ namespace iv {
                         .outputs = {},
                         .event_inputs = {},
                         .event_outputs = {},
-                        .event_streams = _event_stream_storage.get(),
                         .buffer = _storage.buffer(),
                     },
                     index,
@@ -171,12 +168,12 @@ namespace iv {
         : _module_refs(std::move(other._module_refs))
         , _root(std::move(other._root))
         , _resources(std::move(other._resources))
-        , _event_stream_storage(std::move(other._event_stream_storage))
         , _execution_target_registry(other._execution_target_registry)
         , _layout(std::move(other._layout))
         , _storage(std::move(other._storage))
         , _max_block_size(other._max_block_size)
         , _default_silence_ttl_samples(other._default_silence_ttl_samples)
+        , _event_port_buffer_base_multiplier(other._event_port_buffer_base_multiplier)
         , _executor_id(other._executor_id)
         , _shutdown_requested(other._shutdown_requested)
         {
@@ -202,12 +199,12 @@ namespace iv {
             _module_refs = std::move(other._module_refs);
             _root = std::move(other._root);
             _resources = std::move(other._resources);
-            _event_stream_storage = std::move(other._event_stream_storage);
             _execution_target_registry = other._execution_target_registry;
             _layout = std::move(other._layout);
             _storage = std::move(other._storage);
             _max_block_size = other._max_block_size;
             _default_silence_ttl_samples = other._default_silence_ttl_samples;
+            _event_port_buffer_base_multiplier = other._event_port_buffer_base_multiplier;
             _executor_id = other._executor_id;
             _shutdown_requested = other._shutdown_requested;
             other._execution_target_registry = nullptr;
@@ -224,7 +221,8 @@ namespace iv {
             ExecutionTargetRegistry& execution_target_registry,
             size_t executor_id,
             std::vector<ModuleRef> module_refs = {},
-            size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max()
+            size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max(),
+            size_t event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER
         )
         {
             execution_target_registry.register_executor(executor_id);
@@ -236,8 +234,8 @@ namespace iv {
                     executor_id,
                     "create",
                     true,
-                    nullptr,
-                    default_silence_ttl_samples
+                    default_silence_ttl_samples,
+                    event_port_buffer_base_multiplier
                 );
                 execution_target_registry.validate_executor_block_size(executor_id, prepared.max_block_size);
 
@@ -245,12 +243,12 @@ namespace iv {
                     std::move(prepared.root),
                     std::move(module_refs),
                     std::move(prepared.resources),
-                    std::move(prepared.event_stream_storage),
                     execution_target_registry,
                     std::move(prepared.layout),
                     std::move(prepared.storage),
                     prepared.max_block_size,
                     default_silence_ttl_samples,
+                    event_port_buffer_base_multiplier,
                     executor_id
                 );
             } catch (...) {
@@ -264,7 +262,8 @@ namespace iv {
             ResourceContext resources,
             ExecutionTargetRegistry& execution_target_registry,
             size_t executor_id,
-            size_t default_silence_ttl_samples
+            size_t default_silence_ttl_samples,
+            size_t event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER
         )
         {
             return create(
@@ -273,7 +272,8 @@ namespace iv {
                 execution_target_registry,
                 executor_id,
                 {},
-                default_silence_ttl_samples
+                default_silence_ttl_samples,
+                event_port_buffer_base_multiplier
             );
         }
 
@@ -281,23 +281,23 @@ namespace iv {
             TypeErasedNode root,
             std::vector<ModuleRef> module_refs,
             ResourceContext resources,
-            std::unique_ptr<EventStreamStorage> event_stream_storage,
             ExecutionTargetRegistry& execution_target_registry,
             NodeLayout layout,
             NodeStorage storage,
             size_t max_block_size,
             size_t default_silence_ttl_samples,
+            size_t event_port_buffer_base_multiplier,
             size_t executor_id
         ) :
             _module_refs(std::move(module_refs)),
             _root(std::move(root)),
             _resources(std::move(resources)),
-            _event_stream_storage(std::move(event_stream_storage)),
             _execution_target_registry(&execution_target_registry),
             _layout(std::move(layout)),
             _storage(std::move(storage)),
             _max_block_size(max_block_size),
             _default_silence_ttl_samples(default_silence_ttl_samples),
+            _event_port_buffer_base_multiplier(event_port_buffer_base_multiplier),
             _executor_id(executor_id)
         {
             validate_root_interface(_root);
@@ -341,8 +341,8 @@ namespace iv {
                 _executor_id,
                 "reload",
                 false,
-                _event_stream_storage.get(),
-                _default_silence_ttl_samples
+                _default_silence_ttl_samples,
+                _event_port_buffer_base_multiplier
             );
             _execution_target_registry->validate_executor_block_size(_executor_id, prepared.max_block_size);
 

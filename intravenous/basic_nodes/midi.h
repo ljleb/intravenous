@@ -146,7 +146,7 @@ namespace iv {
             size_t cursor = 0;
             Sample value = current_frequency(state);
 
-            ctx.event_inputs[0].for_each_in_block(ctx.event_stream_storage(), ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
+            ctx.event_inputs[0].for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
                 size_t const next = std::min(event.time, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
@@ -216,7 +216,7 @@ namespace iv {
             size_t cursor = 0;
             Sample value = current_gate(state);
 
-            ctx.event_inputs[0].for_each_in_block(ctx.event_stream_storage(), ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
+            ctx.event_inputs[0].for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
                 size_t const next = std::min(event.time, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
@@ -334,7 +334,7 @@ namespace iv {
                         state.frequency = current_frequency(note, state.pitch_bend);
                         state.amplitude = amplitude;
                         if (assignment_changed) {
-                            ctx.event_outputs[0].push(ctx.event_stream_storage(), TriggerEvent {}, event_time, ctx.index, ctx.block_size);
+                            ctx.event_outputs[0].push(TriggerEvent {}, event_time, ctx.index, ctx.block_size);
                         }
                     }
                 }
@@ -350,7 +350,7 @@ namespace iv {
             };
 
             size_t cursor = 0;
-            ctx.event_inputs[0].for_each_in_block(ctx.event_stream_storage(), ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
+            ctx.event_inputs[0].for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
                 size_t const next = std::min(event.time, ctx.block_size);
                 push_until(next, cursor);
 

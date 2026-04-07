@@ -572,7 +572,7 @@ namespace iv {
         }
 
         live_instance.midi_buffer.clear();
-        state.event_inputs[0].for_each_in_block(state.event_stream_storage(), state.index, state.block_size, [&](TimedEvent const& event, size_t) {
+        state.event_inputs[0].for_each_in_block(state.index, state.block_size, [&](TimedEvent const& event, size_t) {
             auto const* midi = std::get_if<MidiEvent>(&event.value);
             if (midi == nullptr || midi->size == 0) {
                 return;
@@ -621,7 +621,7 @@ namespace iv {
             size_t const sample_offset = pending.sample_time <= block_start
                 ? 0
                 : static_cast<size_t>(pending.sample_time - block_start);
-            ctx.event_outputs[0].push(ctx.event_stream_storage(), pending.midi, sample_offset, ctx.index, ctx.block_size);
+            ctx.event_outputs[0].push(pending.midi, sample_offset, ctx.index, ctx.block_size);
             live_input.pending_messages.pop_front();
         }
     }

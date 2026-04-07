@@ -209,7 +209,7 @@ namespace iv {
                     event_port_data_export_id(_node_id, input_i)
                 );
                 IV_ASSERT(!input_port_data.empty(), "graph node wrapper event input wiring must resolve the requested EventSharedPortData entry");
-                std::construct_at(&state.event_inputs[input_i], input_port_data[0]);
+                std::construct_at(&state.event_inputs[input_i], const_cast<EventSharedPortData&>(input_port_data[0]));
             }
 
             for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
@@ -238,10 +238,8 @@ namespace iv {
             for (size_t output_i = 0; output_i < event_outputs.size(); ++output_i) {
                 auto const& target = _event_output_targets[output_i];
                 if (target.target.empty()) {
-                    throw std::logic_error(
-                        "graph node wrapper event output wiring is missing for node '" + _node_id +
-                        "' output " + std::to_string(output_i) + "'"
-                    );
+                    std::construct_at(&state.event_outputs[output_i]);
+                    continue;
                 }
                 auto target_port_data = ctx.template resolve_exported_array_storage<EventSharedPortData>(target.target);
                 if (target_port_data.empty()) {
@@ -254,7 +252,7 @@ namespace iv {
                 }
                 std::construct_at(
                     &state.event_outputs[output_i],
-                    target_port_data[0],
+                    const_cast<EventSharedPortData&>(target_port_data[0]),
                     event_outputs[output_i].type,
                     target.conversion
                 );
@@ -270,7 +268,6 @@ namespace iv {
                         .outputs = state.outputs,
                         .event_inputs = state.event_inputs,
                         .event_outputs = state.event_outputs,
-                        .event_streams = ctx.event_streams,
                         .scc_feedback_latency = ctx.scc_feedback_latency,
                         .buffer = state.nested_node_states[state.nested_node_states.size() - 1],
                     },
@@ -288,7 +285,6 @@ namespace iv {
                     .outputs = state.outputs,
                     .event_inputs = state.event_inputs,
                     .event_outputs = state.event_outputs,
-                    .event_streams = ctx.event_streams,
                     .scc_feedback_latency = ctx.scc_feedback_latency,
                     .buffer = state.nested_node_states[state.nested_node_states.size() - 1],
                 },
