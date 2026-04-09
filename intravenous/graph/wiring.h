@@ -77,6 +77,13 @@ namespace iv {
         return id;
     }
 
+    inline std::string graph_dormancy_node_skip_export_id(std::string_view graph_id)
+    {
+        std::string id = "graph_dormancy_node_skip:";
+        id += graph_id;
+        return id;
+    }
+
     inline size_t calculate_port_buffer_size(
         size_t block_size,
         size_t latency,

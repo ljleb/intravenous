@@ -81,6 +81,152 @@ namespace iv::details {
         );
     }
 
+    inline std::vector<DormancyGroup> compile_dormancy_groups(
+        PreparedGraph const& g,
+        std::span<LoweredScopeSpec const> scopes,
+        std::string_view graph_id,
+        GraphExecutionPlan const& execution_plan
+    )
+    {
+        std::unordered_map<std::string, size_t> runtime_index_by_node_id;
+        for (size_t i = 0; i < g.node_ids.size(); ++i) {
+            runtime_index_by_node_id.emplace(g.node_ids[i], i);
+        }
+        std::vector<size_t> region_to_order(execution_plan.regions.size(), GRAPH_ID);
+        for (size_t ordered_i = 0; ordered_i < execution_plan.region_order.size(); ++ordered_i) {
+            region_to_order[execution_plan.region_order[ordered_i]] = ordered_i;
+        }
+
+        std::vector<DormancyGroup> groups;
+        groups.reserve(scopes.size());
+        std::vector<std::unordered_set<size_t>> member_sets;
+        member_sets.reserve(scopes.size());
+
+        for (auto const& scope : scopes) {
+            DormancyGroup group;
+            group.parent_group = scope.parent_scope;
+            group.ttl_samples = scope.ttl_samples;
+
+            std::unordered_set<size_t> member_set;
+            for (auto const& node_id : scope.member_node_ids) {
+                auto it = runtime_index_by_node_id.find(node_id);
+                if (it == runtime_index_by_node_id.end()) {
+                    continue;
+                }
+                group.member_nodes.push_back(it->second);
+                member_set.insert(it->second);
+            }
+
+            std::sort(group.member_nodes.begin(), group.member_nodes.end());
+            group.member_nodes.erase(std::unique(group.member_nodes.begin(), group.member_nodes.end()), group.member_nodes.end());
+            member_sets.push_back(std::move(member_set));
+            groups.push_back(std::move(group));
+        }
+
+        for (size_t group_i = 0; group_i < groups.size(); ++group_i) {
+            auto const& member_set = member_sets[group_i];
+            std::unordered_set<std::string> seen_sample_inputs;
+            std::unordered_set<std::string> seen_event_inputs;
+            std::unordered_set<std::string> seen_sample_outputs;
+
+            for (GraphEdge const& edge : g.edges) {
+                bool const target_inside = edge.target.node != GRAPH_ID && member_set.contains(edge.target.node);
+                bool const source_inside = edge.source.node != GRAPH_ID && member_set.contains(edge.source.node);
+
+                if (target_inside && !source_inside) {
+                    auto const export_id = port_data_export_id(g.node_ids[edge.target.node], edge.target.port);
+                    if (seen_sample_inputs.insert(export_id).second) {
+                        groups[group_i].sample_input_frontier.push_back(DormancySamplePort{
+                            .export_id = export_id,
+                            .history = g.nodes[edge.target.node].inputs()[edge.target.port].history,
+                        });
+                    }
+                    size_t const ordered_region = region_to_order[execution_plan.node_to_region[edge.target.node]];
+                    if (ordered_region != GRAPH_ID) {
+                        groups[group_i].wake_check_regions.push_back(ordered_region);
+                    }
+                }
+
+                if (source_inside && !target_inside) {
+                    std::string export_id;
+                    size_t history = 0;
+                    if (edge.target.node == GRAPH_ID) {
+                        export_id = graph_port_data_export_id(graph_id, edge.target.port);
+                    } else {
+                        export_id = port_data_export_id(g.node_ids[edge.target.node], edge.target.port);
+                        history = g.nodes[edge.target.node].inputs()[edge.target.port].history;
+                    }
+                    if (seen_sample_outputs.insert(export_id).second) {
+                        groups[group_i].sample_output_frontier.push_back(DormancySamplePort{
+                            .export_id = std::move(export_id),
+                            .history = history,
+                        });
+                    }
+                }
+            }
+
+            for (GraphEventEdge const& edge : g.event_edges) {
+                bool const target_inside = edge.target.node != GRAPH_ID && member_set.contains(edge.target.node);
+                bool const source_inside = edge.source.node != GRAPH_ID && member_set.contains(edge.source.node);
+                if (target_inside && !source_inside) {
+                    auto const export_id = event_port_data_export_id(g.node_ids[edge.target.node], edge.target.port);
+                    if (seen_event_inputs.insert(export_id).second) {
+                        groups[group_i].event_input_frontier.push_back(DormancyEventPort{
+                            .export_id = export_id,
+                        });
+                    }
+                    size_t const ordered_region = region_to_order[execution_plan.node_to_region[edge.target.node]];
+                    if (ordered_region != GRAPH_ID) {
+                        groups[group_i].wake_check_regions.push_back(ordered_region);
+                    }
+                }
+            }
+
+            std::sort(groups[group_i].wake_check_regions.begin(), groups[group_i].wake_check_regions.end());
+            groups[group_i].wake_check_regions.erase(
+                std::unique(groups[group_i].wake_check_regions.begin(), groups[group_i].wake_check_regions.end()),
+                groups[group_i].wake_check_regions.end()
+            );
+
+            groups[group_i].can_skip =
+                !groups[group_i].member_nodes.empty()
+                && !groups[group_i].sample_output_frontier.empty()
+                && (!groups[group_i].sample_input_frontier.empty() || !groups[group_i].event_input_frontier.empty())
+                && std::all_of(
+                    groups[group_i].member_nodes.begin(),
+                    groups[group_i].member_nodes.end(),
+                    [&](size_t runtime_node) { return g.nodes[runtime_node].can_skip_block(); }
+                );
+        }
+
+        std::vector<size_t> kept_old_indices;
+        kept_old_indices.reserve(groups.size());
+        for (size_t i = 0; i < groups.size(); ++i) {
+            if (groups[i].can_skip) {
+                kept_old_indices.push_back(i);
+            }
+        }
+
+        std::unordered_map<size_t, size_t> remapped_group_indices;
+        for (size_t new_i = 0; new_i < kept_old_indices.size(); ++new_i) {
+            remapped_group_indices.emplace(kept_old_indices[new_i], new_i);
+        }
+
+        std::vector<DormancyGroup> filtered;
+        filtered.reserve(kept_old_indices.size());
+        for (size_t old_i : kept_old_indices) {
+            DormancyGroup group = std::move(groups[old_i]);
+            size_t parent = group.parent_group;
+            while (parent != GRAPH_ID && !remapped_group_indices.contains(parent)) {
+                parent = groups[parent].parent_group;
+            }
+            group.parent_group = parent == GRAPH_ID ? GRAPH_ID : remapped_group_indices.at(parent);
+            filtered.push_back(std::move(group));
+        }
+
+        return filtered;
+    }
+
     inline void expand_hyperedge_ports(PreparedGraph& g, std::string_view builder_id)
     {
         std::unordered_map<PortId, std::vector<GraphEdge>> reverse_edges_map;
@@ -829,7 +975,8 @@ namespace iv::details {
         std::vector<InputConfig> public_inputs,
         std::vector<OutputConfig> public_outputs,
         std::vector<EventInputConfig> public_event_inputs,
-        std::vector<EventOutputConfig> public_event_outputs
+        std::vector<EventOutputConfig> public_event_outputs,
+        std::vector<DormancyGroup> dormancy_groups
     )
     {
         auto [source_of, target_of] = [&] {
@@ -920,6 +1067,7 @@ namespace iv::details {
             .public_event_inputs = std::move(public_event_inputs),
             .public_event_outputs = std::move(public_event_outputs),
             .public_output_buffer_plans = std::move(public_output_buffer_plans),
+            .dormancy_groups = std::move(dormancy_groups),
             .internal_latency = 0,
             .node_ids = std::move(node_ids),
         };
@@ -966,7 +1114,9 @@ namespace iv::details {
             size_t const region_i = artifact.execution_plan.region_order[ordered_scc_i];
             auto const& region = artifact.execution_plan.regions[region_i];
             std::vector<GraphNodeWrapper> region_nodes;
+            std::vector<size_t> region_global_node_indices;
             region_nodes.reserve(region.execution_order.size());
+            region_global_node_indices.reserve(region.execution_order.size());
 
             for (size_t global_i : region.execution_order) {
                 std::vector<std::string> output_targets;
@@ -1037,6 +1187,7 @@ namespace iv::details {
                     std::move(output_targets),
                     std::move(event_output_targets)
                 );
+                region_global_node_indices.push_back(global_i);
             }
 
             size_t internal_latency = 0;
@@ -1047,9 +1198,11 @@ namespace iv::details {
 
             artifact.scc_wrappers.emplace_back(
                 std::move(region_nodes),
+                std::move(region_global_node_indices),
                 region.max_block_size,
                 internal_latency,
-                region.nodes.size() > 1 ? region.max_block_size : 0
+                region.nodes.size() > 1 ? region.max_block_size : 0,
+                artifact.dormancy_groups.empty() ? std::string{} : graph_dormancy_node_skip_export_id(artifact.graph_id)
             );
         }
 

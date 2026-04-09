@@ -135,6 +135,71 @@ namespace {
         }
     };
 
+    struct SourceOnlyNode {
+        auto outputs() const
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+    };
+
+    struct OverrideCanSkipNode {
+        auto event_outputs() const
+        {
+            return std::array<iv::EventOutputConfig, 1> {{
+                { .name = "trigger", .type = iv::EventTypeId::trigger }
+            }};
+        }
+
+        bool can_skip_block() const
+        {
+            return true;
+        }
+    };
+
+    struct CountingSilentPassthrough {
+        int* tick_count = nullptr;
+
+        auto inputs() const
+        {
+            return std::array<iv::InputConfig, 1>{};
+        }
+
+        auto outputs() const
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+
+        void tick(iv::TickSampleContext<CountingSilentPassthrough> const& ctx) const
+        {
+            if (tick_count) {
+                ++*tick_count;
+            }
+            (void)ctx.inputs[0].get();
+            ctx.outputs[0].push(0.0f);
+        }
+    };
+
+    struct BufferSink {
+        iv::Sample* destination;
+        size_t size;
+
+        auto inputs() const
+        {
+            return std::array<iv::InputConfig, 1>{};
+        }
+
+        void tick_block(iv::TickBlockContext<BufferSink> const& ctx) const
+        {
+            auto block = ctx.inputs[0].get_block(ctx.block_size);
+            for (size_t i = 0; i < ctx.block_size; ++i) {
+                size_t const index = ctx.index + i;
+                if (index < size) {
+                    destination[index] = block[i];
+                }
+            }
+        }
+    };
+
     static_assert(iv::details::fixed_input_count_v<UnaryPassthrough> == 1);
     static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SamplePortRef>);
     static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SamplePortRef>())>);
@@ -456,15 +521,13 @@ TEST(ArchitectureSmoke, SubgraphPassthroughFlattensToDirectSignalPath)
 
     iv::GraphBuilder g;
     auto const src = g.node<iv::ValueSource>(&value);
-    auto const passthrough = g.subgraph([](iv::GraphBuilder& nested) {
-        auto const input = nested.input();
-        nested.outputs(input);
+    auto const passthrough = g.subgraph([&] {
+        g.outputs(src);
     });
     auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
-    passthrough(src);
     sink(passthrough);
     g.outputs();
 
@@ -480,6 +543,15 @@ TEST(ArchitectureSmoke, SubgraphPassthroughFlattensToDirectSignalPath)
 
     expect_constant_block(audio_device.output_block(), value);
     audio_device.device().finish_requested_block();
+}
+
+TEST(ArchitectureSmoke, CanSkipBlockDefaultsAndOverride)
+{
+    EXPECT_TRUE(iv::get_can_skip_block(UnaryPassthrough{}));
+    EXPECT_FALSE(iv::get_can_skip_block(DisconnectedTriggerSource{}));
+    EXPECT_FALSE(iv::get_can_skip_block(EventUnaryPassthrough{}));
+    EXPECT_FALSE(iv::get_can_skip_block(SourceOnlyNode{}));
+    EXPECT_TRUE(iv::get_can_skip_block(OverrideCanSkipNode{}));
 }
 
 TEST(ArchitectureSmoke, PipeOperatorChainsSingleInputSingleOutputNodes)
@@ -583,6 +655,116 @@ TEST(ArchitectureSmoke, RepeatedRequestedBlocksDoNotOverflowBufferedDevice)
         expect_constant_block(audio_device.output_block().first(block_size), value);
         audio_device.device().finish_requested_block();
     }
+}
+
+TEST(ArchitectureSmoke, IndependentGraphBuilderStillLowersThroughNode)
+{
+    iv::Sample value = 0.375f;
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 1,
+            .max_block_frames = 8,
+        }
+    );
+
+    iv::GraphBuilder g;
+    auto const src = g.node<iv::ValueSource>(&value);
+
+    iv::GraphBuilder child;
+    auto const input = child.input();
+    child.outputs(input);
+
+    auto const passthrough = g.node(child);
+    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+        .device_id = 0,
+        .channel = 0,
+    });
+    passthrough(src);
+    sink(passthrough);
+    g.outputs();
+
+    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    iv::NodeExecutor executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build()),
+        {},
+        execution_target_registry,
+        1
+    );
+
+    request_tick_and_wait(audio_device, executor, 0, 8);
+
+    expect_constant_block(audio_device.output_block(), value);
+    audio_device.device().finish_requested_block();
+}
+
+TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
+{
+    iv::Sample value = 0.0f;
+    std::vector<iv::Sample> output(12, 0.0f);
+    int tick_count = 0;
+
+    iv::GraphBuilder g;
+    auto const src = g.node<iv::ValueSource>(&value);
+    auto const scoped = g.subgraph([&] {
+        auto const stage = g.node<CountingSilentPassthrough>(CountingSilentPassthrough{ .tick_count = &tick_count });
+        stage(src);
+        g.outputs(stage);
+    }).ttl(8);
+    auto const sink = g.node<BufferSink>(output.data(), output.size());
+    sink(scoped);
+    g.outputs();
+
+    iv::test::FakeAudioDevice audio_device({ .max_block_frames = output.size() });
+    iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
+    iv::NodeExecutor executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build()),
+        {},
+        execution_targets,
+        1
+    );
+
+    executor.tick_block(0, 4);
+    executor.tick_block(4, 4);
+    executor.tick_block(8, 4);
+
+    EXPECT_EQ(tick_count, 8);
+}
+
+TEST(ArchitectureSmoke, IndependentGraphBuilderDormancyStopsTickingSilentScope)
+{
+    iv::Sample value = 0.0f;
+    std::vector<iv::Sample> output(12, 0.0f);
+    int tick_count = 0;
+
+    iv::GraphBuilder child;
+    auto const child_input = child.input();
+    auto const child_stage = child.node<CountingSilentPassthrough>(CountingSilentPassthrough{ .tick_count = &tick_count });
+    child_stage(child_input);
+    child.outputs(child_stage);
+
+    iv::GraphBuilder g;
+    auto const src = g.node<iv::ValueSource>(&value);
+    auto const scoped = g.node(child).ttl(8);
+    auto const sink = g.node<BufferSink>(output.data(), output.size());
+    scoped(src);
+    sink(scoped);
+    g.outputs();
+
+    iv::test::FakeAudioDevice audio_device({ .max_block_frames = output.size() });
+    iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
+    iv::NodeExecutor executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build()),
+        {},
+        execution_targets,
+        1
+    );
+
+    executor.tick_block(0, 4);
+    executor.tick_block(4, 4);
+    executor.tick_block(8, 4);
+
+    EXPECT_EQ(tick_count, 8);
 }
 
 TEST(ArchitectureSmoke, LargeRequestedBlockIndicesRemainReadyWithoutWarmup)

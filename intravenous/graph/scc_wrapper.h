@@ -8,28 +8,36 @@
 #include <numeric>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace iv {
     struct GraphSccWrapper {
         std::vector<GraphNodeWrapper> _nodes;
+        std::vector<size_t> _global_node_indices;
         std::vector<size_t> _input_constant_offsets;
         size_t _block_size;
         size_t _internal_latency;
         size_t _scc_feedback_latency;
+        std::string _node_skip_import_id;
 
         GraphSccWrapper(
             std::vector<GraphNodeWrapper> nodes,
+            std::vector<size_t> global_node_indices,
             size_t block_size,
             size_t internal_latency,
-            size_t scc_feedback_latency
+            size_t scc_feedback_latency,
+            std::string node_skip_import_id
         ) :
             _nodes(std::move(nodes)),
+            _global_node_indices(std::move(global_node_indices)),
             _input_constant_offsets(_nodes.size() + 1, 0),
             _block_size(block_size),
             _internal_latency(internal_latency),
-            _scc_feedback_latency(scc_feedback_latency)
+            _scc_feedback_latency(scc_feedback_latency),
+            _node_skip_import_id(std::move(node_skip_import_id))
         {
+            IV_ASSERT(_nodes.size() == _global_node_indices.size(), "SCC wrapper must have one global node index per wrapped node");
             for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
                 _input_constant_offsets[node_i + 1] = _input_constant_offsets[node_i] + _nodes[node_i].inputs().size();
             }
@@ -46,6 +54,7 @@ namespace iv {
 
         struct State {
             std::span<std::span<std::byte>> nested_node_states;
+            std::span<std::uint32_t> global_node_skip_depth;
             DormancyState dormancy;
         };
 
@@ -68,6 +77,9 @@ namespace iv {
         {
             auto const& state = ctx.state();
             ctx.nested_node_states(state.nested_node_states);
+            if (!_node_skip_import_id.empty()) {
+                ctx.import_array(_node_skip_import_id, state.global_node_skip_depth);
+            }
             ctx.local_array(state.dormancy.dormant, _nodes.size());
             ctx.local_array(state.dormancy.unchanged_inputs, _nodes.size());
             ctx.local_array(state.dormancy.silent_samples_accumulated, _nodes.size());
@@ -86,8 +98,9 @@ namespace iv {
             std::fill(state.dormancy.unchanged_inputs.begin(), state.dormancy.unchanged_inputs.end(), 0);
             std::fill(state.dormancy.silent_samples_accumulated.begin(), state.dormancy.silent_samples_accumulated.end(), 0);
             for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
-                state.dormancy.effective_ttl_samples[node_i] =
-                    _nodes[node_i].resolve_default_ttl_samples(ctx.default_silence_ttl_samples());
+                state.dormancy.effective_ttl_samples[node_i] = _nodes[node_i].can_skip_block()
+                    ? _nodes[node_i].resolve_default_ttl_samples(ctx.default_silence_ttl_samples())
+                    : std::numeric_limits<size_t>::max();
             }
             std::fill(state.dormancy.remembered_constant_inputs.begin(), state.dormancy.remembered_constant_inputs.end(), 0.0f);
             std::fill(state.dormancy.remembered_constant_valid.begin(), state.dormancy.remembered_constant_valid.end(), 0);
@@ -224,6 +237,18 @@ namespace iv {
                         sample_inputs_unchanged(state, runtime_state, node_i, scc_block_size, inputs_constant)
                         && event_inputs_unchanged(runtime_state, block_index, scc_block_size);
                     state.dormancy.unchanged_inputs[node_i] = unchanged ? 1 : 0;
+
+                    if (
+                        !state.global_node_skip_depth.empty()
+                        && state.global_node_skip_depth[_global_node_indices[node_i]] != 0
+                    ) {
+                        do_skip_block(_nodes[node_i], {
+                            node_ctx,
+                            block_index,
+                            scc_block_size
+                        });
+                        continue;
+                    }
 
                     if (state.dormancy.dormant[node_i] != 0) {
                         if (unchanged) {

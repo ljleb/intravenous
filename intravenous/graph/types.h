@@ -6,6 +6,8 @@
 #include <functional>
 #include <limits>
 #include <unordered_map>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace iv {
@@ -68,6 +70,33 @@ namespace iv {
         std::vector<size_t> nodes;
         std::vector<size_t> execution_order;
         size_t max_block_size;
+    };
+
+    struct DormancySamplePort {
+        std::string export_id;
+        size_t history = 0;
+    };
+
+    struct DormancyEventPort {
+        std::string export_id;
+    };
+
+    struct DormancyGroup {
+        size_t parent_group = GRAPH_ID;
+        size_t subtree_end_exclusive = 0;
+        std::vector<size_t> member_nodes;
+        std::vector<size_t> wake_check_regions;
+        std::vector<DormancySamplePort> sample_input_frontier;
+        std::vector<DormancyEventPort> event_input_frontier;
+        std::vector<DormancySamplePort> sample_output_frontier;
+        std::optional<size_t> ttl_samples;
+        bool can_skip = false;
+    };
+
+    struct LoweredScopeSpec {
+        size_t parent_scope = GRAPH_ID;
+        std::vector<std::string> member_node_ids;
+        std::optional<size_t> ttl_samples;
     };
 
     struct GraphExecutionPlan {

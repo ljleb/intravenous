@@ -117,6 +117,12 @@ namespace iv {
             ttl = node.ttl_samples();
         };
 
+        template <typename Node>
+        concept has_can_skip_block_method = requires(Node const& node, bool value)
+        {
+            value = node.can_skip_block();
+        };
+
     }
 
     template<typename Node>
@@ -259,6 +265,18 @@ namespace iv {
         else
         {
             return std::nullopt;
+        }
+    }
+
+    template<typename Node>
+    constexpr bool get_can_skip_block(Node const& node)
+    {
+        if constexpr (details::has_can_skip_block_method<Node>) {
+            return node.can_skip_block();
+        } else {
+            return get_num_event_outputs(node) == 0
+                && get_num_outputs(node) > 0
+                && (get_num_inputs(node) > 0 || get_num_event_inputs(node) > 0);
         }
     }
 

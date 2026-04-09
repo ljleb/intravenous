@@ -22,6 +22,7 @@ namespace iv {
         std::vector<EventInputConfig> public_event_inputs;
         std::vector<EventOutputConfig> public_event_outputs;
         std::vector<PortBufferPlan> public_output_buffer_plans;
+        std::vector<DormancyGroup> dormancy_groups;
         size_t internal_latency;
         std::vector<std::string> node_ids;
     };

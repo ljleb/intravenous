@@ -58,16 +58,14 @@ int main()
     auto const dt = graph.node<iv::ValueSource>(&dt_value);
     auto const src_a = graph.node<iv::ValueSource>(&noise_a);
     auto const src_b = graph.node<iv::ValueSource>(&noise_b);
-    auto const voice_a = graph.subgraph([&](iv::GraphBuilder& nested) {
-        detached_voice(nested, nested.input("dt"), nested.input("noise"), 0.5f);
+    auto const voice_a = graph.subgraph([&] {
+        detached_voice(graph, dt, src_a, 0.5f);
     });
-    auto const voice_b = graph.subgraph([&](iv::GraphBuilder& nested) {
-        detached_voice(nested, nested.input("dt"), nested.input("noise"), 0.25f);
+    auto const voice_b = graph.subgraph([&] {
+        detached_voice(graph, dt, src_b, 0.25f);
     });
     auto const sink = graph.node<BufferSink>(output.data(), output.size());
 
-    voice_a("dt"_P = dt, "noise"_P = src_a);
-    voice_b("dt"_P = dt, "noise"_P = src_b);
     sink(voice_a + voice_b);
     graph.outputs();
 

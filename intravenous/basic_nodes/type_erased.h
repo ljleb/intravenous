@@ -37,6 +37,7 @@ namespace iv {
         size_t _internal_latency;
         size_t _max_block_size;
         std::optional<size_t> _ttl_samples;
+        bool _can_skip_block = false;
         char const* _type_name = "<unknown>";
         void (*_declare_fn)(void*, DeclarationContext<TypeErasedNode> const&) = nullptr;
         void (*_tick_fn)(void*, TickSampleContext<TypeErasedNode> const&) = nullptr;
@@ -65,6 +66,7 @@ namespace iv {
             _internal_latency = get_internal_latency(node);
             _max_block_size = get_max_block_size(node);
             _ttl_samples = get_ttl_samples(node);
+            _can_skip_block = get_can_skip_block(node);
             _type_name = typeid(Node).name();
             validate_max_block_size(_max_block_size, "node max_block_size() must be a power of 2");
 
@@ -214,6 +216,11 @@ namespace iv {
         std::optional<size_t> ttl_samples() const
         {
             return _ttl_samples;
+        }
+
+        bool can_skip_block() const
+        {
+            return _can_skip_block;
         }
 
         void declare(DeclarationContext<TypeErasedNode> const& ctx) const

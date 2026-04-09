@@ -150,6 +150,11 @@ namespace iv {
             return get_max_block_size(_node);
         }
 
+        bool can_skip_block() const
+        {
+            return _node.can_skip_block();
+        }
+
         void declare(DeclarationContext<GraphNodeWrapper> const& ctx) const
         {
             auto const& state = ctx.state();
