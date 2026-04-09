@@ -32,6 +32,18 @@ namespace {
     };
 
     template<typename L, typename R>
+    concept GreaterInvocable = requires(L lhs, R rhs)
+    {
+        lhs > rhs;
+    };
+
+    template<typename L, typename R>
+    concept LessInvocable = requires(L lhs, R rhs)
+    {
+        lhs < rhs;
+    };
+
+    template<typename L, typename R>
     concept ShiftRightInvocable = requires(L lhs, R rhs)
     {
         lhs >> rhs;
@@ -101,55 +113,79 @@ namespace {
         }
     };
 
+    struct EventUnaryPassthrough {
+        auto event_inputs() const
+        {
+            return std::array<iv::EventInputConfig, 1> {{
+                { .name = "trigger", .type = iv::EventTypeId::trigger }
+            }};
+        }
+
+        auto event_outputs() const
+        {
+            return std::array<iv::EventOutputConfig, 1> {{
+                { .name = "trigger", .type = iv::EventTypeId::trigger }
+            }};
+        }
+
+        void tick_block(iv::TickBlockContext<EventUnaryPassthrough> const& ctx) const
+        {
+            auto events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            ctx.event_outputs[0].push_block(events, ctx.index, ctx.block_size);
+        }
+    };
+
     static_assert(iv::details::fixed_input_count_v<UnaryPassthrough> == 1);
-    static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SignalRef>);
-    static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SignalRef>())>);
-    static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SignalRef, iv::SignalRef>);
-    static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SignalRef>()), iv::SignalRef>);
-    static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SignalRef>()), decltype("in"_P = std::declval<iv::SignalRef>())>);
+    static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SamplePortRef>);
+    static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SamplePortRef>())>);
+    static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SamplePortRef, iv::SamplePortRef>);
+    static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SamplePortRef>()), iv::SamplePortRef>);
+    static_assert(!NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SamplePortRef>()), decltype("in"_P = std::declval<iv::SamplePortRef>())>);
     static_assert(NodeRefInvocable<
         iv::StructuredNodeRef<MixedInputsNode>,
-        iv::SignalRef,
-        decltype("cutoff"_P = std::declval<iv::SignalRef>()),
-        decltype("resonance"_P = std::declval<iv::SignalRef>())
+        iv::SamplePortRef,
+        decltype("cutoff"_P = std::declval<iv::SamplePortRef>()),
+        decltype("resonance"_P = std::declval<iv::SamplePortRef>())
     >);
     static_assert(NodeRefInvocable<
         iv::StructuredNodeRef<MixedInputsNode>,
-        iv::SignalRef,
-        iv::SignalRef,
-        decltype("resonance"_P = std::declval<iv::SignalRef>())
+        iv::SamplePortRef,
+        iv::SamplePortRef,
+        decltype("resonance"_P = std::declval<iv::SamplePortRef>())
     >);
     static_assert(!NodeRefInvocable<
         iv::StructuredNodeRef<MixedInputsNode>,
-        decltype("cutoff"_P = std::declval<iv::SignalRef>()),
-        iv::SignalRef
+        decltype("cutoff"_P = std::declval<iv::SamplePortRef>()),
+        iv::SamplePortRef
     >);
     static_assert(!NodeRefInvocable<
         iv::StructuredNodeRef<MixedInputsNode>,
-        iv::SignalRef,
-        decltype("cutoff"_P = std::declval<iv::SignalRef>()),
-        iv::SignalRef
+        iv::SamplePortRef,
+        decltype("cutoff"_P = std::declval<iv::SamplePortRef>()),
+        iv::SamplePortRef
     >);
     static_assert(!NodeRefInvocable<
         iv::StructuredNodeRef<MixedInputsNode>,
-        iv::SignalRef,
-        decltype("cutoff"_P = std::declval<iv::SignalRef>()),
-        decltype("cutoff"_P = std::declval<iv::SignalRef>())
+        iv::SamplePortRef,
+        decltype("cutoff"_P = std::declval<iv::SamplePortRef>()),
+        decltype("cutoff"_P = std::declval<iv::SamplePortRef>())
     >);
     static_assert(!NodeRefInvocable<
         iv::StructuredNodeRef<MixedInputsNode>,
-        iv::SignalRef,
-        iv::SignalRef,
-        iv::SignalRef,
-        decltype("resonance"_P = std::declval<iv::SignalRef>())
+        iv::SamplePortRef,
+        iv::SamplePortRef,
+        iv::SamplePortRef,
+        decltype("resonance"_P = std::declval<iv::SamplePortRef>())
     >);
-    static_assert(ShiftRightInvocable<iv::SignalRef, iv::StructuredNodeRef<UnaryPassthrough>>);
-    static_assert(ShiftLeftInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SignalRef>);
+    static_assert(GreaterInvocable<iv::SamplePortRef, iv::StructuredNodeRef<UnaryPassthrough>>);
+    static_assert(LessInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SamplePortRef>);
+    static_assert(GreaterInvocable<iv::StructuredNodeRef<DisconnectedTriggerSource>, iv::TypedNodeRef<EventUnaryPassthrough>>);
+    static_assert(LessInvocable<iv::TypedNodeRef<EventUnaryPassthrough>, iv::StructuredNodeRef<DisconnectedTriggerSource>>);
     static_assert(ShiftLeftInvocable<decltype("value"_P), iv::StructuredNodeRef<UnaryPassthrough>>);
     static_assert(ShiftRightInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("value"_P)>);
-    static_assert(BitNotInvocable<iv::SignalRef>);
+    static_assert(BitNotInvocable<iv::SamplePortRef>);
     static_assert(BitNotInvocable<iv::StructuredNodeRef<UnaryPassthrough>>);
-    static_assert(std::same_as<iv::details::node_ref_for_t<iv::Broadcast>, iv::TypedNodeRef<iv::Broadcast>>);
+    static_assert(std::same_as<iv::details::sample_node_ref_for_t<iv::Broadcast>, iv::TypedNodeRef<iv::Broadcast>>);
 
     void expect_constant_block(std::span<iv::Sample const> block, iv::Sample expected)
     {
@@ -466,7 +502,7 @@ TEST(ArchitectureSmoke, PipeOperatorChainsSingleInputSingleOutputNodes)
         .channel = 0,
     });
 
-    auto const piped = src >> stage_a >> stage_b;
+    auto const piped = src > stage_a > stage_b;
     sink(piped);
     g.outputs();
 
@@ -635,7 +671,7 @@ TEST(ArchitectureSmoke, DirectoryModuleRetainsModuleRefsAndRuns)
         audio_device,
         execution_target_registry,
         1,
-        iv::test::test_modules_root() / "noisy_saw_project"
+        iv::test::test_modules_root() / "nested_loader_project"
     );
 
     EXPECT_NE(processor.num_module_refs(), 0u);
@@ -648,7 +684,7 @@ TEST(ArchitectureSmoke, DirectoryModuleEventArrayBindingsResolve)
     iv::test::FakeAudioDevice audio_device;
     auto loader = iv::test::make_loader();
     auto loaded = loader.load_root(
-        iv::test::test_modules_root() / "noisy_saw_project",
+        iv::test::test_modules_root() / "event_loader_project",
         iv::test::module_render_config(audio_device),
         &audio_device.sample_period()
     );

@@ -32,7 +32,7 @@ namespace {
         }
     };
 
-    void detached_voice(iv::GraphBuilder& g, iv::SignalRef dt, iv::SignalRef noise, iv::Sample amplitude)
+    void detached_voice(iv::GraphBuilder& g, iv::SamplePortRef dt, iv::SamplePortRef noise, iv::Sample amplitude)
     {
         auto const reset = 1.0f;
         auto const frequency = 220.0f;

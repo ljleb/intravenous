@@ -10,9 +10,9 @@ int main()
 
     auto const fixtures = iv::test::test_modules_root();
     auto const runtime_root = iv::test::runtime_modules_root();
-    auto const project_src = fixtures / "noisy_saw_project";
+    auto const project_src = fixtures / "behavior_project";
     auto const project_dst = runtime_root / "behavior_project";
-    auto const voice_src = fixtures / "noisy_saw_voice";
+    auto const voice_src = fixtures / "behavior_voice";
     auto const voice_dst = runtime_root / "behavior_voice";
     auto const local_src = fixtures / "local_cmake";
     auto const local_dst = runtime_root / "behavior_local";
@@ -23,8 +23,8 @@ int main()
     iv::test::copy_directory(voice_src, voice_dst);
     iv::test::copy_directory(local_src, local_dst);
 
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.noisy_saw_project", project_dst));
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.noisy_saw_voice", voice_dst));
+    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.behavior_project", project_dst));
+    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.behavior_voice", voice_dst));
     std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst));
 
     iv::test::FakeAudioDevice audio_device;
@@ -39,8 +39,8 @@ int main()
         (void)graph;
     }
 
-    auto const project_workspace = iv::test::runtime_module_workspace("iv.test.noisy_saw_project", project_dst);
-    auto const voice_workspace = iv::test::runtime_module_workspace("iv.test.noisy_saw_voice", voice_dst);
+    auto const project_workspace = iv::test::runtime_module_workspace("iv.test.behavior_project", project_dst);
+    auto const voice_workspace = iv::test::runtime_module_workspace("iv.test.behavior_voice", voice_dst);
     auto const local_workspace = iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst);
 
     auto const project_cache = project_workspace / "build" / "CMakeCache.txt";
@@ -57,8 +57,8 @@ int main()
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
-    auto project_needle = std::string("SignalRef first_noise;");
-    auto project_replacement = std::string("SignalRef first_noise;\n        // behavior source marker");
+    auto project_needle = std::string("SamplePortRef first_output;");
+    auto project_replacement = std::string("SamplePortRef first_output;\n    // behavior source marker");
     iv::test::require(project_source.contains(project_needle), "project fixture missing source marker");
     project_source.replace(project_source.find(project_needle), project_needle.size(), project_replacement);
     iv::test::write_text(project_dst / "module.cpp", project_source);
@@ -77,8 +77,8 @@ int main()
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
-    auto voice_needle = std::string("\"amplitude\"_P = amplitude,");
-    auto voice_replacement = std::string("\"amplitude\"_P = amplitude,/* behavior dependency marker*/");
+    auto voice_needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");
+    auto voice_replacement = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);/* behavior dependency marker*/");
     iv::test::require(voice_source.contains(voice_needle), "voice fixture missing source marker");
     voice_source.replace(voice_source.find(voice_needle), voice_needle.size(), voice_replacement);
     iv::test::write_text(voice_dst / "module.cpp", voice_source);

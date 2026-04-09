@@ -28,33 +28,33 @@
 
 namespace iv {
     class GraphBuilder;
-    class NodeRef;
+    class SampleNodeRef;
     template<class Node>
     class TypedNodeRef;
     template<class Node>
     class StructuredNodeRef;
 
-    struct SignalRef {
+    struct SamplePortRef {
         GraphBuilder* graph_builder{};
         size_t node_index{};
         size_t output_port{};
 
-        SignalRef() = default;
-        explicit SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
+        SamplePortRef() = default;
+        explicit SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
         operator PortId() const { return { node_index, output_port }; }
 
-        SignalRef detach(size_t loop_extra_latency = 1) const;
+        SamplePortRef detach(size_t loop_extra_latency = 1) const;
 
         std::string to_string() const;
     };
 
-    struct EventRef {
+    struct EventPortRef {
         GraphBuilder* graph_builder {};
         size_t node_index {};
         size_t output_port {};
 
-        EventRef() = default;
-        explicit EventRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
+        EventPortRef() = default;
+        explicit EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
         operator PortId() const { return { node_index, output_port }; }
 
         std::string to_string() const;
@@ -62,20 +62,20 @@ namespace iv {
 
     struct NamedRef {
         std::string_view name;
-        std::variant<SignalRef, Sample, EventRef> value;
+        std::variant<SamplePortRef, Sample, EventPortRef> value;
 
-        NamedRef(std::string_view name, SignalRef signal): name(name), value(signal) {}
+        NamedRef(std::string_view name, SamplePortRef sample_port): name(name), value(sample_port) {}
         NamedRef(std::string_view name, Sample sample): name(name), value(sample) {}
-        NamedRef(std::string_view name, EventRef event): name(name), value(event) {}
+        NamedRef(std::string_view name, EventPortRef event): name(name), value(event) {}
     };
 
     struct OutputRefConfig {
-        SignalRef ref;
+        SamplePortRef ref;
         OutputConfig config;
     };
 
     struct EventOutputRefConfig {
-        EventRef ref;
+        EventPortRef ref;
         EventOutputConfig config;
     };
 
@@ -229,13 +229,13 @@ namespace iv {
             || has_fixed_output_count_v<std::remove_cvref_t<Node>>;
 
         template<typename Node>
-        using node_ref_for_t = std::conditional_t<
+        using sample_node_ref_for_t = std::conditional_t<
             has_fixed_output_count_v<std::remove_cvref_t<Node>>,
             StructuredNodeRef<std::remove_cvref_t<Node>>,
             std::conditional_t<
                 should_preserve_node_type_v<std::remove_cvref_t<Node>>,
                 TypedNodeRef<std::remove_cvref_t<Node>>,
-                NodeRef
+                SampleNodeRef
             >
         >;
 
@@ -249,7 +249,7 @@ namespace iv {
         inline constexpr bool is_named_arg_v = is_named_arg<std::remove_cvref_t<T>>::value;
 
         template<class T>
-        inline constexpr bool is_event_like_v = std::convertible_to<std::remove_cvref_t<T>, EventRef>;
+        inline constexpr bool is_event_like_v = std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
 
         template<class T>
         inline constexpr bool arg_is_event_v = is_event_like_v<T>;
@@ -258,7 +258,7 @@ namespace iv {
         inline constexpr bool arg_is_event_v<NamedArg<Name, T>> = is_event_like_v<T>;
 
         enum class call_domain {
-            signal,
+            sample,
             event,
             mixed,
         };
@@ -303,13 +303,13 @@ namespace iv {
         inline constexpr bool has_event_args_v = (false || ... || arg_is_event_v<std::remove_cvref_t<Args>>);
 
         template<class... Args>
-        inline constexpr bool has_signal_args_v = (false || ... || !arg_is_event_v<std::remove_cvref_t<Args>>);
+        inline constexpr bool has_sample_args_v = (false || ... || !arg_is_event_v<std::remove_cvref_t<Args>>);
 
         template<class... Args>
         inline constexpr call_domain call_domain_v =
             has_event_args_v<Args...>
-                ? (has_signal_args_v<Args...> ? call_domain::mixed : call_domain::event)
-                : call_domain::signal;
+                ? (has_sample_args_v<Args...> ? call_domain::mixed : call_domain::event)
+                : call_domain::sample;
 
         template<class... Args>
         inline constexpr size_t arg_count_v = sizeof...(Args);
@@ -339,7 +339,7 @@ namespace iv {
         GraphBuilder* _graph_builder{};
         size_t _index{};
 
-        friend class EventPortView;
+        friend class EventNodeRef;
 
     private:
         Derived const& derived() const
@@ -355,11 +355,11 @@ namespace iv {
         {}
 
         BuilderNode const& node() const;
-        NodeRef node_ref() const;
+        SampleNodeRef node_ref() const;
 
-        SignalRef operator[](size_t output_index) const;
-        SignalRef operator[](std::string_view output_name) const;
-        operator SignalRef() const;
+        SamplePortRef operator[](size_t output_index) const;
+        SamplePortRef operator[](std::string_view output_name) const;
+        operator SamplePortRef() const;
         bool input_is_connected(size_t input_port) const;
         bool event_input_is_connected(size_t input_port) const;
 
@@ -375,25 +375,25 @@ namespace iv {
         Derived connect_input(size_t input_port, T&& value) const;
         template<class T>
         Derived connect_input(std::string_view input_name, T&& value) const;
-        Derived connect_event_input(size_t input_port, EventRef value) const;
-        Derived connect_event_input(std::string_view input_name, EventRef value) const;
+        Derived connect_event_input(size_t input_port, EventPortRef value) const;
+        Derived connect_event_input(std::string_view input_name, EventPortRef value) const;
 
-        SignalRef detach(size_t loop_extra_latency = 1) const;
+        SamplePortRef detach(size_t loop_extra_latency = 1) const;
         Derived ttl(size_t samples) const;
         Derived no_ttl() const;
 
         std::string to_string() const;
     };
 
-    class NodeRef : public NodeRefBase<NodeRef> {
+    class SampleNodeRef : public NodeRefBase<SampleNodeRef> {
     public:
-        using NodeRefBase<NodeRef>::NodeRefBase;
+        using NodeRefBase<SampleNodeRef>::NodeRefBase;
     };
 
-    class EventPortView {
-        NodeRef _node;
+    class EventNodeRef {
+        SampleNodeRef _node;
 
-        EventRef event_ref(size_t output_index) const
+        EventPortRef event_port_ref(size_t output_index) const
         {
             auto outputs = get_event_outputs(_node.node());
             if (output_index >= outputs.size()) {
@@ -402,15 +402,15 @@ namespace iv {
                     + _node.to_string() + " is out of bounds"
                 );
             }
-            return EventRef(*_node._graph_builder, _node._index, output_index);
+            return EventPortRef(*_node._graph_builder, _node._index, output_index);
         }
 
-        EventRef event_ref(std::string_view output_name) const
+        EventPortRef event_port_ref(std::string_view output_name) const
         {
             auto outputs = get_event_outputs(_node.node());
             for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
                 if (outputs[output_port].name == output_name) {
-                    return EventRef(*_node._graph_builder, _node._index, output_port);
+                    return EventPortRef(*_node._graph_builder, _node._index, output_port);
                 }
             }
 
@@ -421,32 +421,32 @@ namespace iv {
         }
 
     public:
-        EventPortView() = default;
+        EventNodeRef() = default;
 
-        explicit EventPortView(NodeRef node) :
+        explicit EventNodeRef(SampleNodeRef node) :
             _node(std::move(node))
         {}
 
-        EventRef operator[](size_t output_index) const
+        EventPortRef operator[](size_t output_index) const
         {
-            return event_ref(output_index);
+            return event_port_ref(output_index);
         }
 
-        EventRef operator[](std::string_view output_name) const
+        EventPortRef operator[](std::string_view output_name) const
         {
-            return event_ref(output_name);
+            return event_port_ref(output_name);
         }
 
-        operator EventRef() const
+        operator EventPortRef() const
         {
             auto outputs = get_event_outputs(_node.node());
             if (outputs.size() != 1) {
                 details::error(
                     to_string() + " "
-                    "does not have exactly 1 event output port: it cannot be implicitly converted to EventRef"
+                    "does not have exactly 1 event output port: it cannot be implicitly converted to EventPortRef"
                 );
             }
-            return event_ref(0);
+            return event_port_ref(0);
         }
 
         std::string to_string() const
@@ -454,7 +454,7 @@ namespace iv {
             return _node.to_string();
         }
 
-        NodeRef const& node() const
+        SampleNodeRef const& node() const
         {
             return _node;
         }
@@ -468,12 +468,12 @@ namespace iv {
         using NodeType = std::remove_cvref_t<Node>;
         using Base::Base;
 
-        operator NodeRef() const
+        operator SampleNodeRef() const
         {
             if (!this->_graph_builder) {
-                return NodeRef();
+                return SampleNodeRef();
             }
-            return NodeRef(*this->_graph_builder, this->_index);
+            return SampleNodeRef(*this->_graph_builder, this->_index);
         }
     };
 
@@ -493,23 +493,23 @@ namespace iv {
         {}
 
         template<size_t I>
-        SignalRef get() const
+        SamplePortRef get() const
         {
             static_assert(I < output_count);
             if (!this->_graph_builder) {
-                details::error("attempted to use a null NodeRef");
+                details::error("attempted to use a null SampleNodeRef");
             }
-            return SignalRef(*this->_graph_builder, this->_index, I);
+            return SamplePortRef(*this->_graph_builder, this->_index, I);
         }
     };
 
-    using DetachedSignalInfo = DetachedInfo;
+    using DetachedSamplePortInfo = DetachedInfo;
 
     class GraphBuilder {
         template<class Derived, class Node>
         friend class NodeRefBase;
-        friend struct SignalRef;
-        friend struct EventRef;
+        friend struct SamplePortRef;
+        friend struct EventPortRef;
 
         struct BuilderIdentity {
             std::string value;
@@ -549,7 +549,7 @@ namespace iv {
         std::vector<EventOutputConfig> _public_event_outputs;
         bool _outputs_defined{ false };
 
-        std::unordered_map<PortId, DetachedSignalInfo> _detached_info_by_source;
+        std::unordered_map<PortId, DetachedSamplePortInfo> _detached_info_by_source;
         std::unordered_set<PortId> _detached_reader_outputs;
 
         explicit GraphBuilder(BuilderIdentity builder_id) :
@@ -574,13 +574,13 @@ namespace iv {
             return _builder_id.child_id(index);
         }
 
-        SignalRef input()
+        SamplePortRef input()
         {
             _public_inputs.emplace_back();
-            return SignalRef(*this, GRAPH_ID, _public_inputs.size() - 1);
+            return SamplePortRef(*this, GRAPH_ID, _public_inputs.size() - 1);
         }
 
-        SignalRef input(std::string_view name, Sample default_value = 0.0)
+        SamplePortRef input(std::string_view name, Sample default_value = 0.0)
         {
             if (name.empty()) {
                 details::error("input name cannot be empty");
@@ -591,10 +591,10 @@ namespace iv {
 
             _public_inputs.emplace_back(InputConfig { .name = std::string(name), .default_value = default_value });
             _input_name_to_index.emplace(std::string(name), _public_inputs.size() - 1);
-            return SignalRef(*this, GRAPH_ID, _public_inputs.size() - 1);
+            return SamplePortRef(*this, GRAPH_ID, _public_inputs.size() - 1);
         }
 
-        EventRef event_input(std::string_view name, EventTypeId type)
+        EventPortRef event_input(std::string_view name, EventTypeId type)
         {
             if (name.empty()) {
                 details::error("event input name cannot be empty");
@@ -605,11 +605,11 @@ namespace iv {
 
             _public_event_inputs.emplace_back(EventInputConfig { .name = std::string(name), .type = type });
             _event_input_name_to_index.emplace(std::string(name), _public_event_inputs.size() - 1);
-            return EventRef(*this, GRAPH_ID, _public_event_inputs.size() - 1);
+            return EventPortRef(*this, GRAPH_ID, _public_event_inputs.size() - 1);
         }
 
         template<class Node, class... Args>
-        details::node_ref_for_t<Node> node(Args&&... args)
+        details::sample_node_ref_for_t<Node> node(Args&&... args)
         {
             using StoredNode = std::remove_cvref_t<Node>;
             StoredNode node_value(std::forward<Args>(args)...);
@@ -646,11 +646,11 @@ namespace iv {
             } else if constexpr (details::should_preserve_node_type_v<StoredNode>) {
                 return TypedNodeRef<StoredNode>(*this, _nodes.size() - 1);
             } else {
-                return NodeRef(*this, _nodes.size() - 1);
+                return SampleNodeRef(*this, _nodes.size() - 1);
             }
         }
 
-        NodeRef node(GraphBuilder const& child)
+        SampleNodeRef node(GraphBuilder const& child)
         {
             if (!child._outputs_defined) {
                 details::error(
@@ -748,7 +748,7 @@ namespace iv {
             for (auto const& [source, info] : child._detached_info_by_source) {
                 _detached_info_by_source.emplace(
                     remap_child_port(source),
-                    DetachedSignalInfo{
+                    DetachedSamplePortInfo{
                         .detach_id = info.detach_id + child_detach_offset,
                         .original_source = remap_child_port(info.original_source),
                         .writer_node = child_node_offset + info.writer_node,
@@ -762,23 +762,29 @@ namespace iv {
                 _detached_reader_outputs.insert(remap_child_port(reader_output));
             }
 
-            return NodeRef(*this, placeholder_node);
+            return SampleNodeRef(*this, placeholder_node);
         }
 
         template<class... Refs>
         void event_outputs(Refs&&... refs)
         {
-            std::array<EventRef, sizeof...(Refs)> refs_array{
-                std::forward<Refs>(refs)...
-            };
             std::vector<EventOutputRefConfig> output_refs;
-            output_refs.reserve(refs_array.size());
-            for (auto const& ref : refs_array) {
-                output_refs.push_back(EventOutputRefConfig{
-                    .ref = ref,
-                    .config = {},
-                });
-            }
+            output_refs.reserve(sizeof...(Refs));
+            auto const append_ref = [&](auto&& ref) {
+                using RefT = std::remove_cvref_t<decltype(ref)>;
+                if constexpr (details::is_named_arg_v<RefT>) {
+                    output_refs.push_back(EventOutputRefConfig{
+                        .ref = static_cast<EventPortRef>(ref.value),
+                        .config = EventOutputConfig{ .name = std::string(RefT::name.view()) },
+                    });
+                } else {
+                    output_refs.push_back(EventOutputRefConfig{
+                        .ref = static_cast<EventPortRef>(std::forward<decltype(ref)>(ref)),
+                        .config = {},
+                    });
+                }
+            };
+            (append_ref(std::forward<Refs>(refs)), ...);
             event_outputs(std::span<EventOutputRefConfig const>(output_refs.data(), output_refs.size()));
         }
 
@@ -792,7 +798,7 @@ namespace iv {
                 if (ref.graph_builder != this) {
                     details::error(
                         "builder " + _builder_id.value + ": event_outputs(...): "
-                        "EventRef at index " + std::to_string(i) + " "
+                        "EventPortRef at index " + std::to_string(i) + " "
                         "belongs to another builder"
                     );
                 }
@@ -811,7 +817,7 @@ namespace iv {
         }
 
         template<class Fn>
-        NodeRef subgraph(Fn&& fn)
+        SampleNodeRef subgraph(Fn&& fn)
         {
             GraphBuilder g = derive_nested_builder();
             std::forward<Fn>(fn)(g);
@@ -839,12 +845,12 @@ namespace iv {
                 using RefT = std::remove_cvref_t<decltype(ref)>;
                 if constexpr (details::is_named_arg_v<RefT>) {
                     output_refs.push_back(OutputRefConfig{
-                        .ref = lift_to_signal(ref.value),
+                        .ref = lift_to_sample_port(ref.value),
                         .config = OutputConfig{ .name = std::string(RefT::name.view()) },
                     });
                 } else {
                     output_refs.push_back(OutputRefConfig{
-                        .ref = lift_to_signal(std::forward<decltype(ref)>(ref)),
+                        .ref = lift_to_sample_port(std::forward<decltype(ref)>(ref)),
                         .config = {},
                     });
                 }
@@ -862,7 +868,7 @@ namespace iv {
             output_refs.reserve(refs.size());
             for (auto const& ref : refs) {
                 output_refs.push_back(OutputRefConfig{
-                    .ref = lift_to_signal(ref),
+                    .ref = lift_to_sample_port(ref),
                     .config = OutputConfig{ .name = std::string(ref.name) },
                 });
             }
@@ -885,7 +891,7 @@ namespace iv {
                 if (ref.graph_builder != this) {
                     details::error(
                         "builder " + _builder_id.value + ": outputs(...): "
-                        "SignalRef at index " + std::to_string(i) + " "
+                        "SamplePortRef at index " + std::to_string(i) + " "
                         "belongs to builder " + ref.graph_builder->_builder_id.value
                     );
                 }
@@ -923,7 +929,7 @@ namespace iv {
                     );
                 }
                 output_refs.push_back(OutputRefConfig{
-                    .ref = lift_to_signal(ref),
+                    .ref = lift_to_sample_port(ref),
                     .config = OutputConfig{ .name = std::string(ref.name) },
                 });
             }
@@ -1064,7 +1070,7 @@ namespace iv {
 
             for (auto const& [source, info] : _detached_info_by_source) {
                 PortId const remapped_source = resolve_source(resolve_source, source);
-                g.detached_info_by_source.emplace(remapped_source, DetachedSignalInfo{
+                g.detached_info_by_source.emplace(remapped_source, DetachedSamplePortInfo{
                     .detach_id = info.detach_id,
                     .original_source = remapped_source,
                     .writer_node = runtime_node_indices[info.writer_node],
@@ -1117,37 +1123,37 @@ namespace iv {
             return std::to_string(next_root_builder_id++);
         }
 
-        SignalRef detach_signal(SignalRef signal, size_t loop_extra_latency)
+        SamplePortRef detach_sample_port(SamplePortRef sample_port, size_t loop_extra_latency)
         {
-            if (!signal.graph_builder) {
+            if (!sample_port.graph_builder) {
                 details::error(
-                    "builder " + _builder_id.value + ": cannot detach an empty signal"
+                    "builder " + _builder_id.value + ": cannot detach an empty sample port"
                 );
             }
 
-            if (signal.graph_builder != this) {
+            if (sample_port.graph_builder != this) {
                 details::error(
-                    "builder " + _builder_id.value + ": cannot detach " + signal.to_string() +
+                    "builder " + _builder_id.value + ": cannot detach " + sample_port.to_string() +
                     " because it belongs to another builder"
                 );
             }
 
-            PortId const source = signal;
+            PortId const source = sample_port;
 
             // Already detached: return unchanged.
             if (_detached_reader_outputs.contains(source)) {
-                return signal;
+                return sample_port;
             }
 
             // Reuse existing detached bridge for the same source.
             if (auto it = _detached_info_by_source.find(source); it != _detached_info_by_source.end()) {
                 if (it->second.loop_extra_latency != loop_extra_latency) {
                     details::error(
-                        "builder " + _builder_id.value + ": detach loop extra latency conflict on " + signal.to_string()
+                        "builder " + _builder_id.value + ": detach loop extra latency conflict on " + sample_port.to_string()
                     );
                 }
                 PortId const reader = it->second.reader_output;
-                return SignalRef(*this, reader.node, reader.port);
+                return SamplePortRef(*this, reader.node, reader.port);
             }
 
             if (loop_extra_latency < 1) {
@@ -1158,12 +1164,12 @@ namespace iv {
 
             auto writer = node<DetachWriterNode>(detach_id, loop_extra_latency);
             size_t const writer_node = _nodes.size() - 1;
-            writer(signal);
+            writer(sample_port);
 
             auto reader = node<DetachReaderNode>(detach_id, loop_extra_latency);
-            SignalRef detached = reader;
+            SamplePortRef detached = reader;
 
-            _detached_info_by_source.emplace(source, DetachedSignalInfo{
+            _detached_info_by_source.emplace(source, DetachedSamplePortInfo{
                 .detach_id = detach_id,
                 .original_source = source,
                 .writer_node = writer_node,
@@ -1175,53 +1181,56 @@ namespace iv {
             return detached;
         }
 
-        SignalRef lift_to_signal(SignalRef s)
+        SamplePortRef lift_to_sample_port(SamplePortRef sample_port)
         {
-            if (s.graph_builder != this) {
+            if (sample_port.graph_builder != this) {
                 details::error(
-                    "builder " + _builder_id.value + ": signal " + s.to_string() + " belongs to another builder"
+                    "builder " + _builder_id.value + ": sample port " + sample_port.to_string() + " belongs to another builder"
                 );
             }
-            return s;
+            return sample_port;
         }
 
         template<class T>
         requires std::is_arithmetic_v<std::remove_cvref_t<T>> || std::is_same_v<std::remove_cvref_t<T>, Sample>
-        SignalRef lift_to_signal(T value)
+        SamplePortRef lift_to_sample_port(T value)
         {
             return node<Constant>(static_cast<Sample>(value));
         }
 
-        SignalRef lift_to_signal(NamedRef const& ref)
+        SamplePortRef lift_to_sample_port(NamedRef const& ref)
         {
-            return std::visit([&](auto const& v) -> SignalRef {
+            return std::visit([&](auto const& v) -> SamplePortRef {
                 using T = std::remove_cvref_t<decltype(v)>;
-                if constexpr (std::same_as<T, EventRef>) {
+                if constexpr (std::same_as<T, EventPortRef>) {
                     details::error(
-                        "builder " + _builder_id.value + ": expected sample/signal value, got EventRef"
+                        "builder " + _builder_id.value + ": expected sample/sample-port value, got EventPortRef"
                     );
                 } else {
-                    return lift_to_signal(v);
+                    return lift_to_sample_port(v);
                 }
             }, ref.value);
         }
     };
 
-    inline SignalRef lift(GraphBuilder& g, Sample value)
+    inline SamplePortRef lift(GraphBuilder& g, Sample value)
     {
         return g.node<Constant>(value);
     }
 
-    inline SignalRef lift(SignalRef s)
+    inline SamplePortRef lift(SamplePortRef s)
     {
         if (!s.graph_builder) {
-            details::error("cannot lift an empty signal");
+            details::error("cannot lift an empty sample port");
         }
         return s;
     }
 
     template<class T>
-    concept SignalLike = std::convertible_to<std::remove_cvref_t<T>, SignalRef>;
+    concept SamplePortLike = std::convertible_to<std::remove_cvref_t<T>, SamplePortRef>;
+
+    template<class T>
+    concept EventPortLike = std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
 
     template<class T>
     concept ScalarLike =
@@ -1230,13 +1239,13 @@ namespace iv {
         std::is_same_v<std::remove_cvref_t<T>, Sample>;
 
     template<class T>
-    concept Liftable = SignalLike<T> || ScalarLike<T>;
+    concept Liftable = SamplePortLike<T> || ScalarLike<T>;
 
     template<class T>
-    SignalRef lift_operand(GraphBuilder& g, T&& x)
+    SamplePortRef lift_operand(GraphBuilder& g, T&& x)
     {
-        if constexpr (SignalLike<T>) {
-            SignalRef s = std::forward<T>(x);
+        if constexpr (SamplePortLike<T>) {
+            SamplePortRef s = std::forward<T>(x);
             if (s.graph_builder != &g) {
                 details::error("operand belongs to a different builder");
             }
@@ -1249,17 +1258,17 @@ namespace iv {
 
     template<class Node, class L, class R>
     requires (Liftable<L> && Liftable<R>)
-    NodeRef make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
+    SampleNodeRef make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
     {
         GraphBuilder* g = nullptr;
 
-        if constexpr (SignalLike<L>) {
-            SignalRef s = std::forward<L>(lhs);
+        if constexpr (SamplePortLike<L>) {
+            SamplePortRef s = std::forward<L>(lhs);
             g = s.graph_builder;
         }
 
-        if constexpr (SignalLike<R>) {
-            SignalRef s = std::forward<R>(rhs);
+        if constexpr (SamplePortLike<R>) {
+            SamplePortRef s = std::forward<R>(rhs);
             if (!g) {
                 g = s.graph_builder;
             }
@@ -1269,18 +1278,18 @@ namespace iv {
         }
 
         if (!g) {
-            details::error(std::string(op_name) + ": at least one operand must be a signal");
+            details::error(std::string(op_name) + ": at least one operand must be a sample port");
         }
 
-        SignalRef lhs_signal = lift_operand(*g, std::forward<L>(lhs));
-        SignalRef rhs_signal = lift_operand(*g, std::forward<R>(rhs));
+        SamplePortRef lhs_sample_port = lift_operand(*g, std::forward<L>(lhs));
+        SamplePortRef rhs_sample_port = lift_operand(*g, std::forward<R>(rhs));
 
-        return g->node<Node>()(lhs_signal, rhs_signal);
+        return g->node<Node>()(lhs_sample_port, rhs_sample_port);
     }
 
     template<class L, class R>
     requires (Liftable<L>&& Liftable<R>)
-    NodeRef operator+(L&& lhs, R&& rhs)
+    SampleNodeRef operator+(L&& lhs, R&& rhs)
     {
         return make_binary_op<Sum>(
             std::forward<L>(lhs),
@@ -1291,7 +1300,7 @@ namespace iv {
 
     template<class L, class R>
     requires (Liftable<L>&& Liftable<R>)
-    NodeRef operator-(L&& lhs, R&& rhs)
+    SampleNodeRef operator-(L&& lhs, R&& rhs)
     {
         return make_binary_op<Subtract>(
             std::forward<L>(lhs),
@@ -1302,7 +1311,7 @@ namespace iv {
 
     template<class L, class R>
     requires (Liftable<L>&& Liftable<R>)
-    NodeRef operator*(L&& lhs, R&& rhs)
+    SampleNodeRef operator*(L&& lhs, R&& rhs)
     {
         return make_binary_op<Product>(
             std::forward<L>(lhs),
@@ -1313,7 +1322,7 @@ namespace iv {
 
     template<class L, class R>
     requires (Liftable<L>&& Liftable<R>)
-    NodeRef operator/(L&& lhs, R&& rhs)
+    SampleNodeRef operator/(L&& lhs, R&& rhs)
     {
         return make_binary_op<Quotient>(
             std::forward<L>(lhs),
@@ -1322,30 +1331,30 @@ namespace iv {
         );
     }
 
-    inline SignalRef operator~(SignalRef signal)
+    inline SamplePortRef operator~(SamplePortRef sample_port)
     {
-        return signal.detach();
+        return sample_port.detach();
     }
 
     template<class T>
     requires (
-        std::convertible_to<std::remove_cvref_t<T>, SignalRef> &&
-        !std::same_as<std::remove_cvref_t<T>, SignalRef>
+        std::convertible_to<std::remove_cvref_t<T>, SamplePortRef> &&
+        !std::same_as<std::remove_cvref_t<T>, SamplePortRef>
     )
-    SignalRef operator~(T&& value)
+    SamplePortRef operator~(T&& value)
     {
-        return static_cast<SignalRef>(std::forward<T>(value)).detach();
+        return static_cast<SamplePortRef>(std::forward<T>(value)).detach();
     }
 
     template<class L, class R>
     requires (
-        SignalLike<L> &&
-        std::convertible_to<std::remove_cvref_t<R>, NodeRef>
+        SamplePortLike<L> &&
+        std::convertible_to<std::remove_cvref_t<R>, SampleNodeRef>
     )
     auto connect_unary_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
-        SignalRef source = std::forward<L>(lhs);
-        NodeRef target = static_cast<NodeRef>(std::forward<R>(rhs));
+        SamplePortRef source = std::forward<L>(lhs);
+        SampleNodeRef target = static_cast<SampleNodeRef>(std::forward<R>(rhs));
 
         auto const inputs = get_inputs(target.node());
         auto const outputs = get_outputs(target.node());
@@ -1359,7 +1368,7 @@ namespace iv {
 
         target(source);
         if (outputs.empty()) {
-            if constexpr (std::convertible_to<std::remove_cvref_t<L>, NodeRef>) {
+            if constexpr (std::convertible_to<std::remove_cvref_t<L>, SampleNodeRef>) {
                 return target;
             } else {
                 return source;
@@ -1371,45 +1380,45 @@ namespace iv {
                 std::to_string(outputs.size()) + " outputs on " + target.to_string()
             );
         }
-        if constexpr (std::convertible_to<std::remove_cvref_t<L>, NodeRef>) {
+        if constexpr (std::convertible_to<std::remove_cvref_t<L>, SampleNodeRef>) {
             return target;
         } else {
-            return static_cast<SignalRef>(target);
+            return static_cast<SamplePortRef>(target);
         }
     }
 
     template<class L, class R>
     requires (
-        SignalLike<L> &&
-        std::convertible_to<std::remove_cvref_t<R>, NodeRef>
+        SamplePortLike<L> &&
+        std::convertible_to<std::remove_cvref_t<R>, SampleNodeRef>
     )
-    auto operator>>(L&& lhs, R&& rhs)
+    auto operator>(L&& lhs, R&& rhs)
     {
-        return connect_unary_node(std::forward<L>(lhs), std::forward<R>(rhs), "operator>>");
+        return connect_unary_node(std::forward<L>(lhs), std::forward<R>(rhs), "operator>");
     }
 
     template<class L, class R>
     requires (
-        std::convertible_to<std::remove_cvref_t<L>, NodeRef> &&
-        SignalLike<R>
+        std::convertible_to<std::remove_cvref_t<L>, SampleNodeRef> &&
+        SamplePortLike<R>
     )
-    auto operator<<(L&& lhs, R&& rhs)
+    auto operator<(L&& lhs, R&& rhs)
     {
-        return connect_unary_node(std::forward<R>(rhs), std::forward<L>(lhs), "operator<<");
+        return connect_unary_node(std::forward<R>(rhs), std::forward<L>(lhs), "operator<");
     }
 
-    inline EventRef connect_unary_event_node(EventPortView const& source, EventPortView const& target, std::string_view op_name)
+    template<class L, class R>
+    requires (
+        EventPortLike<L> &&
+        std::convertible_to<std::remove_cvref_t<R>, EventNodeRef>
+    )
+    auto connect_unary_event_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
-        auto const source_event_outputs = get_event_outputs(source.node().node());
+        EventPortRef source = std::forward<L>(lhs);
+        EventNodeRef target = static_cast<EventNodeRef>(std::forward<R>(rhs));
+
         auto const event_inputs = get_event_inputs(target.node().node());
         auto const event_outputs = get_event_outputs(target.node().node());
-
-        if (source_event_outputs.size() != 1) {
-            details::error(
-                std::string(op_name) + " requires source to have exactly 1 event output; got " +
-                std::to_string(source_event_outputs.size()) + " event outputs on " + source.to_string()
-            );
-        }
 
         if (event_inputs.size() != 1) {
             details::error(
@@ -1418,9 +1427,13 @@ namespace iv {
             );
         }
 
-        target.node().connect_event_input(0, source[0]);
+        target.node().connect_event_input(0, source);
         if (event_outputs.empty()) {
-            return source[0];
+            if constexpr (std::convertible_to<std::remove_cvref_t<L>, EventNodeRef>) {
+                return target;
+            } else {
+                return source;
+            }
         }
         if (event_outputs.size() != 1) {
             details::error(
@@ -1428,86 +1441,100 @@ namespace iv {
                 std::to_string(event_outputs.size()) + " event outputs on " + target.to_string()
             );
         }
-        return target[0];
+        if constexpr (std::convertible_to<std::remove_cvref_t<L>, EventNodeRef>) {
+            return target;
+        } else {
+            return target[0];
+        }
     }
 
-    inline EventRef operator>>(EventPortView const& lhs, EventPortView const& rhs)
+    template<class L, class R>
+    requires (
+        EventPortLike<L> &&
+        std::convertible_to<std::remove_cvref_t<R>, EventNodeRef>
+    )
+    auto operator>(L&& lhs, R&& rhs)
     {
-        return connect_unary_event_node(lhs, rhs, "operator>>");
+        return connect_unary_event_node(std::forward<L>(lhs), std::forward<R>(rhs), "operator>");
     }
 
-    inline EventRef operator<<(EventPortView const& lhs, EventPortView const& rhs)
+    template<class L, class R>
+    requires (
+        std::convertible_to<std::remove_cvref_t<L>, EventNodeRef> &&
+        EventPortLike<R>
+    )
+    auto operator<(L&& lhs, R&& rhs)
     {
-        return connect_unary_event_node(rhs, lhs, "operator<<");
+        return connect_unary_event_node(std::forward<R>(rhs), std::forward<L>(lhs), "operator<");
     }
 
     template<fixed_string Name, class R>
-    requires std::convertible_to<std::remove_cvref_t<R>, NodeRef>
-    SignalRef operator<<(PortName<Name>, R&& rhs)
+    requires std::convertible_to<std::remove_cvref_t<R>, SampleNodeRef>
+    SamplePortRef operator<<(PortName<Name>, R&& rhs)
     {
-        NodeRef node = static_cast<NodeRef>(std::forward<R>(rhs));
+        SampleNodeRef node = static_cast<SampleNodeRef>(std::forward<R>(rhs));
         return node[Name.view()];
     }
 
     template<class L, fixed_string Name>
-    requires std::convertible_to<std::remove_cvref_t<L>, NodeRef>
-    SignalRef operator>>(L&& lhs, PortName<Name>)
+    requires std::convertible_to<std::remove_cvref_t<L>, SampleNodeRef>
+    SamplePortRef operator>>(L&& lhs, PortName<Name>)
     {
-        NodeRef node = static_cast<NodeRef>(std::forward<L>(lhs));
+        SampleNodeRef node = static_cast<SampleNodeRef>(std::forward<L>(lhs));
         return node[Name.view()];
     }
 
     template<class T>
-    requires std::convertible_to<std::remove_cvref_t<T>, NodeRef>
-    EventPortView operator>>(T&& node, EventPortsTag)
+    requires std::convertible_to<std::remove_cvref_t<T>, SampleNodeRef>
+    EventNodeRef operator>>(T&& node, EventPortsTag)
     {
-        return EventPortView(static_cast<NodeRef>(std::forward<T>(node)));
+        return EventNodeRef(static_cast<SampleNodeRef>(std::forward<T>(node)));
     }
 
     template<class T>
-    requires std::convertible_to<std::remove_cvref_t<T>, NodeRef>
-    EventPortView operator<<(EventPortsTag, T&& node)
+    requires std::convertible_to<std::remove_cvref_t<T>, SampleNodeRef>
+    EventNodeRef operator<<(EventPortsTag, T&& node)
     {
-        return EventPortView(static_cast<NodeRef>(std::forward<T>(node)));
+        return EventNodeRef(static_cast<SampleNodeRef>(std::forward<T>(node)));
     }
 
     template<class T>
-    requires std::convertible_to<std::remove_cvref_t<T>, NodeRef>
-    NodeRef operator>>(T&& node, SamplePortsTag)
+    requires std::convertible_to<std::remove_cvref_t<T>, SampleNodeRef>
+    SampleNodeRef operator>>(T&& node, SamplePortsTag)
     {
-        return static_cast<NodeRef>(std::forward<T>(node));
+        return static_cast<SampleNodeRef>(std::forward<T>(node));
     }
 
     template<class T>
-    requires std::convertible_to<std::remove_cvref_t<T>, NodeRef>
-    NodeRef operator<<(SamplePortsTag, T&& node)
+    requires std::convertible_to<std::remove_cvref_t<T>, SampleNodeRef>
+    SampleNodeRef operator<<(SamplePortsTag, T&& node)
     {
-        return static_cast<NodeRef>(std::forward<T>(node));
+        return static_cast<SampleNodeRef>(std::forward<T>(node));
     }
 
-    inline NodeRef operator>>(EventPortView const& view, SamplePortsTag)
+    inline SampleNodeRef operator>>(EventNodeRef const& view, SamplePortsTag)
     {
         return view.node();
     }
 
-    inline NodeRef operator<<(SamplePortsTag, EventPortView const& view)
+    inline SampleNodeRef operator<<(SamplePortsTag, EventNodeRef const& view)
     {
         return view.node();
     }
 
     template<fixed_string Name>
-    EventRef operator<<(PortName<Name>, EventPortView const& view)
+    EventPortRef operator<<(PortName<Name>, EventNodeRef const& view)
     {
         return view[Name.view()];
     }
 
     template<fixed_string Name>
-    EventRef operator>>(EventPortView const& view, PortName<Name>)
+    EventPortRef operator>>(EventNodeRef const& view, PortName<Name>)
     {
         return view[Name.view()];
     }
 
-    inline SignalRef::SignalRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
+    inline SamplePortRef::SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
         graph_builder(&graph_builder_),
         node_index(node_index),
         output_port(output_port)
@@ -1543,7 +1570,7 @@ namespace iv {
         }
     }
 
-    inline EventRef::EventRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
+    inline EventPortRef::EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
         graph_builder(&graph_builder_),
         node_index(node_index),
         output_port(output_port)
@@ -1577,26 +1604,26 @@ namespace iv {
         }
     }
 
-    inline SignalRef SignalRef::detach(size_t loop_extra_latency) const
+    inline SamplePortRef SamplePortRef::detach(size_t loop_extra_latency) const
     {
         if (!graph_builder) {
-            details::error("attempted to detach an empty signal");
+            details::error("attempted to detach an empty sample port");
         }
-        return graph_builder->detach_signal(*this, loop_extra_latency);
+        return graph_builder->detach_sample_port(*this, loop_extra_latency);
     }
 
-    inline std::string SignalRef::to_string() const
+    inline std::string SamplePortRef::to_string() const
     {
         if (!graph_builder) {
-            return "empty signal";
+            return "empty sample port";
         }
         if (node_index == GRAPH_ID) {
             return "graph input " + std::to_string(output_port) + " in builder " + graph_builder->_builder_id.value;
         }
-        return "signal at address " + graph_builder->node_id(node_index) + ":" + std::to_string(output_port);
+        return "sample port at address " + graph_builder->node_id(node_index) + ":" + std::to_string(output_port);
     }
 
-    inline std::string EventRef::to_string() const
+    inline std::string EventPortRef::to_string() const
     {
         if (!graph_builder) {
             return "empty event";
@@ -1611,39 +1638,39 @@ namespace iv {
     inline BuilderNode const& NodeRefBase<Derived, Node>::node() const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
         return _graph_builder->_nodes[_index];
     }
 
     template<class Derived, class Node>
-    inline NodeRef NodeRefBase<Derived, Node>::node_ref() const
+    inline SampleNodeRef NodeRefBase<Derived, Node>::node_ref() const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
-        return NodeRef(*_graph_builder, _index);
+        return SampleNodeRef(*_graph_builder, _index);
     }
 
     template<class Derived, class Node>
-    inline SignalRef NodeRefBase<Derived, Node>::operator[](size_t output_index) const
+    inline SamplePortRef NodeRefBase<Derived, Node>::operator[](size_t output_index) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
-        return SignalRef(*_graph_builder, _index, output_index);
+        return SamplePortRef(*_graph_builder, _index, output_index);
     }
 
     template<class Derived, class Node>
-    inline SignalRef NodeRefBase<Derived, Node>::operator[](std::string_view output_name) const
+    inline SamplePortRef NodeRefBase<Derived, Node>::operator[](std::string_view output_name) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
         auto outputs = get_outputs(node());
         for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
             if (outputs[output_port].name == output_name) {
-                return SignalRef(*_graph_builder, _index, output_port);
+                return SamplePortRef(*_graph_builder, _index, output_port);
             }
         }
 
@@ -1654,25 +1681,25 @@ namespace iv {
     }
 
     template<class Derived, class Node>
-    inline NodeRefBase<Derived, Node>::operator SignalRef() const
+    inline NodeRefBase<Derived, Node>::operator SamplePortRef() const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
         if (get_num_outputs(node()) != 1) {
             details::error(
                 to_string() + " "
-                "does not have exactly 1 output port: it cannot be implicitly converted to SignalRef"
+                "does not have exactly 1 output port: it cannot be implicitly converted to SamplePortRef"
             );
         }
-        return SignalRef(*_graph_builder, _index, 0);
+        return SamplePortRef(*_graph_builder, _index, 0);
     }
 
     template<class Derived, class Node>
     inline bool NodeRefBase<Derived, Node>::input_is_connected(size_t input_port) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
         return _graph_builder->_placed_input_ports.contains(PortId{ _index, input_port });
     }
@@ -1681,7 +1708,7 @@ namespace iv {
     inline bool NodeRefBase<Derived, Node>::event_input_is_connected(size_t input_port) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
         return _graph_builder->_placed_event_input_ports.contains(PortId{ _index, input_port });
     }
@@ -1692,14 +1719,14 @@ namespace iv {
     Derived NodeRefBase<Derived, Node>::operator()(Args&&... args) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
 
         constexpr auto call_domain = details::call_domain_v<Args...>;
         auto const inputs = get_inputs(node());
         auto const event_inputs = get_event_inputs(node());
 
-        auto connect_input = [&](SignalRef ref, size_t input_port, std::string_view input_name = {}) {
+        auto connect_input = [&](SamplePortRef ref, size_t input_port, std::string_view input_name = {}) {
             if (input_port >= inputs.size()) {
                 details::error(
                     to_string() + " "
@@ -1730,7 +1757,7 @@ namespace iv {
             });
         };
 
-        auto connect_event = [&](EventRef ref, size_t input_port, std::string_view input_name = {}) {
+        auto connect_event = [&](EventPortRef ref, size_t input_port, std::string_view input_name = {}) {
             if (input_port >= event_inputs.size()) {
                 details::error(
                     to_string() + " "
@@ -1772,14 +1799,14 @@ namespace iv {
             if constexpr (call_domain == details::call_domain::event) {
                 for (size_t input_port = 0; input_port < event_inputs.size(); ++input_port) {
                     if (event_inputs[input_port].name == name) {
-                        connect_event(static_cast<EventRef>(named_arg.value), input_port, name);
+                        connect_event(static_cast<EventPortRef>(named_arg.value), input_port, name);
                         return;
                     }
                 }
             } else {
                 for (size_t input_port = 0; input_port < inputs.size(); ++input_port) {
                     if (inputs[input_port].name == name) {
-                        connect_input(_graph_builder->lift_to_signal(named_arg.value), input_port, name);
+                        connect_input(_graph_builder->lift_to_sample_port(named_arg.value), input_port, name);
                         return;
                     }
                 }
@@ -1796,9 +1823,9 @@ namespace iv {
             if constexpr (details::is_named_arg_v<decltype(arg)>) {
                 connect_named(std::forward<decltype(arg)>(arg));
             } else if constexpr (call_domain == details::call_domain::event) {
-                connect_event(static_cast<EventRef>(std::forward<decltype(arg)>(arg)), positional_port++);
+                connect_event(static_cast<EventPortRef>(std::forward<decltype(arg)>(arg)), positional_port++);
             } else {
-                connect_input(_graph_builder->lift_to_signal(std::forward<decltype(arg)>(arg)), positional_port++);
+                connect_input(_graph_builder->lift_to_sample_port(std::forward<decltype(arg)>(arg)), positional_port++);
             }
         };
 
@@ -1812,7 +1839,7 @@ namespace iv {
     inline Derived NodeRefBase<Derived, Node>::connect_input(size_t input_port, T&& value) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
 
         auto const inputs = get_inputs(node());
@@ -1824,7 +1851,7 @@ namespace iv {
             );
         }
 
-        SignalRef ref = _graph_builder->lift_to_signal(std::forward<T>(value));
+        SamplePortRef ref = _graph_builder->lift_to_sample_port(std::forward<T>(value));
         if (ref.graph_builder != _graph_builder) {
             details::error(
                 ref.to_string() + " "
@@ -1866,10 +1893,10 @@ namespace iv {
     }
 
     template<class Derived, class Node>
-    inline Derived NodeRefBase<Derived, Node>::connect_event_input(size_t input_port, EventRef value) const
+    inline Derived NodeRefBase<Derived, Node>::connect_event_input(size_t input_port, EventPortRef value) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
 
         auto const event_inputs = get_event_inputs(node());
@@ -1909,7 +1936,7 @@ namespace iv {
     }
 
     template<class Derived, class Node>
-    inline Derived NodeRefBase<Derived, Node>::connect_event_input(std::string_view input_name, EventRef value) const
+    inline Derived NodeRefBase<Derived, Node>::connect_event_input(std::string_view input_name, EventPortRef value) const
     {
         auto const event_inputs = get_event_inputs(node());
         for (size_t input_port = 0; input_port < event_inputs.size(); ++input_port) {
@@ -1925,16 +1952,16 @@ namespace iv {
     }
 
     template<class Derived, class Node>
-    inline SignalRef NodeRefBase<Derived, Node>::detach(size_t loop_extra_latency) const
+    inline SamplePortRef NodeRefBase<Derived, Node>::detach(size_t loop_extra_latency) const
     {
-        return static_cast<SignalRef>(*this).detach(loop_extra_latency);
+        return static_cast<SamplePortRef>(*this).detach(loop_extra_latency);
     }
 
     template<class Derived, class Node>
     inline Derived NodeRefBase<Derived, Node>::ttl(size_t ttl_samples) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null NodeRef");
+            details::error("attempted to use a null SampleNodeRef");
         }
         auto& builder_node = _graph_builder->_nodes[_index];
         if (!builder_node.materialize && builder_node.lowered_subgraph_count != 0) {
@@ -1965,31 +1992,31 @@ namespace iv {
     }
 
     template<size_t I, class Node>
-    SignalRef get(StructuredNodeRef<Node> const& node_ref)
+    SamplePortRef get(StructuredNodeRef<Node> const& node_ref)
     {
         return node_ref.template get<I>();
     }
 
     template<size_t I, class Node>
-    SignalRef get(StructuredNodeRef<Node>& node_ref)
+    SamplePortRef get(StructuredNodeRef<Node>& node_ref)
     {
         return node_ref.template get<I>();
     }
 
     template<size_t I, class Node>
-    SignalRef get(StructuredNodeRef<Node>&& node_ref)
+    SamplePortRef get(StructuredNodeRef<Node>&& node_ref)
     {
         return node_ref.template get<I>();
     }
 
     template<size_t voice_count, class Fn>
-    NodeRef polyphonic(GraphBuilder& g, Fn&& make_voice)
+    SampleNodeRef polyphonic(GraphBuilder& g, Fn&& make_voice)
     {
         static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
 
         std::vector<OutputConfig> output_configs;
         std::vector<EventOutputConfig> event_output_configs;
-        NodeRef mix;
+        SampleNodeRef mix;
 
         auto const same_output_config = [](OutputConfig const& a, OutputConfig const& b) {
             return a.name == b.name
@@ -2001,7 +2028,7 @@ namespace iv {
                 && a.type == b.type;
         };
 
-        auto connect_lane_outputs = [&](auto voice_index_c, NodeRef voice) {
+        auto connect_lane_outputs = [&](auto voice_index_c, SampleNodeRef voice) {
             constexpr size_t voice_index = decltype(voice_index_c)::value;
 
             for (size_t output_port = 0; output_port < output_configs.size(); ++output_port) {
@@ -2018,7 +2045,7 @@ namespace iv {
             constexpr size_t voice_index = decltype(voice_index_c)::value;
 
             auto const midi_driver = g.node<MidiVoiceAllocator<voice_index, voice_count>>();
-            NodeRef voice = make_voice(midi_driver).node_ref();
+            SampleNodeRef voice = make_voice(midi_driver).node_ref();
             auto const& voice_node = voice.node();
             if (voice_node.materialize == nullptr && voice_node.lowered_subgraph_count == 0) {
                 details::error("iv::polyphonic callback must return a materialized node or subgraph node");
@@ -2066,6 +2093,6 @@ namespace std {
 
     template<size_t I, class Node>
     struct tuple_element<I, iv::StructuredNodeRef<Node>> {
-        using type = iv::SignalRef;
+        using type = iv::SamplePortRef;
     };
 }

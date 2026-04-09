@@ -15,7 +15,7 @@ int main()
             audio_device,
             execution_targets,
             1,
-            fixtures / "noisy_saw_project" / "module.cpp"
+            fixtures / "nested_loader_project" / "module.cpp"
         );
         iv::test::run_processor_ticks(executor);
     }
@@ -37,8 +37,8 @@ int main()
     {
         auto moved_root = iv::test::runtime_modules_root() / "moved_modules";
         std::filesystem::remove_all(moved_root);
-        iv::test::copy_directory(fixtures / "noisy_saw_project", moved_root / "project");
-        iv::test::copy_directory(fixtures / "noisy_saw_voice", moved_root / "voice");
+        iv::test::copy_directory(fixtures / "nested_loader_project", moved_root / "project");
+        iv::test::copy_directory(fixtures / "nested_loader_voice", moved_root / "voice");
 
         iv::test::FakeAudioDevice audio_device;
         auto loader = iv::test::make_loader({ moved_root });

@@ -49,7 +49,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         // auto const sink = io.file(g, channel, "out.wav");
         auto const sink = io.sink(g, channel);
 
-        auto const voice = polyphonic<16>(g, [&](NodeRef m) {
+        auto const voice = polyphonic<16>(g, [&](SampleNodeRef m) {
             static size_t seed = 0;
             m.connect_event_input("midi", midi);
 
@@ -67,15 +67,15 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
                 "phase_offset"_P = phi,
                 "dt"_P = dt
             );
-            phi(hi_pass * 0.1);
+            phi < hi_pass * 0.1;
             hi_pass(lo_pass, 0.3, dt);
             lo_pass(u_to_n, 0.0, dt);
-            u_to_n(generator);
+            u_to_n < generator;
 
             return saw * amp;
         });
 
-        SignalRef x = voice;
+        SamplePortRef x = voice;
         if (channel == 0)
         {
             auto constexpr port = "l0"_P;

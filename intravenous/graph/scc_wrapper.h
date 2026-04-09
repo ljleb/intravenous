@@ -184,6 +184,11 @@ namespace iv {
             return true;
         }
 
+        static bool has_sample_outputs(GraphNodeWrapper::State const& node_state)
+        {
+            return !node_state.outputs.empty();
+        }
+
         static bool event_outputs_empty(GraphNodeWrapper::State const& node_state, size_t block_index, size_t block_size)
         {
             if (node_state.event_outputs.empty()) {
@@ -247,7 +252,8 @@ namespace iv {
                     }
 
                     bool const silent =
-                        sample_outputs_silent(runtime_state, scc_block_size)
+                        has_sample_outputs(runtime_state)
+                        && sample_outputs_silent(runtime_state, scc_block_size)
                         && event_outputs_empty(runtime_state, block_index, scc_block_size);
 
                     if (inputs_constant && silent) {

@@ -573,7 +573,7 @@ namespace iv {
             return static_cast<BuildSession*>(session_ptr)->load_module(id);
         }
 
-        static NodeRef sink_from_context(void* session_ptr, GraphBuilder& builder, size_t channel, size_t device_id)
+        static SampleNodeRef sink_from_context(void* session_ptr, GraphBuilder& builder, size_t channel, size_t device_id)
         {
             auto& session = *static_cast<BuildSession*>(session_ptr);
             ++session.sink_count;
@@ -583,7 +583,7 @@ namespace iv {
             });
         }
 
-        static NodeRef file_from_context(void*, GraphBuilder& builder, size_t channel, std::filesystem::path const& path)
+        static SampleNodeRef file_from_context(void*, GraphBuilder& builder, size_t channel, std::filesystem::path const& path)
         {
             return builder.node<FileSink>(FileSink{
                 .path = path,

@@ -7,9 +7,9 @@ int main()
     auto const repo = iv::test::repo_root();
     auto const fixtures = iv::test::test_modules_root();
     auto const runtime_root = iv::test::runtime_modules_root();
-    auto const reload_src = fixtures / "noisy_saw_project";
+    auto const reload_src = fixtures / "reload_project";
     auto const reload_dst = runtime_root / "reload_target";
-    auto const voice_src = fixtures / "noisy_saw_voice";
+    auto const voice_src = fixtures / "reload_voice";
     auto const voice_dst = runtime_root / "reload_voice";
 
     std::filesystem::remove_all(runtime_root);
@@ -44,8 +44,8 @@ int main()
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
-    auto needle = std::string("\"amplitude\"_P = amplitude,");
-    auto replacement = std::string("\"amplitude\"_P = amplitude,/* reload marker*/");
+    auto needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");
+    auto replacement = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);/* reload marker*/");
     iv::test::require(source.contains(needle), "reload fixture did not contain expected marker");
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text(module_cpp, source);
