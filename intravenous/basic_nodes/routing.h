@@ -90,6 +90,10 @@ namespace iv {
         EventTypeId _type;
 
     public:
+        struct State {
+            std::span<size_t> cursors;
+        };
+
         explicit EventConcatenation(size_t num_inputs, EventTypeId type) :
             _num_inputs(num_inputs),
             _type(type)
@@ -112,12 +116,39 @@ namespace iv {
             return _num_inputs;
         }
 
+        void declare(DeclarationContext<EventConcatenation> const& ctx) const
+        {
+            auto const& state = ctx.state();
+            ctx.local_array(state.cursors, _num_inputs);
+        }
+
         void tick_block(TickBlockContext<EventConcatenation> const& ctx) const
         {
-            for (auto const& input : ctx.event_inputs) {
-                input.for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
-                    ctx.event_outputs[0].push(event.value, event.time, ctx.index, ctx.block_size);
-                });
+            auto& state = ctx.state();
+            auto const num_inputs = ctx.event_inputs.size();
+            std::ranges::fill(state.cursors, 0);
+
+            while (true) {
+                size_t selected_input = num_inputs;
+                TimedEvent selected_event {};
+                for (size_t input_i = 0; input_i < num_inputs; ++input_i) {
+                    auto const block = ctx.event_inputs[input_i].get_block(ctx.index, ctx.block_size);
+                    if (state.cursors[input_i] >= block.size()) {
+                        continue;
+                    }
+                    TimedEvent const event = block[state.cursors[input_i]];
+                    if (selected_input == num_inputs || event.time < selected_event.time) {
+                        selected_input = input_i;
+                        selected_event = event;
+                    }
+                }
+
+                if (selected_input == num_inputs) {
+                    break;
+                }
+
+                ctx.event_outputs[0].push(selected_event.value, selected_event.time, ctx.index, ctx.block_size);
+                ++state.cursors[selected_input];
             }
         }
     };
@@ -139,6 +170,10 @@ namespace iv {
         }
 
     public:
+        struct State {
+            std::span<size_t> cursors;
+        };
+
         PolyphonicMix(
             size_t arity,
             std::vector<OutputConfig> outputs,
@@ -179,6 +214,12 @@ namespace iv {
             return _event_outputs;
         }
 
+        void declare(DeclarationContext<PolyphonicMix> const& ctx) const
+        {
+            auto const& state = ctx.state();
+            ctx.local_array(state.cursors, _arity);
+        }
+
         void tick_block(TickBlockContext<PolyphonicMix> const& ctx) const
         {
             for (size_t output_port = 0; output_port < _outputs.size(); ++output_port) {
@@ -188,10 +229,32 @@ namespace iv {
                     output.accumulate_block(ctx.inputs[sample_input_index(output_port, lane)].get_block(ctx.block_size));
                 }
             }
+
+            auto& state = ctx.state();
             for (size_t output_port = 0; output_port < _event_outputs.size(); ++output_port) {
-                for (size_t lane = 0; lane < _arity; ++lane) {
-                    auto const events = ctx.event_inputs[event_input_index(output_port, lane)].get_block(ctx.index, ctx.block_size);
-                    ctx.event_outputs[output_port].push_block(events, ctx.index, ctx.block_size);
+                std::ranges::fill(state.cursors, 0);
+
+                while (true) {
+                    size_t selected_lane = _arity;
+                    TimedEvent selected_event {};
+                    for (size_t lane = 0; lane < _arity; ++lane) {
+                        auto const block = ctx.event_inputs[event_input_index(output_port, lane)].get_block(ctx.index, ctx.block_size);
+                        if (state.cursors[lane] >= block.size()) {
+                            continue;
+                        }
+                        TimedEvent const event = block[state.cursors[lane]];
+                        if (selected_lane == _arity || event.time < selected_event.time) {
+                            selected_lane = lane;
+                            selected_event = event;
+                        }
+                    }
+
+                    if (selected_lane == _arity) {
+                        break;
+                    }
+
+                    ctx.event_outputs[output_port].push(selected_event.value, selected_event.time, ctx.index, ctx.block_size);
+                    ++state.cursors[selected_lane];
                 }
             }
         }

@@ -142,6 +142,46 @@ namespace {
         }
     };
 
+    struct OffsetTriggerSource {
+        size_t sample_offset = 0;
+
+        auto event_outputs() const
+        {
+            return std::array<iv::EventOutputConfig, 1> {{
+                { .name = "trigger", .type = iv::EventTypeId::trigger }
+            }};
+        }
+
+        void tick_block(iv::TickBlockContext<OffsetTriggerSource> const& ctx) const
+        {
+            if (sample_offset < ctx.block_size) {
+                ctx.event_outputs[0].push(iv::TriggerEvent{}, sample_offset, ctx.index, ctx.block_size);
+            }
+        }
+    };
+
+    struct TriggerOrderRecorder {
+        std::vector<size_t>* event_times = nullptr;
+
+        auto event_inputs() const
+        {
+            return std::array<iv::EventInputConfig, 1> {{
+                { .name = "trigger", .type = iv::EventTypeId::trigger }
+            }};
+        }
+
+        void tick_block(iv::TickBlockContext<TriggerOrderRecorder> const& ctx) const
+        {
+            if (!event_times) {
+                return;
+            }
+            event_times->clear();
+            ctx.event_inputs[0].for_each_in_block(ctx.index, ctx.block_size, [&](iv::TimedEvent const& event, size_t) {
+                event_times->push_back(event.time);
+            });
+        }
+    };
+
     struct SourceOnlyNode {
         auto outputs() const
         {
@@ -1119,6 +1159,64 @@ TEST(ArchitectureSmoke, DisconnectedEventOutputUsesZeroCapacitySinkBudget)
     );
 
     EXPECT_NO_THROW(tick_executor_direct(executor, 0, 8));
+}
+
+TEST(ArchitectureSmoke, EventConcatenationMergesInputsInTimeOrder)
+{
+    std::vector<size_t> event_times;
+    iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
+
+    iv::GraphBuilder g;
+    auto const late = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 5 });
+    auto const early = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 2 });
+    auto const concat = g.node<iv::EventConcatenation>(2, iv::EventTypeId::trigger);
+    auto const sink = g.node<TriggerOrderRecorder>(TriggerOrderRecorder{ .event_times = &event_times });
+
+    concat.connect_event_input(0, late >> iv::events);
+    concat.connect_event_input(1, early >> iv::events);
+    sink.connect_event_input("trigger", concat >> iv::events);
+    g.outputs();
+
+    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    auto executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build()),
+        {},
+        std::move(execution_target_registry).to_builder()
+    );
+
+    tick_executor_direct(executor, 0, 8);
+    EXPECT_EQ(event_times, (std::vector<size_t>{ 2, 5 }));
+}
+
+TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
+{
+    std::vector<size_t> event_times;
+    iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
+
+    iv::GraphBuilder g;
+    auto const late = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 6 });
+    auto const early = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 1 });
+    auto const mix = g.node<iv::PolyphonicMix>(
+        2,
+        std::vector<iv::OutputConfig> {},
+        std::vector<iv::EventOutputConfig> { iv::EventOutputConfig{ .name = "trigger", .type = iv::EventTypeId::trigger } }
+    );
+    auto const sink = g.node<TriggerOrderRecorder>(TriggerOrderRecorder{ .event_times = &event_times });
+
+    mix.connect_event_input(0, late >> iv::events);
+    mix.connect_event_input(1, early >> iv::events);
+    sink.connect_event_input("trigger", mix >> iv::events);
+    g.outputs();
+
+    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    auto executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build()),
+        {},
+        std::move(execution_target_registry).to_builder()
+    );
+
+    tick_executor_direct(executor, 0, 8);
+    EXPECT_EQ(event_times, (std::vector<size_t>{ 1, 6 }));
 }
 
 TEST(ArchitectureSmoke, ExecutorTeardownAllowsFreshExecutor)
