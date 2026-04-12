@@ -370,13 +370,14 @@ namespace iv {
 
     struct JuceVstRuntimeManager::LiveMidiInput : ::juce::MidiInputCallback {
         struct PendingMessage {
-            int64_t sample_time = 0;
+            std::chrono::steady_clock::time_point arrival_time {};
             MidiEvent midi {};
         };
 
         std::unique_ptr<::juce::MidiInput> input;
         double sample_rate = 48000.0;
-        std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
+        std::optional<std::chrono::steady_clock::time_point> render_epoch_time;
+        int64_t render_epoch_sample = 0;
         std::mutex mutex;
         std::deque<PendingMessage> pending_messages;
 
@@ -387,12 +388,9 @@ namespace iv {
                 return;
             }
 
-            double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-            int64_t const sample_time = static_cast<int64_t>(std::floor(seconds * sample_rate));
-
             std::lock_guard lock(mutex);
             pending_messages.push_back(PendingMessage {
-                .sample_time = sample_time,
+                .arrival_time = std::chrono::steady_clock::now(),
                 .midi = midi,
             });
         }
@@ -504,7 +502,6 @@ namespace iv {
     {
         auto live = std::make_unique<LiveMidiInput>();
         live->sample_rate = sample_rate > 0.0 ? sample_rate : 48000.0;
-        live->start_time = std::chrono::steady_clock::now();
 
         auto const device = resolve_midi_input_device(spec.device_query);
         live->input = ::juce::MidiInput::openDevice(device.identifier, live.get());
@@ -609,15 +606,28 @@ namespace iv {
         int64_t const block_end = static_cast<int64_t>(ctx.index + ctx.block_size);
 
         std::lock_guard lock(live_input.mutex);
+        if (!live_input.render_epoch_time.has_value()) {
+            live_input.render_epoch_time = std::chrono::steady_clock::now();
+            live_input.render_epoch_sample = block_start;
+        }
+
+        auto const to_sample_time = [&](std::chrono::steady_clock::time_point arrival_time) {
+            auto const elapsed = arrival_time - *live_input.render_epoch_time;
+            double const seconds = std::chrono::duration<double>(elapsed).count();
+            double const samples = seconds * live_input.sample_rate;
+            return live_input.render_epoch_sample + static_cast<int64_t>(std::floor(samples));
+        };
+
         while (!live_input.pending_messages.empty()) {
             auto const& pending = live_input.pending_messages.front();
-            if (pending.sample_time >= block_end) {
+            int64_t const sample_time = to_sample_time(pending.arrival_time);
+            if (sample_time >= block_end) {
                 break;
             }
 
-            size_t const sample_offset = pending.sample_time <= block_start
+            size_t const sample_offset = sample_time <= block_start
                 ? 0
-                : static_cast<size_t>(pending.sample_time - block_start);
+                : static_cast<size_t>(sample_time - block_start);
             ctx.event_outputs[0].push(pending.midi, sample_offset, ctx.index, ctx.block_size);
             live_input.pending_messages.pop_front();
         }
