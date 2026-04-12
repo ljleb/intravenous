@@ -1,8 +1,8 @@
 #include <node_lifecycle.h>
 
-#include <string>
 #include <array>
 #include <iostream>
+#include <string>
 
 struct DebugProbe {
     std::string label = "debug";

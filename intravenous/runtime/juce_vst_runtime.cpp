@@ -334,11 +334,9 @@ namespace iv {
         std::vector<ParameterBinding> parameter_bindings;
         double prepared_sample_rate = 0.0;
         int prepared_block_size = 0;
-        std::mutex mutex;
 
         void prepare(double sample_rate, size_t block_size)
         {
-            std::lock_guard lock(mutex);
             if (prepared_sample_rate == sample_rate && prepared_block_size == static_cast<int>(block_size)) {
                 return;
             }
@@ -548,7 +546,6 @@ namespace iv {
             live_instance.prepared_sample_rate > 0.0 ? live_instance.prepared_sample_rate : 48000.0,
             state.block_size
         );
-        std::lock_guard lock(live_instance.mutex);
 
         auto& buffer = live_instance.audio_buffer;
 

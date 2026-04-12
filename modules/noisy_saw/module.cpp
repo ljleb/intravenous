@@ -4,7 +4,6 @@
 #include "basic_nodes/shaping.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/midi.h"
-#include "basic_nodes/debug_probe.h"
 #include "juce_vst_wrapper.h"
 
 #include <array>

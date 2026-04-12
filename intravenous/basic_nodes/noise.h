@@ -16,6 +16,15 @@
 #include <numbers>
 
 namespace iv {
+    namespace details {
+        inline Sample clamp_open_unit_interval_pm1(Sample x)
+        {
+            float const lower = std::nextafter(-1.0f, 0.0f);
+            float const upper = std::nextafter(1.0f, 0.0f);
+            return Sample(std::clamp(static_cast<float>(x), lower, upper));
+        }
+    }
+
     class UniformNoise {
         Sample _min;
         Sample _max;
@@ -213,7 +222,7 @@ namespace iv {
 
         void tick(TickSampleContext<UniformToCauchy> const& state) const
         {
-            Sample uniform = state.inputs[0].get();
+            Sample uniform = details::clamp_open_unit_interval_pm1(state.inputs[0].get());
             state.outputs[0].push(_x0 + _gamma * std::tanf(std::numbers::pi_v<float> * uniform * 0.5));
         }
     };
@@ -316,7 +325,7 @@ namespace iv {
 
         void tick(TickSampleContext<UniformToGaussian> const& state) const
         {
-            Sample uniform = state.inputs[0].get();
+            Sample uniform = details::clamp_open_unit_interval_pm1(state.inputs[0].get());
             Sample normal = std::numbers::sqrt2_v<float> * erfinvf(uniform);
             state.outputs[0].push(std::fmaf(normal, _std, _mean));
         }
@@ -376,7 +385,7 @@ namespace iv {
         {
             Rng::ctr_type counter = make_index(state.index);
             unsigned int uniform_uint = _generator(counter, _seed)[0];
-            Sample uniform = r123::uneg11<Sample>(uniform_uint);
+            Sample uniform = details::clamp_open_unit_interval_pm1(r123::uneg11<Sample>(uniform_uint));
             Sample gaussian = std::numbers::sqrt2_v<float> * erfinvf(uniform);
             state.outputs[0].push(std::fmaf(gaussian, _std, _mean));
         }
