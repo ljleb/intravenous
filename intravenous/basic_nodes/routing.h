@@ -80,7 +80,7 @@ namespace iv {
         {
             auto events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
             for (auto& output : ctx.event_outputs) {
-                output.push_block(events, ctx.index, ctx.block_size);
+                output.push_block(events);
             }
         }
     };
@@ -147,7 +147,7 @@ namespace iv {
                     break;
                 }
 
-                ctx.event_outputs[0].push(selected_event.value, selected_event.time, ctx.index, ctx.block_size);
+                ctx.event_outputs[0].push(selected_event);
                 ++state.cursors[selected_input];
             }
         }
@@ -253,7 +253,7 @@ namespace iv {
                         break;
                     }
 
-                    ctx.event_outputs[output_port].push(selected_event.value, selected_event.time, ctx.index, ctx.block_size);
+                    ctx.event_outputs[output_port].push(selected_event);
                     ++state.cursors[selected_lane];
                 }
             }

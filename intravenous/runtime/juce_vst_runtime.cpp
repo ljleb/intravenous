@@ -574,7 +574,7 @@ namespace iv {
             live_instance.midi_buffer.addEvent(
                 midi->bytes.data(),
                 midi->size,
-                static_cast<int>(event.time)
+                static_cast<int>(event.time - state.index)
             );
         });
         live_instance.plugin->processBlock(buffer, live_instance.midi_buffer);

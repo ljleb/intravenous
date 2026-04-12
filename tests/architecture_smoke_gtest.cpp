@@ -29,6 +29,13 @@
 namespace {
     using namespace iv::literals;
 
+    static constexpr auto kMidiToTriggerPlan = iv::EventConversionRegistry::plan(
+        iv::EventTypeId::midi,
+        iv::EventTypeId::trigger
+    );
+    static_assert(kMidiToTriggerPlan.step_count == 1);
+    static_assert(kMidiToTriggerPlan[0] == iv::EventConversionStepId::midi_to_trigger);
+
     constexpr auto kBlockReadyTimeout = std::chrono::milliseconds(100);
     constexpr auto kAsyncWaitTimeout = std::chrono::milliseconds(50);
 
@@ -138,7 +145,7 @@ namespace {
         void tick_block(iv::TickBlockContext<EventUnaryPassthrough> const& ctx) const
         {
             auto events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
-            ctx.event_outputs[0].push_block(events, ctx.index, ctx.block_size);
+            ctx.event_outputs[0].push_block(events);
         }
     };
 
@@ -176,9 +183,10 @@ namespace {
                 return;
             }
             event_times->clear();
-            ctx.event_inputs[0].for_each_in_block(ctx.index, ctx.block_size, [&](iv::TimedEvent const& event, size_t) {
+            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            for (iv::TimedEvent const& event : events) {
                 event_times->push_back(event.time);
-            });
+            }
         }
     };
 
@@ -1217,6 +1225,46 @@ TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
 
     tick_executor_direct(executor, 0, 8);
     EXPECT_EQ(event_times, (std::vector<size_t>{ 1, 6 }));
+}
+
+TEST(ArchitectureSmoke, EventPortRingGetBlockPreservesOrderAcrossWraparound)
+{
+    std::array<iv::TimedEvent, 4> storage {};
+    iv::EventSharedPortData shared(std::span<iv::TimedEvent>(storage), 0, 0, iv::EventTypeId::trigger);
+    iv::EventOutputPort output(shared, iv::EventTypeId::trigger);
+    iv::EventInputPort input(shared);
+
+    output.push(iv::TimedEvent { .time = 0, .value = iv::TriggerEvent {} });
+    output.push(iv::TimedEvent { .time = 1, .value = iv::TriggerEvent {} });
+
+    EXPECT_EQ(input.get_block(2, 1).size(), 0u);
+
+    output.push(iv::TimedEvent { .time = 2, .value = iv::TriggerEvent {} });
+    output.push(iv::TimedEvent { .time = 3, .value = iv::TriggerEvent {} });
+    output.push(iv::TimedEvent { .time = 4, .value = iv::TriggerEvent {} });
+
+    auto const block = input.get_block(2, 3);
+    ASSERT_EQ(block.size(), 3u);
+    EXPECT_EQ(block[0].time, 2u);
+    EXPECT_EQ(block[1].time, 3u);
+    EXPECT_EQ(block[2].time, 4u);
+}
+
+TEST(ArchitectureSmoke, EventPortDropsOverflowingEvents)
+{
+    std::array<iv::TimedEvent, 2> storage {};
+    iv::EventSharedPortData shared(std::span<iv::TimedEvent>(storage), 0, 0, iv::EventTypeId::trigger);
+    iv::EventOutputPort output(shared, iv::EventTypeId::trigger);
+    iv::EventInputPort input(shared);
+
+    output.push(iv::TimedEvent { .time = 0, .value = iv::TriggerEvent {} });
+    output.push(iv::TimedEvent { .time = 1, .value = iv::TriggerEvent {} });
+    output.push(iv::TimedEvent { .time = 2, .value = iv::TriggerEvent {} });
+
+    auto const block = input.get_block(0, 4);
+    ASSERT_EQ(block.size(), 2u);
+    EXPECT_EQ(block[0].time, 0u);
+    EXPECT_EQ(block[1].time, 1u);
 }
 
 TEST(ArchitectureSmoke, ExecutorTeardownAllowsFreshExecutor)

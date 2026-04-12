@@ -15,7 +15,6 @@
 #include <cstdint>
 #include <array>
 #include <functional>
-#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -100,9 +99,22 @@ namespace iv {
     };
 
     struct EventConversionPlan {
+        static constexpr size_t max_steps = static_cast<size_t>(EventTypeId::count) - 1;
+
         EventTypeId source_type {};
         EventTypeId target_type {};
-        std::vector<EventConversionStepId> steps;
+        std::array<EventConversionStepId, max_steps> steps {};
+        size_t step_count = 0;
+
+        constexpr size_t size() const
+        {
+            return step_count;
+        }
+
+        constexpr EventConversionStepId operator[](size_t index) const
+        {
+            return steps[index];
+        }
 
         bool operator==(EventConversionPlan const&) const = default;
     };
@@ -113,14 +125,15 @@ namespace iv {
             int assumptions = 0;
             int hops = 0;
 
-            auto tie() const
+            constexpr bool operator<(Score const& other) const
             {
-                return std::tie(loss, assumptions, hops);
-            }
-
-            bool operator<(Score const& other) const
-            {
-                return tie() < other.tie();
+                if (loss != other.loss) {
+                    return loss < other.loss;
+                }
+                if (assumptions != other.assumptions) {
+                    return assumptions < other.assumptions;
+                }
+                return hops < other.hops;
             }
         };
 
@@ -161,32 +174,32 @@ namespace iv {
             return type_index(type) < type_count();
         }
 
-        static bool is_note_on(MidiEvent const& midi)
+        static constexpr bool is_note_on(MidiEvent const& midi)
         {
             if (midi.size < 3) return false;
             std::uint8_t const status = midi.bytes[0] & 0xF0;
             return status == 0x90 && midi.bytes[2] != 0;
         }
 
-        static bool is_note_off(MidiEvent const& midi)
+        static constexpr bool is_note_off(MidiEvent const& midi)
         {
             if (midi.size < 3) return false;
             std::uint8_t const status = midi.bytes[0] & 0xF0;
             return status == 0x80 || (status == 0x90 && midi.bytes[2] == 0);
         }
 
-        static MidiEvent default_note_on()
+        static constexpr MidiEvent default_note_on()
         {
             return MidiEvent { .bytes = { 0x90, 60, 127 }, .size = 3 };
         }
 
-        static MidiEvent default_note_off()
+        static constexpr MidiEvent default_note_off()
         {
             return MidiEvent { .bytes = { 0x80, 60, 0 }, .size = 3 };
         }
 
         template<typename Emit>
-        static void apply_step(EventConversionStepId step, TimedEvent const& event, Emit&& emit)
+        static constexpr void apply_step(EventConversionStepId step, TimedEvent const& event, Emit&& emit)
         {
             switch (step) {
             case EventConversionStepId::midi_to_trigger:
@@ -238,14 +251,14 @@ namespace iv {
         }
 
         template<typename Emit>
-        static void apply_steps_recursive(
+        static constexpr void apply_steps_recursive(
             EventConversionPlan const& plan,
             size_t step_index,
             TimedEvent const& event,
             Emit&& emit
         )
         {
-            if (step_index >= plan.steps.size()) {
+            if (step_index >= plan.step_count) {
                 emit(event);
                 return;
             }
@@ -262,7 +275,7 @@ namespace iv {
             return registry;
         }
 
-        EventConversionPlan plan(EventTypeId source, EventTypeId target) const
+        static constexpr EventConversionPlan plan(EventTypeId source, EventTypeId target)
         {
             if (!is_valid_type(source) || !is_valid_type(target)) {
                 throw std::logic_error("invalid event type");
@@ -273,6 +286,7 @@ namespace iv {
                     .source_type = source,
                     .target_type = target,
                     .steps = {},
+                    .step_count = 0,
                 };
             }
 
@@ -321,77 +335,28 @@ namespace iv {
                 throw std::logic_error("no event conversion path is available");
             }
 
-            std::vector<EventConversionStepId> steps;
+            std::array<EventConversionStepId, EventConversionPlan::max_steps> reversed_steps {};
+            size_t reversed_step_count = 0;
             for (EventTypeId current = target; current != source; current = previous_type[type_index(current)]) {
-                steps.push_back(previous_step[type_index(current)]);
+                reversed_steps[reversed_step_count++] = previous_step[type_index(current)];
             }
-            std::reverse(steps.begin(), steps.end());
 
-            return EventConversionPlan {
+            EventConversionPlan result {
                 .source_type = source,
                 .target_type = target,
-                .steps = std::move(steps),
             };
+            for (size_t i = 0; i < reversed_step_count; ++i) {
+                result.steps[i] = reversed_steps[reversed_step_count - 1 - i];
+            }
+            result.step_count = reversed_step_count;
+
+            return result;
         }
 
         template<typename Emit>
-        void convert(EventConversionPlan const& plan, TimedEvent const& event, Emit&& emit) const
+        static constexpr void convert(EventConversionPlan const& plan, TimedEvent const& event, Emit&& emit)
         {
             apply_steps_recursive(plan, 0, event, std::forward<Emit>(emit));
-        }
-    };
-
-    class EventBlockView {
-        std::span<TimedEvent const> _events {};
-        size_t _block_index = 0;
-        EventTypeId _type {};
-
-    public:
-        EventBlockView() = default;
-
-        EventBlockView(
-            std::span<TimedEvent const> events,
-            size_t block_index,
-            EventTypeId type
-        ) :
-            _events(events),
-            _block_index(block_index),
-            _type(type)
-        {}
-
-        size_t size() const
-        {
-            return _events.size();
-        }
-
-        EventTypeId type() const
-        {
-            return _type;
-        }
-
-        size_t block_index() const
-        {
-            return _block_index;
-        }
-
-        std::span<TimedEvent const> events() const
-        {
-            return _events;
-        }
-
-        TimedEvent operator[](size_t index) const
-        {
-            TimedEvent event = _events[index];
-            event.time -= _block_index;
-            return event;
-        }
-
-        template<typename Fn>
-        void for_each(Fn&& fn) const
-        {
-            for (size_t i = 0; i < _events.size(); ++i) {
-                fn((*this)[i], i);
-            }
         }
     };
 
@@ -422,7 +387,7 @@ namespace iv {
         }
 
         size_t const budget_bytes = base_multiplier * average_size;
-        return std::max<size_t>(1, budget_bytes / sizeof(TimedEvent));
+        return next_power_of_2(std::max<size_t>(1, budget_bytes / sizeof(TimedEvent)));
     }
 
     inline constexpr size_t MAX_BLOCK_SIZE = size_t(1) << (std::numeric_limits<size_t>::digits - 1);
@@ -564,25 +529,9 @@ namespace iv {
         }
     };
 
-    IV_FORCEINLINE constexpr BlockView<Sample> make_block_view(
-        std::span<Sample> buffer,
-        size_t start,
-        size_t count
-    )
-    {
-        if (count == 0) {
-            return {};
-        }
-
-        size_t const first_size = std::min(count, buffer.size() - start);
-        return {
-            buffer.subspan(start, first_size),
-            buffer.subspan(0, count - first_size),
-        };
-    }
-
-    IV_FORCEINLINE constexpr BlockView<Sample const> make_block_view(
-        std::span<Sample const> buffer,
+    template<typename A>
+    IV_FORCEINLINE constexpr BlockView<A> make_block_view(
+        std::span<A> buffer,
         size_t start,
         size_t count
     )
@@ -788,16 +737,19 @@ namespace iv {
 
     struct EventSharedPortData {
         std::span<TimedEvent> buffer;
-        size_t event_count = 0;
+        size_t read_index = 0;
+        size_t write_index = 0;
         EventTypeId type {};
 
         constexpr EventSharedPortData(
             std::span<TimedEvent> buffer = {},
-            size_t event_count = 0,
+            size_t read_index = 0,
+            size_t write_index = 0,
             EventTypeId type = {}
         ) :
             buffer(buffer),
-            event_count(event_count),
+            read_index(read_index),
+            write_index(write_index),
             type(type)
         {}
     };
@@ -812,40 +764,45 @@ namespace iv {
             _shared_data(&shared_data)
         {}
 
-        EventBlockView get_block(size_t block_index, size_t block_size) const
+        BlockView<TimedEvent const> get_block(size_t block_index, size_t block_size) const
         {
-            if (!_shared_data) {
-                return EventBlockView({}, block_index, EventTypeId::empty);
+            if (!_shared_data || _shared_data->buffer.empty()) {
+                return {};
             }
 
             auto& shared_data = *_shared_data;
             size_t const block_end = block_index + block_size;
-            size_t consumed = 0;
-            while (consumed < shared_data.event_count && shared_data.buffer[consumed].time < block_index) {
-                ++consumed;
-            }
-            if (consumed != 0) {
-                size_t const remaining = shared_data.event_count - consumed;
-                std::move(
-                    shared_data.buffer.begin() + static_cast<std::ptrdiff_t>(consumed),
-                    shared_data.buffer.begin() + static_cast<std::ptrdiff_t>(shared_data.event_count),
-                    shared_data.buffer.begin()
-                );
-                shared_data.event_count = remaining;
+            size_t const mask = shared_data.buffer.size() - 1;
+
+            while (shared_data.read_index != shared_data.write_index) {
+                TimedEvent const& oldest = shared_data.buffer[shared_data.read_index & mask];
+                if (oldest.time >= block_index) {
+                    break;
+                }
+                ++shared_data.read_index;
             }
 
+            size_t const available = shared_data.write_index - shared_data.read_index;
             size_t end = 0;
-            while (end < shared_data.event_count && shared_data.buffer[end].time < block_end) {
+            while (end < available && shared_data.buffer[(shared_data.read_index + end) & mask].time < block_end) {
                 ++end;
             }
 
-            return EventBlockView(shared_data.buffer.first(end), block_index, shared_data.type);
+            return make_block_view(
+                std::span<TimedEvent const>(shared_data.buffer.data(), shared_data.buffer.size()),
+                shared_data.read_index & mask,
+                end
+            );
         }
 
         template<typename Fn>
         void for_each_in_block(size_t block_index, size_t block_size, Fn&& fn) const
         {
-            get_block(block_index, block_size).for_each(std::forward<Fn>(fn));
+            auto block = get_block(block_index, block_size);
+            size_t i = 0;
+            for (TimedEvent const& event : block) {
+                fn(event, i++);
+            }
         }
 
         EventTypeId type() const
@@ -885,18 +842,25 @@ namespace iv {
         void push(Event event, size_t sample_offset, size_t block_index, size_t block_size) const
         {
             (void)block_size;
+            push(TimedEvent{
+                .time = block_index + sample_offset,
+                .value = std::move(event)
+            });
+        }
+
+        void push(TimedEvent const& timed_event) const
+        {
             if (!_shared_data || _shared_data->buffer.empty()) {
                 return;
             }
-            TimedEvent const timed_event {
-                .time = block_index + sample_offset,
-                .value = std::move(event)
-            };
+
             auto append = [&](TimedEvent const& appended) {
-                if (_shared_data->event_count >= _shared_data->buffer.size()) {
-                    throw std::logic_error("event port capacity exceeded");
+                size_t const available = _shared_data->write_index - _shared_data->read_index;
+                if (available >= _shared_data->buffer.size()) {
+                    return;
                 }
-                _shared_data->buffer[_shared_data->event_count++] = appended;
+                _shared_data->buffer[_shared_data->write_index & (_shared_data->buffer.size() - 1)] = appended;
+                ++_shared_data->write_index;
             };
             if (_has_conversion) {
                 EventConversionRegistry::instance().convert(_conversion, timed_event, [&](TimedEvent const& converted) {
@@ -907,16 +871,16 @@ namespace iv {
             }
         }
 
-        void push_block(EventBlockView const& events, size_t block_index, size_t block_size) const
+        void push_block(BlockView<TimedEvent const> events) const
         {
-            events.for_each([&](TimedEvent const& event, size_t) {
-                push(event.value, event.time, block_index, block_size);
-            });
+            for (TimedEvent const& event : events) {
+                push(event);
+            }
         }
 
-        void append_block(EventBlockView const& events, size_t block_index, size_t block_size) const
+        void append_block(BlockView<TimedEvent const> events) const
         {
-            push_block(events, block_index, block_size);
+            push_block(events);
         }
 
         EventTypeId source_type() const

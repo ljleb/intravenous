@@ -146,8 +146,10 @@ namespace iv {
             size_t cursor = 0;
             Sample value = current_frequency(state);
 
-            ctx.event_inputs[0].for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
-                size_t const next = std::min(event.time, ctx.block_size);
+            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            for (TimedEvent const& event : events) {
+                size_t const event_offset = event.time - ctx.index;
+                size_t const next = std::min(event_offset, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
 
@@ -155,7 +157,7 @@ namespace iv {
                     apply_midi(state, *midi);
                     value = current_frequency(state);
                 }
-            });
+            }
 
             std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(ctx.block_size), value);
             ctx.outputs[0].push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
@@ -216,8 +218,10 @@ namespace iv {
             size_t cursor = 0;
             Sample value = current_gate(state);
 
-            ctx.event_inputs[0].for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
-                size_t const next = std::min(event.time, ctx.block_size);
+            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            for (TimedEvent const& event : events) {
+                size_t const event_offset = event.time - ctx.index;
+                size_t const next = std::min(event_offset, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
 
@@ -225,7 +229,7 @@ namespace iv {
                     apply_midi(state, *midi);
                     value = current_gate(state);
                 }
-            });
+            }
 
             std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(ctx.block_size), value);
             ctx.outputs[0].push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
@@ -350,13 +354,15 @@ namespace iv {
             };
 
             size_t cursor = 0;
-            ctx.event_inputs[0].for_each_in_block(ctx.index, ctx.block_size, [&](TimedEvent const& event, size_t) {
-                size_t const next = std::min(event.time, ctx.block_size);
+            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            for (TimedEvent const& event : events) {
+                size_t const event_offset = event.time - ctx.index;
+                size_t const next = std::min(event_offset, ctx.block_size);
                 push_until(next, cursor);
 
                 auto const* midi = std::get_if<MidiEvent>(&event.value);
                 if (!midi) {
-                    return;
+                    continue;
                 }
 
                 if (details::midi_is_note_on(*midi)) {
@@ -368,7 +374,7 @@ namespace iv {
                     if (target_voice == voice_count) {
                         target_voice = find_oldest_voice(state.allocated, state.ages);
                     }
-                    assign_voice(target_voice, note, details::midi_velocity_to_amplitude(*midi), event.time);
+                    assign_voice(target_voice, note, details::midi_velocity_to_amplitude(*midi), event_offset);
                 } else if (details::midi_is_note_off(*midi)) {
                     size_t const target_voice = find_voice_for_note(
                         state.allocated,
@@ -384,7 +390,7 @@ namespace iv {
                         state.frequency = current_frequency(state.notes[voice_id], state.pitch_bend);
                     }
                 }
-            });
+            }
 
             push_until(ctx.block_size, cursor);
         }
