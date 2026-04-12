@@ -30,16 +30,19 @@ endfunction()
 
 function(iv_configure_juce)
     set(IV_JUCE_AUDIO_PROCESSORS_TARGET "")
+    set(IV_JUCE_AUDIO_DEVICES_TARGET "")
     set(IV_JUCE_EVENTS_TARGET "")
     set(IV_JUCE_CORE_TARGET "")
     set(IV_JUCE_MODULES_DIR "")
 
     if(TARGET juce::juce_audio_processors)
         set(IV_JUCE_AUDIO_PROCESSORS_TARGET juce::juce_audio_processors)
+        set(IV_JUCE_AUDIO_DEVICES_TARGET juce::juce_audio_devices)
         set(IV_JUCE_EVENTS_TARGET juce::juce_events)
         set(IV_JUCE_CORE_TARGET juce::juce_core)
     elseif(TARGET JUCE::juce_audio_processors)
         set(IV_JUCE_AUDIO_PROCESSORS_TARGET JUCE::juce_audio_processors)
+        set(IV_JUCE_AUDIO_DEVICES_TARGET JUCE::juce_audio_devices)
         set(IV_JUCE_EVENTS_TARGET JUCE::juce_events)
         set(IV_JUCE_CORE_TARGET JUCE::juce_core)
     else()
@@ -61,6 +64,7 @@ function(iv_configure_juce)
     endif()
 
     set(IV_JUCE_AUDIO_PROCESSORS_TARGET "${IV_JUCE_AUDIO_PROCESSORS_TARGET}" PARENT_SCOPE)
+    set(IV_JUCE_AUDIO_DEVICES_TARGET "${IV_JUCE_AUDIO_DEVICES_TARGET}" PARENT_SCOPE)
     set(IV_JUCE_EVENTS_TARGET "${IV_JUCE_EVENTS_TARGET}" PARENT_SCOPE)
     set(IV_JUCE_CORE_TARGET "${IV_JUCE_CORE_TARGET}" PARENT_SCOPE)
     set(IV_JUCE_MODULES_DIR "${IV_JUCE_MODULES_DIR}" PARENT_SCOPE)
@@ -106,6 +110,7 @@ if(JUCE_FOUND)
 
     target_link_libraries(intravenous_module_runtime PRIVATE
         ${IV_JUCE_AUDIO_PROCESSORS_TARGET}
+        ${IV_JUCE_AUDIO_DEVICES_TARGET}
         ${IV_JUCE_EVENTS_TARGET}
         ${IV_JUCE_CORE_TARGET}
     )

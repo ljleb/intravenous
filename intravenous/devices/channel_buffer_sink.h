@@ -30,35 +30,23 @@ namespace iv {
 
         void initialize(InitializationContext<AudioDeviceSink> const& ctx) const
         {
-            if (!ctx.execution_targets) {
-                return;
-            }
-
             auto& state = ctx.state();
-            auto& target = ctx.execution_targets.audio_device(device_id, channel);
+            auto& target = ctx.orchestrator.audio_device(device_id, channel);
             target.register_sink(channel, state.buffer);
         }
 
         void move(MoveContext<AudioDeviceSink> const& ctx) const
         {
-            if (!ctx.execution_targets) {
-                return;
-            }
-
             auto& state = ctx.state();
             auto& previous = ctx.previous_state();
-            auto& target = ctx.execution_targets.audio_device(device_id, channel);
+            auto& target = ctx.orchestrator.audio_device(device_id, channel);
             target.update_sink(channel, previous.buffer, state.buffer);
         }
 
         void release(ReleaseContext<AudioDeviceSink> const& ctx) const
         {
-            if (!ctx.execution_targets) {
-                return;
-            }
-
             auto& state = ctx.state();
-            auto& target = ctx.execution_targets.audio_device(device_id, channel);
+            auto& target = ctx.orchestrator.audio_device(device_id, channel);
             target.unregister_sink(channel, state.buffer);
         }
 
@@ -69,7 +57,7 @@ namespace iv {
                 return;
             }
 
-            sink_state.buffer[ctx.index & (sink_state.buffer.size() - 1)] += ctx.inputs[0].get();
+            sink_state.buffer[ctx.index & (sink_state.buffer.size() - 1)] = ctx.inputs[0].get();
         }
     };
 
@@ -96,35 +84,23 @@ namespace iv {
 
         void initialize(InitializationContext<FileSink> const& ctx) const
         {
-            if (!ctx.execution_targets) {
-                return;
-            }
-
             auto& state = ctx.state();
-            auto& target = ctx.execution_targets.file(path, channel);
+            auto& target = ctx.orchestrator.file(path, channel);
             target.register_sink(channel, state.buffer);
         }
 
         void move(MoveContext<FileSink> const& ctx) const
         {
-            if (!ctx.execution_targets) {
-                return;
-            }
-
             auto& state = ctx.state();
             auto& previous = ctx.previous_state();
-            auto& target = ctx.execution_targets.file(path, channel);
+            auto& target = ctx.orchestrator.file(path, channel);
             target.update_sink(channel, previous.buffer, state.buffer);
         }
 
         void release(ReleaseContext<FileSink> const& ctx) const
         {
-            if (!ctx.execution_targets) {
-                return;
-            }
-
             auto& state = ctx.state();
-            auto& target = ctx.execution_targets.file(path, channel);
+            auto& target = ctx.orchestrator.file(path, channel);
             target.unregister_sink(channel, state.buffer);
         }
 
@@ -135,7 +111,7 @@ namespace iv {
                 return;
             }
 
-            sink_state.buffer[ctx.index & (sink_state.buffer.size() - 1)] += ctx.inputs[0].get();
+            sink_state.buffer[ctx.index & (sink_state.buffer.size() - 1)] = ctx.inputs[0].get();
         }
     };
 }

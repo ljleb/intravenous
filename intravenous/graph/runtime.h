@@ -10,7 +10,9 @@ namespace iv {
         std::byte* nested_state,
         TickBlockContext<OuterNode> const& outer,
         std::span<InputPort> inputs,
-        std::span<OutputPort> outputs
+        std::span<OutputPort> outputs,
+        std::span<EventInputPort> event_inputs = {},
+        std::span<EventOutputPort> event_outputs = {}
     )
     {
         node.tick_block({
@@ -18,7 +20,9 @@ namespace iv {
                 static_cast<TickContext<OuterNode> const&>(outer),
                 nested_state,
                 inputs,
-                outputs
+                outputs,
+                event_inputs,
+                event_outputs
             ),
             outer.index,
             outer.block_size

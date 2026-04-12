@@ -5,6 +5,9 @@
 #include <concepts>
 #include <cstddef>
 #include <iostream>
+#include <iterator>
+#include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -45,9 +48,10 @@ namespace iv {
     namespace details
     {
         template <typename Node>
-        concept has_outputs = requires(Node node, std::span<OutputConfig const> outputs)
+        concept has_outputs = requires(Node const& node)
         {
-            outputs = node.outputs();
+            std::begin(node.outputs());
+            std::end(node.outputs());
         };
 
         template <typename Node>
@@ -57,9 +61,36 @@ namespace iv {
         };
 
         template <typename Node>
-        concept has_inputs = requires(Node node, std::span<InputConfig const> inputs)
+        concept has_inputs = requires(Node const& node)
         {
-            inputs = node.inputs();
+            std::begin(node.inputs());
+            std::end(node.inputs());
+        };
+
+        template <typename Node>
+        concept has_event_outputs = requires(Node const& node)
+        {
+            std::begin(node.event_outputs());
+            std::end(node.event_outputs());
+        };
+
+        template <typename Node>
+        concept has_num_event_outputs = requires(Node node, size_t num_outputs)
+        {
+            num_outputs = node.num_event_outputs();
+        };
+
+        template <typename Node>
+        concept has_event_inputs = requires(Node const& node)
+        {
+            std::begin(node.event_inputs());
+            std::end(node.event_inputs());
+        };
+
+        template <typename Node>
+        concept has_num_event_inputs = requires(Node node, size_t num_inputs)
+        {
+            num_inputs = node.num_event_inputs();
         };
 
         template <typename Node>
@@ -79,6 +110,19 @@ namespace iv {
         {
             block_size = node.max_block_size();
         };
+
+        template <typename Node>
+        concept has_ttl_method = requires(Node node, std::optional<size_t> ttl)
+        {
+            ttl = node.ttl_samples();
+        };
+
+        template <typename Node>
+        concept has_can_skip_block_method = requires(Node const& node, bool value)
+        {
+            value = node.can_skip_block();
+        };
+
     }
 
     template<typename Node>
@@ -134,6 +178,58 @@ namespace iv {
     }
 
     template<typename Node>
+    constexpr auto get_event_outputs(Node const& node)
+    {
+        if constexpr (details::has_event_outputs<Node>)
+        {
+            return node.event_outputs();
+        }
+        else
+        {
+            return std::span<EventOutputConfig, 0>{};
+        }
+    }
+
+    template<typename Node>
+    constexpr auto get_num_event_outputs(Node const& node)
+    {
+        if constexpr (details::has_num_event_outputs<Node>)
+        {
+            return node.num_event_outputs();
+        }
+        else
+        {
+            return get_event_outputs(node).size();
+        }
+    }
+
+    template<typename Node>
+    constexpr auto get_event_inputs(Node const& node)
+    {
+        if constexpr (details::has_event_inputs<Node>)
+        {
+            return node.event_inputs();
+        }
+        else
+        {
+            return std::span<EventInputConfig, 0>{};
+        }
+    }
+
+    template<typename Node>
+    constexpr auto get_num_event_inputs(Node const& node)
+    {
+        if constexpr (details::has_num_event_inputs<Node>)
+        {
+            return node.num_event_inputs();
+        }
+        else
+        {
+            return get_event_inputs(node).size();
+        }
+    }
+
+    template<typename Node>
     constexpr size_t get_internal_latency(Node const& node)
     {
         if constexpr (details::has_internal_latency<Node>)
@@ -156,6 +252,31 @@ namespace iv {
         else
         {
             return MAX_BLOCK_SIZE;
+        }
+    }
+
+    template<typename Node>
+    constexpr std::optional<size_t> get_ttl_samples(Node const& node)
+    {
+        if constexpr (details::has_ttl_method<Node>)
+        {
+            return node.ttl_samples();
+        }
+        else
+        {
+            return std::nullopt;
+        }
+    }
+
+    template<typename Node>
+    constexpr bool get_can_skip_block(Node const& node)
+    {
+        if constexpr (details::has_can_skip_block_method<Node>) {
+            return node.can_skip_block();
+        } else {
+            return get_num_event_outputs(node) == 0
+                && get_num_outputs(node) > 0
+                && (get_num_inputs(node) > 0 || get_num_event_inputs(node) > 0);
         }
     }
 

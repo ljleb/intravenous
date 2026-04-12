@@ -8,9 +8,9 @@ int main()
 
     auto const fixtures = iv::test::test_modules_root();
     auto const runtime_root = iv::test::runtime_modules_root() / "module_watcher";
-    auto const project_src = fixtures / "noisy_saw_project";
+    auto const project_src = fixtures / "reload_project";
     auto const project_dst = runtime_root / "watch_target";
-    auto const voice_src = fixtures / "noisy_saw_voice";
+    auto const voice_src = fixtures / "reload_voice";
     auto const voice_dst = runtime_root / "watch_voice";
 
     std::filesystem::remove_all(runtime_root);
@@ -33,8 +33,8 @@ int main()
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
-    auto needle = std::string("warper[\"anti_aliased\"] * amplitude");
-    auto replacement = std::string("warper[\"anti_aliased\"] * amplitude/* watcher marker*/");
+    auto needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");
+    auto replacement = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);/* watcher marker*/");
     iv::test::require(source.contains(needle), "watch fixture did not contain expected marker");
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text(module_cpp, source);

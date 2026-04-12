@@ -61,7 +61,7 @@ int main()
         auto loader = iv::test::make_loader({ fixtures, iv::test::duplicate_modules_root() });
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(fixtures / "noisy_saw_project", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+            [&] { (void)loader.load_root(fixtures / "nested_loader_project", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
             "duplicate module id",
             "duplicate module id should fail"
         );

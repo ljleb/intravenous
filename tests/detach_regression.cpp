@@ -11,6 +11,26 @@
 namespace {
     using namespace iv::literals;
 
+    void tick_executor_direct(iv::NodeExecutor& executor, size_t index, size_t block_size)
+    {
+        iv::validate_block_size(block_size, "test block size must be a power of 2");
+        if (block_size > executor.max_block_size()) {
+            throw std::logic_error("test block size exceeds executor max block size");
+        }
+
+        executor.root().tick_block({
+            iv::TickContext<iv::TypeErasedNode> {
+                .inputs = {},
+                .outputs = {},
+                .event_inputs = {},
+                .event_outputs = {},
+                .buffer = executor.storage().buffer(),
+            },
+            index,
+            block_size
+        });
+    }
+
     struct BufferSink {
         iv::Sample* destination;
         size_t size;
@@ -32,14 +52,14 @@ namespace {
         }
     };
 
-    void detached_voice(iv::GraphBuilder& g, iv::SignalRef dt, iv::SignalRef noise, iv::Sample amplitude)
+    void detached_voice(iv::GraphBuilder& g, iv::SamplePortRef dt, iv::SamplePortRef noise, iv::Sample amplitude)
     {
         auto const reset = 1.0f;
         auto const frequency = 220.0f;
-        auto const integrator = g.node<iv::Integrator>();
+        auto const integrator = g.node<iv::PhaseIntegrator>();
         auto const warper = g.node<iv::Warper>();
 
-        integrator(warper["aliased"].detach() * reset, frequency * 2.0f, dt);
+        integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
         warper(integrator + noise);
         g.outputs(warper["anti_aliased"] * amplitude);
     }
@@ -58,16 +78,14 @@ int main()
     auto const dt = graph.node<iv::ValueSource>(&dt_value);
     auto const src_a = graph.node<iv::ValueSource>(&noise_a);
     auto const src_b = graph.node<iv::ValueSource>(&noise_b);
-    auto const voice_a = graph.subgraph([&](iv::GraphBuilder& nested) {
-        detached_voice(nested, nested.input("dt"), nested.input("noise"), 0.5f);
+    auto const voice_a = graph.subgraph([&] {
+        detached_voice(graph, dt, src_a, 0.5f);
     });
-    auto const voice_b = graph.subgraph([&](iv::GraphBuilder& nested) {
-        detached_voice(nested, nested.input("dt"), nested.input("noise"), 0.25f);
+    auto const voice_b = graph.subgraph([&] {
+        detached_voice(graph, dt, src_b, 0.25f);
     });
     auto const sink = graph.node<BufferSink>(output.data(), output.size());
 
-    voice_a("dt"_P = dt, "noise"_P = src_a);
-    voice_b("dt"_P = dt, "noise"_P = src_b);
     sink(voice_a + voice_b);
     graph.outputs();
 
@@ -76,10 +94,9 @@ int main()
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(graph.build()),
         {},
-        execution_targets,
-        1
+        std::move(execution_targets).to_builder()
     );
-    executor.tick_block(0, output.size());
+    tick_executor_direct(executor, 0, output.size());
 
     bool saw_non_zero = false;
     for (iv::Sample sample : output) {

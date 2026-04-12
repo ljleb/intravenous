@@ -3,7 +3,7 @@
 #include "compat.h"
 #include "node_traits.h"
 #include "node_resources.h"
-#include "execution_targets.h"
+#include "orchestrator/orchestrator_builder.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -11,6 +11,7 @@
 #include <deque>
 #include <memory>
 #include <new>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -38,9 +39,9 @@ namespace iv {
     struct NodeStorage;
 
     struct NodeLifecycleCallbacks {
-        void (*move_fn)(void const*, size_t, NodeStorage&, NodeStorage const&, ExecutionTargetRegistry*, size_t) = nullptr;
-        void (*initialize_fn)(void const*, size_t, NodeStorage&, ExecutionTargetRegistry*, size_t) = nullptr;
-        void (*release_fn)(void const*, size_t, NodeStorage&, ExecutionTargetRegistry*, size_t) = nullptr;
+        void (*move_fn)(void const*, size_t, NodeStorage&, NodeStorage const&, OrchestratorBuilder*) = nullptr;
+        void (*initialize_fn)(void const*, size_t, NodeStorage&, OrchestratorBuilder*) = nullptr;
+        void (*release_fn)(void const*, size_t, NodeStorage&, OrchestratorBuilder*) = nullptr;
         void (*default_construct_state_fn)(void*) = nullptr;
         void (*move_construct_state_fn)(void*, void*) = nullptr;
         void (*destroy_state_fn)(void*) = nullptr;
@@ -90,6 +91,7 @@ namespace iv {
         size_t storage_size = 0;
         size_t storage_alignment = 1;
         size_t max_block_size = 1;
+        size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max();
         std::vector<NodeRecord> nodes;
         std::vector<Region> regions;
         std::vector<ArrayBinding> imported_arrays;
@@ -133,7 +135,20 @@ namespace iv {
         : _max_block_size(max_block_size)
         {}
 
+        explicit NodeLayoutBuilder(size_t max_block_size, size_t default_silence_ttl_samples)
+        : _max_block_size(max_block_size)
+        , _default_silence_ttl_samples(default_silence_ttl_samples)
+        {}
+
+        explicit NodeLayoutBuilder(size_t max_block_size, size_t default_silence_ttl_samples, size_t event_port_buffer_base_multiplier)
+        : _max_block_size(max_block_size)
+        , _default_silence_ttl_samples(default_silence_ttl_samples)
+        , _event_port_buffer_base_multiplier(event_port_buffer_base_multiplier)
+        {}
+
         size_t max_block_size() const;
+        size_t default_silence_ttl_samples() const { return _default_silence_ttl_samples; }
+        size_t event_port_buffer_base_multiplier() const { return _event_port_buffer_base_multiplier; }
 
         template<typename A>
         static void const* array_type_token()
@@ -152,6 +167,8 @@ namespace iv {
 
     private:
         size_t _max_block_size = 1;
+        size_t _default_silence_ttl_samples = std::numeric_limits<size_t>::max();
+        size_t _event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER;
         size_t _storage_alignment = 1;
         std::vector<NodeLayout::NodeRecord> _nodes;
         std::vector<NodeLayout::Region> _regions;
@@ -199,8 +216,8 @@ namespace iv {
         template<typename A>
         std::span<A const> resolve_exported_array_storage(std::string const& id) const;
         bool can_move_from(NodeStorage const& previous, size_t node_index) const;
-        void initialize(NodeStorage const* previous = nullptr, ExecutionTargetRegistry* execution_targets = nullptr, size_t executor_id = 0);
-        void release(ExecutionTargetRegistry* execution_targets = nullptr, size_t executor_id = 0);
+        void initialize(NodeStorage const* previous = nullptr, OrchestratorBuilder* orchestrator = nullptr);
+        void release(OrchestratorBuilder* orchestrator = nullptr);
     };
 
     template<typename Node>
@@ -250,6 +267,7 @@ namespace iv {
         void nested_node_states(std::span<std::span<std::byte>> const& nodes) const;
 
         size_t max_block_size() const;
+        size_t event_port_buffer_base_multiplier() const;
 
         size_t node_index() const
         {
@@ -272,13 +290,13 @@ namespace iv {
     private:
         NodeStorage* _storage;
         void* _state = nullptr;
+        std::optional<OrchestratorBuilder> _fallback_orchestrator;
 
     public:
         ResourceContext const& resources;
-        ExecutionTargetRegistrar execution_targets;
-        size_t executor_id;
+        OrchestratorBuilder& orchestrator;
 
-        explicit InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources, ExecutionTargetRegistry* execution_targets = nullptr, size_t executor_id = 0);
+        explicit InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources, OrchestratorBuilder* orchestrator = nullptr);
 
         template<typename Node2>
         InitializationContext(InitializationContext<Node2> const& ctx);
@@ -296,6 +314,11 @@ namespace iv {
             return _storage->max_block_size();
         }
 
+        size_t default_silence_ttl_samples() const
+        {
+            return _storage->layout->default_silence_ttl_samples;
+        }
+
         template<typename A>
         std::span<A const> resolve_exported_array_storage(std::string const& id) const;
     };
@@ -310,13 +333,13 @@ namespace iv {
     private:
         NodeStorage* _storage;
         void* _state = nullptr;
+        std::optional<OrchestratorBuilder> _fallback_orchestrator;
 
     public:
         ResourceContext const& resources;
-        ExecutionTargetRegistrar execution_targets;
-        size_t executor_id;
+        OrchestratorBuilder& orchestrator;
 
-        explicit ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources, ExecutionTargetRegistry* execution_targets = nullptr, size_t executor_id = 0);
+        explicit ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources, OrchestratorBuilder* orchestrator = nullptr);
 
         template<typename Node2>
         ReleaseContext(ReleaseContext<Node2> const& ctx);
@@ -337,11 +360,11 @@ namespace iv {
         void* _state = nullptr;
         NodeStorage const* _previous_storage;
         void* _previous_state = nullptr;
+        std::optional<OrchestratorBuilder> _fallback_orchestrator;
 
     public:
         ResourceContext const& resources;
-        ExecutionTargetRegistrar execution_targets;
-        size_t executor_id;
+        OrchestratorBuilder& orchestrator;
 
         explicit MoveContext(
             NodeStorage& storage,
@@ -349,8 +372,7 @@ namespace iv {
             NodeStorage const& previous_storage,
             void* previous_state,
             ResourceContext const& resources,
-            ExecutionTargetRegistry* execution_targets = nullptr,
-            size_t executor_id = 0
+            OrchestratorBuilder* orchestrator = nullptr
         );
 
         template<typename Node2>
@@ -478,6 +500,12 @@ namespace iv {
     inline size_t DeclarationContext<Node>::max_block_size() const
     {
         return _builder->max_block_size();
+    }
+
+    template<typename Node>
+    inline size_t DeclarationContext<Node>::event_port_buffer_base_multiplier() const
+    {
+        return _builder->event_port_buffer_base_multiplier();
     }
 
     template<typename Node>
@@ -679,6 +707,7 @@ namespace iv {
         NodeLayout layout;
         layout.storage_alignment = _storage_alignment;
         layout.max_block_size = _max_block_size;
+        layout.default_silence_ttl_samples = _default_silence_ttl_samples;
         layout.nodes = std::move(_nodes);
         layout.regions = std::move(_regions);
         layout.imported_arrays = std::move(_imports);
@@ -771,49 +800,49 @@ namespace iv {
         }
 
         if constexpr (requires(Node const& node, MoveContext<Node> ctx) { node.move(ctx); }) {
-            callbacks.move_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, NodeStorage const& previous_storage, ExecutionTargetRegistry* execution_targets, size_t executor_id) {
+            callbacks.move_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, NodeStorage const& previous_storage, OrchestratorBuilder* orchestrator) {
                 void* state = storage.state_ptr(node_index);
                 void* previous_state = previous_storage.state_ptr(node_index);
                 if constexpr (std::is_empty_v<Node>) {
                     (void) node_ptr;
                     Node node {};
-                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, execution_targets, executor_id);
+                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, orchestrator);
                     node.move(ctx);
                 } else {
                     auto const& node = *static_cast<Node const*>(node_ptr);
-                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, execution_targets, executor_id);
+                    MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, orchestrator);
                     node.move(ctx);
                 }
             };
         }
 
         if constexpr (requires(Node const& node, InitializationContext<Node> ctx) { node.initialize(ctx); }) {
-            callbacks.initialize_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, ExecutionTargetRegistry* execution_targets, size_t executor_id) {
+            callbacks.initialize_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, OrchestratorBuilder* orchestrator) {
                 void* state = storage.state_ptr(node_index);
                 if constexpr (std::is_empty_v<Node>) {
                     (void)node_ptr;
                     Node node {};
-                    InitializationContext<Node> ctx(storage, state, *storage.resources, execution_targets, executor_id);
+                    InitializationContext<Node> ctx(storage, state, *storage.resources, orchestrator);
                     node.initialize(ctx);
                 } else {
                     auto const& node = *static_cast<Node const*>(node_ptr);
-                    InitializationContext<Node> ctx(storage, state, *storage.resources, execution_targets, executor_id);
+                    InitializationContext<Node> ctx(storage, state, *storage.resources, orchestrator);
                     node.initialize(ctx);
                 }
             };
         }
 
         if constexpr (requires(Node const& node, ReleaseContext<Node> ctx) { node.release(ctx); }) {
-            callbacks.release_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, ExecutionTargetRegistry* execution_targets, size_t executor_id) {
+            callbacks.release_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, OrchestratorBuilder* orchestrator) {
                 void* state = storage.state_ptr(node_index);
                 if constexpr (std::is_empty_v<Node>) {
                     (void)node_ptr;
                     Node node {};
-                    ReleaseContext<Node> ctx(storage, state, *storage.resources, execution_targets, executor_id);
+                    ReleaseContext<Node> ctx(storage, state, *storage.resources, orchestrator);
                     node.release(ctx);
                 } else {
                     auto const& node = *static_cast<Node const*>(node_ptr);
-                    ReleaseContext<Node> ctx(storage, state, *storage.resources, execution_targets, executor_id);
+                    ReleaseContext<Node> ctx(storage, state, *storage.resources, orchestrator);
                     node.release(ctx);
                 }
             };
@@ -1002,7 +1031,7 @@ namespace iv {
             next_region(*previous.layout, node_index, previous_index) == previous.layout->regions.size();
     }
 
-    inline void NodeStorage::initialize(NodeStorage const* previous, ExecutionTargetRegistry* execution_targets, size_t executor_id)
+    inline void NodeStorage::initialize(NodeStorage const* previous, OrchestratorBuilder* orchestrator)
     {
         if (!layout || !resources) {
             return;
@@ -1096,7 +1125,7 @@ namespace iv {
                 record.lifecycle.move_construct_state_fn != nullptr;
 
             if (previous && record.lifecycle.move_fn && can_move_from(*previous, node_index)) {
-                record.lifecycle.move_fn(record.node, node_index, *this, *previous, execution_targets, executor_id);
+                record.lifecycle.move_fn(record.node, node_index, *this, *previous, orchestrator);
                 auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
                 previous_initialized_nodes.erase(
                     std::remove(previous_initialized_nodes.begin(), previous_initialized_nodes.end(), node_index),
@@ -1107,9 +1136,9 @@ namespace iv {
                     auto const& previous_record = previous->layout->nodes[node_index];
                     if (previous_record.lifecycle.release_fn) {
                         if (moved_state) {
-                            previous_record.lifecycle.release_fn(previous_record.node, node_index, *this, execution_targets, executor_id);
+                            previous_record.lifecycle.release_fn(previous_record.node, node_index, *this, orchestrator);
                         } else {
-                            previous_record.lifecycle.release_fn(previous_record.node, node_index, const_cast<NodeStorage&>(*previous), execution_targets, executor_id);
+                            previous_record.lifecycle.release_fn(previous_record.node, node_index, const_cast<NodeStorage&>(*previous), orchestrator);
                         }
                     }
                     auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
@@ -1120,7 +1149,7 @@ namespace iv {
                 }
                 if (record.lifecycle.initialize_fn) {
                     try {
-                        record.lifecycle.initialize_fn(record.node, node_index, *this, execution_targets, executor_id);
+                        record.lifecycle.initialize_fn(record.node, node_index, *this, orchestrator);
                     } catch (std::exception const& e) {
                         throw std::runtime_error(
                             "node initialize failed at index " + std::to_string(node_index) + ": " + e.what()
@@ -1137,7 +1166,7 @@ namespace iv {
         }
     }
 
-    inline void NodeStorage::release(ExecutionTargetRegistry* execution_targets, size_t executor_id)
+    inline void NodeStorage::release(OrchestratorBuilder* orchestrator)
     {
         if (!layout || !resources) {
             return;
@@ -1147,19 +1176,19 @@ namespace iv {
             size_t const node_index = *it;
             auto const& record = layout->nodes[node_index];
             if (record.lifecycle.release_fn) {
-                record.lifecycle.release_fn(record.node, node_index, *this, execution_targets, executor_id);
+                record.lifecycle.release_fn(record.node, node_index, *this, orchestrator);
             }
         }
         initialized_nodes.clear();
     }
 
     template<typename Node>
-    inline InitializationContext<Node>::InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources_, ExecutionTargetRegistry* execution_targets_, size_t executor_id_)
+    inline InitializationContext<Node>::InitializationContext(NodeStorage& storage, void* state, ResourceContext const& resources_, OrchestratorBuilder* orchestrator_)
       : _storage(&storage)
       , _state(state)
+      , _fallback_orchestrator(orchestrator_ ? std::nullopt : std::optional<OrchestratorBuilder>(std::in_place))
       , resources(resources_)
-      , execution_targets(execution_targets_, executor_id_)
-      , executor_id(executor_id_)
+      , orchestrator(orchestrator_ ? *orchestrator_ : *_fallback_orchestrator)
       {}
 
     template<typename Node>
@@ -1167,9 +1196,9 @@ namespace iv {
     inline InitializationContext<Node>::InitializationContext(InitializationContext<Node2> const& ctx)
     : _storage(ctx._storage)
     , _state(ctx._state)
+    , _fallback_orchestrator(std::nullopt)
     , resources(ctx.resources)
-    , execution_targets(ctx.execution_targets)
-    , executor_id(ctx.executor_id)
+    , orchestrator(ctx.orchestrator)
     {}
 
     template<typename Node>
@@ -1187,12 +1216,12 @@ namespace iv {
     }
 
     template<typename Node>
-    inline ReleaseContext<Node>::ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources_, ExecutionTargetRegistry* execution_targets_, size_t executor_id_)
+    inline ReleaseContext<Node>::ReleaseContext(NodeStorage& storage, void* state, ResourceContext const& resources_, OrchestratorBuilder* orchestrator_)
       : _storage(&storage)
       , _state(state)
+      , _fallback_orchestrator(orchestrator_ ? std::nullopt : std::optional<OrchestratorBuilder>(std::in_place))
       , resources(resources_)
-      , execution_targets(execution_targets_, executor_id_)
-      , executor_id(executor_id_)
+      , orchestrator(orchestrator_ ? *orchestrator_ : *_fallback_orchestrator)
       {}
 
     template<typename Node>
@@ -1200,9 +1229,9 @@ namespace iv {
     inline ReleaseContext<Node>::ReleaseContext(ReleaseContext<Node2> const& ctx)
     : _storage(ctx._storage)
     , _state(ctx._state)
+    , _fallback_orchestrator(std::nullopt)
     , resources(ctx.resources)
-    , execution_targets(ctx.execution_targets)
-    , executor_id(ctx.executor_id)
+    , orchestrator(ctx.orchestrator)
     {}
 
     template<typename Node>
@@ -1219,16 +1248,15 @@ namespace iv {
         NodeStorage const& previous_storage,
         void* previous_state,
         ResourceContext const& resources_,
-        ExecutionTargetRegistry* execution_targets_,
-        size_t executor_id_
+        OrchestratorBuilder* orchestrator_
     )
       : _storage(&storage)
       , _state(state)
       , _previous_storage(&previous_storage)
       , _previous_state(previous_state)
+      , _fallback_orchestrator(orchestrator_ ? std::nullopt : std::optional<OrchestratorBuilder>(std::in_place))
       , resources(resources_)
-      , execution_targets(execution_targets_, executor_id_)
-      , executor_id(executor_id_)
+      , orchestrator(orchestrator_ ? *orchestrator_ : *_fallback_orchestrator)
       {}
 
     template<typename Node>
@@ -1238,9 +1266,9 @@ namespace iv {
     , _state(ctx._state)
     , _previous_storage(ctx._previous_storage)
     , _previous_state(ctx._previous_state)
+    , _fallback_orchestrator(std::nullopt)
     , resources(ctx.resources)
-    , execution_targets(ctx.execution_targets)
-    , executor_id(ctx.executor_id)
+    , orchestrator(ctx.orchestrator)
     {}
 
     template<typename Node>

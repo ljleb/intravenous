@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dsl.h"
+#include "juce_midi_input.h"
 #include "node_lifecycle.h"
 
 #include <cstdint>
@@ -20,10 +21,13 @@ namespace iv {
     namespace juce {
 #if !IV_ENABLE_JUCE_VST
         template<typename... Args>
-        NodeRef vst(Args&&...)
+        SampleNodeRef vst(Args&&...)
         {
-            static_assert(false, "iv::juce::vst(...) requires JUCE VST support. Configure the project with JUCE available so IV_ENABLE_JUCE_VST=1.");
-            return NodeRef();
+            static_assert(
+                details::dependent_false_v<Args...>,
+                "iv::juce::vst(...) requires JUCE VST support. Configure the project with JUCE available so IV_ENABLE_JUCE_VST=1."
+            );
+            return SampleNodeRef();
         }
 #endif
     }
@@ -60,24 +64,6 @@ namespace iv {
 
     JuceVstWrapperSpec probe_juce_vst(JuceVstPluginConfig request);
 
-    namespace juce {
-        inline NodeRef vst(
-            GraphBuilder& g,
-            std::filesystem::path plugin_path,
-            std::string plugin_identifier = {},
-            size_t preferred_audio_input_streams = 1,
-            size_t preferred_audio_output_streams = 1
-        )
-        {
-            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstPluginConfig{
-                .plugin_path = std::move(plugin_path),
-                .plugin_identifier = std::move(plugin_identifier),
-                .preferred_audio_input_streams = preferred_audio_input_streams,
-                .preferred_audio_output_streams = preferred_audio_output_streams,
-            }));
-        }
-    }
-
     class JuceVstWrapper {
         std::shared_ptr<JuceVstWrapperSpec const> _spec;
 
@@ -108,6 +94,13 @@ namespace iv {
             return inputs;
         }
 
+        auto event_inputs() const
+        {
+            return std::array<EventInputConfig, 1> {{
+                { .name = "midi", .type = EventTypeId::midi }
+            }};
+        }
+
         std::vector<OutputConfig> outputs() const
         {
             std::vector<OutputConfig> outputs;
@@ -128,5 +121,23 @@ namespace iv {
 
         void tick_block(TickBlockContext<JuceVstWrapper> const& ctx) const;
     };
+
+    namespace juce {
+        inline SampleNodeRef vst(
+            GraphBuilder& g,
+            std::filesystem::path plugin_path,
+            std::string plugin_identifier = {},
+            size_t preferred_audio_input_streams = 1,
+            size_t preferred_audio_output_streams = 1
+        )
+        {
+            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstPluginConfig{
+                .plugin_path = std::move(plugin_path),
+                .plugin_identifier = std::move(plugin_identifier),
+                .preferred_audio_input_streams = preferred_audio_input_streams,
+                .preferred_audio_output_streams = preferred_audio_output_streams,
+            }));
+        }
+    }
 #endif
 }

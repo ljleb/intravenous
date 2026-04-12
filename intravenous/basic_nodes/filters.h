@@ -82,7 +82,7 @@ namespace iv {
             return std::array {
                 InputConfig { .name = "in", .history = 1 },
                 InputConfig { .name = "cutoff" },
-                InputConfig { .name = "dx", .default_value = 1.0 },
+                InputConfig { .name = "dt", .default_value = 1.0 },
             };
         }
 
@@ -95,12 +95,12 @@ namespace iv {
         {
             auto& in_port = ctx.inputs[0];
             auto const ctrl = ctx.inputs[1].get();
-            auto const dx = ctx.inputs[2].get();
+            auto const dt = ctx.inputs[2].get();
             auto& out = ctx.outputs[0];
 
-            auto const usableMax = std::min<Sample>(FMAX, 0.5f / dx);
+            auto const usableMax = std::min<Sample>(FMAX, 0.5f / dt);
             auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);
-            auto const norm = f_c * dx;
+            auto const norm = f_c * dt;
             auto const c = std::tanf(std::numbers::pi_v<Sample::storage> * norm);
             auto const a1 = (1.0f - c) / (1.0f + c);
             auto const alpha = c / (1.0f + c);

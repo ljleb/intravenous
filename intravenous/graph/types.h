@@ -6,6 +6,8 @@
 #include <functional>
 #include <limits>
 #include <unordered_map>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace iv {
@@ -30,12 +32,34 @@ namespace iv {
         bool operator==(GraphEdge const&) const = default;
     };
 
+    struct GraphEventEdge {
+        PortId source, target;
+        EventConversionPlan conversion;
+
+        GraphEventEdge(
+            PortId source = {},
+            PortId target = {},
+            EventConversionPlan conversion = {}
+        ) :
+            source(source), target(target), conversion(std::move(conversion))
+        {}
+
+        bool operator==(GraphEventEdge const&) const = default;
+    };
+
+    struct EventOutputBinding {
+        std::string target;
+        EventConversionPlan conversion;
+
+        bool operator==(EventOutputBinding const&) const = default;
+    };
+
     struct DetachedInfo {
         size_t detach_id = 0;
         PortId original_source;
         size_t writer_node = std::numeric_limits<size_t>::max();
         PortId reader_output;
-        size_t loop_block_size = 1;
+        size_t loop_extra_latency = 1;
 
         bool operator==(DetachedInfo const&) const = default;
     };
@@ -46,6 +70,33 @@ namespace iv {
         std::vector<size_t> nodes;
         std::vector<size_t> execution_order;
         size_t max_block_size;
+    };
+
+    struct DormancySamplePort {
+        std::string export_id;
+        size_t history = 0;
+    };
+
+    struct DormancyEventPort {
+        std::string export_id;
+    };
+
+    struct DormancyGroup {
+        size_t parent_group = GRAPH_ID;
+        size_t subtree_end_exclusive = 0;
+        std::vector<size_t> member_nodes;
+        std::vector<size_t> wake_check_regions;
+        std::vector<DormancySamplePort> sample_input_frontier;
+        std::vector<DormancyEventPort> event_input_frontier;
+        std::vector<DormancySamplePort> sample_output_frontier;
+        std::optional<size_t> ttl_samples;
+        bool can_skip = false;
+    };
+
+    struct LoweredScopeSpec {
+        size_t parent_scope = GRAPH_ID;
+        std::vector<std::string> member_node_ids;
+        std::optional<size_t> ttl_samples;
     };
 
     struct GraphExecutionPlan {
@@ -72,6 +123,17 @@ struct std::hash<iv::GraphEdge>
     std::hash<iv::PortId> port_id_hash;
 
     std::size_t operator()(const iv::GraphEdge& e) const
+    {
+        return port_id_hash(e.source) ^ (~port_id_hash(e.target) - 1);
+    }
+};
+
+template<>
+struct std::hash<iv::GraphEventEdge>
+{
+    std::hash<iv::PortId> port_id_hash;
+
+    std::size_t operator()(const iv::GraphEventEdge& e) const
     {
         return port_id_hash(e.source) ^ (~port_id_hash(e.target) - 1);
     }

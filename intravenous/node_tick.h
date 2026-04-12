@@ -1,6 +1,7 @@
 #pragma once
 
 #include "node_traits.h"
+#include "node_resources.h"
 
 #include <sstream>
 #include <memory>
@@ -11,6 +12,9 @@ namespace iv {
     struct TickContext {
         std::span<InputPort> inputs;
         std::span<OutputPort> outputs;
+        std::span<EventInputPort> event_inputs;
+        std::span<EventOutputPort> event_outputs;
+        size_t scc_feedback_latency = 0;
         std::span<std::byte> buffer;
 
         using State = typename NodeState<Node>::Type;
@@ -38,6 +42,11 @@ namespace iv {
         );
     };
 
+    template<typename Node>
+    struct SkipBlockContext : public TickBlockContext<Node> {
+        using TickBlockContext<Node>::TickBlockContext;
+    };
+
     namespace details {
         template <typename Node>
         concept has_tick = requires(Node node, TickSampleContext<Node> state)
@@ -49,6 +58,12 @@ namespace iv {
         concept has_tick_block = requires(Node node, TickBlockContext<Node> state)
         {
             node.tick_block(state);
+        };
+
+        template <typename Node>
+        concept has_skip_block = requires(Node node, SkipBlockContext<Node> state)
+        {
+            node.skip_block(state);
         };
     }
 
@@ -80,6 +95,9 @@ namespace iv {
     template<typename Node>
     void do_tick_block(Node const& node, TickBlockContext<Node> const& state);
 
+    template<typename Node>
+    void do_skip_block(Node const& node, SkipBlockContext<Node> const& state);
+
     IV_FORCEINLINE std::span<std::byte> remaining_buffer(std::span<std::byte> buffer, std::byte* state_base)
     {
         if (!state_base) {
@@ -105,12 +123,17 @@ namespace iv {
         TickContext<OuterNode> const& outer,
         std::byte* nested_state,
         std::span<InputPort> inputs,
-        std::span<OutputPort> outputs
+        std::span<OutputPort> outputs,
+        std::span<EventInputPort> event_inputs = {},
+        std::span<EventOutputPort> event_outputs = {}
     )
     {
         return TickContext<NestedNode> {
             .inputs = inputs,
             .outputs = outputs,
+            .event_inputs = event_inputs,
+            .event_outputs = event_outputs,
+            .scc_feedback_latency = outer.scc_feedback_latency,
             .buffer = remaining_buffer(outer.buffer, nested_state),
         };
     }
@@ -159,5 +182,27 @@ namespace iv {
                 });
             }
         }
+    }
+
+    template<typename Node>
+    IV_FORCEINLINE void do_skip_block(Node const& node, SkipBlockContext<Node> const& ctx)
+    {
+        if (ctx.block_size == 0) {
+            return;
+        }
+        validate_block_size(ctx.block_size);
+
+        if constexpr (details::has_skip_block<Node>)
+        {
+            node.skip_block(ctx);
+        }
+        else
+        {
+            for (auto& output : ctx.outputs) {
+                output.push_silence(ctx.block_size);
+            }
+        }
+
+        advance_inputs(ctx.inputs, ctx.block_size);
     }
 }
