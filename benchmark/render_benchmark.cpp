@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -129,14 +130,26 @@ namespace {
         };
     }
 
-    void request_tick_and_drain(iv::test::FakeAudioDevice& audio_device, iv::NodeExecutor& executor, size_t index, size_t block_size)
+    void request_block(iv::test::FakeAudioDevice& audio_device, size_t index, size_t block_size)
     {
-        audio_device.device().begin_requested_block(index, block_size);
-        executor.tick_block(index, block_size);
-        if (!audio_device.device().wait_until_block_ready()) {
+        audio_device.begin_requested_block(index, block_size);
+        if (!audio_device.wait_until_block_ready()) {
             throw std::runtime_error("benchmark device block did not become ready");
         }
-        audio_device.device().finish_requested_block();
+        audio_device.finish_requested_block();
+    }
+
+    void stop_executor(iv::test::FakeAudioDevice& audio_device, iv::NodeExecutor& executor, std::future<void>& worker)
+    {
+        executor.request_shutdown();
+        if (worker.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
+            audio_device.begin_requested_block(0, 1);
+            if (worker.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+                throw std::runtime_error("benchmark execute() did not exit after shutdown");
+            }
+            audio_device.finish_requested_block();
+        }
+        worker.get();
     }
 }
 
@@ -158,7 +171,7 @@ int main(int argc, char** argv)
 
         iv::ModuleLoader loader = iv::test::make_loader();
         iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
-        iv::NodeExecutor executor = iv::test::make_executor(loader, audio_device, execution_targets, 1, options.module_path);
+        iv::NodeExecutor executor = iv::test::make_executor(loader, audio_device, std::move(execution_targets), 1, options.module_path);
 
         size_t const block_size = options.block_size == 0 ? executor.max_block_size() : options.block_size;
         iv::validate_block_size(block_size, "benchmark block size must be a power of 2");
@@ -169,9 +182,13 @@ int main(int argc, char** argv)
             );
         }
 
+        auto worker = std::async(std::launch::async, [&] {
+            executor.execute();
+        });
+
         size_t index = 0;
         for (size_t i = 0; i < options.warmup_blocks; ++i) {
-            request_tick_and_drain(audio_device, executor, index, block_size);
+            request_block(audio_device, index, block_size);
             index += block_size;
         }
 
@@ -182,7 +199,7 @@ int main(int argc, char** argv)
         auto const measure_begin = clock::now();
         while (true) {
             auto const tick_begin = clock::now();
-            request_tick_and_drain(audio_device, executor, index, block_size);
+            request_block(audio_device, index, block_size);
             auto const tick_end = clock::now();
             index += block_size;
 
@@ -194,6 +211,8 @@ int main(int argc, char** argv)
                 break;
             }
         }
+
+        stop_executor(audio_device, executor, worker);
 
         auto const measure_end = clock::now();
         double const total_elapsed_s = std::chrono::duration<double>(measure_end - measure_begin).count();

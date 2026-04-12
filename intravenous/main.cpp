@@ -12,7 +12,6 @@
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <condition_variable>
 #include <vector>
 
 namespace {
@@ -25,40 +24,35 @@ namespace {
         }
     }
 
-    std::optional<iv::LogicalAudioDevice> try_create_audio_device(iv::RequestNotification request_notification)
+    std::optional<iv::LogicalAudioDevice> try_create_audio_device()
     {
-        return iv::make_miniaudio_device({}, std::move(request_notification));
+        return iv::make_miniaudio_device({});
     }
 
-    iv::ModuleRenderConfig module_render_config(iv::LogicalAudioDevice const& audio_device)
+    iv::ModuleRenderConfig module_render_config(iv::RenderConfig const& config)
     {
         return {
-            .sample_rate = audio_device.config().sample_rate,
-            .num_channels = audio_device.config().num_channels,
-            .max_block_frames = audio_device.config().max_block_frames,
+            .sample_rate = config.sample_rate,
+            .num_channels = config.num_channels,
+            .max_block_frames = config.max_block_frames,
         };
     }
 
-    iv::ExecutionTargetRegistry::AudioDeviceProvider make_audio_device_provider(iv::LogicalAudioDevice& audio_device)
+    iv::DeviceOrchestrator make_audio_device_provider(iv::LogicalAudioDevice audio_device)
     {
-        return {
-            .owner = &audio_device,
-            .device_fn = [](void* owner, size_t device_id) -> iv::LogicalAudioDevice* {
-                if (device_id != 0) {
-                    return nullptr;
-                }
-                return static_cast<iv::LogicalAudioDevice*>(owner);
-            },
-            .preferred_block_size_fn = [](void* owner) -> size_t {
-                return static_cast<iv::LogicalAudioDevice*>(owner)->config().preferred_block_size;
-            },
-        };
+        std::vector<iv::OutputDeviceMixer> mixers;
+        mixers.emplace_back(
+            std::move(audio_device),
+            [](iv::OrchestratorBuilder& builder, iv::OutputDeviceMixer&& mixer) {
+                builder.add_audio_mixer(0, std::move(mixer));
+            }
+        );
+        return iv::DeviceOrchestrator(std::move(mixers));
     }
 
     iv::NodeExecutor make_executor(
-        iv::LogicalAudioDevice& audio_device,
-        iv::ExecutionTargetRegistry& execution_target_registry,
-        size_t executor_id,
+        iv::RenderConfig const& render_config,
+        iv::DeviceOrchestrator& device_orchestrator,
         iv::ModuleLoader::LoadedGraph loaded_graph
     )
     {
@@ -68,15 +62,14 @@ namespace {
         static std::unique_ptr<iv::JuceVstRuntimeSupport> juce_vst_runtime_support;
         juce_vst_runtime_support = std::make_unique<iv::JuceVstRuntimeSupport>(
             juce_vst_runtime_manager,
-            static_cast<double>(audio_device.config().sample_rate)
+            static_cast<double>(render_config.sample_rate)
         );
         resources = juce_vst_runtime_support->resources();
 #endif
         return iv::NodeExecutor::create(
             std::move(loaded_graph.root),
             std::move(resources),
-            execution_target_registry,
-            executor_id,
+            std::move(device_orchestrator).to_builder(),
             std::move(loaded_graph.module_refs)
         );
     }
@@ -101,8 +94,7 @@ int main(int argc, char** argv)
         search_roots.emplace_back(argv[i]);
     }
 
-    auto request_notification = std::make_shared<std::condition_variable>();
-    auto audio_device = try_create_audio_device(request_notification);
+    auto audio_device = try_create_audio_device();
     if (!audio_device) {
         std::cerr << "No production audio backend is currently configured.\n";
         return 1;
@@ -113,17 +105,18 @@ int main(int argc, char** argv)
     iv::ModuleLoader loader(std::filesystem::current_path(), std::move(search_roots));
     auto watcher = iv::make_dependency_watcher();
 
-    iv::Sample device_sample_period = iv::sample_period(audio_device->config());
+    auto const render_config = audio_device->config();
+    iv::Sample device_sample_period = iv::sample_period(render_config);
 
     auto loaded_graph = loader.load_root(
         module_path,
-        module_render_config(*audio_device),
+        module_render_config(render_config),
         &device_sample_period
     );
     watcher->update(loaded_graph.dependencies);
 
-    iv::ExecutionTargetRegistry execution_targets(make_audio_device_provider(*audio_device), 48000, request_notification);
-    auto executor_storage = make_executor(*audio_device, execution_targets, 1, std::move(loaded_graph));
+    iv::DeviceOrchestrator output_devices(make_audio_device_provider(std::move(*audio_device)));
+    auto executor_storage = make_executor(render_config, output_devices, std::move(loaded_graph));
     executor_state = &executor_storage;
 
     iv::ReloadWorker reload_worker(
@@ -133,7 +126,7 @@ int main(int argc, char** argv)
         [&]() {
             return loader.load_root(
                 module_path,
-                module_render_config(*audio_device),
+                module_render_config(render_config),
                 &device_sample_period
             );
         }

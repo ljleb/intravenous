@@ -1,16 +1,14 @@
 #pragma once
 
 #include "ports.h"
-#include "compat.h"
-#include <condition_variable>
-#include <memory>
-#include <optional>
+
+#include <concepts>
 #include <span>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 namespace iv {
-    using RequestNotification = std::shared_ptr<std::condition_variable>;
-
     struct RenderConfig {
         size_t sample_rate = 48000;
         size_t num_channels = 2;
@@ -30,139 +28,123 @@ namespace iv {
         return static_cast<Sample>(1) / static_cast<Sample>(config.sample_rate);
     }
 
+    template<typename Device>
+    concept LogicalAudioDeviceBackend = requires(Device& device, Device const& const_device) {
+        { const_device.config() } -> std::same_as<RenderConfig const&>;
+        { device.wait_for_block_request() } -> std::same_as<std::span<Sample>>;
+        { device.submit_response() } -> std::same_as<void>;
+    };
+
     class LogicalAudioDevice {
-        using StatePtr = std::shared_ptr<void>;
+        void* _state;
+        void (*_destroy)(void*) noexcept;
+        RenderConfig const& (*_config)(void const*) noexcept;
+        std::span<Sample> (*_wait_for_block_request)(void*);
+        void (*_submit_response)(void*);
 
-        RenderConfig _config;
-        StatePtr _state;
-        bool (*_is_shutdown_requested_fn)(void const*) = nullptr;
-        void (*_request_shutdown_fn)(void*) = nullptr;
-        std::optional<std::pair<size_t, size_t>> (*_requested_block_fn)(void const*) = nullptr;
-        std::optional<std::pair<size_t, size_t>> (*_wait_for_requested_block_fn)(void*) = nullptr;
-        void (*_begin_requested_block_fn)(void*, size_t, size_t) = nullptr;
-        void (*_submit_mixed_block_fn)(void*, size_t, std::span<Sample const>, size_t, size_t) = nullptr;
-        bool (*_wait_until_block_ready_fn)(void*) = nullptr;
-        std::span<Sample const> (*_current_mixed_block_fn)(void const*) = nullptr;
-        void (*_finish_requested_block_fn)(void*) = nullptr;
-
-        LogicalAudioDevice(
-            RenderConfig config,
-            StatePtr state,
-            bool (*is_shutdown_requested_fn)(void const*),
-            void (*request_shutdown_fn)(void*),
-            std::optional<std::pair<size_t, size_t>> (*requested_block_fn)(void const*),
-            std::optional<std::pair<size_t, size_t>> (*wait_for_requested_block_fn)(void*),
-            void (*begin_requested_block_fn)(void*, size_t, size_t),
-            void (*submit_mixed_block_fn)(void*, size_t, std::span<Sample const>, size_t, size_t),
-            bool (*wait_until_block_ready_fn)(void*),
-            std::span<Sample const> (*current_mixed_block_fn)(void const*),
-            void (*finish_requested_block_fn)(void*)
-        )
-        : _config(std::move(config))
-        , _state(std::move(state))
-        , _is_shutdown_requested_fn(is_shutdown_requested_fn)
-        , _request_shutdown_fn(request_shutdown_fn)
-        , _requested_block_fn(requested_block_fn)
-        , _wait_for_requested_block_fn(wait_for_requested_block_fn)
-        , _begin_requested_block_fn(begin_requested_block_fn)
-        , _submit_mixed_block_fn(submit_mixed_block_fn)
-        , _wait_until_block_ready_fn(wait_until_block_ready_fn)
-        , _current_mixed_block_fn(current_mixed_block_fn)
-        , _finish_requested_block_fn(finish_requested_block_fn)
-        {}
+        template<LogicalAudioDeviceBackend Device>
+        void bind_device() noexcept
+        {
+            _destroy = +[](void* self) noexcept {
+                delete static_cast<Device*>(self);
+            };
+            _config = +[](void const* self) noexcept -> RenderConfig const& {
+                return static_cast<Device const*>(self)->config();
+            };
+            _wait_for_block_request = +[](void* self) -> std::span<Sample> {
+                return static_cast<Device*>(self)->wait_for_block_request();
+            };
+            _submit_response = +[](void* self) {
+                static_cast<Device*>(self)->submit_response();
+            };
+        }
 
     public:
         LogicalAudioDevice() = default;
 
-        template<typename State>
-        static LogicalAudioDevice from_state(RenderConfig config, std::shared_ptr<State> state)
+        template<LogicalAudioDeviceBackend Device>
+            requires (!std::same_as<std::remove_cvref_t<Device>, LogicalAudioDevice> &&
+                      std::move_constructible<std::remove_cvref_t<Device>>)
+        explicit LogicalAudioDevice(Device&& device)
+        : _state(new std::remove_cvref_t<Device>(std::forward<Device>(device)))
         {
-            return LogicalAudioDevice(
-                std::move(config),
-                std::move(state),
-                +[](void const* ptr) -> bool {
-                    return static_cast<State const*>(ptr)->is_shutdown_requested();
-                },
-                +[](void* ptr) {
-                    static_cast<State*>(ptr)->request_shutdown();
-                },
-                +[](void const* ptr) -> std::optional<std::pair<size_t, size_t>> {
-                    return static_cast<State const*>(ptr)->requested_block();
-                },
-                +[](void* ptr) -> std::optional<std::pair<size_t, size_t>> {
-                    return static_cast<State*>(ptr)->wait_for_requested_block();
-                },
-                +[](void* ptr, size_t frame_index, size_t frame_count) {
-                    static_cast<State*>(ptr)->begin_requested_block(frame_index, frame_count);
-                },
-                +[](void* ptr, size_t frame_index, std::span<Sample const> interleaved, size_t frames, size_t channels) {
-                    static_cast<State*>(ptr)->submit_mixed_block(frame_index, interleaved, frames, channels);
-                },
-                +[](void* ptr) -> bool {
-                    return static_cast<State*>(ptr)->wait_until_block_ready();
-                },
-                +[](void const* ptr) -> std::span<Sample const> {
-                    return static_cast<State const*>(ptr)->current_mixed_block();
-                },
-                +[](void* ptr) {
-                    static_cast<State*>(ptr)->finish_requested_block();
-                }
-            );
+            bind_device<std::remove_cvref_t<Device>>();
+        }
+
+        template<LogicalAudioDeviceBackend Device, typename... Args>
+        explicit LogicalAudioDevice(std::in_place_type_t<Device>, Args&&... args)
+        : _state(new Device(std::forward<Args>(args)...))
+        {
+            bind_device<Device>();
+        }
+
+        ~LogicalAudioDevice()
+        {
+            if (_state && _destroy) {
+                _destroy(_state);
+            }
+        }
+
+        LogicalAudioDevice(LogicalAudioDevice&& other) noexcept
+        : _state(other._state)
+        , _destroy(other._destroy)
+        , _config(other._config)
+        , _wait_for_block_request(other._wait_for_block_request)
+        , _submit_response(other._submit_response)
+        {
+            other._state = nullptr;
+            other._destroy = nullptr;
+            other._config = nullptr;
+            other._wait_for_block_request = nullptr;
+            other._submit_response = nullptr;
+        }
+
+        LogicalAudioDevice& operator=(LogicalAudioDevice&& other) noexcept
+        {
+            if (this == &other) {
+                return *this;
+            }
+
+            if (_state && _destroy) {
+                _destroy(_state);
+            }
+            _state = other._state;
+            _destroy = other._destroy;
+            _config = other._config;
+            _wait_for_block_request = other._wait_for_block_request;
+            _submit_response = other._submit_response;
+            other._state = nullptr;
+            other._destroy = nullptr;
+            other._config = nullptr;
+            other._wait_for_block_request = nullptr;
+            other._submit_response = nullptr;
+            return *this;
+        }
+
+        LogicalAudioDevice(LogicalAudioDevice const&) = delete;
+        LogicalAudioDevice& operator=(LogicalAudioDevice const&) = delete;
+
+        explicit operator bool() const noexcept
+        {
+            return _state != nullptr;
         }
 
         RenderConfig const& config() const
         {
-            return _config;
+            if (!operator bool()) throw std::logic_error("LogicalAudioDevice is empty");
+            return _config(_state);
         }
 
-        bool is_shutdown_requested() const
+        std::span<Sample> wait_for_block_request()
         {
-            return _is_shutdown_requested_fn(static_cast<void const*>(_state.get()));
+            if (!operator bool()) throw std::logic_error("LogicalAudioDevice is empty");
+            return _wait_for_block_request(_state);
         }
 
-        void request_shutdown()
+        void submit_response()
         {
-            _request_shutdown_fn(_state.get());
-        }
-
-        std::optional<std::pair<size_t, size_t>> requested_block() const
-        {
-            return _requested_block_fn(static_cast<void const*>(_state.get()));
-        }
-
-        std::optional<std::pair<size_t, size_t>> wait_for_requested_block()
-        {
-            return _wait_for_requested_block_fn(_state.get());
-        }
-
-        void begin_requested_block(size_t frame_index, size_t frame_count)
-        {
-            _begin_requested_block_fn(_state.get(), frame_index, frame_count);
-        }
-
-        void submit_mixed_block(
-            size_t frame_index,
-            std::span<Sample const> interleaved,
-            size_t frames,
-            size_t channels
-        )
-        {
-            _submit_mixed_block_fn(_state.get(), frame_index, interleaved, frames, channels);
-        }
-
-        bool wait_until_block_ready()
-        {
-            return _wait_until_block_ready_fn(_state.get());
-        }
-
-        std::span<Sample const> current_mixed_block() const
-        {
-            return _current_mixed_block_fn(static_cast<void const*>(_state.get()));
-        }
-
-        void finish_requested_block()
-        {
-            _finish_requested_block_fn(_state.get());
+            if (!operator bool()) return;
+            _submit_response(_state);
         }
     };
 }

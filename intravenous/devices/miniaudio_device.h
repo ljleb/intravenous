@@ -3,188 +3,136 @@
 #include "audio_device.h"
 #include "third_party/miniaudio/miniaudio.h"
 
-#include <algorithm>
 #include <condition_variable>
-#include <cstring>
 #include <mutex>
-#include <vector>
+#include <stdexcept>
+#include <utility>
 
 namespace iv {
-    struct MiniaudioDeviceState {
-        RenderConfig config;
-        mutable std::mutex mutex;
-        std::condition_variable cv;
-        std::optional<std::pair<size_t, size_t>> active_requested_block;
-        std::vector<Sample> mixed_block;
-        bool block_ready = false;
-        bool shutdown_requested = false;
-        size_t next_frame_index = 0;
-        RequestNotification request_notification;
-        ma_device device {};
+    class MiniaudioLogicalDevice {
+        RenderConfig _config;
+        ma_device _device {};
+        std::mutex _mutex;
+        std::condition_variable _cv;
+        bool _shutdown_requested = false;
+        bool _request_pending = false;
+        bool _response_ready = false;
+        Sample* _pending_output = nullptr;
+        size_t _pending_samples = 0;
 
         static void data_callback(ma_device* device, void* output, void const*, ma_uint32 frame_count)
         {
-            auto& self = *static_cast<MiniaudioDeviceState*>(device->pUserData);
-            self.render_callback(static_cast<float*>(output), static_cast<size_t>(frame_count));
+            auto& self = *static_cast<MiniaudioLogicalDevice*>(device->pUserData);
+            self.render_callback(static_cast<Sample*>(output), static_cast<size_t>(frame_count));
         }
 
-        void render_callback(float* output, size_t frame_count)
+        void render_callback(Sample* output, size_t frame_count)
         {
-            begin_requested_block(next_frame_index, frame_count);
-            if (!wait_until_block_ready()) {
-                std::fill_n(output, frame_count * config.num_channels, 0.0f);
-                return;
-            }
+            {
+                std::unique_lock lock(_mutex);
+                _pending_output = output;
+                _pending_samples = frame_count * _config.num_channels;
+                _request_pending = true;
+                _response_ready = false;
+                _cv.notify_all();
 
-            auto mixed = current_mixed_block();
-            if (mixed.size() != frame_count * config.num_channels) {
-                throw std::logic_error("LogicalAudioDevice mixed block size mismatch");
-            }
+                _cv.wait(lock, [&] {
+                    return _shutdown_requested || _response_ready;
+                });
 
-            std::memcpy(output, mixed.data(), mixed.size_bytes());
-            finish_requested_block();
-            next_frame_index += frame_count;
+                _pending_output = nullptr;
+                _pending_samples = 0;
+                _request_pending = false;
+                _response_ready = false;
+            }
         }
 
-        MiniaudioDeviceState(RenderConfig config_, RequestNotification request_notification_)
-        : config(std::move(config_))
-        , request_notification(std::move(request_notification_))
+        void begin_shutdown() noexcept
         {
-            validate_render_config(config);
+            {
+                std::scoped_lock lock(_mutex);
+                _shutdown_requested = true;
+            }
+            _cv.notify_all();
+        }
+
+    public:
+        explicit MiniaudioLogicalDevice(RenderConfig config = {})
+        : _config(std::move(config))
+        {
+            validate_render_config(_config);
 
             ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
             device_config.playback.format = ma_format_f32;
-            device_config.playback.channels = static_cast<ma_uint32>(config.num_channels);
-            device_config.sampleRate = static_cast<ma_uint32>(config.sample_rate);
-            device_config.periodSizeInFrames = static_cast<ma_uint32>(config.preferred_block_size);
-            device_config.dataCallback = &MiniaudioDeviceState::data_callback;
+            device_config.playback.channels = static_cast<ma_uint32>(_config.num_channels);
+            device_config.sampleRate = static_cast<ma_uint32>(_config.sample_rate);
+            device_config.periodSizeInFrames = static_cast<ma_uint32>(_config.preferred_block_size);
+            device_config.dataCallback = &MiniaudioLogicalDevice::data_callback;
             device_config.pUserData = this;
+            device_config.noPreSilencedOutputBuffer = true;
+            // device_config.noClip = true;
 
-            if (ma_device_init(nullptr, &device_config, &device) != MA_SUCCESS) {
+            if (ma_device_init(nullptr, &device_config, &_device) != MA_SUCCESS) {
                 throw std::runtime_error("failed to initialize miniaudio playback device");
             }
 
-            config.sample_rate = device.sampleRate;
-            config.num_channels = device.playback.channels;
-            if (device.playback.internalPeriodSizeInFrames > 0) {
-                config.preferred_block_size = device.playback.internalPeriodSizeInFrames;
+            _config.sample_rate = _device.sampleRate;
+            _config.num_channels = _device.playback.channels;
+            if (_device.playback.internalPeriodSizeInFrames > 0) {
+                _config.preferred_block_size = _device.playback.internalPeriodSizeInFrames;
             }
-            mixed_block.assign(config.max_block_frames * config.num_channels, 0.0f);
 
-            if (ma_device_start(&device) != MA_SUCCESS) {
-                ma_device_uninit(&device);
+            if (ma_device_start(&_device) != MA_SUCCESS) {
+                ma_device_uninit(&_device);
                 throw std::runtime_error("failed to start miniaudio playback device");
             }
         }
 
-        ~MiniaudioDeviceState()
+        ~MiniaudioLogicalDevice()
         {
-            request_shutdown();
-            ma_device_uninit(&device);
+            begin_shutdown();
+            ma_device_uninit(&_device);
         }
 
-        bool is_shutdown_requested() const
+        MiniaudioLogicalDevice(MiniaudioLogicalDevice&&) = delete;
+        MiniaudioLogicalDevice& operator=(MiniaudioLogicalDevice&&) = delete;
+        MiniaudioLogicalDevice(MiniaudioLogicalDevice const&) = delete;
+        MiniaudioLogicalDevice& operator=(MiniaudioLogicalDevice const&) = delete;
+
+        RenderConfig const& config() const
         {
-            std::scoped_lock lock(mutex);
-            return shutdown_requested;
+            return _config;
         }
 
-        void request_shutdown()
+        std::span<Sample> wait_for_block_request()
+        {
+            std::unique_lock lock(_mutex);
+            _cv.wait(lock, [&] {
+                return _shutdown_requested || (_request_pending && !_response_ready);
+            });
+
+            if (!_request_pending) {
+                throw std::logic_error("MiniaudioLogicalDevice wait_for_block_request() interrupted without a pending request");
+            }
+
+            return std::span<Sample>(_pending_output, _pending_samples);
+        }
+
+        void submit_response()
         {
             {
-                std::scoped_lock lock(mutex);
-                shutdown_requested = true;
+                std::scoped_lock lock(_mutex);
+                if (!_request_pending || _response_ready || _pending_output == nullptr) {
+                    throw std::logic_error("MiniaudioLogicalDevice has no claimed request awaiting response");
+                }
+                _response_ready = true;
             }
-            if (request_notification) {
-                request_notification->notify_all();
-            }
-            cv.notify_all();
-        }
-
-        std::optional<std::pair<size_t, size_t>> requested_block() const
-        {
-            std::scoped_lock lock(mutex);
-            return active_requested_block;
-        }
-
-        std::optional<std::pair<size_t, size_t>> wait_for_requested_block()
-        {
-            std::unique_lock lock(mutex);
-            cv.wait(lock, [&] {
-                return shutdown_requested || active_requested_block.has_value();
-            });
-            if (shutdown_requested) {
-                return std::nullopt;
-            }
-            return active_requested_block;
-        }
-
-        void begin_requested_block(size_t frame_index, size_t frame_count)
-        {
-            std::scoped_lock lock(mutex);
-            active_requested_block = std::pair{ frame_index, frame_count };
-            block_ready = false;
-            mixed_block.assign(frame_count * config.num_channels, 0.0f);
-            if (request_notification) {
-                request_notification->notify_all();
-            }
-            cv.notify_all();
-        }
-
-        void submit_mixed_block(
-            size_t frame_index,
-            std::span<Sample const> interleaved,
-            size_t frames,
-            size_t channels
-        )
-        {
-            std::scoped_lock lock(mutex);
-            if (!active_requested_block.has_value()) {
-                throw std::logic_error("LogicalAudioDevice cannot accept a mixed block without an active request");
-            }
-            if (*active_requested_block != std::pair{ frame_index, frames }) {
-                throw std::logic_error("LogicalAudioDevice mixed block does not match the active request");
-            }
-            if (channels != config.num_channels) {
-                throw std::logic_error("LogicalAudioDevice mixed block channel count mismatch");
-            }
-            if (interleaved.size() != frames * channels) {
-                throw std::logic_error("LogicalAudioDevice mixed block span size mismatch");
-            }
-
-            mixed_block.assign(interleaved.begin(), interleaved.end());
-            block_ready = true;
-            cv.notify_all();
-        }
-
-        bool wait_until_block_ready()
-        {
-            std::unique_lock lock(mutex);
-            cv.wait(lock, [&] {
-                return shutdown_requested || block_ready;
-            });
-            return !shutdown_requested && block_ready;
-        }
-
-        std::span<Sample const> current_mixed_block() const
-        {
-            std::scoped_lock lock(mutex);
-            return { mixed_block.data(), mixed_block.size() };
-        }
-
-        void finish_requested_block()
-        {
-            std::scoped_lock lock(mutex);
-            active_requested_block.reset();
-            block_ready = false;
-            cv.notify_all();
+            _cv.notify_all();
         }
     };
 
-    inline LogicalAudioDevice make_miniaudio_device(RenderConfig config = {}, RequestNotification request_notification = {})
+    inline LogicalAudioDevice make_miniaudio_device(RenderConfig config = {})
     {
-        auto state = std::make_shared<MiniaudioDeviceState>(std::move(config), std::move(request_notification));
-        auto const device_config = state->config;
-        return LogicalAudioDevice::from_state(device_config, std::move(state));
+        return LogicalAudioDevice(std::in_place_type<MiniaudioLogicalDevice>, std::move(config));
     }
 }

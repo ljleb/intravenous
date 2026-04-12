@@ -1,4 +1,6 @@
 #include "devices/channel_buffer_sink.h"
+#include "devices/miniaudio_device.h"
+#include "block_rate_buffer.h"
 #include "basic_nodes/buffers.h"
 #include "dsl.h"
 #include "graph_node.h"
@@ -7,13 +9,18 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -200,6 +207,28 @@ namespace {
         }
     };
 
+    struct CountingBlockPassthrough {
+        std::atomic<size_t>* block_count = nullptr;
+
+        auto inputs() const
+        {
+            return std::array<iv::InputConfig, 1>{};
+        }
+
+        auto outputs() const
+        {
+            return std::array<iv::OutputConfig, 1>{};
+        }
+
+        void tick_block(iv::TickBlockContext<CountingBlockPassthrough> const& ctx) const
+        {
+            if (block_count) {
+                block_count->fetch_add(1, std::memory_order_relaxed);
+            }
+            ctx.outputs[0].push_block(ctx.inputs[0].get_block(ctx.block_size));
+        }
+    };
+
     static_assert(iv::details::fixed_input_count_v<UnaryPassthrough> == 1);
     static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, iv::SamplePortRef>);
     static_assert(NodeRefInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("in"_P = std::declval<iv::SamplePortRef>())>);
@@ -300,8 +329,7 @@ namespace {
 
     iv::NodeExecutor make_constant_audio_executor(
         iv::Sample* value,
-        iv::ExecutionTargetRegistry& execution_target_registry,
-        size_t executor_id,
+        iv::ExecutionTargetRegistry execution_target_registry,
         size_t channel = 0
     )
     {
@@ -317,8 +345,7 @@ namespace {
         return iv::NodeExecutor::create(
             iv::TypeErasedNode(g.build()),
             {},
-            execution_target_registry,
-            executor_id
+            std::move(execution_target_registry).to_builder()
         );
     }
 
@@ -335,19 +362,92 @@ namespace {
         return iv::TypeErasedNode(g.build());
     }
 
-    template<typename Executor>
-    void request_and_tick(iv::test::FakeAudioDevice& audio_device, Executor& executor, size_t index, size_t block_size)
+    void tick_executor_direct(iv::NodeExecutor& executor, size_t index, size_t block_size)
     {
-        audio_device.device().begin_requested_block(index, block_size);
-        executor.tick_block(index, block_size);
+        if (block_size == 0) {
+            return;
+        }
+        iv::validate_block_size(block_size, "test block size must be a power of 2");
+        if (block_size > executor.max_block_size()) {
+            throw std::logic_error("test block size exceeds executor max block size");
+        }
+
+        executor.root().tick_block({
+            iv::TickContext<iv::TypeErasedNode> {
+                .inputs = {},
+                .outputs = {},
+                .event_inputs = {},
+                .event_outputs = {},
+                .buffer = executor.storage().buffer(),
+            },
+            index,
+            block_size
+        });
     }
 
     template<typename Executor>
-    void request_tick_and_wait(iv::test::FakeAudioDevice& audio_device, Executor& executor, size_t index, size_t block_size)
+    auto start_executor(Executor& executor)
     {
-        request_and_tick(audio_device, executor, index, block_size);
+        return std::async(std::launch::async, [&] {
+            executor.execute();
+        });
+    }
+
+    template<typename Executor>
+    void stop_executor(iv::test::FakeAudioDevice& audio_device, Executor& executor, std::future<void>& worker)
+    {
+        executor.request_shutdown();
+        if (worker.wait_for(kAsyncWaitTimeout) != std::future_status::ready) {
+            audio_device.begin_requested_block(0, 1);
+            ASSERT_EQ(worker.wait_for(kBlockReadyTimeout), std::future_status::ready)
+                << "execute() did not exit after shutdown";
+            audio_device.finish_requested_block();
+        }
+        worker.get();
+    }
+
+    template<typename Executor>
+    void request_block_and_wait(iv::test::FakeAudioDevice& audio_device, Executor&, size_t index, size_t block_size)
+    {
+        audio_device.begin_requested_block(index, block_size);
         ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout))
             << "requested block [" << index << ", " << block_size << "] did not become ready";
+    }
+
+    template<typename Executor>
+    void request_block_with_manual_sync(iv::test::FakeAudioDevice& audio_device, Executor& executor, size_t index, size_t block_size)
+    {
+        audio_device.begin_requested_block(index, block_size);
+        executor.device_orchestrator().wait_for_block();
+
+        auto worker = std::async(std::launch::async, [&] {
+            tick_executor_direct(executor, index, block_size);
+            executor.device_orchestrator().sync_block(index, block_size);
+        });
+
+        ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout))
+            << "requested block [" << index << ", " << block_size << "] did not become ready";
+
+        audio_device.begin_requested_block(index + block_size, block_size);
+        ASSERT_EQ(worker.wait_for(kBlockReadyTimeout), std::future_status::ready)
+            << "manual sync did not exit after the requested block became ready";
+        worker.get();
+    }
+
+    template<typename Executor, typename Fn>
+    void execute_requested_block(
+        iv::test::FakeAudioDevice& audio_device,
+        Executor& executor,
+        size_t index,
+        size_t block_size,
+        Fn&& verify
+    )
+    {
+        auto worker = start_executor(executor);
+        request_block_and_wait(audio_device, executor, index, block_size);
+        verify();
+        audio_device.finish_requested_block();
+        stop_executor(audio_device, executor, worker);
     }
 
     void expect_zero_output(iv::test::FakeAudioDevice const& audio_device, size_t channel = 0)
@@ -377,6 +477,70 @@ namespace {
             (static_cast<std::uint32_t>(header[26]) << 16) |
             (static_cast<std::uint32_t>(header[27]) << 24);
     }
+
+    std::vector<std::int16_t> read_wav_pcm16_samples(std::filesystem::path const& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        EXPECT_TRUE(static_cast<bool>(in)) << "failed to open wav file: " << path.string();
+        if (!in) {
+            return {};
+        }
+
+        std::array<unsigned char, 44> header {};
+        in.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+        EXPECT_GE(in.gcount(), static_cast<std::streamsize>(header.size()))
+            << "wav file too small: " << path.string();
+        if (in.gcount() < static_cast<std::streamsize>(header.size())) {
+            return {};
+        }
+
+        std::uint32_t const data_size =
+            static_cast<std::uint32_t>(header[40]) |
+            (static_cast<std::uint32_t>(header[41]) << 8) |
+            (static_cast<std::uint32_t>(header[42]) << 16) |
+            (static_cast<std::uint32_t>(header[43]) << 24);
+        EXPECT_EQ(data_size % sizeof(std::int16_t), 0u);
+        if (data_size % sizeof(std::int16_t) != 0) {
+            return {};
+        }
+
+        std::vector<std::int16_t> samples(data_size / sizeof(std::int16_t));
+        in.read(reinterpret_cast<char*>(samples.data()), static_cast<std::streamsize>(data_size));
+        EXPECT_EQ(in.gcount(), static_cast<std::streamsize>(data_size))
+            << "wav file payload shorter than header reported: " << path.string();
+        return samples;
+    }
+
+    void expect_pcm16_constant(std::span<std::int16_t const> samples, iv::Sample expected)
+    {
+        for (size_t i = 0; i < samples.size(); ++i) {
+            auto const actual = static_cast<iv::Sample>(samples[i]) / 32767.0f;
+            if (std::abs(actual - expected) > 1e-4f) {
+                FAIL() << "pcm mismatch at sample " << i
+                       << ": expected " << expected
+                       << ", got " << actual;
+            }
+        }
+    }
+
+    struct FakeAudioDeviceBackend {
+        iv::test::FakeAudioDevice* device = nullptr;
+
+        auto const& config() const
+        {
+            return device->config();
+        }
+
+        std::span<iv::Sample> wait_for_block_request()
+        {
+            return device->wait_for_block_request();
+        }
+
+        void submit_response()
+        {
+            device->submit_response();
+        }
+    };
 }
 
 TEST(ArchitectureSmoke, SameDeviceSameChannelAccumulates)
@@ -412,18 +576,15 @@ TEST(ArchitectureSmoke, SameDeviceSameChannelAccumulates)
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(g.build()),
         {},
-        execution_target_registry,
-        1
+        std::move(execution_target_registry).to_builder()
     );
 
     ASSERT_EQ(executor.max_block_size(), channel.size());
-    request_tick_and_wait(audio_device, executor, 0, channel.size());
-
-    auto block = audio_device.output_block();
-    std::copy_n(block.begin(), channel.size(), channel.begin());
-    audio_device.device().finish_requested_block();
-
-    expect_constant_block(channel, 0.75f);
+    execute_requested_block(audio_device, executor, 0, channel.size(), [&] {
+        auto block = audio_device.output_block();
+        std::copy_n(block.begin(), channel.size(), channel.begin());
+        expect_constant_block(channel, 0.75f);
+    });
 }
 
 TEST(ArchitectureSmoke, ChannelAlignmentPreservesLeftAndRight)
@@ -457,16 +618,14 @@ TEST(ArchitectureSmoke, ChannelAlignmentPreservesLeftAndRight)
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(g.build()),
         {},
-        execution_target_registry,
-        1
+        std::move(execution_target_registry).to_builder()
     );
 
-    request_tick_and_wait(audio_device, executor, 0, 8);
-
-    auto left_block = audio_device.output_block(0);
-    auto right_block = audio_device.output_block(1);
-    expect_interleaved_channels(left_block, 0.25f, right_block, 0.5f);
-    audio_device.device().finish_requested_block();
+    execute_requested_block(audio_device, executor, 0, 8, [&] {
+        auto left_block = audio_device.output_block(0);
+        auto right_block = audio_device.output_block(1);
+        expect_interleaved_channels(left_block, 0.25f, right_block, 0.5f);
+    });
 }
 
 TEST(ArchitectureSmoke, RequestedBlockMismatchDoesNotSatisfyActiveRequest)
@@ -480,32 +639,21 @@ TEST(ArchitectureSmoke, RequestedBlockMismatchDoesNotSatisfyActiveRequest)
         }
     );
 
-    iv::GraphBuilder g;
-    auto const src = g.node<iv::ValueSource>(&value);
-    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
-        .device_id = 0,
-        .channel = 0,
-    });
-    sink(src);
-    g.outputs();
+    auto executor = make_constant_audio_executor(&value, iv::test::make_audio_device_provider(audio_device));
 
-    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
-    iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
-        {},
-        execution_target_registry,
-        1
-    );
-
-    audio_device.device().begin_requested_block(8, 4);
-    executor.tick_block(4, 4);
+    audio_device.begin_requested_block(0, 8);
+    executor.device_orchestrator().wait_for_block();
+    tick_executor_direct(executor, 0, 4);
+    executor.device_orchestrator().sync_block(0, 4);
     expect_zero_output(audio_device);
 
-    executor.tick_block(8, 4);
-    ASSERT_TRUE(audio_device.device().wait_until_block_ready());
+    tick_executor_direct(executor, 4, 4);
+    executor.request_shutdown();
+    executor.device_orchestrator().sync_block(4, 4);
+    ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout));
     auto block = audio_device.output_block();
-    expect_constant_block(block.first(4), 0.75f);
-    audio_device.device().finish_requested_block();
+    expect_constant_block(block.first(8), 0.75f);
+    audio_device.finish_requested_block();
 }
 
 TEST(ArchitectureSmoke, SubgraphPassthroughFlattensToDirectSignalPath)
@@ -535,14 +683,12 @@ TEST(ArchitectureSmoke, SubgraphPassthroughFlattensToDirectSignalPath)
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(g.build()),
         {},
-        execution_target_registry,
-        1
+        std::move(execution_target_registry).to_builder()
     );
 
-    request_tick_and_wait(audio_device, executor, 0, 8);
-
-    expect_constant_block(audio_device.output_block(), value);
-    audio_device.device().finish_requested_block();
+    execute_requested_block(audio_device, executor, 0, 8, [&] {
+        expect_constant_block(audio_device.output_block(), value);
+    });
 }
 
 TEST(ArchitectureSmoke, CanSkipBlockDefaultsAndOverride)
@@ -582,14 +728,12 @@ TEST(ArchitectureSmoke, PipeOperatorChainsSingleInputSingleOutputNodes)
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(g.build()),
         {},
-        execution_target_registry,
-        1
+        std::move(execution_target_registry).to_builder()
     );
 
-    request_tick_and_wait(audio_device, executor, 0, 8);
-
-    expect_constant_block(audio_device.output_block(), value);
-    audio_device.device().finish_requested_block();
+    execute_requested_block(audio_device, executor, 0, 8, [&] {
+        expect_constant_block(audio_device.output_block(), value);
+    });
 }
 
 TEST(ArchitectureSmoke, ExactRequestedBlockBecomesReady)
@@ -616,18 +760,13 @@ TEST(ArchitectureSmoke, ExactRequestedBlockBecomesReady)
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(g.build()),
         {},
-        execution_target_registry,
-        1
+        std::move(execution_target_registry).to_builder()
     );
 
-    audio_device.device().begin_requested_block(8, 4);
-    executor.tick_block(8, 4);
-    ASSERT_TRUE(audio_device.device().wait_until_block_ready());
-
-    auto block = audio_device.output_block();
-    expect_constant_block(block.first(4), 0.75f);
-
-    audio_device.device().finish_requested_block();
+    execute_requested_block(audio_device, executor, 8, 4, [&] {
+        auto block = audio_device.output_block();
+        expect_constant_block(block.first(4), 0.75f);
+    });
 }
 
 TEST(ArchitectureSmoke, RepeatedRequestedBlocksDoNotOverflowBufferedDevice)
@@ -645,16 +784,17 @@ TEST(ArchitectureSmoke, RepeatedRequestedBlocksDoNotOverflowBufferedDevice)
         }
     );
 
-    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
-    auto executor = make_constant_audio_executor(&value, execution_target_registry, 1);
+    auto executor = make_constant_audio_executor(&value, iv::test::make_audio_device_provider(audio_device));
 
+    auto worker = start_executor(executor);
     for (size_t i = 0; i < iterations; ++i) {
         size_t const index = i * block_size;
         SCOPED_TRACE(::testing::Message() << "iteration=" << i << " block_index=" << index);
-        request_tick_and_wait(audio_device, executor, index, block_size);
+        request_block_and_wait(audio_device, executor, index, block_size);
         expect_constant_block(audio_device.output_block().first(block_size), value);
-        audio_device.device().finish_requested_block();
+        audio_device.finish_requested_block();
     }
+    stop_executor(audio_device, executor, worker);
 }
 
 TEST(ArchitectureSmoke, IndependentGraphBuilderStillLowersThroughNode)
@@ -688,14 +828,12 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderStillLowersThroughNode)
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(g.build()),
         {},
-        execution_target_registry,
-        1
+        std::move(execution_target_registry).to_builder()
     );
 
-    request_tick_and_wait(audio_device, executor, 0, 8);
-
-    expect_constant_block(audio_device.output_block(), value);
-    audio_device.device().finish_requested_block();
+    execute_requested_block(audio_device, executor, 0, 8, [&] {
+        expect_constant_block(audio_device.output_block(), value);
+    });
 }
 
 TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
@@ -720,13 +858,12 @@ TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(g.build()),
         {},
-        execution_targets,
-        1
+        std::move(execution_targets).to_builder()
     );
 
-    executor.tick_block(0, 4);
-    executor.tick_block(4, 4);
-    executor.tick_block(8, 4);
+    tick_executor_direct(executor, 0, 4);
+    tick_executor_direct(executor, 4, 4);
+    tick_executor_direct(executor, 8, 4);
 
     EXPECT_EQ(tick_count, 8);
 }
@@ -756,13 +893,12 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderDormancyStopsTickingSilentScope)
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(g.build()),
         {},
-        execution_targets,
-        1
+        std::move(execution_targets).to_builder()
     );
 
-    executor.tick_block(0, 4);
-    executor.tick_block(4, 4);
-    executor.tick_block(8, 4);
+    tick_executor_direct(executor, 0, 4);
+    tick_executor_direct(executor, 4, 4);
+    tick_executor_direct(executor, 8, 4);
 
     EXPECT_EQ(tick_count, 8);
 }
@@ -784,63 +920,17 @@ TEST(ArchitectureSmoke, LargeRequestedBlockIndicesRemainReadyWithoutWarmup)
         }
     );
 
-    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
-    auto executor = make_constant_audio_executor(&value, execution_target_registry, 1);
+    auto executor = make_constant_audio_executor(&value, iv::test::make_audio_device_provider(audio_device));
 
+    auto worker = start_executor(executor);
     for (size_t i = 0; i < window_blocks; ++i) {
         size_t const index = start_index + i * block_size;
         SCOPED_TRACE(::testing::Message() << "iteration=" << i << " block_index=" << index);
-        request_tick_and_wait(audio_device, executor, index, block_size);
+        request_block_and_wait(audio_device, executor, index, block_size);
         expect_constant_block(audio_device.output_block().first(block_size), value);
-        audio_device.device().finish_requested_block();
+        audio_device.finish_requested_block();
     }
-}
-
-TEST(ArchitectureSmoke, SyncBlockBecomesReadyWhenRequestArrivesLate)
-{
-    auto request_notification = std::make_shared<std::condition_variable>();
-    iv::test::FakeAudioDevice audio_device(
-        iv::RenderConfig{
-            .sample_rate = 48000,
-            .num_channels = 1,
-            .max_block_frames = 4096,
-            .preferred_block_size = 256,
-        },
-        request_notification
-    );
-
-    iv::ExecutionTargetRegistry execution_target_registry(
-        iv::test::make_audio_device_provider(audio_device),
-        48000,
-        request_notification
-    );
-    execution_target_registry.register_executor(1);
-    execution_target_registry.validate_executor_block_size(1, 256);
-
-    auto worker = std::async(std::launch::async, [&] {
-        return execution_target_registry.sync_block(1, std::nullopt, 0, 256);
-    });
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    audio_device.device().begin_requested_block(0, 256);
-
-    auto const status = worker.wait_for(kBlockReadyTimeout);
-    if (status != std::future_status::ready) {
-        execution_target_registry.request_shutdown(1);
-    }
-    ASSERT_EQ(status, std::future_status::ready)
-        << "sync_block did not wake after the device published a request";
-    bool const sync_result = worker.get();
-    ASSERT_TRUE(sync_result)
-        << "sync_block returned false after the delayed request was published";
-
-    audio_device.device().finish_requested_block();
-    execution_target_registry.unregister_executor(1);
-}
-
-TEST(ArchitectureSmoke, SyncBlockSurvivesRapidRequestReplacement)
-{
-    GTEST_SKIP() << "invalid timing probe: this test reports a completed block without actually rendering it";
+    stop_executor(audio_device, executor, worker);
 }
 
 TEST(ArchitectureSmoke, DirectoryModuleRetainsModuleRefsAndRuns)
@@ -851,14 +941,12 @@ TEST(ArchitectureSmoke, DirectoryModuleRetainsModuleRefsAndRuns)
     auto processor = iv::test::make_executor(
         loader,
         audio_device,
-        execution_target_registry,
-        1,
+        std::move(execution_target_registry),
         iv::test::test_modules_root() / "nested_loader_project"
     );
 
     EXPECT_NE(processor.num_module_refs(), 0u);
-    iv::test::run_processor_ticks(processor);
-    EXPECT_FALSE(processor.is_shutdown_requested());
+    iv::test::run_processor_ticks(audio_device, processor);
 }
 
 TEST(ArchitectureSmoke, DirectoryModuleEventArrayBindingsResolve)
@@ -1027,95 +1115,29 @@ TEST(ArchitectureSmoke, DisconnectedEventOutputUsesZeroCapacitySinkBudget)
     auto executor = iv::NodeExecutor::create(
         std::move(root),
         {},
-        execution_target_registry,
-        1
+        std::move(execution_target_registry).to_builder()
     );
 
-    EXPECT_NO_THROW(executor.tick_block(0, 8));
+    EXPECT_NO_THROW(tick_executor_direct(executor, 0, 8));
 }
 
-TEST(ArchitectureSmoke, DuplicateExecutorIdIsRejected)
+TEST(ArchitectureSmoke, ExecutorTeardownAllowsFreshExecutor)
 {
     iv::Sample a = 0.25f;
     iv::Sample b = 0.5f;
     iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
-    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
 
-    auto executor_a = make_constant_audio_executor(&a, execution_target_registry, 1);
-    (void)executor_a;
-
-    expect_failure_contains(
-        [&] {
-            auto executor_b = make_constant_audio_executor(&b, execution_target_registry, 1);
-            (void)executor_b;
-        },
-        "already registered"
-    );
-}
-
-TEST(ArchitectureSmoke, TwoExecutorsShareRegistryAndAccumulate)
-{
-    iv::Sample a = 0.25f;
-    iv::Sample b = 0.5f;
-    iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
-    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
-
-    auto executor_a = make_constant_audio_executor(&a, execution_target_registry, 1);
-    auto executor_b = make_constant_audio_executor(&b, execution_target_registry, 2);
-
-    request_and_tick(audio_device, executor_a, 0, 8);
-    EXPECT_FALSE(audio_device.is_block_ready());
-    expect_zero_output(audio_device);
-
-    executor_b.tick_block(0, 8);
-    ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout));
-    expect_constant_block(audio_device.output_block(), 0.75f);
-    audio_device.device().finish_requested_block();
-}
-
-TEST(ArchitectureSmoke, TwoExecutorsBlockBecomesReadyAfterSecondContribution)
-{
-    iv::Sample a = 0.25f;
-    iv::Sample b = 0.5f;
-    iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
-    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
-
-    auto executor_a = make_constant_audio_executor(&a, execution_target_registry, 1);
-    auto executor_b = make_constant_audio_executor(&b, execution_target_registry, 2);
-
-    audio_device.device().begin_requested_block(0, 8);
-    executor_a.tick_block(0, 8);
-    EXPECT_FALSE(audio_device.is_block_ready());
-
-    executor_b.tick_block(0, 8);
-    EXPECT_TRUE(audio_device.is_block_ready());
-
-    if (audio_device.is_block_ready()) {
-        expect_constant_block(audio_device.output_block(), 0.75f);
-        audio_device.device().finish_requested_block();
-    }
-}
-
-TEST(ArchitectureSmoke, ExecutorTeardownRemovesContribution)
-{
-    iv::Sample a = 0.25f;
-    iv::Sample b = 0.5f;
-    iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
-    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
-
-    auto executor_a = make_constant_audio_executor(&a, execution_target_registry, 1);
     {
-        auto executor_b = make_constant_audio_executor(&b, execution_target_registry, 2);
-        request_and_tick(audio_device, executor_a, 0, 8);
-        executor_b.tick_block(0, 8);
-        ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout));
-        expect_constant_block(audio_device.output_block(), 0.75f);
-        audio_device.device().finish_requested_block();
+        auto executor_a = make_constant_audio_executor(&a, iv::test::make_audio_device_provider(audio_device));
+        execute_requested_block(audio_device, executor_a, 0, 8, [&] {
+            expect_constant_block(audio_device.output_block(), 0.25f);
+        });
     }
 
-    request_tick_and_wait(audio_device, executor_a, 8, 8);
-    expect_constant_block(audio_device.output_block(), 0.25f);
-    audio_device.device().finish_requested_block();
+    auto executor_b = make_constant_audio_executor(&b, iv::test::make_audio_device_provider(audio_device));
+    execute_requested_block(audio_device, executor_b, 8, 8, [&] {
+        expect_constant_block(audio_device.output_block(), 0.5f);
+    });
 }
 
 TEST(ArchitectureSmoke, ReloadReplacesAudioContribution)
@@ -1123,37 +1145,199 @@ TEST(ArchitectureSmoke, ReloadReplacesAudioContribution)
     iv::Sample a = 0.25f;
     iv::Sample b = 0.5f;
     iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
-    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    auto executor = make_constant_audio_executor(&a, iv::test::make_audio_device_provider(audio_device));
 
-    auto executor = make_constant_audio_executor(&a, execution_target_registry, 1);
-
-    request_tick_and_wait(audio_device, executor, 0, 8);
+    request_block_with_manual_sync(audio_device, executor, 0, 8);
     expect_constant_block(audio_device.output_block(), 0.25f);
-    audio_device.device().finish_requested_block();
+    audio_device.finish_requested_block();
 
     executor.reload(make_constant_audio_graph(&b));
 
-    request_tick_and_wait(audio_device, executor, 8, 8);
+    request_block_with_manual_sync(audio_device, executor, 8, 8);
     expect_constant_block(audio_device.output_block(), 0.5f);
-    audio_device.device().finish_requested_block();
+    audio_device.finish_requested_block();
 }
 
 TEST(ArchitectureSmoke, RegistryReadyCheckDoesNotBlockWithoutAudioTargets)
 {
     iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
-    execution_target_registry.register_executor(1);
-    execution_target_registry.validate_executor_block_size(1, 8);
+    auto& execution_targets = execution_target_registry;
 
     auto wait_result = std::async(std::launch::async, [&] {
-        return execution_target_registry.sync_block(1, std::nullopt, 0, 8);
+        return execution_targets.wait_for_block(0, 8);
     });
 
     EXPECT_EQ(wait_result.wait_for(kAsyncWaitTimeout), std::future_status::ready)
         << "sync_block should not wait forever when an executor has no active audio devices";
 
-    execution_target_registry.unregister_executor(1);
     (void)wait_result.wait_for(kBlockReadyTimeout);
+}
+
+TEST(ArchitectureSmoke, MiniaudioDestructorUnblocksPendingCallback)
+{
+    std::unique_ptr<iv::MiniaudioLogicalDevice> device;
+    try {
+        device = std::make_unique<iv::MiniaudioLogicalDevice>(iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 2,
+            .max_block_frames = 256,
+            .preferred_block_size = 64,
+        });
+    } catch (std::exception const& e) {
+        GTEST_SKIP() << e.what();
+    }
+
+    auto request = device->wait_for_block_request();
+    ASSERT_FALSE(request.empty());
+
+    auto destroy = std::async(std::launch::async, [&] {
+        device.reset();
+    });
+    ASSERT_EQ(destroy.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+        << "MiniaudioLogicalDevice destructor blocked with a pending callback response";
+    destroy.get();
+}
+
+TEST(ArchitectureSmoke, ExecuteReloadSwitchesAtExecutorBlockBoundaryWithinActiveRequest)
+{
+    iv::Sample old_value = 0.25f;
+    iv::Sample new_value = 0.5f;
+    std::atomic<size_t> block_count = 0;
+    std::atomic<bool> reload_sent = false;
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 1,
+            .max_block_frames = 512,
+            .preferred_block_size = 64,
+        }
+    );
+
+    iv::GraphBuilder g;
+    auto const src = g.node<iv::ValueSource>(&old_value);
+    auto const counter = g.node<CountingBlockPassthrough>(CountingBlockPassthrough{ .block_count = &block_count });
+    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+        .device_id = 0,
+        .channel = 0,
+    });
+    counter(src);
+    sink(counter);
+    g.outputs();
+
+    auto executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build()),
+        {},
+        iv::test::make_audio_device_provider(audio_device).to_builder()
+    );
+
+    auto worker = std::async(std::launch::async, [&] {
+        executor.execute([&]() -> std::optional<iv::ModuleLoader::LoadedGraph> {
+            if (reload_sent.load(std::memory_order_relaxed)) {
+                return std::nullopt;
+            }
+            if (block_count.load(std::memory_order_relaxed) < 1) {
+                return std::nullopt;
+            }
+            reload_sent.store(true, std::memory_order_relaxed);
+            return iv::ModuleLoader::LoadedGraph(
+                make_constant_audio_graph(&new_value),
+                {},
+                {},
+                "live_reload",
+                {},
+                1
+            );
+        });
+    });
+
+    audio_device.begin_requested_block(0, 192);
+    ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout))
+        << "reload execute() did not satisfy the active request";
+
+    auto block = audio_device.output_block().first(192);
+    expect_constant_block(block.first(64), old_value);
+    expect_constant_block(block.subspan(64, 128), new_value);
+    audio_device.finish_requested_block();
+
+    stop_executor(audio_device, executor, worker);
+}
+
+TEST(ArchitectureSmoke, OrchestratorBuilderReplaysRegistrationsAcrossBuildAndReturn)
+{
+    std::array<iv::Sample, 8> a;
+    std::array<iv::Sample, 8> b;
+    std::array<iv::Sample, 8> c;
+    a.fill(0.25f);
+    b.fill(0.5f);
+    c.fill(1.0f);
+
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 1,
+            .max_block_frames = 8,
+            .preferred_block_size = 8,
+        }
+    );
+
+    iv::OrchestratorBuilder builder;
+    builder.audio_device(0, 0).register_sink(0, a);
+    builder.audio_device(0, 0).register_sink(0, b);
+    builder.add_audio_device(0, iv::LogicalAudioDevice(FakeAudioDeviceBackend{ &audio_device }));
+
+    auto orchestrator = std::move(builder).build();
+    audio_device.begin_requested_block(0, 8);
+    orchestrator.wait_for_block();
+    orchestrator.request_shutdown();
+    orchestrator.sync_block(0, 8);
+    ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout));
+    expect_constant_block(audio_device.output_block().first(8), 0.75f);
+    audio_device.finish_requested_block();
+
+    auto rebound = std::move(orchestrator).to_builder();
+    rebound.audio_device(0, 0).update_sink(0, a, c);
+    rebound.audio_device(0, 0).unregister_sink(0, b);
+
+    auto orchestrator2 = std::move(rebound).build();
+    audio_device.begin_requested_block(8, 8);
+    orchestrator2.wait_for_block();
+    orchestrator2.request_shutdown();
+    orchestrator2.sync_block(8, 8);
+    ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout));
+    expect_constant_block(audio_device.output_block().first(8), 1.0f);
+    audio_device.finish_requested_block();
+}
+
+TEST(ArchitectureSmoke, BlockRateBufferPreservesOrderAcrossWraparound)
+{
+    iv::BlockRateBuffer<int> buffer(8);
+
+    auto first_write = buffer.allocate_write(6);
+    for (size_t i = 0; i < 6; ++i) {
+        first_write[i] = static_cast<int>(i + 1);
+    }
+
+    auto first_read = buffer.read_block(4);
+    ASSERT_EQ(first_read.size(), 4u);
+    EXPECT_EQ(first_read[0], 1);
+    EXPECT_EQ(first_read[1], 2);
+    EXPECT_EQ(first_read[2], 3);
+    EXPECT_EQ(first_read[3], 4);
+
+    auto second_write = buffer.allocate_write(4);
+    for (size_t i = 0; i < 4; ++i) {
+        second_write[i] = static_cast<int>(i + 7);
+    }
+
+    auto second_read = buffer.read_block(6);
+    ASSERT_EQ(second_read.size(), 6u);
+    EXPECT_EQ(second_read[0], 5);
+    EXPECT_EQ(second_read[1], 6);
+    EXPECT_EQ(second_read[2], 7);
+    EXPECT_EQ(second_read[3], 8);
+    EXPECT_EQ(second_read[4], 9);
+    EXPECT_EQ(second_read[5], 10);
 }
 
 TEST(ArchitectureSmoke, SingleExecutorExecuteSurvivesVaryingRequestSizes)
@@ -1169,12 +1353,7 @@ TEST(ArchitectureSmoke, SingleExecutorExecuteSurvivesVaryingRequestSizes)
         },
         request_notification
     );
-    iv::ExecutionTargetRegistry execution_target_registry(
-        iv::test::make_audio_device_provider(audio_device),
-        48000,
-        request_notification
-    );
-    auto executor = make_constant_audio_executor(&value, execution_target_registry, 1);
+    auto executor = make_constant_audio_executor(&value, iv::test::make_audio_device_provider(audio_device));
 
     auto worker = std::async(std::launch::async, [&] {
         executor.execute();
@@ -1185,18 +1364,78 @@ TEST(ArchitectureSmoke, SingleExecutorExecuteSurvivesVaryingRequestSizes)
 
     for (size_t iteration = 0; iteration < 512; ++iteration) {
         size_t const request_size = request_sizes[iteration % request_sizes.size()];
-        audio_device.device().begin_requested_block(request_index, request_size);
+        audio_device.begin_requested_block(request_index, request_size);
 
         ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout))
             << "single-executor execute() stalled for request [" << request_index << ", " << request_size << "]";
 
-        audio_device.device().finish_requested_block();
+        audio_device.finish_requested_block();
         request_index += request_size;
     }
 
-    executor.request_shutdown();
-    ASSERT_EQ(worker.wait_for(kBlockReadyTimeout), std::future_status::ready)
-        << "single-executor execute() did not exit after shutdown";
+    stop_executor(audio_device, executor, worker);
+}
+
+TEST(ArchitectureSmoke, StereoExecutorExecuteSurvivesVaryingRequestSizes)
+{
+    iv::Sample left = 0.25f;
+    iv::Sample right = 0.5f;
+    auto request_notification = std::make_shared<std::condition_variable>();
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 2,
+            .max_block_frames = 4096,
+            .preferred_block_size = 256,
+        },
+        request_notification
+    );
+    iv::ExecutionTargetRegistry execution_target_registry(
+        iv::test::make_audio_device_provider(audio_device)
+    );
+
+    iv::GraphBuilder g;
+    auto const src_left = g.node<iv::ValueSource>(&left);
+    auto const src_right = g.node<iv::ValueSource>(&right);
+    auto const sink_left = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+        .device_id = 0,
+        .channel = 0,
+    });
+    auto const sink_right = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+        .device_id = 0,
+        .channel = 1,
+    });
+    sink_left(src_left);
+    sink_right(src_right);
+    g.outputs();
+
+    iv::NodeExecutor executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build()),
+        {},
+        std::move(execution_target_registry).to_builder()
+    );
+
+    auto worker = std::async(std::launch::async, [&] {
+        executor.execute();
+    });
+
+    std::array<size_t, 8> const request_sizes { 64, 128, 192, 256, 320, 384, 448, 512 };
+    size_t request_index = 0;
+
+    for (size_t iteration = 0; iteration < 512; ++iteration) {
+        size_t const request_size = request_sizes[iteration % request_sizes.size()];
+        audio_device.begin_requested_block(request_index, request_size);
+
+        ASSERT_TRUE(audio_device.wait_until_block_ready_for(kBlockReadyTimeout))
+            << "stereo execute() stalled for request [" << request_index << ", " << request_size << "]";
+
+        expect_constant_block(audio_device.output_block(0).first(request_size), left);
+        expect_constant_block(audio_device.output_block(1).first(request_size), right);
+        audio_device.finish_requested_block();
+        request_index += request_size;
+    }
+
+    stop_executor(audio_device, executor, worker);
 }
 
 TEST(ArchitectureSmoke, FileSinkUsesDeviceSampleRateForWavOutput)
@@ -1226,21 +1465,86 @@ TEST(ArchitectureSmoke, FileSinkUsesDeviceSampleRateForWavOutput)
         g.outputs();
 
         iv::ExecutionTargetRegistry execution_target_registry(
-            iv::test::make_audio_device_provider(audio_device),
-            48000
+            iv::test::make_audio_device_provider(audio_device)
         );
         auto executor = iv::NodeExecutor::create(
             iv::TypeErasedNode(g.build()),
             {},
-            execution_target_registry,
-            1
+            std::move(execution_target_registry).to_builder()
         );
 
-        executor.tick_block(0, 8);
+        executor.device_orchestrator().wait_for_block();
+        tick_executor_direct(executor, 0, 8);
+        executor.device_orchestrator().request_shutdown();
+        executor.device_orchestrator().sync_block(0, 8);
     }
 
     ASSERT_TRUE(std::filesystem::exists(output_path)) << output_path.string();
     EXPECT_EQ(read_wav_sample_rate(output_path), audio_device.config().sample_rate);
+
+    std::filesystem::remove(output_path, ec);
+}
+
+TEST(ArchitectureSmoke, FileSinkPreservesContinuityAcrossVaryingAudioRequests)
+{
+    iv::Sample value = 0.25f;
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 44100,
+            .num_channels = 1,
+            .max_block_frames = 512,
+            .preferred_block_size = 64,
+        }
+    );
+
+    auto output_path = iv::test::repo_root() / "build" / "architecture_smoke_file_sink_continuity.wav";
+    std::error_code ec;
+    std::filesystem::remove(output_path, ec);
+
+    size_t total_requested_frames = 0;
+    {
+        iv::GraphBuilder g;
+        auto const src = g.node<iv::ValueSource>(&value);
+        auto const audio_sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+            .device_id = 0,
+            .channel = 0,
+        });
+        auto const file_sink = g.node<iv::FileSink>(iv::FileSink{
+            .path = output_path,
+            .channel = 0,
+        });
+        audio_sink(src);
+        file_sink(src);
+        g.outputs();
+
+        iv::ExecutionTargetRegistry execution_target_registry(
+            iv::test::make_audio_device_provider(audio_device)
+        );
+        auto executor = iv::NodeExecutor::create(
+            iv::TypeErasedNode(g.build()),
+            {},
+            std::move(execution_target_registry).to_builder()
+        );
+
+        auto worker = start_executor(executor);
+        std::array<size_t, 5> const request_sizes { 64, 192, 128, 256, 64 };
+        size_t request_index = 0;
+        for (size_t request_size : request_sizes) {
+            request_block_and_wait(audio_device, executor, request_index, request_size);
+            expect_constant_block(audio_device.output_block().first(request_size), value);
+            audio_device.finish_requested_block();
+            request_index += request_size;
+            total_requested_frames += request_size;
+        }
+        stop_executor(audio_device, executor, worker);
+    }
+
+    ASSERT_TRUE(std::filesystem::exists(output_path)) << output_path.string();
+    EXPECT_EQ(read_wav_sample_rate(output_path), audio_device.config().sample_rate);
+
+    auto samples = read_wav_pcm16_samples(output_path);
+    ASSERT_EQ(samples.size(), total_requested_frames);
+    expect_pcm16_constant(samples, value);
 
     std::filesystem::remove(output_path, ec);
 }

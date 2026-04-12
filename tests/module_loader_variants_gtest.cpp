@@ -12,11 +12,11 @@ TEST(ModuleLoaderVariants, LoadsSingleModuleCppPath)
     iv::NodeExecutor executor = iv::test::make_executor(
         loader,
         audio_device,
-        execution_targets,
+        std::move(execution_targets),
         1,
         fixtures / "nested_loader_project" / "module.cpp"
     );
-    iv::test::run_processor_ticks(executor);
+    iv::test::run_processor_ticks(audio_device, executor);
 }
 
 TEST(ModuleLoaderVariants, LoadsDirectoryWithLocalCmake)
@@ -29,11 +29,11 @@ TEST(ModuleLoaderVariants, LoadsDirectoryWithLocalCmake)
     iv::NodeExecutor executor = iv::test::make_executor(
         loader,
         audio_device,
-        execution_targets,
+        std::move(execution_targets),
         1,
         fixtures / "local_cmake"
     );
-    iv::test::run_processor_ticks(executor);
+    iv::test::run_processor_ticks(audio_device, executor);
 }
 
 TEST(ModuleLoaderVariants, LoadsMovedModuleTree)
@@ -50,9 +50,9 @@ TEST(ModuleLoaderVariants, LoadsMovedModuleTree)
     iv::NodeExecutor executor = iv::test::make_executor(
         loader,
         audio_device,
-        execution_targets,
+        std::move(execution_targets),
         1,
         moved_root / "project"
     );
-    iv::test::run_processor_ticks(executor);
+    iv::test::run_processor_ticks(audio_device, executor);
 }

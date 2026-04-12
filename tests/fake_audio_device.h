@@ -5,207 +5,186 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
-#include <optional>
 #include <span>
+#include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace iv::test {
-    struct FakeAudioDeviceState {
-        iv::RenderConfig config;
-        iv::Sample sample_period = 0.0f;
-        mutable std::mutex mutex;
-        std::condition_variable cv;
-        std::optional<std::pair<size_t, size_t>> active_requested_block;
-        std::vector<iv::Sample> mixed_block;
-        std::vector<iv::Sample> output_storage;
-        bool block_ready = false;
-        bool shutdown_requested = false;
-        iv::RequestNotification request_notification;
+    class FakeAudioDevice {
+        iv::RenderConfig _config;
+        iv::Sample _sample_period = 0.0f;
+        std::mutex _mutex;
+        std::condition_variable _cv;
+        bool _shutdown_requested = false;
+        bool _request_pending = false;
+        bool _response_ready = false;
+        bool _block_ready = false;
+        size_t _requested_frame_index = 0;
+        size_t _requested_frames = 0;
+        std::vector<iv::Sample> _interleaved_output;
+        std::vector<iv::Sample> _planar_output;
 
-        FakeAudioDeviceState(iv::RenderConfig config_, iv::RequestNotification request_notification_)
-        : config(std::move(config_))
-        , request_notification(std::move(request_notification_))
-        , output_storage(config.num_channels * config.max_block_frames, 0.0f)
+        void materialize_planar_output_locked()
         {
-            iv::validate_render_config(config);
-            sample_period = iv::sample_period(config);
+            size_t const channels = _config.num_channels;
+            std::fill(_planar_output.begin(), _planar_output.end(), 0.0f);
+            for (size_t frame = 0; frame < _requested_frames && frame < _config.max_block_frames; ++frame) {
+                for (size_t channel = 0; channel < channels; ++channel) {
+                    _planar_output[channel * _config.max_block_frames + frame] =
+                        _interleaved_output[frame * channels + channel];
+                }
+            }
         }
 
-        bool is_shutdown_requested() const
+    public:
+        explicit FakeAudioDevice(
+            iv::RenderConfig config = {},
+            [[maybe_unused]] std::shared_ptr<std::condition_variable> request_notification = {}
+        )
+        : _config(std::move(config))
         {
-            std::scoped_lock lock(mutex);
-            return shutdown_requested;
+            iv::validate_render_config(_config);
+            _sample_period = iv::sample_period(_config);
+            _interleaved_output.assign(_config.max_block_frames * _config.num_channels, 0.0f);
+            _planar_output.assign(_config.max_block_frames * _config.num_channels, 0.0f);
         }
 
-        void request_shutdown()
+        iv::RenderConfig const& config() const
+        {
+            return _config;
+        }
+
+        std::span<iv::Sample> wait_for_block_request()
+        {
+            std::unique_lock lock(_mutex);
+            _cv.wait(lock, [&] {
+                return _shutdown_requested || (_request_pending && !_response_ready);
+            });
+
+            if (!_request_pending) {
+                throw std::logic_error("FakeAudioDevice wait_for_block_request() interrupted without a pending request");
+            }
+
+            return std::span<iv::Sample>(
+                _interleaved_output.data(),
+                _requested_frames * _config.num_channels
+            );
+        }
+
+        void submit_response()
         {
             {
-                std::scoped_lock lock(mutex);
-                shutdown_requested = true;
-            }
-            if (request_notification) {
-                request_notification->notify_all();
-            }
-            cv.notify_all();
-        }
+                std::scoped_lock lock(_mutex);
+                if (!_request_pending || _response_ready) {
+                    throw std::logic_error("FakeAudioDevice has no pending request awaiting response");
+                }
 
-        std::optional<std::pair<size_t, size_t>> requested_block() const
-        {
-            std::scoped_lock lock(mutex);
-            return active_requested_block;
-        }
-
-        std::optional<std::pair<size_t, size_t>> wait_for_requested_block()
-        {
-            std::unique_lock lock(mutex);
-            cv.wait(lock, [&] {
-                return shutdown_requested || active_requested_block.has_value();
-            });
-            if (shutdown_requested) {
-                return std::nullopt;
+                materialize_planar_output_locked();
+                _response_ready = true;
+                _block_ready = true;
             }
-            return active_requested_block;
+            _cv.notify_all();
         }
 
         void begin_requested_block(size_t frame_index, size_t frame_count)
         {
-            std::scoped_lock lock(mutex);
-            active_requested_block = std::pair{ frame_index, frame_count };
-            block_ready = false;
-            mixed_block.assign(frame_count * config.num_channels, 0.0f);
-            if (request_notification) {
-                request_notification->notify_all();
-            }
-            cv.notify_all();
-        }
+            {
+                std::scoped_lock lock(_mutex);
+                if (frame_count > _config.max_block_frames) {
+                    throw std::logic_error("FakeAudioDevice request exceeds max block size");
+                }
 
-        void submit_mixed_block(
-            size_t frame_index,
-            std::span<iv::Sample const> interleaved,
-            size_t frames,
-            size_t channels
-        )
-        {
-            std::scoped_lock lock(mutex);
-            if (channels != config.num_channels) {
-                throw std::logic_error("FakeAudioDevice mixed block channel count mismatch");
-            }
-            if (interleaved.size() != frames * channels) {
-                throw std::logic_error("FakeAudioDevice mixed block span size mismatch");
-            }
-            if (active_requested_block.has_value() && *active_requested_block != std::pair{ frame_index, frames }) {
-                throw std::logic_error("FakeAudioDevice mixed block does not match the active request");
-            }
-
-            mixed_block.assign(interleaved.begin(), interleaved.end());
-            std::fill(output_storage.begin(), output_storage.end(), 0.0f);
-            for (size_t frame = 0; frame < frames && frame < config.max_block_frames; ++frame) {
-                for (size_t channel = 0; channel < channels; ++channel) {
-                    output_storage[channel * config.max_block_frames + frame] =
-                        interleaved[frame * channels + channel];
+                bool const preserve_previous_output = _response_ready;
+                _requested_frame_index = frame_index;
+                _requested_frames = frame_count;
+                _request_pending = true;
+                _response_ready = false;
+                _block_ready = false;
+                if (!preserve_previous_output) {
+                    std::fill(_interleaved_output.begin(), _interleaved_output.end(), 0.0f);
+                    std::fill(_planar_output.begin(), _planar_output.end(), 0.0f);
                 }
             }
-            block_ready = true;
-            cv.notify_all();
+            _cv.notify_all();
         }
 
         bool wait_until_block_ready()
         {
-            std::unique_lock lock(mutex);
-            cv.wait(lock, [&] {
-                return shutdown_requested || block_ready;
+            std::unique_lock lock(_mutex);
+            _cv.wait(lock, [&] {
+                return _shutdown_requested || _block_ready;
             });
-            return !shutdown_requested && block_ready;
+            return !_shutdown_requested && _block_ready;
         }
 
         template<typename Rep, typename Period>
         bool wait_until_block_ready_for(std::chrono::duration<Rep, Period> timeout)
         {
-            std::unique_lock lock(mutex);
-            bool const ready = cv.wait_for(lock, timeout, [&] {
-                return shutdown_requested || block_ready;
+            std::unique_lock lock(_mutex);
+            bool const ready = _cv.wait_for(lock, timeout, [&] {
+                return _shutdown_requested || _block_ready;
             });
-            return ready && !shutdown_requested && block_ready;
-        }
-
-        bool is_block_ready() const
-        {
-            std::scoped_lock lock(mutex);
-            return block_ready;
-        }
-
-        std::span<iv::Sample const> current_mixed_block() const
-        {
-            std::scoped_lock lock(mutex);
-            return { mixed_block.data(), mixed_block.size() };
+            return ready && !_shutdown_requested && _block_ready;
         }
 
         void finish_requested_block()
         {
-            std::scoped_lock lock(mutex);
-            active_requested_block.reset();
-            block_ready = false;
-            cv.notify_all();
-        }
-    };
-
-    class FakeAudioDevice {
-        std::shared_ptr<FakeAudioDeviceState> _state;
-        iv::LogicalAudioDevice _device;
-
-    public:
-        explicit FakeAudioDevice(iv::RenderConfig config = {}, iv::RequestNotification request_notification = {})
-        : _state(std::make_shared<FakeAudioDeviceState>(std::move(config), std::move(request_notification)))
-        , _device([&] {
-            auto const device_config = _state->config;
-            return iv::LogicalAudioDevice::from_state(device_config, _state);
-        }())
-        {}
-
-        iv::LogicalAudioDevice& device()
-        {
-            return _device;
+            {
+                std::scoped_lock lock(_mutex);
+                _request_pending = false;
+                _response_ready = false;
+                _block_ready = false;
+                _requested_frames = 0;
+            }
+            _cv.notify_all();
         }
 
-        iv::LogicalAudioDevice const& device() const
+        bool is_block_ready()
         {
-            return _device;
+            std::scoped_lock lock(_mutex);
+            return _block_ready;
         }
 
-        iv::RenderConfig const& config() const
+        std::span<iv::Sample const> output_block(size_t channel = 0)
         {
-            return _device.config();
-        }
-
-        bool is_block_ready() const
-        {
-            return _state->is_block_ready();
-        }
-
-        template<typename Rep, typename Period>
-        bool wait_until_block_ready_for(std::chrono::duration<Rep, Period> timeout) const
-        {
-            return _state->wait_until_block_ready_for(timeout);
+            std::scoped_lock lock(_mutex);
+            return {
+                _planar_output.data() + channel * _config.max_block_frames,
+                _config.max_block_frames
+            };
         }
 
         std::span<iv::Sample const> output_block(size_t channel = 0) const
         {
-            std::scoped_lock lock(_state->mutex);
-            return {
-                _state->output_storage.data() + channel * _state->config.max_block_frames,
-                _state->config.max_block_frames
-            };
+            return const_cast<FakeAudioDevice*>(this)->output_block(channel);
         }
 
         iv::Sample& sample_period()
         {
-            return _state->sample_period;
+            return _sample_period;
         }
 
         iv::Sample sample_period() const
         {
-            return _state->sample_period;
+            return _sample_period;
+        }
+
+        size_t requested_frame_index()
+        {
+            std::scoped_lock lock(_mutex);
+            return _requested_frame_index;
+        }
+
+        void request_shutdown()
+        {
+            {
+                std::scoped_lock lock(_mutex);
+                _shutdown_requested = true;
+            }
+            _cv.notify_all();
         }
     };
 }

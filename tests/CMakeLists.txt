@@ -12,7 +12,7 @@ FetchContent_MakeAvailable(googletest)
 function(add_iv_gtest target source)
     add_executable(${target}
         ${source}
-        ${PROJECT_SOURCE_DIR}/intravenious/third_party/miniaudio/miniaudio.c
+        ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
     )
 
     target_compile_features(${target} PRIVATE cxx_std_23)
@@ -23,11 +23,11 @@ function(add_iv_gtest target source)
     )
 
     target_include_directories(${target} PRIVATE
-        ${PROJECT_SOURCE_DIR}/intravenious
+        ${PROJECT_SOURCE_DIR}/intravenous
     )
 
     target_include_directories(${target} SYSTEM PRIVATE
-        ${PROJECT_SOURCE_DIR}/intravenious/third_party
+        ${PROJECT_SOURCE_DIR}/intravenous/third_party
     )
 
     if(MSVC)
@@ -44,41 +44,41 @@ function(add_iv_gtest target source)
     gtest_discover_tests(${target})
 endfunction()
 
-add_iv_gtest(intravenious_architecture_smoke_tests architecture_smoke_gtest.cpp)
-add_iv_gtest(intravenious_module_loader_variants_tests module_loader_variants_gtest.cpp)
-add_iv_gtest(intravenious_module_loader_failures_tests module_loader_failures_gtest.cpp)
-add_iv_gtest(intravenious_module_loader_reload_tests module_loader_reload_gtest.cpp)
-add_iv_gtest(intravenious_module_build_behavior_tests module_build_behavior_gtest.cpp)
-add_iv_gtest(intravenious_module_watcher_tests module_watcher_gtest.cpp)
-add_iv_gtest(intravenious_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
-add_iv_gtest(intravenious_detach_regression_tests detach_regression_gtest.cpp)
+add_iv_gtest(intravenous_architecture_smoke_tests architecture_smoke_gtest.cpp)
+add_iv_gtest(intravenous_module_loader_variants_tests module_loader_variants_gtest.cpp)
+add_iv_gtest(intravenous_module_loader_failures_tests module_loader_failures_gtest.cpp)
+add_iv_gtest(intravenous_module_loader_reload_tests module_loader_reload_gtest.cpp)
+add_iv_gtest(intravenous_module_build_behavior_tests module_build_behavior_gtest.cpp)
+add_iv_gtest(intravenous_module_watcher_tests module_watcher_gtest.cpp)
+add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
+add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)
 
-add_executable(intravenious_node_layout_storage
+add_executable(intravenous_node_layout_storage
     node_layout_storage.cpp
-    ${PROJECT_SOURCE_DIR}/intravenious/third_party/miniaudio/miniaudio.c
+    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
 )
 
-target_compile_features(intravenious_node_layout_storage PRIVATE cxx_std_23)
-set_target_properties(intravenious_node_layout_storage PROPERTIES
+target_compile_features(intravenous_node_layout_storage PRIVATE cxx_std_23)
+set_target_properties(intravenous_node_layout_storage PROPERTIES
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
 
-target_include_directories(intravenious_node_layout_storage PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenious
+target_include_directories(intravenous_node_layout_storage PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenous
 )
 
-target_include_directories(intravenious_node_layout_storage SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenious/third_party
+target_include_directories(intravenous_node_layout_storage SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/intravenous/third_party
 )
 
 if(MSVC)
-    target_compile_options(intravenious_node_layout_storage PRIVATE /W4 /permissive-)
+    target_compile_options(intravenous_node_layout_storage PRIVATE /W4 /permissive-)
 else()
-    target_compile_options(intravenious_node_layout_storage PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(intravenous_node_layout_storage PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-target_link_libraries(intravenious_node_layout_storage PRIVATE intravenous_module_runtime)
+target_link_libraries(intravenous_node_layout_storage PRIVATE intravenous_module_runtime)
 
-add_test(NAME intravenious_node_layout_storage COMMAND intravenious_node_layout_storage)
+add_test(NAME intravenous_node_layout_storage COMMAND intravenous_node_layout_storage)

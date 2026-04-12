@@ -4,6 +4,8 @@
 #include <iostream>
 #include <mutex>
 #include <stacktrace>
+#include <cstdlib>
+#include <string_view>
 
 #if defined(_MSC_VER)
 #  define IV_FORCEINLINE __forceinline
@@ -14,7 +16,7 @@
 #endif
 
 namespace iv {
-    inline std::ostream& diagnostic_stream()
+    inline std::ofstream& diagnostic_file()
     {
         static std::mutex mutex;
         static std::ofstream file;
@@ -28,10 +30,37 @@ namespace iv {
             initialized = true;
         }
 
+        return file;
+    }
+
+    inline std::ostream& diagnostic_stream()
+    {
+        auto& file = diagnostic_file();
         if (file.is_open()) {
             return file;
         }
         return std::cerr;
+    }
+
+    inline void flush_diagnostic_stream()
+    {
+        auto& file = diagnostic_file();
+        if (file.is_open()) {
+            file.flush();
+        } else {
+            std::cerr.flush();
+        }
+    }
+
+    inline bool diagnostic_flag_enabled(char const* name)
+    {
+        if (name == nullptr || *name == '\0') {
+            return false;
+        }
+        if (char const* value = std::getenv(name); value && *value) {
+            return std::string_view(value) != "0";
+        }
+        return false;
     }
 
     inline void print_stacktrace(std::ostream& out)

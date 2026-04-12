@@ -39,6 +39,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     auto const sup = juce::vst(g, "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
     info(sup.node());
     sup(
+        "Mix"_P = 0.2,
         "DelayWarp"_P = 1.0,
         "Density"_P = 1.0,
         "Mode"_P = 2 / 24.f
@@ -85,7 +86,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             auto constexpr port = "r0"_P;
             x = port << sup(port = x);
         }
-        sink(x);
+        sink(x * 0.1);
     }
 
     g.outputs();

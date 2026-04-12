@@ -12,6 +12,26 @@
 namespace {
     using namespace iv::literals;
 
+    void tick_executor_direct(iv::NodeExecutor& executor, size_t index, size_t block_size)
+    {
+        iv::validate_block_size(block_size, "test block size must be a power of 2");
+        if (block_size > executor.max_block_size()) {
+            throw std::logic_error("test block size exceeds executor max block size");
+        }
+
+        executor.root().tick_block({
+            iv::TickContext<iv::TypeErasedNode> {
+                .inputs = {},
+                .outputs = {},
+                .event_inputs = {},
+                .event_outputs = {},
+                .buffer = executor.storage().buffer(),
+            },
+            index,
+            block_size
+        });
+    }
+
     struct BufferSink {
         iv::Sample* destination;
         size_t size;
@@ -73,10 +93,9 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     iv::NodeExecutor executor = iv::NodeExecutor::create(
         iv::TypeErasedNode(graph.build()),
         {},
-        execution_targets,
-        1
+        std::move(execution_targets).to_builder()
     );
-    executor.tick_block(0, output.size());
+    tick_executor_direct(executor, 0, output.size());
 
     bool saw_non_zero = false;
     for (size_t i = 0; i < output.size(); ++i) {

@@ -75,9 +75,12 @@ namespace iv {
 
     inline void dispatch_shutdown_handler()
     {
+        (void)diagnostic_stream();
+        flush_diagnostic_stream();
         if (g_shutdown_handler) {
             g_shutdown_handler();
         }
+        flush_diagnostic_stream();
     }
 
     inline void handle_sigint(int)
