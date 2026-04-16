@@ -1,9 +1,11 @@
-#include "juce_vst_runtime.h"
+#define IV_INTERNAL_TRANSLATION_UNIT
+
+#include "vst_runtime.h"
 
 #if IV_ENABLE_JUCE_VST
 
-#include "../juce_midi_input.h"
-#include "../juce_vst_wrapper.h"
+#include "midi_input.h"
+#include "vst_wrapper.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>

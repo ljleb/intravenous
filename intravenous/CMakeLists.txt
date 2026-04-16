@@ -89,7 +89,7 @@ if(JUCE_FOUND)
     iv_configure_juce()
 
     target_sources(intravenous_module_runtime PRIVATE
-        runtime/juce_vst_runtime.cpp
+        juce/vst_runtime.cpp
     )
 
     target_compile_definitions(intravenous_module_runtime PUBLIC

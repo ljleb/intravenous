@@ -1,12 +1,14 @@
+#define IV_INTERNAL_TRANSLATION_UNIT
+
 #include "devices/audio_device.h"
 #include "devices/miniaudio_device.h"
 #include "module/loader.h"
 #include "module/search_paths.h"
 #include "module/watcher.h"
 #include "runtime/handlers.h"
-#include "runtime/juce_vst_runtime.h"
+#include "juce/vst_runtime.h"
 #include "runtime/reload_worker.h"
-#include "node_executor.h"
+#include "node/executor.h"
 
 #include <filesystem>
 #include <iostream>

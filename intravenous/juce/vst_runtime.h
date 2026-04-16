@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../graph_node.h"
-#include "../juce_midi_input.h"
-#include "../juce_vst_wrapper.h"
+#include "graph/node.h"
+#include "juce/midi_input.h"
+#include "juce/vst_wrapper.h"
 
 #include <mutex>
 #include <memory>

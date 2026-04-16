@@ -1,3 +1,5 @@
+#define IV_INTERNAL_TRANSLATION_UNIT
+
 #include "module/loader.h"
 
 #include "devices/channel_buffer_sink.h"
@@ -577,7 +579,7 @@ namespace iv {
         {
             auto& session = *static_cast<BuildSession*>(session_ptr);
             ++session.sink_count;
-            return builder.node<AudioDeviceSink>(AudioDeviceSink{
+            return builder.node<AudioDeviceSink>(std::source_location::current(), AudioDeviceSink{
                 .device_id = device_id,
                 .channel = channel,
             });
@@ -585,7 +587,7 @@ namespace iv {
 
         static SampleNodeRef file_from_context(void*, GraphBuilder& builder, size_t channel, std::filesystem::path const& path)
         {
-            return builder.node<FileSink>(FileSink{
+            return builder.node<FileSink>(std::source_location::current(), FileSink{
                 .path = path,
                 .channel = channel,
             });

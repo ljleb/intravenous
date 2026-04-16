@@ -3,7 +3,7 @@
 #include "basic_nodes/type_erased.h"
 #include "orchestrator/device_orchestrator.h"
 #include "orchestrator/orchestrator_builder.h"
-#include "node_lifecycle.h"
+#include "lifecycle.h"
 #include "module/loader.h"
 
 #include <algorithm>

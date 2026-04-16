@@ -1,7 +1,8 @@
-#include "node_lifecycle.h"
+#include "node/lifecycle.h"
 #include "module_test_utils.h"
 #include "basic_nodes/type_erased.h"
-#include "graph_node.h"
+#include "dsl.h"
+#include "graph/node.h"
 #include "graph/node_wrapper.h"
 #include "devices/channel_buffer_sink.h"
 #include "basic_nodes/buffers.h"
@@ -488,13 +489,13 @@ int main()
         iv::Sample b = 0.5f;
 
         iv::GraphBuilder g;
-        auto const src_a = g.node<iv::ValueSource>(&a);
-        auto const src_b = g.node<iv::ValueSource>(&b);
-        auto const sink_a = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+        auto const src_a = NODE(g, iv::ValueSource, &a);
+        auto const src_b = NODE(g, iv::ValueSource, &b);
+        auto const sink_a = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
             .device_id = 0,
             .channel = 0,
         });
-        auto const sink_b = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+        auto const sink_b = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
             .device_id = 0,
             .channel = 0,
         });

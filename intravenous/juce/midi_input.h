@@ -1,7 +1,7 @@
 #pragma once
 
-#include "dsl.h"
-#include "node_lifecycle.h"
+#include "graph/builder.h"
+#include "node/lifecycle.h"
 
 #include <array>
 #include <memory>
@@ -70,7 +70,7 @@ namespace iv {
             std::string device_query = {}
         )
         {
-            return g.node<JuceMidiInputSource>(JuceMidiInputSpec {
+            return g.node<JuceMidiInputSource>(std::source_location::current(), JuceMidiInputSpec {
                 .device_query = std::move(device_query),
             });
         }

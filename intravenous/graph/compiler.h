@@ -3,9 +3,9 @@
 #include "basic_nodes/routing.h"
 #include "basic_nodes/arithmetic.h"
 #include "basic_nodes/type_erased.h"
-#include "graph/build_types.h"
-#include "graph/types.h"
-#include "graph/wiring.h"
+#include "build_types.h"
+#include "types.h"
+#include "wiring.h"
 
 #include <algorithm>
 #include <bit>

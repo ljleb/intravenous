@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 
 namespace iv {
     void missing_dependency(ModuleContext const& context)

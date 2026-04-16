@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../fast_bitset.h"
-#include "../node_lifecycle.h"
+#include "node/lifecycle.h"
 #include "../note_number_lookup_table.h"
 
 #include <algorithm>

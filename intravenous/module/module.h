@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dsl.h"
+#include "graph/builder.h"
 
 #include <cstdint>
 #include <cstring>
@@ -177,7 +177,7 @@ namespace iv {
 
     inline SampleNodeRef ModuleContext::load(std::string_view id) const
     {
-        return _builder->node(load_builder(id));
+        return _builder->embed_subgraph(load_builder(id));
     }
 }
 

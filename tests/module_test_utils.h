@@ -3,9 +3,9 @@
 #include "devices/audio_device.h"
 #include "fake_audio_device.h"
 #include "module/loader.h"
-#include "node_executor.h"
+#include "node/executor.h"
 #include "runtime/handlers.h"
-#include "runtime/juce_vst_runtime.h"
+#include "juce/vst_runtime.h"
 
 #include <chrono>
 #include <cstdlib>

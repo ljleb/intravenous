@@ -1,4 +1,4 @@
-#include "node_lifecycle.h"
+#include "node/lifecycle.h"
 #include "module_test_utils.h"
 
 #include <gtest/gtest.h>

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "compat.h"
-#include "node_traits.h"
-#include "node_resources.h"
+#include "traits.h"
+#include "resources.h"
 #include "orchestrator/orchestrator_builder.h"
 
 #include <algorithm>

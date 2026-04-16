@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 
 inline void event_loader_project(iv::ModuleContext const& context)
 {
@@ -7,7 +7,7 @@ inline void event_loader_project(iv::ModuleContext const& context)
 
     auto const voice_builder = context.load_builder("iv.test.event_loader_voice");
     auto const root_trigger = g.event_input("trigger", EventTypeId::trigger);
-    auto const voice = g.node(voice_builder);
+    auto const voice = g.embed_subgraph(voice_builder);
 
     voice.connect_event_input("trigger", root_trigger);
     g.event_outputs("trigger"_P = ((voice >> events) >> "trigger"_P));

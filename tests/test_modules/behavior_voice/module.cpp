@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 #include "basic_nodes/shaping.h"
 
 inline void behavior_voice(iv::ModuleContext const& context)
@@ -11,7 +11,7 @@ inline void behavior_voice(iv::ModuleContext const& context)
     auto const phase_offset = g.input("phase_offset", 0.0);
     auto const dt = g.input("dt", 1.0);
 
-    auto const saw = g.node<SawOscillator>();
+    auto const saw = NODE(g, SawOscillator);
     saw(
         "frequency"_P = frequency,
         "phase_offset"_P = phase_offset,

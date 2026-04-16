@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/shaping.h"
 
@@ -7,10 +7,10 @@ inline void benchmark_constant_saw(iv::ModuleContext const& context)
     using namespace iv;
     auto& g = context.builder();
     auto const& io = context.target_factory();
-    auto const dt = g.node<ValueSource>(&context.sample_period());
+    auto const dt = NODE(g, ValueSource, &context.sample_period());
 
-    auto const phase = g.node<PhaseIntegrator>();
-    auto const osc = g.node<SawOscillator>();
+    auto const phase = NODE(g, PhaseIntegrator);
+    auto const osc = NODE(g, SawOscillator);
     phase(0.0);
     auto const tone = osc(
         "frequency"_P = 110.0,

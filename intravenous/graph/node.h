@@ -1,8 +1,8 @@
 #pragma once
 
-#include "graph/build_types.h"
-#include "graph/event_port_data_node.h"
-#include "graph/wiring.h"
+#include "build_types.h"
+#include "event_port_data_node.h"
+#include "wiring.h"
 
 #include <algorithm>
 #include <cstddef>

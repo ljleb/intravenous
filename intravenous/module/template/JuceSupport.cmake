@@ -51,7 +51,7 @@ function(iv_module_enable_juce target)
     endif()
 
     target_sources("${target}" PRIVATE
-        ${IV_CORE_INCLUDE_DIR}/runtime/juce_vst_runtime.cpp
+        ${IV_CORE_INCLUDE_DIR}/juce/vst_runtime.cpp
     )
     target_compile_definitions("${target}" PRIVATE
         IV_ENABLE_JUCE_VST=1
