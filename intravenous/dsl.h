@@ -7,6 +7,21 @@
 #include "module/module.h"
 
 namespace iv {
+    template<class Ref>
+    concept SourceSpanAnnotatableRef = requires(std::remove_cvref_t<Ref> const& ref) {
+        ref._add_source_span(0u, 0u);
+    };
+
+    template<class Ref>
+    requires SourceSpanAnnotatableRef<Ref>
+    std::remove_cvref_t<Ref> _add_node_source_span(Ref&& ref, uint32_t begin, uint32_t end)
+    {
+        using StoredRef = std::remove_cvref_t<Ref>;
+        StoredRef stored_ref = std::forward<Ref>(ref);
+        stored_ref._add_source_span(begin, end);
+        return stored_ref;
+    }
+
     template<fixed_string Name>
     inline constexpr PortName<Name> named{};
 
@@ -24,7 +39,7 @@ namespace iv {
 
     inline SamplePortRef lift(GraphBuilder& g, Sample value)
     {
-        return g.node<Constant>(std::source_location::current(), value);
+        return g.node<Constant>(value);
     }
 
     inline SamplePortRef lift(SamplePortRef s)
@@ -60,7 +75,7 @@ namespace iv {
             }
             return s;
         } else {
-            return g.node<Constant>(std::source_location::current(), static_cast<Sample>(x))();
+            return g.node<Constant>(static_cast<Sample>(x))();
         }
     }
 
@@ -91,7 +106,7 @@ namespace iv {
         SamplePortRef lhs_sample_port = lift_operand(*g, std::forward<L>(lhs));
         SamplePortRef rhs_sample_port = lift_operand(*g, std::forward<R>(rhs));
 
-        return g->node<Node>(std::source_location::current())(lhs_sample_port, rhs_sample_port);
+        return g->node<Node>()(lhs_sample_port, rhs_sample_port);
     }
 
     template<class L, class R>
@@ -632,7 +647,7 @@ namespace iv {
         auto process_lane = [&](auto voice_index_c) {
             constexpr size_t voice_index = decltype(voice_index_c)::value;
 
-            auto const midi_driver = g.node<MidiVoiceAllocator<voice_index, voice_count>>(std::source_location::current());
+            auto const midi_driver = g.node<MidiVoiceAllocator<voice_index, voice_count>>();
             SampleNodeRef voice = make_voice(midi_driver).node_ref();
             auto const& voice_node = voice.node();
             if (
@@ -648,7 +663,6 @@ namespace iv {
                 output_configs = voice_node.output_configs;
                 event_output_configs = voice_node.event_output_configs;
                 mix = g.node<PolyphonicMix>(
-                    std::source_location::current(),
                     voice_count,
                     output_configs,
                     event_output_configs
@@ -694,6 +708,3 @@ namespace std {
         using type = iv::SamplePortRef;
     };
 }
-
-#define NODE(graph, NodeType, ...) \
-    (graph).node<NodeType>(std::source_location::current(), ##__VA_ARGS__)

@@ -5,6 +5,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 
 set(JUCE_DIR "" CACHE PATH "Path to a JUCE source tree or installed JUCE package root")
+option(IV_BUILD_CLANG_SOURCE_SPAN_TOOL "Build the Clang node source span rewriter (set to OFF to skip it)" ON)
 
 set(IV_JUCE_SOURCE_DIR "")
 if(JUCE_DIR)
@@ -27,3 +28,14 @@ endif()
 add_subdirectory(intravenous)
 add_subdirectory(tests)
 add_subdirectory(benchmark)
+
+if(IV_BUILD_CLANG_SOURCE_SPAN_TOOL)
+    add_subdirectory(tools)
+    target_compile_definitions(intravenous_module_runtime PUBLIC
+        IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER="$<TARGET_FILE:iv_clang_source_span_rewriter>"
+    )
+else()
+    target_compile_definitions(intravenous_module_runtime PUBLIC
+        IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER=""
+    )
+endif()

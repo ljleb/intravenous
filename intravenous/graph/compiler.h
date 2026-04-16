@@ -38,6 +38,7 @@ namespace iv::details {
         std::vector<TypeErasedNode> nodes;
         std::vector<std::optional<size_t>> explicit_ttl_samples;
         std::vector<std::string> node_ids;
+        std::vector<std::vector<SourceSpan>> node_source_spans;
         std::unordered_set<GraphEdge> edges;
         std::unordered_set<GraphEventEdge> event_edges;
         std::unordered_map<PortId, DetachedInfo> detached_info_by_source;
@@ -256,6 +257,7 @@ namespace iv::details {
                 g.nodes.emplace_back(Sum(port_arity));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_source_spans.emplace_back();
                 size_t const sum_node = g.nodes.size() - 1;
 
                 for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
@@ -285,6 +287,7 @@ namespace iv::details {
                 g.nodes.emplace_back(EventConcatenation(port_arity, concat_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_source_spans.emplace_back();
                 size_t const concat_node = g.nodes.size() - 1;
 
                 for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
@@ -328,6 +331,7 @@ namespace iv::details {
                 g.nodes.emplace_back(Broadcast(port_arity));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_source_spans.emplace_back();
                 size_t const broadcast_node = g.nodes.size() - 1;
 
                 for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
@@ -357,6 +361,7 @@ namespace iv::details {
                 g.nodes.emplace_back(BroadcastEvent(port_arity, broadcast_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_source_spans.emplace_back();
                 size_t const broadcast_node = g.nodes.size() - 1;
 
                 for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
@@ -393,6 +398,7 @@ namespace iv::details {
                     g.nodes.emplace_back(DummySink());
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                    g.node_source_spans.emplace_back();
                     size_t const new_node = g.nodes.size() - 1;
                     g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
                 }
@@ -406,6 +412,7 @@ namespace iv::details {
                     g.nodes.emplace_back(DummyEventSink());
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                    g.node_source_spans.emplace_back();
                     size_t const new_node = g.nodes.size() - 1;
                     EventTypeId const source_type = get_event_outputs(g.nodes[node])[output_port].type;
                     g.event_edges.insert(GraphEventEdge{
@@ -481,18 +488,22 @@ namespace iv::details {
         std::vector<TypeErasedNode> sorted_nodes;
         std::vector<std::optional<size_t>> sorted_explicit_ttls;
         std::vector<std::string> sorted_node_ids;
+        std::vector<std::vector<SourceSpan>> sorted_node_source_spans;
         sorted_nodes.reserve(num_nodes);
         sorted_explicit_ttls.reserve(num_nodes);
         sorted_node_ids.reserve(num_nodes);
+        sorted_node_source_spans.reserve(num_nodes);
         for (size_t old_i = 0; old_i < num_nodes; ++old_i)
         {
             sorted_nodes.push_back(std::move(g.nodes[sorted[old_i]]));
             sorted_explicit_ttls.push_back(std::move(g.explicit_ttl_samples[sorted[old_i]]));
             sorted_node_ids.push_back(std::move(g.node_ids[sorted[old_i]]));
+            sorted_node_source_spans.push_back(std::move(g.node_source_spans[sorted[old_i]]));
         }
         g.nodes.swap(sorted_nodes);
         g.explicit_ttl_samples.swap(sorted_explicit_ttls);
         g.node_ids.swap(sorted_node_ids);
+        g.node_source_spans.swap(sorted_node_source_spans);
 
         std::vector<size_t> reverse_sorted(num_nodes);
         for (size_t new_i = 0; new_i < num_nodes; ++new_i) {
@@ -968,6 +979,7 @@ namespace iv::details {
         std::vector<TypeErasedNode> nodes,
         std::vector<std::optional<size_t>> explicit_ttl_samples,
         std::vector<std::string> node_ids,
+        std::vector<std::vector<SourceSpan>> node_source_spans,
         std::unordered_set<GraphEdge> edges,
         std::unordered_set<GraphEventEdge> event_edges,
         std::vector<DetachedInfo> detached,
@@ -1070,6 +1082,7 @@ namespace iv::details {
             .dormancy_groups = std::move(dormancy_groups),
             .internal_latency = 0,
             .node_ids = std::move(node_ids),
+            .node_source_spans = std::move(node_source_spans),
         };
         {
             std::unordered_map<PortId, PortId> artifact_target_of;

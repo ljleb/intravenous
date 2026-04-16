@@ -28,6 +28,7 @@ namespace iv {
         std::vector<EventOutputConfig> _public_event_outputs;
         size_t _internal_latency;
         std::vector<std::string> _node_ids;
+        std::vector<std::vector<SourceSpan>> _node_source_spans;
         std::vector<DormancyGroup> _dormancy_groups;
         std::vector<size_t> _group_sample_input_offsets;
         std::vector<size_t> _group_event_input_offsets;
@@ -55,6 +56,7 @@ namespace iv {
             _public_event_outputs(std::move(artifact.public_event_outputs)),
             _internal_latency(artifact.internal_latency),
             _node_ids(std::move(artifact.node_ids)),
+            _node_source_spans(std::move(artifact.node_source_spans)),
             _dormancy_groups(std::move(artifact.dormancy_groups)),
             _group_sample_input_offsets(),
             _group_event_input_offsets(),

@@ -64,6 +64,13 @@ namespace iv {
         bool operator==(DetachedInfo const&) const = default;
     };
 
+    struct SourceSpan {
+        uint32_t begin = 0;
+        uint32_t end = 0;
+
+        bool operator==(SourceSpan const&) const = default;
+    };
+
     inline constexpr size_t GRAPH_ID = std::numeric_limits<size_t>::max();
 
     struct GraphRegion {

@@ -25,5 +25,6 @@ namespace iv {
         std::vector<DormancyGroup> dormancy_groups;
         size_t internal_latency;
         std::vector<std::string> node_ids;
+        std::vector<std::vector<SourceSpan>> node_source_spans;
     };
 }

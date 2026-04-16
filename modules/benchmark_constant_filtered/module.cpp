@@ -8,12 +8,12 @@ inline void benchmark_constant_filtered(iv::ModuleContext const& context)
     using namespace iv;
     auto& g = context.builder();
     auto const& io = context.target_factory();
-    auto const dt = NODE(g, ValueSource, &context.sample_period());
+    auto const dt = g.node<ValueSource>(&context.sample_period());
 
-    auto const phase = NODE(g, PhaseIntegrator);
-    auto const osc = NODE(g, SawOscillator);
-    auto const low_pass = NODE(g, SimpleIirLowPass);
-    auto const high_pass = NODE(g, SimpleIirHighPass);
+    auto const phase = g.node<PhaseIntegrator>();
+    auto const osc = g.node<SawOscillator>();
+    auto const low_pass = g.node<SimpleIirLowPass>();
+    auto const high_pass = g.node<SimpleIirHighPass>();
 
     phase(0.0);
     osc(

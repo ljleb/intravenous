@@ -57,8 +57,8 @@ namespace {
     {
         auto const reset = 1.0f;
         auto const frequency = 220.0f;
-        auto const integrator = NODE(g, iv::PhaseIntegrator);
-        auto const warper = NODE(g, iv::Warper);
+        auto const integrator = g.node<iv::PhaseIntegrator>();
+        auto const warper = g.node<iv::Warper>();
 
         integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
         warper(integrator + noise);
@@ -76,16 +76,16 @@ int main()
     std::vector<iv::Sample> output(32, 0.0f);
 
     iv::GraphBuilder graph;
-    auto const dt = NODE(graph, iv::ValueSource, &dt_value);
-    auto const src_a = NODE(graph, iv::ValueSource, &noise_a);
-    auto const src_b = NODE(graph, iv::ValueSource, &noise_b);
+    auto const dt = graph.node<iv::ValueSource>(&dt_value);
+    auto const src_a = graph.node<iv::ValueSource>(&noise_a);
+    auto const src_b = graph.node<iv::ValueSource>(&noise_b);
     auto const voice_a = graph.subgraph([&] {
         detached_voice(graph, dt, src_a, 0.5f);
     });
     auto const voice_b = graph.subgraph([&] {
         detached_voice(graph, dt, src_b, 0.25f);
     });
-    auto const sink = NODE(graph, BufferSink, output.data(), output.size());
+    auto const sink = graph.node<BufferSink>(output.data(), output.size());
 
     sink(voice_a + voice_b);
     graph.outputs();

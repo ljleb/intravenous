@@ -131,7 +131,7 @@ namespace iv {
             size_t preferred_audio_output_streams = 1
         )
         {
-            return g.node<JuceVstWrapper>(std::source_location::current(), probe_juce_vst(JuceVstPluginConfig{
+            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstPluginConfig{
                 .plugin_path = std::move(plugin_path),
                 .plugin_identifier = std::move(plugin_identifier),
                 .preferred_audio_input_streams = preferred_audio_input_streams,

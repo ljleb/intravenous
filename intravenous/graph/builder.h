@@ -5,17 +5,18 @@
 #include "compiler.h"
 #include "node.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <initializer_list>
 #include <memory>
 #include <optional>
 #include <ranges>
-#include <source_location>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -45,6 +46,7 @@ namespace iv {
         operator PortId() const { return { node_index, output_port }; }
 
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
+        void _add_source_span(uint32_t begin, uint32_t end) const;
 
         std::string to_string() const;
     };
@@ -134,6 +136,7 @@ namespace iv {
         std::vector<PortId> subgraph_output_sources {};
         std::vector<std::vector<PortId>> subgraph_event_input_targets {};
         std::vector<PortId> subgraph_event_output_sources {};
+        std::vector<SourceSpan> source_spans {};
 
         std::vector<InputConfig> const& inputs() const
         {
@@ -322,6 +325,7 @@ namespace iv {
         size_t _index{};
 
         friend class EventNodeRef;
+        friend class GraphBuilder;
 
     private:
         Derived const& derived() const
@@ -363,6 +367,7 @@ namespace iv {
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
         Derived ttl(size_t samples) const;
         Derived no_ttl() const;
+        void _add_source_span(uint32_t begin, uint32_t end) const;
 
         std::string to_string() const;
     };
@@ -718,10 +723,7 @@ namespace iv {
         }
 
         template<class Node, class... Args>
-        details::sample_node_ref_for_t<Node> node(
-            [[maybe_unused]] std::source_location source_location = std::source_location::current(),
-            Args&&... args
-        )
+        details::sample_node_ref_for_t<Node> node(Args&&... args)
         {
             using StoredNode = std::remove_cvref_t<Node>;
             StoredNode node_value(std::forward<Args>(args)...);
@@ -762,10 +764,7 @@ namespace iv {
             }
         }
 
-        SampleNodeRef embed_subgraph(
-            GraphBuilder const& child,
-            [[maybe_unused]] std::source_location source_location = std::source_location::current()
-        )
+        SampleNodeRef embed_subgraph(GraphBuilder const& child)
         {
             if (!child._outputs_defined) {
                 details::error(
@@ -1108,6 +1107,7 @@ namespace iv {
                 .nodes = {},
                 .explicit_ttl_samples = {},
                 .node_ids = {},
+                .node_source_spans = {},
                 .edges = {},
                 .event_edges = {},
                 .detached_info_by_source = {},
@@ -1131,6 +1131,7 @@ namespace iv {
                 g.nodes.push_back(_nodes[node_i].materialize(detach_id_offset));
                 g.explicit_ttl_samples.push_back(_nodes[node_i].ttl_samples);
                 g.node_ids.push_back(node_id(node_i));
+                g.node_source_spans.push_back(_nodes[node_i].source_spans);
             }
 
             auto materialize_placeholder_default = [&](size_t placeholder_node, size_t input_port) {
@@ -1140,6 +1141,7 @@ namespace iv {
                 g.node_ids.push_back(
                     node_id(placeholder_node) + ".default." + std::to_string(input_port)
                 );
+                g.node_source_spans.emplace_back();
                 return PortId{ g.nodes.size() - 1, 0 };
             };
 
@@ -1339,6 +1341,7 @@ namespace iv {
                 std::move(g.nodes),
                 std::move(g.explicit_ttl_samples),
                 std::move(g.node_ids),
+                std::move(g.node_source_spans),
                 std::move(g.edges),
                 std::move(g.event_edges),
                 std::move(detached),
@@ -1352,6 +1355,57 @@ namespace iv {
         }
 
     private:
+        std::optional<SampleNodeRef> _source_node_for_source_span(SamplePortRef ref)
+        {
+            if (!ref.graph_builder) {
+                return std::nullopt;
+            }
+
+            if (ref.graph_builder != this) {
+                details::error(
+                    "builder " + _builder_id.value + ": cannot resolve source span origin for " + ref.to_string() +
+                    " because it belongs to another builder"
+                );
+            }
+
+            PortId source = ref;
+            for (auto const& [_, info] : _detached_info_by_source) {
+                if (info.reader_output == source) {
+                    source = info.original_source;
+                    break;
+                }
+            }
+
+            if (source.node == GRAPH_ID) {
+                return std::nullopt;
+            }
+
+            return SampleNodeRef(*this, source.node);
+        }
+
+        void _add_node_source_span(SampleNodeRef ref, uint32_t begin, uint32_t end)
+        {
+            if (!ref._graph_builder) {
+                return;
+            }
+
+            if (ref._graph_builder != this) {
+                details::error(
+                    "builder " + _builder_id.value + ": cannot record source span for " + ref.to_string() +
+                    " because it belongs to another builder"
+                );
+            }
+
+            auto& spans = _nodes[ref._index].source_spans;
+            SourceSpan span {
+                .begin = begin,
+                .end = end,
+            };
+            if (std::find(spans.begin(), spans.end(), span) == spans.end()) {
+                spans.push_back(span);
+            }
+        }
+
         static std::string allocate_root_builder_id()
         {
             static size_t next_root_builder_id = 0;
@@ -1397,11 +1451,11 @@ namespace iv {
 
             size_t const detach_id = _next_detach_id++;
 
-            auto writer = node<DetachWriterNode>(std::source_location::current(), detach_id, loop_extra_latency);
+            auto writer = node<DetachWriterNode>(detach_id, loop_extra_latency);
             size_t const writer_node = _nodes.size() - 1;
             writer(sample_port);
 
-            auto reader = node<DetachReaderNode>(std::source_location::current(), detach_id, loop_extra_latency);
+            auto reader = node<DetachReaderNode>(detach_id, loop_extra_latency);
             SamplePortRef detached = reader;
 
             _detached_info_by_source.emplace(source, DetachedSamplePortInfo{
@@ -1430,7 +1484,7 @@ namespace iv {
         requires std::is_arithmetic_v<std::remove_cvref_t<T>> || std::is_same_v<std::remove_cvref_t<T>, Sample>
         SamplePortRef lift_to_sample_port(T value)
         {
-            return node<Constant>(std::source_location::current(), static_cast<Sample>(value));
+            return node<Constant>(static_cast<Sample>(value));
         }
 
         SamplePortRef lift_to_sample_port(NamedRef const& ref)
@@ -1526,6 +1580,17 @@ namespace iv {
         return graph_builder->detach_sample_port(*this, loop_extra_latency);
     }
 
+    inline void SamplePortRef::_add_source_span(uint32_t begin, uint32_t end) const
+    {
+        if (!graph_builder) {
+            return;
+        }
+
+        if (auto source_node = graph_builder->_source_node_for_source_span(*this); source_node.has_value()) {
+            graph_builder->_add_node_source_span(*source_node, begin, end);
+        }
+    }
+
     inline std::string SamplePortRef::to_string() const
     {
         if (!graph_builder) {
@@ -1564,6 +1629,15 @@ namespace iv {
             details::error("attempted to use a null SampleNodeRef");
         }
         return SampleNodeRef(*_graph_builder, _index);
+    }
+
+    template<class Derived, class Node>
+    inline void NodeRefBase<Derived, Node>::_add_source_span(uint32_t begin, uint32_t end) const
+    {
+        if (!_graph_builder) {
+            return;
+        }
+        _graph_builder->_add_node_source_span(SampleNodeRef(*_graph_builder, _index), begin, end);
     }
 
     template<class Derived, class Node>

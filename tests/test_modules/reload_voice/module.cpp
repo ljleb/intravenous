@@ -11,7 +11,7 @@ inline void reload_voice(iv::ModuleContext const& context)
     auto const phase_offset = g.input("phase_offset", 0.0);
     auto const dt = g.input("dt", 1.0);
 
-    auto const saw = NODE(g, SawOscillator);
+    auto const saw = g.node<SawOscillator>();
     saw(
         "frequency"_P = frequency,
         "phase_offset"_P = phase_offset,

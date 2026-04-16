@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(iv_runtime_module LANGUAGES CXX)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(${IV_CORE_INCLUDE_DIR}/module/template/ModuleSupport.cmake)
 

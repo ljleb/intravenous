@@ -7,8 +7,8 @@ inline void benchmark_constant_project(iv::ModuleContext const& context)
     using namespace iv;
     auto& g = context.builder();
     auto const& io = context.target_factory();
-    auto const dt = NODE(g, ValueSource, &context.sample_period());
-    auto const phase = NODE(g, PhaseIntegrator);
+    auto const dt = g.node<ValueSource>(&context.sample_period());
+    auto const phase = g.node<PhaseIntegrator>();
     auto const voice_builder = context.load_builder("iv.test.benchmark_constant_voice");
 
     phase(0.0);

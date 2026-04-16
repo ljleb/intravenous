@@ -70,7 +70,7 @@ namespace iv {
             std::string device_query = {}
         )
         {
-            return g.node<JuceMidiInputSource>(std::source_location::current(), JuceMidiInputSpec {
+            return g.node<JuceMidiInputSource>(JuceMidiInputSpec {
                 .device_query = std::move(device_query),
             });
         }

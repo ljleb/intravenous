@@ -579,7 +579,7 @@ namespace iv {
         {
             auto& session = *static_cast<BuildSession*>(session_ptr);
             ++session.sink_count;
-            return builder.node<AudioDeviceSink>(std::source_location::current(), AudioDeviceSink{
+            return builder.node<AudioDeviceSink>(AudioDeviceSink{
                 .device_id = device_id,
                 .channel = channel,
             });
@@ -587,7 +587,7 @@ namespace iv {
 
         static SampleNodeRef file_from_context(void*, GraphBuilder& builder, size_t channel, std::filesystem::path const& path)
         {
-            return builder.node<FileSink>(std::source_location::current(), FileSink{
+            return builder.node<FileSink>(FileSink{
                 .path = path,
                 .channel = channel,
             });
@@ -716,8 +716,12 @@ namespace iv {
                 << "module_dir=" << resolved.module_dir.generic_string() << '\n'
                 << "custom=" << resolved.has_custom_cmake << '\n'
                 << "template_stamp=" << compute_stamp_for_file(default_template_path).time_since_epoch().count() << '\n'
+                << "module_support_stamp=" << compute_stamp_for_file(repo_root / "intravenous" / "module" / "template" / "ModuleSupport.cmake").time_since_epoch().count() << '\n'
+                << "juce_support_stamp=" << compute_stamp_for_file(repo_root / "intravenous" / "module" / "template" / "JuceSupport.cmake").time_since_epoch().count() << '\n'
+                << "source_span_rewrite_stamp=" << compute_stamp_for_file(repo_root / "intravenous" / "module" / "template" / "SourceSpanRewrite.cmake").time_since_epoch().count() << '\n'
                 << "custom_stamp=" << (resolved.has_custom_cmake ? compute_stamp_for_file(resolved.cmake_dir / "CMakeLists.txt").time_since_epoch().count() : 0) << '\n'
                 << "core_runtime_library=" << IV_CONFIGURED_CORE_RUNTIME_LIBRARY << '\n'
+                << "source_span_rewriter=" << IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER << '\n'
                 << "juce_dir=" << IV_CONFIGURED_JUCE_DIR << '\n'
                 << "juce_modules_dir=" << IV_CONFIGURED_JUCE_MODULES_DIR << '\n'
                 << "output_name=" << output_name << '\n'
@@ -825,6 +829,9 @@ namespace iv {
                 << " -DIV_MODULE_PCH_HEADER=" << quote(default_pch_path);
             if (std::string_view(IV_CONFIGURED_CORE_RUNTIME_LIBRARY).size() != 0) {
                 configure << " -DIV_CORE_RUNTIME_LIBRARY=" << quote(std::filesystem::path(IV_CONFIGURED_CORE_RUNTIME_LIBRARY));
+            }
+            if (std::string_view(IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER).size() != 0) {
+                configure << " -DIV_SOURCE_SPAN_REWRITER=" << quote(std::filesystem::path(IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER));
             }
             if (std::string_view(IV_CONFIGURED_JUCE_MODULES_DIR).size() != 0) {
                 configure << " -DIV_JUCE_MODULES_DIR=" << quote(std::filesystem::path(IV_CONFIGURED_JUCE_MODULES_DIR));

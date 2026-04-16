@@ -188,6 +188,11 @@ namespace iv {
         struct StorageDeleter {
             size_t alignment = alignof(std::max_align_t);
 
+            constexpr StorageDeleter() noexcept = default;
+            constexpr explicit StorageDeleter(size_t alignment_) noexcept :
+                alignment(alignment_)
+            {}
+
             void operator()(std::byte* p) const noexcept
             {
                 if (p) {
@@ -198,11 +203,13 @@ namespace iv {
 
         NodeLayout const* layout = nullptr;
         ResourceContext const* resources = nullptr;
-        std::unique_ptr<std::byte[], StorageDeleter> storage {};
+        std::unique_ptr<std::byte[], StorageDeleter> storage;
         std::vector<size_t> constructed_nodes;
         std::vector<size_t> initialized_nodes;
 
-        NodeStorage() = default;
+        NodeStorage() :
+            storage(nullptr, StorageDeleter{})
+        {}
         NodeStorage(NodeLayout const& layout, ResourceContext const& resources);
         NodeStorage(NodeStorage&& other) noexcept;
         NodeStorage& operator=(NodeStorage&& other) noexcept;

@@ -382,8 +382,8 @@ namespace {
     )
     {
         iv::GraphBuilder g;
-        auto const src = NODE(g, iv::ValueSource, value);
-        auto const sink = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+        auto const src = g.node<iv::ValueSource>(value);
+        auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
             .device_id = 0,
             .channel = channel,
         });
@@ -400,8 +400,8 @@ namespace {
     iv::TypeErasedNode make_constant_audio_graph(iv::Sample* value, size_t channel = 0)
     {
         iv::GraphBuilder g;
-        auto const src = NODE(g, iv::ValueSource, value);
-        auto const sink = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+        auto const src = g.node<iv::ValueSource>(value);
+        auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
             .device_id = 0,
             .channel = channel,
         });
@@ -606,13 +606,13 @@ TEST(ArchitectureSmoke, SameDeviceSameChannelAccumulates)
     );
 
     iv::GraphBuilder g;
-    auto const src_a = NODE(g, iv::ValueSource, &a);
-    auto const src_b = NODE(g, iv::ValueSource, &b);
-    auto const sink_a = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const src_a = g.node<iv::ValueSource>(&a);
+    auto const src_b = g.node<iv::ValueSource>(&b);
+    auto const sink_a = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
-    auto const sink_b = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const sink_b = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
@@ -648,13 +648,13 @@ TEST(ArchitectureSmoke, ChannelAlignmentPreservesLeftAndRight)
     );
 
     iv::GraphBuilder g;
-    auto const src_left = NODE(g, iv::ValueSource, &left);
-    auto const src_right = NODE(g, iv::ValueSource, &right);
-    auto const sink_left = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const src_left = g.node<iv::ValueSource>(&left);
+    auto const src_right = g.node<iv::ValueSource>(&right);
+    auto const sink_left = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
-    auto const sink_right = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const sink_right = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 1,
     });
@@ -716,11 +716,11 @@ TEST(ArchitectureSmoke, SubgraphPassthroughFlattensToDirectSignalPath)
     );
 
     iv::GraphBuilder g;
-    auto const src = NODE(g, iv::ValueSource, &value);
+    auto const src = g.node<iv::ValueSource>(&value);
     auto const passthrough = g.subgraph([&] {
         g.outputs(src);
     });
-    auto const sink = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
@@ -760,10 +760,10 @@ TEST(ArchitectureSmoke, PipeOperatorChainsSingleInputSingleOutputNodes)
     );
 
     iv::GraphBuilder g;
-    auto const src = NODE(g, iv::ValueSource, &value);
-    auto const stage_a = NODE(g, UnaryPassthrough);
-    auto const stage_b = NODE(g, UnaryPassthrough);
-    auto const sink = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const src = g.node<iv::ValueSource>(&value);
+    auto const stage_a = g.node<UnaryPassthrough>();
+    auto const stage_b = g.node<UnaryPassthrough>();
+    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
@@ -796,8 +796,8 @@ TEST(ArchitectureSmoke, ExactRequestedBlockBecomesReady)
     );
 
     iv::GraphBuilder g;
-    auto const src = NODE(g, iv::ValueSource, &value);
-    auto const sink = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const src = g.node<iv::ValueSource>(&value);
+    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
@@ -857,14 +857,14 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderStillLowersThroughNode)
     );
 
     iv::GraphBuilder g;
-    auto const src = NODE(g, iv::ValueSource, &value);
+    auto const src = g.node<iv::ValueSource>(&value);
 
     iv::GraphBuilder child;
     auto const input = child.input();
     child.outputs(input);
 
     auto const passthrough = g.embed_subgraph(child);
-    auto const sink = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
@@ -891,13 +891,13 @@ TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
     int tick_count = 0;
 
     iv::GraphBuilder g;
-    auto const src = NODE(g, iv::ValueSource, &value);
+    auto const src = g.node<iv::ValueSource>(&value);
     auto const scoped = g.subgraph([&] {
-        auto const stage = NODE(g, CountingSilentPassthrough, CountingSilentPassthrough{ .tick_count = &tick_count });
+        auto const stage = g.node<CountingSilentPassthrough>(CountingSilentPassthrough{ .tick_count = &tick_count });
         stage(src);
         g.outputs(stage);
     }).ttl(8);
-    auto const sink = NODE(g, BufferSink, output.data(), output.size());
+    auto const sink = g.node<BufferSink>(output.data(), output.size());
     sink(scoped);
     g.outputs();
 
@@ -924,14 +924,14 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderDormancyStopsTickingSilentScope)
 
     iv::GraphBuilder child;
     auto const child_input = child.input();
-    auto const child_stage = NODE(child, CountingSilentPassthrough, CountingSilentPassthrough{ .tick_count = &tick_count });
+    auto const child_stage = child.node<CountingSilentPassthrough>(CountingSilentPassthrough{ .tick_count = &tick_count });
     child_stage(child_input);
     child.outputs(child_stage);
 
     iv::GraphBuilder g;
-    auto const src = NODE(g, iv::ValueSource, &value);
+    auto const src = g.node<iv::ValueSource>(&value);
     auto const scoped = g.embed_subgraph(child).ttl(8);
-    auto const sink = NODE(g, BufferSink, output.data(), output.size());
+    auto const sink = g.node<BufferSink>(output.data(), output.size());
     scoped(src);
     sink(scoped);
     g.outputs();
@@ -1128,7 +1128,7 @@ TEST(ArchitectureSmoke, ConversionToEmptyDropsAllEvents)
 TEST(ArchitectureSmoke, DisconnectedEventOutputUsesZeroCapacitySinkBudget)
 {
     iv::GraphBuilder g;
-    [[maybe_unused]] auto const source = NODE(g, DisconnectedTriggerSource);
+    [[maybe_unused]] auto const source = g.node<DisconnectedTriggerSource>();
     g.outputs();
 
     iv::TypeErasedNode root = iv::TypeErasedNode(g.build());
@@ -1175,10 +1175,10 @@ TEST(ArchitectureSmoke, EventConcatenationMergesInputsInTimeOrder)
     iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
 
     iv::GraphBuilder g;
-    auto const late = NODE(g, OffsetTriggerSource, OffsetTriggerSource{ .sample_offset = 5 });
-    auto const early = NODE(g, OffsetTriggerSource, OffsetTriggerSource{ .sample_offset = 2 });
-    auto const concat = NODE(g, iv::EventConcatenation, 2, iv::EventTypeId::trigger);
-    auto const sink = NODE(g, TriggerOrderRecorder, TriggerOrderRecorder{ .event_times = &event_times });
+    auto const late = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 5 });
+    auto const early = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 2 });
+    auto const concat = g.node<iv::EventConcatenation>(2, iv::EventTypeId::trigger);
+    auto const sink = g.node<TriggerOrderRecorder>(TriggerOrderRecorder{ .event_times = &event_times });
 
     concat.connect_event_input(0, late >> iv::events);
     concat.connect_event_input(1, early >> iv::events);
@@ -1202,14 +1202,13 @@ TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
     iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
 
     iv::GraphBuilder g;
-    auto const late = NODE(g, OffsetTriggerSource, OffsetTriggerSource{ .sample_offset = 6 });
-    auto const early = NODE(g, OffsetTriggerSource, OffsetTriggerSource{ .sample_offset = 1 });
-    auto const mix = NODE(g, iv::PolyphonicMix, 
-        2,
+    auto const late = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 6 });
+    auto const early = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 1 });
+    auto const mix = g.node<iv::PolyphonicMix>(2,
         std::vector<iv::OutputConfig> {},
         std::vector<iv::EventOutputConfig> { iv::EventOutputConfig{ .name = "trigger", .type = iv::EventTypeId::trigger } }
     );
-    auto const sink = NODE(g, TriggerOrderRecorder, TriggerOrderRecorder{ .event_times = &event_times });
+    auto const sink = g.node<TriggerOrderRecorder>(TriggerOrderRecorder{ .event_times = &event_times });
 
     mix.connect_event_input(0, late >> iv::events);
     mix.connect_event_input(1, early >> iv::events);
@@ -1361,9 +1360,9 @@ TEST(ArchitectureSmoke, ExecuteReloadSwitchesAtExecutorBlockBoundaryWithinActive
     );
 
     iv::GraphBuilder g;
-    auto const src = NODE(g, iv::ValueSource, &old_value);
-    auto const counter = NODE(g, CountingBlockPassthrough, CountingBlockPassthrough{ .block_count = &block_count });
-    auto const sink = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const src = g.node<iv::ValueSource>(&old_value);
+    auto const counter = g.node<CountingBlockPassthrough>(CountingBlockPassthrough{ .block_count = &block_count });
+    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
@@ -1541,13 +1540,13 @@ TEST(ArchitectureSmoke, StereoExecutorExecuteSurvivesVaryingRequestSizes)
     );
 
     iv::GraphBuilder g;
-    auto const src_left = NODE(g, iv::ValueSource, &left);
-    auto const src_right = NODE(g, iv::ValueSource, &right);
-    auto const sink_left = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const src_left = g.node<iv::ValueSource>(&left);
+    auto const src_right = g.node<iv::ValueSource>(&right);
+    auto const sink_left = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
     });
-    auto const sink_right = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+    auto const sink_right = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 1,
     });
@@ -1602,8 +1601,8 @@ TEST(ArchitectureSmoke, FileSinkUsesDeviceSampleRateForWavOutput)
 
     {
         iv::GraphBuilder g;
-        auto const src = NODE(g, iv::ValueSource, &value);
-        auto const sink = NODE(g, iv::FileSink, iv::FileSink{
+        auto const src = g.node<iv::ValueSource>(&value);
+        auto const sink = g.node<iv::FileSink>(iv::FileSink{
             .path = output_path,
             .channel = 0,
         });
@@ -1650,12 +1649,12 @@ TEST(ArchitectureSmoke, FileSinkPreservesContinuityAcrossVaryingAudioRequests)
     size_t total_requested_frames = 0;
     {
         iv::GraphBuilder g;
-        auto const src = NODE(g, iv::ValueSource, &value);
-        auto const audio_sink = NODE(g, iv::AudioDeviceSink, iv::AudioDeviceSink{
+        auto const src = g.node<iv::ValueSource>(&value);
+        auto const audio_sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
             .device_id = 0,
             .channel = 0,
         });
-        auto const file_sink = NODE(g, iv::FileSink, iv::FileSink{
+        auto const file_sink = g.node<iv::FileSink>(iv::FileSink{
             .path = output_path,
             .channel = 0,
         });
