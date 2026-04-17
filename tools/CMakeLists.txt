@@ -220,3 +220,13 @@ else()
         clangToolingCore
     )
 endif()
+
+# Some distributions (including Nix toolchains) require explicit LLVM linkage
+# when translation units directly reference llvm::* symbols.
+if(TARGET LLVM)
+    target_link_libraries(iv_clang_source_span_rewriter PRIVATE LLVM)
+elseif(TARGET LLVMSupport)
+    target_link_libraries(iv_clang_source_span_rewriter PRIVATE LLVMSupport)
+elseif(LLVM_LIBRARIES)
+    target_link_libraries(iv_clang_source_span_rewriter PRIVATE ${LLVM_LIBRARIES})
+endif()

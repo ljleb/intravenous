@@ -18,7 +18,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     auto const dt = g.node<ValueSource>(&context.sample_period());
 
     auto const midi = juce::midi_input(g) >> events;
-    auto const sup = juce::vst(g, "D:\\music\\vst-plugins\\3\\x64\\ValhallaSupermassive.vst3");
+    auto const sup = juce::vst(g, "ValhallaSupermassive");
     info(sup.node());
     sup(
         "Mix"_P = 0.2,

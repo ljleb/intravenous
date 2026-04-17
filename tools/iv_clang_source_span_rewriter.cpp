@@ -35,6 +35,11 @@ namespace {
         llvm::cl::desc("Write the rewritten source to this path instead of rewriting in place"),
         llvm::cl::value_desc("path")
     );
+    llvm::cl::opt<std::string> repo_root_path(
+        "repo-root",
+        llvm::cl::desc("Project root used to identify core sources (defaults to current working directory)"),
+        llvm::cl::value_desc("path")
+    );
 
     struct FileRange {
         clang::FileID file_id;
@@ -57,15 +62,56 @@ namespace {
         bool operator==(WrapSpec const&) const = default;
     };
 
-    std::string normalized_path(llvm::StringRef path)
+    std::string normalized_path(std::filesystem::path const& path)
     {
-        return std::filesystem::path(path.str()).lexically_normal().generic_string();
+        return path.lexically_normal().generic_string();
     }
 
-    bool is_user_source_path(llvm::StringRef path)
+    std::optional<std::filesystem::path> configured_core_source_dir()
     {
-        std::string normalized = normalized_path(path);
-        return normalized.find("/intravenous/") == std::string::npos;
+        std::error_code ec;
+        std::filesystem::path root =
+            repo_root_path.empty()
+                ? std::filesystem::current_path(ec)
+                : std::filesystem::path(repo_root_path.getValue());
+
+        if (ec || root.empty()) {
+            return std::nullopt;
+        }
+
+        root = root.lexically_normal();
+        std::filesystem::path const core = root / "intravenous";
+        if (std::filesystem::exists(core, ec)) {
+            return core;
+        }
+        return std::nullopt;
+    }
+
+    bool is_within_path(std::filesystem::path const& child, std::filesystem::path const& parent)
+    {
+        std::string child_norm = normalized_path(child);
+        std::string parent_norm = normalized_path(parent);
+        if (parent_norm.empty()) {
+            return false;
+        }
+        if (child_norm == parent_norm) {
+            return true;
+        }
+        if (!parent_norm.ends_with('/')) {
+            parent_norm.push_back('/');
+        }
+        return child_norm.starts_with(parent_norm);
+    }
+
+    bool is_user_source_path(
+        std::filesystem::path const& path,
+        std::optional<std::filesystem::path> const& core_source_dir
+    )
+    {
+        if (!core_source_dir.has_value()) {
+            return true;
+        }
+        return !is_within_path(path, *core_source_dir);
     }
 
     bool is_reference_type(clang::QualType type)
@@ -124,7 +170,16 @@ namespace {
         clang::SourceManager& _source_manager;
         clang::LangOptions const& _lang_options;
         clang::FileID _main_file_id;
+        std::optional<std::filesystem::path> _core_source_dir;
         std::vector<WrapSpec> _wraps;
+
+        bool is_user_source_path(llvm::StringRef path) const
+        {
+            if (path.empty()) {
+                return false;
+            }
+            return ::is_user_source_path(std::filesystem::path(path.str()), _core_source_dir);
+        }
 
         bool is_user_source_location(clang::SourceLocation location) const
         {
@@ -454,7 +509,9 @@ namespace {
             _source_manager(context.getSourceManager()),
             _lang_options(context.getLangOpts()),
             _main_file_id(_source_manager.getMainFileID())
-        {}
+        {
+            _core_source_dir = configured_core_source_dir();
+        }
 
         bool VisitExpr(clang::Expr* expr)
         {

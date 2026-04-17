@@ -406,6 +406,8 @@ int main()
             iv::TickContext<iv::TypeErasedNode> {
                 .inputs = {},
                 .outputs = {},
+                .event_inputs = {},
+                .event_outputs = {},
                 .buffer = storage.buffer(),
             },
             0,
@@ -474,6 +476,8 @@ int main()
             iv::TickContext<iv::GraphNodeWrapper> {
                 .inputs = wrapper_state.inputs,
                 .outputs = wrapper_state.outputs,
+                .event_inputs = {},
+                .event_outputs = {},
                 .buffer = storage.buffer(),
             },
             0,
@@ -517,6 +521,8 @@ int main()
             iv::TickContext<iv::TypeErasedNode> {
                 .inputs = {},
                 .outputs = {},
+                .event_inputs = {},
+                .event_outputs = {},
                 .buffer = storage.buffer(),
             },
             0,

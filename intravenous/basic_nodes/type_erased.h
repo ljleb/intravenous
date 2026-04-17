@@ -59,10 +59,14 @@ namespace iv {
         template<typename Node>
         /*implicit*/ TypeErasedNode(Node node)
         {
-            _inputs.assign_range(get_inputs(node));
-            _outputs.assign_range(get_outputs(node));
-            _event_inputs.assign_range(get_event_inputs(node));
-            _event_outputs.assign_range(get_event_outputs(node));
+            auto const inputs = get_inputs(node);
+            auto const outputs = get_outputs(node);
+            auto const event_inputs = get_event_inputs(node);
+            auto const event_outputs = get_event_outputs(node);
+            _inputs.assign(inputs.begin(), inputs.end());
+            _outputs.assign(outputs.begin(), outputs.end());
+            _event_inputs.assign(event_inputs.begin(), event_inputs.end());
+            _event_outputs.assign(event_outputs.begin(), event_outputs.end());
             _internal_latency = get_internal_latency(node);
             _max_block_size = get_max_block_size(node);
             _ttl_samples = get_ttl_samples(node);

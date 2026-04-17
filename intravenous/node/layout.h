@@ -1158,9 +1158,10 @@ namespace iv {
                     try {
                         record.lifecycle.initialize_fn(record.node, node_index, *this, orchestrator);
                     } catch (std::exception const& e) {
-                        throw std::runtime_error(
-                            "node initialize failed at index " + std::to_string(node_index) + ": " + e.what()
-                        );
+                        throw std::runtime_error(wrap_exception(
+                            "node initialize failed at index " + std::to_string(node_index),
+                            e
+                        ));
                     } catch (...) {
                         throw std::runtime_error(
                             "node initialize failed at index " + std::to_string(node_index)

@@ -3,6 +3,7 @@
 #include "node/lifecycle.h"
 
 #include <array>
+#include <cmath>
 #include <functional>
 #include <vector>
 
@@ -87,7 +88,7 @@ namespace iv {
 
         void tick(auto const& ctx) const
         {
-            ctx.outputs[0].push(std::powf(ctx.inputs[0].get(), ctx.inputs[1].get()));
+            ctx.outputs[0].push(std::pow(ctx.inputs[0].get(), ctx.inputs[1].get()));
         }
     };
 }

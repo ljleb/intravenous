@@ -80,7 +80,9 @@ namespace {
 int main(int argc, char** argv)
 {
     iv::install_crash_handlers();
-
+#if IV_ENABLE_JUCE_VST
+    iv::warmup_juce_vst_scan_cache();
+#endif
     if (argc < 2) {
         auto const sep = iv::module_search_path_separator();
         std::cerr << "usage: intravenous <module-path> [search-root...]\n";
@@ -122,7 +124,6 @@ int main(int argc, char** argv)
     executor_state = &executor_storage;
 
     iv::ReloadWorker reload_worker(
-        loader,
         *watcher,
         module_path,
         [&]() {

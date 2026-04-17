@@ -11,10 +11,17 @@ function(iv_configure_core_runtime_import)
     endif()
 
     if(NOT TARGET intravenous_module_runtime)
+        set(_iv_core_runtime_link_libraries "")
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+            # std::stacktrace on libstdc++ requires stdc++exp at final link.
+            list(APPEND _iv_core_runtime_link_libraries stdc++exp)
+        endif()
+
         add_library(intravenous_module_runtime STATIC IMPORTED GLOBAL)
         set_target_properties(intravenous_module_runtime PROPERTIES
             IMPORTED_LOCATION "${IV_CORE_RUNTIME_LIBRARY}"
             INTERFACE_INCLUDE_DIRECTORIES "${IV_CORE_INCLUDE_DIR};${IV_THIRD_PARTY_INCLUDE_DIR}"
+            INTERFACE_LINK_LIBRARIES "${_iv_core_runtime_link_libraries}"
         )
     endif()
 endfunction()
@@ -69,18 +76,33 @@ function(iv_add_runtime_module target)
     if(MSVC)
         target_compile_options(${target}__compile_settings INTERFACE /W4 /permissive-)
     else()
-        target_compile_options(${target}__compile_settings INTERFACE -Wall -Wextra -Wpedantic)
+        target_compile_options(${target}__compile_settings INTERFACE
+            -Wall
+            -Wextra
+            -Wpedantic
+        )
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(${target}__compile_settings INTERFACE
+                -Wno-unused-comparison
+            )
+        endif()
     endif()
 
     if(IVM_ENABLE_JUCE)
         if(TARGET intravenous_module_runtime)
-            target_compile_definitions(${target}__compile_settings INTERFACE
-                IV_ENABLE_JUCE_VST=1
-                JUCE_PLUGINHOST_VST3=1
-            )
-            if(DEFINED IV_JUCE_MODULES_DIR AND EXISTS "${IV_JUCE_MODULES_DIR}")
-                target_include_directories(${target}__compile_settings SYSTEM INTERFACE
-                    ${IV_JUCE_MODULES_DIR}
+            if(DEFINED IV_CORE_ENABLE_JUCE_VST AND IV_CORE_ENABLE_JUCE_VST)
+                target_compile_definitions(${target}__compile_settings INTERFACE
+                    IV_ENABLE_JUCE_VST=1
+                    JUCE_PLUGINHOST_VST3=1
+                )
+                if(DEFINED IV_JUCE_MODULES_DIR AND EXISTS "${IV_JUCE_MODULES_DIR}")
+                    target_include_directories(${target}__compile_settings SYSTEM INTERFACE
+                        ${IV_JUCE_MODULES_DIR}
+                    )
+                endif()
+            else()
+                target_compile_definitions(${target}__compile_settings INTERFACE
+                    IV_ENABLE_JUCE_VST=0
                 )
             endif()
         elseif(JUCE_FOUND)

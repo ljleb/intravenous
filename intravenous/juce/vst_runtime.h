@@ -67,6 +67,10 @@ namespace iv {
         std::mutex _mutex;
     };
 
+    // Builds the process-wide VST search cache once.
+    // Subsequent probes reuse the cached index.
+    void warmup_juce_vst_scan_cache();
+
     void tick_juce_vst_wrapper(
         JuceVstWrapperSpec const& spec,
         void* live_instance,

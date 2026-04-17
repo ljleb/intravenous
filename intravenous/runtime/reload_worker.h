@@ -21,7 +21,6 @@ namespace iv {
             std::vector<ModuleDependency> dependencies;
         };
 
-        ModuleLoader* _loader = nullptr;
         DependencyWatcher* _watcher = nullptr;
         std::filesystem::path _module_path;
         std::function<ModuleLoader::LoadedGraph()> _build_reload;
@@ -35,12 +34,10 @@ namespace iv {
 
     public:
         ReloadWorker(
-            ModuleLoader& loader,
             DependencyWatcher& watcher,
             std::filesystem::path module_path,
             std::function<ModuleLoader::LoadedGraph()> build_reload
         ) :
-            _loader(&loader),
             _watcher(&watcher),
             _module_path(std::move(module_path)),
             _build_reload(std::move(build_reload))

@@ -2,6 +2,13 @@ cmake_minimum_required(VERSION 3.20)
 
 project(intravenous LANGUAGES C CXX)
 
+# JUCE uses these as compile-time module config macros.
+# Keep them centralized at directory scope so JUCE-related targets pick them up.
+add_compile_definitions(
+    JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
+    JUCE_USE_CURL=${JUCE_USE_CURL}
+)
+
 function(iv_apply_common_cxx_settings target defs_visibility)
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 23
@@ -25,6 +32,12 @@ function(iv_apply_common_cxx_settings target defs_visibility)
             -Wpedantic
             -Wno-deprecated-declarations
         )
+    endif()
+endfunction()
+
+function(iv_link_stacktrace_support target)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_link_libraries(${target} PUBLIC stdc++exp)
     endif()
 endfunction()
 
@@ -76,6 +89,7 @@ add_library(intravenous_module_runtime STATIC
 )
 
 iv_apply_common_cxx_settings(intravenous_module_runtime PUBLIC)
+iv_link_stacktrace_support(intravenous_module_runtime)
 
 target_include_directories(intravenous_module_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -95,6 +109,7 @@ if(JUCE_FOUND)
     target_compile_definitions(intravenous_module_runtime PUBLIC
         IV_ENABLE_JUCE_VST=1
         JUCE_PLUGINHOST_VST3=1
+        IV_CONFIGURED_ENABLE_JUCE_VST=1
         IV_CONFIGURED_JUCE_MODULES_DIR="${IV_JUCE_MODULES_DIR}"
     )
 
@@ -117,6 +132,7 @@ if(JUCE_FOUND)
 else()
     target_compile_definitions(intravenous_module_runtime PUBLIC
         IV_ENABLE_JUCE_VST=0
+        IV_CONFIGURED_ENABLE_JUCE_VST=0
         IV_CONFIGURED_JUCE_DIR=""
         IV_CONFIGURED_JUCE_MODULES_DIR=""
     )
@@ -124,6 +140,8 @@ endif()
 
 target_compile_definitions(intravenous_module_runtime PUBLIC
     IV_CONFIGURED_CORE_RUNTIME_LIBRARY="$<TARGET_LINKER_FILE:intravenous_module_runtime>"
+    IV_CONFIGURED_JUCE_WEB_BROWSER=${JUCE_WEB_BROWSER}
+    IV_CONFIGURED_JUCE_USE_CURL=${JUCE_USE_CURL}
 )
 
 add_executable(intravenous

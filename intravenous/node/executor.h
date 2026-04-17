@@ -1,6 +1,7 @@
 #pragma once
 
 #include "basic_nodes/type_erased.h"
+#include "compat.h"
 #include "orchestrator/device_orchestrator.h"
 #include "orchestrator/orchestrator_builder.h"
 #include "lifecycle.h"
@@ -114,7 +115,10 @@ namespace iv {
                     event_port_buffer_base_multiplier
                 );
             } catch (std::exception const& e) {
-                throw std::runtime_error(std::string("failed to ") + operation + " node executor: make_layout: " + e.what());
+                throw std::runtime_error(wrap_exception(
+                    std::string("failed to ") + operation + " node executor: make_layout",
+                    e
+                ));
             } catch (...) {
                 throw std::runtime_error(std::string("failed to ") + operation + " node executor: make_layout");
             }
@@ -122,7 +126,10 @@ namespace iv {
             try {
                 prepared.storage = prepared.layout.create_storage(prepared.resources);
             } catch (std::exception const& e) {
-                throw std::runtime_error(std::string("failed to ") + operation + " node executor: create_storage: " + e.what());
+                throw std::runtime_error(wrap_exception(
+                    std::string("failed to ") + operation + " node executor: create_storage",
+                    e
+                ));
             } catch (...) {
                 throw std::runtime_error(std::string("failed to ") + operation + " node executor: create_storage");
             }
@@ -131,7 +138,10 @@ namespace iv {
                 try {
                     prepared.storage.initialize(nullptr, &orchestrator_builder);
                 } catch (std::exception const& e) {
-                    throw std::runtime_error(std::string("failed to ") + operation + " node executor: initialize_storage: " + e.what());
+                    throw std::runtime_error(wrap_exception(
+                        std::string("failed to ") + operation + " node executor: initialize_storage",
+                        e
+                    ));
                 } catch (...) {
                     throw std::runtime_error(std::string("failed to ") + operation + " node executor: initialize_storage");
                 }
@@ -156,7 +166,7 @@ namespace iv {
                 });
             } catch (std::exception const& e) {
                 _shutdown_requested = true;
-                throw std::runtime_error(std::string("node executor tick failed: ") + e.what());
+                throw std::runtime_error(wrap_exception("node executor tick failed", e));
             } catch (...) {
                 _shutdown_requested = true;
                 throw std::runtime_error("node executor tick failed");
@@ -313,7 +323,10 @@ namespace iv {
             try {
                 prepared.storage.initialize(nullptr, &builder);
             } catch (std::exception const& e) {
-                throw std::runtime_error(std::string("failed to reload node executor: initialize_storage: ") + e.what());
+                throw std::runtime_error(wrap_exception(
+                    "failed to reload node executor: initialize_storage",
+                    e
+                ));
             } catch (...) {
                 throw std::runtime_error("failed to reload node executor: initialize_storage");
             }

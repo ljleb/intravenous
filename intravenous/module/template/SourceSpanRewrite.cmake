@@ -35,6 +35,22 @@ function(iv_rewrite_sources_to_build_dir out_var)
     endif()
 
     set(_iv_rewritten_sources "")
+    set(_iv_rewriter_extra_args "")
+    set(_iv_rewriter_root_args "")
+    if(DEFINED IV_CORE_INCLUDE_DIR AND NOT IV_CORE_INCLUDE_DIR STREQUAL "")
+        get_filename_component(_iv_repo_root "${IV_CORE_INCLUDE_DIR}" DIRECTORY)
+        if(EXISTS "${_iv_repo_root}")
+            list(APPEND _iv_rewriter_root_args "--repo-root" "${_iv_repo_root}")
+        endif()
+    endif()
+    if(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+        foreach(_iv_include_dir IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+            if(_iv_include_dir AND EXISTS "${_iv_include_dir}")
+                list(APPEND _iv_rewriter_extra_args "--extra-arg=-isystem${_iv_include_dir}")
+            endif()
+        endforeach()
+    endif()
+
     foreach(_iv_source IN LISTS IVSSR_SOURCES)
         get_filename_component(_iv_source_abs "${_iv_source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -54,7 +70,13 @@ function(iv_rewrite_sources_to_build_dir out_var)
         add_custom_command(
             OUTPUT "${_iv_rewritten_source}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_iv_rewritten_dir}"
-            COMMAND "${IV_SOURCE_SPAN_REWRITER}" -p "${CMAKE_BINARY_DIR}" --output "${_iv_rewritten_source}" "${_iv_source_abs}"
+            COMMAND
+                "${IV_SOURCE_SPAN_REWRITER}"
+                -p "${CMAKE_BINARY_DIR}"
+                ${_iv_rewriter_root_args}
+                ${_iv_rewriter_extra_args}
+                --output "${_iv_rewritten_source}"
+                "${_iv_source_abs}"
             DEPENDS
                 "${IV_SOURCE_SPAN_REWRITER}"
                 "${_iv_source_abs}"

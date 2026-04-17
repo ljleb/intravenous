@@ -109,6 +109,10 @@ namespace iv {
         static GraphNodeWrapper::State& node_state(std::span<std::byte> buffer)
         {
             return TickContext<GraphNodeWrapper> {
+                .inputs = {},
+                .outputs = {},
+                .event_inputs = {},
+                .event_outputs = {},
                 .buffer = buffer,
             }.state();
         }

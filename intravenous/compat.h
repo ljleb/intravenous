@@ -1,10 +1,12 @@
 #pragma once
 
 #include <fstream>
+#include <exception>
 #include <iostream>
 #include <mutex>
 #include <stacktrace>
 #include <cstdlib>
+#include <string>
 #include <string_view>
 
 #if defined(_MSC_VER)
@@ -67,6 +69,14 @@ namespace iv {
     {
         out << std::stacktrace::current() << '\n';
         out.flush();
+    }
+
+    inline std::string wrap_exception(std::string_view context, std::exception const& cause)
+    {
+        std::string wrapped(context);
+        wrapped += "\ncaused by: ";
+        wrapped += cause.what();
+        return wrapped;
     }
 
     [[noreturn]] inline void assertion_failed(

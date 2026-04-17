@@ -1,6 +1,7 @@
 #define IV_INTERNAL_TRANSLATION_UNIT
 
 #include "module/loader.h"
+#include "compat.h"
 
 #include "devices/channel_buffer_sink.h"
 
@@ -709,6 +710,8 @@ namespace iv {
 
         std::string configure_signature(ResolvedModule const& resolved, std::filesystem::path const& output_dir, std::string const& output_name) const
         {
+            auto const [c_compiler, cxx_compiler] = preferred_module_compilers();
+
             std::ostringstream sig;
             sig
                 << "id=" << resolved.id << '\n'
@@ -721,6 +724,11 @@ namespace iv {
                 << "source_span_rewrite_stamp=" << compute_stamp_for_file(repo_root / "intravenous" / "module" / "template" / "SourceSpanRewrite.cmake").time_since_epoch().count() << '\n'
                 << "custom_stamp=" << (resolved.has_custom_cmake ? compute_stamp_for_file(resolved.cmake_dir / "CMakeLists.txt").time_since_epoch().count() : 0) << '\n'
                 << "core_runtime_library=" << IV_CONFIGURED_CORE_RUNTIME_LIBRARY << '\n'
+                << "core_enable_juce_vst=" << IV_CONFIGURED_ENABLE_JUCE_VST << '\n'
+                << "juce_web_browser=" << IV_CONFIGURED_JUCE_WEB_BROWSER << '\n'
+                << "juce_use_curl=" << IV_CONFIGURED_JUCE_USE_CURL << '\n'
+                << "c_compiler=" << c_compiler.generic_string() << '\n'
+                << "cxx_compiler=" << cxx_compiler.generic_string() << '\n'
                 << "source_span_rewriter=" << IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER << '\n'
                 << "juce_dir=" << IV_CONFIGURED_JUCE_DIR << '\n'
                 << "juce_modules_dir=" << IV_CONFIGURED_JUCE_MODULES_DIR << '\n'
@@ -742,7 +750,11 @@ namespace iv {
         std::filesystem::path ensure_default_template_workspace(std::filesystem::path const& source_dir) const
         {
             std::filesystem::create_directories(source_dir);
+            std::filesystem::path const template_dir = repo_root / "intravenous" / "module" / "template";
             copy_file_if_different(default_template_path, source_dir / "CMakeLists.txt");
+            copy_file_if_different(template_dir / "ModuleSupport.cmake", source_dir / "ModuleSupport.cmake");
+            copy_file_if_different(template_dir / "JuceSupport.cmake", source_dir / "JuceSupport.cmake");
+            copy_file_if_different(template_dir / "SourceSpanRewrite.cmake", source_dir / "SourceSpanRewrite.cmake");
             return source_dir;
         }
 
@@ -778,6 +790,25 @@ namespace iv {
             return {};
         }
 
+        std::pair<std::filesystem::path, std::filesystem::path> preferred_module_compilers() const
+        {
+            auto clangxx = find_program_on_path("clang++");
+            if (!clangxx.has_value()) {
+                throw std::runtime_error(
+                    "runtime module configure requires clang++, but it was not found on PATH"
+                );
+            }
+
+            auto clang = find_program_on_path("clang");
+            if (!clang.has_value()) {
+                throw std::runtime_error(
+                    "runtime module configure requires clang, but it was not found on PATH"
+                );
+            }
+
+            return {*clang, *clangxx};
+        }
+
         std::string choose_generator(BuildWorkspace const& workspace, bool should_configure) const
         {
             if (auto configured = configured_generator(workspace); configured.has_value() && !configured->empty()) {
@@ -800,6 +831,8 @@ namespace iv {
             std::string const& generator
         ) const
         {
+            auto const [c_compiler, cxx_compiler] = preferred_module_compilers();
+
             if (!generator.empty()) {
                 if (
                     auto existing = configured_generator(workspace);
@@ -820,10 +853,15 @@ namespace iv {
             }
             configure
                 << " -DCMAKE_BUILD_TYPE=" << active_build_config()
+                << " -DCMAKE_C_COMPILER=" << quote(c_compiler)
+                << " -DCMAKE_CXX_COMPILER=" << quote(cxx_compiler)
                 << " -DIV_MODULE_ENTRY_FILE=" << quote(resolved.entry_file)
                 << " -DIV_MODULE_SOURCE_DIR=" << quote(resolved.module_dir)
                 << " -DIV_CORE_INCLUDE_DIR=" << quote(core_include_dir)
                 << " -DIV_THIRD_PARTY_INCLUDE_DIR=" << quote(third_party_include_dir)
+                << " -DIV_CORE_ENABLE_JUCE_VST=" << IV_CONFIGURED_ENABLE_JUCE_VST
+                << " -DJUCE_WEB_BROWSER=" << IV_CONFIGURED_JUCE_WEB_BROWSER
+                << " -DJUCE_USE_CURL=" << IV_CONFIGURED_JUCE_USE_CURL
                 << " -DIV_MODULE_OUTPUT_DIR=" << quote(workspace.output_dir)
                 << " -DIV_MODULE_OUTPUT_NAME=" << quote(std::filesystem::path(output_name))
                 << " -DIV_MODULE_PCH_HEADER=" << quote(default_pch_path);
@@ -1012,9 +1050,10 @@ namespace iv {
                 try {
                     return root_module.builder(context).build();
                 } catch (std::exception const& e) {
-                    throw std::runtime_error(
-                        "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "': " + e.what()
-                    );
+                    throw std::runtime_error(wrap_exception(
+                        "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "'",
+                        e
+                    ));
                 } catch (...) {
                     throw std::runtime_error(
                         "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "'"

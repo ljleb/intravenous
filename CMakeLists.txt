@@ -7,6 +7,11 @@ enable_testing()
 set(JUCE_DIR "" CACHE PATH "Path to a JUCE source tree or installed JUCE package root")
 option(IV_BUILD_CLANG_SOURCE_SPAN_TOOL "Build the Clang node source span rewriter (set to OFF to skip it)" ON)
 
+# avoid pulling heavy GUI/web dependencies
+# unless explicitly re-enabled by the user at configure time.
+set(JUCE_WEB_BROWSER 0 CACHE BOOL "Enable JUCE web browser component" FORCE)
+set(JUCE_USE_CURL 0 CACHE BOOL "Enable JUCE curl integration" FORCE)
+
 set(IV_JUCE_SOURCE_DIR "")
 if(JUCE_DIR)
     if(EXISTS "${JUCE_DIR}/CMakeLists.txt")
