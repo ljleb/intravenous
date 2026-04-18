@@ -143,6 +143,22 @@ namespace iv {
             return unescape_json(match[1].str());
         }
 
+        std::vector<std::string> parse_string_array_param(std::string const& line, std::string const& key)
+        {
+            std::regex const pattern("\"" + key + "\"\\s*:\\s*\\[(.*?)\\]");
+            std::smatch match;
+            if (!std::regex_search(line, match, pattern)) {
+                throw std::runtime_error("JSON-RPC request is missing string array param '" + key + "'");
+            }
+
+            std::vector<std::string> values;
+            std::regex const item_pattern("\"((?:\\\\.|[^\"])*)\"");
+            for (std::sregex_iterator it(match[1].first, match[1].second, item_pattern), end; it != end; ++it) {
+                values.push_back(unescape_json((*it)[1].str()));
+            }
+            return values;
+        }
+
         uint64_t parse_uint64_param(std::string const& line, std::string const& key)
         {
             std::regex const pattern("\"" + key + R"("\s*:\s*([0-9]+))");
@@ -153,7 +169,7 @@ namespace iv {
             return static_cast<uint64_t>(std::stoull(match[1].str()));
         }
 
-        std::vector<SourceRange> parse_ranges(std::string const& line)
+        std::vector<SourceRange> parse_ranges(std::string const& line, bool require_non_empty = true)
         {
             static std::regex const range_pattern(
                 R"(\{"start"\s*:\s*\{"line"\s*:\s*([0-9]+)\s*,\s*"column"\s*:\s*([0-9]+)\}\s*,\s*"end"\s*:\s*\{"line"\s*:\s*([0-9]+)\s*,\s*"column"\s*:\s*([0-9]+)\}\})"
@@ -172,7 +188,7 @@ namespace iv {
                     },
                 });
             }
-            if (ranges.empty()) {
+            if (require_non_empty && ranges.empty()) {
                 throw std::runtime_error("graph.queryBySpans requires at least one range");
             }
             return ranges;
@@ -196,7 +212,20 @@ namespace iv {
             throw std::runtime_error("graph.queryBySpans match must be 'union' or 'intersection'");
         }
 
-        std::string live_port_json(std::vector<LivePortInfo> const& ports)
+        std::string connectivity_json(LogicalPortConnectivity connectivity)
+        {
+            switch (connectivity) {
+            case LogicalPortConnectivity::connected:
+                return "connected";
+            case LogicalPortConnectivity::mixed:
+                return "mixed";
+            case LogicalPortConnectivity::disconnected:
+                return "disconnected";
+            }
+            return "disconnected";
+        }
+
+        std::string logical_port_json(std::vector<LogicalPortInfo> const& ports)
         {
             std::string json = "[";
             bool first = true;
@@ -206,7 +235,7 @@ namespace iv {
                 }
                 first = false;
                 json += "{\"name\":\"" + escape_json(port.name) + "\",\"type\":\"" + escape_json(port.type) +
-                    "\",\"connected\":" + std::string(port.connected ? "true" : "false") + "}";
+                    "\",\"connectivity\":\"" + connectivity_json(port.connectivity) + "\"}";
             }
             json += "]";
             return json;
@@ -231,15 +260,62 @@ namespace iv {
             return json;
         }
 
-        std::string live_node_json(LiveNodeInfo const& node)
+        std::string member_node_ids_json(std::vector<std::string> const& member_node_ids)
+        {
+            std::string json = "[";
+            bool first = true;
+            for (auto const& member_node_id : member_node_ids) {
+                if (!first) {
+                    json += ",";
+                }
+                first = false;
+                json += "\"" + escape_json(member_node_id) + "\"";
+            }
+            json += "]";
+            return json;
+        }
+
+        std::string string_array_json(std::vector<std::string> const& values)
+        {
+            std::string json = "[";
+            bool first = true;
+            for (auto const& value : values) {
+                if (!first) {
+                    json += ",";
+                }
+                first = false;
+                json += "\"" + escape_json(value) + "\"";
+            }
+            json += "]";
+            return json;
+        }
+
+        std::string logical_node_json(LogicalNodeInfo const& node)
         {
             return "{\"id\":\"" + escape_json(node.id) +
                 "\",\"kind\":\"" + escape_json(node.kind) +
                 "\",\"sourceSpans\":" + source_spans_json(node.source_spans) +
-                ",\"sampleInputs\":" + live_port_json(node.sample_inputs) +
-                ",\"sampleOutputs\":" + live_port_json(node.sample_outputs) +
-                ",\"eventInputs\":" + live_port_json(node.event_inputs) +
-                ",\"eventOutputs\":" + live_port_json(node.event_outputs) + "}";
+                ",\"sampleInputs\":" + logical_port_json(node.sample_inputs) +
+                ",\"sampleOutputs\":" + logical_port_json(node.sample_outputs) +
+                ",\"eventInputs\":" + logical_port_json(node.event_inputs) +
+                ",\"eventOutputs\":" + logical_port_json(node.event_outputs) +
+                ",\"memberNodeIds\":" + member_node_ids_json(node.member_node_ids) +
+                ",\"memberCount\":" + std::to_string(node.member_count) + "}";
+        }
+
+        std::string logical_nodes_json(std::vector<LogicalNodeInfo> const& nodes)
+        {
+            std::string json = "[";
+            bool first = true;
+            for (auto const& node : nodes) {
+                if (!first) {
+                    json += ",";
+                }
+                first = false;
+                json += logical_node_json(node);
+            }
+            json += "]";
+            return json;
         }
 
         std::string initialize_result_json(RuntimeProjectInitializeResult const& result)
@@ -247,7 +323,7 @@ namespace iv {
             return "{\"moduleRoot\":\"" + escape_json(result.module_root.generic_string()) +
                 "\",\"moduleId\":\"" + escape_json(result.module_id) +
                 "\",\"executionEpoch\":" + std::to_string(result.execution_epoch) +
-                ",\"capabilities\":{\"queryBySpans\":true,\"getNode\":true}}";
+                ",\"capabilities\":{\"queryBySpans\":true,\"queryActiveRegions\":true,\"getLogicalNode\":true,\"getLogicalNodes\":true}}";
         }
 
         std::string query_result_json(RuntimeProjectQueryResult const& result)
@@ -259,10 +335,16 @@ namespace iv {
                     json += ",";
                 }
                 first = false;
-                json += live_node_json(node);
+                json += logical_node_json(node);
             }
             json += "]}";
             return json;
+        }
+
+        std::string region_query_result_json(RuntimeProjectRegionQueryResult const& result)
+        {
+            return "{\"executionEpoch\":" + std::to_string(result.execution_epoch) +
+                ",\"sourceSpans\":" + source_spans_json(result.source_spans) + "}";
         }
 
         std::string runtime_event_params_json(RuntimeProjectEvent const& event)
@@ -274,6 +356,12 @@ namespace iv {
             }
             if (event.execution_epoch != 0) {
                 json += ",\"executionEpoch\":" + std::to_string(event.execution_epoch);
+            }
+            if (!event.created_node_ids.empty()) {
+                json += ",\"createdNodeIds\":" + string_array_json(event.created_node_ids);
+            }
+            if (!event.deleted_node_ids.empty()) {
+                json += ",\"deletedNodeIds\":" + string_array_json(event.deleted_node_ids);
             }
             json += "}";
             return json;
@@ -420,10 +508,20 @@ namespace iv {
                                 request_id,
                                 query_result_json(service.query_by_spans(file_path, ranges, match_mode))
                             );
-                        } else if (method == "graph.getNode") {
+                        } else if (method == "graph.queryActiveRegions") {
+                            auto const file_path = parse_string_param(line, "filePath");
+                            response = jsonrpc_result(
+                                request_id,
+                                region_query_result_json(service.query_active_regions(file_path))
+                            );
+                        } else if (method == "graph.getLogicalNode") {
                             auto const execution_epoch = parse_uint64_param(line, "executionEpoch");
                             auto const node_id = parse_string_param(line, "nodeId");
-                            response = jsonrpc_result(request_id, live_node_json(service.get_node(execution_epoch, node_id)));
+                            response = jsonrpc_result(request_id, logical_node_json(service.get_logical_node(execution_epoch, node_id)));
+                        } else if (method == "graph.getLogicalNodes") {
+                            auto const execution_epoch = parse_uint64_param(line, "executionEpoch");
+                            auto const node_ids = parse_string_array_param(line, "nodeIds");
+                            response = jsonrpc_result(request_id, logical_nodes_json(service.get_logical_nodes(execution_epoch, node_ids)));
                         } else if (method == "server.shutdown") {
                             response = jsonrpc_result(request_id, "{\"ok\":true}");
                             (void)send_message(fd, response);

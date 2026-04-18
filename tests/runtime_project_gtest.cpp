@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <ranges>
 #include <set>
 #include <optional>
 #include <string>
@@ -102,6 +103,14 @@ namespace {
     {
         auto const workspace = make_workspace(test_name);
         iv::test::copy_directory(iv::test::test_modules_root() / fixture_name, workspace);
+        return workspace;
+    }
+
+    std::filesystem::path make_inline_module_workspace(std::string const& test_name, std::string const& module_text)
+    {
+        auto const workspace = make_workspace(test_name);
+        write_text(workspace / ".intravenous", "");
+        write_text(workspace / "module.cpp", module_text);
         return workspace;
     }
 
@@ -218,6 +227,180 @@ TEST(RuntimeProjectService, QueryBySpansReturnsMatchingLiveNodesWithPorts)
     EXPECT_TRUE(has_any_port);
 }
 
+TEST(RuntimeProjectService, QueryBySpansReturnsMergedLogicalNodes)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_query_by_spans_merged_logical",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+
+namespace {
+    template<int I>
+    iv::NodeRef make_value(iv::GraphBuilder& g, iv::ModuleContext const& context)
+    {
+        (void)I;
+        return g.node<iv::ValueSource>(&context.sample_period()).node_ref();
+    }
+
+    void merged_logical_module(iv::ModuleContext const& context)
+    {
+        using namespace iv;
+        auto& g = context.builder();
+        auto const a = make_value<0>(g, context);
+        auto const b = make_value<1>(g, context);
+        auto const sink = context.target_factory().sink(g, 0);
+        sink(a + b);
+        g.outputs();
+    }
+}
+
+IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
+)"
+    );
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const result = service.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {
+            iv::SourceRange {
+                .start = { .line = 1, .column = 1 },
+                .end = { .line = 22, .column = 1 },
+            },
+        }
+    );
+
+    auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const& node) {
+        return node.member_count > 1 && node.kind.contains("ValueSource");
+    });
+
+    ASSERT_NE(it, result.nodes.end());
+    EXPECT_EQ(it->member_count, it->member_node_ids.size());
+    EXPECT_EQ(it->member_count, 2u);
+    EXPECT_TRUE(std::ranges::all_of(it->member_node_ids, [&](std::string const& node_id) {
+        return !node_id.empty() && node_id != it->id;
+    }));
+    EXPECT_EQ(std::set<std::string>(it->member_node_ids.begin(), it->member_node_ids.end()).size(), it->member_node_ids.size());
+    EXPECT_FALSE(it->source_spans.empty());
+}
+
+TEST(RuntimeProjectService, QueryBySpansDoesNotMergeDifferentSchemas)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_query_by_spans_schema_mismatch",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+#include "basic_nodes/arithmetic.h"
+
+namespace {
+    template<size_t Inputs>
+    iv::NodeRef make_sum(iv::GraphBuilder& g)
+    {
+        return g.node<iv::Sum>(Inputs).node_ref();
+    }
+
+    void schema_mismatch_module(iv::ModuleContext const& context)
+    {
+        using namespace iv;
+        auto& g = context.builder();
+        auto const a = make_sum<2>(g);
+        auto const b = make_sum<3>(g);
+        auto const sink = context.target_factory().sink(g, 0);
+        sink(a + b);
+        g.outputs();
+    }
+}
+
+IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
+)"
+    );
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const result = service.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {
+            iv::SourceRange {
+                .start = { .line = 1, .column = 1 },
+                .end = { .line = 21, .column = 1 },
+            },
+        }
+    );
+
+    size_t singleton_sum_count = 0;
+    for (auto const& node : result.nodes) {
+        if (node.member_count == 1
+            && node.kind.contains("BinaryOpNode")
+            && (node.sample_inputs.size() == 2 || node.sample_inputs.size() == 3)) {
+            ++singleton_sum_count;
+        }
+    }
+
+    EXPECT_GE(singleton_sum_count, 2u);
+}
+
+TEST(RuntimeProjectService, QueryBySpansAggregatesMixedConnectivity)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_query_by_spans_mixed_connectivity",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+#include "basic_nodes/arithmetic.h"
+
+namespace {
+    template<int I>
+    iv::NodeRef make_sum(iv::GraphBuilder& g)
+    {
+        (void)I;
+        return g.node<iv::Sum>(1).node_ref();
+    }
+
+    void mixed_connectivity_module(iv::ModuleContext const& context)
+    {
+        using namespace iv;
+        auto& g = context.builder();
+        auto const value = g.node<iv::ValueSource>(&context.sample_period()).node_ref();
+        auto const a = make_sum<0>(g);
+        auto const b = make_sum<1>(g);
+        a(value);
+        auto const sink = context.target_factory().sink(g, 0);
+        sink(a + b);
+        g.outputs();
+    }
+}
+
+IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module);
+)"
+    );
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const result = service.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {
+            iv::SourceRange {
+                .start = { .line = 1, .column = 1 },
+                .end = { .line = 22, .column = 1 },
+            },
+        }
+    );
+
+    auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const& node) {
+        return node.member_count > 1
+            && node.kind.contains("BinaryOpNode")
+            && !node.sample_inputs.empty()
+            && node.sample_inputs.front().connectivity == iv::LogicalPortConnectivity::mixed;
+    });
+
+    ASSERT_NE(it, result.nodes.end());
+}
+
 TEST(RuntimeProjectService, QueryBySpansIntersectsMultipleSelections)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_query_by_spans_intersection", "local_cmake");
@@ -308,6 +491,48 @@ TEST(RuntimeProjectService, QueryBySpansUnionsMultipleSelections)
     EXPECT_EQ(both_ids, expected_union);
 }
 
+TEST(RuntimeProjectService, QueryActiveRegionsReturnsOnlySourceSpans)
+{
+    auto const workspace = copy_fixture_workspace("runtime_project_query_active_regions", "local_cmake");
+    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
+    write_text(workspace / ".intravenous", "");
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const nodes = service.query_by_spans(module_cpp, {
+        iv::SourceRange {
+            .start = { .line = 1, .column = 1 },
+            .end = { .line = 1000, .column = 1 },
+        }
+    }, iv::SourceRangeMatchMode::intersection);
+    auto const active_regions = service.query_active_regions(module_cpp);
+
+    auto const span_key = [](iv::LiveSourceSpan const& span) {
+        return span.file_path + ":" +
+            std::to_string(span.range.start.line) + ":" +
+            std::to_string(span.range.start.column) + ":" +
+            std::to_string(span.range.end.line) + ":" +
+            std::to_string(span.range.end.column);
+    };
+
+    std::set<std::string> expected_spans;
+    for (auto const& node : nodes.nodes) {
+        for (auto const& span : node.source_spans) {
+            expected_spans.insert(span_key(span));
+        }
+    }
+
+    std::set<std::string> actual_spans;
+    for (auto const& span : active_regions.source_spans) {
+        actual_spans.insert(span_key(span));
+    }
+
+    EXPECT_EQ(active_regions.execution_epoch, nodes.execution_epoch);
+    EXPECT_EQ(actual_spans, expected_spans);
+}
+
 TEST(RuntimeProjectService, MissingMarkerFailsInitialization)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_missing_marker", "local_cmake");
@@ -375,7 +600,7 @@ TEST(RuntimeProjectService, ReloadInvalidatesOldNodeIds)
     EXPECT_THROW(
         {
             try {
-                (void)service.get_node(initialized.execution_epoch, initial.nodes.front().id);
+                (void)service.get_logical_node(initialized.execution_epoch, initial.nodes.front().id);
             } catch (std::exception const& e) {
                 EXPECT_TRUE(std::string(e.what()).contains("stale"));
                 throw;

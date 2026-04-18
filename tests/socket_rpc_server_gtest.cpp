@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <sys/select.h>
@@ -189,6 +190,9 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
     EXPECT_TRUE(initialize_response.contains(R"("jsonrpc":"2.0")"));
     EXPECT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
     EXPECT_TRUE(initialize_response.contains(R"("moduleRoot":")"));
+    EXPECT_TRUE(initialize_response.contains(R"("getLogicalNode":true)"));
+    EXPECT_TRUE(initialize_response.contains(R"("getLogicalNodes":true)"));
+    EXPECT_TRUE(initialize_response.contains(R"("queryActiveRegions":true)"));
 
     std::string const query_request =
         R"({"jsonrpc":"2.0","id":2,"method":"graph.queryBySpans","params":{"filePath":")" +
@@ -200,9 +204,44 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
     EXPECT_TRUE(query_response.contains(R"("jsonrpc":"2.0")"));
     EXPECT_TRUE(query_response.contains(R"("executionEpoch":1)"));
     EXPECT_TRUE(query_response.contains(R"("nodes":[)"));
+    EXPECT_TRUE(query_response.contains(R"("memberCount":)"));
+
+    std::string const active_regions_request =
+        R"({"jsonrpc":"2.0","id":6,"method":"graph.queryActiveRegions","params":{"filePath":")" +
+        std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
+        R"("}})" "\n";
+    ASSERT_EQ(::write(fd, active_regions_request.data(), active_regions_request.size()), static_cast<ssize_t>(active_regions_request.size()));
+
+    auto const active_regions_response = read_line(fd, &response_buffer);
+    EXPECT_TRUE(active_regions_response.contains(R"("id":6)"));
+    EXPECT_TRUE(active_regions_response.contains(R"("sourceSpans":[)"));
+
+    std::smatch node_id_match;
+    ASSERT_TRUE(std::regex_search(query_response, node_id_match, std::regex("\"id\":\"([^\"]+)\"")));
+    auto const logical_node_id = node_id_match[1].str();
+
+    std::string const get_logical_node_request =
+        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
+        logical_node_id +
+        R"("}})" "\n";
+    ASSERT_EQ(::write(fd, get_logical_node_request.data(), get_logical_node_request.size()), static_cast<ssize_t>(get_logical_node_request.size()));
+
+    auto const get_logical_node_response = read_line(fd, &response_buffer);
+    EXPECT_TRUE(get_logical_node_response.contains(R"("id":3)"));
+    EXPECT_TRUE(get_logical_node_response.contains(R"("memberCount":)"));
+
+    std::string const get_logical_nodes_request =
+        R"({"jsonrpc":"2.0","id":4,"method":"graph.getLogicalNodes","params":{"executionEpoch":1,"nodeIds":[")" +
+        logical_node_id +
+        R"("]}})" "\n";
+    ASSERT_EQ(::write(fd, get_logical_nodes_request.data(), get_logical_nodes_request.size()), static_cast<ssize_t>(get_logical_nodes_request.size()));
+
+    auto const get_logical_nodes_response = read_line(fd, &response_buffer);
+    EXPECT_TRUE(get_logical_nodes_response.contains(R"("id":4)"));
+    EXPECT_TRUE(get_logical_nodes_response.contains(R"([{"id":")"));
 
     std::string const shutdown_request =
-        R"({"jsonrpc":"2.0","id":3,"method":"server.shutdown","params":{}})" "\n";
+        R"({"jsonrpc":"2.0","id":5,"method":"server.shutdown","params":{}})" "\n";
     ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
     auto const shutdown_response = read_line(fd, &response_buffer);
     EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
@@ -250,6 +289,8 @@ TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
 
     bool saw_started = false;
     bool saw_finished = false;
+    bool saw_created_ids = false;
+    bool saw_deleted_ids = false;
     auto const deadline = std::chrono::steady_clock::now() + 45s;
     while (std::chrono::steady_clock::now() < deadline && (!saw_started || !saw_finished)) {
         auto const line = read_line_until(fd, &response_buffer, 500ms);
@@ -261,11 +302,15 @@ TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
         }
         if (line.contains(R"("method":"server.buildFinished")")) {
             saw_finished = true;
+            saw_created_ids = line.contains(R"("createdNodeIds":[)");
+            saw_deleted_ids = line.contains(R"("deletedNodeIds":[)");
         }
     }
 
     EXPECT_TRUE(saw_started);
     EXPECT_TRUE(saw_finished);
+    EXPECT_TRUE(saw_created_ids);
+    EXPECT_TRUE(saw_deleted_ids);
 
     std::string const shutdown_request =
         R"({"jsonrpc":"2.0","id":3,"method":"server.shutdown","params":{}})" "\n";

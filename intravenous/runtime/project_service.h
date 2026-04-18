@@ -4,6 +4,7 @@
 #include "devices/audio_device.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -39,22 +40,30 @@ namespace iv {
         bool operator==(LiveSourceSpan const&) const = default;
     };
 
-    struct LivePortInfo {
-        std::string name {};
-        std::string type {};
-        bool connected = false;
-
-        bool operator==(LivePortInfo const&) const = default;
+    enum class LogicalPortConnectivity {
+        disconnected,
+        connected,
+        mixed,
     };
 
-    struct LiveNodeInfo {
+    struct LogicalPortInfo {
+        std::string name {};
+        std::string type {};
+        LogicalPortConnectivity connectivity = LogicalPortConnectivity::disconnected;
+
+        bool operator==(LogicalPortInfo const&) const = default;
+    };
+
+    struct LogicalNodeInfo {
         std::string id {};
         std::string kind {};
         std::vector<LiveSourceSpan> source_spans {};
-        std::vector<LivePortInfo> sample_inputs {};
-        std::vector<LivePortInfo> sample_outputs {};
-        std::vector<LivePortInfo> event_inputs {};
-        std::vector<LivePortInfo> event_outputs {};
+        std::vector<LogicalPortInfo> sample_inputs {};
+        std::vector<LogicalPortInfo> sample_outputs {};
+        std::vector<LogicalPortInfo> event_inputs {};
+        std::vector<LogicalPortInfo> event_outputs {};
+        std::vector<std::string> member_node_ids {};
+        size_t member_count = 0;
     };
 
     struct RuntimeProjectInitializeResult {
@@ -65,7 +74,12 @@ namespace iv {
 
     struct RuntimeProjectQueryResult {
         uint64_t execution_epoch = 0;
-        std::vector<LiveNodeInfo> nodes {};
+        std::vector<LogicalNodeInfo> nodes {};
+    };
+
+    struct RuntimeProjectRegionQueryResult {
+        uint64_t execution_epoch = 0;
+        std::vector<LiveSourceSpan> source_spans {};
     };
 
     enum class RuntimeProjectEventKind {
@@ -81,6 +95,8 @@ namespace iv {
         std::string message {};
         std::filesystem::path module_root {};
         uint64_t execution_epoch = 0;
+        std::vector<std::string> created_node_ids {};
+        std::vector<std::string> deleted_node_ids {};
     };
 
     using AudioDeviceFactory = std::function<std::optional<LogicalAudioDevice>()>;
@@ -111,7 +127,11 @@ namespace iv {
             std::vector<SourceRange> const& ranges,
             SourceRangeMatchMode match_mode = SourceRangeMatchMode::intersection
         ) const;
-        LiveNodeInfo get_node(uint64_t execution_epoch, std::string const& node_id) const;
+        RuntimeProjectRegionQueryResult query_active_regions(
+            std::filesystem::path const& file_path
+        ) const;
+        LogicalNodeInfo get_logical_node(uint64_t execution_epoch, std::string const& node_id) const;
+        std::vector<LogicalNodeInfo> get_logical_nodes(uint64_t execution_epoch, std::vector<std::string> const& node_ids) const;
         void request_shutdown();
     };
 }

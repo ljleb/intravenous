@@ -5,6 +5,7 @@ const fs = require("fs");
 const net = require("net");
 const os = require("os");
 const path = require("path");
+const mergedNodeIconPath = path.join(__dirname, "media", "merged_node.svg");
 
 class JsonRpcSocketClient {
     constructor(socketPath, notificationHandler = null) {
@@ -122,6 +123,10 @@ class LiveGraphItem extends vscode.TreeItem {
     constructor(label, collapsibleState, description = "") {
         super(label, collapsibleState);
         this.description = description;
+        this.children = [];
+        this.loadChildren = null;
+        this.childrenLoaded = true;
+        this.treeKey = "";
     }
 }
 
@@ -129,64 +134,219 @@ class LiveGraphProvider {
     constructor() {
         this.items = [];
         this.nodes = [];
+        this.logicalNodeResolver = null;
+        this.expandedState = new Map();
         this.onDidChangeTreeDataEmitter = new vscode.EventEmitter();
         this.onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
     }
 
+    setLogicalNodeResolver(resolver) {
+        this.logicalNodeResolver = resolver;
+    }
+
     setNodes(nodes) {
         this.nodes = nodes;
-        this.items = nodes.map((node) => this.makeNodeItem(node));
+        this.items = nodes.length > 0
+            ? nodes.map((node) => this.makeNodeItem(node))
+            : [this.makeEmptyItem()];
         this.onDidChangeTreeDataEmitter.fire();
+    }
+
+    makeEmptyItem() {
+        const item = new LiveGraphItem("[no nodes]", vscode.TreeItemCollapsibleState.None, "");
+        item.treeKey = "empty";
+        item.contextValue = "intravenousEmpty";
+        item.tooltip = "No visible logical nodes at the current selection";
+        return item;
+    }
+
+    setExpanded(element, expanded) {
+        if (!element || !element.treeKey) {
+            return;
+        }
+        this.expandedState.set(element.treeKey, expanded);
+    }
+
+    pruneDeletedNodeState(deletedNodeIds) {
+        if (!Array.isArray(deletedNodeIds) || deletedNodeIds.length === 0) {
+            return;
+        }
+        const deleted = new Set(deletedNodeIds);
+        for (const key of [...this.expandedState.keys()]) {
+            let shouldDelete = false;
+            for (const nodeId of deleted) {
+                if (key.includes(`node:${nodeId}`) || key.includes(`member:${nodeId}`)) {
+                    shouldDelete = true;
+                    break;
+                }
+            }
+            if (shouldDelete) {
+                this.expandedState.delete(key);
+            }
+        }
+    }
+
+    collapsibleStateFor(treeKey, defaultExpanded) {
+        const expanded = this.expandedState.has(treeKey)
+            ? this.expandedState.get(treeKey)
+            : defaultExpanded;
+        return expanded
+            ? vscode.TreeItemCollapsibleState.Expanded
+            : vscode.TreeItemCollapsibleState.Collapsed;
     }
 
     getTreeItem(element) {
         return element;
     }
 
-    getChildren(element) {
+    async getChildren(element) {
         if (!element) {
             return this.items;
+        }
+        if (element.loadChildren && !element.childrenLoaded) {
+            element.children = await element.loadChildren();
+            element.childrenLoaded = true;
         }
         return element.children || [];
     }
 
     makeNodeItem(node) {
+        const treeKey = `node:${node.id}`;
         const item = new LiveGraphItem(
             node.kind || node.id,
-            vscode.TreeItemCollapsibleState.Expanded,
-            node.id || ""
+            this.collapsibleStateFor(treeKey, true),
+            node.memberCount > 1 ? `${node.memberCount} nodes` : (node.id || "")
         );
+        item.treeKey = treeKey;
         item.contextValue = "intravenousNode";
         item.node = node;
-        item.tooltip = `${node.kind || "node"}${Array.isArray(node.sourceSpans) ? ` • ${node.sourceSpans.length} source span${node.sourceSpans.length === 1 ? "" : "s"}` : ""}`;
-        item.iconPath = new vscode.ThemeIcon("symbol-misc");
+        item.tooltip = `${node.kind || "node"}${Array.isArray(node.sourceSpans) ? ` • ${node.sourceSpans.length} source span${node.sourceSpans.length === 1 ? "" : "s"}` : ""}${node.memberCount > 1 ? ` • ${node.memberCount} members` : ""}`;
+        item.iconPath = node.memberCount > 1
+            ? mergedNodeIconPath
+            : new vscode.ThemeIcon("symbol-misc");
 
         const children = [];
-        children.push(this.makePortGroup("sample inputs", node.sampleInputs || [], "input", "sample"));
-        children.push(this.makePortGroup("sample outputs", node.sampleOutputs || [], "output", "sample"));
-        children.push(this.makePortGroup("event inputs", node.eventInputs || [], "input", "event"));
-        children.push(this.makePortGroup("event outputs", node.eventOutputs || [], "output", "event"));
+        children.push(this.makePortGroup(treeKey, "sample inputs", node.sampleInputs || [], "input", "sample"));
+        children.push(this.makePortGroup(treeKey, "sample outputs", node.sampleOutputs || [], "output", "sample"));
+        children.push(this.makePortGroup(treeKey, "event inputs", node.eventInputs || [], "input", "event"));
+        children.push(this.makePortGroup(treeKey, "event outputs", node.eventOutputs || [], "output", "event"));
+        if (Array.isArray(node.memberNodeIds) && node.memberNodeIds.length > 1) {
+            children.push(this.makeMembersGroup(treeKey, node.memberNodeIds));
+        }
         item.children = children;
         return item;
     }
 
-    makePortGroup(label, ports, direction, portKind) {
-        const item = new LiveGraphItem(label, vscode.TreeItemCollapsibleState.Expanded, `${ports.length}`);
+    makePortGroup(parentTreeKey, label, ports, direction, portKind) {
+        const treeKey = `${parentTreeKey}/group:${label}`;
+        const item = new LiveGraphItem(label, this.collapsibleStateFor(treeKey, true), `${ports.length}`);
+        item.treeKey = treeKey;
         item.children = ports.map((port, index) => {
-            const description = [port.type || "sample", port.connected ? "connected" : "disconnected"].join(" · ");
+            const connectivity = port.connectivity || "disconnected";
+            const description = [port.type || "sample", connectivity].join(" · ");
             const child = new LiveGraphItem(port.name || `${label} ${index}`, vscode.TreeItemCollapsibleState.None, description);
-            child.iconPath = this.portIcon(direction, portKind, port.connected);
+            child.iconPath = this.portIcon(direction, portKind, connectivity);
             return child;
         });
         return item;
     }
 
-    portIcon(direction, portKind, connected) {
+    makeMemberNodeItem(parentTreeKey, member) {
+        const treeKey = `${parentTreeKey}/member:${member.id}`;
+        const item = new LiveGraphItem(
+            member.id || member.kind || "member",
+            this.collapsibleStateFor(treeKey, false),
+            member.kind || ""
+        );
+        item.treeKey = treeKey;
+        item.tooltip = `${member.kind || "member"}${Array.isArray(member.sourceSpans) ? ` • ${member.sourceSpans.length} source span${member.sourceSpans.length === 1 ? "" : "s"}` : ""}`;
+        item.iconPath = new vscode.ThemeIcon("symbol-misc");
+        item.children = [
+            this.makePortGroup(treeKey, "sample inputs", member.sampleInputs || [], "input", "sample"),
+            this.makePortGroup(treeKey, "sample outputs", member.sampleOutputs || [], "output", "sample"),
+            this.makePortGroup(treeKey, "event inputs", member.eventInputs || [], "input", "event"),
+            this.makePortGroup(treeKey, "event outputs", member.eventOutputs || [], "output", "event"),
+        ];
+        return item;
+    }
+
+    hydrateMemberItem(item, member) {
+        item.label = member.id || member.kind || "member";
+        item.description = member.kind || "";
+        item.tooltip = `${member.kind || "member"}${Array.isArray(member.sourceSpans) ? ` • ${member.sourceSpans.length} source span${member.sourceSpans.length === 1 ? "" : "s"}` : ""}`;
+        item.iconPath = new vscode.ThemeIcon("symbol-misc");
+        item.children = [
+            this.makePortGroup(item.treeKey, "sample inputs", member.sampleInputs || [], "input", "sample"),
+            this.makePortGroup(item.treeKey, "sample outputs", member.sampleOutputs || [], "output", "sample"),
+            this.makePortGroup(item.treeKey, "event inputs", member.eventInputs || [], "input", "event"),
+            this.makePortGroup(item.treeKey, "event outputs", member.eventOutputs || [], "output", "event"),
+        ];
+        item.childrenLoaded = true;
+        item.memberLoaded = true;
+        item.loadChildren = null;
+    }
+
+    makeMemberPlaceholder(parentTreeKey, memberNodeId, allMemberNodeIds, memberItems, index) {
+        const treeKey = `${parentTreeKey}/member:${memberNodeId}`;
+        const item = new LiveGraphItem(
+            memberNodeId,
+            this.collapsibleStateFor(treeKey, false),
+            ""
+        );
+        item.treeKey = treeKey;
+        item.iconPath = new vscode.ThemeIcon("symbol-misc");
+        item.children = [];
+        item.childrenLoaded = false;
+        item.memberLoaded = false;
+        item.loadChildren = async () => {
+            if (item.memberLoaded) {
+                return item.children;
+            }
+            if (!this.logicalNodeResolver) {
+                item.childrenLoaded = true;
+                item.memberLoaded = true;
+                return item.children;
+            }
+
+            const start = Math.max(0, index - 5);
+            const end = Math.min(allMemberNodeIds.length, index + 6);
+            const nearbyIds = allMemberNodeIds.slice(start, end);
+            const resolvedMembers = await this.logicalNodeResolver(nearbyIds);
+            const membersById = new Map((resolvedMembers || []).map((member) => [member.id, member]));
+
+            for (let i = start; i < end; ++i) {
+                const sibling = memberItems[i];
+                const member = membersById.get(allMemberNodeIds[i]);
+                if (!sibling || !member) {
+                    continue;
+                }
+                this.hydrateMemberItem(sibling, member);
+                this.onDidChangeTreeDataEmitter.fire(sibling);
+            }
+
+            return item.children;
+        };
+        return item;
+    }
+
+    makeMembersGroup(parentTreeKey, memberNodeIds) {
+        const treeKey = `${parentTreeKey}/group:members`;
+        const item = new LiveGraphItem("members", this.collapsibleStateFor(treeKey, true), `${memberNodeIds.length}`);
+        item.treeKey = treeKey;
+        const memberItems = new Array(memberNodeIds.length);
+        for (let index = 0; index < memberNodeIds.length; ++index) {
+            memberItems[index] = this.makeMemberPlaceholder(treeKey, memberNodeIds[index], memberNodeIds, memberItems, index);
+        }
+        item.children = memberItems;
+        return item;
+    }
+
+    portIcon(direction, portKind, connectivity) {
         const iconName = direction === "input" ? "arrow-right" : "arrow-left";
         const color = new vscode.ThemeColor(
-            connected
-                ? (direction === "input" ? "terminal.ansiYellow" : "terminal.ansiBlue")
-                : "terminal.ansiWhite"
+            connectivity === "disconnected"
+                ? "terminal.ansiWhite"
+                : (direction === "input" ? "terminal.ansiYellow" : "terminal.ansiBlue")
         );
         return new vscode.ThemeIcon(iconName, color);
     }
@@ -195,6 +355,7 @@ class LiveGraphProvider {
 class NodeSpanHighlighter {
     constructor() {
         this.spans = [];
+        this.activeRegions = [];
         this.decorationType = vscode.window.createTextEditorDecorationType({
             backgroundColor: "rgba(118, 173, 255, 0.14)",
             borderColor: "rgba(118, 173, 255, 0.60)",
@@ -204,14 +365,31 @@ class NodeSpanHighlighter {
             overviewRulerColor: "rgba(118, 173, 255, 0.75)",
             overviewRulerLane: vscode.OverviewRulerLane.Right,
         });
+        this.regionDecorationType = vscode.window.createTextEditorDecorationType({
+            backgroundColor: "rgba(160, 190, 255, 0.045)",
+            borderColor: "rgba(160, 190, 255, 0.10)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+        });
     }
 
     dispose() {
         this.clear();
         this.decorationType.dispose();
+        this.regionDecorationType.dispose();
     }
 
     clear() {
+        this.spans = [];
+        this.activeRegions = [];
+        for (const editor of vscode.window.visibleTextEditors) {
+            editor.setDecorations(this.decorationType, []);
+            editor.setDecorations(this.regionDecorationType, []);
+        }
+    }
+
+    clearPrimary() {
         this.spans = [];
         for (const editor of vscode.window.visibleTextEditors) {
             editor.setDecorations(this.decorationType, []);
@@ -220,6 +398,11 @@ class NodeSpanHighlighter {
 
     setSpans(spans) {
         this.spans = Array.isArray(spans) ? spans : [];
+        this.refresh();
+    }
+
+    setActiveRegions(spans) {
+        this.activeRegions = Array.isArray(spans) ? spans : [];
         this.refresh();
     }
 
@@ -232,6 +415,7 @@ class NodeSpanHighlighter {
     applyToEditor(editor) {
         if (editor.document.uri.scheme !== "file") {
             editor.setDecorations(this.decorationType, []);
+            editor.setDecorations(this.regionDecorationType, []);
             return;
         }
 
@@ -244,7 +428,18 @@ class NodeSpanHighlighter {
                 Math.max(span.end.line - 1, 0),
                 Math.max(span.end.column - 1, 0)
             ));
+        const primaryKeys = new Set(decorations.map((range) => `${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`));
+        const regionDecorations = this.activeRegions
+            .filter((span) => span.filePath === filePath)
+            .map((span) => new vscode.Range(
+                Math.max(span.start.line - 1, 0),
+                Math.max(span.start.column - 1, 0),
+                Math.max(span.end.line - 1, 0),
+                Math.max(span.end.column - 1, 0)
+            ))
+            .filter((range) => !primaryKeys.has(`${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`));
         editor.setDecorations(this.decorationType, decorations);
+        editor.setDecorations(this.regionDecorationType, regionDecorations);
     }
 }
 
@@ -364,11 +559,9 @@ class WorkspaceSession {
         this.process = childProcess.spawn(binary, args, {
             cwd: this.workspaceRoot(),
             env: childEnv,
-            stdio: ["ignore", "pipe", "pipe"],
+            stdio: ["ignore", "ignore", "ignore"],
         });
 
-        this.process.stdout.on("data", (chunk) => this.outputChannel.append(chunk.toString()));
-        this.process.stderr.on("data", (chunk) => this.outputChannel.append(chunk.toString()));
         this.process.on("error", (error) => {
             this.outputChannel.appendLine(`Intravenous server spawn failed: ${error.message}`);
         });
@@ -440,11 +633,26 @@ class WorkspaceSession {
             ranges,
             match: ranges.length > 1 ? "union" : "intersection",
         });
+        const activeRegionsResult = await this.client.request("graph.queryActiveRegions", {
+            filePath: editor.document.uri.fsPath,
+        });
         this.executionEpoch = result.executionEpoch || this.executionEpoch;
         this.lastQueryError = "";
         const nodes = this.sortNodesByRelevance(result.nodes || [], this.lastQuery);
         this.provider.setNodes(nodes);
+        this.highlighter.setActiveRegions(activeRegionsResult.sourceSpans || []);
         return nodes;
+    }
+
+    async fetchLogicalNodes(nodeIds) {
+        if (!this.client || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+            return [];
+        }
+        const nodes = await this.client.request("graph.getLogicalNodes", {
+            executionEpoch: this.executionEpoch,
+            nodeIds,
+        });
+        return Array.isArray(nodes) ? nodes : [];
     }
 
     async ensureReady() {
@@ -543,6 +751,9 @@ class WorkspaceSession {
             if (typeof params.executionEpoch === "number") {
                 this.executionEpoch = params.executionEpoch;
             }
+            if (Array.isArray(params.deletedNodeIds)) {
+                this.provider.pruneDeletedNodeState(params.deletedNodeIds);
+            }
             this.logServerEvent("Intravenous rebuild finished", params);
             if (!this.refreshInFlight && vscode.window.activeTextEditor) {
                 this.refreshInFlight = this.updateFromEditor(vscode.window.activeTextEditor)
@@ -551,7 +762,7 @@ class WorkspaceSession {
                         if (primary && Array.isArray(primary.sourceSpans)) {
                             this.highlighter.setSpans(primary.sourceSpans);
                         } else {
-                            this.highlighter.clear();
+                            this.highlighter.clearPrimary();
                         }
                     })
                     .catch((error) => {
@@ -560,7 +771,7 @@ class WorkspaceSession {
                             this.outputChannel.appendLine(message);
                             this.lastQueryError = message;
                         }
-                        this.highlighter.clear();
+                        this.highlighter.clearPrimary();
                     })
                     .finally(() => {
                         this.refreshInFlight = null;
@@ -600,6 +811,12 @@ async function activate(context) {
     context.subscriptions.push(highlighter);
     const treeView = vscode.window.createTreeView("intravenous.liveGraph", { treeDataProvider: provider });
     context.subscriptions.push(treeView);
+    context.subscriptions.push(treeView.onDidExpandElement((event) => {
+        provider.setExpanded(event.element, true);
+    }));
+    context.subscriptions.push(treeView.onDidCollapseElement((event) => {
+        provider.setExpanded(event.element, false);
+    }));
 
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
     if (!workspaceFolder) {
@@ -607,6 +824,7 @@ async function activate(context) {
     }
 
     const session = new WorkspaceSession(workspaceFolder, outputChannel, provider, highlighter);
+    provider.setLogicalNodeResolver((nodeIds) => session.fetchLogicalNodes(nodeIds));
     context.subscriptions.push({ dispose: () => void session.shutdown() });
     context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(() => {
         highlighter.refresh();
@@ -668,7 +886,7 @@ async function activate(context) {
             if (primary && Array.isArray(primary.sourceSpans)) {
                 highlighter.setSpans(primary.sourceSpans);
             } else {
-                highlighter.clear();
+                highlighter.clearPrimary();
             }
         }
     } catch (error) {
@@ -686,7 +904,7 @@ async function activate(context) {
             if (primary && Array.isArray(primary.sourceSpans)) {
                 highlighter.setSpans(primary.sourceSpans);
             } else {
-                highlighter.clear();
+                highlighter.clearPrimary();
             }
         } catch (error) {
             const message = `Intravenous query failed: ${error.message}`;
@@ -694,7 +912,7 @@ async function activate(context) {
                 outputChannel.appendLine(message);
                 session.lastQueryError = message;
             }
-            highlighter.clear();
+            highlighter.clearPrimary();
         }
     }));
 }
