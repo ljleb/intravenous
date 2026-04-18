@@ -6,6 +6,7 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 const mergedNodeIconPath = path.join(__dirname, "media", "merged_node.svg");
+const singleNodeIconPath = path.join(__dirname, "media", "single_node.svg");
 
 class JsonRpcSocketClient {
     constructor(socketPath, notificationHandler = null) {
@@ -223,13 +224,27 @@ class LiveGraphProvider {
         item.tooltip = `${node.kind || "node"}${Array.isArray(node.sourceSpans) ? ` • ${node.sourceSpans.length} source span${node.sourceSpans.length === 1 ? "" : "s"}` : ""}${node.memberCount > 1 ? ` • ${node.memberCount} members` : ""}`;
         item.iconPath = node.memberCount > 1
             ? mergedNodeIconPath
-            : new vscode.ThemeIcon("symbol-misc");
+            : (node.memberCount === 1
+                ? singleNodeIconPath
+                : new vscode.ThemeIcon("symbol-misc"));
 
         const children = [];
-        children.push(this.makePortGroup(treeKey, "sample inputs", node.sampleInputs || [], "input", "sample"));
-        children.push(this.makePortGroup(treeKey, "sample outputs", node.sampleOutputs || [], "output", "sample"));
-        children.push(this.makePortGroup(treeKey, "event inputs", node.eventInputs || [], "input", "event"));
-        children.push(this.makePortGroup(treeKey, "event outputs", node.eventOutputs || [], "output", "event"));
+        const sampleInputs = this.makePortGroup(treeKey, "sample inputs", node.sampleInputs || [], "input", "sample");
+        const sampleOutputs = this.makePortGroup(treeKey, "sample outputs", node.sampleOutputs || [], "output", "sample");
+        const eventInputs = this.makePortGroup(treeKey, "event inputs", node.eventInputs || [], "input", "event");
+        const eventOutputs = this.makePortGroup(treeKey, "event outputs", node.eventOutputs || [], "output", "event");
+        if (sampleInputs) {
+            children.push(sampleInputs);
+        }
+        if (sampleOutputs) {
+            children.push(sampleOutputs);
+        }
+        if (eventInputs) {
+            children.push(eventInputs);
+        }
+        if (eventOutputs) {
+            children.push(eventOutputs);
+        }
         if (Array.isArray(node.memberNodeIds) && node.memberNodeIds.length > 1) {
             children.push(this.makeMembersGroup(treeKey, node.memberNodeIds));
         }
@@ -238,6 +253,9 @@ class LiveGraphProvider {
     }
 
     makePortGroup(parentTreeKey, label, ports, direction, portKind) {
+        if (!Array.isArray(ports) || ports.length === 0) {
+            return null;
+        }
         const treeKey = `${parentTreeKey}/group:${label}`;
         const item = new LiveGraphItem(label, this.collapsibleStateFor(treeKey, true), `${ports.length}`);
         item.treeKey = treeKey;
@@ -260,13 +278,13 @@ class LiveGraphProvider {
         );
         item.treeKey = treeKey;
         item.tooltip = `${member.kind || "member"}${Array.isArray(member.sourceSpans) ? ` • ${member.sourceSpans.length} source span${member.sourceSpans.length === 1 ? "" : "s"}` : ""}`;
-        item.iconPath = new vscode.ThemeIcon("symbol-misc");
+        item.iconPath = singleNodeIconPath;
         item.children = [
             this.makePortGroup(treeKey, "sample inputs", member.sampleInputs || [], "input", "sample"),
             this.makePortGroup(treeKey, "sample outputs", member.sampleOutputs || [], "output", "sample"),
             this.makePortGroup(treeKey, "event inputs", member.eventInputs || [], "input", "event"),
             this.makePortGroup(treeKey, "event outputs", member.eventOutputs || [], "output", "event"),
-        ];
+        ].filter(Boolean);
         return item;
     }
 
@@ -274,13 +292,13 @@ class LiveGraphProvider {
         item.label = member.id || member.kind || "member";
         item.description = member.kind || "";
         item.tooltip = `${member.kind || "member"}${Array.isArray(member.sourceSpans) ? ` • ${member.sourceSpans.length} source span${member.sourceSpans.length === 1 ? "" : "s"}` : ""}`;
-        item.iconPath = new vscode.ThemeIcon("symbol-misc");
+        item.iconPath = singleNodeIconPath;
         item.children = [
             this.makePortGroup(item.treeKey, "sample inputs", member.sampleInputs || [], "input", "sample"),
             this.makePortGroup(item.treeKey, "sample outputs", member.sampleOutputs || [], "output", "sample"),
             this.makePortGroup(item.treeKey, "event inputs", member.eventInputs || [], "input", "event"),
             this.makePortGroup(item.treeKey, "event outputs", member.eventOutputs || [], "output", "event"),
-        ];
+        ].filter(Boolean);
         item.childrenLoaded = true;
         item.memberLoaded = true;
         item.loadChildren = null;
@@ -294,7 +312,7 @@ class LiveGraphProvider {
             ""
         );
         item.treeKey = treeKey;
-        item.iconPath = new vscode.ThemeIcon("symbol-misc");
+        item.iconPath = singleNodeIconPath;
         item.children = [];
         item.childrenLoaded = false;
         item.memberLoaded = false;
