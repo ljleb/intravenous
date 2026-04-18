@@ -193,7 +193,7 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
     std::string const query_request =
         R"({"jsonrpc":"2.0","id":2,"method":"graph.queryBySpans","params":{"filePath":")" +
         std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
-        R"(","ranges":[{"start":{"line":7,"column":1},"end":{"line":15,"column":1}}]}})" "\n";
+        R"(","ranges":[{"start":{"line":7,"column":1},"end":{"line":15,"column":1}}],"match":"intersection"}})" "\n";
     ASSERT_EQ(::write(fd, query_request.data(), query_request.size()), static_cast<ssize_t>(query_request.size()));
 
     auto const query_response = read_line(fd, &response_buffer);

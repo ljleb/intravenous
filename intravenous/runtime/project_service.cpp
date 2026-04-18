@@ -656,7 +656,8 @@ namespace iv {
 
     RuntimeProjectQueryResult RuntimeProjectService::query_by_spans(
         std::filesystem::path const& file_path,
-        std::vector<SourceRange> const& ranges
+        std::vector<SourceRange> const& ranges,
+        SourceRangeMatchMode match_mode
     ) const
     {
         std::scoped_lock lock(_impl->mutex);
@@ -687,11 +688,16 @@ namespace iv {
         for (SnapshotNode const& node : _impl->snapshot->nodes) {
             bool matches = requested_ranges.empty();
             if (!requested_ranges.empty()) {
-                matches = std::ranges::all_of(requested_ranges, [&](std::pair<uint32_t, uint32_t> const& requested_range) {
+                auto const node_matches_range = [&](std::pair<uint32_t, uint32_t> const& requested_range) {
                     return std::ranges::any_of(node.source_spans, [&](SnapshotNodeSpan const& span) {
                         return span.file_path == normalized_file_path && span_touches_range(span, requested_range);
                     });
-                });
+                };
+                if (match_mode == SourceRangeMatchMode::union_) {
+                    matches = std::ranges::any_of(requested_ranges, node_matches_range);
+                } else {
+                    matches = std::ranges::all_of(requested_ranges, node_matches_range);
+                }
             }
             if (!matches || emitted.contains(node.id)) {
                 continue;

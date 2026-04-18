@@ -27,6 +27,11 @@ namespace iv {
         bool operator==(SourceRange const&) const = default;
     };
 
+    enum class SourceRangeMatchMode {
+        intersection,
+        union_,
+    };
+
     struct LiveSourceSpan {
         std::string file_path {};
         SourceRange range {};
@@ -103,7 +108,8 @@ namespace iv {
         RuntimeProjectInitializeResult initialize();
         RuntimeProjectQueryResult query_by_spans(
             std::filesystem::path const& file_path,
-            std::vector<SourceRange> const& ranges
+            std::vector<SourceRange> const& ranges,
+            SourceRangeMatchMode match_mode = SourceRangeMatchMode::intersection
         ) const;
         LiveNodeInfo get_node(uint64_t execution_epoch, std::string const& node_id) const;
         void request_shutdown();

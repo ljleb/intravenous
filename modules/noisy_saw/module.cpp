@@ -36,8 +36,8 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             // m.connect_event_input("midi", midi);
 
             auto const saw = g.node<SawOscillator>();
-            auto const amp = (0.2);
-            auto const f = (440);
+            auto const amp = g.node<Constant>(0.2);
+            auto const f = g.node<Constant>(440);
             auto const phi = g.node<PhaseIntegrator>();
             auto const generator = g.node<DeterministicUniformAESNoise>(seed++);
             auto const u_to_n = g.node<UniformToGaussian>(0.0, 0.5);

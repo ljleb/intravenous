@@ -190,11 +190,68 @@ class LiveGraphProvider {
     }
 }
 
+class NodeSpanHighlighter {
+    constructor() {
+        this.spans = [];
+        this.decorationType = vscode.window.createTextEditorDecorationType({
+            backgroundColor: "rgba(118, 173, 255, 0.14)",
+            borderColor: "rgba(118, 173, 255, 0.60)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+            overviewRulerColor: "rgba(118, 173, 255, 0.75)",
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        });
+    }
+
+    dispose() {
+        this.clear();
+        this.decorationType.dispose();
+    }
+
+    clear() {
+        this.spans = [];
+        for (const editor of vscode.window.visibleTextEditors) {
+            editor.setDecorations(this.decorationType, []);
+        }
+    }
+
+    setSpans(spans) {
+        this.spans = Array.isArray(spans) ? spans : [];
+        this.refresh();
+    }
+
+    refresh() {
+        for (const editor of vscode.window.visibleTextEditors) {
+            this.applyToEditor(editor);
+        }
+    }
+
+    applyToEditor(editor) {
+        if (editor.document.uri.scheme !== "file") {
+            editor.setDecorations(this.decorationType, []);
+            return;
+        }
+
+        const filePath = editor.document.uri.fsPath;
+        const decorations = this.spans
+            .filter((span) => span.filePath === filePath)
+            .map((span) => new vscode.Range(
+                Math.max(span.start.line - 1, 0),
+                Math.max(span.start.column - 1, 0),
+                Math.max(span.end.line - 1, 0),
+                Math.max(span.end.column - 1, 0)
+            ));
+        editor.setDecorations(this.decorationType, decorations);
+    }
+}
+
 class WorkspaceSession {
-    constructor(workspaceFolder, outputChannel, provider) {
+    constructor(workspaceFolder, outputChannel, provider, highlighter) {
         this.workspaceFolder = workspaceFolder;
         this.outputChannel = outputChannel;
         this.provider = provider;
+        this.highlighter = highlighter;
         this.process = null;
         this.client = null;
         this.executionEpoch = 0;
@@ -357,10 +414,10 @@ class WorkspaceSession {
 
     async updateFromEditor(editor) {
         if (!this.client || !editor) {
-            return;
+            return [];
         }
         if (editor.document.uri.scheme !== "file") {
-            return;
+            return [];
         }
 
         const ranges = editor.selections.map((selection) => ({
@@ -368,7 +425,7 @@ class WorkspaceSession {
             end: { line: selection.end.line + 1, column: selection.end.character + 1 },
         }));
         if (ranges.length === 0) {
-            return;
+            return [];
         }
 
         this.lastQuery = {
@@ -379,10 +436,13 @@ class WorkspaceSession {
         const result = await this.client.request("graph.queryBySpans", {
             filePath: editor.document.uri.fsPath,
             ranges,
+            match: ranges.length > 1 ? "union" : "intersection",
         });
-        this.executionEpoch = result.executionEpoch;
+        this.executionEpoch = result.executionEpoch || this.executionEpoch;
         this.lastQueryError = "";
-        this.provider.setNodes(this.sortNodesByRelevance(result.nodes || [], this.lastQuery));
+        const nodes = this.sortNodesByRelevance(result.nodes || [], this.lastQuery);
+        this.provider.setNodes(nodes);
+        return nodes;
     }
 
     async ensureReady() {
@@ -484,12 +544,21 @@ class WorkspaceSession {
             this.logServerEvent("Intravenous rebuild finished", params);
             if (!this.refreshInFlight && vscode.window.activeTextEditor) {
                 this.refreshInFlight = this.updateFromEditor(vscode.window.activeTextEditor)
+                    .then((nodes) => {
+                        const primary = Array.isArray(nodes) && nodes.length > 0 ? nodes[0] : null;
+                        if (primary && Array.isArray(primary.sourceSpans)) {
+                            this.highlighter.setSpans(primary.sourceSpans);
+                        } else {
+                            this.highlighter.clear();
+                        }
+                    })
                     .catch((error) => {
                         const message = `Intravenous query failed: ${error.message}`;
                         if (message !== this.lastQueryError) {
                             this.outputChannel.appendLine(message);
                             this.lastQueryError = message;
                         }
+                        this.highlighter.clear();
                     })
                     .finally(() => {
                         this.refreshInFlight = null;
@@ -521,101 +590,28 @@ class WorkspaceSession {
     }
 }
 
-async function selectSourceSpans(spans) {
-    if (!Array.isArray(spans) || spans.length === 0) {
-        return;
-    }
-
-    const spansByFile = new Map();
-    for (const span of spans) {
-        const list = spansByFile.get(span.filePath) || [];
-        list.push(span);
-        spansByFile.set(span.filePath, list);
-    }
-
-    if (spansByFile.size === 1) {
-        const [[filePath, fileSpans]] = spansByFile.entries();
-        const document = await vscode.workspace.openTextDocument(filePath);
-        const editor = await vscode.window.showTextDocument(document, { preview: false });
-        editor.selections = fileSpans.map((span) => new vscode.Selection(
-            span.start.line - 1,
-            span.start.column - 1,
-            span.end.line - 1,
-            span.end.column - 1
-        ));
-        if (editor.selections.length > 0) {
-            editor.revealRange(editor.selections[0], vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-        }
-        return;
-    }
-
-    const locations = [];
-    for (const [filePath, fileSpans] of spansByFile.entries()) {
-        const uri = vscode.Uri.file(filePath);
-        for (const span of fileSpans) {
-            locations.push(new vscode.Location(
-                uri,
-                new vscode.Range(
-                    span.start.line - 1,
-                    span.start.column - 1,
-                    span.end.line - 1,
-                    span.end.column - 1
-                )
-            ));
-        }
-    }
-    if (locations.length > 0) {
-        const first = locations[0];
-        await vscode.commands.executeCommand(
-            "editor.action.goToLocations",
-            first.uri,
-            first.range.start,
-            locations,
-            "peek",
-            "No source spans"
-        );
-    }
-}
-
 async function activate(context) {
     const outputChannel = vscode.window.createOutputChannel("Intravenous");
     const provider = new LiveGraphProvider();
+    const highlighter = new NodeSpanHighlighter();
     context.subscriptions.push(outputChannel);
-    context.subscriptions.push(vscode.window.registerTreeDataProvider("intravenous.liveGraph", provider));
+    context.subscriptions.push(highlighter);
+    const treeView = vscode.window.createTreeView("intravenous.liveGraph", { treeDataProvider: provider });
+    context.subscriptions.push(treeView);
 
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
     if (!workspaceFolder) {
         return;
     }
 
-    const session = new WorkspaceSession(workspaceFolder, outputChannel, provider);
+    const session = new WorkspaceSession(workspaceFolder, outputChannel, provider, highlighter);
     context.subscriptions.push({ dispose: () => void session.shutdown() });
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.selectNodeSourceSpans", async (item) => {
-        try {
-            const node = item && item.node;
-            if (node && Array.isArray(node.sourceSpans) && node.sourceSpans.length > 0) {
-                await selectSourceSpans(node.sourceSpans);
-                return;
-            }
-
-            const editor = vscode.window.activeTextEditor;
-            if (!editor) {
-                return;
-            }
-            if (!await session.ensureReady()) {
-                return;
-            }
-
-            await session.updateFromEditor(editor);
-            const spans = [];
-            for (const matchedNode of session.provider.nodes || []) {
-                for (const span of matchedNode.sourceSpans || []) {
-                    spans.push(span);
-                }
-            }
-            await selectSourceSpans(spans);
-        } catch (error) {
-            outputChannel.appendLine(`Intravenous select spans failed: ${error.message}`);
+    context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(() => {
+        highlighter.refresh();
+    }));
+    context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
+        if (editor) {
+            highlighter.applyToEditor(editor);
         }
     }));
 
@@ -627,7 +623,13 @@ async function activate(context) {
     try {
         await session.start();
         if (vscode.window.activeTextEditor) {
-            await session.updateFromEditor(vscode.window.activeTextEditor);
+            const nodes = await session.updateFromEditor(vscode.window.activeTextEditor);
+            const primary = Array.isArray(nodes) && nodes.length > 0 ? nodes[0] : null;
+            if (primary && Array.isArray(primary.sourceSpans)) {
+                highlighter.setSpans(primary.sourceSpans);
+            } else {
+                highlighter.clear();
+            }
         }
     } catch (error) {
         outputChannel.appendLine(`Intravenous startup failed: ${error.message}`);
@@ -639,13 +641,20 @@ async function activate(context) {
             return;
         }
         try {
-            await session.updateFromEditor(event.textEditor);
+            const nodes = await session.updateFromEditor(event.textEditor);
+            const primary = Array.isArray(nodes) && nodes.length > 0 ? nodes[0] : null;
+            if (primary && Array.isArray(primary.sourceSpans)) {
+                highlighter.setSpans(primary.sourceSpans);
+            } else {
+                highlighter.clear();
+            }
         } catch (error) {
             const message = `Intravenous query failed: ${error.message}`;
             if (message !== session.lastQueryError) {
                 outputChannel.appendLine(message);
                 session.lastQueryError = message;
             }
+            highlighter.clear();
         }
     }));
 }

@@ -178,6 +178,24 @@ namespace iv {
             return ranges;
         }
 
+        SourceRangeMatchMode parse_match_mode(std::string const& line)
+        {
+            std::regex const pattern("\"match\"\\s*:\\s*\"([^\"]+)\"");
+            std::smatch match;
+            if (!std::regex_search(line, match, pattern)) {
+                return SourceRangeMatchMode::intersection;
+            }
+
+            auto const mode = match[1].str();
+            if (mode == "union") {
+                return SourceRangeMatchMode::union_;
+            }
+            if (mode == "intersection") {
+                return SourceRangeMatchMode::intersection;
+            }
+            throw std::runtime_error("graph.queryBySpans match must be 'union' or 'intersection'");
+        }
+
         std::string live_port_json(std::vector<LivePortInfo> const& ports)
         {
             std::string json = "[";
@@ -397,9 +415,10 @@ namespace iv {
                         } else if (method == "graph.queryBySpans") {
                             auto const file_path = parse_string_param(line, "filePath");
                             auto const ranges = parse_ranges(line);
+                            auto const match_mode = parse_match_mode(line);
                             response = jsonrpc_result(
                                 request_id,
-                                query_result_json(service.query_by_spans(file_path, ranges))
+                                query_result_json(service.query_by_spans(file_path, ranges, match_mode))
                             );
                         } else if (method == "graph.getNode") {
                             auto const execution_epoch = parse_uint64_param(line, "executionEpoch");
