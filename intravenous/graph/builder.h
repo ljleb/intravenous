@@ -47,6 +47,7 @@ namespace iv {
 
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
         void _add_source_span(uint32_t begin, uint32_t end) const;
+        void _add_source_span(std::string_view file_path, uint32_t begin, uint32_t end) const;
 
         std::string to_string() const;
     };
@@ -368,6 +369,7 @@ namespace iv {
         Derived ttl(size_t samples) const;
         Derived no_ttl() const;
         void _add_source_span(uint32_t begin, uint32_t end) const;
+        void _add_source_span(std::string_view file_path, uint32_t begin, uint32_t end) const;
 
         std::string to_string() const;
     };
@@ -1383,7 +1385,12 @@ namespace iv {
             return SampleNodeRef(*this, source.node);
         }
 
-        void _add_node_source_span(SampleNodeRef ref, uint32_t begin, uint32_t end)
+        void _add_node_source_span(
+            SampleNodeRef ref,
+            std::string_view file_path,
+            uint32_t begin,
+            uint32_t end
+        )
         {
             if (!ref._graph_builder) {
                 return;
@@ -1398,6 +1405,7 @@ namespace iv {
 
             auto& spans = _nodes[ref._index].source_spans;
             SourceSpan span {
+                .file_path = std::string(file_path),
                 .begin = begin,
                 .end = end,
             };
@@ -1582,12 +1590,17 @@ namespace iv {
 
     inline void SamplePortRef::_add_source_span(uint32_t begin, uint32_t end) const
     {
+        _add_source_span(std::string_view {}, begin, end);
+    }
+
+    inline void SamplePortRef::_add_source_span(std::string_view file_path, uint32_t begin, uint32_t end) const
+    {
         if (!graph_builder) {
             return;
         }
 
         if (auto source_node = graph_builder->_source_node_for_source_span(*this); source_node.has_value()) {
-            graph_builder->_add_node_source_span(*source_node, begin, end);
+            graph_builder->_add_node_source_span(*source_node, file_path, begin, end);
         }
     }
 
@@ -1634,10 +1647,20 @@ namespace iv {
     template<class Derived, class Node>
     inline void NodeRefBase<Derived, Node>::_add_source_span(uint32_t begin, uint32_t end) const
     {
+        _add_source_span(std::string_view {}, begin, end);
+    }
+
+    template<class Derived, class Node>
+    inline void NodeRefBase<Derived, Node>::_add_source_span(
+        std::string_view file_path,
+        uint32_t begin,
+        uint32_t end
+    ) const
+    {
         if (!_graph_builder) {
             return;
         }
-        _graph_builder->_add_node_source_span(SampleNodeRef(*_graph_builder, _index), begin, end);
+        _graph_builder->_add_node_source_span(SampleNodeRef(*_graph_builder, _index), file_path, begin, end);
     }
 
     template<class Derived, class Node>

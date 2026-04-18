@@ -67,6 +67,37 @@ namespace {
         return path.lexically_normal().generic_string();
     }
 
+    std::string cxx_string_literal(std::string_view value)
+    {
+        std::string out;
+        out.reserve(value.size() + 2);
+        out.push_back('"');
+        for (char c : value) {
+            switch (c) {
+            case '\\':
+                out += "\\\\";
+                break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                out.push_back(c);
+                break;
+            }
+        }
+        out.push_back('"');
+        return out;
+    }
+
     std::optional<std::filesystem::path> configured_core_source_dir()
     {
         std::error_code ec;
@@ -299,9 +330,22 @@ namespace {
                         return true;
                     }
 
+                    clang::Expr const* init = parent_decl->getInit();
+                    if (!init) {
+                        return true;
+                    }
+
+                    clang::SourceLocation const decl_loc =
+                        _source_manager.getSpellingLoc(parent_decl->getLocation());
+                    clang::SourceLocation const init_begin =
+                        _source_manager.getSpellingLoc(init->getBeginLoc());
+                    if (!decl_loc.isInvalid() && !init_begin.isInvalid() && decl_loc == init_begin) {
+                        return true;
+                    }
+
                     return is_reference_type(parent_decl->getType())
                         && parent_decl->hasInit()
-                        && strip_trivial_expr_wrappers(parent_decl->getInit()) == strip_trivial_expr_wrappers(current);
+                        && strip_trivial_expr_wrappers(init) == strip_trivial_expr_wrappers(current);
                 }
 
                 auto const* parent_stmt = parents[0].get<clang::Stmt>();
@@ -385,10 +429,20 @@ namespace {
                 return;
             }
 
+            clang::Expr const* init = decl->getInit();
+            if (!init) {
+                return;
+            }
+
+            clang::SourceLocation const decl_loc = _source_manager.getSpellingLoc(decl->getLocation());
+            clang::SourceLocation const init_begin = _source_manager.getSpellingLoc(init->getBeginLoc());
+
             clang::QualType const decl_type = decl->getType();
             if (
                 !decl->isLocalVarDecl()
                 || !decl->hasInit()
+                || init_begin.isInvalid()
+                || decl_loc == init_begin
                 || is_reference_type(decl_type)
                 || !is_source_span_ref_like(decl_type)
                 || !is_user_source_location(decl->getLocation())
@@ -396,7 +450,7 @@ namespace {
                 return;
             }
 
-            auto const wrapped_range = file_range_for_source_range(decl->getInit()->getSourceRange());
+            auto const wrapped_range = file_range_for_source_range(init->getSourceRange());
             auto const span_range = token_range_for_location(decl->getLocation());
             if (!wrapped_range.has_value() || !span_range.has_value()) {
                 return;
@@ -437,9 +491,14 @@ namespace {
             wraps.erase(std::unique(wraps.begin(), wraps.end()), wraps.end());
         }
 
-        static std::string render_with_wraps(std::string_view input, std::vector<WrapSpec> wraps)
+        static std::string render_with_wraps(
+            std::string_view input,
+            std::vector<WrapSpec> wraps,
+            std::string_view file_path
+        )
         {
             deduplicate_wraps(wraps);
+            std::string const encoded_file_path = cxx_string_literal(file_path);
 
             std::unordered_map<unsigned, std::vector<WrapSpec const*>> begin_events;
             std::unordered_map<unsigned, std::vector<WrapSpec const*>> end_events;
@@ -478,6 +537,8 @@ namespace {
                     auto events = it->second;
                     std::sort(events.begin(), events.end(), end_order);
                     for (WrapSpec const* wrap : events) {
+                        output += ", ";
+                        output += encoded_file_path;
                         output += ", ";
                         output += std::to_string(wrap->span_begin);
                         output += ", ";
@@ -556,10 +617,11 @@ namespace {
             }
 
             bool const write_in_place = output_path.empty();
+            std::string const normalized_main_path = normalized_path(std::filesystem::path(path_ref.str()));
             std::string const rewritten =
                 _wraps.empty()
                     ? buffer.str()
-                    : render_with_wraps(buffer.str(), _wraps);
+                    : render_with_wraps(buffer.str(), _wraps, normalized_main_path);
             if (write_in_place && rewritten == buffer) {
                 return false;
             }

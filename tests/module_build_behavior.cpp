@@ -23,9 +23,9 @@ int main()
     iv::test::copy_directory(voice_src, voice_dst);
     iv::test::copy_directory(local_src, local_dst);
 
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.behavior_project", project_dst));
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.behavior_voice", voice_dst));
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst));
+    std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.behavior_project", project_dst));
+    std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.behavior_voice", voice_dst));
+    std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.local_cmake", local_dst));
 
     iv::test::FakeAudioDevice audio_device;
     iv::ModuleLoader loader(iv::test::repo_root(), { runtime_root });
@@ -41,7 +41,6 @@ int main()
 
     auto const project_workspace = iv::test::runtime_module_workspace("iv.test.behavior_project", project_dst);
     auto const voice_workspace = iv::test::runtime_module_workspace("iv.test.behavior_voice", voice_dst);
-    auto const local_workspace = iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst);
 
     auto const project_cache = project_workspace / "build" / "CMakeCache.txt";
     auto const voice_cache = voice_workspace / "build" / "CMakeCache.txt";
@@ -107,6 +106,7 @@ int main()
         (void)graph;
     }
 
+    auto const local_workspace = iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst);
     auto const local_configure_signature = local_workspace / "configure.signature";
     auto const local_configure_before = iv::test::write_time(local_configure_signature);
 
@@ -129,35 +129,15 @@ int main()
         "local CMake edit should force reconfigure"
     );
 
-    if (auto ninja_path = std::getenv("IV_RUNTIME_MODULE_PREFER_NINJA"); ninja_path == nullptr || std::string_view(ninja_path) != "0") {
-        auto configured = iv::test::read_text(project_workspace / "generator.txt");
-        if (configured == "Ninja") {
-            iv::test::require(std::filesystem::exists(project_workspace / "build" / "build.ninja"), "ninja workspace should contain build.ninja");
-        }
+    auto const expected_generator = iv::test::configured_build_generator();
+    auto const project_generator = iv::test::read_text(project_workspace / "generator.txt");
+    auto const local_generator = iv::test::read_text(local_workspace / "generator.txt");
+    iv::test::require(project_generator == expected_generator, "project workspace should preserve top-level generator");
+    iv::test::require(local_generator == expected_generator, "local workspace should preserve top-level generator");
+    if (project_generator == "Ninja") {
+        iv::test::require(std::filesystem::exists(project_workspace / "build" / "build.ninja"), "ninja workspace should contain build.ninja");
+        iv::test::require(std::filesystem::exists(local_workspace / "build" / "build.ninja"), "local ninja workspace should contain build.ninja");
     }
-
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst));
-#if defined(_WIN32)
-    _putenv_s("IV_RUNTIME_MODULE_PREFER_NINJA", "0");
-#else
-    setenv("IV_RUNTIME_MODULE_PREFER_NINJA", "0", 1);
-#endif
-    {
-        iv::ModuleLoader fallback_loader(iv::test::repo_root(), { runtime_root });
-        auto graph = fallback_loader.load_root(
-            local_dst,
-            iv::test::module_render_config(audio_device),
-            &audio_device.sample_period()
-        );
-        (void)graph;
-    }
-    auto fallback_generator = iv::test::read_text(local_workspace / "generator.txt");
-    iv::test::require(fallback_generator != "Ninja", "ninja disable flag should force non-ninja generator");
-#if defined(_WIN32)
-    _putenv_s("IV_RUNTIME_MODULE_PREFER_NINJA", "");
-#else
-    unsetenv("IV_RUNTIME_MODULE_PREFER_NINJA");
-#endif
 
     return 0;
 }

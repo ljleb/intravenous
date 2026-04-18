@@ -1,0 +1,328 @@
+#include "module_test_utils.h"
+#include "fake_audio_device.h"
+
+#include "runtime/project_service.h"
+
+#include <gtest/gtest.h>
+
+#include <chrono>
+#include <cstdlib>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace {
+    using namespace std::chrono_literals;
+
+    struct DrivenTestAudioDevice {
+        std::shared_ptr<iv::test::FakeAudioDevice> device;
+        std::jthread driver;
+
+        auto make_factory() const
+        {
+            return [device = this->device]() -> std::optional<iv::LogicalAudioDevice> {
+                struct RefBackend {
+                    std::shared_ptr<iv::test::FakeAudioDevice> device;
+
+                    iv::RenderConfig const& config() const
+                    {
+                        return device->config();
+                    }
+
+                    std::span<iv::Sample> wait_for_block_request()
+                    {
+                        return device->wait_for_block_request();
+                    }
+
+                    void submit_response()
+                    {
+                        try {
+                            device->submit_response();
+                        } catch (std::logic_error const&) {
+                        }
+                    }
+                };
+
+                return iv::LogicalAudioDevice(RefBackend { device });
+            };
+        }
+    };
+
+    DrivenTestAudioDevice make_audio_device_context()
+    {
+        auto device = std::make_shared<iv::test::FakeAudioDevice>(iv::RenderConfig {
+            .sample_rate = 48000,
+            .num_channels = 2,
+            .max_block_frames = 256,
+            .preferred_block_size = 64,
+        });
+
+        std::jthread driver([device](std::stop_token stop_token) {
+            size_t frame_index = 0;
+            while (!stop_token.stop_requested()) {
+                device->begin_requested_block(frame_index, device->config().preferred_block_size);
+                if (!device->wait_until_block_ready_for(200ms)) {
+                    break;
+                }
+                device->finish_requested_block();
+                frame_index += device->config().preferred_block_size;
+                std::this_thread::sleep_for(1ms);
+            }
+            device->request_shutdown();
+        });
+
+        return DrivenTestAudioDevice {
+            .device = std::move(device),
+            .driver = std::move(driver),
+        };
+    }
+
+    std::filesystem::path make_workspace(std::string const& name)
+    {
+        auto const workspace = iv::test::runtime_modules_root() / name;
+        std::filesystem::remove_all(workspace);
+        std::filesystem::create_directories(workspace);
+        return workspace;
+    }
+
+    void write_text(std::filesystem::path const& path, std::string const& text)
+    {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(static_cast<bool>(out)) << "failed to open " << path;
+        out << text;
+    }
+
+    std::filesystem::path copy_fixture_workspace(std::string const& test_name, std::string const& fixture_name)
+    {
+        auto const workspace = make_workspace(test_name);
+        iv::test::copy_directory(iv::test::test_modules_root() / fixture_name, workspace);
+        return workspace;
+    }
+
+    std::string find_program(std::string const& name)
+    {
+        std::string command = "command -v " + name;
+        FILE* pipe = popen(command.c_str(), "r");
+        if (!pipe) {
+            return {};
+        }
+
+        std::string output;
+        char buffer[256];
+        while (fgets(buffer, sizeof(buffer), pipe)) {
+            output += buffer;
+        }
+        pclose(pipe);
+
+        while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
+            output.pop_back();
+        }
+        return output;
+    }
+
+    std::string configured_program_or_find(std::string const& name, char const* configured_path)
+    {
+        if (configured_path != nullptr && *configured_path != '\0') {
+            return configured_path;
+        }
+        return find_program(name);
+    }
+
+    struct ScopedEnvVar {
+        std::string key;
+        std::optional<std::string> original;
+
+        ScopedEnvVar(std::string key_, std::string value) :
+            key(std::move(key_))
+        {
+            if (char const* existing = std::getenv(key.c_str())) {
+                original = existing;
+            }
+            setenv(key.c_str(), value.c_str(), 1);
+        }
+
+        ~ScopedEnvVar()
+        {
+            if (original.has_value()) {
+                setenv(key.c_str(), original->c_str(), 1);
+            } else {
+                unsetenv(key.c_str());
+            }
+        }
+    };
+}
+
+TEST(RuntimeProjectService, EmptyIntravenousMarkerUsesWorkspaceRoot)
+{
+    auto const workspace = copy_fixture_workspace("runtime_project_empty_marker", "local_cmake");
+    write_text(workspace / ".intravenous", "");
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    auto const initialized = service.initialize();
+
+    EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(workspace));
+    EXPECT_EQ(initialized.execution_epoch, 1u);
+    EXPECT_FALSE(initialized.module_id.empty());
+}
+
+TEST(RuntimeProjectService, RelativeRootModulePathResolvesAgainstWorkspaceRoot)
+{
+    auto const workspace = make_workspace("runtime_project_relative_root");
+    auto const module_root = workspace / "module";
+    iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", module_root);
+    write_text(workspace / ".intravenous", "rootModulePath=module\n");
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    auto const initialized = service.initialize();
+
+    EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(module_root));
+    EXPECT_EQ(initialized.execution_epoch, 1u);
+}
+
+TEST(RuntimeProjectService, QueryBySpansReturnsMatchingLiveNodesWithPorts)
+{
+    auto const workspace = copy_fixture_workspace("runtime_project_query_by_spans", "local_cmake");
+    write_text(workspace / ".intravenous", "");
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    auto const initialized = service.initialize();
+
+    auto const result = service.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {
+            iv::SourceRange {
+                .start = { .line = 7, .column = 1 },
+                .end = { .line = 15, .column = 1 },
+            },
+        }
+    );
+
+    ASSERT_EQ(result.execution_epoch, initialized.execution_epoch);
+    ASSERT_FALSE(result.nodes.empty());
+
+    auto const& node = result.nodes.front();
+    EXPECT_FALSE(node.id.empty());
+    EXPECT_FALSE(node.kind.empty());
+    EXPECT_FALSE(node.source_spans.empty());
+
+    bool has_any_port = !node.sample_inputs.empty() || !node.sample_outputs.empty() || !node.event_inputs.empty() || !node.event_outputs.empty();
+    EXPECT_TRUE(has_any_port);
+}
+
+TEST(RuntimeProjectService, MissingMarkerFailsInitialization)
+{
+    auto const workspace = copy_fixture_workspace("runtime_project_missing_marker", "local_cmake");
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    EXPECT_THROW(
+        {
+            try {
+                (void)service.initialize();
+            } catch (std::exception const& e) {
+                EXPECT_TRUE(std::string(e.what()).contains(".intravenous"));
+                throw;
+            }
+        },
+        std::exception
+    );
+}
+
+TEST(RuntimeProjectService, ReloadInvalidatesOldNodeIds)
+{
+    auto const workspace = copy_fixture_workspace("runtime_project_reload_epoch", "local_cmake");
+    auto const module_cpp = workspace / "module.cpp";
+    write_text(workspace / ".intravenous", "");
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    auto const initialized = service.initialize();
+
+    auto const initial = service.query_by_spans(
+        std::filesystem::weakly_canonical(module_cpp),
+        {
+            iv::SourceRange {
+                .start = { .line = 7, .column = 1 },
+                .end = { .line = 15, .column = 1 },
+            },
+        }
+    );
+    ASSERT_FALSE(initial.nodes.empty());
+
+    auto const original_text = iv::test::read_text(module_cpp);
+    iv::test::write_text(module_cpp, original_text + "\n");
+
+    iv::RuntimeProjectQueryResult reloaded;
+    auto const deadline = std::chrono::steady_clock::now() + 45s;
+    do {
+        std::this_thread::sleep_for(100ms);
+        reloaded = service.query_by_spans(
+            std::filesystem::weakly_canonical(module_cpp),
+            {
+                iv::SourceRange {
+                    .start = { .line = 7, .column = 1 },
+                    .end = { .line = 16, .column = 1 },
+                },
+            }
+        );
+        if (reloaded.execution_epoch > initialized.execution_epoch) {
+            break;
+        }
+    } while (std::chrono::steady_clock::now() < deadline);
+
+    iv::test::write_text(module_cpp, original_text);
+
+    ASSERT_GT(reloaded.execution_epoch, initialized.execution_epoch);
+    EXPECT_THROW(
+        {
+            try {
+                (void)service.get_node(initialized.execution_epoch, initial.nodes.front().id);
+            } catch (std::exception const& e) {
+                EXPECT_TRUE(std::string(e.what()).contains("stale"));
+                throw;
+            }
+        },
+        std::exception
+    );
+}
+
+TEST(RuntimeProjectService, ProjectConfigOverridesIntraveniousDefaultsToolchain)
+{
+    auto const workspace = copy_fixture_workspace("runtime_project_toolchain_override", "local_cmake");
+    auto const install_dir = workspace / "install";
+    std::filesystem::create_directories(install_dir);
+    std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.local_cmake", workspace));
+
+    write_text(
+        install_dir / ".intravenous_defaults",
+        "cCompiler=/definitely/missing-clang\n"
+        "cxxCompiler=/definitely/missing-clangxx\n"
+    );
+
+    auto const c_compiler = configured_program_or_find("clang", IV_CONFIGURED_C_COMPILER);
+    auto const cxx_compiler = configured_program_or_find("clang++", IV_CONFIGURED_CXX_COMPILER);
+    ASSERT_FALSE(c_compiler.empty());
+    ASSERT_FALSE(cxx_compiler.empty());
+
+    write_text(
+        workspace / ".intravenous",
+        "cCompiler=" + c_compiler + "\n"
+        "cxxCompiler=" + cxx_compiler + "\n"
+    );
+
+    ScopedEnvVar env("INTRAVENOUS_DIR", install_dir.string());
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    auto const initialized = service.initialize();
+
+    EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(workspace));
+    EXPECT_EQ(initialized.execution_epoch, 1u);
+}

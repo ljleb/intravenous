@@ -4,3 +4,5 @@
 /.codex
 /intravenious
 /scripts/benchmark.txt*
+node_modules
+*.vsix

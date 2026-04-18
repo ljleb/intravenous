@@ -48,6 +48,10 @@ set_target_properties(iv_runtime_module PROPERTIES
 
 target_link_libraries(iv_runtime_module PRIVATE iv_runtime_module__compile_settings)
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_link_libraries(iv_runtime_module PRIVATE stdc++exp)
+endif()
+
 if(DEFINED IV_MODULE_PCH_HEADER)
     target_precompile_headers(iv_runtime_module PRIVATE ${IV_MODULE_PCH_HEADER})
 endif()

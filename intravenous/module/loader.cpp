@@ -335,20 +335,6 @@ namespace iv {
             return entries;
         }
 
-        bool env_flag_disabled(char const* name)
-        {
-            char const* value = std::getenv(name);
-            if (!value || !*value) {
-                return false;
-            }
-
-            std::string normalized(value);
-            std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
-                return static_cast<char>(std::tolower(c));
-            });
-            return normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off";
-        }
-
         std::optional<std::filesystem::path> find_program_on_path(std::string_view name)
         {
 #if defined(_WIN32)
@@ -555,15 +541,21 @@ namespace iv {
         std::filesystem::path default_template_path;
         std::filesystem::path default_pch_path;
         std::vector<std::filesystem::path> extra_search_roots;
+        ToolchainConfig toolchain;
         mutable std::mutex build_mutex;
 
-        explicit Impl(std::filesystem::path discovery_start, std::vector<std::filesystem::path> extra_roots) :
+        explicit Impl(
+            std::filesystem::path discovery_start,
+            std::vector<std::filesystem::path> extra_roots,
+            ToolchainConfig toolchain_
+        ) :
             repo_root(discover_repo_root(std::move(discovery_start))),
             core_include_dir(repo_root / "intravenous"),
             third_party_include_dir(repo_root / "intravenous" / "third_party"),
             cache_root(repo_root / "build" / "iv_runtime_modules"),
             default_template_path(repo_root / "intravenous" / "module" / "template" / "CMakeLists.txt"),
-            default_pch_path(repo_root / "intravenous" / "module" / "template" / "module_pch.h")
+            default_pch_path(repo_root / "intravenous" / "module" / "template" / "module_pch.h"),
+            toolchain(std::move(toolchain_))
         {
             std::filesystem::create_directories(cache_root);
             for (auto& root : extra_roots) {
@@ -711,6 +703,10 @@ namespace iv {
         std::string configure_signature(ResolvedModule const& resolved, std::filesystem::path const& output_dir, std::string const& output_name) const
         {
             auto const [c_compiler, cxx_compiler] = preferred_module_compilers();
+            auto const cmake_program = preferred_cmake_program();
+            auto const cmake_generator = preferred_cmake_generator();
+            auto const make_program = preferred_make_program();
+            auto const juce_dir = preferred_juce_dir();
 
             std::ostringstream sig;
             sig
@@ -729,8 +725,11 @@ namespace iv {
                 << "juce_use_curl=" << IV_CONFIGURED_JUCE_USE_CURL << '\n'
                 << "c_compiler=" << c_compiler.generic_string() << '\n'
                 << "cxx_compiler=" << cxx_compiler.generic_string() << '\n'
+                << "cmake_program=" << cmake_program.generic_string() << '\n'
+                << "cmake_generator=" << cmake_generator << '\n'
+                << "make_program=" << make_program.generic_string() << '\n'
                 << "source_span_rewriter=" << IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER << '\n'
-                << "juce_dir=" << IV_CONFIGURED_JUCE_DIR << '\n'
+                << "juce_dir=" << juce_dir.generic_string() << '\n'
                 << "juce_modules_dir=" << IV_CONFIGURED_JUCE_MODULES_DIR << '\n'
                 << "output_name=" << output_name << '\n'
                 << "output_dir=" << output_dir.generic_string() << '\n';
@@ -781,10 +780,71 @@ namespace iv {
             return std::nullopt;
         }
 
-        std::string preferred_generator() const
+        std::string preferred_cmake_generator() const
         {
-            if (!env_flag_disabled("IV_RUNTIME_MODULE_PREFER_NINJA") && find_program_on_path("ninja").has_value()) {
-                return "Ninja";
+            if (toolchain.cmake_generator.has_value()) {
+                return *toolchain.cmake_generator;
+            }
+
+            if (std::string_view(IV_CONFIGURED_CMAKE_GENERATOR).size() != 0) {
+                return IV_CONFIGURED_CMAKE_GENERATOR;
+            }
+
+            return {};
+        }
+
+        std::filesystem::path existing_program_or_empty(std::optional<std::filesystem::path> const& configured) const
+        {
+            if (!configured.has_value()) {
+                return {};
+            }
+            if (!std::filesystem::exists(*configured)) {
+                throw std::runtime_error("configured program does not exist: " + configured->string());
+            }
+            return *configured;
+        }
+
+        std::filesystem::path preferred_cmake_program() const
+        {
+            if (auto configured = existing_program_or_empty(toolchain.cmake_program); !configured.empty()) {
+                return configured;
+            }
+
+            if (std::string_view(IV_CONFIGURED_CMAKE_COMMAND).size() != 0) {
+                return std::filesystem::path(IV_CONFIGURED_CMAKE_COMMAND);
+            }
+
+            if (auto found = find_program_on_path("cmake"); found.has_value()) {
+                return *found;
+            }
+
+            throw std::runtime_error("runtime module configure requires cmake, but it was not found");
+        }
+
+        std::filesystem::path preferred_make_program() const
+        {
+            if (auto configured = existing_program_or_empty(toolchain.make_program); !configured.empty()) {
+                return configured;
+            }
+
+            if (std::string_view(IV_CONFIGURED_MAKE_PROGRAM).size() != 0) {
+                std::filesystem::path configured = IV_CONFIGURED_MAKE_PROGRAM;
+                if (!configured.empty() && std::filesystem::exists(configured)) {
+                    return configured;
+                }
+            }
+
+            return {};
+        }
+
+        std::filesystem::path preferred_juce_dir() const
+        {
+            if (toolchain.juce_dir.has_value()) {
+                return *toolchain.juce_dir;
+            }
+
+            if (std::string_view(IV_CONFIGURED_JUCE_DIR).size() != 0) {
+                return std::filesystem::path(IV_CONFIGURED_JUCE_DIR);
             }
 
             return {};
@@ -792,6 +852,31 @@ namespace iv {
 
         std::pair<std::filesystem::path, std::filesystem::path> preferred_module_compilers() const
         {
+            if (toolchain.c_compiler.has_value() || toolchain.cxx_compiler.has_value()) {
+                if (!toolchain.c_compiler.has_value() || !toolchain.cxx_compiler.has_value()) {
+                    throw std::runtime_error("runtime module toolchain override requires both cCompiler and cxxCompiler");
+                }
+                if (!std::filesystem::exists(*toolchain.c_compiler)) {
+                    throw std::runtime_error("configured C compiler does not exist: " + toolchain.c_compiler->string());
+                }
+                if (!std::filesystem::exists(*toolchain.cxx_compiler)) {
+                    throw std::runtime_error("configured C++ compiler does not exist: " + toolchain.cxx_compiler->string());
+                }
+                return {*toolchain.c_compiler, *toolchain.cxx_compiler};
+            }
+
+            if (
+                std::string_view(IV_CONFIGURED_C_COMPILER).size() != 0 &&
+                std::string_view(IV_CONFIGURED_CXX_COMPILER).size() != 0 &&
+                std::filesystem::exists(std::filesystem::path(IV_CONFIGURED_C_COMPILER)) &&
+                std::filesystem::exists(std::filesystem::path(IV_CONFIGURED_CXX_COMPILER))
+            ) {
+                return {
+                    std::filesystem::path(IV_CONFIGURED_C_COMPILER),
+                    std::filesystem::path(IV_CONFIGURED_CXX_COMPILER),
+                };
+            }
+
             auto clangxx = find_program_on_path("clang++");
             if (!clangxx.has_value()) {
                 throw std::runtime_error(
@@ -811,15 +896,15 @@ namespace iv {
 
         std::string choose_generator(BuildWorkspace const& workspace, bool should_configure) const
         {
+            if (should_configure) {
+                return preferred_cmake_generator();
+            }
+
             if (auto configured = configured_generator(workspace); configured.has_value() && !configured->empty()) {
                 return *configured;
             }
 
-            if (!should_configure) {
-                return {};
-            }
-
-            return preferred_generator();
+            return {};
         }
 
         void configure_workspace(
@@ -846,10 +931,14 @@ namespace iv {
 
             std::ostringstream configure;
             configure
-                << "cmake -S " << quote(configure_source)
+                << quote(preferred_cmake_program()) << " -S " << quote(configure_source)
                 << " -B " << quote(workspace.build_dir);
             if (!generator.empty()) {
                 configure << " -G " << quote(std::filesystem::path(generator));
+                auto const make_program = preferred_make_program();
+                if (!make_program.empty()) {
+                    configure << " -DCMAKE_MAKE_PROGRAM=" << quote(make_program);
+                }
             }
             configure
                 << " -DCMAKE_BUILD_TYPE=" << active_build_config()
@@ -874,8 +963,8 @@ namespace iv {
             if (std::string_view(IV_CONFIGURED_JUCE_MODULES_DIR).size() != 0) {
                 configure << " -DIV_JUCE_MODULES_DIR=" << quote(std::filesystem::path(IV_CONFIGURED_JUCE_MODULES_DIR));
             }
-            if (std::string_view(IV_CONFIGURED_JUCE_DIR).size() != 0) {
-                configure << " -DJUCE_DIR=" << quote(std::filesystem::path(IV_CONFIGURED_JUCE_DIR));
+            if (auto juce_dir = preferred_juce_dir(); !juce_dir.empty()) {
+                configure << " -DJUCE_DIR=" << quote(juce_dir);
             }
             run_command(configure.str());
 
@@ -883,18 +972,11 @@ namespace iv {
             write_text_if_different(workspace.generator_file, generator);
         }
 
-        void build_workspace(BuildWorkspace const& workspace, std::string const& generator) const
+        void build_workspace(BuildWorkspace const& workspace, std::string const&) const
         {
-            if (generator == "Ninja" && find_program_on_path("ninja").has_value()) {
-                std::ostringstream build;
-                build << "ninja -C " << quote(workspace.build_dir);
-                run_command(build.str());
-                return;
-            }
-
             std::ostringstream build;
             build
-                << "cmake --build " << quote(workspace.build_dir)
+                << quote(preferred_cmake_program()) << " --build " << quote(workspace.build_dir)
                 << " --config " << active_build_config()
                 << " --parallel";
             run_command(build.str());
@@ -1089,8 +1171,12 @@ namespace iv {
         sink_count(sink_count_)
     {}
 
-    ModuleLoader::ModuleLoader(std::filesystem::path discovery_start, std::vector<std::filesystem::path> extra_search_roots) :
-        _impl(std::make_unique<Impl>(std::move(discovery_start), std::move(extra_search_roots)))
+    ModuleLoader::ModuleLoader(
+        std::filesystem::path discovery_start,
+        std::vector<std::filesystem::path> extra_search_roots,
+        ToolchainConfig toolchain
+    ) :
+        _impl(std::make_unique<Impl>(std::move(discovery_start), std::move(extra_search_roots), std::move(toolchain)))
     {}
 
     ModuleLoader::~ModuleLoader() = default;

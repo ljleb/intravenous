@@ -10,6 +10,8 @@ pkgs.mkShell {
     llvmPackages_latest.libllvm.dev
     llvmPackages_latest.clang-unwrapped.dev
     python3
+    nodejs
+    vsce
     juce
 
     # JUCE/Linux deps
@@ -17,6 +19,11 @@ pkgs.mkShell {
     fontconfig
     freetype
     libGL
+    xorg.libX11.dev
+    xorg.libXrandr.dev
+    xorg.libXinerama.dev
+    xorg.libXext.dev
+    xorg.libXcursor.dev
   ];
 
   shellHook = ''

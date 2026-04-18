@@ -20,6 +20,13 @@
 #include <string>
 #include <thread>
 
+#if defined(_WIN32)
+#define NOMINMAX
+#include <Windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace iv::test {
     inline std::filesystem::path repo_root()
     {
@@ -36,9 +43,54 @@ namespace iv::test {
         return repo_root() / "tests" / "test_modules_duplicate";
     }
 
+    inline std::string test_process_namespace()
+    {
+        static std::string cached = [] {
+            auto sanitize = [](std::string text) {
+                if (text.empty()) {
+                    text = "unknown_test";
+                }
+                for (char& c : text) {
+                    bool good =
+                        (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9');
+                    if (!good) {
+                        c = '_';
+                    }
+                }
+                return text;
+            };
+
+            std::filesystem::path executable = "unknown_test";
+#if defined(_WIN32)
+            std::string buffer(MAX_PATH, '\0');
+            auto length = GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (length > 0) {
+                buffer.resize(length);
+                executable = buffer;
+            }
+            auto pid = static_cast<unsigned long>(GetCurrentProcessId());
+#else
+            std::error_code ec;
+            executable = std::filesystem::read_symlink("/proc/self/exe", ec);
+            auto pid = static_cast<unsigned long>(::getpid());
+#endif
+            auto name = executable.stem().string();
+            if (name.empty()) {
+                name = "unknown_test";
+            }
+
+            std::ostringstream out;
+            out << sanitize(std::move(name)) << "_" << pid;
+            return out.str();
+        }();
+        return cached;
+    }
+
     inline std::filesystem::path runtime_modules_root()
     {
-        return repo_root() / "build" / "test_runtime_modules";
+        return repo_root() / "build" / "test_runtime_modules" / test_process_namespace();
     }
 
     inline std::filesystem::path runtime_module_cache_root()
@@ -89,9 +141,25 @@ namespace iv::test {
         return out.str();
     }
 
+    inline std::filesystem::path runtime_module_workspace_root(std::string_view id, std::filesystem::path const& module_dir)
+    {
+        return runtime_module_cache_root() / (sanitize_module_id(id) + "_" + stable_path_hash(module_dir));
+    }
+
     inline std::filesystem::path runtime_module_workspace(std::string_view id, std::filesystem::path const& module_dir)
     {
-        return runtime_module_cache_root() / (sanitize_module_id(id) + "_" + stable_path_hash(module_dir)) / active_build_config();
+        auto const base = runtime_module_cache_root() / (sanitize_module_id(id) + "_" + stable_path_hash(module_dir));
+        auto const debug = base / "Debug";
+        auto const release = base / "Release";
+        auto const has_debug = std::filesystem::exists(debug);
+        auto const has_release = std::filesystem::exists(release);
+        if (has_debug && !has_release) {
+            return debug;
+        }
+        if (!has_debug && has_release) {
+            return release;
+        }
+        return base / active_build_config();
     }
 
     inline void require(bool condition, char const* message)
@@ -105,6 +173,23 @@ namespace iv::test {
     inline void require_contains(std::string const& text, std::string const& needle, char const* message)
     {
         require(text.contains(needle), message);
+    }
+
+    inline std::string configured_build_generator()
+    {
+        auto const cache_path = repo_root() / "build" / "CMakeCache.txt";
+        std::ifstream in(cache_path);
+        require(static_cast<bool>(in), "failed to open top-level CMakeCache.txt");
+
+        for (std::string line; std::getline(in, line);) {
+            static std::string const prefix = "CMAKE_GENERATOR:INTERNAL=";
+            if (line.starts_with(prefix)) {
+                return line.substr(prefix.size());
+            }
+        }
+
+        require(false, "failed to find CMAKE_GENERATOR in top-level CMakeCache.txt");
+        return {};
     }
 
     inline std::string read_text(std::filesystem::path const& path)
@@ -128,7 +213,10 @@ namespace iv::test {
     {
         std::error_code ec;
         auto stamp = std::filesystem::last_write_time(path, ec);
-        require(!ec, "failed to read timestamp");
+        if (ec) {
+            std::cerr << "failed to read timestamp for '" << path.string() << "': " << ec.message() << '\n';
+            std::exit(1);
+        }
         return stamp;
     }
 

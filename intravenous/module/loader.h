@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,15 @@ namespace iv {
         std::unique_ptr<Impl> _impl;
 
     public:
+        struct ToolchainConfig {
+            std::optional<std::filesystem::path> c_compiler;
+            std::optional<std::filesystem::path> cxx_compiler;
+            std::optional<std::filesystem::path> cmake_program;
+            std::optional<std::string> cmake_generator;
+            std::optional<std::filesystem::path> make_program;
+            std::optional<std::filesystem::path> juce_dir;
+        };
+
         struct LoadedGraph {
             std::vector<ModuleRef> module_refs;
             TypeErasedNode root;
@@ -36,7 +46,8 @@ namespace iv {
 
         explicit ModuleLoader(
             std::filesystem::path discovery_start = std::filesystem::current_path(),
-            std::vector<std::filesystem::path> extra_search_roots = {}
+            std::vector<std::filesystem::path> extra_search_roots = {},
+            ToolchainConfig toolchain = ToolchainConfig()
         );
         ~ModuleLoader();
         ModuleLoader(ModuleLoader&&) noexcept;

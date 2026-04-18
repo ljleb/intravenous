@@ -22,6 +22,27 @@ namespace iv {
         return stored_ref;
     }
 
+    template<class Ref>
+    requires SourceSpanAnnotatableRef<Ref>
+    std::remove_cvref_t<Ref> _add_node_source_span(
+        Ref&& ref,
+        std::string_view file_path,
+        uint32_t begin,
+        uint32_t end
+    )
+    {
+        using StoredRef = std::remove_cvref_t<Ref>;
+        StoredRef stored_ref = std::forward<Ref>(ref);
+        if constexpr (requires {
+            stored_ref._add_source_span(file_path, begin, end);
+        }) {
+            stored_ref._add_source_span(file_path, begin, end);
+        } else {
+            stored_ref._add_source_span(begin, end);
+        }
+        return stored_ref;
+    }
+
     template<fixed_string Name>
     inline constexpr PortName<Name> named{};
 

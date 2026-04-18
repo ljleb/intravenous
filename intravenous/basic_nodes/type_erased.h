@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include <typeinfo>
 #include <vector>
 
 namespace iv {
@@ -39,6 +40,8 @@ namespace iv {
         std::optional<size_t> _ttl_samples;
         bool _can_skip_block = false;
         char const* _type_name = "<unknown>";
+        std::type_info const* _type_info = &typeid(void);
+        void const* (*_const_ptr_fn)(void const*) = +[](void const*) -> void const* { return nullptr; };
         void (*_declare_fn)(void*, DeclarationContext<TypeErasedNode> const&) = nullptr;
         void (*_tick_fn)(void*, TickSampleContext<TypeErasedNode> const&) = nullptr;
         void (*_tick_block_fn)(void*, TickBlockContext<TypeErasedNode> const&) = nullptr;
@@ -72,10 +75,12 @@ namespace iv {
             _ttl_samples = get_ttl_samples(node);
             _can_skip_block = get_can_skip_block(node);
             _type_name = typeid(Node).name();
+            _type_info = &typeid(Node);
             validate_max_block_size(_max_block_size, "node max_block_size() must be a power of 2");
 
             if constexpr (std::is_empty_v<Node>) {
                 _node = NodeStoragePtr(nullptr, +[](void*) {});
+                _const_ptr_fn = +[](void const*) -> void const* { return nullptr; };
                 _declare_fn = [](void*, DeclarationContext<TypeErasedNode> const& ctx) {
                     auto const& state = ctx.state();
                     do_declare(Node{}, ctx);
@@ -130,6 +135,7 @@ namespace iv {
                     new Node(std::move(node)),
                     +[](void* ptr) { delete static_cast<Node*>(ptr); }
                 );
+                _const_ptr_fn = +[](void const* ptr) -> void const* { return ptr; };
                 _declare_fn = [](void* node, DeclarationContext<TypeErasedNode> const& ctx) {
                     auto const& state = ctx.state();
                     do_declare(*static_cast<Node*>(node), ctx);
@@ -215,6 +221,15 @@ namespace iv {
         char const* type_name() const
         {
             return _type_name;
+        }
+
+        template<class Node>
+        Node const* try_as() const
+        {
+            if (*_type_info != typeid(Node)) {
+                return nullptr;
+            }
+            return static_cast<Node const*>(_const_ptr_fn(_node.get()));
         }
 
         std::optional<size_t> ttl_samples() const
