@@ -31,7 +31,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         // auto const sink = io.file(g, channel, "out.wav");
         auto const sink = io.sink(g, channel);
 
-        // auto const voice = polyphonic<1>(g, [&](SampleNodeRef m) {
+        auto const voice = polyphonic<4>(g, [&](auto m) {
             static size_t seed = 0;
             // m.connect_event_input("midi", midi);
 
@@ -54,8 +54,8 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             lo_pass(u_to_n, 0.0, dt);
             u_to_n < generator;
 
-            auto const voice = saw * amp;
-        // });
+            return saw * amp;
+        });
 
         SamplePortRef x = voice;
         // if (channel == 0)

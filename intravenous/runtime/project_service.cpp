@@ -867,8 +867,21 @@ namespace iv {
             live.sample_outputs = node.sample_outputs;
             live.event_inputs = node.event_inputs;
             live.event_outputs = node.event_outputs;
-            live.member_node_ids = node.member_node_ids;
             live.member_count = node.member_node_ids.size();
+            live.member_nodes.reserve(node.member_node_ids.size());
+            if (snapshot.has_value()) {
+                for (auto const& member_node_id : node.member_node_ids) {
+                    auto const it = snapshot->logical_node_index_by_id.find(member_node_id);
+                    if (it == snapshot->logical_node_index_by_id.end()) {
+                        continue;
+                    }
+                    auto const& member = snapshot->logical_nodes[it->second];
+                    live.member_nodes.push_back(LogicalNodeMemberInfo {
+                        .id = member.id,
+                        .kind = member.kind,
+                    });
+                }
+            }
             live.source_spans.reserve(node.source_spans.size());
             for (auto const& span : node.source_spans) {
                 live.source_spans.push_back(to_live_span(span));

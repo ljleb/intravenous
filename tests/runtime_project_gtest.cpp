@@ -277,12 +277,16 @@ IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
     });
 
     ASSERT_NE(it, result.nodes.end());
-    EXPECT_EQ(it->member_count, it->member_node_ids.size());
+    EXPECT_EQ(it->member_count, it->member_nodes.size());
     EXPECT_EQ(it->member_count, 2u);
-    EXPECT_TRUE(std::ranges::all_of(it->member_node_ids, [&](std::string const& node_id) {
-        return !node_id.empty() && node_id != it->id;
+    EXPECT_TRUE(std::ranges::all_of(it->member_nodes, [&](auto const& member) {
+        return !member.id.empty() && member.id != it->id && !member.kind.empty();
     }));
-    EXPECT_EQ(std::set<std::string>(it->member_node_ids.begin(), it->member_node_ids.end()).size(), it->member_node_ids.size());
+    std::set<std::string> member_ids;
+    for (auto const& member : it->member_nodes) {
+        member_ids.insert(member.id);
+    }
+    EXPECT_EQ(member_ids.size(), it->member_nodes.size());
     EXPECT_FALSE(it->source_spans.empty());
 }
 

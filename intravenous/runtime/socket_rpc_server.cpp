@@ -260,16 +260,17 @@ namespace iv {
             return json;
         }
 
-        std::string member_node_ids_json(std::vector<std::string> const& member_node_ids)
+        std::string member_nodes_json(std::vector<LogicalNodeMemberInfo> const& member_nodes)
         {
             std::string json = "[";
             bool first = true;
-            for (auto const& member_node_id : member_node_ids) {
+            for (auto const& member : member_nodes) {
                 if (!first) {
                     json += ",";
                 }
                 first = false;
-                json += "\"" + escape_json(member_node_id) + "\"";
+                json += "{\"id\":\"" + escape_json(member.id) +
+                    "\",\"kind\":\"" + escape_json(member.kind) + "\"}";
             }
             json += "]";
             return json;
@@ -299,7 +300,7 @@ namespace iv {
                 ",\"sampleOutputs\":" + logical_port_json(node.sample_outputs) +
                 ",\"eventInputs\":" + logical_port_json(node.event_inputs) +
                 ",\"eventOutputs\":" + logical_port_json(node.event_outputs) +
-                ",\"memberNodeIds\":" + member_node_ids_json(node.member_node_ids) +
+                ",\"memberNodes\":" + member_nodes_json(node.member_nodes) +
                 ",\"memberCount\":" + std::to_string(node.member_count) + "}";
         }
 

@@ -156,6 +156,7 @@ class LiveGraphProvider {
     makeEmptyItem() {
         const item = new LiveGraphItem("[no nodes]", vscode.TreeItemCollapsibleState.None, "");
         item.treeKey = "empty";
+        item.id = item.treeKey;
         item.contextValue = "intravenousEmpty";
         item.tooltip = "No visible logical nodes at the current selection";
         return item;
@@ -219,6 +220,7 @@ class LiveGraphProvider {
             node.memberCount > 1 ? `${node.memberCount} nodes` : (node.id || "")
         );
         item.treeKey = treeKey;
+        item.id = treeKey;
         item.contextValue = "intravenousNode";
         item.node = node;
         item.tooltip = `${node.kind || "node"}${Array.isArray(node.sourceSpans) ? ` • ${node.sourceSpans.length} source span${node.sourceSpans.length === 1 ? "" : "s"}` : ""}${node.memberCount > 1 ? ` • ${node.memberCount} members` : ""}`;
@@ -245,8 +247,8 @@ class LiveGraphProvider {
         if (eventOutputs) {
             children.push(eventOutputs);
         }
-        if (Array.isArray(node.memberNodeIds) && node.memberNodeIds.length > 1) {
-            children.push(this.makeMembersGroup(treeKey, node.memberNodeIds));
+        if (Array.isArray(node.memberNodes) && node.memberNodes.length > 1) {
+            children.push(this.makeMembersGroup(treeKey, node.memberNodes));
         }
         item.children = children;
         return item;
@@ -259,6 +261,7 @@ class LiveGraphProvider {
         const treeKey = `${parentTreeKey}/group:${label}`;
         const item = new LiveGraphItem(label, this.collapsibleStateFor(treeKey, true), `${ports.length}`);
         item.treeKey = treeKey;
+        item.id = treeKey;
         item.children = ports.map((port, index) => {
             const connectivity = port.connectivity || "disconnected";
             const description = [port.type || "sample", connectivity].join(" · ");
@@ -269,16 +272,19 @@ class LiveGraphProvider {
         return item;
     }
 
-    makeMemberNodeItem(parentTreeKey, member) {
-        const treeKey = `${parentTreeKey}/member:${member.id}`;
-        const item = new LiveGraphItem(
-            member.id || member.kind || "member",
-            this.collapsibleStateFor(treeKey, false),
-            member.kind || ""
-        );
-        item.treeKey = treeKey;
+    applyMemberPresentation(item, member) {
+        item.label = member.kind || member.id || "member";
+        item.description = member.id || "";
         item.tooltip = `${member.kind || "member"}${Array.isArray(member.sourceSpans) ? ` • ${member.sourceSpans.length} source span${member.sourceSpans.length === 1 ? "" : "s"}` : ""}`;
         item.iconPath = singleNodeIconPath;
+    }
+
+    makeMemberNodeItem(parentTreeKey, member) {
+        const treeKey = `${parentTreeKey}/member:${member.id}`;
+        const item = new LiveGraphItem("", this.collapsibleStateFor(treeKey, false), "");
+        item.treeKey = treeKey;
+        item.id = treeKey;
+        this.applyMemberPresentation(item, member);
         item.children = [
             this.makePortGroup(treeKey, "sample inputs", member.sampleInputs || [], "input", "sample"),
             this.makePortGroup(treeKey, "sample outputs", member.sampleOutputs || [], "output", "sample"),
@@ -289,10 +295,7 @@ class LiveGraphProvider {
     }
 
     hydrateMemberItem(item, member) {
-        item.label = member.id || member.kind || "member";
-        item.description = member.kind || "";
-        item.tooltip = `${member.kind || "member"}${Array.isArray(member.sourceSpans) ? ` • ${member.sourceSpans.length} source span${member.sourceSpans.length === 1 ? "" : "s"}` : ""}`;
-        item.iconPath = singleNodeIconPath;
+        this.applyMemberPresentation(item, member);
         item.children = [
             this.makePortGroup(item.treeKey, "sample inputs", member.sampleInputs || [], "input", "sample"),
             this.makePortGroup(item.treeKey, "sample outputs", member.sampleOutputs || [], "output", "sample"),
@@ -304,15 +307,13 @@ class LiveGraphProvider {
         item.loadChildren = null;
     }
 
-    makeMemberPlaceholder(parentTreeKey, memberNodeId, allMemberNodeIds, memberItems, index) {
+    makeMemberPlaceholder(parentTreeKey, memberNode, allMemberNodes, memberItems, index) {
+        const memberNodeId = memberNode.id;
         const treeKey = `${parentTreeKey}/member:${memberNodeId}`;
-        const item = new LiveGraphItem(
-            memberNodeId,
-            this.collapsibleStateFor(treeKey, false),
-            ""
-        );
+        const item = new LiveGraphItem("", this.collapsibleStateFor(treeKey, false), "");
         item.treeKey = treeKey;
-        item.iconPath = singleNodeIconPath;
+        item.id = treeKey;
+        this.applyMemberPresentation(item, memberNode);
         item.children = [];
         item.childrenLoaded = false;
         item.memberLoaded = false;
@@ -327,14 +328,14 @@ class LiveGraphProvider {
             }
 
             const start = Math.max(0, index - 5);
-            const end = Math.min(allMemberNodeIds.length, index + 6);
-            const nearbyIds = allMemberNodeIds.slice(start, end);
+            const end = Math.min(allMemberNodes.length, index + 6);
+            const nearbyIds = allMemberNodes.slice(start, end).map((member) => member.id);
             const resolvedMembers = await this.logicalNodeResolver(nearbyIds);
             const membersById = new Map((resolvedMembers || []).map((member) => [member.id, member]));
 
             for (let i = start; i < end; ++i) {
                 const sibling = memberItems[i];
-                const member = membersById.get(allMemberNodeIds[i]);
+                const member = membersById.get(allMemberNodes[i].id);
                 if (!sibling || !member) {
                     continue;
                 }
@@ -347,13 +348,14 @@ class LiveGraphProvider {
         return item;
     }
 
-    makeMembersGroup(parentTreeKey, memberNodeIds) {
+    makeMembersGroup(parentTreeKey, memberNodes) {
         const treeKey = `${parentTreeKey}/group:members`;
-        const item = new LiveGraphItem("members", this.collapsibleStateFor(treeKey, true), `${memberNodeIds.length}`);
+        const item = new LiveGraphItem("members", this.collapsibleStateFor(treeKey, true), `${memberNodes.length}`);
         item.treeKey = treeKey;
-        const memberItems = new Array(memberNodeIds.length);
-        for (let index = 0; index < memberNodeIds.length; ++index) {
-            memberItems[index] = this.makeMemberPlaceholder(treeKey, memberNodeIds[index], memberNodeIds, memberItems, index);
+        item.id = treeKey;
+        const memberItems = new Array(memberNodes.length);
+        for (let index = 0; index < memberNodes.length; ++index) {
+            memberItems[index] = this.makeMemberPlaceholder(treeKey, memberNodes[index], memberNodes, memberItems, index);
         }
         item.children = memberItems;
         return item;
