@@ -404,9 +404,7 @@ class NodeSpanHighlighter {
 
     clearPrimary() {
         this.spans = [];
-        for (const editor of vscode.window.visibleTextEditors) {
-            editor.setDecorations(this.decorationType, []);
-        }
+        this.refresh();
     }
 
     setSpans(spans) {
@@ -468,6 +466,7 @@ class WorkspaceSession {
         this.lastQueryError = "";
         this.refreshInFlight = null;
         this.lastQuery = null;
+        this.startInFlight = null;
     }
 
     resolveServerBinary() {
@@ -535,6 +534,19 @@ class WorkspaceSession {
     }
 
     async start() {
+        if (this.client) {
+            return true;
+        }
+        if (this.startInFlight) {
+            return await this.startInFlight;
+        }
+        this.startInFlight = this.startImpl().finally(() => {
+            this.startInFlight = null;
+        });
+        return await this.startInFlight;
+    }
+
+    async startImpl() {
         if (!this.isIntravenousProject()) {
             return false;
         }
@@ -554,13 +566,10 @@ class WorkspaceSession {
             INTRAVENOUS_DIR: process.env.INTRAVENOUS_DIR || serverDir,
         };
 
-        if (await this.tryConnectExisting(socketPath)) {
-            const result = await this.client.request("server.initialize", {
-                workspaceRoot: this.workspaceRoot(),
-            });
-            this.executionEpoch = result.executionEpoch;
+        if (await this.tryConnectExisting(socketPath, 2000)) {
+            await this.initializeConnectedClient();
             this.outputChannel.appendLine(`connected to existing Intravenous server: ${socketPath}`);
-            return;
+            return true;
         }
 
         try {
@@ -584,13 +593,19 @@ class WorkspaceSession {
 
         await this.waitForSocket(socketPath, 10000);
 
-        this.client = new JsonRpcSocketClient(socketPath, (method, params) => this.handleNotification(method, params));
-        await this.client.connect();
+        if (!(await this.tryConnectExisting(socketPath, 10000))) {
+            throw new Error(`Intravenous server socket appeared but did not accept connections: ${socketPath}`);
+        }
+        await this.initializeConnectedClient();
+        return true;
+    }
+
+    async initializeConnectedClient() {
         const result = await this.client.request("server.initialize", {
             workspaceRoot: this.workspaceRoot(),
         });
         this.executionEpoch = result.executionEpoch;
-        return true;
+        return result;
     }
 
     async waitForSocket(socketPath, timeoutMs) {
@@ -604,19 +619,33 @@ class WorkspaceSession {
         throw new Error(`Intravenous server socket did not appear: ${socketPath}`);
     }
 
-    async tryConnectExisting(socketPath) {
-        if (!fs.existsSync(socketPath)) {
-            return false;
-        }
+    async tryConnectExisting(socketPath, timeoutMs = 1000) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if (!fs.existsSync(socketPath)) {
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                continue;
+            }
 
-        const client = new JsonRpcSocketClient(socketPath, (method, params) => this.handleNotification(method, params));
-        try {
-            await client.connect(1000);
-            this.client = client;
-            return true;
-        } catch (_) {
-            client.dispose();
-            return false;
+            const client = new JsonRpcSocketClient(socketPath, (method, params) => this.handleNotification(method, params));
+            try {
+                await client.connect(Math.min(1000, Math.max(deadline - Date.now(), 100)));
+                this.client = client;
+                return true;
+            } catch (_) {
+                client.dispose();
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+        }
+        return false;
+    }
+
+    updatePrimaryHighlight(nodes) {
+        const primary = Array.isArray(nodes) && nodes.length > 0 ? nodes[0] : null;
+        if (primary && Array.isArray(primary.sourceSpans) && primary.sourceSpans.length > 0) {
+            this.highlighter.setSpans(primary.sourceSpans);
+        } else {
+            this.highlighter.clearPrimary();
         }
     }
 
@@ -771,12 +800,7 @@ class WorkspaceSession {
             if (!this.refreshInFlight && vscode.window.activeTextEditor) {
                 this.refreshInFlight = this.updateFromEditor(vscode.window.activeTextEditor)
                     .then((nodes) => {
-                        const primary = Array.isArray(nodes) && nodes.length > 0 ? nodes[0] : null;
-                        if (primary && Array.isArray(primary.sourceSpans)) {
-                            this.highlighter.setSpans(primary.sourceSpans);
-                        } else {
-                            this.highlighter.clearPrimary();
-                        }
+                        this.updatePrimaryHighlight(nodes);
                     })
                     .catch((error) => {
                         const message = `Intravenous query failed: ${error.message}`;
@@ -784,7 +808,6 @@ class WorkspaceSession {
                             this.outputChannel.appendLine(message);
                             this.lastQueryError = message;
                         }
-                        this.highlighter.clearPrimary();
                     })
                     .finally(() => {
                         this.refreshInFlight = null;
@@ -895,12 +918,7 @@ async function activate(context) {
         await session.start();
         if (vscode.window.activeTextEditor) {
             const nodes = await session.updateFromEditor(vscode.window.activeTextEditor);
-            const primary = Array.isArray(nodes) && nodes.length > 0 ? nodes[0] : null;
-            if (primary && Array.isArray(primary.sourceSpans)) {
-                highlighter.setSpans(primary.sourceSpans);
-            } else {
-                highlighter.clearPrimary();
-            }
+            session.updatePrimaryHighlight(nodes);
         }
     } catch (error) {
         outputChannel.appendLine(`Intravenous startup failed: ${error.message}`);
@@ -913,19 +931,13 @@ async function activate(context) {
         }
         try {
             const nodes = await session.updateFromEditor(event.textEditor);
-            const primary = Array.isArray(nodes) && nodes.length > 0 ? nodes[0] : null;
-            if (primary && Array.isArray(primary.sourceSpans)) {
-                highlighter.setSpans(primary.sourceSpans);
-            } else {
-                highlighter.clearPrimary();
-            }
+            session.updatePrimaryHighlight(nodes);
         } catch (error) {
             const message = `Intravenous query failed: ${error.message}`;
             if (message !== session.lastQueryError) {
                 outputChannel.appendLine(message);
                 session.lastQueryError = message;
             }
-            highlighter.clearPrimary();
         }
     }));
 }

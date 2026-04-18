@@ -619,6 +619,7 @@ namespace iv {
 
         GraphSnapshot build_graph_snapshot(
             TypeErasedNode const& root,
+            GraphIntrospectionMetadata const& introspection,
             std::filesystem::path const& module_root,
             std::string const& module_id,
             uint64_t execution_epoch
@@ -660,8 +661,8 @@ namespace iv {
                     snapshot_node.id = graph._node_ids[global_i];
                     snapshot_node.kind = demangle_type_name(node._node.type_name());
 
-                    if (global_i < graph._node_source_spans.size()) {
-                        for (SourceSpan const& span : graph._node_source_spans[global_i]) {
+                    if (global_i < introspection.node_source_spans.size()) {
+                        for (SourceSpan const& span : introspection.node_source_spans[global_i]) {
                             snapshot_node.source_spans.push_back(SnapshotNodeSpan {
                                 .file_path = normalized_path_string(span.file_path),
                                 .begin = span.begin,
@@ -730,9 +731,9 @@ namespace iv {
                 snapshot.concrete_nodes.push_back(std::move(*maybe_node));
             }
 
-            snapshot.concrete_nodes.reserve(snapshot.concrete_nodes.size() + graph._lowered_subgraphs.size());
-            for (size_t lowered_i = 0; lowered_i < graph._lowered_subgraphs.size(); ++lowered_i) {
-                auto const& lowered_subgraph = graph._lowered_subgraphs[lowered_i];
+            snapshot.concrete_nodes.reserve(snapshot.concrete_nodes.size() + introspection.lowered_subgraphs.size());
+            for (size_t lowered_i = 0; lowered_i < introspection.lowered_subgraphs.size(); ++lowered_i) {
+                auto const& lowered_subgraph = introspection.lowered_subgraphs[lowered_i];
                 ConcreteNode snapshot_node;
                 snapshot_node.id = "subgraph:" + std::to_string(lowered_i);
                 snapshot_node.kind = lowered_subgraph.kind.empty() ? std::string("Subgraph") : lowered_subgraph.kind;
@@ -1065,7 +1066,13 @@ namespace iv {
                 std::vector<std::string> created_node_ids;
                 {
                     std::scoped_lock lock(mutex);
-                    snapshot = build_graph_snapshot(loaded_graph.root, config->module_root, loaded_graph.module_id, 1);
+                    snapshot = build_graph_snapshot(
+                        loaded_graph.root,
+                        loaded_graph.introspection,
+                        config->module_root,
+                        loaded_graph.module_id,
+                        1
+                    );
                     created_node_ids = assign_fresh_logical_node_ids(*snapshot);
                     initialized = true;
                 }
@@ -1103,7 +1110,13 @@ namespace iv {
                                     deleted_node_ids.push_back(node.id);
                                 }
                             }
-                            snapshot = build_graph_snapshot(reload.root, config->module_root, reload.module_id, next_epoch);
+                            snapshot = build_graph_snapshot(
+                                reload.root,
+                                reload.introspection,
+                                config->module_root,
+                                reload.module_id,
+                                next_epoch
+                            );
                             created_node_ids = assign_fresh_logical_node_ids(*snapshot);
                         }
                         emit_event(RuntimeProjectEvent {

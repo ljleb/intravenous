@@ -1052,7 +1052,6 @@ namespace iv::details {
         std::vector<TypeErasedNode> nodes,
         std::vector<std::optional<size_t>> explicit_ttl_samples,
         std::vector<std::string> node_ids,
-        std::vector<std::vector<SourceSpan>> node_source_spans,
         std::unordered_set<GraphEdge> edges,
         std::unordered_set<GraphEventEdge> event_edges,
         std::vector<DetachedInfo> detached,
@@ -1061,8 +1060,7 @@ namespace iv::details {
         std::vector<OutputConfig> public_outputs,
         std::vector<EventInputConfig> public_event_inputs,
         std::vector<EventOutputConfig> public_event_outputs,
-        std::vector<DormancyGroup> dormancy_groups,
-        std::vector<LoweredSubgraph> lowered_subgraphs
+        std::vector<DormancyGroup> dormancy_groups
     )
     {
         auto [source_of, target_of] = [&] {
@@ -1154,10 +1152,8 @@ namespace iv::details {
             .public_event_outputs = std::move(public_event_outputs),
             .public_output_buffer_plans = std::move(public_output_buffer_plans),
             .dormancy_groups = std::move(dormancy_groups),
-            .lowered_subgraphs = std::move(lowered_subgraphs),
             .internal_latency = 0,
             .node_ids = std::move(node_ids),
-            .node_source_spans = std::move(node_source_spans),
         };
         {
             std::unordered_map<PortId, PortId> artifact_target_of;

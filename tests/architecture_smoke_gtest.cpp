@@ -1389,6 +1389,7 @@ TEST(ArchitectureSmoke, ExecuteReloadSwitchesAtExecutorBlockBoundaryWithinActive
                 make_constant_audio_graph(&new_value),
                 {},
                 {},
+                {},
                 "live_reload",
                 {},
                 1

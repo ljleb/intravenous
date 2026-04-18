@@ -382,12 +382,17 @@ namespace iv {
         mutable std::mutex write_mutex;
         mutable std::condition_variable ready_cv;
         mutable std::condition_variable stopped_cv;
+        mutable std::condition_variable initialized_cv;
         bool ready = false;
         bool stopped = false;
+        bool initialized = false;
         int listen_fd = -1;
         int client_fd = -1;
+        bool client_initialized = false;
         std::optional<std::jthread> accept_thread;
+        std::optional<std::jthread> initialize_thread;
         RuntimeProjectInitializeResult initialized_result;
+        std::exception_ptr initialization_exception;
 
         explicit Impl(
             std::filesystem::path workspace_root_,
@@ -451,6 +456,9 @@ namespace iv {
             {
                 std::scoped_lock client_lock(client_mutex);
                 fd = client_fd;
+                if (!client_initialized) {
+                    return;
+                }
             }
             if (fd < 0) {
                 return;
@@ -491,17 +499,21 @@ namespace iv {
 
                     int request_id = 0;
                     std::string response;
+                    bool mark_client_initialized = false;
                     try {
                         request_id = parse_request_id(line);
                         auto const method = parse_request_method(line);
 
                         if (method == "server.initialize") {
+                            wait_until_initialized();
                             auto const requested_workspace = normalize_path(parse_string_param(line, "workspaceRoot"));
                             if (requested_workspace != workspace_root) {
                                 throw std::runtime_error("workspaceRoot does not match server workspace");
                             }
                             response = jsonrpc_result(request_id, initialize_result_json(initialized_result));
+                            mark_client_initialized = true;
                         } else if (method == "graph.queryBySpans") {
+                            wait_until_initialized();
                             auto const file_path = parse_string_param(line, "filePath");
                             auto const ranges = parse_ranges(line);
                             auto const match_mode = parse_match_mode(line);
@@ -510,16 +522,19 @@ namespace iv {
                                 query_result_json(service.query_by_spans(file_path, ranges, match_mode))
                             );
                         } else if (method == "graph.queryActiveRegions") {
+                            wait_until_initialized();
                             auto const file_path = parse_string_param(line, "filePath");
                             response = jsonrpc_result(
                                 request_id,
                                 region_query_result_json(service.query_active_regions(file_path))
                             );
                         } else if (method == "graph.getLogicalNode") {
+                            wait_until_initialized();
                             auto const execution_epoch = parse_uint64_param(line, "executionEpoch");
                             auto const node_id = parse_string_param(line, "nodeId");
                             response = jsonrpc_result(request_id, logical_node_json(service.get_logical_node(execution_epoch, node_id)));
                         } else if (method == "graph.getLogicalNodes") {
+                            wait_until_initialized();
                             auto const execution_epoch = parse_uint64_param(line, "executionEpoch");
                             auto const node_ids = parse_string_array_param(line, "nodeIds");
                             response = jsonrpc_result(request_id, logical_nodes_json(service.get_logical_nodes(execution_epoch, node_ids)));
@@ -538,6 +553,12 @@ namespace iv {
                     if (!send_message(fd, response)) {
                         return;
                     }
+                    if (mark_client_initialized) {
+                        std::scoped_lock client_lock(client_mutex);
+                        if (client_fd == fd) {
+                            client_initialized = true;
+                        }
+                    }
                 }
             }
         }
@@ -555,12 +576,14 @@ namespace iv {
                 {
                     std::scoped_lock client_lock(client_mutex);
                     client_fd = accepted_fd;
+                    client_initialized = false;
                 }
                 handle_client(accepted_fd);
                 {
                     std::scoped_lock client_lock(client_mutex);
                     if (client_fd == accepted_fd) {
                         client_fd = -1;
+                        client_initialized = false;
                     }
                 }
                 ::close(accepted_fd);
@@ -573,10 +596,19 @@ namespace iv {
             stopped_cv.notify_all();
         }
 
+        void wait_until_initialized()
+        {
+            std::unique_lock lock(mutex);
+            initialized_cv.wait(lock, [&] {
+                return initialized || initialization_exception != nullptr;
+            });
+            if (initialization_exception != nullptr) {
+                std::rethrow_exception(initialization_exception);
+            }
+        }
+
         void start()
         {
-            initialized_result = service.initialize();
-
             std::filesystem::create_directories(socket_path_value.parent_path());
             std::error_code ec;
             std::filesystem::remove(socket_path_value, ec);
@@ -610,6 +642,24 @@ namespace iv {
             accept_thread.emplace([this](std::stop_token stop_token) {
                 accept_loop(stop_token);
             });
+
+            initialize_thread.emplace([this](std::stop_token) {
+                try {
+                    auto result = service.initialize();
+                    {
+                        std::scoped_lock lock(mutex);
+                        initialized_result = std::move(result);
+                        initialized = true;
+                    }
+                } catch (...) {
+                    {
+                        std::scoped_lock lock(mutex);
+                        initialization_exception = std::current_exception();
+                    }
+                    request_shutdown();
+                }
+                initialized_cv.notify_all();
+            });
         }
 
         void request_shutdown()
@@ -620,14 +670,20 @@ namespace iv {
                 if (client_fd >= 0) {
                     ::shutdown(client_fd, SHUT_RDWR);
                 }
+                client_initialized = false;
             }
             if (listen_fd >= 0) {
                 ::shutdown(listen_fd, SHUT_RDWR);
                 ::close(listen_fd);
                 listen_fd = -1;
             }
+            std::error_code ec;
+            std::filesystem::remove(socket_path_value, ec);
             if (accept_thread.has_value()) {
                 accept_thread->request_stop();
+            }
+            if (initialize_thread.has_value()) {
+                initialize_thread->request_stop();
             }
         }
     };

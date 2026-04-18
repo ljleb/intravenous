@@ -10,6 +10,11 @@
 #include <vector>
 
 namespace iv {
+    struct GraphIntrospectionMetadata {
+        std::vector<LoweredSubgraph> lowered_subgraphs;
+        std::vector<std::vector<SourceSpan>> node_source_spans;
+    };
+
     struct GraphBuildArtifact {
         std::string graph_id;
         std::vector<GraphSccWrapper> scc_wrappers;
@@ -23,9 +28,7 @@ namespace iv {
         std::vector<EventOutputConfig> public_event_outputs;
         std::vector<PortBufferPlan> public_output_buffer_plans;
         std::vector<DormancyGroup> dormancy_groups;
-        std::vector<LoweredSubgraph> lowered_subgraphs;
         size_t internal_latency;
         std::vector<std::string> node_ids;
-        std::vector<std::vector<SourceSpan>> node_source_spans;
     };
 }

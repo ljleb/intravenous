@@ -1189,9 +1189,9 @@ namespace iv {
                 &session
             );
             TypeErasedModule root_module = session.load_module(root.id);
-            TypeErasedNode built_root = [&]() -> TypeErasedNode {
+            GraphBuilder::BuildResult built_root = [&]() -> GraphBuilder::BuildResult {
                 try {
-                    return root_module.builder(context).build();
+                    return root_module.builder(context).build_with_metadata();
                 } catch (std::exception const& e) {
                     throw std::runtime_error(wrap_exception(
                         "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "'",
@@ -1206,8 +1206,9 @@ namespace iv {
             session.ensure_loaded_binary_dependencies();
 
             return LoadedGraph(
-                std::move(built_root),
+                std::move(built_root.graph),
                 std::move(session.module_refs),
+                std::move(built_root.introspection),
                 root.request_path,
                 root.id,
                 std::move(session.dependencies),
@@ -1219,6 +1220,7 @@ namespace iv {
     ModuleLoader::LoadedGraph::LoadedGraph(
         TypeErasedNode root_,
         std::vector<ModuleRef> module_refs_,
+        GraphIntrospectionMetadata introspection_,
         std::filesystem::path module_path_,
         std::string module_id_,
         std::vector<ModuleDependency> dependencies_,
@@ -1226,6 +1228,7 @@ namespace iv {
     ) :
         module_refs(std::move(module_refs_)),
         root(std::move(root_)),
+        introspection(std::move(introspection_)),
         module_path(std::move(module_path_)),
         module_id(std::move(module_id_)),
         dependencies(std::move(dependencies_)),

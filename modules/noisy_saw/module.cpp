@@ -55,7 +55,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             return saw * ("amplitude"_P << m);
         });
 
-        SamplePortRef x = voice;
+        auto x = voice;
         // if (channel == 0)
         // {
         //     auto constexpr port = "l0"_P;

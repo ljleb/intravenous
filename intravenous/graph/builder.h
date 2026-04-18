@@ -1268,7 +1268,12 @@ namespace iv {
             outputs(std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
         }
 
-        Graph build(size_t detach_id_offset = 0) const
+        struct BuildResult {
+            Graph graph;
+            GraphIntrospectionMetadata introspection;
+        };
+
+        BuildResult build_with_metadata(size_t detach_id_offset = 0) const
         {
             if (!_outputs_defined) {
                 details::error("builder " + _builder_id.value + ": g.outputs(...) must be called before build()");
@@ -1590,23 +1595,40 @@ namespace iv {
             }();
             auto execution_plan = details::build_execution_plan(g.nodes, g.edges, g.event_edges, detached);
 
-            return Graph(details::build_graph_artifact(
+            GraphIntrospectionMetadata introspection {
+                .lowered_subgraphs = std::move(lowered_subgraphs),
+                .node_source_spans = std::move(g.node_source_spans),
+            };
+            auto dormancy_groups = details::compile_dormancy_groups(
+                g,
+                introspection.lowered_subgraphs,
                 _builder_id.value,
-                std::move(g.nodes),
-                std::move(g.explicit_ttl_samples),
-                std::move(g.node_ids),
-                std::move(g.node_source_spans),
-                std::move(g.edges),
-                std::move(g.event_edges),
-                std::move(detached),
-                std::move(execution_plan),
-                _public_inputs,
-                _public_outputs,
-                _public_event_inputs,
-                _public_event_outputs,
-                details::compile_dormancy_groups(g, lowered_subgraphs, _builder_id.value, execution_plan),
-                std::move(lowered_subgraphs)
-            ));
+                execution_plan
+            );
+
+            return BuildResult {
+                .graph = Graph(details::build_graph_artifact(
+                    _builder_id.value,
+                    std::move(g.nodes),
+                    std::move(g.explicit_ttl_samples),
+                    std::move(g.node_ids),
+                    std::move(g.edges),
+                    std::move(g.event_edges),
+                    std::move(detached),
+                    std::move(execution_plan),
+                    _public_inputs,
+                    _public_outputs,
+                    _public_event_inputs,
+                    _public_event_outputs,
+                    std::move(dormancy_groups)
+                )),
+                .introspection = std::move(introspection),
+            };
+        }
+
+        Graph build(size_t detach_id_offset = 0) const
+        {
+            return build_with_metadata(detach_id_offset).graph;
         }
 
     private:

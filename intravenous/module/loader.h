@@ -1,5 +1,6 @@
 #pragma once
 
+#include "graph/build_types.h"
 #include "module/dependency.h"
 #include "module/module.h"
 
@@ -32,6 +33,7 @@ namespace iv {
         struct LoadedGraph {
             std::vector<ModuleRef> module_refs;
             TypeErasedNode root;
+            GraphIntrospectionMetadata introspection;
             std::filesystem::path module_path;
             std::string module_id;
             std::vector<ModuleDependency> dependencies;
@@ -40,6 +42,7 @@ namespace iv {
             LoadedGraph(
                 TypeErasedNode root_,
                 std::vector<ModuleRef> module_refs_,
+                GraphIntrospectionMetadata introspection_,
                 std::filesystem::path module_path_,
                 std::string module_id_,
                 std::vector<ModuleDependency> dependencies_,
