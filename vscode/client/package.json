@@ -12,10 +12,17 @@
   ],
   "activationEvents": [
     "workspaceContains:.intravenous",
-    "onView:intravenous.liveGraph"
+    "onView:intravenous.liveGraph",
+    "onCommand:intravenous.selectNodeSourceSpans"
   ],
   "main": "./extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "intravenous.selectNodeSourceSpans",
+        "title": "Select Node Source Spans"
+      }
+    ],
     "configuration": {
       "title": "Intravenous",
       "properties": {
@@ -40,6 +47,22 @@
         {
           "id": "intravenous.liveGraph",
           "name": "Live Graph"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "intravenous.selectNodeSourceSpans",
+          "when": "editorTextFocus && resourceScheme == file",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "intravenous.selectNodeSourceSpans",
+          "when": "view == intravenous.liveGraph && viewItem == intravenousNode",
+          "group": "navigation"
         }
       ]
     }

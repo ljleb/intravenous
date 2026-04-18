@@ -128,11 +128,13 @@ class LiveGraphItem extends vscode.TreeItem {
 class LiveGraphProvider {
     constructor() {
         this.items = [];
+        this.nodes = [];
         this.onDidChangeTreeDataEmitter = new vscode.EventEmitter();
         this.onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
     }
 
     setNodes(nodes) {
+        this.nodes = nodes;
         this.items = nodes.map((node) => this.makeNodeItem(node));
         this.onDidChangeTreeDataEmitter.fire();
     }
@@ -155,33 +157,36 @@ class LiveGraphProvider {
             node.kind || ""
         );
         item.contextValue = "intravenousNode";
+        item.node = node;
+        item.tooltip = `${node.kind || "node"}${Array.isArray(node.sourceSpans) ? ` • ${node.sourceSpans.length} source span${node.sourceSpans.length === 1 ? "" : "s"}` : ""}`;
+        item.iconPath = new vscode.ThemeIcon("symbol-misc");
 
         const children = [];
-        if (Array.isArray(node.sourceSpans)) {
-            for (const span of node.sourceSpans) {
-                children.push(new LiveGraphItem(
-                    `${path.basename(span.filePath)}:${span.start.line}:${span.start.column}-${span.end.line}:${span.end.column}`,
-                    vscode.TreeItemCollapsibleState.None,
-                    "source"
-                ));
-            }
-        }
-
-        children.push(this.makePortGroup("sample inputs", node.sampleInputs || []));
-        children.push(this.makePortGroup("sample outputs", node.sampleOutputs || []));
-        children.push(this.makePortGroup("event inputs", node.eventInputs || []));
-        children.push(this.makePortGroup("event outputs", node.eventOutputs || []));
+        children.push(this.makePortGroup("sample inputs", node.sampleInputs || [], "input", "sample"));
+        children.push(this.makePortGroup("sample outputs", node.sampleOutputs || [], "output", "sample"));
+        children.push(this.makePortGroup("event inputs", node.eventInputs || [], "input", "event"));
+        children.push(this.makePortGroup("event outputs", node.eventOutputs || [], "output", "event"));
         item.children = children;
         return item;
     }
 
-    makePortGroup(label, ports) {
-        const item = new LiveGraphItem(label, vscode.TreeItemCollapsibleState.Collapsed, `${ports.length}`);
+    makePortGroup(label, ports, direction, portKind) {
+        const item = new LiveGraphItem(label, vscode.TreeItemCollapsibleState.Expanded, `${ports.length}`);
         item.children = ports.map((port, index) => {
             const description = [port.type || "sample", port.connected ? "connected" : "disconnected"].join(" · ");
-            return new LiveGraphItem(port.name || `${label} ${index}`, vscode.TreeItemCollapsibleState.None, description);
+            const child = new LiveGraphItem(port.name || `${label} ${index}`, vscode.TreeItemCollapsibleState.None, description);
+            child.iconPath = this.portIcon(direction, portKind);
+            return child;
         });
         return item;
+    }
+
+    portIcon(direction, portKind) {
+        const iconName = direction === "input" ? "arrow-right" : "arrow-left";
+        const color = new vscode.ThemeColor(
+            direction === "input" ? "terminal.ansiYellow" : "terminal.ansiBlue"
+        );
+        return new vscode.ThemeIcon(iconName, color);
     }
 }
 
@@ -195,6 +200,7 @@ class WorkspaceSession {
         this.executionEpoch = 0;
         this.lastQueryError = "";
         this.refreshInFlight = null;
+        this.lastQuery = null;
     }
 
     resolveServerBinary() {
@@ -365,13 +371,78 @@ class WorkspaceSession {
             return;
         }
 
+        this.lastQuery = {
+            filePath: editor.document.uri.fsPath,
+            ranges,
+        };
+
         const result = await this.client.request("graph.queryBySpans", {
             filePath: editor.document.uri.fsPath,
             ranges,
         });
         this.executionEpoch = result.executionEpoch;
         this.lastQueryError = "";
-        this.provider.setNodes(result.nodes || []);
+        this.provider.setNodes(this.sortNodesByRelevance(result.nodes || [], this.lastQuery));
+    }
+
+    async ensureReady() {
+        if (!this.isIntravenousProject()) {
+            this.outputChannel.appendLine(`workspace is not an Intravenous project: missing ${this.projectMarkerPath()}`);
+            return false;
+        }
+        if (!this.client) {
+            await this.start();
+        }
+        return true;
+    }
+
+    positionKey(position) {
+        return (position.line * 1000000) + position.column;
+    }
+
+    sortNodesByRelevance(nodes, query) {
+        if (!query) {
+            return nodes;
+        }
+
+        const scoreNode = (node) => {
+            let best = null;
+            for (const span of node.sourceSpans || []) {
+                if (span.filePath !== query.filePath) {
+                    continue;
+                }
+                const spanStart = this.positionKey(span.start);
+                const spanEnd = this.positionKey(span.end);
+                const spanLength = Math.max(spanEnd - spanStart, 0);
+
+                for (const range of query.ranges) {
+                    const rangeStart = this.positionKey(range.start);
+                    const rangeEnd = this.positionKey(range.end);
+                    const boundaryDistance = Math.abs(spanStart - rangeStart) + Math.abs(spanEnd - rangeEnd);
+                    const score = [boundaryDistance, spanLength, spanStart];
+                    if (!best || score[0] < best[0] || (score[0] === best[0] && (score[1] < best[1] || (score[1] === best[1] && score[2] < best[2])))) {
+                        best = score;
+                    }
+                }
+            }
+
+            return best || [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
+        };
+
+        return [...nodes].sort((left, right) => {
+            const a = scoreNode(left);
+            const b = scoreNode(right);
+            if (a[0] !== b[0]) {
+                return a[0] - b[0];
+            }
+            if (a[1] !== b[1]) {
+                return a[1] - b[1];
+            }
+            if (a[2] !== b[2]) {
+                return a[2] - b[2];
+            }
+            return String(left.id).localeCompare(String(right.id));
+        });
     }
 
     logServerEvent(prefix, params) {
@@ -450,6 +521,62 @@ class WorkspaceSession {
     }
 }
 
+async function selectSourceSpans(spans) {
+    if (!Array.isArray(spans) || spans.length === 0) {
+        return;
+    }
+
+    const spansByFile = new Map();
+    for (const span of spans) {
+        const list = spansByFile.get(span.filePath) || [];
+        list.push(span);
+        spansByFile.set(span.filePath, list);
+    }
+
+    if (spansByFile.size === 1) {
+        const [[filePath, fileSpans]] = spansByFile.entries();
+        const document = await vscode.workspace.openTextDocument(filePath);
+        const editor = await vscode.window.showTextDocument(document, { preview: false });
+        editor.selections = fileSpans.map((span) => new vscode.Selection(
+            span.start.line - 1,
+            span.start.column - 1,
+            span.end.line - 1,
+            span.end.column - 1
+        ));
+        if (editor.selections.length > 0) {
+            editor.revealRange(editor.selections[0], vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+        }
+        return;
+    }
+
+    const locations = [];
+    for (const [filePath, fileSpans] of spansByFile.entries()) {
+        const uri = vscode.Uri.file(filePath);
+        for (const span of fileSpans) {
+            locations.push(new vscode.Location(
+                uri,
+                new vscode.Range(
+                    span.start.line - 1,
+                    span.start.column - 1,
+                    span.end.line - 1,
+                    span.end.column - 1
+                )
+            ));
+        }
+    }
+    if (locations.length > 0) {
+        const first = locations[0];
+        await vscode.commands.executeCommand(
+            "editor.action.goToLocations",
+            first.uri,
+            first.range.start,
+            locations,
+            "peek",
+            "No source spans"
+        );
+    }
+}
+
 async function activate(context) {
     const outputChannel = vscode.window.createOutputChannel("Intravenous");
     const provider = new LiveGraphProvider();
@@ -463,6 +590,34 @@ async function activate(context) {
 
     const session = new WorkspaceSession(workspaceFolder, outputChannel, provider);
     context.subscriptions.push({ dispose: () => void session.shutdown() });
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.selectNodeSourceSpans", async (item) => {
+        try {
+            const node = item && item.node;
+            if (node && Array.isArray(node.sourceSpans) && node.sourceSpans.length > 0) {
+                await selectSourceSpans(node.sourceSpans);
+                return;
+            }
+
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+                return;
+            }
+            if (!await session.ensureReady()) {
+                return;
+            }
+
+            await session.updateFromEditor(editor);
+            const spans = [];
+            for (const matchedNode of session.provider.nodes || []) {
+                for (const span of matchedNode.sourceSpans || []) {
+                    spans.push(span);
+                }
+            }
+            await selectSourceSpans(spans);
+        } catch (error) {
+            outputChannel.appendLine(`Intravenous select spans failed: ${error.message}`);
+        }
+    }));
 
     if (!session.isIntravenousProject()) {
         outputChannel.appendLine(`workspace is not an Intravenous project: missing ${session.projectMarkerPath()}`);
