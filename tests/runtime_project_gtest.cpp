@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <optional>
 #include <string>
 #include <thread>
@@ -215,6 +216,53 @@ TEST(RuntimeProjectService, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 
     bool has_any_port = !node.sample_inputs.empty() || !node.sample_outputs.empty() || !node.event_inputs.empty() || !node.event_outputs.empty();
     EXPECT_TRUE(has_any_port);
+}
+
+TEST(RuntimeProjectService, QueryBySpansIntersectsMultipleSelections)
+{
+    auto const workspace = copy_fixture_workspace("runtime_project_query_by_spans_intersection", "local_cmake");
+    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
+    write_text(workspace / ".intravenous", "");
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const dt_range = iv::SourceRange {
+        .start = { .line = 8, .column = 20 },
+        .end = { .line = 8, .column = 20 },
+    };
+    auto const sink_range = iv::SourceRange {
+        .start = { .line = 11, .column = 24 },
+        .end = { .line = 11, .column = 24 },
+    };
+
+    auto const dt_only = service.query_by_spans(module_cpp, { dt_range });
+    auto const sink_only = service.query_by_spans(module_cpp, { sink_range });
+    auto const both = service.query_by_spans(module_cpp, { dt_range, sink_range });
+
+    auto const ids = [](iv::RuntimeProjectQueryResult const& query) {
+        std::set<std::string> node_ids;
+        for (auto const& node : query.nodes) {
+            node_ids.insert(node.id);
+        }
+        return node_ids;
+    };
+
+    auto const dt_ids = ids(dt_only);
+    auto const sink_ids = ids(sink_only);
+    auto const both_ids = ids(both);
+
+    std::set<std::string> intersection;
+    std::set_intersection(
+        dt_ids.begin(), dt_ids.end(),
+        sink_ids.begin(), sink_ids.end(),
+        std::inserter(intersection, intersection.end())
+    );
+
+    EXPECT_EQ(both.execution_epoch, dt_only.execution_epoch);
+    EXPECT_EQ(both.execution_epoch, sink_only.execution_epoch);
+    EXPECT_EQ(both_ids, intersection);
 }
 
 TEST(RuntimeProjectService, MissingMarkerFailsInitialization)

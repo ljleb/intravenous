@@ -675,27 +675,23 @@ namespace iv {
         RuntimeProjectQueryResult result;
         result.execution_epoch = _impl->snapshot->execution_epoch;
 
+        auto span_touches_range = [](SnapshotNodeSpan const& span, std::pair<uint32_t, uint32_t> const& requested_range) {
+            auto const [begin, end] = requested_range;
+            if (begin == end) {
+                return span.begin <= begin && begin <= span.end;
+            }
+            return span.begin <= end && begin <= span.end;
+        };
+
         std::unordered_set<std::string> emitted;
         for (SnapshotNode const& node : _impl->snapshot->nodes) {
-            bool matches = false;
-            for (auto const& span : node.source_spans) {
-                if (span.file_path != normalized_file_path) {
-                    continue;
-                }
-                for (auto const& [begin, end] : requested_ranges) {
-                    if (begin == end) {
-                        if (span.begin <= begin && begin <= span.end) {
-                            matches = true;
-                            break;
-                        }
-                    } else if (span.begin <= end && begin <= span.end) {
-                        matches = true;
-                        break;
-                    }
-                }
-                if (matches) {
-                    break;
-                }
+            bool matches = requested_ranges.empty();
+            if (!requested_ranges.empty()) {
+                matches = std::ranges::all_of(requested_ranges, [&](std::pair<uint32_t, uint32_t> const& requested_range) {
+                    return std::ranges::any_of(node.source_spans, [&](SnapshotNodeSpan const& span) {
+                        return span.file_path == normalized_file_path && span_touches_range(span, requested_range);
+                    });
+                });
             }
             if (!matches || emitted.contains(node.id)) {
                 continue;
