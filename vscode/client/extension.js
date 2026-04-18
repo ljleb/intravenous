@@ -622,6 +622,44 @@ async function activate(context) {
         return;
     }
 
+    context.subscriptions.push(vscode.languages.registerDocumentHighlightProvider(
+        { scheme: "file", language: "cpp" },
+        {
+            provideDocumentHighlights: async (document, position) => {
+                const owningWorkspace = vscode.workspace.getWorkspaceFolder(document.uri);
+                if (!owningWorkspace || owningWorkspace.uri.fsPath !== session.workspaceRoot()) {
+                    return undefined;
+                }
+
+                try {
+                    if (!(await session.ensureReady())) {
+                        return undefined;
+                    }
+                } catch (_) {
+                    return undefined;
+                }
+
+                try {
+                    const result = await session.client.request("graph.queryBySpans", {
+                        filePath: document.uri.fsPath,
+                        ranges: [{
+                            start: { line: position.line + 1, column: position.character + 1 },
+                            end: { line: position.line + 1, column: position.character + 1 },
+                        }],
+                        match: "intersection",
+                    });
+
+                    if (Array.isArray(result.nodes) && result.nodes.length > 0) {
+                        return [];
+                    }
+                } catch (_) {
+                }
+
+                return undefined;
+            },
+        }
+    ));
+
     try {
         await session.start();
         if (vscode.window.activeTextEditor) {

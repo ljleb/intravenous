@@ -11,8 +11,7 @@
     "Other"
   ],
   "activationEvents": [
-    "workspaceContains:.intravenous",
-    "onView:intravenous.liveGraph"
+    "workspaceContains:.intravenous"
   ],
   "main": "./extension.js",
   "contributes": {
