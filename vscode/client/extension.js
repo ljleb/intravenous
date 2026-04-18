@@ -175,16 +175,18 @@ class LiveGraphProvider {
         item.children = ports.map((port, index) => {
             const description = [port.type || "sample", port.connected ? "connected" : "disconnected"].join(" · ");
             const child = new LiveGraphItem(port.name || `${label} ${index}`, vscode.TreeItemCollapsibleState.None, description);
-            child.iconPath = this.portIcon(direction, portKind);
+            child.iconPath = this.portIcon(direction, portKind, port.connected);
             return child;
         });
         return item;
     }
 
-    portIcon(direction, portKind) {
+    portIcon(direction, portKind, connected) {
         const iconName = direction === "input" ? "arrow-right" : "arrow-left";
         const color = new vscode.ThemeColor(
-            direction === "input" ? "terminal.ansiYellow" : "terminal.ansiBlue"
+            connected
+                ? (direction === "input" ? "terminal.ansiYellow" : "terminal.ansiBlue")
+                : "terminal.ansiWhite"
         );
         return new vscode.ThemeIcon(iconName, color);
     }

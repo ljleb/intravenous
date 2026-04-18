@@ -440,6 +440,21 @@ namespace iv {
             return it->second;
         }
 
+        void invalidate_line_index(std::string const& normalized_path)
+        {
+            line_index_cache.erase(normalized_path);
+        }
+
+        void invalidate_line_indexes(std::span<ModuleDependency const> dependencies)
+        {
+            for (auto const& dependency : dependencies) {
+                if (dependency.entry_file.empty()) {
+                    continue;
+                }
+                invalidate_line_index(normalized_path_string(dependency.entry_file));
+            }
+        }
+
         std::pair<uint32_t, uint32_t> byte_range_for(
             std::string const& normalized_path,
             SourceRange const& range
@@ -518,6 +533,7 @@ namespace iv {
                     &device_sample_period
                 );
                 watcher->update(loaded_graph.dependencies);
+                invalidate_line_indexes(loaded_graph.dependencies);
 
                 {
                     std::scoped_lock lock(mutex);
@@ -545,6 +561,7 @@ namespace iv {
                             module_render_config(render_config),
                             &device_sample_period
                         );
+                        invalidate_line_indexes(reload.dependencies);
                         uint64_t next_epoch = 1;
                         {
                             std::scoped_lock lock(mutex);
