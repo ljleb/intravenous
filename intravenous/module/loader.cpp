@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -28,6 +29,7 @@
 #include <Windows.h>
 #else
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 namespace iv {
@@ -388,10 +390,66 @@ namespace iv {
 #endif
         }
 
-        void run_command(std::string const& command)
+        void run_command(std::string const& command, ModuleLoader::LogSink const& log_sink = {})
         {
-            int const result = std::system(command.c_str());
+            auto capture_path = []() {
+                auto path = std::filesystem::temp_directory_path() / "intravenous_command_XXXXXX";
+#if defined(_WIN32)
+                path += ".log";
+                return path;
+#else
+                std::string templ = path.string();
+                std::vector<char> buffer(templ.begin(), templ.end());
+                buffer.push_back('\0');
+                int fd = mkstemp(buffer.data());
+                if (fd < 0) {
+                    throw std::runtime_error("failed to create temporary command log file");
+                }
+                close(fd);
+                return std::filesystem::path(buffer.data());
+#endif
+            };
+
+            auto const log_path = capture_path();
+            {
+                auto& out = diagnostic_stream();
+                out << "running command: " << command << '\n';
+                out.flush();
+            }
+            if (log_sink) {
+                log_sink("running command: " + command);
+            }
+            std::string const redirected =
+                command + " > " + quote(log_path) + " 2>&1";
+            int const result = std::system(redirected.c_str());
+            std::string output;
+            try {
+                output = read_text(log_path);
+            } catch (...) {
+            }
+            if (!output.empty()) {
+                auto& out = diagnostic_stream();
+                out << output;
+                if (output.back() != '\n') {
+                    out << '\n';
+                }
+                out.flush();
+                if (log_sink) {
+                    log_sink(output);
+                }
+            }
+            std::error_code ec;
+            std::filesystem::remove(log_path, ec);
             if (result != 0) {
+                if (!output.empty()) {
+                    while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
+                        output.pop_back();
+                    }
+                    throw std::runtime_error(
+                        "command failed with exit code " + std::to_string(result) + ": " + command + "\n" + output
+                    );
+                }
+
                 throw std::runtime_error("command failed with exit code " + std::to_string(result) + ": " + command);
             }
         }
@@ -542,12 +600,14 @@ namespace iv {
         std::filesystem::path default_pch_path;
         std::vector<std::filesystem::path> extra_search_roots;
         ToolchainConfig toolchain;
+        LogSink log_sink;
         mutable std::mutex build_mutex;
 
         explicit Impl(
             std::filesystem::path discovery_start,
             std::vector<std::filesystem::path> extra_roots,
-            ToolchainConfig toolchain_
+            ToolchainConfig toolchain_,
+            LogSink log_sink_
         ) :
             repo_root(discover_repo_root(std::move(discovery_start))),
             core_include_dir(repo_root / "intravenous"),
@@ -555,7 +615,8 @@ namespace iv {
             cache_root(repo_root / "build" / "iv_runtime_modules"),
             default_template_path(repo_root / "intravenous" / "module" / "template" / "CMakeLists.txt"),
             default_pch_path(repo_root / "intravenous" / "module" / "template" / "module_pch.h"),
-            toolchain(std::move(toolchain_))
+            toolchain(std::move(toolchain_)),
+            log_sink(std::move(log_sink_))
         {
             std::filesystem::create_directories(cache_root);
             for (auto& root : extra_roots) {
@@ -966,7 +1027,7 @@ namespace iv {
             if (auto juce_dir = preferred_juce_dir(); !juce_dir.empty()) {
                 configure << " -DJUCE_DIR=" << quote(juce_dir);
             }
-            run_command(configure.str());
+            run_command(configure.str(), log_sink);
 
             write_text_if_different(workspace.configure_signature_file, configure_signature_text);
             write_text_if_different(workspace.generator_file, generator);
@@ -979,7 +1040,7 @@ namespace iv {
                 << quote(preferred_cmake_program()) << " --build " << quote(workspace.build_dir)
                 << " --config " << active_build_config()
                 << " --parallel";
-            run_command(build.str());
+            run_command(build.str(), log_sink);
         }
 
         std::filesystem::path build_artifact(ResolvedModule const& resolved) const
@@ -1174,9 +1235,15 @@ namespace iv {
     ModuleLoader::ModuleLoader(
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots,
-        ToolchainConfig toolchain
+        ToolchainConfig toolchain,
+        LogSink log_sink
     ) :
-        _impl(std::make_unique<Impl>(std::move(discovery_start), std::move(extra_search_roots), std::move(toolchain)))
+        _impl(std::make_unique<Impl>(
+            std::move(discovery_start),
+            std::move(extra_search_roots),
+            std::move(toolchain),
+            std::move(log_sink)
+        ))
     {}
 
     ModuleLoader::~ModuleLoader() = default;

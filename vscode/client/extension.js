@@ -7,8 +7,9 @@ const os = require("os");
 const path = require("path");
 
 class JsonRpcSocketClient {
-    constructor(socketPath) {
+    constructor(socketPath, notificationHandler = null) {
         this.socketPath = socketPath;
+        this.notificationHandler = notificationHandler;
         this.socket = null;
         this.nextId = 1;
         this.pending = new Map();
@@ -81,6 +82,9 @@ class JsonRpcSocketClient {
             }
 
             if (typeof message.id !== "number") {
+                if (typeof message.method === "string" && this.notificationHandler) {
+                    this.notificationHandler(message.method, message.params || {});
+                }
                 continue;
             }
 
@@ -189,6 +193,8 @@ class WorkspaceSession {
         this.process = null;
         this.client = null;
         this.executionEpoch = 0;
+        this.lastQueryError = "";
+        this.refreshInFlight = null;
     }
 
     resolveServerBinary() {
@@ -307,7 +313,7 @@ class WorkspaceSession {
 
         await this.waitForSocket(socketPath, 10000);
 
-        this.client = new JsonRpcSocketClient(socketPath);
+        this.client = new JsonRpcSocketClient(socketPath, (method, params) => this.handleNotification(method, params));
         await this.client.connect();
         const result = await this.client.request("server.initialize", {
             workspaceRoot: this.workspaceRoot(),
@@ -332,7 +338,7 @@ class WorkspaceSession {
             return false;
         }
 
-        const client = new JsonRpcSocketClient(socketPath);
+        const client = new JsonRpcSocketClient(socketPath, (method, params) => this.handleNotification(method, params));
         try {
             await client.connect(1000);
             this.client = client;
@@ -364,7 +370,66 @@ class WorkspaceSession {
             ranges,
         });
         this.executionEpoch = result.executionEpoch;
+        this.lastQueryError = "";
         this.provider.setNodes(result.nodes || []);
+    }
+
+    logServerEvent(prefix, params) {
+        const parts = [prefix];
+        if (params.moduleRoot) {
+            parts.push(params.moduleRoot);
+        }
+        if (params.executionEpoch) {
+            parts.push(`epoch=${params.executionEpoch}`);
+        }
+        if (params.message) {
+            parts.push(params.message);
+        }
+        this.outputChannel.appendLine(parts.join(": "));
+    }
+
+    handleNotification(method, params) {
+        if (method === "server.log") {
+            if (params.message) {
+                const lines = String(params.message).split(/\r?\n/);
+                for (const line of lines) {
+                    if (line.length > 0) {
+                        this.outputChannel.appendLine(line);
+                    }
+                }
+            }
+            return;
+        }
+
+        if (method === "server.buildStarted") {
+            this.logServerEvent("Intravenous rebuild started", params);
+            return;
+        }
+
+        if (method === "server.buildFinished") {
+            if (typeof params.executionEpoch === "number") {
+                this.executionEpoch = params.executionEpoch;
+            }
+            this.logServerEvent("Intravenous rebuild finished", params);
+            if (!this.refreshInFlight && vscode.window.activeTextEditor) {
+                this.refreshInFlight = this.updateFromEditor(vscode.window.activeTextEditor)
+                    .catch((error) => {
+                        const message = `Intravenous query failed: ${error.message}`;
+                        if (message !== this.lastQueryError) {
+                            this.outputChannel.appendLine(message);
+                            this.lastQueryError = message;
+                        }
+                    })
+                    .finally(() => {
+                        this.refreshInFlight = null;
+                    });
+            }
+            return;
+        }
+
+        if (method === "server.buildFailed") {
+            this.logServerEvent("Intravenous rebuild failed", params);
+        }
     }
 
     async shutdown() {
@@ -421,7 +486,11 @@ async function activate(context) {
         try {
             await session.updateFromEditor(event.textEditor);
         } catch (error) {
-            outputChannel.appendLine(`Intravenous query failed: ${error.message}`);
+            const message = `Intravenous query failed: ${error.message}`;
+            if (message !== session.lastQueryError) {
+                outputChannel.appendLine(message);
+                session.lastQueryError = message;
+            }
         }
     }));
 }

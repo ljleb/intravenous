@@ -51,13 +51,12 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     EXPECT_FALSE(std::filesystem::exists(project_workspace / "build" / "_deps" / "juce" / "JUCEConfig.cmake"));
 #endif
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto project_needle = std::string("SamplePortRef first_output;");
     auto project_replacement = std::string("SamplePortRef first_output;\n    // behavior source marker");
     ASSERT_NE(project_source.find(project_needle), std::string::npos);
     project_source.replace(project_source.find(project_needle), project_needle.size(), project_replacement);
-    iv::test::write_text(project_dst / "module.cpp", project_source);
+    iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
     {
         auto graph = loader.load_root(
@@ -71,13 +70,12 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     EXPECT_EQ(iv::test::write_time(project_cache), project_cache_before);
     EXPECT_EQ(iv::test::write_time(voice_cache), voice_cache_before);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto voice_needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");
     auto voice_replacement = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);/* behavior dependency marker*/");
     ASSERT_NE(voice_source.find(voice_needle), std::string::npos);
     voice_source.replace(voice_source.find(voice_needle), voice_needle.size(), voice_replacement);
-    iv::test::write_text(voice_dst / "module.cpp", voice_source);
+    iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);
 
     auto const project_cache_mid = iv::test::write_time(project_cache);
     auto const voice_cache_mid = iv::test::write_time(voice_cache);
@@ -107,10 +105,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     auto const local_configure_signature = local_workspace / "configure.signature";
     auto const local_configure_before = iv::test::write_time(local_configure_signature);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto local_cmake = iv::test::read_text(local_dst / "CMakeLists.txt");
     local_cmake += "\n# behavior cmake marker\n";
-    iv::test::write_text(local_dst / "CMakeLists.txt", local_cmake);
+    iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
 
     {
         auto graph = loader.load_root(

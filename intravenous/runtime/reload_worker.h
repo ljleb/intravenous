@@ -1,5 +1,6 @@
 #pragma once
 
+#include "compat.h"
 #include "module/dependency.h"
 #include "module/loader.h"
 #include "module/watcher.h"
@@ -24,6 +25,9 @@ namespace iv {
         DependencyWatcher* _watcher = nullptr;
         std::filesystem::path _module_path;
         std::function<ModuleLoader::LoadedGraph()> _build_reload;
+        std::function<void()> _on_build_started;
+        std::function<void()> _on_build_succeeded;
+        std::function<void(std::exception_ptr)> _on_build_failed;
 
         mutable std::mutex _mutex;
         std::optional<PendingReload> _pending_reload;
@@ -36,11 +40,17 @@ namespace iv {
         ReloadWorker(
             DependencyWatcher& watcher,
             std::filesystem::path module_path,
-            std::function<ModuleLoader::LoadedGraph()> build_reload
+            std::function<ModuleLoader::LoadedGraph()> build_reload,
+            std::function<void()> on_build_started = {},
+            std::function<void()> on_build_succeeded = {},
+            std::function<void(std::exception_ptr)> on_build_failed = {}
         ) :
             _watcher(&watcher),
             _module_path(std::move(module_path)),
-            _build_reload(std::move(build_reload))
+            _build_reload(std::move(build_reload)),
+            _on_build_started(std::move(on_build_started)),
+            _on_build_succeeded(std::move(on_build_succeeded)),
+            _on_build_failed(std::move(on_build_failed))
         {}
 
         void start()
@@ -71,6 +81,9 @@ namespace iv {
                     }
 
                     if (should_build) {
+                        if (_on_build_started) {
+                            _on_build_started();
+                        }
                         try {
                             auto next_graph = _build_reload();
                             auto next_dependencies = next_graph.dependencies;
@@ -84,10 +97,17 @@ namespace iv {
                                 _pending_reload = std::move(next_reload);
                             }
                             _build_in_progress = false;
+                            if (_on_build_succeeded) {
+                                _on_build_succeeded();
+                            }
                         } catch (...) {
+                            auto exception = std::current_exception();
+                            if (_on_build_failed) {
+                                _on_build_failed(exception);
+                            }
                             std::lock_guard lock(_mutex);
                             _build_in_progress = false;
-                            _pending_exception = std::current_exception();
+                            _pending_exception = exception;
                         }
                     }
 

@@ -1,5 +1,6 @@
 #include "runtime/app.h"
 
+#include "compat.h"
 #include "devices/miniaudio_device.h"
 #include "juce/vst_runtime.h"
 #include "module/loader.h"
@@ -26,6 +27,24 @@ namespace iv {
             if (shutdown_callback) {
                 (*shutdown_callback)();
             }
+        }
+
+        void log_reload_exception(std::string_view context, std::exception_ptr exception)
+        {
+            if (!exception) {
+                return;
+            }
+
+            auto& out = diagnostic_stream();
+            out << context;
+            try {
+                std::rethrow_exception(exception);
+            } catch (std::exception const& e) {
+                out << ": " << e.what() << '\n';
+            } catch (...) {
+                out << ": unknown exception\n";
+            }
+            out.flush();
         }
 
         std::optional<LogicalAudioDevice> try_create_audio_device()
@@ -139,7 +158,7 @@ namespace iv {
 
             executor_storage.execute([&]() -> std::optional<ModuleLoader::LoadedGraph> {
                 if (auto exception = reload_worker.take_exception()) {
-                    std::rethrow_exception(exception);
+                    log_reload_exception("reload failed", exception);
                 }
 
                 std::vector<ModuleDependency> dependencies;

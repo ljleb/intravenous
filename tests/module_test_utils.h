@@ -209,6 +209,31 @@ namespace iv::test {
         out << text;
     }
 
+    inline void advance_write_time(std::filesystem::path const& path, std::chrono::seconds delta = std::chrono::seconds(2))
+    {
+        std::error_code ec;
+        auto const current = std::filesystem::last_write_time(path, ec);
+        if (ec) {
+            std::cerr << "failed to read timestamp for '" << path.string() << "': " << ec.message() << '\n';
+            std::exit(1);
+        }
+        std::filesystem::last_write_time(path, current + delta, ec);
+        if (ec) {
+            std::cerr << "failed to advance timestamp for '" << path.string() << "': " << ec.message() << '\n';
+            std::exit(1);
+        }
+    }
+
+    inline void write_text_advancing_timestamp(
+        std::filesystem::path const& path,
+        std::string const& text,
+        std::chrono::seconds delta = std::chrono::seconds(2)
+    )
+    {
+        write_text(path, text);
+        advance_write_time(path, delta);
+    }
+
     inline std::filesystem::file_time_type write_time(std::filesystem::path const& path)
     {
         std::error_code ec;

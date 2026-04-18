@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace iv {
     using ModuleRef = std::shared_ptr<void>;
@@ -17,6 +18,8 @@ namespace iv {
         std::unique_ptr<Impl> _impl;
 
     public:
+        using LogSink = std::function<void(std::string const&)>;
+
         struct ToolchainConfig {
             std::optional<std::filesystem::path> c_compiler;
             std::optional<std::filesystem::path> cxx_compiler;
@@ -47,7 +50,8 @@ namespace iv {
         explicit ModuleLoader(
             std::filesystem::path discovery_start = std::filesystem::current_path(),
             std::vector<std::filesystem::path> extra_search_roots = {},
-            ToolchainConfig toolchain = ToolchainConfig()
+            ToolchainConfig toolchain = ToolchainConfig(),
+            LogSink log_sink = {}
         );
         ~ModuleLoader();
         ModuleLoader(ModuleLoader&&) noexcept;

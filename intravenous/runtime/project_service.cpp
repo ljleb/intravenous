@@ -24,6 +24,7 @@
 #include <span>
 #include <stdexcept>
 #include <thread>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -207,6 +208,39 @@ namespace iv {
             return "unknown";
         }
 
+        void log_reload_exception(std::string_view context, std::exception_ptr exception)
+        {
+            if (!exception) {
+                return;
+            }
+
+            auto& out = diagnostic_stream();
+            out << context;
+            try {
+                std::rethrow_exception(exception);
+            } catch (std::exception const& e) {
+                out << ": " << e.what() << '\n';
+            } catch (...) {
+                out << ": unknown exception\n";
+            }
+            out.flush();
+        }
+
+        std::string describe_exception(std::exception_ptr exception)
+        {
+            if (!exception) {
+                return "unknown exception";
+            }
+
+            try {
+                std::rethrow_exception(exception);
+            } catch (std::exception const& e) {
+                return e.what();
+            } catch (...) {
+                return "unknown exception";
+            }
+        }
+
         Graph const& require_root_graph(TypeErasedNode const& root)
         {
             auto const* graph = root.try_as<Graph>();
@@ -335,6 +369,7 @@ namespace iv {
         std::filesystem::path discovery_start;
         std::vector<std::filesystem::path> extra_search_roots;
         AudioDeviceFactory audio_device_factory;
+        RuntimeProjectEventSink event_sink;
 
         mutable std::mutex mutex;
         mutable std::unordered_map<std::string, LineIndex> line_index_cache;
@@ -353,13 +388,41 @@ namespace iv {
             std::filesystem::path workspace_root_,
             std::filesystem::path discovery_start_,
             std::vector<std::filesystem::path> extra_search_roots_,
-            AudioDeviceFactory audio_device_factory_
+            AudioDeviceFactory audio_device_factory_,
+            RuntimeProjectEventSink event_sink_
         ) :
             workspace_root(normalize_path(workspace_root_)),
             discovery_start(std::move(discovery_start_)),
             extra_search_roots(std::move(extra_search_roots_)),
-            audio_device_factory(std::move(audio_device_factory_))
+            audio_device_factory(std::move(audio_device_factory_)),
+            event_sink(std::move(event_sink_))
         {}
+
+        void emit_event(RuntimeProjectEvent event)
+        {
+            if (event.module_root.empty()) {
+                if (config.has_value()) {
+                    event.module_root = config->module_root;
+                } else if (snapshot.has_value()) {
+                    event.module_root = snapshot->module_root;
+                }
+            }
+            if (event.execution_epoch == 0 && snapshot.has_value()) {
+                event.execution_epoch = snapshot->execution_epoch;
+            }
+            if (event_sink) {
+                event_sink(event);
+            }
+        }
+
+        void emit_log(std::string level, std::string message)
+        {
+            emit_event(RuntimeProjectEvent {
+                .kind = RuntimeProjectEventKind::log,
+                .level = std::move(level),
+                .message = std::move(message),
+            });
+        }
 
         void rethrow_if_failed() const
         {
@@ -436,7 +499,14 @@ namespace iv {
                 auto search_roots = parse_search_path_env();
                 search_roots.insert(search_roots.end(), extra_search_roots.begin(), extra_search_roots.end());
 
-                ModuleLoader loader(discovery_start, std::move(search_roots), config->toolchain);
+                ModuleLoader loader(
+                    discovery_start,
+                    std::move(search_roots),
+                    config->toolchain,
+                    [this](std::string const& message) {
+                        emit_log("info", message);
+                    }
+                );
                 auto watcher = make_dependency_watcher();
 
                 RenderConfig const render_config = audio_device->config();
@@ -475,19 +545,44 @@ namespace iv {
                             module_render_config(render_config),
                             &device_sample_period
                         );
+                        uint64_t next_epoch = 1;
                         {
                             std::scoped_lock lock(mutex);
-                            uint64_t const next_epoch = snapshot.has_value() ? snapshot->execution_epoch + 1 : 1;
+                            next_epoch = snapshot.has_value() ? snapshot->execution_epoch + 1 : 1;
                             snapshot = build_graph_snapshot(reload.root, config->module_root, reload.module_id, next_epoch);
                         }
+                        emit_event(RuntimeProjectEvent {
+                            .kind = RuntimeProjectEventKind::build_finished,
+                            .level = "info",
+                            .message = "rebuild complete " + config->module_root.string(),
+                            .module_root = config->module_root,
+                            .execution_epoch = next_epoch,
+                        });
                         return reload;
+                    },
+                    [this]() {
+                        emit_event(RuntimeProjectEvent {
+                            .kind = RuntimeProjectEventKind::build_started,
+                            .level = "info",
+                            .message = "rebuilding " + config->module_root.string(),
+                            .module_root = config->module_root,
+                        });
+                    },
+                    []() {},
+                    [this](std::exception_ptr exception) {
+                        emit_event(RuntimeProjectEvent {
+                            .kind = RuntimeProjectEventKind::build_failed,
+                            .level = "error",
+                            .message = describe_exception(exception),
+                            .module_root = config->module_root,
+                        });
                     }
                 );
                 reload_worker.start();
 
                 executor_storage.execute([&]() -> std::optional<ModuleLoader::LoadedGraph> {
                     if (auto exception = reload_worker.take_exception()) {
-                        std::rethrow_exception(exception);
+                        log_reload_exception("runtime project reload failed", exception);
                     }
 
                     std::vector<ModuleDependency> dependencies;
@@ -514,13 +609,15 @@ namespace iv {
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots,
-        AudioDeviceFactory audio_device_factory
+        AudioDeviceFactory audio_device_factory,
+        RuntimeProjectEventSink event_sink
     ) :
         _impl(std::make_unique<Impl>(
             std::move(workspace_root),
             std::move(discovery_start),
             std::move(extra_search_roots),
-            std::move(audio_device_factory)
+            std::move(audio_device_factory),
+            std::move(event_sink)
         ))
     {}
 
@@ -586,7 +683,12 @@ namespace iv {
                     continue;
                 }
                 for (auto const& [begin, end] : requested_ranges) {
-                    if (span.begin < end && begin < span.end) {
+                    if (begin == end) {
+                        if (span.begin <= begin && begin <= span.end) {
+                            matches = true;
+                            break;
+                        }
+                    } else if (span.begin <= end && begin <= span.end) {
                         matches = true;
                         break;
                     }

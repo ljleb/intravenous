@@ -63,7 +63,23 @@ namespace iv {
         std::vector<LiveNodeInfo> nodes {};
     };
 
+    enum class RuntimeProjectEventKind {
+        log,
+        build_started,
+        build_finished,
+        build_failed,
+    };
+
+    struct RuntimeProjectEvent {
+        RuntimeProjectEventKind kind = RuntimeProjectEventKind::log;
+        std::string level = "info";
+        std::string message {};
+        std::filesystem::path module_root {};
+        uint64_t execution_epoch = 0;
+    };
+
     using AudioDeviceFactory = std::function<std::optional<LogicalAudioDevice>()>;
+    using RuntimeProjectEventSink = std::function<void(RuntimeProjectEvent const&)>;
 
     class RuntimeProjectService {
         class Impl;
@@ -74,7 +90,8 @@ namespace iv {
             std::filesystem::path workspace_root,
             std::filesystem::path discovery_start,
             std::vector<std::filesystem::path> extra_search_roots = {},
-            AudioDeviceFactory audio_device_factory = {}
+            AudioDeviceFactory audio_device_factory = {},
+            RuntimeProjectEventSink event_sink = {}
         );
         ~RuntimeProjectService();
         RuntimeProjectService(RuntimeProjectService&&) noexcept;

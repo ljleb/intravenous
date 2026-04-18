@@ -3,6 +3,7 @@
 #include "compat.h"
 
 #include <atomic>
+#include <array>
 #include <cerrno>
 #include <condition_variable>
 #include <cstring>
@@ -105,6 +106,11 @@ namespace iv {
         {
             return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) + ",\"error\":{\"code\":" + std::to_string(code) +
                 ",\"message\":\"" + escape_json(message) + "\"}}\n";
+        }
+
+        std::string jsonrpc_notification(std::string const& method, std::string params_json)
+        {
+            return "{\"jsonrpc\":\"2.0\",\"method\":\"" + escape_json(method) + "\",\"params\":" + std::move(params_json) + "}\n";
         }
 
         int parse_request_id(std::string const& line)
@@ -240,6 +246,20 @@ namespace iv {
             json += "]}";
             return json;
         }
+
+        std::string runtime_event_params_json(RuntimeProjectEvent const& event)
+        {
+            std::string json = "{\"level\":\"" + escape_json(event.level) +
+                "\",\"message\":\"" + escape_json(event.message) + "\"";
+            if (!event.module_root.empty()) {
+                json += ",\"moduleRoot\":\"" + escape_json(event.module_root.generic_string()) + "\"";
+            }
+            if (event.execution_epoch != 0) {
+                json += ",\"executionEpoch\":" + std::to_string(event.execution_epoch);
+            }
+            json += "}";
+            return json;
+        }
     }
 
     class SocketRpcServer::Impl {
@@ -251,11 +271,14 @@ namespace iv {
         RuntimeProjectService service;
 
         mutable std::mutex mutex;
+        mutable std::mutex client_mutex;
+        mutable std::mutex write_mutex;
         mutable std::condition_variable ready_cv;
         mutable std::condition_variable stopped_cv;
         bool ready = false;
         bool stopped = false;
         int listen_fd = -1;
+        int client_fd = -1;
         std::optional<std::jthread> accept_thread;
         RuntimeProjectInitializeResult initialized_result;
 
@@ -269,12 +292,70 @@ namespace iv {
             discovery_start(std::move(discovery_start_)),
             socket_path_value(socket_path_.empty() ? default_socket_path(workspace_root) : std::move(socket_path_)),
             audio_device_factory(std::move(audio_device_factory_)),
-            service(workspace_root, discovery_start, {}, audio_device_factory)
+            service(
+                workspace_root,
+                discovery_start,
+                {},
+                audio_device_factory,
+                [this](RuntimeProjectEvent const& event) {
+                    notify_event(event);
+                }
+            )
         {}
 
         ~Impl()
         {
             request_shutdown();
+        }
+
+        bool send_message(int fd, std::string const& message)
+        {
+            std::scoped_lock write_lock(write_mutex);
+            size_t written = 0;
+            while (written < message.size()) {
+                ssize_t count = ::write(fd, message.data() + written, message.size() - written);
+                if (count < 0) {
+                    return false;
+                }
+                written += static_cast<size_t>(count);
+            }
+            return true;
+        }
+
+        void notify_event(RuntimeProjectEvent const& event)
+        {
+            std::string method;
+            switch (event.kind) {
+            case RuntimeProjectEventKind::log:
+                method = "server.log";
+                break;
+            case RuntimeProjectEventKind::build_started:
+                method = "server.buildStarted";
+                break;
+            case RuntimeProjectEventKind::build_finished:
+                method = "server.buildFinished";
+                break;
+            case RuntimeProjectEventKind::build_failed:
+                method = "server.buildFailed";
+                break;
+            }
+
+            int fd = -1;
+            {
+                std::scoped_lock client_lock(client_mutex);
+                fd = client_fd;
+            }
+            if (fd < 0) {
+                return;
+            }
+
+            auto const message = jsonrpc_notification(method, runtime_event_params_json(event));
+            if (!send_message(fd, message)) {
+                std::scoped_lock client_lock(client_mutex);
+                if (client_fd == fd) {
+                    client_fd = -1;
+                }
+            }
         }
 
         void handle_client(int fd)
@@ -326,7 +407,7 @@ namespace iv {
                             response = jsonrpc_result(request_id, live_node_json(service.get_node(execution_epoch, node_id)));
                         } else if (method == "server.shutdown") {
                             response = jsonrpc_result(request_id, "{\"ok\":true}");
-                            (void)::write(fd, response.data(), response.size());
+                            (void)send_message(fd, response);
                             request_shutdown();
                             return;
                         } else {
@@ -336,7 +417,9 @@ namespace iv {
                         response = jsonrpc_error(request_id, -32000, e.what());
                     }
 
-                    (void)::write(fd, response.data(), response.size());
+                    if (!send_message(fd, response)) {
+                        return;
+                    }
                 }
             }
         }
@@ -344,15 +427,25 @@ namespace iv {
         void accept_loop(std::stop_token stop_token)
         {
             while (!stop_token.stop_requested()) {
-                int client_fd = ::accept(listen_fd, nullptr, nullptr);
-                if (client_fd < 0) {
+                int accepted_fd = ::accept(listen_fd, nullptr, nullptr);
+                if (accepted_fd < 0) {
                     if (errno == EINTR) {
                         continue;
                     }
                     break;
                 }
-                handle_client(client_fd);
-                ::close(client_fd);
+                {
+                    std::scoped_lock client_lock(client_mutex);
+                    client_fd = accepted_fd;
+                }
+                handle_client(accepted_fd);
+                {
+                    std::scoped_lock client_lock(client_mutex);
+                    if (client_fd == accepted_fd) {
+                        client_fd = -1;
+                    }
+                }
+                ::close(accepted_fd);
             }
 
             {
@@ -404,6 +497,12 @@ namespace iv {
         void request_shutdown()
         {
             service.request_shutdown();
+            {
+                std::scoped_lock client_lock(client_mutex);
+                if (client_fd >= 0) {
+                    ::shutdown(client_fd, SHUT_RDWR);
+                }
+            }
             if (listen_fd >= 0) {
                 ::shutdown(listen_fd, SHUT_RDWR);
                 ::close(listen_fd);

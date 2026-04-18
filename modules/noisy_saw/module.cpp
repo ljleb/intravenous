@@ -68,6 +68,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         //     auto constexpr port = "r0"_P;
         //     x = port << sup(port = x);
         // }
+        voice;
         sink(x * 0.0);
     }
 
