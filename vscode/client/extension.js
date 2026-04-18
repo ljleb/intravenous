@@ -152,9 +152,9 @@ class LiveGraphProvider {
 
     makeNodeItem(node) {
         const item = new LiveGraphItem(
-            node.id,
+            node.kind || node.id,
             vscode.TreeItemCollapsibleState.Expanded,
-            node.kind || ""
+            node.id || ""
         );
         item.contextValue = "intravenousNode";
         item.node = node;
