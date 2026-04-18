@@ -21,13 +21,13 @@ namespace iv {
     namespace juce {
 #if !IV_ENABLE_JUCE_VST
         template<typename... Args>
-        SampleNodeRef vst(Args&&...)
+        auto vst(Args&&...)
         {
             static_assert(
                 details::dependent_false_v<Args...>,
                 "iv::juce::vst(...) requires JUCE VST support. Configure the project with JUCE available so IV_ENABLE_JUCE_VST=1."
             );
-            return SampleNodeRef();
+            return NodeRef();
         }
 #endif
     }
@@ -123,7 +123,7 @@ namespace iv {
     };
 
     namespace juce {
-        inline SampleNodeRef vst(
+        inline auto vst(
             GraphBuilder& g,
             std::filesystem::path plugin_path,
             std::string plugin_identifier = {},

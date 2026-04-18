@@ -30,7 +30,7 @@
 
 namespace iv {
     class GraphBuilder;
-    class SampleNodeRef;
+    class NodeRef;
     template<class Node>
     class TypedNodeRef;
     template<class Node>
@@ -101,26 +101,26 @@ namespace iv {
     template<size_t N>
     fixed_string(char const (&)[N]) -> fixed_string<N>;
 
-    template<fixed_string Name, class T>
+    enum class NamedPortKind : std::uint8_t {
+        sample,
+        event,
+    };
+
+    template<fixed_string Name, class T, NamedPortKind Kind = NamedPortKind::sample>
     struct NamedArg {
         using value_type = T;
         static constexpr auto name = Name;
+        static constexpr auto kind = Kind;
 
         T value;
     };
 
-    template<fixed_string Name, class T>
-    NamedRef make_named_ref(NamedArg<Name, T> const& arg)
-    {
-        return NamedRef(Name.view(), arg.value);
-    }
-
-    template<fixed_string Name>
+    template<fixed_string Name, NamedPortKind Kind = NamedPortKind::sample>
     struct PortName {
         template<class T>
         constexpr auto operator=(T&& value) const
         {
-            return NamedArg<Name, std::remove_cvref_t<T>>{ std::forward<T>(value) };
+            return NamedArg<Name, std::remove_cvref_t<T>, Kind>{ std::forward<T>(value) };
         }
     };
 
@@ -185,6 +185,54 @@ namespace iv {
         inline constexpr bool has_fixed_input_count_v =
             (fixed_input_count_v<Node> != std::dynamic_extent);
 
+        template<typename EventInputs>
+        struct fixed_event_input_count : std::integral_constant<size_t, std::dynamic_extent> {};
+
+        template<size_t N>
+        struct fixed_event_input_count<std::array<EventInputConfig, N>> : std::integral_constant<size_t, N> {};
+
+        template<size_t N>
+        struct fixed_event_input_count<std::span<EventInputConfig const, N>> : std::integral_constant<size_t, N> {};
+
+        template<size_t N>
+        struct fixed_event_input_count<std::span<EventInputConfig, N>> : std::integral_constant<size_t, N> {};
+
+        template<typename Node>
+        inline constexpr size_t fixed_event_input_count_v = fixed_event_input_count<
+            std::remove_cvref_t<decltype(get_event_inputs(std::declval<Node const&>()))>
+        >::value;
+
+        template<>
+        inline constexpr size_t fixed_event_input_count_v<void> = std::dynamic_extent;
+
+        template<typename Node>
+        inline constexpr bool has_fixed_event_input_count_v =
+            (fixed_event_input_count_v<Node> != std::dynamic_extent);
+
+        template<typename EventOutputs>
+        struct fixed_event_output_count : std::integral_constant<size_t, std::dynamic_extent> {};
+
+        template<size_t N>
+        struct fixed_event_output_count<std::array<EventOutputConfig, N>> : std::integral_constant<size_t, N> {};
+
+        template<size_t N>
+        struct fixed_event_output_count<std::span<EventOutputConfig const, N>> : std::integral_constant<size_t, N> {};
+
+        template<size_t N>
+        struct fixed_event_output_count<std::span<EventOutputConfig, N>> : std::integral_constant<size_t, N> {};
+
+        template<typename Node>
+        inline constexpr size_t fixed_event_output_count_v = fixed_event_output_count<
+            std::remove_cvref_t<decltype(get_event_outputs(std::declval<Node const&>()))>
+        >::value;
+
+        template<>
+        inline constexpr size_t fixed_event_output_count_v<void> = std::dynamic_extent;
+
+        template<typename Node>
+        inline constexpr bool has_fixed_event_output_count_v =
+            (fixed_event_output_count_v<Node> != std::dynamic_extent);
+
         template<typename Outputs>
         struct fixed_output_count : std::integral_constant<size_t, std::dynamic_extent> {};
 
@@ -212,42 +260,29 @@ namespace iv {
         template<typename Node>
         inline constexpr bool should_preserve_node_type_v =
             has_fixed_input_count_v<std::remove_cvref_t<Node>>
-            || has_fixed_output_count_v<std::remove_cvref_t<Node>>;
+            || has_fixed_output_count_v<std::remove_cvref_t<Node>>
+            || has_fixed_event_input_count_v<std::remove_cvref_t<Node>>
+            || has_fixed_event_output_count_v<std::remove_cvref_t<Node>>;
 
         template<typename Node>
-        using sample_node_ref_for_t = std::conditional_t<
+        using node_ref_for_t = std::conditional_t<
             has_fixed_output_count_v<std::remove_cvref_t<Node>>,
             StructuredNodeRef<std::remove_cvref_t<Node>>,
             std::conditional_t<
                 should_preserve_node_type_v<std::remove_cvref_t<Node>>,
                 TypedNodeRef<std::remove_cvref_t<Node>>,
-                SampleNodeRef
+                NodeRef
             >
         >;
 
         template<class T>
         struct is_named_arg : std::false_type {};
 
-        template<fixed_string Name, class T>
-        struct is_named_arg<NamedArg<Name, T>> : std::true_type {};
+        template<fixed_string Name, class T, NamedPortKind Kind>
+        struct is_named_arg<NamedArg<Name, T, Kind>> : std::true_type {};
 
         template<class T>
         inline constexpr bool is_named_arg_v = is_named_arg<std::remove_cvref_t<T>>::value;
-
-        template<class T>
-        inline constexpr bool is_event_like_v = std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
-
-        template<class T>
-        inline constexpr bool arg_is_event_v = is_event_like_v<T>;
-
-        template<fixed_string Name, class T>
-        inline constexpr bool arg_is_event_v<NamedArg<Name, T>> = is_event_like_v<T>;
-
-        enum class call_domain {
-            sample,
-            event,
-            mixed,
-        };
 
         template<class... Args>
         consteval bool named_args_follow_positionals_only()
@@ -266,8 +301,9 @@ namespace iv {
         template<class A, class B>
         inline constexpr bool same_named_port_v = false;
 
-        template<fixed_string A, class TA, fixed_string B, class TB>
-        inline constexpr bool same_named_port_v<NamedArg<A, TA>, NamedArg<B, TB>> = (A.view() == B.view());
+        template<fixed_string A, class TA, NamedPortKind KA, fixed_string B, class TB, NamedPortKind KB>
+        inline constexpr bool same_named_port_v<NamedArg<A, TA, KA>, NamedArg<B, TB, KB>> =
+            (A.view() == B.view()) && (KA == KB);
 
         template<class Arg, class... Rest>
         inline constexpr bool named_port_not_in_rest_v =
@@ -285,38 +321,44 @@ namespace iv {
         template<class... Args>
         inline constexpr bool unique_named_args_v = unique_named_args<Args...>::value;
 
-        template<class... Args>
-        inline constexpr bool has_event_args_v = (false || ... || arg_is_event_v<std::remove_cvref_t<Args>>);
+        template<class T>
+        inline constexpr bool arg_targets_sample_input_v = !std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
+
+        template<fixed_string Name, class T, NamedPortKind Kind>
+        inline constexpr bool arg_targets_sample_input_v<NamedArg<Name, T, Kind>> = (Kind == NamedPortKind::sample);
+
+        template<class T>
+        inline constexpr bool arg_targets_event_input_v = std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
+
+        template<fixed_string Name, class T, NamedPortKind Kind>
+        inline constexpr bool arg_targets_event_input_v<NamedArg<Name, T, Kind>> = (Kind == NamedPortKind::event);
 
         template<class... Args>
-        inline constexpr bool has_sample_args_v = (false || ... || !arg_is_event_v<std::remove_cvref_t<Args>>);
+        inline constexpr size_t sample_input_arg_count_v =
+            (0 + ... + (arg_targets_sample_input_v<std::remove_cvref_t<Args>> ? 1u : 0u));
 
         template<class... Args>
-        inline constexpr call_domain call_domain_v =
-            has_event_args_v<Args...>
-                ? (has_sample_args_v<Args...> ? call_domain::mixed : call_domain::event)
-                : call_domain::sample;
-
-        template<class... Args>
-        inline constexpr size_t arg_count_v = sizeof...(Args);
-
-        template<class Node, class... Args>
-        inline constexpr bool accepts_total_arg_count_v =
-            std::same_as<Node, void>
-            || call_domain_v<Args...> == call_domain::event
-            || !has_fixed_input_count_v<Node>
-            || arg_count_v<Args...> <= fixed_input_count_v<Node>;
+        inline constexpr size_t event_input_arg_count_v =
+            (0 + ... + (arg_targets_event_input_v<std::remove_cvref_t<Args>> ? 1u : 0u));
 
         template<class... Args>
         inline constexpr bool valid_node_call_args_v =
             named_args_follow_positionals_only_v<Args...>
-            && unique_named_args_v<Args...>
-            && call_domain_v<Args...> != call_domain::mixed;
+            && unique_named_args_v<Args...>;
 
         template<class Node, class... Args>
         concept node_call_enabled =
             valid_node_call_args_v<Args...>
-            && accepts_total_arg_count_v<Node, Args...>;
+            && (
+                std::same_as<Node, void>
+                || !has_fixed_input_count_v<Node>
+                || sample_input_arg_count_v<Args...> <= fixed_input_count_v<Node>
+            )
+            && (
+                std::same_as<Node, void>
+                || !has_fixed_event_input_count_v<Node>
+                || event_input_arg_count_v<Args...> <= fixed_event_input_count_v<Node>
+            );
     }
 
     template<class Derived, class Node = void>
@@ -325,7 +367,6 @@ namespace iv {
         GraphBuilder* _graph_builder{};
         size_t _index{};
 
-        friend class EventNodeRef;
         friend class GraphBuilder;
 
     private:
@@ -342,10 +383,13 @@ namespace iv {
         {}
 
         BuilderNode const& node() const;
-        SampleNodeRef node_ref() const;
+        NodeRef node_ref() const;
 
         SamplePortRef operator[](size_t output_index) const;
         SamplePortRef operator[](std::string_view output_name) const;
+        EventPortRef event_port(size_t output_index) const;
+        EventPortRef event_port(std::string_view output_name) const;
+        EventPortRef event_port() const;
         operator SamplePortRef() const;
         bool input_is_connected(size_t input_port) const;
         bool event_input_is_connected(size_t input_port) const;
@@ -374,79 +418,9 @@ namespace iv {
         std::string to_string() const;
     };
 
-    class SampleNodeRef : public NodeRefBase<SampleNodeRef> {
+    class NodeRef : public NodeRefBase<NodeRef> {
     public:
-        using NodeRefBase<SampleNodeRef>::NodeRefBase;
-    };
-
-    class EventNodeRef {
-        SampleNodeRef _node;
-
-        EventPortRef event_port_ref(size_t output_index) const
-        {
-            auto outputs = get_event_outputs(_node.node());
-            if (output_index >= outputs.size()) {
-                details::error(
-                    "event output port " + std::to_string(output_index) + " of "
-                    + _node.to_string() + " is out of bounds"
-                );
-            }
-            return EventPortRef(*_node._graph_builder, _node._index, output_index);
-        }
-
-        EventPortRef event_port_ref(std::string_view output_name) const
-        {
-            auto outputs = get_event_outputs(_node.node());
-            for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
-                if (outputs[output_port].name == output_name) {
-                    return EventPortRef(*_node._graph_builder, _node._index, output_port);
-                }
-            }
-
-            details::error(
-                "an event output port named '" + std::string(output_name) + "' "
-                "does not exist on " + _node.to_string()
-            );
-        }
-
-    public:
-        EventNodeRef() = default;
-
-        explicit EventNodeRef(SampleNodeRef node) :
-            _node(std::move(node))
-        {}
-
-        EventPortRef operator[](size_t output_index) const
-        {
-            return event_port_ref(output_index);
-        }
-
-        EventPortRef operator[](std::string_view output_name) const
-        {
-            return event_port_ref(output_name);
-        }
-
-        operator EventPortRef() const
-        {
-            auto outputs = get_event_outputs(_node.node());
-            if (outputs.size() != 1) {
-                details::error(
-                    to_string() + " "
-                    "does not have exactly 1 event output port: it cannot be implicitly converted to EventPortRef"
-                );
-            }
-            return event_port_ref(0);
-        }
-
-        std::string to_string() const
-        {
-            return _node.to_string();
-        }
-
-        SampleNodeRef const& node() const
-        {
-            return _node;
-        }
+        using NodeRefBase<NodeRef>::NodeRefBase;
     };
 
     template<class Node>
@@ -457,12 +431,12 @@ namespace iv {
         using NodeType = std::remove_cvref_t<Node>;
         using Base::Base;
 
-        operator SampleNodeRef() const
+        operator NodeRef() const
         {
             if (!this->_graph_builder) {
-                return SampleNodeRef();
+                return NodeRef();
             }
-            return SampleNodeRef(*this->_graph_builder, this->_index);
+            return NodeRef(*this->_graph_builder, this->_index);
         }
     };
 
@@ -486,7 +460,7 @@ namespace iv {
         {
             static_assert(I < output_count);
             if (!this->_graph_builder) {
-                details::error("attempted to use a null SampleNodeRef");
+                details::error("attempted to use a null NodeRef");
             }
             return SamplePortRef(*this->_graph_builder, this->_index, I);
         }
@@ -530,9 +504,7 @@ namespace iv {
         std::unordered_set<PortId> _placed_event_input_ports;
 
         std::vector<InputConfig> _public_inputs;
-        std::unordered_map<std::string, size_t> _input_name_to_index;
         std::vector<EventInputConfig> _public_event_inputs;
-        std::unordered_map<std::string, size_t> _event_input_name_to_index;
 
         std::vector<OutputConfig> _public_outputs;
         std::vector<EventOutputConfig> _public_event_outputs;
@@ -591,7 +563,7 @@ namespace iv {
             scope.output_sources.clear();
             scope.output_configs.reserve(refs.size());
             scope.output_sources.reserve(refs.size());
-            std::unordered_set<std::string> output_names;
+            bool const require_names = refs.size() > 1;
 
             for (size_t i = 0; i < refs.size(); ++i) {
                 auto const& ref = refs[i].ref;
@@ -604,13 +576,11 @@ namespace iv {
                     );
                 }
 
-                if (!config.name.empty()) {
-                    if (output_names.contains(config.name)) {
-                        details::error(
-                            "builder " + _builder_id.value + ": duplicate subgraph output name '" + config.name + "'"
-                        );
-                    }
-                    output_names.insert(config.name);
+                if (require_names && config.name.empty()) {
+                    details::error(
+                        "builder " + _builder_id.value
+                        + ": subgraph outputs(...) requires names when exposing more than one sample output"
+                    );
                 }
 
                 scope.output_sources.push_back(PortId{ ref.node_index, ref.output_port });
@@ -631,14 +601,23 @@ namespace iv {
             scope.event_output_sources.clear();
             scope.event_output_configs.reserve(refs.size());
             scope.event_output_sources.reserve(refs.size());
+            bool const require_names = refs.size() > 1;
 
             for (size_t i = 0; i < refs.size(); ++i) {
                 auto const& ref = refs[i].ref;
+                auto const& config = refs[i].config;
                 if (ref.graph_builder != this) {
                     details::error(
                         "builder " + _builder_id.value + ": subgraph event_outputs(...): "
                         "EventPortRef at index " + std::to_string(i) + " "
                         "belongs to another builder"
+                    );
+                }
+
+                if (require_names && config.name.empty()) {
+                    details::error(
+                        "builder " + _builder_id.value
+                        + ": subgraph event_outputs(...) requires names when exposing more than one event output"
                     );
                 }
 
@@ -692,7 +671,7 @@ namespace iv {
 
         SamplePortRef input()
         {
-            _public_inputs.emplace_back();
+            _public_inputs.emplace_back(InputConfig{});
             return SamplePortRef(*this, GRAPH_ID, _public_inputs.size() - 1);
         }
 
@@ -701,12 +680,8 @@ namespace iv {
             if (name.empty()) {
                 details::error("input name cannot be empty");
             }
-            if (_input_name_to_index.contains(std::string(name))) {
-                details::error("input '" + std::string(name) + "' already exists");
-            }
 
             _public_inputs.emplace_back(InputConfig { .name = std::string(name), .default_value = default_value });
-            _input_name_to_index.emplace(std::string(name), _public_inputs.size() - 1);
             return SamplePortRef(*this, GRAPH_ID, _public_inputs.size() - 1);
         }
 
@@ -715,17 +690,41 @@ namespace iv {
             if (name.empty()) {
                 details::error("event input name cannot be empty");
             }
-            if (_event_input_name_to_index.contains(std::string(name))) {
-                details::error("event input '" + std::string(name) + "' already exists");
-            }
 
             _public_event_inputs.emplace_back(EventInputConfig { .name = std::string(name), .type = type });
-            _event_input_name_to_index.emplace(std::string(name), _public_event_inputs.size() - 1);
             return EventPortRef(*this, GRAPH_ID, _public_event_inputs.size() - 1);
         }
 
+        EventPortRef event_input(EventTypeId type)
+        {
+            _public_event_inputs.emplace_back(EventInputConfig{ .type = type });
+            return EventPortRef(*this, GRAPH_ID, _public_event_inputs.size() - 1);
+        }
+
+        template<class Config>
+        static void validate_output_port_configs(
+            std::span<Config const> configs,
+            std::string_view node_label,
+            std::string_view kind
+        )
+        {
+            if (configs.size() <= 1) {
+                return;
+            }
+            for (auto const& config : configs) {
+                if (config.name.empty()) {
+                    details::error(
+                        std::string(node_label)
+                        + ": output "
+                        + std::string(kind)
+                        + " ports require names when more than one output is exposed"
+                    );
+                }
+            }
+        }
+
         template<class Node, class... Args>
-        details::sample_node_ref_for_t<Node> node(Args&&... args)
+        details::node_ref_for_t<Node> node(Args&&... args)
         {
             using StoredNode = std::remove_cvref_t<Node>;
             StoredNode node_value(std::forward<Args>(args)...);
@@ -734,6 +733,17 @@ namespace iv {
             auto event_inputs = get_event_inputs(node_value);
             auto event_outputs = get_event_outputs(node_value);
 
+            auto const node_type = typeid(StoredNode).name();
+            validate_output_port_configs(
+                std::span<OutputConfig const>(std::begin(outputs), std::end(outputs)),
+                node_type,
+                "sample"
+            );
+            validate_output_port_configs(
+                std::span<EventOutputConfig const>(std::begin(event_outputs), std::end(event_outputs)),
+                node_type,
+                "event"
+            );
             auto materialize = [node_value = std::move(node_value)]([[maybe_unused]] size_t detach_id_offset) {
                 if constexpr (std::same_as<StoredNode, DetachWriterNode>) {
                     return TypeErasedNode(DetachWriterNode{
@@ -762,11 +772,11 @@ namespace iv {
             } else if constexpr (details::should_preserve_node_type_v<StoredNode>) {
                 return TypedNodeRef<StoredNode>(*this, _nodes.size() - 1);
             } else {
-                return SampleNodeRef(*this, _nodes.size() - 1);
+                return NodeRef(*this, _nodes.size() - 1);
             }
         }
 
-        SampleNodeRef embed_subgraph(GraphBuilder const& child)
+        NodeRef embed_subgraph(GraphBuilder const& child)
         {
             if (!child._outputs_defined) {
                 details::error(
@@ -878,7 +888,7 @@ namespace iv {
                 _detached_reader_outputs.insert(remap_child_port(reader_output));
             }
 
-            return SampleNodeRef(*this, placeholder_node);
+            return NodeRef(*this, placeholder_node);
         }
 
         template<class... Refs>
@@ -886,6 +896,7 @@ namespace iv {
         {
             std::vector<EventOutputRefConfig> output_refs;
             output_refs.reserve(sizeof...(Refs));
+            constexpr bool require_names = (sizeof...(Refs) > 1);
             auto const append_ref = [&](auto&& ref) {
                 using RefT = std::remove_cvref_t<decltype(ref)>;
                 if constexpr (details::is_named_arg_v<RefT>) {
@@ -894,10 +905,17 @@ namespace iv {
                         .config = EventOutputConfig{ .name = std::string(RefT::name.view()) },
                     });
                 } else {
-                    output_refs.push_back(EventOutputRefConfig{
-                        .ref = static_cast<EventPortRef>(std::forward<decltype(ref)>(ref)),
-                        .config = {},
-                    });
+                    if constexpr (require_names) {
+                        details::error(
+                            "builder " + _builder_id.value
+                            + ": event_outputs(...) requires names when exposing more than one event output"
+                        );
+                    } else {
+                        output_refs.push_back(EventOutputRefConfig{
+                            .ref = static_cast<EventPortRef>(ref),
+                            .config = EventOutputConfig{},
+                        });
+                    }
                 }
             };
             (append_ref(std::forward<Refs>(refs)), ...);
@@ -913,14 +931,23 @@ namespace iv {
 
             _public_event_outputs.clear();
             _public_event_outputs.reserve(refs.size());
+            bool const require_names = refs.size() > 1;
 
             for (size_t i = 0; i < refs.size(); ++i) {
                 auto const& ref = refs[i].ref;
+                auto const& config = refs[i].config;
                 if (ref.graph_builder != this) {
                     details::error(
                         "builder " + _builder_id.value + ": event_outputs(...): "
                         "EventPortRef at index " + std::to_string(i) + " "
                         "belongs to another builder"
+                    );
+                }
+
+                if (require_names && config.name.empty()) {
+                    details::error(
+                        "builder " + _builder_id.value
+                        + ": event_outputs(...) requires names when exposing more than one event output"
                     );
                 }
 
@@ -938,7 +965,7 @@ namespace iv {
         }
 
         template<class Fn>
-        SampleNodeRef subgraph(Fn&& fn)
+        NodeRef subgraph(Fn&& fn)
         {
             static_assert(
                 std::invocable<Fn&> && !std::invocable<Fn&, GraphBuilder&>,
@@ -986,11 +1013,11 @@ namespace iv {
                 std::move(scope.event_output_sources)
             );
 
-            return SampleNodeRef(*this, placeholder_node);
+            return NodeRef(*this, placeholder_node);
         }
 
         template<class... Refs>
-        requires (details::valid_node_call_args_v<Refs...> && !details::has_event_args_v<Refs...>)
+        requires details::valid_node_call_args_v<Refs...>
         void outputs(Refs&&... refs)
         {
             if (_outputs_defined) {
@@ -999,6 +1026,7 @@ namespace iv {
 
             std::vector<OutputRefConfig> output_refs;
             output_refs.reserve(sizeof...(Refs));
+            constexpr bool require_names = (sizeof...(Refs) > 1);
             auto const append_ref = [&](auto&& ref) {
                 using RefT = std::remove_cvref_t<decltype(ref)>;
                 if constexpr (details::is_named_arg_v<RefT>) {
@@ -1007,10 +1035,17 @@ namespace iv {
                         .config = OutputConfig{ .name = std::string(RefT::name.view()) },
                     });
                 } else {
-                    output_refs.push_back(OutputRefConfig{
-                        .ref = lift_to_sample_port(std::forward<decltype(ref)>(ref)),
-                        .config = {},
-                    });
+                    if constexpr (require_names) {
+                        details::error(
+                            "builder " + _builder_id.value
+                            + ": outputs(...) requires names when exposing more than one sample output"
+                        );
+                    } else {
+                        output_refs.push_back(OutputRefConfig{
+                            .ref = lift_to_sample_port(std::forward<decltype(ref)>(ref)),
+                            .config = OutputConfig{},
+                        });
+                    }
                 }
             };
             (append_ref(std::forward<Refs>(refs)), ...);
@@ -1046,7 +1081,7 @@ namespace iv {
 
             _public_outputs.clear();
             _public_outputs.reserve(refs.size());
-            std::unordered_set<std::string> output_names;
+            bool const require_names = refs.size() > 1;
 
             for (size_t i = 0; i < refs.size(); ++i) {
                 auto const& ref = refs[i].ref;
@@ -1059,13 +1094,11 @@ namespace iv {
                     );
                 }
 
-                if (!config.name.empty()) {
-                    if (output_names.contains(config.name)) {
-                        details::error(
-                            "builder " + _builder_id.value + ": duplicate output name '" + config.name + "'"
-                        );
-                    }
-                    output_names.insert(config.name);
+                if (require_names && config.name.empty()) {
+                    details::error(
+                        "builder " + _builder_id.value
+                        + ": outputs(...) requires names when exposing more than one sample output"
+                    );
                 }
 
                 _edges.emplace(GraphEdge{
@@ -1085,10 +1118,12 @@ namespace iv {
             }
             std::vector<OutputRefConfig> output_refs;
             output_refs.reserve(refs.size());
+            bool const require_names = refs.size() > 1;
             for (auto const& ref : refs) {
-                if (ref.name.empty()) {
+                if (require_names && ref.name.empty()) {
                     details::error(
-                        "builder " + _builder_id.value + ": named outputs must not use empty names"
+                        "builder " + _builder_id.value
+                        + ": outputs(...) requires names when exposing more than one sample output"
                     );
                 }
                 output_refs.push_back(OutputRefConfig{
@@ -1357,7 +1392,7 @@ namespace iv {
         }
 
     private:
-        std::optional<SampleNodeRef> _source_node_for_source_span(SamplePortRef ref)
+        std::optional<NodeRef> _source_node_for_source_span(SamplePortRef ref)
         {
             if (!ref.graph_builder) {
                 return std::nullopt;
@@ -1382,11 +1417,11 @@ namespace iv {
                 return std::nullopt;
             }
 
-            return SampleNodeRef(*this, source.node);
+            return NodeRef(*this, source.node);
         }
 
         void _add_node_source_span(
-            SampleNodeRef ref,
+            NodeRef ref,
             std::string_view file_path,
             uint32_t begin,
             uint32_t end
@@ -1508,6 +1543,7 @@ namespace iv {
                 }
             }, ref.value);
         }
+
     };
 
     inline SamplePortRef::SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
@@ -1630,18 +1666,18 @@ namespace iv {
     inline BuilderNode const& NodeRefBase<Derived, Node>::node() const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null SampleNodeRef");
+            details::error("attempted to use a null NodeRef");
         }
         return _graph_builder->_nodes[_index];
     }
 
     template<class Derived, class Node>
-    inline SampleNodeRef NodeRefBase<Derived, Node>::node_ref() const
+    inline NodeRef NodeRefBase<Derived, Node>::node_ref() const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null SampleNodeRef");
+            details::error("attempted to use a null NodeRef");
         }
-        return SampleNodeRef(*_graph_builder, _index);
+        return NodeRef(*_graph_builder, _index);
     }
 
     template<class Derived, class Node>
@@ -1660,14 +1696,14 @@ namespace iv {
         if (!_graph_builder) {
             return;
         }
-        _graph_builder->_add_node_source_span(SampleNodeRef(*_graph_builder, _index), file_path, begin, end);
+        _graph_builder->_add_node_source_span(NodeRef(*_graph_builder, _index), file_path, begin, end);
     }
 
     template<class Derived, class Node>
     inline SamplePortRef NodeRefBase<Derived, Node>::operator[](size_t output_index) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null SampleNodeRef");
+            details::error("attempted to use a null NodeRef");
         }
         return SamplePortRef(*_graph_builder, _index, output_index);
     }
@@ -1676,13 +1712,23 @@ namespace iv {
     inline SamplePortRef NodeRefBase<Derived, Node>::operator[](std::string_view output_name) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null SampleNodeRef");
+            details::error("attempted to use a null NodeRef");
         }
         auto outputs = get_outputs(node());
+        std::optional<size_t> matched_output;
         for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
             if (outputs[output_port].name == output_name) {
-                return SamplePortRef(*_graph_builder, _index, output_port);
+                if (matched_output.has_value()) {
+                    details::error(
+                        "output name '" + std::string(output_name) + "' is ambiguous on " + to_string()
+                    );
+                }
+                matched_output = output_port;
             }
+        }
+
+        if (matched_output.has_value()) {
+            return SamplePortRef(*_graph_builder, _index, *matched_output);
         }
 
         details::error(
@@ -1692,10 +1738,74 @@ namespace iv {
     }
 
     template<class Derived, class Node>
+    inline EventPortRef NodeRefBase<Derived, Node>::event_port(size_t output_index) const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+
+        auto outputs = get_event_outputs(node());
+        if (output_index >= outputs.size()) {
+            details::error(
+                "event output port " + std::to_string(output_index) + " of "
+                + to_string() + " is out of bounds"
+            );
+        }
+        return EventPortRef(*_graph_builder, _index, output_index);
+    }
+
+    template<class Derived, class Node>
+    inline EventPortRef NodeRefBase<Derived, Node>::event_port(std::string_view output_name) const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+
+        auto outputs = get_event_outputs(node());
+        std::optional<size_t> matched_output;
+        for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
+            if (outputs[output_port].name == output_name) {
+                if (matched_output.has_value()) {
+                    details::error(
+                        "event output name '" + std::string(output_name) + "' is ambiguous on " + to_string()
+                    );
+                }
+                matched_output = output_port;
+            }
+        }
+
+        if (matched_output.has_value()) {
+            return EventPortRef(*_graph_builder, _index, *matched_output);
+        }
+
+        details::error(
+            "an event output port named '" + std::string(output_name) + "' "
+            "does not exist on " + to_string()
+        );
+    }
+
+    template<class Derived, class Node>
+    inline EventPortRef NodeRefBase<Derived, Node>::event_port() const
+    {
+        if (!_graph_builder) {
+            details::error("attempted to use a null NodeRef");
+        }
+
+        auto outputs = get_event_outputs(node());
+        if (outputs.size() != 1) {
+            details::error(
+                to_string() + " "
+                "does not have exactly 1 event output port"
+            );
+        }
+        return event_port(0);
+    }
+
+    template<class Derived, class Node>
     inline NodeRefBase<Derived, Node>::operator SamplePortRef() const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null SampleNodeRef");
+            details::error("attempted to use a null NodeRef");
         }
         if (get_num_outputs(node()) != 1) {
             details::error(
@@ -1710,7 +1820,7 @@ namespace iv {
     inline bool NodeRefBase<Derived, Node>::input_is_connected(size_t input_port) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null SampleNodeRef");
+            details::error("attempted to use a null NodeRef");
         }
         return _graph_builder->_placed_input_ports.contains(PortId{ _index, input_port });
     }
@@ -1719,7 +1829,7 @@ namespace iv {
     inline bool NodeRefBase<Derived, Node>::event_input_is_connected(size_t input_port) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null SampleNodeRef");
+            details::error("attempted to use a null NodeRef");
         }
         return _graph_builder->_placed_event_input_ports.contains(PortId{ _index, input_port });
     }
@@ -1734,7 +1844,7 @@ namespace iv {
     inline Derived NodeRefBase<Derived, Node>::ttl(size_t ttl_samples) const
     {
         if (!_graph_builder) {
-            details::error("attempted to use a null SampleNodeRef");
+            details::error("attempted to use a null NodeRef");
         }
         auto& builder_node = _graph_builder->_nodes[_index];
         if (!builder_node.materialize) {

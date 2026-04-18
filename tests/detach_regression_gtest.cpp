@@ -63,7 +63,7 @@ namespace {
 
         integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
         warper(integrator + noise);
-        g.outputs(warper["anti_aliased"] * amplitude);
+        g.outputs("out"_P = (warper["anti_aliased"] * amplitude));
     }
 }
 
@@ -118,7 +118,7 @@ TEST(DetachRegression, NestedFeedbackWithoutDetachStillFailsAfterFlattening)
     auto const recursive = graph.subgraph([&] {
         auto const integrator = graph.node<iv::PhaseIntegrator>();
         integrator(integrator);
-        graph.outputs(integrator);
+        graph.outputs("phase"_P = integrator);
     });
     (void)recursive;
     graph.outputs();

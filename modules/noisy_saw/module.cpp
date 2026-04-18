@@ -17,7 +17,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
 
-    auto const midi = juce::midi_input(g) >> events;
+    auto const midi = juce::midi_input(g);
     // auto const sup = juce::vst(g, "ValhallaSupermassive");
     // info(sup.node());
     // sup(

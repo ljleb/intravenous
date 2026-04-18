@@ -26,23 +26,23 @@ namespace iv {
 
     class ModuleTargetFactory {
         void* _user_data = nullptr;
-        SampleNodeRef (*_sink_fn)(void*, GraphBuilder&, size_t, size_t) = nullptr;
-        SampleNodeRef (*_file_fn)(void*, GraphBuilder&, size_t, std::filesystem::path const&) = nullptr;
+        NodeRef (*_sink_fn)(void*, GraphBuilder&, size_t, size_t) = nullptr;
+        NodeRef (*_file_fn)(void*, GraphBuilder&, size_t, std::filesystem::path const&) = nullptr;
 
     public:
         ModuleTargetFactory() = default;
 
         ModuleTargetFactory(
             void* user_data,
-            SampleNodeRef (*sink_fn)(void*, GraphBuilder&, size_t, size_t),
-            SampleNodeRef (*file_fn)(void*, GraphBuilder&, size_t, std::filesystem::path const&)
+            NodeRef (*sink_fn)(void*, GraphBuilder&, size_t, size_t),
+            NodeRef (*file_fn)(void*, GraphBuilder&, size_t, std::filesystem::path const&)
         ) :
             _user_data(user_data),
             _sink_fn(sink_fn),
             _file_fn(file_fn)
         {}
 
-        SampleNodeRef sink(GraphBuilder& builder, size_t channel, size_t device_id = 0) const
+        NodeRef sink(GraphBuilder& builder, size_t channel, size_t device_id = 0) const
         {
             if (!_sink_fn) {
                 throw std::logic_error("module audio sink callback is unavailable");
@@ -51,7 +51,7 @@ namespace iv {
             return _sink_fn(_user_data, builder, channel, device_id);
         }
 
-        SampleNodeRef file(GraphBuilder& builder, size_t channel, std::filesystem::path const& path) const
+        NodeRef file(GraphBuilder& builder, size_t channel, std::filesystem::path const& path) const
         {
             if (!_file_fn) {
                 throw std::logic_error("module file target callback is unavailable");
@@ -120,7 +120,7 @@ namespace iv {
             return _load_user_data;
         }
 
-        SampleNodeRef load(std::string_view id) const;
+        NodeRef load(std::string_view id) const;
         GraphBuilder load_builder(std::string_view id) const;
     };
 
@@ -175,7 +175,7 @@ namespace iv {
         return _load_fn(_load_user_data, id).builder(*this);
     }
 
-    inline SampleNodeRef ModuleContext::load(std::string_view id) const
+    inline NodeRef ModuleContext::load(std::string_view id) const
     {
         return _builder->embed_subgraph(load_builder(id));
     }

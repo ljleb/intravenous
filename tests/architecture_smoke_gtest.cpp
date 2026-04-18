@@ -327,7 +327,7 @@ namespace {
     static_assert(ShiftRightInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("value"_P)>);
     static_assert(BitNotInvocable<iv::SamplePortRef>);
     static_assert(BitNotInvocable<iv::StructuredNodeRef<UnaryPassthrough>>);
-    static_assert(std::same_as<iv::details::sample_node_ref_for_t<iv::Broadcast>, iv::TypedNodeRef<iv::Broadcast>>);
+    static_assert(std::same_as<iv::details::node_ref_for_t<iv::Broadcast>, iv::TypedNodeRef<iv::Broadcast>>);
 
     void expect_constant_block(std::span<iv::Sample const> block, iv::Sample expected)
     {
@@ -1180,9 +1180,9 @@ TEST(ArchitectureSmoke, EventConcatenationMergesInputsInTimeOrder)
     auto const concat = g.node<iv::EventConcatenation>(2, iv::EventTypeId::trigger);
     auto const sink = g.node<TriggerOrderRecorder>(TriggerOrderRecorder{ .event_times = &event_times });
 
-    concat.connect_event_input(0, late >> iv::events);
-    concat.connect_event_input(1, early >> iv::events);
-    sink.connect_event_input("trigger", concat >> iv::events);
+    concat.connect_event_input(0, late.event_port());
+    concat.connect_event_input(1, early.event_port());
+    sink.connect_event_input("trigger", concat.event_port());
     g.outputs();
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
@@ -1210,9 +1210,9 @@ TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
     );
     auto const sink = g.node<TriggerOrderRecorder>(TriggerOrderRecorder{ .event_times = &event_times });
 
-    mix.connect_event_input(0, late >> iv::events);
-    mix.connect_event_input(1, early >> iv::events);
-    sink.connect_event_input("trigger", mix >> iv::events);
+    mix.connect_event_input(0, late.event_port());
+    mix.connect_event_input(1, early.event_port());
+    sink.connect_event_input("trigger", mix.event_port());
     g.outputs();
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));

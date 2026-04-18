@@ -20,13 +20,13 @@ namespace iv {
     namespace juce {
 #if !IV_ENABLE_JUCE_VST
         template<typename... Args>
-        SampleNodeRef midi_input(Args&&...)
+        auto midi_input(Args&&...)
         {
             static_assert(
                 details::dependent_false_v<Args...>,
                 "iv::juce::midi_input(...) requires JUCE support. Configure the project with JUCE available so IV_ENABLE_JUCE_VST=1."
             );
-            return SampleNodeRef();
+            return NodeRef();
         }
 #endif
     }
@@ -65,7 +65,7 @@ namespace iv {
     };
 
     namespace juce {
-        inline SampleNodeRef midi_input(
+        inline auto midi_input(
             GraphBuilder& g,
             std::string device_query = {}
         )

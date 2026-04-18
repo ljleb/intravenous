@@ -173,10 +173,23 @@ namespace {
         }
 
         std::string const qualified_name = record->getQualifiedNameAsString();
-        return qualified_name == "iv::SampleNodeRef"
+        return qualified_name == "iv::NodeRef"
             || qualified_name == "iv::SamplePortRef"
             || qualified_name == "iv::TypedNodeRef"
             || qualified_name == "iv::StructuredNodeRef";
+    }
+
+    bool should_wrap_overloaded_operator(clang::OverloadedOperatorKind op)
+    {
+        switch (op) {
+        case clang::OO_Call:
+        case clang::OO_Subscript:
+        case clang::OO_LessLess:
+        case clang::OO_GreaterGreater:
+            return true;
+        default:
+            return false;
+        }
     }
 
     clang::Expr const* strip_trivial_expr_wrappers(clang::Expr const* expr)
@@ -387,13 +400,11 @@ namespace {
                 return;
             }
 
-            if (auto const* binary = llvm::dyn_cast<clang::BinaryOperator>(expr)) {
-                if (binary->isAssignmentOp()) {
-                    return;
-                }
+            if (llvm::isa<clang::BinaryOperator>(expr)) {
+                return;
             }
             if (auto const* overloaded = llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
-                if (overloaded->getOperator() == clang::OO_Equal) {
+                if (!should_wrap_overloaded_operator(overloaded->getOperator())) {
                     return;
                 }
             }
