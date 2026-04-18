@@ -101,9 +101,41 @@ namespace iv {
         bool can_skip = false;
     };
 
-    struct LoweredScopeSpec {
+    struct LoweredSubgraphSpec {
+        struct PortRef {
+            std::string node_id {};
+            size_t port = 0;
+            bool is_graph_port = false;
+        };
+
         size_t parent_scope = GRAPH_ID;
+        std::string kind;
         std::vector<std::string> member_node_ids;
+        std::vector<SourceSpan> source_spans;
+        std::vector<InputConfig> sample_inputs;
+        std::vector<OutputConfig> sample_outputs;
+        std::vector<EventInputConfig> event_inputs;
+        std::vector<EventOutputConfig> event_outputs;
+        std::vector<std::vector<PortRef>> sample_input_targets;
+        std::vector<PortRef> sample_output_sources;
+        std::vector<std::vector<PortRef>> event_input_targets;
+        std::vector<PortRef> event_output_sources;
+        std::optional<size_t> ttl_samples;
+    };
+
+    struct LoweredSubgraph {
+        size_t parent_scope = GRAPH_ID;
+        std::string kind;
+        std::vector<size_t> member_nodes;
+        std::vector<SourceSpan> source_spans;
+        std::vector<InputConfig> sample_inputs;
+        std::vector<OutputConfig> sample_outputs;
+        std::vector<EventInputConfig> event_inputs;
+        std::vector<EventOutputConfig> event_outputs;
+        std::vector<std::vector<PortId>> sample_input_targets;
+        std::vector<PortId> sample_output_sources;
+        std::vector<std::vector<PortId>> event_input_targets;
+        std::vector<PortId> event_output_sources;
         std::optional<size_t> ttl_samples;
     };
 

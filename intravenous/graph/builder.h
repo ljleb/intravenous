@@ -138,6 +138,7 @@ namespace iv {
         std::vector<std::vector<PortId>> subgraph_event_input_targets {};
         std::vector<PortId> subgraph_event_output_sources {};
         std::vector<SourceSpan> source_spans {};
+        std::string subgraph_kind {};
 
         std::vector<InputConfig> const& inputs() const
         {
@@ -512,8 +513,13 @@ namespace iv {
 
         struct ScopedSubgraph {
             size_t start_node_index = 0;
+            std::string kind {};
+            std::vector<InputConfig> input_configs;
+            std::vector<size_t> input_placeholder_nodes;
             std::vector<OutputConfig> output_configs;
             std::vector<PortId> output_sources;
+            std::vector<EventInputConfig> event_input_configs;
+            std::vector<size_t> event_input_placeholder_nodes;
             std::vector<EventOutputConfig> event_output_configs;
             std::vector<PortId> event_output_sources;
             bool outputs_defined = false;
@@ -633,6 +639,7 @@ namespace iv {
         }
 
         size_t append_lowered_subgraph_placeholder(
+            std::string subgraph_kind,
             std::vector<InputConfig> input_configs,
             std::vector<OutputConfig> output_configs,
             std::vector<EventInputConfig> event_input_configs,
@@ -645,7 +652,7 @@ namespace iv {
             std::vector<PortId> subgraph_event_output_sources
         )
         {
-            size_t const placeholder_node = _nodes.size();
+            size_t const placeholder_node_index = _nodes.size();
             _nodes.emplace_back(BuilderNode{
                 .input_configs = std::move(input_configs),
                 .output_configs = std::move(output_configs),
@@ -659,8 +666,9 @@ namespace iv {
                 .subgraph_output_sources = std::move(subgraph_output_sources),
                 .subgraph_event_input_targets = std::move(subgraph_event_input_targets),
                 .subgraph_event_output_sources = std::move(subgraph_event_output_sources),
+                .subgraph_kind = std::move(subgraph_kind),
             });
-            return placeholder_node;
+            return placeholder_node_index;
         }
 
         std::string node_id(size_t index) const
@@ -671,12 +679,44 @@ namespace iv {
 
         SamplePortRef input()
         {
+            if (inside_subgraph_scope()) {
+                auto& scope = current_scope();
+                scope.input_configs.emplace_back(InputConfig{});
+                size_t const placeholder_node = _nodes.size();
+                scope.input_placeholder_nodes.push_back(placeholder_node);
+                _nodes.emplace_back(BuilderNode{
+                    .input_configs = {},
+                    .output_configs = { OutputConfig{} },
+                    .event_input_configs = {},
+                    .event_output_configs = {},
+                    .materialize = {},
+                });
+                return SamplePortRef(*this, placeholder_node, 0);
+            }
             _public_inputs.emplace_back(InputConfig{});
             return SamplePortRef(*this, GRAPH_ID, _public_inputs.size() - 1);
         }
 
         SamplePortRef input(std::string_view name, Sample default_value = 0.0)
         {
+            if (inside_subgraph_scope()) {
+                auto& scope = current_scope();
+                scope.input_configs.emplace_back(InputConfig {
+                    .name = std::string(name),
+                    .default_value = default_value
+                });
+                size_t const placeholder_node = _nodes.size();
+                scope.input_placeholder_nodes.push_back(placeholder_node);
+                _nodes.emplace_back(BuilderNode{
+                    .input_configs = {},
+                    .output_configs = { OutputConfig{ .name = std::string(name) } },
+                    .event_input_configs = {},
+                    .event_output_configs = {},
+                    .materialize = {},
+                });
+                return SamplePortRef(*this, placeholder_node, 0);
+            }
+
             if (name.empty()) {
                 details::error("input name cannot be empty");
             }
@@ -687,6 +727,21 @@ namespace iv {
 
         EventPortRef event_input(std::string_view name, EventTypeId type)
         {
+            if (inside_subgraph_scope()) {
+                auto& scope = current_scope();
+                scope.event_input_configs.emplace_back(EventInputConfig { .name = std::string(name), .type = type });
+                size_t const placeholder_node = _nodes.size();
+                scope.event_input_placeholder_nodes.push_back(placeholder_node);
+                _nodes.emplace_back(BuilderNode{
+                    .input_configs = {},
+                    .output_configs = {},
+                    .event_input_configs = {},
+                    .event_output_configs = { EventOutputConfig{ .name = std::string(name), .type = type } },
+                    .materialize = {},
+                });
+                return EventPortRef(*this, placeholder_node, 0);
+            }
+
             if (name.empty()) {
                 details::error("event input name cannot be empty");
             }
@@ -697,6 +752,20 @@ namespace iv {
 
         EventPortRef event_input(EventTypeId type)
         {
+            if (inside_subgraph_scope()) {
+                auto& scope = current_scope();
+                scope.event_input_configs.emplace_back(EventInputConfig{ .type = type });
+                size_t const placeholder_node = _nodes.size();
+                scope.event_input_placeholder_nodes.push_back(placeholder_node);
+                _nodes.emplace_back(BuilderNode{
+                    .input_configs = {},
+                    .output_configs = {},
+                    .event_input_configs = {},
+                    .event_output_configs = { EventOutputConfig{ .type = type } },
+                    .materialize = {},
+                });
+                return EventPortRef(*this, placeholder_node, 0);
+            }
             _public_event_inputs.emplace_back(EventInputConfig{ .type = type });
             return EventPortRef(*this, GRAPH_ID, _public_event_inputs.size() - 1);
         }
@@ -798,6 +867,7 @@ namespace iv {
             };
 
             append_lowered_subgraph_placeholder(
+                {},
                 child._public_inputs,
                 child._public_outputs,
                 child._public_event_inputs,
@@ -965,7 +1035,7 @@ namespace iv {
         }
 
         template<class Fn>
-        NodeRef subgraph(Fn&& fn)
+        NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph")
         {
             static_assert(
                 std::invocable<Fn&> && !std::invocable<Fn&, GraphBuilder&>,
@@ -974,8 +1044,13 @@ namespace iv {
 
             _scope_stack.push_back(ScopedSubgraph{
                 .start_node_index = _nodes.size(),
+                .kind = std::string(kind),
+                .input_configs = {},
+                .input_placeholder_nodes = {},
                 .output_configs = {},
                 .output_sources = {},
+                .event_input_configs = {},
+                .event_input_placeholder_nodes = {},
                 .event_output_configs = {},
                 .event_output_sources = {},
                 .outputs_defined = false,
@@ -1000,16 +1075,75 @@ namespace iv {
             guard.active = false;
             _scope_stack.pop_back();
 
+            size_t const placeholder_node_index = _nodes.size();
+            std::unordered_map<size_t, size_t> sample_input_index_by_placeholder;
+            sample_input_index_by_placeholder.reserve(scope.input_placeholder_nodes.size());
+            for (size_t i = 0; i < scope.input_placeholder_nodes.size(); ++i) {
+                sample_input_index_by_placeholder.emplace(scope.input_placeholder_nodes[i], i);
+            }
+            std::unordered_map<size_t, size_t> event_input_index_by_placeholder;
+            event_input_index_by_placeholder.reserve(scope.event_input_placeholder_nodes.size());
+            for (size_t i = 0; i < scope.event_input_placeholder_nodes.size(); ++i) {
+                event_input_index_by_placeholder.emplace(scope.event_input_placeholder_nodes[i], i);
+            }
+
+            std::vector<std::vector<PortId>> subgraph_input_targets(scope.input_configs.size());
+            std::vector<std::vector<PortId>> subgraph_event_input_targets(scope.event_input_configs.size());
+
+            auto translate_sample_source = [&](PortId source) {
+                if (auto const it = sample_input_index_by_placeholder.find(source.node); it != sample_input_index_by_placeholder.end()) {
+                    return PortId{ placeholder_node_index, it->second };
+                }
+                return source;
+            };
+
+            auto translate_event_source = [&](PortId source) {
+                if (auto const it = event_input_index_by_placeholder.find(source.node); it != event_input_index_by_placeholder.end()) {
+                    return PortId{ placeholder_node_index, it->second };
+                }
+                return source;
+            };
+
+            for (GraphEdge const& edge : _edges) {
+                auto const it = sample_input_index_by_placeholder.find(edge.source.node);
+                if (it == sample_input_index_by_placeholder.end()) {
+                    continue;
+                }
+                subgraph_input_targets[it->second].push_back(edge.target);
+            }
+            std::erase_if(_edges, [&](GraphEdge const& edge) {
+                return sample_input_index_by_placeholder.contains(edge.source.node);
+            });
+
+            for (GraphEventEdge const& edge : _event_edges) {
+                auto const it = event_input_index_by_placeholder.find(edge.source.node);
+                if (it == event_input_index_by_placeholder.end()) {
+                    continue;
+                }
+                subgraph_event_input_targets[it->second].push_back(edge.target);
+            }
+            std::erase_if(_event_edges, [&](GraphEventEdge const& edge) {
+                return event_input_index_by_placeholder.contains(edge.source.node);
+            });
+
+            for (auto& source : scope.output_sources) {
+                source = translate_sample_source(source);
+            }
+            for (auto& source : scope.event_output_sources) {
+                source = translate_event_source(source);
+            }
+
             size_t const placeholder_node = append_lowered_subgraph_placeholder(
-                {},
+                std::move(scope.kind),
+                std::move(scope.input_configs),
                 std::move(scope.output_configs),
-                {},
+                std::move(scope.event_input_configs),
                 std::move(scope.event_output_configs),
                 scope.start_node_index,
                 _nodes.size() - scope.start_node_index,
-                {},
+                std::move(subgraph_input_targets),
                 std::move(scope.output_sources),
-                {},
+                std::move(subgraph_event_input_targets),
                 std::move(scope.event_output_sources)
             );
 
@@ -1292,6 +1426,52 @@ namespace iv {
             details::validate_graph(g, _public_inputs.size(), _public_outputs.size());
 
             auto lowered_scopes = [&] {
+                auto make_scope_port_ref = [&](PortId port) {
+                    return iv::LoweredSubgraphSpec::PortRef {
+                        .node_id = port.node == GRAPH_ID ? std::string{} : node_id(port.node),
+                        .port = port.port,
+                        .is_graph_port = port.node == GRAPH_ID,
+                    };
+                };
+                auto resolve_scope_source = [&](auto const& self, PortId source) -> PortId {
+                    if (source.node == GRAPH_ID || _nodes[source.node].materialize) {
+                        return source;
+                    }
+                    PortId const passthrough_source = _nodes[source.node].subgraph_output_sources[source.port];
+                    if (passthrough_source.node == source.node) {
+                        return self(self, source_of.at(passthrough_source));
+                    }
+                    return self(self, passthrough_source);
+                };
+                auto resolve_scope_event_source = [&](auto const& self, PortId source) -> PortId {
+                    if (source.node == GRAPH_ID || _nodes[source.node].materialize) {
+                        return source;
+                    }
+                    PortId const passthrough_source = _nodes[source.node].subgraph_event_output_sources[source.port];
+                    if (passthrough_source.node == source.node) {
+                        return self(self, event_source_of.at(passthrough_source).source);
+                    }
+                    return self(self, passthrough_source);
+                };
+                auto collect_scope_targets = [&](auto const& self, PortId target, std::vector<iv::LoweredSubgraphSpec::PortRef>& out) -> void {
+                    if (target.node == GRAPH_ID || _nodes[target.node].materialize) {
+                        out.push_back(make_scope_port_ref(target));
+                        return;
+                    }
+                    for (PortId const child_target : _nodes[target.node].subgraph_input_targets[target.port]) {
+                        self(self, child_target, out);
+                    }
+                };
+                auto collect_scope_event_targets = [&](auto const& self, PortId target, std::vector<iv::LoweredSubgraphSpec::PortRef>& out) -> void {
+                    if (target.node == GRAPH_ID || _nodes[target.node].materialize) {
+                        out.push_back(make_scope_port_ref(target));
+                        return;
+                    }
+                    for (PortId const child_target : _nodes[target.node].subgraph_event_input_targets[target.port]) {
+                        self(self, child_target, out);
+                    }
+                };
+
                 std::vector<size_t> placeholder_indices;
                 for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
                     if (!_nodes[node_i].materialize) {
@@ -1310,11 +1490,17 @@ namespace iv {
                 };
 
                 std::unordered_map<size_t, size_t> scope_index_by_placeholder;
-                std::vector<iv::LoweredScopeSpec> scopes;
+                std::vector<iv::LoweredSubgraphSpec> scopes;
 
                 for (size_t placeholder_i : placeholder_indices) {
                     auto const& placeholder = _nodes[placeholder_i];
-                    iv::LoweredScopeSpec scope;
+                    iv::LoweredSubgraphSpec scope;
+                    scope.kind = placeholder.subgraph_kind;
+                    scope.source_spans = placeholder.source_spans;
+                    scope.sample_inputs = placeholder.input_configs;
+                    scope.sample_outputs = placeholder.output_configs;
+                    scope.event_inputs = placeholder.event_input_configs;
+                    scope.event_outputs = placeholder.event_output_configs;
                     scope.ttl_samples = placeholder.ttl_samples;
 
                     size_t const begin = placeholder.lowered_subgraph_begin;
@@ -1324,6 +1510,35 @@ namespace iv {
                             continue;
                         }
                         scope.member_node_ids.push_back(node_id(node_i));
+                    }
+
+                    scope.sample_input_targets.reserve(placeholder.subgraph_input_targets.size());
+                    for (auto const& targets : placeholder.subgraph_input_targets) {
+                        std::vector<iv::LoweredSubgraphSpec::PortRef> flattened_targets;
+                        for (PortId const target : targets) {
+                            collect_scope_targets(collect_scope_targets, target, flattened_targets);
+                        }
+                        scope.sample_input_targets.push_back(std::move(flattened_targets));
+                    }
+                    scope.sample_output_sources.reserve(placeholder.subgraph_output_sources.size());
+                    for (PortId const source : placeholder.subgraph_output_sources) {
+                        scope.sample_output_sources.push_back(make_scope_port_ref(
+                            resolve_scope_source(resolve_scope_source, source)
+                        ));
+                    }
+                    scope.event_input_targets.reserve(placeholder.subgraph_event_input_targets.size());
+                    for (auto const& targets : placeholder.subgraph_event_input_targets) {
+                        std::vector<iv::LoweredSubgraphSpec::PortRef> flattened_targets;
+                        for (PortId const target : targets) {
+                            collect_scope_event_targets(collect_scope_event_targets, target, flattened_targets);
+                        }
+                        scope.event_input_targets.push_back(std::move(flattened_targets));
+                    }
+                    scope.event_output_sources.reserve(placeholder.subgraph_event_output_sources.size());
+                    for (PortId const source : placeholder.subgraph_event_output_sources) {
+                        scope.event_output_sources.push_back(make_scope_port_ref(
+                            resolve_scope_event_source(resolve_scope_event_source, source)
+                        ));
                     }
 
                     if (scope.member_node_ids.empty()) {
@@ -1363,6 +1578,8 @@ namespace iv {
                 return scopes;
             }();
 
+            auto lowered_subgraphs = details::compile_lowered_subgraphs(g, lowered_scopes);
+
             auto detached = [&] {
                 std::vector<DetachedInfo> detached_info;
                 detached_info.reserve(g.detached_info_by_source.size());
@@ -1387,7 +1604,8 @@ namespace iv {
                 _public_outputs,
                 _public_event_inputs,
                 _public_event_outputs,
-                details::compile_dormancy_groups(g, lowered_scopes, _builder_id.value, execution_plan)
+                details::compile_dormancy_groups(g, lowered_subgraphs, _builder_id.value, execution_plan),
+                std::move(lowered_subgraphs)
             ));
         }
 

@@ -89,6 +89,8 @@ namespace iv {
             std::string file_path;
             uint32_t begin = 0;
             uint32_t end = 0;
+
+            bool operator==(SnapshotNodeSpan const&) const = default;
         };
 
         struct ConcretePortInfo {
@@ -247,6 +249,58 @@ namespace iv {
                 : LogicalPortConnectivity::disconnected;
         }
 
+        bool sample_input_connected(
+            std::unordered_set<GraphEdge> const& edges,
+            std::unordered_set<size_t> const& member_set,
+            std::span<PortId const> targets
+        )
+        {
+            return std::ranges::any_of(edges, [&](GraphEdge const& edge) {
+                return std::ranges::any_of(targets, [&](PortId const& target) {
+                    return edge.target == target
+                        && (edge.source.node == GRAPH_ID || !member_set.contains(edge.source.node));
+                });
+            });
+        }
+
+        bool sample_output_connected(
+            std::unordered_set<GraphEdge> const& edges,
+            std::unordered_set<size_t> const& member_set,
+            PortId source
+        )
+        {
+            return std::ranges::any_of(edges, [&](GraphEdge const& edge) {
+                return edge.source == source
+                    && (edge.target.node == GRAPH_ID || !member_set.contains(edge.target.node));
+            });
+        }
+
+        bool event_input_connected(
+            std::unordered_set<GraphEventEdge> const& edges,
+            std::unordered_set<size_t> const& member_set,
+            std::span<PortId const> targets
+        )
+        {
+            return std::ranges::any_of(edges, [&](GraphEventEdge const& edge) {
+                return std::ranges::any_of(targets, [&](PortId const& target) {
+                    return edge.target == target
+                        && (edge.source.node == GRAPH_ID || !member_set.contains(edge.source.node));
+                });
+            });
+        }
+
+        bool event_output_connected(
+            std::unordered_set<GraphEventEdge> const& edges,
+            std::unordered_set<size_t> const& member_set,
+            PortId source
+        )
+        {
+            return std::ranges::any_of(edges, [&](GraphEventEdge const& edge) {
+                return edge.source == source
+                    && (edge.target.node == GRAPH_ID || !member_set.contains(edge.target.node));
+            });
+        }
+
         bool same_port_schema(
             std::span<ConcretePortInfo const> a,
             std::span<ConcretePortInfo const> b
@@ -321,6 +375,16 @@ namespace iv {
                 .event_outputs = aggregate_ports(members, &ConcreteNode::event_outputs),
                 .member_node_ids = std::move(member_node_ids),
             };
+        }
+
+        std::string make_display_logical_node_id(size_t index)
+        {
+            return "logical." + std::to_string(index);
+        }
+
+        std::string make_member_logical_node_id(size_t index)
+        {
+            return "logical.member." + std::to_string(index);
         }
 
         struct AtomicCoverageSegment {
@@ -409,16 +473,6 @@ namespace iv {
             return segments;
         }
 
-        std::string make_display_logical_node_id(size_t index)
-        {
-            return "logical." + std::to_string(index);
-        }
-
-        std::string make_member_logical_node_id(size_t index)
-        {
-            return "logical.member." + std::to_string(index);
-        }
-
         std::vector<LogicalSnapshotNode> build_logical_nodes(
             std::span<ConcreteNode const> concrete_nodes,
             std::span<std::string const> singleton_logical_node_ids
@@ -478,8 +532,7 @@ namespace iv {
                                 .begin = segment.begin,
                                 .end = segment.end,
                             },
-                        }
-                        ,
+                        },
                         std::move(member_logical_node_ids)
                     ));
                 }
@@ -576,22 +629,22 @@ namespace iv {
             std::unordered_set<GraphEdge> const& sample_edges = graph._edges;
             std::unordered_set<GraphEventEdge> const& event_edges = graph._event_edges;
 
-            auto sample_input_connected = [&](size_t node, size_t port) {
+            auto execution_sample_input_connected = [&](size_t node, size_t port) {
                 return std::ranges::any_of(sample_edges, [&](GraphEdge const& edge) {
                     return edge.target.node == node && edge.target.port == port;
                 });
             };
-            auto sample_output_connected = [&](size_t node, size_t port) {
+            auto execution_sample_output_connected = [&](size_t node, size_t port) {
                 return std::ranges::any_of(sample_edges, [&](GraphEdge const& edge) {
                     return edge.source.node == node && edge.source.port == port;
                 });
             };
-            auto event_input_connected = [&](size_t node, size_t port) {
+            auto execution_event_input_connected = [&](size_t node, size_t port) {
                 return std::ranges::any_of(event_edges, [&](GraphEventEdge const& edge) {
                     return edge.target.node == node && edge.target.port == port;
                 });
             };
-            auto event_output_connected = [&](size_t node, size_t port) {
+            auto execution_event_output_connected = [&](size_t node, size_t port) {
                 return std::ranges::any_of(event_edges, [&](GraphEventEdge const& edge) {
                     return edge.source.node == node && edge.source.port == port;
                 });
@@ -623,7 +676,7 @@ namespace iv {
                         snapshot_node.sample_inputs.push_back(ConcretePortInfo {
                             .name = inputs[input_i].name,
                             .type = "sample",
-                            .connected = sample_input_connected(global_i, input_i),
+                            .connected = execution_sample_input_connected(global_i, input_i),
                             .history = inputs[input_i].history,
                             .default_value = inputs[input_i].default_value,
                         });
@@ -635,7 +688,7 @@ namespace iv {
                         snapshot_node.sample_outputs.push_back(ConcretePortInfo {
                             .name = outputs[output_i].name,
                             .type = "sample",
-                            .connected = sample_output_connected(global_i, output_i),
+                            .connected = execution_sample_output_connected(global_i, output_i),
                             .history = outputs[output_i].history,
                             .latency = outputs[output_i].latency,
                         });
@@ -647,7 +700,7 @@ namespace iv {
                         snapshot_node.event_inputs.push_back(ConcretePortInfo {
                             .name = event_inputs[input_i].name,
                             .type = event_type_name(event_inputs[input_i].type),
-                            .connected = event_input_connected(global_i, input_i),
+                            .connected = execution_event_input_connected(global_i, input_i),
                         });
                     }
 
@@ -657,7 +710,7 @@ namespace iv {
                         snapshot_node.event_outputs.push_back(ConcretePortInfo {
                             .name = event_outputs[output_i].name,
                             .type = event_type_name(event_outputs[output_i].type),
-                            .connected = event_output_connected(global_i, output_i),
+                            .connected = execution_event_output_connected(global_i, output_i),
                         });
                     }
 
@@ -675,6 +728,85 @@ namespace iv {
                     continue;
                 }
                 snapshot.concrete_nodes.push_back(std::move(*maybe_node));
+            }
+
+            snapshot.concrete_nodes.reserve(snapshot.concrete_nodes.size() + graph._lowered_subgraphs.size());
+            for (size_t lowered_i = 0; lowered_i < graph._lowered_subgraphs.size(); ++lowered_i) {
+                auto const& lowered_subgraph = graph._lowered_subgraphs[lowered_i];
+                ConcreteNode snapshot_node;
+                snapshot_node.id = "subgraph:" + std::to_string(lowered_i);
+                snapshot_node.kind = lowered_subgraph.kind.empty() ? std::string("Subgraph") : lowered_subgraph.kind;
+
+                for (auto const& span : lowered_subgraph.source_spans) {
+                    snapshot_node.source_spans.push_back(SnapshotNodeSpan {
+                        .file_path = normalized_path_string(span.file_path),
+                        .begin = span.begin,
+                        .end = span.end,
+                    });
+                }
+
+                std::unordered_set<size_t> member_set;
+                member_set.reserve(lowered_subgraph.member_nodes.size());
+                for (size_t member_node : lowered_subgraph.member_nodes) {
+                    member_set.insert(member_node);
+                }
+
+                snapshot_node.sample_inputs.reserve(lowered_subgraph.sample_inputs.size());
+                for (size_t input_i = 0; input_i < lowered_subgraph.sample_inputs.size(); ++input_i) {
+                    auto const& input = lowered_subgraph.sample_inputs[input_i];
+                    auto const targets = input_i < lowered_subgraph.sample_input_targets.size()
+                        ? std::span<PortId const>(lowered_subgraph.sample_input_targets[input_i].data(), lowered_subgraph.sample_input_targets[input_i].size())
+                        : std::span<PortId const>();
+                    snapshot_node.sample_inputs.push_back(ConcretePortInfo {
+                        .name = input.name,
+                        .type = "sample",
+                        .connected = sample_input_connected(sample_edges, member_set, targets),
+                        .history = input.history,
+                        .default_value = input.default_value,
+                    });
+                }
+
+                snapshot_node.sample_outputs.reserve(lowered_subgraph.sample_outputs.size());
+                for (size_t output_i = 0; output_i < lowered_subgraph.sample_outputs.size(); ++output_i) {
+                    auto const& output = lowered_subgraph.sample_outputs[output_i];
+                    PortId const source = output_i < lowered_subgraph.sample_output_sources.size()
+                        ? lowered_subgraph.sample_output_sources[output_i]
+                        : PortId{};
+                    snapshot_node.sample_outputs.push_back(ConcretePortInfo {
+                        .name = output.name,
+                        .type = "sample",
+                        .connected = sample_output_connected(sample_edges, member_set, source),
+                        .latency = output.latency,
+                    });
+                }
+
+                snapshot_node.event_inputs.reserve(lowered_subgraph.event_inputs.size());
+                for (size_t input_i = 0; input_i < lowered_subgraph.event_inputs.size(); ++input_i) {
+                    auto const& input = lowered_subgraph.event_inputs[input_i];
+                    auto const targets = input_i < lowered_subgraph.event_input_targets.size()
+                        ? std::span<PortId const>(lowered_subgraph.event_input_targets[input_i].data(), lowered_subgraph.event_input_targets[input_i].size())
+                        : std::span<PortId const>();
+                    snapshot_node.event_inputs.push_back(ConcretePortInfo {
+                        .name = input.name,
+                        .type = event_type_name(input.type),
+                        .connected = event_input_connected(event_edges, member_set, targets),
+                    });
+                }
+
+                snapshot_node.event_outputs.reserve(lowered_subgraph.event_outputs.size());
+                for (size_t output_i = 0; output_i < lowered_subgraph.event_outputs.size(); ++output_i) {
+                    auto const& output = lowered_subgraph.event_outputs[output_i];
+                    PortId const source = output_i < lowered_subgraph.event_output_sources.size()
+                        ? lowered_subgraph.event_output_sources[output_i]
+                        : PortId{};
+                    snapshot_node.event_outputs.push_back(ConcretePortInfo {
+                        .name = output.name,
+                        .type = event_type_name(output.type),
+                        .connected = event_output_connected(event_edges, member_set, source),
+                    });
+                }
+
+                snapshot.concrete_nodes.push_back(std::move(snapshot_node));
             }
 
             std::vector<std::string> singleton_logical_node_ids;
@@ -696,6 +828,7 @@ namespace iv {
             }
 
             auto display_logical_nodes = build_logical_nodes(snapshot.concrete_nodes, singleton_logical_node_ids);
+
             snapshot.query_logical_node_indices.reserve(display_logical_nodes.size());
             for (auto& node : display_logical_nodes) {
                 snapshot.query_logical_node_indices.push_back(snapshot.logical_nodes.size());
@@ -1108,23 +1241,92 @@ namespace iv {
             return span.begin <= end && begin <= span.end;
         };
 
-        std::unordered_set<std::string> emitted;
+        struct RankedLogicalNode {
+            size_t logical_index = 0;
+            uint32_t best_span_size = std::numeric_limits<uint32_t>::max();
+            uint32_t best_distance = std::numeric_limits<uint32_t>::max();
+            uint32_t best_begin = std::numeric_limits<uint32_t>::max();
+            uint32_t best_end = std::numeric_limits<uint32_t>::max();
+        };
+
+        auto span_distance_to_range = [](SnapshotNodeSpan const& span, std::pair<uint32_t, uint32_t> const& requested_range) {
+            auto const [begin, end] = requested_range;
+            if (span.begin <= end && begin <= span.end) {
+                return 0u;
+            }
+            if (span.end < begin) {
+                return begin - span.end;
+            }
+            return span.begin - end;
+        };
+
+        std::vector<RankedLogicalNode> ranked_nodes;
+        ranked_nodes.reserve(_impl->snapshot->query_logical_node_indices.size());
         for (size_t logical_index : _impl->snapshot->query_logical_node_indices) {
             auto const& node = _impl->snapshot->logical_nodes[logical_index];
             bool matches = requested_ranges.empty();
+            RankedLogicalNode ranked { .logical_index = logical_index };
             if (!requested_ranges.empty()) {
                 auto const node_matches_range = [&](std::pair<uint32_t, uint32_t> const& requested_range) {
-                    return std::ranges::any_of(node.source_spans, [&](SnapshotNodeSpan const& span) {
-                        return span.file_path == normalized_file_path && span_touches_range(span, requested_range);
-                    });
+                    bool any = false;
+                    for (auto const& span : node.source_spans) {
+                        if (span.file_path != normalized_file_path || !span_touches_range(span, requested_range)) {
+                            continue;
+                        }
+                        any = true;
+                        auto const span_size = span.end >= span.begin ? span.end - span.begin : 0u;
+                        auto const distance = span_distance_to_range(span, requested_range);
+                        ranked.best_span_size = std::min(ranked.best_span_size, span_size);
+                        ranked.best_distance = std::min(ranked.best_distance, distance);
+                        ranked.best_begin = std::min(ranked.best_begin, span.begin);
+                        ranked.best_end = std::min(ranked.best_end, span.end);
+                    }
+                    return any;
                 };
                 if (match_mode == SourceRangeMatchMode::union_) {
                     matches = std::ranges::any_of(requested_ranges, node_matches_range);
                 } else {
                     matches = std::ranges::all_of(requested_ranges, node_matches_range);
                 }
+            } else if (!node.source_spans.empty()) {
+                ranked.best_span_size = node.source_spans.front().end >= node.source_spans.front().begin
+                    ? node.source_spans.front().end - node.source_spans.front().begin
+                    : 0u;
+                ranked.best_distance = 0u;
+                ranked.best_begin = node.source_spans.front().begin;
+                ranked.best_end = node.source_spans.front().end;
             }
-            if (!matches || emitted.contains(node.id)) {
+            if (!matches) {
+                continue;
+            }
+            ranked_nodes.push_back(ranked);
+        }
+
+        std::sort(ranked_nodes.begin(), ranked_nodes.end(), [&](auto const& a, auto const& b) {
+            if (a.best_span_size != b.best_span_size) {
+                return a.best_span_size < b.best_span_size;
+            }
+            if (a.best_distance != b.best_distance) {
+                return a.best_distance < b.best_distance;
+            }
+            if (a.best_begin != b.best_begin) {
+                return a.best_begin < b.best_begin;
+            }
+            if (a.best_end != b.best_end) {
+                return a.best_end < b.best_end;
+            }
+            auto const& a_node = _impl->snapshot->logical_nodes[a.logical_index];
+            auto const& b_node = _impl->snapshot->logical_nodes[b.logical_index];
+            if (a_node.kind != b_node.kind) {
+                return a_node.kind < b_node.kind;
+            }
+            return a_node.id < b_node.id;
+        });
+
+        std::unordered_set<std::string> emitted;
+        for (auto const& ranked : ranked_nodes) {
+            auto const& node = _impl->snapshot->logical_nodes[ranked.logical_index];
+            if (emitted.contains(node.id)) {
                 continue;
             }
             emitted.insert(node.id);

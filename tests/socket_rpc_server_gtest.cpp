@@ -80,6 +80,40 @@ namespace {
         return workspace;
     }
 
+    std::filesystem::path make_polyphonic_project_workspace()
+    {
+        auto const workspace = make_workspace("socket_rpc_server_polyphonic");
+        iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", workspace);
+        write_text(workspace / ".intravenous", "");
+        write_text(workspace / "module.cpp", R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+#include "basic_nodes/shaping.h"
+
+void polyphonic_module(iv::ModuleContext const& context)
+{
+    using namespace iv;
+    auto& g = context.builder();
+    auto const& io = context.target_factory();
+    auto const dt = g.node<ValueSource>(&context.sample_period());
+    auto const sink = io.sink(g, 0);
+    auto const voices = iv::polyphonic<2>(g, [&](auto m) {
+        auto const saw = g.node<SawOscillator>();
+        saw(
+            "phase_offset"_P = 0.0,
+            "frequency"_P = 440.0,
+            "dt"_P = dt
+        );
+        return saw * ("amplitude"_P << m);
+    });
+    sink(voices);
+    g.outputs();
+}
+
+IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
+)");
+        return workspace;
+    }
+
     std::string pop_line(std::string* buffer)
     {
         auto const newline = buffer->find('\n');
@@ -159,6 +193,27 @@ namespace {
 
         return {};
     }
+
+    std::string read_response_for_id(
+        int fd,
+        std::string* buffer,
+        int id,
+        std::chrono::milliseconds timeout = 45s
+    )
+    {
+        auto const deadline = std::chrono::steady_clock::now() + timeout;
+        std::string const marker = "\"id\":" + std::to_string(id);
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto const line = read_line_until(fd, buffer, 500ms);
+            if (line.empty()) {
+                continue;
+            }
+            if (line.contains(marker)) {
+                return line;
+            }
+        }
+        return {};
+    }
 }
 
 TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
@@ -200,7 +255,8 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
         R"(","ranges":[{"start":{"line":7,"column":1},"end":{"line":15,"column":1}}],"match":"intersection"}})" "\n";
     ASSERT_EQ(::write(fd, query_request.data(), query_request.size()), static_cast<ssize_t>(query_request.size()));
 
-    auto const query_response = read_line(fd, &response_buffer);
+    auto const query_response = read_response_for_id(fd, &response_buffer, 2);
+    ASSERT_FALSE(query_response.empty());
     EXPECT_TRUE(query_response.contains(R"("jsonrpc":"2.0")"));
     EXPECT_TRUE(query_response.contains(R"("executionEpoch":1)"));
     EXPECT_TRUE(query_response.contains(R"("nodes":[)"));
@@ -314,6 +370,78 @@ TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
 
     std::string const shutdown_request =
         R"({"jsonrpc":"2.0","id":3,"method":"server.shutdown","params":{}})" "\n";
+    ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
+    auto const shutdown_response = read_line(fd, &response_buffer);
+    EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
+
+    ::close(fd);
+    server.request_shutdown();
+}
+
+TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
+{
+    auto const workspace = make_polyphonic_project_workspace();
+
+    iv::SocketRpcServer server(workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    server.start();
+    ASSERT_TRUE(server.wait_until_ready(5s));
+
+    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    ASSERT_GE(fd, 0) << std::strerror(errno);
+
+    sockaddr_un address {};
+    address.sun_family = AF_UNIX;
+    auto const socket_path = server.socket_path().string();
+    ASSERT_LT(socket_path.size(), sizeof(address.sun_path));
+    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
+    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0) << std::strerror(errno);
+    std::string response_buffer;
+
+    std::string const initialize_request =
+        R"({"jsonrpc":"2.0","id":1,"method":"server.initialize","params":{"workspaceRoot":")" +
+        std::filesystem::weakly_canonical(workspace).generic_string() +
+        R"("}})" "\n";
+    ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
+    auto const initialize_response = read_line(fd, &response_buffer);
+    ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
+
+    std::string const query_request =
+        R"({"jsonrpc":"2.0","id":2,"method":"graph.queryBySpans","params":{"filePath":")" +
+        std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
+        R"(","ranges":[{"start":{"line":13,"column":20},"end":{"line":13,"column":20}}],"match":"intersection"}})" "\n";
+    ASSERT_EQ(::write(fd, query_request.data(), query_request.size()), static_cast<ssize_t>(query_request.size()));
+    auto const query_response = read_response_for_id(fd, &response_buffer, 2);
+    ASSERT_FALSE(query_response.empty());
+    EXPECT_TRUE(query_response.contains(R"("kind":"iv::SawOscillator")")) << query_response;
+    EXPECT_TRUE(query_response.contains(R"("memberCount":2)")) << query_response;
+    EXPECT_TRUE(query_response.contains(R"("memberNodes":[)")) << query_response;
+    EXPECT_FALSE(query_response.contains(R"("kind":"Polyphonic")")) << query_response;
+    EXPECT_FALSE(query_response.contains(R"("kind":"PolyphonicVoice")")) << query_response;
+
+    std::smatch member_id_match;
+    ASSERT_TRUE(std::regex_search(
+        query_response,
+        member_id_match,
+        std::regex("\"memberNodes\":\\[\\{\"id\":\"([^\"]+)\",\"kind\":\"iv::SawOscillator\"")
+    )) << query_response;
+    auto const member_logical_node_id = member_id_match[1].str();
+
+    std::string const get_members_request =
+        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNodes","params":{"executionEpoch":1,"nodeIds":[")" +
+        member_logical_node_id +
+        R"("]}})" "\n";
+    ASSERT_EQ(::write(fd, get_members_request.data(), get_members_request.size()), static_cast<ssize_t>(get_members_request.size()));
+    auto const members_response = read_response_for_id(fd, &response_buffer, 3);
+    ASSERT_FALSE(members_response.empty());
+    EXPECT_TRUE(members_response.contains(R"("kind":"iv::SawOscillator")"));
+    EXPECT_TRUE(members_response.contains(R"("sampleInputs":[{"name":"phase_offset")"));
+    EXPECT_TRUE(members_response.contains(R"("name":"frequency")"));
+    EXPECT_TRUE(members_response.contains(R"("name":"dt")"));
+    EXPECT_TRUE(members_response.contains(R"("sampleOutputs":[{"name":"out")"));
+    EXPECT_TRUE(members_response.contains(R"("memberCount":1)"));
+
+    std::string const shutdown_request =
+        R"({"jsonrpc":"2.0","id":4,"method":"server.shutdown","params":{}})" "\n";
     ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
     auto const shutdown_response = read_line(fd, &response_buffer);
     EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));

@@ -179,19 +179,6 @@ namespace {
             || qualified_name == "iv::StructuredNodeRef";
     }
 
-    bool should_wrap_overloaded_operator(clang::OverloadedOperatorKind op)
-    {
-        switch (op) {
-        case clang::OO_Call:
-        case clang::OO_Subscript:
-        case clang::OO_LessLess:
-        case clang::OO_GreaterGreater:
-            return true;
-        default:
-            return false;
-        }
-    }
-
     clang::Expr const* strip_trivial_expr_wrappers(clang::Expr const* expr)
     {
         while (true) {
@@ -328,7 +315,7 @@ namespace {
             return callee && callee->getQualifiedNameAsString() == "iv::_add_node_source_span";
         }
 
-        bool is_excluded_lvalue_context(clang::Expr const* expr) const
+        bool is_assignment_lhs_context(clang::Expr const* expr) const
         {
             clang::Expr const* current = expr;
 
@@ -336,29 +323,6 @@ namespace {
                 auto const parents = _context.getParents(*current);
                 if (parents.empty()) {
                     return false;
-                }
-
-                if (auto const* parent_decl = parents[0].get<clang::VarDecl>()) {
-                    if (!parent_decl->hasInit()) {
-                        return true;
-                    }
-
-                    clang::Expr const* init = parent_decl->getInit();
-                    if (!init) {
-                        return true;
-                    }
-
-                    clang::SourceLocation const decl_loc =
-                        _source_manager.getSpellingLoc(parent_decl->getLocation());
-                    clang::SourceLocation const init_begin =
-                        _source_manager.getSpellingLoc(init->getBeginLoc());
-                    if (!decl_loc.isInvalid() && !init_begin.isInvalid() && decl_loc == init_begin) {
-                        return true;
-                    }
-
-                    return is_reference_type(parent_decl->getType())
-                        && parent_decl->hasInit()
-                        && strip_trivial_expr_wrappers(init) == strip_trivial_expr_wrappers(current);
                 }
 
                 auto const* parent_stmt = parents[0].get<clang::Stmt>();
@@ -394,19 +358,27 @@ namespace {
             }
         }
 
-        void maybe_add_expr_wrap(clang::Expr* expr)
+        std::optional<FileRange> token_range_for_named_expr(clang::Expr const* expr) const
+        {
+            if (!expr) {
+                return std::nullopt;
+            }
+
+            if (auto const* decl_ref = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
+                return token_range_for_location(decl_ref->getLocation());
+            }
+
+            if (auto const* member = llvm::dyn_cast<clang::MemberExpr>(expr)) {
+                return token_range_for_location(member->getMemberLoc());
+            }
+
+            return std::nullopt;
+        }
+
+        void maybe_add_symbol_reference_wrap(clang::Expr* expr)
         {
             if (!expr) {
                 return;
-            }
-
-            if (llvm::isa<clang::BinaryOperator>(expr)) {
-                return;
-            }
-            if (auto const* overloaded = llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
-                if (!should_wrap_overloaded_operator(overloaded->getOperator())) {
-                    return;
-                }
             }
 
             clang::QualType const expr_type = expr->getType();
@@ -422,16 +394,17 @@ namespace {
                 return;
             }
 
-            if (is_excluded_lvalue_context(expr)) {
+            if (is_assignment_lhs_context(expr)) {
                 return;
             }
 
-            auto const range = file_range_for_source_range(expr->getSourceRange());
-            if (!range.has_value()) {
+            auto const wrapped_range = file_range_for_source_range(expr->getSourceRange());
+            auto const span_range = token_range_for_named_expr(expr);
+            if (!wrapped_range.has_value() || !span_range.has_value()) {
                 return;
             }
 
-            add_wrap(*range, *range, false);
+            add_wrap(*wrapped_range, *span_range, false);
         }
 
         void maybe_add_binding_wrap(clang::VarDecl* decl)
@@ -485,7 +458,7 @@ namespace {
             }
 
             auto const wrapped_range = file_range_for_source_range(rhs->getSourceRange());
-            auto const span_range = file_range_for_source_range(lhs->getSourceRange());
+            auto const span_range = token_range_for_named_expr(lhs);
             if (!wrapped_range.has_value() || !span_range.has_value()) {
                 return;
             }
@@ -585,15 +558,21 @@ namespace {
             _core_source_dir = configured_core_source_dir();
         }
 
-        bool VisitExpr(clang::Expr* expr)
-        {
-            maybe_add_expr_wrap(expr);
-            return true;
-        }
-
         bool VisitVarDecl(clang::VarDecl* decl)
         {
             maybe_add_binding_wrap(decl);
+            return true;
+        }
+
+        bool VisitDeclRefExpr(clang::DeclRefExpr* expr)
+        {
+            maybe_add_symbol_reference_wrap(expr);
+            return true;
+        }
+
+        bool VisitMemberExpr(clang::MemberExpr* expr)
+        {
+            maybe_add_symbol_reference_wrap(expr);
             return true;
         }
 

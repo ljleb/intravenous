@@ -229,12 +229,16 @@ class LiveGraphProvider {
             : (node.memberCount === 1
                 ? singleNodeIconPath
                 : new vscode.ThemeIcon("symbol-misc"));
+        item.children = this.makeLogicalNodeChildren(treeKey, node);
+        return item;
+    }
 
+    makeLogicalNodeChildren(parentTreeKey, node) {
         const children = [];
-        const sampleInputs = this.makePortGroup(treeKey, "sample inputs", node.sampleInputs || [], "input", "sample");
-        const sampleOutputs = this.makePortGroup(treeKey, "sample outputs", node.sampleOutputs || [], "output", "sample");
-        const eventInputs = this.makePortGroup(treeKey, "event inputs", node.eventInputs || [], "input", "event");
-        const eventOutputs = this.makePortGroup(treeKey, "event outputs", node.eventOutputs || [], "output", "event");
+        const sampleInputs = this.makePortGroup(parentTreeKey, "sample inputs", node.sampleInputs || [], "input", "sample");
+        const sampleOutputs = this.makePortGroup(parentTreeKey, "sample outputs", node.sampleOutputs || [], "output", "sample");
+        const eventInputs = this.makePortGroup(parentTreeKey, "event inputs", node.eventInputs || [], "input", "event");
+        const eventOutputs = this.makePortGroup(parentTreeKey, "event outputs", node.eventOutputs || [], "output", "event");
         if (sampleInputs) {
             children.push(sampleInputs);
         }
@@ -248,10 +252,9 @@ class LiveGraphProvider {
             children.push(eventOutputs);
         }
         if (Array.isArray(node.memberNodes) && node.memberNodes.length > 1) {
-            children.push(this.makeMembersGroup(treeKey, node.memberNodes));
+            children.push(this.makeMembersGroup(parentTreeKey, node.memberNodes));
         }
-        item.children = children;
-        return item;
+        return children;
     }
 
     makePortGroup(parentTreeKey, label, ports, direction, portKind) {
@@ -285,23 +288,13 @@ class LiveGraphProvider {
         item.treeKey = treeKey;
         item.id = treeKey;
         this.applyMemberPresentation(item, member);
-        item.children = [
-            this.makePortGroup(treeKey, "sample inputs", member.sampleInputs || [], "input", "sample"),
-            this.makePortGroup(treeKey, "sample outputs", member.sampleOutputs || [], "output", "sample"),
-            this.makePortGroup(treeKey, "event inputs", member.eventInputs || [], "input", "event"),
-            this.makePortGroup(treeKey, "event outputs", member.eventOutputs || [], "output", "event"),
-        ].filter(Boolean);
+        item.children = this.makeLogicalNodeChildren(treeKey, member);
         return item;
     }
 
     hydrateMemberItem(item, member) {
         this.applyMemberPresentation(item, member);
-        item.children = [
-            this.makePortGroup(item.treeKey, "sample inputs", member.sampleInputs || [], "input", "sample"),
-            this.makePortGroup(item.treeKey, "sample outputs", member.sampleOutputs || [], "output", "sample"),
-            this.makePortGroup(item.treeKey, "event inputs", member.eventInputs || [], "input", "event"),
-            this.makePortGroup(item.treeKey, "event outputs", member.eventOutputs || [], "output", "event"),
-        ].filter(Boolean);
+        item.children = this.makeLogicalNodeChildren(item.treeKey, member);
         item.childrenLoaded = true;
         item.memberLoaded = true;
         item.loadChildren = null;
@@ -350,7 +343,7 @@ class LiveGraphProvider {
 
     makeMembersGroup(parentTreeKey, memberNodes) {
         const treeKey = `${parentTreeKey}/group:members`;
-        const item = new LiveGraphItem("members", this.collapsibleStateFor(treeKey, true), `${memberNodes.length}`);
+        const item = new LiveGraphItem("members", this.collapsibleStateFor(treeKey, false), `${memberNodes.length}`);
         item.treeKey = treeKey;
         item.id = treeKey;
         const memberItems = new Array(memberNodes.length);

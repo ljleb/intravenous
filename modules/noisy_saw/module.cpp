@@ -31,13 +31,11 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         // auto const sink = io.file(g, channel, "out.wav");
         auto const sink = io.sink(g, channel);
 
-        auto const voice = polyphonic<4>(g, [&](auto m) {
+        auto const voice = polyphonic<16>(g, [&](auto m) {
             static size_t seed = 0;
             // m.connect_event_input("midi", midi);
 
             auto const saw = g.node<SawOscillator>();
-            auto const amp = g.node<Constant>(0.2);
-            auto const f = g.node<Constant>(440);
             auto const phi = g.node<PhaseIntegrator>();
             auto const generator = g.node<DeterministicUniformAESNoise>(seed++);
             auto const u_to_n = g.node<UniformToGaussian>(0.0, 0.5);
@@ -45,7 +43,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             auto const hi_pass = g.node<SimpleIirHighPass>();
 
             saw(
-                "frequency"_P = f,
+                "frequency"_P = m >> "frequency"_P,
                 "phase_offset"_P = phi,
                 "dt"_P = dt
             );
@@ -54,7 +52,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
             lo_pass(u_to_n, 0.0, dt);
             u_to_n < generator;
 
-            return saw * amp;
+            return saw * ("amplitude"_P << m);
         });
 
         SamplePortRef x = voice;
@@ -69,7 +67,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         //     x = port << sup(port = x);
         // }
         // voice;
-        sink(x * 0);
+        sink(x * 0.5);
     }
 
     g.outputs();

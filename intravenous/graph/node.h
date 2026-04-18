@@ -30,6 +30,7 @@ namespace iv {
         std::vector<std::string> _node_ids;
         std::vector<std::vector<SourceSpan>> _node_source_spans;
         std::vector<DormancyGroup> _dormancy_groups;
+        std::vector<LoweredSubgraph> _lowered_subgraphs;
         std::vector<size_t> _group_sample_input_offsets;
         std::vector<size_t> _group_event_input_offsets;
         std::vector<size_t> _group_sample_output_offsets;
@@ -58,6 +59,7 @@ namespace iv {
             _node_ids(std::move(artifact.node_ids)),
             _node_source_spans(std::move(artifact.node_source_spans)),
             _dormancy_groups(std::move(artifact.dormancy_groups)),
+            _lowered_subgraphs(std::move(artifact.lowered_subgraphs)),
             _group_sample_input_offsets(),
             _group_event_input_offsets(),
             _group_sample_output_offsets(),

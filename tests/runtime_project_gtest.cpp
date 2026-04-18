@@ -537,6 +537,146 @@ TEST(RuntimeProjectService, QueryActiveRegionsReturnsOnlySourceSpans)
     EXPECT_EQ(actual_spans, expected_spans);
 }
 
+TEST(RuntimeProjectService, QueryBySpansMergesPolyphonicCallbackNodesByExactSourceSpan)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_polyphonic_exact_spans",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+#include "basic_nodes/shaping.h"
+
+void polyphonic_module(iv::ModuleContext const& context)
+{
+    using namespace iv;
+    auto& g = context.builder();
+    auto const& io = context.target_factory();
+    auto const dt = g.node<ValueSource>(&context.sample_period());
+    auto const sink = io.sink(g, 0);
+    auto const voices = iv::polyphonic<2>(g, [&](auto m) {
+        auto const saw = g.node<SawOscillator>();
+        saw(
+            "phase_offset"_P = 0.0,
+            "frequency"_P = 440.0,
+            "dt"_P = dt
+        );
+        return saw * ("amplitude"_P << m);
+    });
+    sink(voices);
+    g.outputs();
+}
+
+IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
+)"
+    );
+
+    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const result = service.query_by_spans(
+        module_cpp,
+        {
+            iv::SourceRange {
+                .start = { .line = 13, .column = 20 },
+                .end = { .line = 13, .column = 20 },
+            },
+        }
+    );
+
+    ASSERT_EQ(result.nodes.size(), 1u);
+    auto const& logical = result.nodes.front();
+    EXPECT_EQ(logical.kind, "iv::SawOscillator");
+    EXPECT_EQ(logical.member_count, 2u);
+    ASSERT_EQ(logical.sample_inputs.size(), 3u);
+    EXPECT_EQ(logical.sample_inputs[0].name, "phase_offset");
+    EXPECT_EQ(logical.sample_inputs[1].name, "frequency");
+    EXPECT_EQ(logical.sample_inputs[2].name, "dt");
+    ASSERT_EQ(logical.sample_outputs.size(), 1u);
+    EXPECT_EQ(logical.sample_outputs[0].name, "out");
+
+    std::vector<std::string> member_ids;
+    member_ids.reserve(logical.member_nodes.size());
+    for (auto const& member : logical.member_nodes) {
+        member_ids.push_back(member.id);
+        EXPECT_EQ(member.kind, "iv::SawOscillator");
+    }
+
+    auto const members = service.get_logical_nodes(result.execution_epoch, member_ids);
+    ASSERT_EQ(members.size(), logical.member_nodes.size());
+    for (auto const& member : members) {
+        EXPECT_EQ(member.kind, "iv::SawOscillator");
+        EXPECT_EQ(member.member_count, 1u);
+        ASSERT_EQ(member.sample_inputs.size(), 3u);
+        EXPECT_EQ(member.sample_inputs[0].name, "phase_offset");
+        EXPECT_EQ(member.sample_inputs[1].name, "frequency");
+        EXPECT_EQ(member.sample_inputs[2].name, "dt");
+        ASSERT_EQ(member.sample_outputs.size(), 1u);
+        EXPECT_EQ(member.sample_outputs[0].name, "out");
+    }
+
+    EXPECT_TRUE(std::ranges::none_of(result.nodes, [](auto const& node) {
+        return node.kind == "Polyphonic";
+    }));
+}
+
+TEST(RuntimeProjectService, QueryBySpansDoesNotAttributeInteriorPolyphonicLambdaSpansToOuterSubgraph)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_polyphonic_interior_span",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+#include "basic_nodes/shaping.h"
+
+void polyphonic_module(iv::ModuleContext const& context)
+{
+    using namespace iv;
+    auto& g = context.builder();
+    auto const& io = context.target_factory();
+    auto const dt = g.node<ValueSource>(&context.sample_period());
+    auto const sink = io.sink(g, 0);
+    auto const voices = iv::polyphonic<2>(g, [&](auto m) {
+        auto const saw = g.node<SawOscillator>();
+        saw(
+            "phase_offset"_P = 0.0,
+            "frequency"_P = 440.0,
+            "dt"_P = dt
+        );
+        return saw * ("amplitude"_P << m);
+    });
+    sink(voices);
+    g.outputs();
+}
+
+IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
+)"
+    );
+
+    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const result = service.query_by_spans(
+        module_cpp,
+        {
+            iv::SourceRange {
+                .start = { .line = 13, .column = 20 },
+                .end = { .line = 13, .column = 20 },
+            },
+        }
+    );
+
+    ASSERT_EQ(result.nodes.size(), 1u);
+    EXPECT_EQ(result.nodes.front().kind, "iv::SawOscillator");
+    EXPECT_TRUE(std::ranges::none_of(result.nodes, [](auto const& node) {
+        return node.kind == "Polyphonic";
+    }));
+    EXPECT_TRUE(std::ranges::none_of(result.nodes, [](auto const& node) {
+        return node.kind == "PolyphonicVoice";
+    }));
+}
+
 TEST(RuntimeProjectService, MissingMarkerFailsInitialization)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_missing_marker", "local_cmake");

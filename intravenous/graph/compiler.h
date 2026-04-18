@@ -84,42 +84,31 @@ namespace iv::details {
 
     inline std::vector<DormancyGroup> compile_dormancy_groups(
         PreparedGraph const& g,
-        std::span<LoweredScopeSpec const> scopes,
+        std::span<LoweredSubgraph const> lowered_subgraphs,
         std::string_view graph_id,
         GraphExecutionPlan const& execution_plan
     )
     {
-        std::unordered_map<std::string, size_t> runtime_index_by_node_id;
-        for (size_t i = 0; i < g.node_ids.size(); ++i) {
-            runtime_index_by_node_id.emplace(g.node_ids[i], i);
-        }
         std::vector<size_t> region_to_order(execution_plan.regions.size(), GRAPH_ID);
         for (size_t ordered_i = 0; ordered_i < execution_plan.region_order.size(); ++ordered_i) {
             region_to_order[execution_plan.region_order[ordered_i]] = ordered_i;
         }
 
         std::vector<DormancyGroup> groups;
-        groups.reserve(scopes.size());
+        groups.reserve(lowered_subgraphs.size());
         std::vector<std::unordered_set<size_t>> member_sets;
-        member_sets.reserve(scopes.size());
+        member_sets.reserve(lowered_subgraphs.size());
 
-        for (auto const& scope : scopes) {
+        for (auto const& lowered_subgraph : lowered_subgraphs) {
             DormancyGroup group;
-            group.parent_group = scope.parent_scope;
-            group.ttl_samples = scope.ttl_samples;
+            group.parent_group = lowered_subgraph.parent_scope;
+            group.ttl_samples = lowered_subgraph.ttl_samples;
+            group.member_nodes = lowered_subgraph.member_nodes;
 
-            std::unordered_set<size_t> member_set;
-            for (auto const& node_id : scope.member_node_ids) {
-                auto it = runtime_index_by_node_id.find(node_id);
-                if (it == runtime_index_by_node_id.end()) {
-                    continue;
-                }
-                group.member_nodes.push_back(it->second);
-                member_set.insert(it->second);
-            }
-
-            std::sort(group.member_nodes.begin(), group.member_nodes.end());
-            group.member_nodes.erase(std::unique(group.member_nodes.begin(), group.member_nodes.end()), group.member_nodes.end());
+            std::unordered_set<size_t> member_set(
+                group.member_nodes.begin(),
+                group.member_nodes.end()
+            );
             member_sets.push_back(std::move(member_set));
             groups.push_back(std::move(group));
         }
@@ -226,6 +215,90 @@ namespace iv::details {
         }
 
         return filtered;
+    }
+
+    inline std::vector<LoweredSubgraph> compile_lowered_subgraphs(
+        PreparedGraph const& g,
+        std::span<LoweredSubgraphSpec const> scopes
+    )
+    {
+        std::unordered_map<std::string, size_t> runtime_index_by_node_id;
+        for (size_t i = 0; i < g.node_ids.size(); ++i) {
+            runtime_index_by_node_id.emplace(g.node_ids[i], i);
+        }
+
+        std::vector<LoweredSubgraph> lowered_subgraphs;
+        lowered_subgraphs.reserve(scopes.size());
+        for (auto const& scope : scopes) {
+            LoweredSubgraph lowered;
+            lowered.parent_scope = scope.parent_scope;
+            lowered.kind = scope.kind;
+            lowered.source_spans = scope.source_spans;
+            lowered.sample_inputs = scope.sample_inputs;
+            lowered.sample_outputs = scope.sample_outputs;
+            lowered.event_inputs = scope.event_inputs;
+            lowered.event_outputs = scope.event_outputs;
+            lowered.ttl_samples = scope.ttl_samples;
+
+            auto remap_port = [&](LoweredSubgraphSpec::PortRef const& port) {
+                if (port.is_graph_port) {
+                    return PortId{ GRAPH_ID, port.port };
+                }
+                auto const it = runtime_index_by_node_id.find(port.node_id);
+                if (it == runtime_index_by_node_id.end()) {
+                    return PortId{ GRAPH_ID, port.port };
+                }
+                return PortId{ it->second, port.port };
+            };
+
+            for (auto const& node_id : scope.member_node_ids) {
+                auto const it = runtime_index_by_node_id.find(node_id);
+                if (it == runtime_index_by_node_id.end()) {
+                    continue;
+                }
+                lowered.member_nodes.push_back(it->second);
+            }
+
+            lowered.sample_input_targets.reserve(scope.sample_input_targets.size());
+            for (auto const& targets : scope.sample_input_targets) {
+                std::vector<PortId> remapped_targets;
+                remapped_targets.reserve(targets.size());
+                for (auto const& target : targets) {
+                    remapped_targets.push_back(remap_port(target));
+                }
+                lowered.sample_input_targets.push_back(std::move(remapped_targets));
+            }
+            lowered.sample_output_sources.reserve(scope.sample_output_sources.size());
+            for (auto const& source : scope.sample_output_sources) {
+                lowered.sample_output_sources.push_back(remap_port(source));
+            }
+            lowered.event_input_targets.reserve(scope.event_input_targets.size());
+            for (auto const& targets : scope.event_input_targets) {
+                std::vector<PortId> remapped_targets;
+                remapped_targets.reserve(targets.size());
+                for (auto const& target : targets) {
+                    remapped_targets.push_back(remap_port(target));
+                }
+                lowered.event_input_targets.push_back(std::move(remapped_targets));
+            }
+            lowered.event_output_sources.reserve(scope.event_output_sources.size());
+            for (auto const& source : scope.event_output_sources) {
+                lowered.event_output_sources.push_back(remap_port(source));
+            }
+
+            std::sort(lowered.member_nodes.begin(), lowered.member_nodes.end());
+            lowered.member_nodes.erase(
+                std::unique(lowered.member_nodes.begin(), lowered.member_nodes.end()),
+                lowered.member_nodes.end()
+            );
+            if (lowered.member_nodes.empty()) {
+                continue;
+            }
+
+            lowered_subgraphs.push_back(std::move(lowered));
+        }
+
+        return lowered_subgraphs;
     }
 
     inline void expand_hyperedge_ports(PreparedGraph& g, std::string_view builder_id)
@@ -988,7 +1061,8 @@ namespace iv::details {
         std::vector<OutputConfig> public_outputs,
         std::vector<EventInputConfig> public_event_inputs,
         std::vector<EventOutputConfig> public_event_outputs,
-        std::vector<DormancyGroup> dormancy_groups
+        std::vector<DormancyGroup> dormancy_groups,
+        std::vector<LoweredSubgraph> lowered_subgraphs
     )
     {
         auto [source_of, target_of] = [&] {
@@ -1080,6 +1154,7 @@ namespace iv::details {
             .public_event_outputs = std::move(public_event_outputs),
             .public_output_buffer_plans = std::move(public_output_buffer_plans),
             .dormancy_groups = std::move(dormancy_groups),
+            .lowered_subgraphs = std::move(lowered_subgraphs),
             .internal_latency = 0,
             .node_ids = std::move(node_ids),
             .node_source_spans = std::move(node_source_spans),
