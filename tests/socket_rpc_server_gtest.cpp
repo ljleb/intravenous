@@ -114,6 +114,31 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
         return workspace;
     }
 
+    std::filesystem::path make_annotated_symbol_project_workspace()
+    {
+        auto const workspace = make_workspace("socket_rpc_server_annotated_symbol");
+        write_text(workspace / ".intravenous", "");
+        write_text(workspace / "module.cpp", R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+
+void annotated_symbol_module(iv::ModuleContext const& context)
+{
+    using namespace iv;
+    auto& g = context.builder();
+    auto const a = _annotate_node_source_info(
+        g.node<ValueSource>(&context.sample_period()).node_ref(),
+        "decl:annotated_symbol_module::a"
+    );
+    auto const sink = context.target_factory().sink(g, 0);
+    sink(a);
+    g.outputs();
+}
+
+IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
+)");
+        return workspace;
+    }
+
     std::string pop_line(std::string* buffer)
     {
         auto const newline = buffer->find('\n');
@@ -446,34 +471,114 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     ASSERT_FALSE(query_response.empty());
     EXPECT_TRUE(query_response.contains(R"("kind":"iv::SawOscillator")")) << query_response;
     EXPECT_TRUE(query_response.contains(R"("memberCount":2)")) << query_response;
-    EXPECT_TRUE(query_response.contains(R"("memberNodes":[)")) << query_response;
     EXPECT_FALSE(query_response.contains(R"("kind":"Polyphonic")")) << query_response;
     EXPECT_FALSE(query_response.contains(R"("kind":"PolyphonicVoice")")) << query_response;
 
-    std::smatch member_id_match;
+    std::smatch logical_id_match;
     ASSERT_TRUE(std::regex_search(
         query_response,
-        member_id_match,
-        std::regex("\"memberNodes\":\\[\\{\"id\":\"([^\"]+)\",\"kind\":\"iv::SawOscillator\"")
+        logical_id_match,
+        std::regex("\"id\":\"([^\"]+)\"")
     )) << query_response;
-    auto const member_logical_node_id = member_id_match[1].str();
+    auto const logical_node_id = logical_id_match[1].str();
 
-    std::string const get_members_request =
-        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNodes","params":{"executionEpoch":1,"nodeIds":[")" +
-        member_logical_node_id +
-        R"("]}})" "\n";
-    ASSERT_EQ(::write(fd, get_members_request.data(), get_members_request.size()), static_cast<ssize_t>(get_members_request.size()));
-    auto const members_response = read_response_for_id(fd, &response_buffer, 3);
-    ASSERT_FALSE(members_response.empty());
-    EXPECT_TRUE(members_response.contains(R"("kind":"iv::SawOscillator")"));
-    EXPECT_TRUE(members_response.contains(R"("sampleInputs":[{"name":"phase_offset")"));
-    EXPECT_TRUE(members_response.contains(R"("name":"frequency")"));
-    EXPECT_TRUE(members_response.contains(R"("name":"dt")"));
-    EXPECT_TRUE(members_response.contains(R"("sampleOutputs":[{"name":"out")"));
-    EXPECT_TRUE(members_response.contains(R"("memberCount":1)"));
+    std::string const get_logical_node_request =
+        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
+        logical_node_id +
+        R"("}})" "\n";
+    ASSERT_EQ(::write(fd, get_logical_node_request.data(), get_logical_node_request.size()), static_cast<ssize_t>(get_logical_node_request.size()));
+    auto const logical_node_response = read_response_for_id(fd, &response_buffer, 3);
+    ASSERT_FALSE(logical_node_response.empty());
+    EXPECT_TRUE(logical_node_response.contains(R"("kind":"iv::SawOscillator")"));
+    EXPECT_TRUE(logical_node_response.contains(R"("sampleInputs":[{"name":"phase_offset")"));
+    EXPECT_TRUE(logical_node_response.contains(R"("name":"frequency")"));
+    EXPECT_TRUE(logical_node_response.contains(R"("name":"dt")"));
+    EXPECT_TRUE(logical_node_response.contains(R"("sampleOutputs":[{"name":"out")"));
+    EXPECT_TRUE(logical_node_response.contains(R"("memberCount":2)"));
 
     std::string const shutdown_request =
         R"({"jsonrpc":"2.0","id":4,"method":"server.shutdown","params":{}})" "\n";
+    ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
+    auto const shutdown_response = read_line(fd, &response_buffer);
+    EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
+
+    ::close(fd);
+    server.request_shutdown();
+}
+
+TEST(SocketRpcServer, QueryBySpansKeepsAnnotatedLogicalNodeIdStableOverUnixSocket)
+{
+    auto const workspace = make_annotated_symbol_project_workspace();
+
+    iv::SocketRpcServer server(workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    server.start();
+    ASSERT_TRUE(server.wait_until_ready(5s));
+
+    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    ASSERT_GE(fd, 0) << std::strerror(errno);
+
+    sockaddr_un address {};
+    address.sun_family = AF_UNIX;
+    auto const socket_path = server.socket_path().string();
+    ASSERT_LT(socket_path.size(), sizeof(address.sun_path));
+    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
+    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0) << std::strerror(errno);
+    std::string response_buffer;
+
+    std::string const initialize_request =
+        R"({"jsonrpc":"2.0","id":1,"method":"server.initialize","params":{"workspaceRoot":")" +
+        std::filesystem::weakly_canonical(workspace).generic_string() +
+        R"("}})" "\n";
+    ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
+    auto const initialize_response = read_line(fd, &response_buffer);
+    ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
+
+    std::string const query_request =
+        R"({"jsonrpc":"2.0","id":2,"method":"graph.queryBySpans","params":{"filePath":")" +
+        std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
+        R"(","ranges":[{"start":{"line":1,"column":1},"end":{"line":16,"column":1}}],"match":"intersection"}})" "\n";
+    ASSERT_EQ(::write(fd, query_request.data(), query_request.size()), static_cast<ssize_t>(query_request.size()));
+    auto const initial_response = read_response_for_id(fd, &response_buffer, 2);
+    ASSERT_FALSE(initial_response.empty());
+    EXPECT_TRUE(initial_response.contains(R"("nodes":[)")) << initial_response;
+    EXPECT_TRUE(initial_response.contains(R"("kind":"iv::ValueSource")")) << initial_response;
+
+    std::smatch initial_id_match;
+    ASSERT_TRUE(std::regex_search(initial_response, initial_id_match, std::regex("\"id\":\"([^\"]+)\""))) << initial_response;
+    auto const initial_id = initial_id_match[1].str();
+    ASSERT_FALSE(initial_id.empty());
+
+    auto module_text = std::ifstream(workspace / "module.cpp", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(module_text));
+    std::string current {
+        std::istreambuf_iterator<char>(module_text),
+        std::istreambuf_iterator<char>()
+    };
+    write_text(workspace / "module.cpp", current + "\n");
+
+    std::string reloaded_response;
+    auto const deadline = std::chrono::steady_clock::now() + 45s;
+    do {
+        std::this_thread::sleep_for(100ms);
+        std::string const reload_query_request =
+            R"({"jsonrpc":"2.0","id":4,"method":"graph.queryBySpans","params":{"filePath":")" +
+            std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
+            R"(","ranges":[{"start":{"line":1,"column":1},"end":{"line":17,"column":1}}],"match":"intersection"}})" "\n";
+        ASSERT_EQ(::write(fd, reload_query_request.data(), reload_query_request.size()), static_cast<ssize_t>(reload_query_request.size()));
+        reloaded_response = read_response_for_id(fd, &response_buffer, 4, 2s);
+        if (reloaded_response.contains(R"("executionEpoch":2)") || reloaded_response.contains(R"("executionEpoch":3)") || reloaded_response.contains(R"("executionEpoch":4)")) {
+            break;
+        }
+    } while (std::chrono::steady_clock::now() < deadline);
+
+    ASSERT_FALSE(reloaded_response.empty());
+    EXPECT_TRUE(reloaded_response.contains(R"("kind":"iv::ValueSource")")) << reloaded_response;
+    std::smatch reloaded_id_match;
+    ASSERT_TRUE(std::regex_search(reloaded_response, reloaded_id_match, std::regex("\"id\":\"([^\"]+)\""))) << reloaded_response;
+    EXPECT_EQ(reloaded_id_match[1].str(), initial_id);
+
+    std::string const shutdown_request =
+        R"({"jsonrpc":"2.0","id":3,"method":"server.shutdown","params":{}})" "\n";
     ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
     auto const shutdown_response = read_line(fd, &response_buffer);
     EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));

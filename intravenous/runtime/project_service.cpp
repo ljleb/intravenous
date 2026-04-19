@@ -93,6 +93,13 @@ namespace iv {
             bool operator==(SnapshotNodeSpan const&) const = default;
         };
 
+        struct SnapshotSourceInfo {
+            std::string declaration_identity;
+            SnapshotNodeSpan span;
+
+            bool operator==(SnapshotSourceInfo const&) const = default;
+        };
+
         struct ConcretePortInfo {
             std::string name;
             std::string type;
@@ -105,7 +112,7 @@ namespace iv {
         struct ConcreteNode {
             std::string id;
             std::string kind;
-            std::vector<SnapshotNodeSpan> source_spans;
+            std::vector<SnapshotSourceInfo> source_infos;
             std::vector<ConcretePortInfo> sample_inputs;
             std::vector<ConcretePortInfo> sample_outputs;
             std::vector<ConcretePortInfo> event_inputs;
@@ -116,11 +123,13 @@ namespace iv {
             std::string id;
             std::string kind;
             std::vector<SnapshotNodeSpan> source_spans;
+            std::string source_declaration_identity;
             std::vector<LogicalPortInfo> sample_inputs;
             std::vector<LogicalPortInfo> sample_outputs;
             std::vector<LogicalPortInfo> event_inputs;
             std::vector<LogicalPortInfo> event_outputs;
-            std::vector<std::string> member_node_ids;
+            std::vector<std::string> backing_node_ids;
+            std::string stable_identity_key;
         };
 
         struct GraphSnapshot {
@@ -130,7 +139,6 @@ namespace iv {
             std::vector<ConcreteNode> concrete_nodes;
             std::vector<LogicalSnapshotNode> logical_nodes;
             std::unordered_map<std::string, size_t> logical_node_index_by_id;
-            std::vector<size_t> query_logical_node_indices;
         };
 
         std::filesystem::path normalize_path(std::filesystem::path const& path)
@@ -330,6 +338,52 @@ namespace iv {
                 && same_port_schema(a.event_outputs, b.event_outputs);
         }
 
+        void sort_and_deduplicate_spans(std::vector<SnapshotNodeSpan>& spans)
+        {
+            std::sort(spans.begin(), spans.end(), [](auto const& a, auto const& b) {
+                return std::tie(a.file_path, a.begin, a.end) < std::tie(b.file_path, b.begin, b.end);
+            });
+            spans.erase(std::unique(spans.begin(), spans.end()), spans.end());
+        }
+
+        std::vector<std::string> declaration_identities_for(ConcreteNode const& node)
+        {
+            std::vector<std::string> declaration_identities;
+            declaration_identities.reserve(node.source_infos.size());
+            for (auto const& info : node.source_infos) {
+                if (!info.declaration_identity.empty()) {
+                    declaration_identities.push_back(info.declaration_identity);
+                }
+            }
+            std::sort(declaration_identities.begin(), declaration_identities.end());
+            declaration_identities.erase(
+                std::unique(declaration_identities.begin(), declaration_identities.end()),
+                declaration_identities.end()
+            );
+            return declaration_identities;
+        }
+
+        std::vector<SnapshotNodeSpan> source_spans_for(
+            std::span<ConcreteNode const* const> nodes,
+            std::string_view declaration_identity
+        )
+        {
+            std::vector<SnapshotNodeSpan> spans;
+            for (auto const* node : nodes) {
+                for (auto const& info : node->source_infos) {
+                    if (info.declaration_identity != declaration_identity) {
+                        continue;
+                    }
+                    if (info.span.file_path.empty() || info.span.begin > info.span.end) {
+                        continue;
+                    }
+                    spans.push_back(info.span);
+                }
+            }
+            sort_and_deduplicate_spans(spans);
+            return spans;
+        }
+
         std::vector<LogicalPortInfo> aggregate_ports(
             std::span<ConcreteNode const* const> nodes,
             auto ConcreteNode::* member
@@ -361,189 +415,113 @@ namespace iv {
         LogicalSnapshotNode make_logical_node_from_members(
             std::span<ConcreteNode const* const> members,
             std::vector<SnapshotNodeSpan> source_spans,
-            std::vector<std::string> member_node_ids
+            std::vector<std::string> backing_node_ids,
+            std::string declaration_identity
         )
         {
-            std::sort(member_node_ids.begin(), member_node_ids.end());
+            std::sort(backing_node_ids.begin(), backing_node_ids.end());
+            sort_and_deduplicate_spans(source_spans);
             return LogicalSnapshotNode {
                 .id = {},
                 .kind = members.empty() ? std::string{} : members.front()->kind,
                 .source_spans = std::move(source_spans),
+                .source_declaration_identity = std::move(declaration_identity),
                 .sample_inputs = aggregate_ports(members, &ConcreteNode::sample_inputs),
                 .sample_outputs = aggregate_ports(members, &ConcreteNode::sample_outputs),
                 .event_inputs = aggregate_ports(members, &ConcreteNode::event_inputs),
                 .event_outputs = aggregate_ports(members, &ConcreteNode::event_outputs),
-                .member_node_ids = std::move(member_node_ids),
+                .backing_node_ids = std::move(backing_node_ids),
+                .stable_identity_key = {},
             };
         }
 
-        std::string make_display_logical_node_id(size_t index)
+        void append_port_schema_signature(std::ostringstream& key, std::span<ConcretePortInfo const> ports)
         {
-            return "logical." + std::to_string(index);
+            key << "[";
+            for (size_t i = 0; i < ports.size(); ++i) {
+                if (i != 0) {
+                    key << ";";
+                }
+                key
+                    << ports[i].name << ","
+                    << ports[i].type << ","
+                    << ports[i].history << ","
+                    << ports[i].latency << ","
+                    << ports[i].default_value;
+            }
+            key << "]";
         }
 
-        std::string make_member_logical_node_id(size_t index)
+        std::string stable_identity_key_for(
+            std::string_view declaration_identity,
+            ConcreteNode const& representative
+        )
         {
-            return "logical.member." + std::to_string(index);
-        }
-
-        struct AtomicCoverageSegment {
-            std::string file_path;
-            uint32_t begin = 0;
-            uint32_t end = 0;
-            std::vector<size_t> member_indices;
-        };
-
-        std::vector<AtomicCoverageSegment> atomic_coverage_segments(std::span<ConcreteNode const> nodes)
-        {
-            struct FileSpanRef {
-                size_t node_index = 0;
-                uint32_t begin = 0;
-                uint32_t end_exclusive = 0;
-            };
-
-            std::unordered_map<std::string, std::vector<FileSpanRef>> spans_by_file;
-            for (size_t node_index = 0; node_index < nodes.size(); ++node_index) {
-                for (auto const& span : nodes[node_index].source_spans) {
-                    uint32_t const end_exclusive = span.end == std::numeric_limits<uint32_t>::max()
-                        ? span.end
-                        : static_cast<uint32_t>(span.end + 1);
-                    spans_by_file[span.file_path].push_back(FileSpanRef {
-                        .node_index = node_index,
-                        .begin = span.begin,
-                        .end_exclusive = end_exclusive,
-                    });
-                }
+            if (declaration_identity.empty()) {
+                return {};
             }
-
-            std::vector<AtomicCoverageSegment> segments;
-            for (auto& [file_path, spans] : spans_by_file) {
-                std::vector<uint32_t> boundaries;
-                boundaries.reserve(spans.size() * 2);
-                for (auto const& span : spans) {
-                    boundaries.push_back(span.begin);
-                    boundaries.push_back(span.end_exclusive);
-                }
-                std::sort(boundaries.begin(), boundaries.end());
-                boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
-                if (boundaries.size() < 2) {
-                    continue;
-                }
-
-                for (size_t i = 0; i + 1 < boundaries.size(); ++i) {
-                    uint32_t const begin = boundaries[i];
-                    uint32_t const end_exclusive = boundaries[i + 1];
-                    if (begin >= end_exclusive) {
-                        continue;
-                    }
-
-                    std::vector<size_t> member_indices;
-                    for (auto const& span : spans) {
-                        if (span.begin < end_exclusive && begin < span.end_exclusive) {
-                            member_indices.push_back(span.node_index);
-                        }
-                    }
-                    std::sort(member_indices.begin(), member_indices.end());
-                    member_indices.erase(std::unique(member_indices.begin(), member_indices.end()), member_indices.end());
-                    if (member_indices.empty()) {
-                        continue;
-                    }
-
-                    uint32_t const end = static_cast<uint32_t>(end_exclusive - 1);
-                    if (!segments.empty()) {
-                        auto& previous = segments.back();
-                        if (previous.file_path == file_path
-                            && previous.member_indices == member_indices
-                            && previous.end != std::numeric_limits<uint32_t>::max()
-                            && static_cast<uint32_t>(previous.end + 1) == begin) {
-                            previous.end = end;
-                            continue;
-                        }
-                    }
-
-                    segments.push_back(AtomicCoverageSegment {
-                        .file_path = file_path,
-                        .begin = begin,
-                        .end = end,
-                        .member_indices = std::move(member_indices),
-                    });
-                }
-            }
-
-            return segments;
+            std::ostringstream key;
+            key << "decl=" << declaration_identity;
+            key << "|kind=" << representative.kind;
+            key << "|sample_inputs=";
+            append_port_schema_signature(key, representative.sample_inputs);
+            key << "|sample_outputs=";
+            append_port_schema_signature(key, representative.sample_outputs);
+            key << "|event_inputs=";
+            append_port_schema_signature(key, representative.event_inputs);
+            key << "|event_outputs=";
+            append_port_schema_signature(key, representative.event_outputs);
+            return key.str();
         }
 
         std::vector<LogicalSnapshotNode> build_logical_nodes(
-            std::span<ConcreteNode const> concrete_nodes,
-            std::span<std::string const> singleton_logical_node_ids
+            std::span<ConcreteNode const> concrete_nodes
         )
         {
-            std::vector<std::vector<size_t>> groups;
-            std::vector<uint8_t> grouped(concrete_nodes.size(), 0);
+            struct DeclarationGroup {
+                std::string declaration_identity;
+                std::vector<size_t> member_indices;
+            };
 
+            std::vector<DeclarationGroup> groups;
             for (size_t i = 0; i < concrete_nodes.size(); ++i) {
-                if (grouped[i] != 0) {
-                    continue;
-                }
-                grouped[i] = 1;
-                groups.push_back({ i });
-                for (size_t j = i + 1; j < concrete_nodes.size(); ++j) {
-                    if (grouped[j] != 0) {
-                        continue;
-                    }
-                    if (same_logical_schema(concrete_nodes[i], concrete_nodes[j])) {
-                        grouped[j] = 1;
-                        groups.back().push_back(j);
+                for (auto const& declaration_identity : declaration_identities_for(concrete_nodes[i])) {
+                    auto group_it = std::find_if(groups.begin(), groups.end(), [&](auto const& group) {
+                        return group.declaration_identity == declaration_identity
+                            && !group.member_indices.empty()
+                            && same_logical_schema(concrete_nodes[group.member_indices.front()], concrete_nodes[i]);
+                    });
+                    if (group_it == groups.end()) {
+                        groups.push_back(DeclarationGroup {
+                            .declaration_identity = declaration_identity,
+                            .member_indices = { i },
+                        });
+                    } else if (!std::ranges::contains(group_it->member_indices, i)) {
+                        group_it->member_indices.push_back(i);
                     }
                 }
             }
 
-            std::vector<uint8_t> represented_without_spans(concrete_nodes.size(), 0);
             std::vector<LogicalSnapshotNode> candidates;
-
+            candidates.reserve(groups.size());
             for (auto const& group : groups) {
-                std::vector<ConcreteNode> concrete_group;
-                concrete_group.reserve(group.size());
-                for (auto index : group) {
-                    concrete_group.push_back(concrete_nodes[index]);
+                std::vector<ConcreteNode const*> members;
+                members.reserve(group.member_indices.size());
+                std::vector<std::string> backing_node_ids;
+                backing_node_ids.reserve(group.member_indices.size());
+                for (auto member_index : group.member_indices) {
+                    members.push_back(&concrete_nodes[member_index]);
+                    backing_node_ids.push_back(concrete_nodes[member_index].id);
                 }
 
-                auto const segments = atomic_coverage_segments(concrete_group);
-                for (auto const& segment : segments) {
-                    for (auto member : segment.member_indices) {
-                        represented_without_spans[group[member]] = 1;
-                    }
-
-                    std::vector<ConcreteNode const*> members;
-                    members.reserve(segment.member_indices.size());
-                    std::vector<std::string> member_logical_node_ids;
-                    member_logical_node_ids.reserve(segment.member_indices.size());
-                    for (auto relative_member_index : segment.member_indices) {
-                        auto const concrete_index = group[relative_member_index];
-                        members.push_back(&concrete_nodes[concrete_index]);
-                        member_logical_node_ids.push_back(singleton_logical_node_ids[concrete_index]);
-                    }
-
-                    candidates.push_back(make_logical_node_from_members(
-                        members,
-                        {
-                            SnapshotNodeSpan {
-                                .file_path = segment.file_path,
-                                .begin = segment.begin,
-                                .end = segment.end,
-                            },
-                        },
-                        std::move(member_logical_node_ids)
-                    ));
-                }
-            }
-
-            for (size_t i = 0; i < concrete_nodes.size(); ++i) {
-                if (represented_without_spans[i] != 0 || !concrete_nodes[i].source_spans.empty()) {
-                    continue;
-                }
-                std::array<ConcreteNode const*, 1> member { &concrete_nodes[i] };
-                candidates.push_back(make_logical_node_from_members(member, {}, { singleton_logical_node_ids[i] }));
+                auto logical = make_logical_node_from_members(
+                    members,
+                    source_spans_for(members, group.declaration_identity),
+                    std::move(backing_node_ids),
+                    group.declaration_identity
+                );
+                logical.stable_identity_key = stable_identity_key_for(group.declaration_identity, *members.front());
+                candidates.push_back(std::move(logical));
             }
 
             std::sort(candidates.begin(), candidates.end(), [](auto const& a, auto const& b) {
@@ -565,12 +543,11 @@ namespace iv {
                 if (a.kind != b.kind) {
                     return a.kind < b.kind;
                 }
-                return a.member_node_ids < b.member_node_ids;
+                if (a.source_declaration_identity != b.source_declaration_identity) {
+                    return a.source_declaration_identity < b.source_declaration_identity;
+                }
+                return a.backing_node_ids < b.backing_node_ids;
             });
-
-            for (size_t i = 0; i < candidates.size(); ++i) {
-                candidates[i].id = make_display_logical_node_id(i);
-            }
 
             return candidates;
         }
@@ -661,12 +638,15 @@ namespace iv {
                     snapshot_node.id = graph._node_ids[global_i];
                     snapshot_node.kind = demangle_type_name(node._node.type_name());
 
-                    if (global_i < introspection.node_source_spans.size()) {
-                        for (SourceSpan const& span : introspection.node_source_spans[global_i]) {
-                            snapshot_node.source_spans.push_back(SnapshotNodeSpan {
-                                .file_path = normalized_path_string(span.file_path),
-                                .begin = span.begin,
-                                .end = span.end,
+                    if (global_i < introspection.node_source_infos.size()) {
+                        for (SourceInfo const& info : introspection.node_source_infos[global_i]) {
+                            snapshot_node.source_infos.push_back(SnapshotSourceInfo {
+                                .declaration_identity = info.declaration_identity,
+                                .span = SnapshotNodeSpan {
+                                    .file_path = info.span.file_path.empty() ? std::string{} : normalized_path_string(info.span.file_path),
+                                    .begin = info.span.begin,
+                                    .end = info.span.end,
+                                },
                             });
                         }
                     }
@@ -739,10 +719,13 @@ namespace iv {
                 snapshot_node.kind = lowered_subgraph.kind.empty() ? std::string("Subgraph") : lowered_subgraph.kind;
 
                 for (auto const& span : lowered_subgraph.source_spans) {
-                    snapshot_node.source_spans.push_back(SnapshotNodeSpan {
-                        .file_path = normalized_path_string(span.file_path),
-                        .begin = span.begin,
-                        .end = span.end,
+                    snapshot_node.source_infos.push_back(SnapshotSourceInfo {
+                        .declaration_identity = {},
+                        .span = SnapshotNodeSpan {
+                            .file_path = normalized_path_string(span.file_path),
+                            .begin = span.begin,
+                            .end = span.end,
+                        },
                     });
                 }
 
@@ -810,31 +793,7 @@ namespace iv {
                 snapshot.concrete_nodes.push_back(std::move(snapshot_node));
             }
 
-            std::vector<std::string> singleton_logical_node_ids;
-            singleton_logical_node_ids.reserve(snapshot.concrete_nodes.size());
-            for (size_t i = 0; i < snapshot.concrete_nodes.size(); ++i) {
-                singleton_logical_node_ids.push_back(make_member_logical_node_id(i));
-            }
-
-            snapshot.logical_nodes.reserve(snapshot.concrete_nodes.size());
-            for (size_t i = 0; i < snapshot.concrete_nodes.size(); ++i) {
-                std::array<ConcreteNode const*, 1> member { &snapshot.concrete_nodes[i] };
-                auto singleton = make_logical_node_from_members(
-                    member,
-                    snapshot.concrete_nodes[i].source_spans,
-                    { singleton_logical_node_ids[i] }
-                );
-                singleton.id = singleton_logical_node_ids[i];
-                snapshot.logical_nodes.push_back(std::move(singleton));
-            }
-
-            auto display_logical_nodes = build_logical_nodes(snapshot.concrete_nodes, singleton_logical_node_ids);
-
-            snapshot.query_logical_node_indices.reserve(display_logical_nodes.size());
-            for (auto& node : display_logical_nodes) {
-                snapshot.query_logical_node_indices.push_back(snapshot.logical_nodes.size());
-                snapshot.logical_nodes.push_back(std::move(node));
-            }
+            snapshot.logical_nodes = build_logical_nodes(snapshot.concrete_nodes);
 
             return snapshot;
         }
@@ -881,25 +840,25 @@ namespace iv {
             return "logical." + std::to_string(next_logical_node_id++);
         }
 
-        std::vector<std::string> assign_fresh_logical_node_ids(GraphSnapshot& graph_snapshot)
+        std::vector<std::string> assign_logical_node_ids(
+            GraphSnapshot& graph_snapshot,
+            std::unordered_map<std::string, std::string> const& previous_ids_by_stable_key
+        )
         {
-            std::unordered_map<std::string, std::string> id_remap;
-            id_remap.reserve(graph_snapshot.logical_nodes.size());
             std::vector<std::string> created_node_ids;
             created_node_ids.reserve(graph_snapshot.logical_nodes.size());
 
             for (auto& node : graph_snapshot.logical_nodes) {
-                auto const previous_id = node.id;
-                node.id = allocate_logical_node_id();
-                id_remap.emplace(previous_id, node.id);
-                created_node_ids.push_back(node.id);
-            }
-
-            for (auto& node : graph_snapshot.logical_nodes) {
-                for (auto& member_node_id : node.member_node_ids) {
-                    if (auto const it = id_remap.find(member_node_id); it != id_remap.end()) {
-                        member_node_id = it->second;
+                if (!node.stable_identity_key.empty()) {
+                    if (auto const it = previous_ids_by_stable_key.find(node.stable_identity_key); it != previous_ids_by_stable_key.end()) {
+                        node.id = it->second;
+                    } else {
+                        node.id = allocate_logical_node_id();
+                        created_node_ids.push_back(node.id);
                     }
+                } else {
+                    node.id = allocate_logical_node_id();
+                    created_node_ids.push_back(node.id);
                 }
             }
 
@@ -1001,21 +960,7 @@ namespace iv {
             live.sample_outputs = node.sample_outputs;
             live.event_inputs = node.event_inputs;
             live.event_outputs = node.event_outputs;
-            live.member_count = node.member_node_ids.size();
-            live.member_nodes.reserve(node.member_node_ids.size());
-            if (snapshot.has_value()) {
-                for (auto const& member_node_id : node.member_node_ids) {
-                    auto const it = snapshot->logical_node_index_by_id.find(member_node_id);
-                    if (it == snapshot->logical_node_index_by_id.end()) {
-                        continue;
-                    }
-                    auto const& member = snapshot->logical_nodes[it->second];
-                    live.member_nodes.push_back(LogicalNodeMemberInfo {
-                        .id = member.id,
-                        .kind = member.kind,
-                    });
-                }
-            }
+            live.member_count = node.backing_node_ids.size();
             live.source_spans.reserve(node.source_spans.size());
             for (auto const& span : node.source_spans) {
                 live.source_spans.push_back(to_live_span(span));
@@ -1073,7 +1018,7 @@ namespace iv {
                         loaded_graph.module_id,
                         1
                     );
-                    created_node_ids = assign_fresh_logical_node_ids(*snapshot);
+                    created_node_ids = assign_logical_node_ids(*snapshot, {});
                     initialized = true;
                 }
                 initialized_cv.notify_all();
@@ -1104,10 +1049,16 @@ namespace iv {
                         {
                             std::scoped_lock lock(mutex);
                             next_epoch = snapshot.has_value() ? snapshot->execution_epoch + 1 : 1;
+                            std::unordered_map<std::string, std::string> previous_ids_by_stable_key;
+                            std::unordered_set<std::string> previous_logical_ids;
                             if (snapshot.has_value()) {
                                 deleted_node_ids.reserve(snapshot->logical_nodes.size());
                                 for (auto const& node : snapshot->logical_nodes) {
                                     deleted_node_ids.push_back(node.id);
+                                    previous_logical_ids.insert(node.id);
+                                    if (!node.stable_identity_key.empty()) {
+                                        previous_ids_by_stable_key.emplace(node.stable_identity_key, node.id);
+                                    }
                                 }
                             }
                             snapshot = build_graph_snapshot(
@@ -1117,7 +1068,11 @@ namespace iv {
                                 reload.module_id,
                                 next_epoch
                             );
-                            created_node_ids = assign_fresh_logical_node_ids(*snapshot);
+                            created_node_ids = assign_logical_node_ids(*snapshot, previous_ids_by_stable_key);
+                            for (auto const& node : snapshot->logical_nodes) {
+                                previous_logical_ids.erase(node.id);
+                            }
+                            deleted_node_ids.assign(previous_logical_ids.begin(), previous_logical_ids.end());
                         }
                         emit_event(RuntimeProjectEvent {
                             .kind = RuntimeProjectEventKind::build_finished,
@@ -1274,8 +1229,8 @@ namespace iv {
         };
 
         std::vector<RankedLogicalNode> ranked_nodes;
-        ranked_nodes.reserve(_impl->snapshot->query_logical_node_indices.size());
-        for (size_t logical_index : _impl->snapshot->query_logical_node_indices) {
+        ranked_nodes.reserve(_impl->snapshot->logical_nodes.size());
+        for (size_t logical_index = 0; logical_index < _impl->snapshot->logical_nodes.size(); ++logical_index) {
             auto const& node = _impl->snapshot->logical_nodes[logical_index];
             bool matches = requested_ranges.empty();
             RankedLogicalNode ranked { .logical_index = logical_index };
@@ -1364,7 +1319,7 @@ namespace iv {
         result.execution_epoch = _impl->snapshot->execution_epoch;
 
         std::unordered_set<std::string> emitted_spans;
-        for (size_t logical_index : _impl->snapshot->query_logical_node_indices) {
+        for (size_t logical_index = 0; logical_index < _impl->snapshot->logical_nodes.size(); ++logical_index) {
             auto const& node = _impl->snapshot->logical_nodes[logical_index];
             for (auto const& span : node.source_spans) {
                 if (span.file_path != normalized_file_path) {

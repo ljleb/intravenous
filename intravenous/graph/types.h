@@ -72,6 +72,13 @@ namespace iv {
         bool operator==(SourceSpan const&) const = default;
     };
 
+    struct SourceInfo {
+        std::string declaration_identity {};
+        SourceSpan span {};
+
+        bool operator==(SourceInfo const&) const = default;
+    };
+
     inline constexpr size_t GRAPH_ID = std::numeric_limits<size_t>::max();
 
     struct GraphRegion {

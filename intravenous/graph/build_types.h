@@ -12,7 +12,7 @@
 namespace iv {
     struct GraphIntrospectionMetadata {
         std::vector<LoweredSubgraph> lowered_subgraphs;
-        std::vector<std::vector<SourceSpan>> node_source_spans;
+        std::vector<std::vector<SourceInfo>> node_source_infos;
     };
 
     struct GraphBuildArtifact {

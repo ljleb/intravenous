@@ -227,7 +227,7 @@ TEST(RuntimeProjectService, QueryBySpansReturnsMatchingLiveNodesWithPorts)
     EXPECT_TRUE(has_any_port);
 }
 
-TEST(RuntimeProjectService, QueryBySpansReturnsMergedLogicalNodes)
+TEST(RuntimeProjectService, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_query_by_spans_merged_logical",
@@ -272,22 +272,233 @@ IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
         }
     );
 
+    size_t value_source_count = 0;
+    for (auto const& node : result.nodes) {
+        if (!node.kind.contains("ValueSource")) {
+            continue;
+        }
+        ++value_source_count;
+        EXPECT_EQ(node.member_count, 1u);
+        EXPECT_FALSE(node.source_spans.empty());
+    }
+
+    EXPECT_EQ(value_source_count, 2u);
+}
+
+TEST(RuntimeProjectService, QueryBySpansKeepsAnnotatedLogicalNodeIdStableAcrossReload)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_query_by_spans_stable_annotated_id",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+
+namespace {
+    void annotated_symbol_module(iv::ModuleContext const& context)
+    {
+        using namespace iv;
+        auto& g = context.builder();
+        auto const a = _annotate_node_source_info(
+            g.node<ValueSource>(&context.sample_period()).node_ref(),
+            "decl:annotated_symbol_module::a"
+        );
+        auto const sink = context.target_factory().sink(g, 0);
+        sink(a);
+        g.outputs();
+    }
+}
+
+IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
+)"
+    );
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
+    auto const initial = service.query_by_spans(
+        module_cpp,
+        {
+            iv::SourceRange {
+                .start = { .line = 1, .column = 1 },
+                .end = { .line = 24, .column = 1 },
+            },
+        }
+    );
+
+    auto const initial_it = std::find_if(initial.nodes.begin(), initial.nodes.end(), [](auto const& node) {
+        return node.kind.contains("ValueSource");
+    });
+
+    ASSERT_NE(initial_it, initial.nodes.end());
+    auto const initial_id = initial_it->id;
+    ASSERT_FALSE(initial_id.empty());
+
+    auto const original_text = iv::test::read_text(module_cpp);
+    iv::test::write_text(module_cpp, original_text + "\n");
+
+    iv::RuntimeProjectQueryResult reloaded;
+    auto const deadline = std::chrono::steady_clock::now() + 45s;
+    do {
+        std::this_thread::sleep_for(100ms);
+        reloaded = service.query_by_spans(
+            module_cpp,
+            {
+                iv::SourceRange {
+                    .start = { .line = 1, .column = 1 },
+                    .end = { .line = 25, .column = 1 },
+                },
+            }
+        );
+        if (reloaded.execution_epoch > initial.execution_epoch) {
+            break;
+        }
+    } while (std::chrono::steady_clock::now() < deadline);
+
+    iv::test::write_text(module_cpp, original_text);
+
+    ASSERT_GT(reloaded.execution_epoch, initial.execution_epoch);
+    auto const reloaded_it = std::find_if(reloaded.nodes.begin(), reloaded.nodes.end(), [](auto const& node) {
+        return node.kind.contains("ValueSource");
+    });
+
+    ASSERT_NE(reloaded_it, reloaded.nodes.end());
+    EXPECT_EQ(reloaded_it->id, initial_id);
+}
+
+TEST(RuntimeProjectService, QueryBySpansReturnsAnnotatedLogicalNode)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_query_by_spans_annotated_symbol",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+
+namespace {
+    void annotated_symbol_module(iv::ModuleContext const& context)
+    {
+        using namespace iv;
+        auto& g = context.builder();
+        auto const a = _annotate_node_source_info(
+            g.node<ValueSource>(&context.sample_period()).node_ref(),
+            "decl:annotated_symbol_module::a"
+        );
+        auto const sink = context.target_factory().sink(g, 0);
+        sink(a);
+        g.outputs();
+    }
+}
+
+IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
+)"
+    );
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const result = service.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {
+            iv::SourceRange {
+                .start = { .line = 1, .column = 1 },
+                .end = { .line = 24, .column = 1 },
+            },
+        }
+    );
+
     auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const& node) {
-        return node.member_count > 1 && node.kind.contains("ValueSource");
+        return node.kind.contains("ValueSource");
     });
 
     ASSERT_NE(it, result.nodes.end());
-    EXPECT_EQ(it->member_count, it->member_nodes.size());
-    EXPECT_EQ(it->member_count, 2u);
-    EXPECT_TRUE(std::ranges::all_of(it->member_nodes, [&](auto const& member) {
-        return !member.id.empty() && member.id != it->id && !member.kind.empty();
-    }));
-    std::set<std::string> member_ids;
-    for (auto const& member : it->member_nodes) {
-        member_ids.insert(member.id);
-    }
-    EXPECT_EQ(member_ids.size(), it->member_nodes.size());
+    EXPECT_FALSE(it->id.empty());
     EXPECT_FALSE(it->source_spans.empty());
+}
+
+TEST(RuntimeProjectService, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_query_by_spans_single_assigned_ref",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+
+namespace {
+    void assigned_ref_module(iv::ModuleContext const& context)
+    {
+        using namespace iv;
+        auto& g = context.builder();
+        SamplePortRef x;
+        x = g.node<ValueSource>(&context.sample_period()).node_ref();
+        auto const sink = context.target_factory().sink(g, 0);
+        sink(x);
+        g.outputs();
+    }
+}
+
+IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
+)"
+    );
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const result = service.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {
+            iv::SourceRange {
+                .start = { .line = 1, .column = 1 },
+                .end = { .line = 24, .column = 1 },
+            },
+        }
+    );
+
+    auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const& node) {
+        return node.kind.contains("ValueSource");
+    });
+
+    ASSERT_NE(it, result.nodes.end());
+    EXPECT_FALSE(it->source_spans.empty());
+}
+
+TEST(RuntimeProjectService, InitializationFailsWhenDeclarationBackedRefIsAssignedTwice)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_double_assignment_fails",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+
+namespace {
+    void assigned_twice_module(iv::ModuleContext const& context)
+    {
+        using namespace iv;
+        auto& g = context.builder();
+        SamplePortRef x;
+        x = g.node<ValueSource>(&context.sample_period()).node_ref();
+        x = g.node<ValueSource>(&context.sample_period()).node_ref();
+        auto const sink = context.target_factory().sink(g, 0);
+        sink(x);
+        g.outputs();
+    }
+}
+
+IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
+)"
+    );
+
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    EXPECT_THROW(
+        {
+            try {
+                (void)service.initialize();
+            } catch (std::exception const& e) {
+                EXPECT_TRUE(std::string(e.what()).contains("already been initialized"));
+                throw;
+            }
+        },
+        std::exception
+    );
 }
 
 TEST(RuntimeProjectService, QueryBySpansDoesNotMergeDifferentSchemas)
@@ -395,14 +606,22 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
         }
     );
 
-    auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const& node) {
-        return node.member_count > 1
-            && node.kind.contains("BinaryOpNode")
-            && !node.sample_inputs.empty()
-            && node.sample_inputs.front().connectivity == iv::LogicalPortConnectivity::mixed;
-    });
+    size_t connected_sum_count = 0;
+    size_t disconnected_sum_count = 0;
+    for (auto const& node : result.nodes) {
+        if (!node.kind.contains("BinaryOpNode") || node.sample_inputs.size() != 1) {
+            continue;
+        }
+        EXPECT_EQ(node.member_count, 1u);
+        if (node.sample_inputs.front().connectivity == iv::LogicalPortConnectivity::connected) {
+            ++connected_sum_count;
+        } else if (node.sample_inputs.front().connectivity == iv::LogicalPortConnectivity::disconnected) {
+            ++disconnected_sum_count;
+        }
+    }
 
-    ASSERT_NE(it, result.nodes.end());
+    EXPECT_EQ(connected_sum_count, 1u);
+    EXPECT_EQ(disconnected_sum_count, 1u);
 }
 
 TEST(RuntimeProjectService, QueryBySpansIntersectsMultipleSelections)
@@ -595,25 +814,15 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     ASSERT_EQ(logical.sample_outputs.size(), 1u);
     EXPECT_EQ(logical.sample_outputs[0].name, "out");
 
-    std::vector<std::string> member_ids;
-    member_ids.reserve(logical.member_nodes.size());
-    for (auto const& member : logical.member_nodes) {
-        member_ids.push_back(member.id);
-        EXPECT_EQ(member.kind, "iv::SawOscillator");
-    }
-
-    auto const members = service.get_logical_nodes(result.execution_epoch, member_ids);
-    ASSERT_EQ(members.size(), logical.member_nodes.size());
-    for (auto const& member : members) {
-        EXPECT_EQ(member.kind, "iv::SawOscillator");
-        EXPECT_EQ(member.member_count, 1u);
-        ASSERT_EQ(member.sample_inputs.size(), 3u);
-        EXPECT_EQ(member.sample_inputs[0].name, "phase_offset");
-        EXPECT_EQ(member.sample_inputs[1].name, "frequency");
-        EXPECT_EQ(member.sample_inputs[2].name, "dt");
-        ASSERT_EQ(member.sample_outputs.size(), 1u);
-        EXPECT_EQ(member.sample_outputs[0].name, "out");
-    }
+    auto const resolved = service.get_logical_node(result.execution_epoch, logical.id);
+    EXPECT_EQ(resolved.kind, "iv::SawOscillator");
+    EXPECT_EQ(resolved.member_count, 2u);
+    ASSERT_EQ(resolved.sample_inputs.size(), 3u);
+    EXPECT_EQ(resolved.sample_inputs[0].name, "phase_offset");
+    EXPECT_EQ(resolved.sample_inputs[1].name, "frequency");
+    EXPECT_EQ(resolved.sample_inputs[2].name, "dt");
+    ASSERT_EQ(resolved.sample_outputs.size(), 1u);
+    EXPECT_EQ(resolved.sample_outputs[0].name, "out");
 
     EXPECT_TRUE(std::ranges::none_of(result.nodes, [](auto const& node) {
         return node.kind == "Polyphonic";

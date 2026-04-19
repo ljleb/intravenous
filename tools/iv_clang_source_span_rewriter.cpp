@@ -7,10 +7,12 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
+#include "clang/Index/USRGeneration.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
 
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
@@ -57,9 +59,17 @@ namespace {
         unsigned wrapped_end = 0;
         unsigned span_begin = 0;
         unsigned span_end = 0;
+        std::string declaration_identity;
         bool binding_wrap = false;
 
         bool operator==(WrapSpec const&) const = default;
+    };
+
+    struct InsertSpec {
+        unsigned offset = 0;
+        std::string text;
+
+        bool operator==(InsertSpec const&) const = default;
     };
 
     std::string normalized_path(std::filesystem::path const& path)
@@ -203,6 +213,7 @@ namespace {
         clang::FileID _main_file_id;
         std::optional<std::filesystem::path> _core_source_dir;
         std::vector<WrapSpec> _wraps;
+        std::vector<InsertSpec> _insertions;
 
         bool is_user_source_path(llvm::StringRef path) const
         {
@@ -285,7 +296,43 @@ namespace {
             };
         }
 
-        void add_wrap(FileRange wrapped, FileRange span, bool binding_wrap)
+        std::string declaration_identity_for(clang::Decl const* decl) const
+        {
+            if (!decl) {
+                return {};
+            }
+
+            llvm::SmallString<256> usr;
+            auto const* canonical = decl->getCanonicalDecl();
+            if (clang::index::generateUSRForDecl(canonical, usr, _lang_options)) {
+                return {};
+            }
+            return std::string(usr.str());
+        }
+
+        std::string declaration_identity_for_named_expr(clang::Expr const* expr) const
+        {
+            if (!expr) {
+                return {};
+            }
+
+            if (auto const* decl_ref = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
+                return declaration_identity_for(decl_ref->getDecl());
+            }
+
+            if (auto const* member = llvm::dyn_cast<clang::MemberExpr>(expr)) {
+                return declaration_identity_for(member->getMemberDecl());
+            }
+
+            return {};
+        }
+
+        void add_wrap(
+            FileRange wrapped,
+            FileRange span,
+            std::string declaration_identity,
+            bool binding_wrap
+        )
         {
             if (
                 wrapped.file_id != span.file_id
@@ -300,6 +347,7 @@ namespace {
                 .wrapped_end = wrapped.end,
                 .span_begin = span.begin,
                 .span_end = span.end,
+                .declaration_identity = std::move(declaration_identity),
                 .binding_wrap = binding_wrap,
             });
         }
@@ -312,7 +360,7 @@ namespace {
             }
 
             auto const* callee = call->getDirectCallee();
-            return callee && callee->getQualifiedNameAsString() == "iv::_add_node_source_span";
+            return callee && callee->getQualifiedNameAsString() == "iv::_annotate_node_source_info";
         }
 
         bool is_assignment_lhs_context(clang::Expr const* expr) const
@@ -400,11 +448,12 @@ namespace {
 
             auto const wrapped_range = file_range_for_source_range(expr->getSourceRange());
             auto const span_range = token_range_for_named_expr(expr);
-            if (!wrapped_range.has_value() || !span_range.has_value()) {
+            auto const declaration_identity = declaration_identity_for_named_expr(expr);
+            if (!wrapped_range.has_value() || !span_range.has_value() || declaration_identity.empty()) {
                 return;
             }
 
-            add_wrap(*wrapped_range, *span_range, false);
+            add_wrap(*wrapped_range, *span_range, declaration_identity, false);
         }
 
         void maybe_add_binding_wrap(clang::VarDecl* decl)
@@ -436,11 +485,41 @@ namespace {
 
             auto const wrapped_range = file_range_for_source_range(init->getSourceRange());
             auto const span_range = token_range_for_location(decl->getLocation());
-            if (!wrapped_range.has_value() || !span_range.has_value()) {
+            auto const declaration_identity = declaration_identity_for(decl);
+            if (!wrapped_range.has_value() || !span_range.has_value() || declaration_identity.empty()) {
                 return;
             }
 
-            add_wrap(*wrapped_range, *span_range, true);
+            add_wrap(*wrapped_range, *span_range, declaration_identity, true);
+        }
+
+        void maybe_add_empty_declaration_init(clang::VarDecl* decl)
+        {
+            if (!decl) {
+                return;
+            }
+
+            clang::QualType const decl_type = decl->getType();
+            if (
+                !decl->isLocalVarDecl()
+                || decl->hasInit()
+                || is_reference_type(decl_type)
+                || !is_source_span_ref_like(decl_type)
+                || !is_user_source_location(decl->getLocation())
+            ) {
+                return;
+            }
+
+            auto const name_range = token_range_for_location(decl->getLocation());
+            auto const declaration_identity = declaration_identity_for(decl);
+            if (!name_range.has_value() || declaration_identity.empty()) {
+                return;
+            }
+
+            _insertions.push_back(InsertSpec {
+                .offset = name_range->end,
+                .text = " { iv::logical_empty_tag, " + cxx_string_literal(declaration_identity) + " }",
+            });
         }
 
         void maybe_add_assignment_wrap(clang::Expr* lhs, clang::Expr* rhs)
@@ -459,38 +538,54 @@ namespace {
 
             auto const wrapped_range = file_range_for_source_range(rhs->getSourceRange());
             auto const span_range = token_range_for_named_expr(lhs);
-            if (!wrapped_range.has_value() || !span_range.has_value()) {
+            auto const declaration_identity = declaration_identity_for_named_expr(lhs);
+            if (!wrapped_range.has_value() || !span_range.has_value() || declaration_identity.empty()) {
                 return;
             }
 
-            add_wrap(*wrapped_range, *span_range, true);
+            add_wrap(*wrapped_range, *span_range, declaration_identity, true);
         }
 
         static void deduplicate_wraps(std::vector<WrapSpec>& wraps)
         {
             std::sort(wraps.begin(), wraps.end(), [](WrapSpec const& a, WrapSpec const& b) {
-                return std::tie(a.wrapped_begin, a.wrapped_end, a.span_begin, a.span_end, a.binding_wrap)
-                    < std::tie(b.wrapped_begin, b.wrapped_end, b.span_begin, b.span_end, b.binding_wrap);
+                return std::tie(a.wrapped_begin, a.wrapped_end, a.span_begin, a.span_end, a.declaration_identity, a.binding_wrap)
+                    < std::tie(b.wrapped_begin, b.wrapped_end, b.span_begin, b.span_end, b.declaration_identity, b.binding_wrap);
             });
             wraps.erase(std::unique(wraps.begin(), wraps.end()), wraps.end());
+        }
+
+        static void deduplicate_insertions(std::vector<InsertSpec>& insertions)
+        {
+            std::sort(insertions.begin(), insertions.end(), [](InsertSpec const& a, InsertSpec const& b) {
+                return std::tie(a.offset, a.text) < std::tie(b.offset, b.text);
+            });
+            insertions.erase(std::unique(insertions.begin(), insertions.end()), insertions.end());
         }
 
         static std::string render_with_wraps(
             std::string_view input,
             std::vector<WrapSpec> wraps,
+            std::vector<InsertSpec> insertions,
             std::string_view file_path
         )
         {
             deduplicate_wraps(wraps);
+            deduplicate_insertions(insertions);
             std::string const encoded_file_path = cxx_string_literal(file_path);
 
             std::unordered_map<unsigned, std::vector<WrapSpec const*>> begin_events;
             std::unordered_map<unsigned, std::vector<WrapSpec const*>> end_events;
+            std::unordered_map<unsigned, std::vector<InsertSpec const*>> insert_events;
             begin_events.reserve(wraps.size());
             end_events.reserve(wraps.size());
             for (auto const& wrap : wraps) {
                 begin_events[wrap.wrapped_begin].push_back(&wrap);
                 end_events[wrap.wrapped_end].push_back(&wrap);
+            }
+            insert_events.reserve(insertions.size());
+            for (auto const& insertion : insertions) {
+                insert_events[insertion.offset].push_back(&insertion);
             }
 
             auto const begin_order = [](WrapSpec const* a, WrapSpec const* b) {
@@ -522,6 +617,8 @@ namespace {
                     std::sort(events.begin(), events.end(), end_order);
                     for (WrapSpec const* wrap : events) {
                         output += ", ";
+                        output += cxx_string_literal(wrap->declaration_identity);
+                        output += ", ";
                         output += encoded_file_path;
                         output += ", ";
                         output += std::to_string(wrap->span_begin);
@@ -536,7 +633,17 @@ namespace {
                     std::sort(events.begin(), events.end(), begin_order);
                     for (WrapSpec const* wrap : events) {
                         (void)wrap;
-                        output += "iv::_add_node_source_span(";
+                        output += "iv::_annotate_node_source_info(";
+                    }
+                }
+
+                if (auto it = insert_events.find(offset); it != insert_events.end()) {
+                    auto events = it->second;
+                    std::sort(events.begin(), events.end(), [](InsertSpec const* a, InsertSpec const* b) {
+                        return a->text < b->text;
+                    });
+                    for (InsertSpec const* insertion : events) {
+                        output += insertion->text;
                     }
                 }
 
@@ -561,6 +668,7 @@ namespace {
         bool VisitVarDecl(clang::VarDecl* decl)
         {
             maybe_add_binding_wrap(decl);
+            maybe_add_empty_declaration_init(decl);
             return true;
         }
 
@@ -586,7 +694,11 @@ namespace {
 
         bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* op)
         {
-            if (op && op->getOperator() == clang::OO_Equal && op->getNumArgs() >= 2) {
+            if (!op) {
+                return true;
+            }
+
+            if (op->getOperator() == clang::OO_Equal && op->getNumArgs() >= 2) {
                 maybe_add_assignment_wrap(op->getArg(0), op->getArg(1));
             }
             return true;
@@ -609,9 +721,9 @@ namespace {
             bool const write_in_place = output_path.empty();
             std::string const normalized_main_path = normalized_path(std::filesystem::path(path_ref.str()));
             std::string const rewritten =
-                _wraps.empty()
+                (_wraps.empty() && _insertions.empty())
                     ? buffer.str()
-                    : render_with_wraps(buffer.str(), _wraps, normalized_main_path);
+                    : render_with_wraps(buffer.str(), _wraps, _insertions, normalized_main_path);
             if (write_in_place && rewritten == buffer) {
                 return false;
             }

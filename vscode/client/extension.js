@@ -135,14 +135,9 @@ class LiveGraphProvider {
     constructor() {
         this.items = [];
         this.nodes = [];
-        this.logicalNodeResolver = null;
         this.expandedState = new Map();
         this.onDidChangeTreeDataEmitter = new vscode.EventEmitter();
         this.onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
-    }
-
-    setLogicalNodeResolver(resolver) {
-        this.logicalNodeResolver = resolver;
     }
 
     setNodes(nodes) {
@@ -177,7 +172,7 @@ class LiveGraphProvider {
         for (const key of [...this.expandedState.keys()]) {
             let shouldDelete = false;
             for (const nodeId of deleted) {
-                if (key.includes(`node:${nodeId}`) || key.includes(`member:${nodeId}`)) {
+                if (key.includes(`node:${nodeId}`)) {
                     shouldDelete = true;
                     break;
                 }
@@ -251,9 +246,6 @@ class LiveGraphProvider {
         if (eventOutputs) {
             children.push(eventOutputs);
         }
-        if (Array.isArray(node.memberNodes) && node.memberNodes.length > 1) {
-            children.push(this.makeMembersGroup(parentTreeKey, node.memberNodes));
-        }
         return children;
     }
 
@@ -272,85 +264,6 @@ class LiveGraphProvider {
             child.iconPath = this.portIcon(direction, portKind, connectivity);
             return child;
         });
-        return item;
-    }
-
-    applyMemberPresentation(item, member) {
-        item.label = member.kind || member.id || "member";
-        item.description = member.id || "";
-        item.tooltip = `${member.kind || "member"}${Array.isArray(member.sourceSpans) ? ` • ${member.sourceSpans.length} source span${member.sourceSpans.length === 1 ? "" : "s"}` : ""}`;
-        item.iconPath = singleNodeIconPath;
-    }
-
-    makeMemberNodeItem(parentTreeKey, member) {
-        const treeKey = `${parentTreeKey}/member:${member.id}`;
-        const item = new LiveGraphItem("", this.collapsibleStateFor(treeKey, false), "");
-        item.treeKey = treeKey;
-        item.id = treeKey;
-        this.applyMemberPresentation(item, member);
-        item.children = this.makeLogicalNodeChildren(treeKey, member);
-        return item;
-    }
-
-    hydrateMemberItem(item, member) {
-        this.applyMemberPresentation(item, member);
-        item.children = this.makeLogicalNodeChildren(item.treeKey, member);
-        item.childrenLoaded = true;
-        item.memberLoaded = true;
-        item.loadChildren = null;
-    }
-
-    makeMemberPlaceholder(parentTreeKey, memberNode, allMemberNodes, memberItems, index) {
-        const memberNodeId = memberNode.id;
-        const treeKey = `${parentTreeKey}/member:${memberNodeId}`;
-        const item = new LiveGraphItem("", this.collapsibleStateFor(treeKey, false), "");
-        item.treeKey = treeKey;
-        item.id = treeKey;
-        this.applyMemberPresentation(item, memberNode);
-        item.children = [];
-        item.childrenLoaded = false;
-        item.memberLoaded = false;
-        item.loadChildren = async () => {
-            if (item.memberLoaded) {
-                return item.children;
-            }
-            if (!this.logicalNodeResolver) {
-                item.childrenLoaded = true;
-                item.memberLoaded = true;
-                return item.children;
-            }
-
-            const start = Math.max(0, index - 5);
-            const end = Math.min(allMemberNodes.length, index + 6);
-            const nearbyIds = allMemberNodes.slice(start, end).map((member) => member.id);
-            const resolvedMembers = await this.logicalNodeResolver(nearbyIds);
-            const membersById = new Map((resolvedMembers || []).map((member) => [member.id, member]));
-
-            for (let i = start; i < end; ++i) {
-                const sibling = memberItems[i];
-                const member = membersById.get(allMemberNodes[i].id);
-                if (!sibling || !member) {
-                    continue;
-                }
-                this.hydrateMemberItem(sibling, member);
-                this.onDidChangeTreeDataEmitter.fire(sibling);
-            }
-
-            return item.children;
-        };
-        return item;
-    }
-
-    makeMembersGroup(parentTreeKey, memberNodes) {
-        const treeKey = `${parentTreeKey}/group:members`;
-        const item = new LiveGraphItem("members", this.collapsibleStateFor(treeKey, false), `${memberNodes.length}`);
-        item.treeKey = treeKey;
-        item.id = treeKey;
-        const memberItems = new Array(memberNodes.length);
-        for (let index = 0; index < memberNodes.length; ++index) {
-            memberItems[index] = this.makeMemberPlaceholder(treeKey, memberNodes[index], memberNodes, memberItems, index);
-        }
-        item.children = memberItems;
         return item;
     }
 
@@ -686,17 +599,6 @@ class WorkspaceSession {
         return nodes;
     }
 
-    async fetchLogicalNodes(nodeIds) {
-        if (!this.client || !Array.isArray(nodeIds) || nodeIds.length === 0) {
-            return [];
-        }
-        const nodes = await this.client.request("graph.getLogicalNodes", {
-            executionEpoch: this.executionEpoch,
-            nodeIds,
-        });
-        return Array.isArray(nodes) ? nodes : [];
-    }
-
     async ensureReady() {
         if (!this.isIntravenousProject()) {
             this.outputChannel.appendLine(`workspace is not an Intravenous project: missing ${this.projectMarkerPath()}`);
@@ -860,7 +762,6 @@ async function activate(context) {
     }
 
     const session = new WorkspaceSession(workspaceFolder, outputChannel, provider, highlighter);
-    provider.setLogicalNodeResolver((nodeIds) => session.fetchLogicalNodes(nodeIds));
     context.subscriptions.push({ dispose: () => void session.shutdown() });
     context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(() => {
         highlighter.refresh();

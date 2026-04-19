@@ -8,24 +8,40 @@
 
 namespace iv {
     template<class Ref>
-    concept SourceSpanAnnotatableRef = requires(std::remove_cvref_t<Ref> const& ref) {
-        ref._add_source_span(0u, 0u);
+    concept SourceInfoAnnotatableRef = requires(std::remove_cvref_t<Ref>& ref, std::string_view declaration_identity) {
+        ref._annotate_source_info(declaration_identity, std::string_view {}, 0u, 0u);
     };
 
     template<class Ref>
-    requires SourceSpanAnnotatableRef<Ref>
-    std::remove_cvref_t<Ref> _add_node_source_span(Ref&& ref, uint32_t begin, uint32_t end)
+    concept SourceInfoDeclarableRef = requires(std::string_view declaration_identity) {
+        std::remove_cvref_t<Ref>(logical_empty_tag, declaration_identity);
+    };
+
+    template<class Ref>
+    requires SourceInfoDeclarableRef<Ref>
+    std::remove_cvref_t<Ref> _declare_node_source_info(std::string_view declaration_identity)
+    {
+        return std::remove_cvref_t<Ref>(logical_empty_tag, declaration_identity);
+    }
+
+    template<class Ref>
+    requires SourceInfoAnnotatableRef<Ref>
+    std::remove_cvref_t<Ref> _annotate_node_source_info(
+        Ref&& ref,
+        std::string_view declaration_identity
+    )
     {
         using StoredRef = std::remove_cvref_t<Ref>;
         StoredRef stored_ref = std::forward<Ref>(ref);
-        stored_ref._add_source_span(begin, end);
+        stored_ref._annotate_source_info(declaration_identity, std::string_view {}, 0u, 0u);
         return stored_ref;
     }
 
     template<class Ref>
-    requires SourceSpanAnnotatableRef<Ref>
-    std::remove_cvref_t<Ref> _add_node_source_span(
+    requires SourceInfoAnnotatableRef<Ref>
+    std::remove_cvref_t<Ref> _annotate_node_source_info(
         Ref&& ref,
+        std::string_view declaration_identity,
         std::string_view file_path,
         uint32_t begin,
         uint32_t end
@@ -33,13 +49,7 @@ namespace iv {
     {
         using StoredRef = std::remove_cvref_t<Ref>;
         StoredRef stored_ref = std::forward<Ref>(ref);
-        if constexpr (requires {
-            stored_ref._add_source_span(file_path, begin, end);
-        }) {
-            stored_ref._add_source_span(file_path, begin, end);
-        } else {
-            stored_ref._add_source_span(begin, end);
-        }
+        stored_ref._annotate_source_info(declaration_identity, file_path, begin, end);
         return stored_ref;
     }
 

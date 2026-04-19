@@ -29,6 +29,12 @@
 #include <vector>
 
 namespace iv {
+    struct LogicalEmptyTag {
+        explicit constexpr LogicalEmptyTag() = default;
+    };
+
+    inline constexpr LogicalEmptyTag logical_empty_tag {};
+
     class GraphBuilder;
     class NodeRef;
     template<class Node>
@@ -40,14 +46,33 @@ namespace iv {
         GraphBuilder* graph_builder{};
         size_t node_index{};
         size_t output_port{};
+        std::string logical_declaration_id {};
+        bool allows_single_assignment = false;
 
         SamplePortRef() = default;
+        SamplePortRef(SamplePortRef const& rhs) :
+            graph_builder(rhs.graph_builder),
+            node_index(rhs.node_index),
+            output_port(rhs.output_port),
+            logical_declaration_id(rhs.allows_single_assignment ? rhs.logical_declaration_id : std::string{}),
+            allows_single_assignment(rhs.allows_single_assignment)
+        {}
+        explicit SamplePortRef(LogicalEmptyTag, std::string_view declaration_identity) :
+            logical_declaration_id(declaration_identity),
+            allows_single_assignment(true)
+        {}
         explicit SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
         operator PortId() const { return { node_index, output_port }; }
 
+        SamplePortRef& operator=(SamplePortRef const& rhs);
+
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
-        void _add_source_span(uint32_t begin, uint32_t end) const;
-        void _add_source_span(std::string_view file_path, uint32_t begin, uint32_t end) const;
+        void _annotate_source_info(
+            std::string_view declaration_identity,
+            std::string_view file_path,
+            uint32_t begin,
+            uint32_t end
+        );
 
         std::string to_string() const;
     };
@@ -137,7 +162,7 @@ namespace iv {
         std::vector<PortId> subgraph_output_sources {};
         std::vector<std::vector<PortId>> subgraph_event_input_targets {};
         std::vector<PortId> subgraph_event_output_sources {};
-        std::vector<SourceSpan> source_spans {};
+        std::vector<SourceInfo> source_infos {};
         std::string subgraph_kind {};
 
         std::vector<InputConfig> const& inputs() const
@@ -367,10 +392,17 @@ namespace iv {
     protected:
         GraphBuilder* _graph_builder{};
         size_t _index{};
+        std::string _logical_declaration_id {};
+        bool _allows_single_assignment = false;
 
         friend class GraphBuilder;
 
     private:
+        Derived& derived()
+        {
+            return static_cast<Derived&>(*this);
+        }
+
         Derived const& derived() const
         {
             return static_cast<Derived const&>(*this);
@@ -378,10 +410,22 @@ namespace iv {
 
     public:
         NodeRefBase() = default;
+        NodeRefBase(NodeRefBase const& rhs) :
+            _graph_builder(rhs._graph_builder),
+            _index(rhs._index),
+            _logical_declaration_id(rhs._allows_single_assignment ? rhs._logical_declaration_id : std::string{}),
+            _allows_single_assignment(rhs._allows_single_assignment)
+        {}
+        explicit NodeRefBase(LogicalEmptyTag, std::string_view declaration_identity) :
+            _logical_declaration_id(declaration_identity),
+            _allows_single_assignment(true)
+        {}
         explicit NodeRefBase(GraphBuilder& graph_builder, size_t index) :
             _graph_builder(&graph_builder),
             _index(index)
         {}
+
+        Derived& operator=(Derived const& rhs);
 
         BuilderNode const& node() const;
         NodeRef node_ref() const;
@@ -413,8 +457,12 @@ namespace iv {
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
         Derived ttl(size_t samples) const;
         Derived no_ttl() const;
-        void _add_source_span(uint32_t begin, uint32_t end) const;
-        void _add_source_span(std::string_view file_path, uint32_t begin, uint32_t end) const;
+        void _annotate_source_info(
+            std::string_view declaration_identity,
+            std::string_view file_path,
+            uint32_t begin,
+            uint32_t end
+        );
 
         std::string to_string() const;
     };
@@ -422,6 +470,14 @@ namespace iv {
     class NodeRef : public NodeRefBase<NodeRef> {
     public:
         using NodeRefBase<NodeRef>::NodeRefBase;
+        using NodeRefBase<NodeRef>::operator=;
+
+        NodeRef(NodeRef const&) = default;
+
+        NodeRef& operator=(NodeRef const& rhs)
+        {
+            return NodeRefBase<NodeRef>::operator=(rhs);
+        }
     };
 
     template<class Node>
@@ -431,6 +487,14 @@ namespace iv {
     public:
         using NodeType = std::remove_cvref_t<Node>;
         using Base::Base;
+        using Base::operator=;
+
+        TypedNodeRef(TypedNodeRef const&) = default;
+
+        TypedNodeRef& operator=(TypedNodeRef const& rhs)
+        {
+            return Base::operator=(rhs);
+        }
 
         operator NodeRef() const
         {
@@ -450,6 +514,14 @@ namespace iv {
     public:
         using NodeType = std::remove_cvref_t<Node>;
         using Base::Base;
+        using Base::operator=;
+
+        StructuredNodeRef(StructuredNodeRef const&) = default;
+
+        StructuredNodeRef& operator=(StructuredNodeRef const& rhs)
+        {
+            return Base::operator=(rhs);
+        }
 
         StructuredNodeRef() = default;
         explicit StructuredNodeRef(GraphBuilder& graph_builder, size_t index) :
@@ -1283,7 +1355,7 @@ namespace iv {
                 .nodes = {},
                 .explicit_ttl_samples = {},
                 .node_ids = {},
-                .node_source_spans = {},
+                .node_source_infos = {},
                 .edges = {},
                 .event_edges = {},
                 .detached_info_by_source = {},
@@ -1307,7 +1379,7 @@ namespace iv {
                 g.nodes.push_back(_nodes[node_i].materialize(detach_id_offset));
                 g.explicit_ttl_samples.push_back(_nodes[node_i].ttl_samples);
                 g.node_ids.push_back(node_id(node_i));
-                g.node_source_spans.push_back(_nodes[node_i].source_spans);
+                g.node_source_infos.push_back(_nodes[node_i].source_infos);
             }
 
             auto materialize_placeholder_default = [&](size_t placeholder_node, size_t input_port) {
@@ -1317,7 +1389,7 @@ namespace iv {
                 g.node_ids.push_back(
                     node_id(placeholder_node) + ".default." + std::to_string(input_port)
                 );
-                g.node_source_spans.emplace_back();
+                g.node_source_infos.emplace_back();
                 return PortId{ g.nodes.size() - 1, 0 };
             };
 
@@ -1501,7 +1573,14 @@ namespace iv {
                     auto const& placeholder = _nodes[placeholder_i];
                     iv::LoweredSubgraphSpec scope;
                     scope.kind = placeholder.subgraph_kind;
-                    scope.source_spans = placeholder.source_spans;
+                    for (auto const& info : placeholder.source_infos) {
+                        if (info.span.file_path.empty() || info.span.begin > info.span.end) {
+                            continue;
+                        }
+                        if (std::find(scope.source_spans.begin(), scope.source_spans.end(), info.span) == scope.source_spans.end()) {
+                            scope.source_spans.push_back(info.span);
+                        }
+                    }
                     scope.sample_inputs = placeholder.input_configs;
                     scope.sample_outputs = placeholder.output_configs;
                     scope.event_inputs = placeholder.event_input_configs;
@@ -1597,7 +1676,7 @@ namespace iv {
 
             GraphIntrospectionMetadata introspection {
                 .lowered_subgraphs = std::move(lowered_subgraphs),
-                .node_source_spans = std::move(g.node_source_spans),
+                .node_source_infos = std::move(g.node_source_infos),
             };
             auto dormancy_groups = details::compile_dormancy_groups(
                 g,
@@ -1660,32 +1739,36 @@ namespace iv {
             return NodeRef(*this, source.node);
         }
 
-        void _add_node_source_span(
+        void _annotate_node_source_info(
             NodeRef ref,
+            std::string_view declaration_identity,
             std::string_view file_path,
             uint32_t begin,
             uint32_t end
         )
         {
-            if (!ref._graph_builder) {
+            if (!ref._graph_builder || declaration_identity.empty()) {
                 return;
             }
 
             if (ref._graph_builder != this) {
                 details::error(
-                    "builder " + _builder_id.value + ": cannot record source span for " + ref.to_string() +
+                    "builder " + _builder_id.value + ": cannot record source info for " + ref.to_string() +
                     " because it belongs to another builder"
                 );
             }
 
-            auto& spans = _nodes[ref._index].source_spans;
-            SourceSpan span {
-                .file_path = std::string(file_path),
-                .begin = begin,
-                .end = end,
+            auto& infos = _nodes[ref._index].source_infos;
+            SourceInfo info {
+                .declaration_identity = std::string(declaration_identity),
+                .span = SourceSpan {
+                    .file_path = std::string(file_path),
+                    .begin = begin,
+                    .end = end,
+                },
             };
-            if (std::find(spans.begin(), spans.end(), span) == spans.end()) {
-                spans.push_back(span);
+            if (std::find(infos.begin(), infos.end(), info) == infos.end()) {
+                infos.push_back(std::move(info));
             }
         }
 
@@ -1822,6 +1905,37 @@ namespace iv {
         }
     }
 
+    inline SamplePortRef& SamplePortRef::operator=(SamplePortRef const& rhs)
+    {
+        if (this == &rhs) {
+            return *this;
+        }
+
+        if (allows_single_assignment) {
+            if (!rhs.graph_builder) {
+                details::error("cannot initialize a logical-empty sample port from an empty sample port");
+            }
+            graph_builder = rhs.graph_builder;
+            node_index = rhs.node_index;
+            output_port = rhs.output_port;
+            allows_single_assignment = false;
+            return *this;
+        }
+
+        if (graph_builder || !logical_declaration_id.empty()) {
+            details::error(
+                "cannot assign to sample port '" + logical_declaration_id + "' after it has already been initialized"
+            );
+        }
+
+        graph_builder = rhs.graph_builder;
+        node_index = rhs.node_index;
+        output_port = rhs.output_port;
+        logical_declaration_id = rhs.logical_declaration_id;
+        allows_single_assignment = rhs.allows_single_assignment;
+        return *this;
+    }
+
     inline EventPortRef::EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
         graph_builder(&graph_builder_),
         node_index(node_index),
@@ -1864,19 +1978,22 @@ namespace iv {
         return graph_builder->detach_sample_port(*this, loop_extra_latency);
     }
 
-    inline void SamplePortRef::_add_source_span(uint32_t begin, uint32_t end) const
+    inline void SamplePortRef::_annotate_source_info(
+        std::string_view declaration_identity,
+        std::string_view file_path,
+        uint32_t begin,
+        uint32_t end
+    )
     {
-        _add_source_span(std::string_view {}, begin, end);
-    }
-
-    inline void SamplePortRef::_add_source_span(std::string_view file_path, uint32_t begin, uint32_t end) const
-    {
+        if (!declaration_identity.empty()) {
+            logical_declaration_id = declaration_identity;
+        }
         if (!graph_builder) {
             return;
         }
 
         if (auto source_node = graph_builder->_source_node_for_source_span(*this); source_node.has_value()) {
-            graph_builder->_add_node_source_span(*source_node, file_path, begin, end);
+            graph_builder->_annotate_node_source_info(*source_node, declaration_identity, file_path, begin, end);
         }
     }
 
@@ -1921,22 +2038,51 @@ namespace iv {
     }
 
     template<class Derived, class Node>
-    inline void NodeRefBase<Derived, Node>::_add_source_span(uint32_t begin, uint32_t end) const
+    inline Derived& NodeRefBase<Derived, Node>::operator=(Derived const& rhs)
     {
-        _add_source_span(std::string_view {}, begin, end);
+        if (this == &rhs) {
+            return derived();
+        }
+
+        if (_allows_single_assignment) {
+            if (!rhs._graph_builder) {
+                details::error("cannot initialize a logical-empty NodeRef from an empty NodeRef");
+            }
+            _graph_builder = rhs._graph_builder;
+            _index = rhs._index;
+            _allows_single_assignment = false;
+            return derived();
+        }
+
+        if (_graph_builder || !_logical_declaration_id.empty()) {
+            details::error(
+                "cannot assign to NodeRef '" + _logical_declaration_id + "' after it has already been initialized"
+            );
+        }
+
+        _graph_builder = rhs._graph_builder;
+        _index = rhs._index;
+        _logical_declaration_id = rhs._logical_declaration_id;
+        _allows_single_assignment = rhs._allows_single_assignment;
+        return derived();
     }
 
     template<class Derived, class Node>
-    inline void NodeRefBase<Derived, Node>::_add_source_span(
+    inline void NodeRefBase<Derived, Node>::_annotate_source_info(
+        std::string_view declaration_identity,
         std::string_view file_path,
         uint32_t begin,
         uint32_t end
-    ) const
+    )
     {
+        if (!declaration_identity.empty()) {
+            _logical_declaration_id = declaration_identity;
+        }
         if (!_graph_builder) {
             return;
         }
-        _graph_builder->_add_node_source_span(NodeRef(*_graph_builder, _index), file_path, begin, end);
+        auto const ref = NodeRef(*_graph_builder, _index);
+        _graph_builder->_annotate_node_source_info(ref, declaration_identity, file_path, begin, end);
     }
 
     template<class Derived, class Node>

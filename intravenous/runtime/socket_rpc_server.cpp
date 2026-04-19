@@ -261,22 +261,6 @@ namespace iv {
             return json;
         }
 
-        std::string member_nodes_json(std::vector<LogicalNodeMemberInfo> const& member_nodes)
-        {
-            std::string json = "[";
-            bool first = true;
-            for (auto const& member : member_nodes) {
-                if (!first) {
-                    json += ",";
-                }
-                first = false;
-                json += "{\"id\":\"" + escape_json(member.id) +
-                    "\",\"kind\":\"" + escape_json(member.kind) + "\"}";
-            }
-            json += "]";
-            return json;
-        }
-
         std::string string_array_json(std::vector<std::string> const& values)
         {
             std::string json = "[";
@@ -301,7 +285,6 @@ namespace iv {
                 ",\"sampleOutputs\":" + logical_port_json(node.sample_outputs) +
                 ",\"eventInputs\":" + logical_port_json(node.event_inputs) +
                 ",\"eventOutputs\":" + logical_port_json(node.event_outputs) +
-                ",\"memberNodes\":" + member_nodes_json(node.member_nodes) +
                 ",\"memberCount\":" + std::to_string(node.member_count) + "}";
         }
 
@@ -359,10 +342,10 @@ namespace iv {
             if (event.execution_epoch != 0) {
                 json += ",\"executionEpoch\":" + std::to_string(event.execution_epoch);
             }
-            if (!event.created_node_ids.empty()) {
+            if (event.kind == RuntimeProjectEventKind::build_finished || !event.created_node_ids.empty()) {
                 json += ",\"createdNodeIds\":" + string_array_json(event.created_node_ids);
             }
-            if (!event.deleted_node_ids.empty()) {
+            if (event.kind == RuntimeProjectEventKind::build_finished || !event.deleted_node_ids.empty()) {
                 json += ",\"deletedNodeIds\":" + string_array_json(event.deleted_node_ids);
             }
             json += "}";

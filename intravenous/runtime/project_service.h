@@ -54,13 +54,6 @@ namespace iv {
         bool operator==(LogicalPortInfo const&) const = default;
     };
 
-    struct LogicalNodeMemberInfo {
-        std::string id {};
-        std::string kind {};
-
-        bool operator==(LogicalNodeMemberInfo const&) const = default;
-    };
-
     struct LogicalNodeInfo {
         std::string id {};
         std::string kind {};
@@ -69,7 +62,6 @@ namespace iv {
         std::vector<LogicalPortInfo> sample_outputs {};
         std::vector<LogicalPortInfo> event_inputs {};
         std::vector<LogicalPortInfo> event_outputs {};
-        std::vector<LogicalNodeMemberInfo> member_nodes {};
         size_t member_count = 0;
     };
 
