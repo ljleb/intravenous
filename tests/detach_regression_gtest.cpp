@@ -92,7 +92,7 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     iv::test::FakeAudioDevice audio_device({ .max_block_frames = output.size() });
     iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(graph.plan().build()),
+        iv::TypeErasedNode(graph.build()),
         {},
         std::move(execution_targets).to_builder()
     );
@@ -124,7 +124,7 @@ TEST(DetachRegression, NestedFeedbackWithoutDetachStillFailsAfterFlattening)
     graph.outputs();
 
     try {
-        graph.plan().build();
+        graph.build();
     } catch (std::logic_error const& e) {
         EXPECT_NE(
             std::string_view(e.what()).find("graph contains a cycle"),

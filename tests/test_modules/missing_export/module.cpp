@@ -10,6 +10,6 @@ namespace {
         }
 
         g.outputs();
-        return iv::TypeErasedNode(g.plan().build());
+        return iv::TypeErasedNode(g.build());
     }
 }

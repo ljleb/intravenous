@@ -457,8 +457,14 @@ namespace iv {
             std::scoped_lock write_lock(write_mutex);
             size_t written = 0;
             while (written < message.size()) {
-                ssize_t count = ::write(fd, message.data() + written, message.size() - written);
+                ssize_t count = ::send(fd, message.data() + written, message.size() - written, MSG_NOSIGNAL);
                 if (count < 0) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    return false;
+                }
+                if (count == 0) {
                     return false;
                 }
                 written += static_cast<size_t>(count);

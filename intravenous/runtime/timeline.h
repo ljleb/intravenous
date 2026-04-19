@@ -2,29 +2,31 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
 
 namespace iv {
-    enum class TimelineInputKind : std::uint8_t {
-        sample,
-        event,
-    };
-
-    struct TimelineLogicalInputId {
-        size_t ordinal = 0;
-
-        bool operator==(TimelineLogicalInputId const&) const = default;
-    };
-
-    struct TimelineLogicalInputKey {
-        std::string logical_node_id {};
-        TimelineLogicalInputId input_id {};
-        TimelineInputKind kind = TimelineInputKind::sample;
-
-        bool operator==(TimelineLogicalInputKey const&) const = default;
-    };
+    class GraphBuilder;
+    struct InputConfig;
+    struct EventInputConfig;
+    struct SamplePortRef;
+    struct EventPortRef;
 
     class Timeline {
     public:
+        SamplePortRef resolve_sample_input(
+            GraphBuilder& builder,
+            std::span<std::string const> logical_node_ids,
+            size_t input_ordinal,
+            InputConfig const& input_config
+        );
+
+        EventPortRef resolve_event_input(
+            GraphBuilder& builder,
+            std::span<std::string const> logical_node_ids,
+            size_t input_ordinal,
+            EventInputConfig const& input_config
+        );
     };
 }

@@ -391,7 +391,7 @@ namespace {
         g.outputs();
 
         return iv::NodeExecutor::create(
-            iv::TypeErasedNode(g.plan().build()),
+            iv::TypeErasedNode(g.build()),
             {},
             std::move(execution_target_registry).to_builder()
         );
@@ -407,7 +407,7 @@ namespace {
         });
         sink(src);
         g.outputs();
-        return iv::TypeErasedNode(g.plan().build());
+        return iv::TypeErasedNode(g.build());
     }
 
     void tick_executor_direct(iv::NodeExecutor& executor, size_t index, size_t block_size)
@@ -622,7 +622,7 @@ TEST(ArchitectureSmoke, SameDeviceSameChannelAccumulates)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -664,7 +664,7 @@ TEST(ArchitectureSmoke, ChannelAlignmentPreservesLeftAndRight)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -729,7 +729,7 @@ TEST(ArchitectureSmoke, SubgraphPassthroughFlattensToDirectSignalPath)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -774,7 +774,7 @@ TEST(ArchitectureSmoke, PipeOperatorChainsSingleInputSingleOutputNodes)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -806,7 +806,7 @@ TEST(ArchitectureSmoke, ExactRequestedBlockBecomesReady)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -874,7 +874,7 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderStillLowersThroughNode)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -890,48 +890,27 @@ TEST(ArchitectureSmoke, BuilderMetadataCarriesLogicalNodesAndBridgeMappings)
 
     iv::GraphBuilder g;
     auto const source_a = g.node<iv::ValueSource>(&sample_period);
-    (void)_annotate_node_source_info(
-        source_a.node_ref(),
-        "decl:shared"
-    );
-    (void)_annotate_node_source_info(source_a.node_ref(), "decl:secondary");
     auto const source_b = g.node<iv::ValueSource>(&sample_period);
-    (void)_annotate_node_source_info(
-        source_b.node_ref(),
-        "decl:shared"
-    );
+    (void)_annotate_node_source_info(source_a.node_ref(), "llvm:shared");
+    (void)_annotate_node_source_info(source_b.node_ref(), "llvm:shared");
     g.outputs();
 
-    auto built = g.plan().build_with_metadata();
+    auto built = g.build_with_metadata();
 
-    ASSERT_EQ(built.introspection.logical_nodes.size(), 2u);
+    ASSERT_EQ(built.introspection.logical_nodes.size(), 1u);
     auto const shared_it = std::find_if(
         built.introspection.logical_nodes.begin(),
         built.introspection.logical_nodes.end(),
-        [](auto const& node) { return node.source_declaration_identity == "decl:shared"; }
+        [](auto const& node) { return node.id == "llvm:shared" && node.source_identity == "llvm:shared"; }
     );
     ASSERT_NE(shared_it, built.introspection.logical_nodes.end());
     EXPECT_EQ(shared_it->backing_node_ids.size(), 2u);
-
-    auto const secondary_it = std::find_if(
-        built.introspection.logical_nodes.begin(),
-        built.introspection.logical_nodes.end(),
-        [](auto const& node) { return node.source_declaration_identity == "decl:secondary"; }
-    );
-    ASSERT_NE(secondary_it, built.introspection.logical_nodes.end());
-    EXPECT_EQ(secondary_it->backing_node_ids.size(), 1u);
-
-    auto const shared_member_it = std::find(
-        shared_it->backing_node_ids.begin(),
-        shared_it->backing_node_ids.end(),
-        secondary_it->backing_node_ids.front()
-    );
-    ASSERT_NE(shared_member_it, shared_it->backing_node_ids.end());
-    auto const reverse_it = built.introspection.logical_node_ids_by_backing_node_id.find(*shared_member_it);
-    ASSERT_NE(reverse_it, built.introspection.logical_node_ids_by_backing_node_id.end());
-    EXPECT_EQ(reverse_it->second.size(), 2u);
-    EXPECT_TRUE(std::ranges::contains(reverse_it->second, shared_it->id));
-    EXPECT_TRUE(std::ranges::contains(reverse_it->second, secondary_it->id));
+    for (auto const& backing_node_id : shared_it->backing_node_ids) {
+        auto const reverse_it = built.introspection.logical_node_ids_by_backing_node_id.find(backing_node_id);
+        ASSERT_NE(reverse_it, built.introspection.logical_node_ids_by_backing_node_id.end());
+        ASSERT_EQ(reverse_it->second.size(), 1u);
+        EXPECT_EQ(reverse_it->second.front(), "llvm:shared");
+    }
 }
 
 TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
@@ -954,7 +933,7 @@ TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
     iv::test::FakeAudioDevice audio_device({ .max_block_frames = output.size() });
     iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_targets).to_builder()
     );
@@ -989,7 +968,7 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderDormancyStopsTickingSilentScope)
     iv::test::FakeAudioDevice audio_device({ .max_block_frames = output.size() });
     iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_targets).to_builder()
     );
@@ -1181,7 +1160,7 @@ TEST(ArchitectureSmoke, DisconnectedEventOutputUsesZeroCapacitySinkBudget)
     [[maybe_unused]] auto const source = g.node<DisconnectedTriggerSource>();
     g.outputs();
 
-    iv::TypeErasedNode root = iv::TypeErasedNode(g.plan().build());
+    iv::TypeErasedNode root = iv::TypeErasedNode(g.build());
     iv::NodeLayoutBuilder builder(8);
     {
         iv::DeclarationContext<iv::TypeErasedNode> ctx(builder, root);
@@ -1237,7 +1216,7 @@ TEST(ArchitectureSmoke, EventConcatenationMergesInputsInTimeOrder)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     auto executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -1267,7 +1246,7 @@ TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     auto executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -1421,7 +1400,7 @@ TEST(ArchitectureSmoke, ExecuteReloadSwitchesAtExecutorBlockBoundaryWithinActive
     g.outputs();
 
     auto executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         iv::test::make_audio_device_provider(audio_device).to_builder()
     );
@@ -1606,7 +1585,7 @@ TEST(ArchitectureSmoke, StereoExecutorExecuteSurvivesVaryingRequestSizes)
     g.outputs();
 
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.plan().build()),
+        iv::TypeErasedNode(g.build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -1664,7 +1643,7 @@ TEST(ArchitectureSmoke, FileSinkUsesDeviceSampleRateForWavOutput)
             iv::test::make_audio_device_provider(audio_device)
         );
         auto executor = iv::NodeExecutor::create(
-            iv::TypeErasedNode(g.plan().build()),
+            iv::TypeErasedNode(g.build()),
             {},
             std::move(execution_target_registry).to_builder()
         );
@@ -1717,7 +1696,7 @@ TEST(ArchitectureSmoke, FileSinkPreservesContinuityAcrossVaryingAudioRequests)
             iv::test::make_audio_device_provider(audio_device)
         );
         auto executor = iv::NodeExecutor::create(
-            iv::TypeErasedNode(g.plan().build()),
+            iv::TypeErasedNode(g.build()),
             {},
             std::move(execution_target_registry).to_builder()
         );

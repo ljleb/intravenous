@@ -29,7 +29,7 @@ namespace iv {
     struct IntrospectionLogicalNode {
         std::string id {};
         std::string kind {};
-        std::string source_declaration_identity {};
+        std::string source_identity {};
         std::vector<SourceSpan> source_spans {};
         std::vector<LogicalPortInfo> sample_inputs {};
         std::vector<LogicalPortInfo> sample_outputs {};

@@ -2,7 +2,6 @@
 
 #include "module/loader.h"
 #include "compat.h"
-#include "graph/plan.h"
 
 #include "devices/channel_buffer_sink.h"
 
@@ -1195,9 +1194,9 @@ namespace iv {
             TypeErasedModule root_module = session.load_module(root.id);
             GraphBuilder::BuildResult built_root = [&]() -> GraphBuilder::BuildResult {
                 try {
-                    auto plan = root_module.builder(context).plan();
-                    plan.fill_vacant_logical_inputs(timeline);
-                    return plan.build_with_metadata();
+                    GraphBuilder root_builder = root_module.builder(context);
+                    root_builder.augment(timeline);
+                    return root_builder.build_with_metadata();
                 } catch (std::exception const& e) {
                     throw std::runtime_error(wrap_exception(
                         "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "'",

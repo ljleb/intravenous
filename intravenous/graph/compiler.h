@@ -38,9 +38,12 @@ namespace iv::details {
         std::vector<TypeErasedNode> nodes;
         std::vector<std::optional<size_t>> explicit_ttl_samples;
         std::vector<std::string> node_ids;
+        std::vector<std::vector<std::string>> node_logical_ids;
         std::vector<std::vector<SourceInfo>> node_source_infos;
         std::unordered_set<GraphEdge> edges;
         std::unordered_set<GraphEventEdge> event_edges;
+        std::unordered_set<PortId> timeline_filled_input_ports;
+        std::unordered_set<PortId> timeline_filled_event_input_ports;
         std::unordered_map<PortId, DetachedInfo> detached_info_by_source;
         std::unordered_set<PortId> detached_reader_outputs;
     };
@@ -330,6 +333,7 @@ namespace iv::details {
                 g.nodes.emplace_back(Sum(port_arity));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_logical_ids.emplace_back();
                 g.node_source_infos.emplace_back();
                 size_t const sum_node = g.nodes.size() - 1;
 
@@ -360,6 +364,7 @@ namespace iv::details {
                 g.nodes.emplace_back(EventConcatenation(port_arity, concat_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_logical_ids.emplace_back();
                 g.node_source_infos.emplace_back();
                 size_t const concat_node = g.nodes.size() - 1;
 
@@ -404,6 +409,7 @@ namespace iv::details {
                 g.nodes.emplace_back(Broadcast(port_arity));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_logical_ids.emplace_back();
                 g.node_source_infos.emplace_back();
                 size_t const broadcast_node = g.nodes.size() - 1;
 
@@ -434,6 +440,7 @@ namespace iv::details {
                 g.nodes.emplace_back(BroadcastEvent(port_arity, broadcast_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_logical_ids.emplace_back();
                 g.node_source_infos.emplace_back();
                 size_t const broadcast_node = g.nodes.size() - 1;
 
@@ -471,6 +478,7 @@ namespace iv::details {
                     g.nodes.emplace_back(DummySink());
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                    g.node_logical_ids.emplace_back();
                     g.node_source_infos.emplace_back();
                     size_t const new_node = g.nodes.size() - 1;
                     g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
@@ -485,6 +493,7 @@ namespace iv::details {
                     g.nodes.emplace_back(DummyEventSink());
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                    g.node_logical_ids.emplace_back();
                     g.node_source_infos.emplace_back();
                     size_t const new_node = g.nodes.size() - 1;
                     EventTypeId const source_type = get_event_outputs(g.nodes[node])[output_port].type;
@@ -561,21 +570,25 @@ namespace iv::details {
         std::vector<TypeErasedNode> sorted_nodes;
         std::vector<std::optional<size_t>> sorted_explicit_ttls;
         std::vector<std::string> sorted_node_ids;
+        std::vector<std::vector<std::string>> sorted_node_logical_ids;
         std::vector<std::vector<SourceInfo>> sorted_node_source_infos;
         sorted_nodes.reserve(num_nodes);
         sorted_explicit_ttls.reserve(num_nodes);
         sorted_node_ids.reserve(num_nodes);
+        sorted_node_logical_ids.reserve(num_nodes);
         sorted_node_source_infos.reserve(num_nodes);
         for (size_t old_i = 0; old_i < num_nodes; ++old_i)
         {
             sorted_nodes.push_back(std::move(g.nodes[sorted[old_i]]));
             sorted_explicit_ttls.push_back(std::move(g.explicit_ttl_samples[sorted[old_i]]));
             sorted_node_ids.push_back(std::move(g.node_ids[sorted[old_i]]));
+            sorted_node_logical_ids.push_back(std::move(g.node_logical_ids[sorted[old_i]]));
             sorted_node_source_infos.push_back(std::move(g.node_source_infos[sorted[old_i]]));
         }
         g.nodes.swap(sorted_nodes);
         g.explicit_ttl_samples.swap(sorted_explicit_ttls);
         g.node_ids.swap(sorted_node_ids);
+        g.node_logical_ids.swap(sorted_node_logical_ids);
         g.node_source_infos.swap(sorted_node_source_infos);
 
         std::vector<size_t> reverse_sorted(num_nodes);
@@ -606,6 +619,26 @@ namespace iv::details {
             sorted_event_edges.insert(std::move(edge));
         }
         g.event_edges.swap(sorted_event_edges);
+
+        std::unordered_set<PortId> sorted_timeline_filled_input_ports;
+        sorted_timeline_filled_input_ports.reserve(g.timeline_filled_input_ports.size());
+        for (PortId port : g.timeline_filled_input_ports) {
+            if (port.node != GRAPH_ID) {
+                port.node = reverse_sorted[port.node];
+            }
+            sorted_timeline_filled_input_ports.insert(port);
+        }
+        g.timeline_filled_input_ports.swap(sorted_timeline_filled_input_ports);
+
+        std::unordered_set<PortId> sorted_timeline_filled_event_input_ports;
+        sorted_timeline_filled_event_input_ports.reserve(g.timeline_filled_event_input_ports.size());
+        for (PortId port : g.timeline_filled_event_input_ports) {
+            if (port.node != GRAPH_ID) {
+                port.node = reverse_sorted[port.node];
+            }
+            sorted_timeline_filled_event_input_ports.insert(port);
+        }
+        g.timeline_filled_event_input_ports.swap(sorted_timeline_filled_event_input_ports);
 
         for (auto& [_, info] : g.detached_info_by_source)
         {
