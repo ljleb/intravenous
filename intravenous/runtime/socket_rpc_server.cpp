@@ -24,30 +24,7 @@
 
 namespace iv {
     namespace {
-        using Json = nlohmann::json;
-
-        std::string escape_json(std::string_view value)
-        {
-            std::string escaped;
-            escaped.reserve(value.size());
-            for (char c : value) {
-                switch (c) {
-                case '\\':
-                    escaped += "\\\\";
-                    break;
-                case '"':
-                    escaped += "\\\"";
-                    break;
-                case '\n':
-                    escaped += "\\n";
-                    break;
-                default:
-                    escaped.push_back(c);
-                    break;
-                }
-            }
-            return escaped;
-        }
+        using Json = nlohmann::ordered_json;
 
         Json parse_request_json(std::string const& line)
         {
@@ -79,20 +56,40 @@ namespace iv {
             return dir / ("workspace-" + out.str() + ".sock");
         }
 
-        std::string jsonrpc_result(int id, std::string result_json)
+        std::string serialize_json_line(Json const& value)
         {
-            return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) + ",\"result\":" + std::move(result_json) + "}\n";
+            return value.dump() + "\n";
+        }
+
+        std::string jsonrpc_result(int id, Json result_json)
+        {
+            return serialize_json_line(Json {
+                {"jsonrpc", "2.0"},
+                {"id", id},
+                {"result", std::move(result_json)},
+            });
         }
 
         std::string jsonrpc_error(int id, int code, std::string const& message)
         {
-            return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) + ",\"error\":{\"code\":" + std::to_string(code) +
-                ",\"message\":\"" + escape_json(message) + "\"}}\n";
+            return serialize_json_line(Json {
+                {"jsonrpc", "2.0"},
+                {"id", id},
+                {"error",
+                 {
+                     {"code", code},
+                     {"message", message},
+                 }},
+            });
         }
 
-        std::string jsonrpc_notification(std::string const& method, std::string params_json)
+        std::string jsonrpc_notification(std::string const& method, Json params_json)
         {
-            return "{\"jsonrpc\":\"2.0\",\"method\":\"" + escape_json(method) + "\",\"params\":" + std::move(params_json) + "}\n";
+            return serialize_json_line(Json {
+                {"jsonrpc", "2.0"},
+                {"method", method},
+                {"params", std::move(params_json)},
+            });
         }
 
         Json const& parse_request_params(Json const& request)
@@ -241,7 +238,7 @@ namespace iv {
             throw std::runtime_error("graph.queryBySpans match must be 'union' or 'intersection'");
         }
 
-        std::string connectivity_json(LogicalPortConnectivity connectivity)
+        std::string_view connectivity_json(LogicalPortConnectivity connectivity)
         {
             switch (connectivity) {
             case LogicalPortConnectivity::connected:
@@ -254,129 +251,122 @@ namespace iv {
             return "disconnected";
         }
 
-        std::string logical_port_json(std::vector<LogicalPortInfo> const& ports)
+        Json logical_port_json(std::vector<LogicalPortInfo> const& ports)
         {
-            std::string json = "[";
-            bool first = true;
+            Json json = Json::array();
             for (auto const& port : ports) {
-                if (!first) {
-                    json += ",";
-                }
-                first = false;
-                json += "{\"name\":\"" + escape_json(port.name) + "\",\"type\":\"" + escape_json(port.type) +
-                    "\",\"connectivity\":\"" + connectivity_json(port.connectivity) + "\"}";
+                json.push_back({
+                    {"name", port.name},
+                    {"type", port.type},
+                    {"connectivity", connectivity_json(port.connectivity)},
+                });
             }
-            json += "]";
             return json;
         }
 
-        std::string source_spans_json(std::vector<LiveSourceSpan> const& spans)
+        Json source_spans_json(std::vector<LiveSourceSpan> const& spans)
         {
-            std::string json = "[";
-            bool first = true;
+            Json json = Json::array();
             for (auto const& span : spans) {
-                if (!first) {
-                    json += ",";
-                }
-                first = false;
-                json += "{\"filePath\":\"" + escape_json(span.file_path) +
-                    "\",\"start\":{\"line\":" + std::to_string(span.range.start.line) +
-                    ",\"column\":" + std::to_string(span.range.start.column) +
-                    "},\"end\":{\"line\":" + std::to_string(span.range.end.line) +
-                    ",\"column\":" + std::to_string(span.range.end.column) + "}}";
+                json.push_back({
+                    {"filePath", span.file_path},
+                    {"start",
+                     {
+                         {"line", span.range.start.line},
+                         {"column", span.range.start.column},
+                     }},
+                    {"end",
+                     {
+                         {"line", span.range.end.line},
+                         {"column", span.range.end.column},
+                     }},
+                });
             }
-            json += "]";
             return json;
         }
 
-        std::string string_array_json(std::vector<std::string> const& values)
+        Json string_array_json(std::vector<std::string> const& values)
         {
-            std::string json = "[";
-            bool first = true;
+            Json json = Json::array();
             for (auto const& value : values) {
-                if (!first) {
-                    json += ",";
-                }
-                first = false;
-                json += "\"" + escape_json(value) + "\"";
+                json.push_back(value);
             }
-            json += "]";
             return json;
         }
 
-        std::string logical_node_json(LogicalNodeInfo const& node)
+        Json logical_node_json(LogicalNodeInfo const& node)
         {
-            return "{\"id\":\"" + escape_json(node.id) +
-                "\",\"kind\":\"" + escape_json(node.kind) +
-                "\",\"sourceSpans\":" + source_spans_json(node.source_spans) +
-                ",\"sampleInputs\":" + logical_port_json(node.sample_inputs) +
-                ",\"sampleOutputs\":" + logical_port_json(node.sample_outputs) +
-                ",\"eventInputs\":" + logical_port_json(node.event_inputs) +
-                ",\"eventOutputs\":" + logical_port_json(node.event_outputs) +
-                ",\"memberCount\":" + std::to_string(node.member_count) + "}";
+            return Json {
+                {"id", node.id},
+                {"kind", node.kind},
+                {"sourceSpans", source_spans_json(node.source_spans)},
+                {"sampleInputs", logical_port_json(node.sample_inputs)},
+                {"sampleOutputs", logical_port_json(node.sample_outputs)},
+                {"eventInputs", logical_port_json(node.event_inputs)},
+                {"eventOutputs", logical_port_json(node.event_outputs)},
+                {"memberCount", node.member_count},
+            };
         }
 
-        std::string logical_nodes_json(std::vector<LogicalNodeInfo> const& nodes)
+        Json logical_nodes_json(std::vector<LogicalNodeInfo> const& nodes)
         {
-            std::string json = "[";
-            bool first = true;
+            Json json = Json::array();
             for (auto const& node : nodes) {
-                if (!first) {
-                    json += ",";
-                }
-                first = false;
-                json += logical_node_json(node);
+                json.push_back(logical_node_json(node));
             }
-            json += "]";
             return json;
         }
 
-        std::string initialize_result_json(RuntimeProjectInitializeResult const& result)
+        Json initialize_result_json(RuntimeProjectInitializeResult const& result)
         {
-            return "{\"moduleRoot\":\"" + escape_json(result.module_root.generic_string()) +
-                "\",\"moduleId\":\"" + escape_json(result.module_id) +
-                "\",\"executionEpoch\":" + std::to_string(result.execution_epoch) +
-                ",\"capabilities\":{\"queryBySpans\":true,\"queryActiveRegions\":true,\"getLogicalNode\":true,\"getLogicalNodes\":true}}";
+            return Json {
+                {"moduleRoot", result.module_root.generic_string()},
+                {"moduleId", result.module_id},
+                {"executionEpoch", result.execution_epoch},
+                {"capabilities",
+                 {
+                     {"queryBySpans", true},
+                     {"queryActiveRegions", true},
+                     {"getLogicalNode", true},
+                     {"getLogicalNodes", true},
+                 }},
+            };
         }
 
-        std::string query_result_json(RuntimeProjectQueryResult const& result)
+        Json query_result_json(RuntimeProjectQueryResult const& result)
         {
-            std::string json = "{\"executionEpoch\":" + std::to_string(result.execution_epoch) + ",\"nodes\":[";
-            bool first = true;
-            for (auto const& node : result.nodes) {
-                if (!first) {
-                    json += ",";
-                }
-                first = false;
-                json += logical_node_json(node);
-            }
-            json += "]}";
-            return json;
+            return Json {
+                {"executionEpoch", result.execution_epoch},
+                {"nodes", logical_nodes_json(result.nodes)},
+            };
         }
 
-        std::string region_query_result_json(RuntimeProjectRegionQueryResult const& result)
+        Json region_query_result_json(RuntimeProjectRegionQueryResult const& result)
         {
-            return "{\"executionEpoch\":" + std::to_string(result.execution_epoch) +
-                ",\"sourceSpans\":" + source_spans_json(result.source_spans) + "}";
+            return Json {
+                {"executionEpoch", result.execution_epoch},
+                {"sourceSpans", source_spans_json(result.source_spans)},
+            };
         }
 
-        std::string runtime_event_params_json(RuntimeProjectEvent const& event)
+        Json runtime_event_params_json(RuntimeProjectEvent const& event)
         {
-            std::string json = "{\"level\":\"" + escape_json(event.level) +
-                "\",\"message\":\"" + escape_json(event.message) + "\"";
+            Json json = {
+                {"level", event.level},
+                {"message", event.message},
+            };
             if (!event.module_root.empty()) {
-                json += ",\"moduleRoot\":\"" + escape_json(event.module_root.generic_string()) + "\"";
+                json["moduleRoot"] = event.module_root.generic_string();
             }
             if (event.execution_epoch != 0) {
-                json += ",\"executionEpoch\":" + std::to_string(event.execution_epoch);
+                json["executionEpoch"] = event.execution_epoch;
             }
             if (event.kind == RuntimeProjectEventKind::build_finished || !event.created_node_ids.empty()) {
-                json += ",\"createdNodeIds\":" + string_array_json(event.created_node_ids);
+                json["createdNodeIds"] = string_array_json(event.created_node_ids);
             }
             if (event.kind == RuntimeProjectEventKind::build_finished || !event.deleted_node_ids.empty()) {
-                json += ",\"deletedNodeIds\":" + string_array_json(event.deleted_node_ids);
+                json["deletedNodeIds"] = string_array_json(event.deleted_node_ids);
             }
-            json += "}";
             return json;
         }
     }
@@ -581,7 +571,7 @@ namespace iv {
                             auto const node_ids = parse_string_array_param(params, "nodeIds");
                             response = jsonrpc_result(request_id, logical_nodes_json(service.get_logical_nodes(execution_epoch, node_ids)));
                         } else if (method == "server.shutdown") {
-                            response = jsonrpc_result(request_id, "{\"ok\":true}");
+                            response = jsonrpc_result(request_id, Json {{"ok", true}});
                             (void)send_message(fd, response);
                             request_shutdown();
                             return;
