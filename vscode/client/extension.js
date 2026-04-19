@@ -554,12 +554,42 @@ class WorkspaceSession {
     }
 
     updatePrimaryHighlight(nodes) {
-        const primary = Array.isArray(nodes) && nodes.length > 0 ? nodes[0] : null;
-        if (primary && Array.isArray(primary.sourceSpans) && primary.sourceSpans.length > 0) {
-            this.highlighter.setSpans(primary.sourceSpans);
-        } else {
+        if (!Array.isArray(nodes) || nodes.length === 0) {
             this.highlighter.clearPrimary();
+            return;
         }
+
+        const spans = [];
+        const seen = new Set();
+        for (const node of nodes) {
+            if (!node || !Array.isArray(node.sourceSpans)) {
+                continue;
+            }
+            for (const span of node.sourceSpans) {
+                if (!span || !span.filePath || !span.start || !span.end) {
+                    continue;
+                }
+                const key = [
+                    span.filePath,
+                    span.start.line,
+                    span.start.column,
+                    span.end.line,
+                    span.end.column,
+                ].join(":");
+                if (seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+                spans.push(span);
+            }
+        }
+
+        if (spans.length > 0) {
+            this.highlighter.setSpans(spans);
+            return;
+        }
+
+        this.highlighter.clearPrimary();
     }
 
     async updateFromEditor(editor) {
