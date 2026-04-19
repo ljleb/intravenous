@@ -306,6 +306,38 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
     server.request_shutdown();
 }
 
+TEST(SocketRpcServer, ShutsDownWhenClientDisconnects)
+{
+    auto const workspace = make_project_workspace();
+
+    iv::SocketRpcServer server(workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    server.start();
+    ASSERT_TRUE(server.wait_until_ready(5s));
+
+    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    ASSERT_GE(fd, 0) << std::strerror(errno);
+
+    sockaddr_un address {};
+    address.sun_family = AF_UNIX;
+    auto const socket_path = server.socket_path().string();
+    ASSERT_LT(socket_path.size(), sizeof(address.sun_path));
+    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
+    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0) << std::strerror(errno);
+
+    std::string const initialize_request =
+        R"({"jsonrpc":"2.0","id":1,"method":"server.initialize","params":{"workspaceRoot":")" +
+        std::filesystem::weakly_canonical(workspace).generic_string() +
+        R"("}})" "\n";
+    ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
+
+    std::string response_buffer;
+    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
+    ASSERT_FALSE(initialize_response.empty());
+
+    ::close(fd);
+    server.wait();
+}
+
 TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
 {
     auto const workspace = make_project_workspace();

@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <thread>
@@ -374,6 +375,7 @@ namespace iv {
         std::filesystem::path workspace_root;
         std::filesystem::path discovery_start;
         std::filesystem::path socket_path_value;
+        std::filesystem::path lock_path_value;
         AudioDeviceFactory audio_device_factory;
         RuntimeProjectService service;
 
@@ -389,6 +391,7 @@ namespace iv {
         int listen_fd = -1;
         int client_fd = -1;
         bool client_initialized = false;
+        int lock_fd = -1;
         std::optional<std::jthread> accept_thread;
         std::optional<std::jthread> initialize_thread;
         RuntimeProjectInitializeResult initialized_result;
@@ -403,6 +406,7 @@ namespace iv {
             workspace_root(normalize_path(workspace_root_)),
             discovery_start(std::move(discovery_start_)),
             socket_path_value(socket_path_.empty() ? default_socket_path(workspace_root) : std::move(socket_path_)),
+            lock_path_value(socket_path_value.string() + ".lock"),
             audio_device_factory(std::move(audio_device_factory_)),
             service(
                 workspace_root,
@@ -418,6 +422,31 @@ namespace iv {
         ~Impl()
         {
             request_shutdown();
+        }
+
+        void acquire_workspace_lock()
+        {
+            std::filesystem::create_directories(lock_path_value.parent_path());
+            lock_fd = ::open(lock_path_value.c_str(), O_CREAT | O_RDWR, 0600);
+            if (lock_fd < 0) {
+                throw std::runtime_error(std::string("failed to open server lock file: ") + std::strerror(errno));
+            }
+            if (::flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+                ::close(lock_fd);
+                lock_fd = -1;
+                throw std::runtime_error("another Intravenous server is already running for this workspace");
+            }
+        }
+
+        void release_workspace_lock()
+        {
+            if (lock_fd >= 0) {
+                ::flock(lock_fd, LOCK_UN);
+                ::close(lock_fd);
+                lock_fd = -1;
+            }
+            std::error_code ec;
+            std::filesystem::remove(lock_path_value, ec);
         }
 
         bool send_message(int fd, std::string const& message)
@@ -587,6 +616,8 @@ namespace iv {
                     }
                 }
                 ::close(accepted_fd);
+                request_shutdown();
+                break;
             }
 
             {
@@ -609,6 +640,7 @@ namespace iv {
 
         void start()
         {
+            acquire_workspace_lock();
             std::filesystem::create_directories(socket_path_value.parent_path());
             std::error_code ec;
             std::filesystem::remove(socket_path_value, ec);
@@ -685,6 +717,7 @@ namespace iv {
             if (initialize_thread.has_value()) {
                 initialize_thread->request_stop();
             }
+            release_workspace_lock();
         }
     };
 
