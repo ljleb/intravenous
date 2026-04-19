@@ -2,6 +2,8 @@
 
 #include "compat.h"
 
+#include <nlohmann/json.hpp>
+
 #include <atomic>
 #include <array>
 #include <cerrno>
@@ -10,7 +12,6 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
-#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -23,6 +24,8 @@
 
 namespace iv {
     namespace {
+        using Json = nlohmann::json;
+
         std::string escape_json(std::string_view value)
         {
             std::string escaped;
@@ -46,35 +49,13 @@ namespace iv {
             return escaped;
         }
 
-        std::string unescape_json(std::string_view value)
+        Json parse_request_json(std::string const& line)
         {
-            std::string unescaped;
-            unescaped.reserve(value.size());
-            bool escape = false;
-            for (char c : value) {
-                if (escape) {
-                    switch (c) {
-                    case 'n':
-                        unescaped.push_back('\n');
-                        break;
-                    case '\\':
-                    case '"':
-                        unescaped.push_back(c);
-                        break;
-                    default:
-                        unescaped.push_back(c);
-                        break;
-                    }
-                    escape = false;
-                    continue;
-                }
-                if (c == '\\') {
-                    escape = true;
-                    continue;
-                }
-                unescaped.push_back(c);
+            try {
+                return Json::parse(line);
+            } catch (Json::parse_error const& e) {
+                throw std::runtime_error(std::string("invalid JSON-RPC request: ") + e.what());
             }
-            return unescaped;
         }
 
         std::filesystem::path normalize_path(std::filesystem::path const& path)
@@ -114,80 +95,125 @@ namespace iv {
             return "{\"jsonrpc\":\"2.0\",\"method\":\"" + escape_json(method) + "\",\"params\":" + std::move(params_json) + "}\n";
         }
 
-        int parse_request_id(std::string const& line)
+        Json const& parse_request_params(Json const& request)
         {
-            static std::regex const pattern(R"("id"\s*:\s*([0-9]+))");
-            std::smatch match;
-            if (!std::regex_search(line, match, pattern)) {
+            auto const params_it = request.find("params");
+            if (params_it == request.end() || !params_it->is_object()) {
+                throw std::runtime_error("JSON-RPC request is missing params object");
+            }
+            return *params_it;
+        }
+
+        int parse_request_id(Json const& request)
+        {
+            auto const id_it = request.find("id");
+            if (id_it == request.end() || !id_it->is_number_integer()) {
                 throw std::runtime_error("JSON-RPC request is missing numeric id");
             }
-            return std::stoi(match[1].str());
+            return id_it->get<int>();
         }
 
-        std::string parse_request_method(std::string const& line)
+        std::string parse_request_method(Json const& request)
         {
-            static std::regex const pattern("\"method\"\\s*:\\s*\"([^\"]+)\"");
-            std::smatch match;
-            if (!std::regex_search(line, match, pattern)) {
+            auto const method_it = request.find("method");
+            if (method_it == request.end() || !method_it->is_string()) {
                 throw std::runtime_error("JSON-RPC request is missing method");
             }
-            return match[1].str();
+            return method_it->get<std::string>();
         }
 
-        std::string parse_string_param(std::string const& line, std::string const& key)
+        std::string parse_string_param(Json const& params, std::string const& key)
         {
-            std::regex const pattern("\"" + key + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
-            std::smatch match;
-            if (!std::regex_search(line, match, pattern)) {
+            auto const value_it = params.find(key);
+            if (value_it == params.end() || !value_it->is_string()) {
                 throw std::runtime_error("JSON-RPC request is missing string param '" + key + "'");
             }
-            return unescape_json(match[1].str());
+            return value_it->get<std::string>();
         }
 
-        std::vector<std::string> parse_string_array_param(std::string const& line, std::string const& key)
+        std::vector<std::string> parse_string_array_param(Json const& params, std::string const& key)
         {
-            std::regex const pattern("\"" + key + "\"\\s*:\\s*\\[(.*?)\\]");
-            std::smatch match;
-            if (!std::regex_search(line, match, pattern)) {
+            auto const value_it = params.find(key);
+            if (value_it == params.end() || !value_it->is_array()) {
                 throw std::runtime_error("JSON-RPC request is missing string array param '" + key + "'");
             }
 
             std::vector<std::string> values;
-            std::regex const item_pattern("\"((?:\\\\.|[^\"])*)\"");
-            for (std::sregex_iterator it(match[1].first, match[1].second, item_pattern), end; it != end; ++it) {
-                values.push_back(unescape_json((*it)[1].str()));
+            values.reserve(value_it->size());
+            for (auto const& item : *value_it) {
+                if (!item.is_string()) {
+                    throw std::runtime_error("JSON-RPC request param '" + key + "' must be an array of strings");
+                }
+                values.push_back(item.get<std::string>());
             }
             return values;
         }
 
-        uint64_t parse_uint64_param(std::string const& line, std::string const& key)
+        uint64_t parse_uint64_param(Json const& params, std::string const& key)
         {
-            std::regex const pattern("\"" + key + R"("\s*:\s*([0-9]+))");
-            std::smatch match;
-            if (!std::regex_search(line, match, pattern)) {
+            auto const value_it = params.find(key);
+            if (value_it == params.end() || !value_it->is_number_integer()) {
                 throw std::runtime_error("JSON-RPC request is missing integer param '" + key + "'");
             }
-            return static_cast<uint64_t>(std::stoull(match[1].str()));
+            auto const value = value_it->get<int64_t>();
+            if (value < 0) {
+                throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
+            }
+            return static_cast<uint64_t>(value);
         }
 
-        std::vector<SourceRange> parse_ranges(std::string const& line, bool require_non_empty = true)
+        uint32_t parse_uint32_value(Json const& value, std::string const& context)
         {
-            static std::regex const range_pattern(
-                R"(\{"start"\s*:\s*\{"line"\s*:\s*([0-9]+)\s*,\s*"column"\s*:\s*([0-9]+)\}\s*,\s*"end"\s*:\s*\{"line"\s*:\s*([0-9]+)\s*,\s*"column"\s*:\s*([0-9]+)\}\})"
-            );
+            if (!value.is_number_integer()) {
+                throw std::runtime_error(std::move(context));
+            }
+            auto const parsed = value.get<int64_t>();
+            if (parsed < 0) {
+                throw std::runtime_error(std::move(context));
+            }
+            return static_cast<uint32_t>(parsed);
+        }
 
+        std::vector<SourceRange> parse_ranges(Json const& params, bool require_non_empty = true)
+        {
             std::vector<SourceRange> ranges;
-            for (std::sregex_iterator it(line.begin(), line.end(), range_pattern), end; it != end; ++it) {
-                ranges.push_back(SourceRange {
-                    .start = {
-                        .line = static_cast<uint32_t>(std::stoul((*it)[1].str())),
-                        .column = static_cast<uint32_t>(std::stoul((*it)[2].str())),
-                    },
-                    .end = {
-                        .line = static_cast<uint32_t>(std::stoul((*it)[3].str())),
-                        .column = static_cast<uint32_t>(std::stoul((*it)[4].str())),
-                    },
-                });
+            auto const ranges_it = params.find("ranges");
+            if (ranges_it != params.end()) {
+                if (!ranges_it->is_array()) {
+                    throw std::runtime_error("graph.queryBySpans ranges must be an array");
+                }
+                ranges.reserve(ranges_it->size());
+                for (auto const& range_json : *ranges_it) {
+                    if (!range_json.is_object()) {
+                        throw std::runtime_error("graph.queryBySpans range entries must be objects");
+                    }
+                    auto const start_it = range_json.find("start");
+                    auto const end_it = range_json.find("end");
+                    if (start_it == range_json.end() || end_it == range_json.end() || !start_it->is_object() ||
+                        !end_it->is_object())
+                    {
+                        throw std::runtime_error("graph.queryBySpans ranges must include start and end positions");
+                    }
+                    auto const start_line_it = start_it->find("line");
+                    auto const start_column_it = start_it->find("column");
+                    auto const end_line_it = end_it->find("line");
+                    auto const end_column_it = end_it->find("column");
+                    if (start_line_it == start_it->end() || start_column_it == start_it->end() ||
+                        end_line_it == end_it->end() || end_column_it == end_it->end())
+                    {
+                        throw std::runtime_error("graph.queryBySpans positions must use unsigned line/column values");
+                    }
+
+                    auto const start_line = parse_uint32_value(*start_line_it, "graph.queryBySpans positions must use unsigned line/column values");
+                    auto const start_column = parse_uint32_value(*start_column_it, "graph.queryBySpans positions must use unsigned line/column values");
+                    auto const end_line = parse_uint32_value(*end_line_it, "graph.queryBySpans positions must use unsigned line/column values");
+                    auto const end_column = parse_uint32_value(*end_column_it, "graph.queryBySpans positions must use unsigned line/column values");
+
+                    ranges.push_back(SourceRange {
+                        .start = {.line = start_line, .column = start_column},
+                        .end = {.line = end_line, .column = end_column},
+                    });
+                }
             }
             if (require_non_empty && ranges.empty()) {
                 throw std::runtime_error("graph.queryBySpans requires at least one range");
@@ -195,15 +221,17 @@ namespace iv {
             return ranges;
         }
 
-        SourceRangeMatchMode parse_match_mode(std::string const& line)
+        SourceRangeMatchMode parse_match_mode(Json const& params)
         {
-            std::regex const pattern("\"match\"\\s*:\\s*\"([^\"]+)\"");
-            std::smatch match;
-            if (!std::regex_search(line, match, pattern)) {
+            auto const mode_it = params.find("match");
+            if (mode_it == params.end()) {
                 return SourceRangeMatchMode::intersection;
             }
+            if (!mode_it->is_string()) {
+                throw std::runtime_error("graph.queryBySpans match must be 'union' or 'intersection'");
+            }
 
-            auto const mode = match[1].str();
+            auto const mode = mode_it->get<std::string>();
             if (mode == "union") {
                 return SourceRangeMatchMode::union_;
             }
@@ -513,12 +541,14 @@ namespace iv {
                     std::string response;
                     bool mark_client_initialized = false;
                     try {
-                        request_id = parse_request_id(line);
-                        auto const method = parse_request_method(line);
+                        auto const request = parse_request_json(line);
+                        request_id = parse_request_id(request);
+                        auto const method = parse_request_method(request);
+                        auto const& params = parse_request_params(request);
 
                         if (method == "server.initialize") {
                             wait_until_initialized();
-                            auto const requested_workspace = normalize_path(parse_string_param(line, "workspaceRoot"));
+                            auto const requested_workspace = normalize_path(parse_string_param(params, "workspaceRoot"));
                             if (requested_workspace != workspace_root) {
                                 throw std::runtime_error("workspaceRoot does not match server workspace");
                             }
@@ -526,29 +556,29 @@ namespace iv {
                             mark_client_initialized = true;
                         } else if (method == "graph.queryBySpans") {
                             wait_until_initialized();
-                            auto const file_path = parse_string_param(line, "filePath");
-                            auto const ranges = parse_ranges(line);
-                            auto const match_mode = parse_match_mode(line);
+                            auto const file_path = parse_string_param(params, "filePath");
+                            auto const ranges = parse_ranges(params);
+                            auto const match_mode = parse_match_mode(params);
                             response = jsonrpc_result(
                                 request_id,
                                 query_result_json(service.query_by_spans(file_path, ranges, match_mode))
                             );
                         } else if (method == "graph.queryActiveRegions") {
                             wait_until_initialized();
-                            auto const file_path = parse_string_param(line, "filePath");
+                            auto const file_path = parse_string_param(params, "filePath");
                             response = jsonrpc_result(
                                 request_id,
                                 region_query_result_json(service.query_active_regions(file_path))
                             );
                         } else if (method == "graph.getLogicalNode") {
                             wait_until_initialized();
-                            auto const execution_epoch = parse_uint64_param(line, "executionEpoch");
-                            auto const node_id = parse_string_param(line, "nodeId");
+                            auto const execution_epoch = parse_uint64_param(params, "executionEpoch");
+                            auto const node_id = parse_string_param(params, "nodeId");
                             response = jsonrpc_result(request_id, logical_node_json(service.get_logical_node(execution_epoch, node_id)));
                         } else if (method == "graph.getLogicalNodes") {
                             wait_until_initialized();
-                            auto const execution_epoch = parse_uint64_param(line, "executionEpoch");
-                            auto const node_ids = parse_string_array_param(line, "nodeIds");
+                            auto const execution_epoch = parse_uint64_param(params, "executionEpoch");
+                            auto const node_ids = parse_string_array_param(params, "nodeIds");
                             response = jsonrpc_result(request_id, logical_nodes_json(service.get_logical_nodes(execution_epoch, node_ids)));
                         } else if (method == "server.shutdown") {
                             response = jsonrpc_result(request_id, "{\"ok\":true}");

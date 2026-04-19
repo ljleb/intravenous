@@ -11,12 +11,15 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cxxabi.h>
 #include <functional>
 #include <memory>
 #include <initializer_list>
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <sstream>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -258,6 +261,398 @@ namespace iv {
         template<typename Node>
         inline constexpr bool has_fixed_event_output_count_v =
             (fixed_event_output_count_v<Node> != std::dynamic_extent);
+
+        struct LogicalConcretePortInfo {
+            std::string name;
+            std::string type;
+            bool connected = false;
+            size_t history = 0;
+            size_t latency = 0;
+            Sample default_value = 0.0f;
+        };
+
+        struct LogicalConcreteNode {
+            std::string id;
+            std::string kind;
+            std::vector<SourceInfo> source_infos;
+            std::vector<LogicalConcretePortInfo> sample_inputs;
+            std::vector<LogicalConcretePortInfo> sample_outputs;
+            std::vector<LogicalConcretePortInfo> event_inputs;
+            std::vector<LogicalConcretePortInfo> event_outputs;
+        };
+
+        inline std::string demangle_type_name(char const* name)
+        {
+            if (name == nullptr || *name == '\0') {
+                return {};
+            }
+#if defined(__GNUG__)
+            int status = 0;
+            std::unique_ptr<char, void(*)(void*)> demangled(
+                abi::__cxa_demangle(name, nullptr, nullptr, &status),
+                std::free
+            );
+            if (status == 0 && demangled) {
+                return demangled.get();
+            }
+#endif
+            return name;
+        }
+
+        inline std::string event_type_name(EventTypeId type)
+        {
+            switch (type) {
+            case EventTypeId::midi:
+                return "midi";
+            case EventTypeId::trigger:
+                return "trigger";
+            case EventTypeId::boundary:
+                return "boundary";
+            case EventTypeId::empty:
+                return "empty";
+            case EventTypeId::count:
+                break;
+            }
+            return "unknown";
+        }
+
+        inline LogicalPortConnectivity aggregate_connectivity(std::span<LogicalConcretePortInfo const> ports)
+        {
+            bool any_connected = false;
+            bool any_disconnected = false;
+            for (auto const& port : ports) {
+                any_connected = any_connected || port.connected;
+                any_disconnected = any_disconnected || !port.connected;
+            }
+            if (any_connected && any_disconnected) {
+                return LogicalPortConnectivity::mixed;
+            }
+            return any_connected
+                ? LogicalPortConnectivity::connected
+                : LogicalPortConnectivity::disconnected;
+        }
+
+        inline bool same_port_schema(
+            std::span<LogicalConcretePortInfo const> a,
+            std::span<LogicalConcretePortInfo const> b
+        )
+        {
+            if (a.size() != b.size()) {
+                return false;
+            }
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (a[i].name != b[i].name
+                    || a[i].type != b[i].type
+                    || a[i].history != b[i].history
+                    || a[i].latency != b[i].latency
+                    || a[i].default_value != b[i].default_value) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        inline bool same_logical_schema(LogicalConcreteNode const& a, LogicalConcreteNode const& b)
+        {
+            return a.kind == b.kind
+                && same_port_schema(a.sample_inputs, b.sample_inputs)
+                && same_port_schema(a.sample_outputs, b.sample_outputs)
+                && same_port_schema(a.event_inputs, b.event_inputs)
+                && same_port_schema(a.event_outputs, b.event_outputs);
+        }
+
+        inline void sort_and_deduplicate_spans(std::vector<SourceSpan>& spans)
+        {
+            std::sort(spans.begin(), spans.end(), [](auto const& a, auto const& b) {
+                return std::tie(a.file_path, a.begin, a.end) < std::tie(b.file_path, b.begin, b.end);
+            });
+            spans.erase(std::unique(spans.begin(), spans.end()), spans.end());
+        }
+
+        inline std::vector<std::string> declaration_identities_for(LogicalConcreteNode const& node)
+        {
+            std::vector<std::string> declaration_identities;
+            declaration_identities.reserve(node.source_infos.size());
+            for (auto const& info : node.source_infos) {
+                if (!info.declaration_identity.empty()) {
+                    declaration_identities.push_back(info.declaration_identity);
+                }
+            }
+            std::sort(declaration_identities.begin(), declaration_identities.end());
+            declaration_identities.erase(
+                std::unique(declaration_identities.begin(), declaration_identities.end()),
+                declaration_identities.end()
+            );
+            return declaration_identities;
+        }
+
+        inline std::vector<SourceSpan> source_spans_for(
+            std::span<LogicalConcreteNode const* const> nodes,
+            std::string_view declaration_identity
+        )
+        {
+            std::vector<SourceSpan> spans;
+            for (auto const* node : nodes) {
+                for (auto const& info : node->source_infos) {
+                    if (info.declaration_identity != declaration_identity) {
+                        continue;
+                    }
+                    if (info.span.file_path.empty() || info.span.begin > info.span.end) {
+                        continue;
+                    }
+                    spans.push_back(info.span);
+                }
+            }
+            sort_and_deduplicate_spans(spans);
+            return spans;
+        }
+
+        inline std::vector<LogicalPortInfo> aggregate_ports(
+            std::span<LogicalConcreteNode const* const> nodes,
+            auto LogicalConcreteNode::* member
+        )
+        {
+            if (nodes.empty()) {
+                return {};
+            }
+
+            auto const& first_ports = nodes.front()->*member;
+            std::vector<LogicalPortInfo> logical_ports;
+            logical_ports.reserve(first_ports.size());
+            for (size_t i = 0; i < first_ports.size(); ++i) {
+                std::vector<LogicalConcretePortInfo> concrete_ports;
+                concrete_ports.reserve(nodes.size());
+                for (auto const* node : nodes) {
+                    concrete_ports.push_back((node->*member)[i]);
+                }
+
+                logical_ports.push_back(LogicalPortInfo {
+                    .name = first_ports[i].name,
+                    .type = first_ports[i].type,
+                    .connectivity = aggregate_connectivity(concrete_ports),
+                });
+            }
+            return logical_ports;
+        }
+
+        inline void append_port_schema_signature(
+            std::ostringstream& key,
+            std::span<LogicalConcretePortInfo const> ports
+        )
+        {
+            key << "[";
+            for (size_t i = 0; i < ports.size(); ++i) {
+                if (i != 0) {
+                    key << ";";
+                }
+                key
+                    << ports[i].name << ","
+                    << ports[i].type << ","
+                    << ports[i].history << ","
+                    << ports[i].latency << ","
+                    << ports[i].default_value;
+            }
+            key << "]";
+        }
+
+        inline std::string stable_identity_key_for(
+            std::string_view declaration_identity,
+            LogicalConcreteNode const& representative
+        )
+        {
+            std::ostringstream key;
+            key << "decl=" << declaration_identity;
+            key << "|kind=" << representative.kind;
+            key << "|sample_inputs=";
+            append_port_schema_signature(key, representative.sample_inputs);
+            key << "|sample_outputs=";
+            append_port_schema_signature(key, representative.sample_outputs);
+            key << "|event_inputs=";
+            append_port_schema_signature(key, representative.event_inputs);
+            key << "|event_outputs=";
+            append_port_schema_signature(key, representative.event_outputs);
+            return key.str();
+        }
+
+        inline std::string logical_node_id_for(std::string_view stable_identity_key)
+        {
+            return "logical:" + std::string(stable_identity_key);
+        }
+
+        inline auto build_logical_metadata(PreparedGraph const& g)
+        {
+            auto sample_input_connected = [&](size_t node, size_t port) {
+                return std::ranges::any_of(g.edges, [&](GraphEdge const& edge) {
+                    return edge.target.node == node && edge.target.port == port;
+                });
+            };
+            auto sample_output_connected = [&](size_t node, size_t port) {
+                return std::ranges::any_of(g.edges, [&](GraphEdge const& edge) {
+                    return edge.source.node == node && edge.source.port == port;
+                });
+            };
+            auto event_input_connected = [&](size_t node, size_t port) {
+                return std::ranges::any_of(g.event_edges, [&](GraphEventEdge const& edge) {
+                    return edge.target.node == node && edge.target.port == port;
+                });
+            };
+            auto event_output_connected = [&](size_t node, size_t port) {
+                return std::ranges::any_of(g.event_edges, [&](GraphEventEdge const& edge) {
+                    return edge.source.node == node && edge.source.port == port;
+                });
+            };
+
+            std::vector<LogicalConcreteNode> concrete_nodes;
+            concrete_nodes.reserve(g.nodes.size());
+            for (size_t node_i = 0; node_i < g.nodes.size(); ++node_i) {
+                LogicalConcreteNode concrete;
+                concrete.id = g.node_ids[node_i];
+                concrete.kind = demangle_type_name(g.nodes[node_i].type_name());
+                if (node_i < g.node_source_infos.size()) {
+                    concrete.source_infos = g.node_source_infos[node_i];
+                }
+
+                auto const inputs = g.nodes[node_i].inputs();
+                concrete.sample_inputs.reserve(inputs.size());
+                for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
+                    concrete.sample_inputs.push_back(LogicalConcretePortInfo {
+                        .name = inputs[input_i].name,
+                        .type = "sample",
+                        .connected = sample_input_connected(node_i, input_i),
+                        .history = inputs[input_i].history,
+                        .default_value = inputs[input_i].default_value,
+                    });
+                }
+
+                auto const outputs = g.nodes[node_i].outputs();
+                concrete.sample_outputs.reserve(outputs.size());
+                for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
+                    concrete.sample_outputs.push_back(LogicalConcretePortInfo {
+                        .name = outputs[output_i].name,
+                        .type = "sample",
+                        .connected = sample_output_connected(node_i, output_i),
+                        .history = outputs[output_i].history,
+                        .latency = outputs[output_i].latency,
+                    });
+                }
+
+                auto const event_inputs = g.nodes[node_i].event_inputs();
+                concrete.event_inputs.reserve(event_inputs.size());
+                for (size_t input_i = 0; input_i < event_inputs.size(); ++input_i) {
+                    concrete.event_inputs.push_back(LogicalConcretePortInfo {
+                        .name = event_inputs[input_i].name,
+                        .type = event_type_name(event_inputs[input_i].type),
+                        .connected = event_input_connected(node_i, input_i),
+                    });
+                }
+
+                auto const event_outputs = g.nodes[node_i].event_outputs();
+                concrete.event_outputs.reserve(event_outputs.size());
+                for (size_t output_i = 0; output_i < event_outputs.size(); ++output_i) {
+                    concrete.event_outputs.push_back(LogicalConcretePortInfo {
+                        .name = event_outputs[output_i].name,
+                        .type = event_type_name(event_outputs[output_i].type),
+                        .connected = event_output_connected(node_i, output_i),
+                    });
+                }
+
+                concrete_nodes.push_back(std::move(concrete));
+            }
+
+            struct DeclarationGroup {
+                std::string declaration_identity;
+                std::vector<size_t> member_indices;
+            };
+
+            std::vector<DeclarationGroup> groups;
+            for (size_t i = 0; i < concrete_nodes.size(); ++i) {
+                for (auto const& declaration_identity : declaration_identities_for(concrete_nodes[i])) {
+                    auto group_it = std::find_if(groups.begin(), groups.end(), [&](auto const& group) {
+                        return group.declaration_identity == declaration_identity
+                            && !group.member_indices.empty()
+                            && same_logical_schema(concrete_nodes[group.member_indices.front()], concrete_nodes[i]);
+                    });
+                    if (group_it == groups.end()) {
+                        groups.push_back(DeclarationGroup {
+                            .declaration_identity = declaration_identity,
+                            .member_indices = { i },
+                        });
+                    } else if (!std::ranges::contains(group_it->member_indices, i)) {
+                        group_it->member_indices.push_back(i);
+                    }
+                }
+            }
+
+            std::vector<IntrospectionLogicalNode> logical_nodes;
+            logical_nodes.reserve(groups.size());
+            for (auto const& group : groups) {
+                std::vector<LogicalConcreteNode const*> members;
+                members.reserve(group.member_indices.size());
+                std::vector<std::string> backing_node_ids;
+                backing_node_ids.reserve(group.member_indices.size());
+                for (auto member_index : group.member_indices) {
+                    members.push_back(&concrete_nodes[member_index]);
+                    backing_node_ids.push_back(concrete_nodes[member_index].id);
+                }
+
+                std::sort(backing_node_ids.begin(), backing_node_ids.end());
+                auto source_spans = source_spans_for(members, group.declaration_identity);
+                auto stable_identity_key = stable_identity_key_for(group.declaration_identity, *members.front());
+
+                logical_nodes.push_back(IntrospectionLogicalNode {
+                    .id = logical_node_id_for(stable_identity_key),
+                    .kind = members.front()->kind,
+                    .source_declaration_identity = group.declaration_identity,
+                    .source_spans = std::move(source_spans),
+                    .sample_inputs = aggregate_ports(members, &LogicalConcreteNode::sample_inputs),
+                    .sample_outputs = aggregate_ports(members, &LogicalConcreteNode::sample_outputs),
+                    .event_inputs = aggregate_ports(members, &LogicalConcreteNode::event_inputs),
+                    .event_outputs = aggregate_ports(members, &LogicalConcreteNode::event_outputs),
+                    .backing_node_ids = std::move(backing_node_ids),
+                });
+            }
+
+            std::sort(logical_nodes.begin(), logical_nodes.end(), [](auto const& a, auto const& b) {
+                auto const a_file = a.source_spans.empty() ? std::string{} : a.source_spans.front().file_path;
+                auto const b_file = b.source_spans.empty() ? std::string{} : b.source_spans.front().file_path;
+                if (a_file != b_file) {
+                    return a_file < b_file;
+                }
+                auto const a_begin = a.source_spans.empty() ? 0u : a.source_spans.front().begin;
+                auto const b_begin = b.source_spans.empty() ? 0u : b.source_spans.front().begin;
+                if (a_begin != b_begin) {
+                    return a_begin < b_begin;
+                }
+                auto const a_end = a.source_spans.empty() ? 0u : a.source_spans.front().end;
+                auto const b_end = b.source_spans.empty() ? 0u : b.source_spans.front().end;
+                if (a_end != b_end) {
+                    return a_end < b_end;
+                }
+                if (a.kind != b.kind) {
+                    return a.kind < b.kind;
+                }
+                if (a.source_declaration_identity != b.source_declaration_identity) {
+                    return a.source_declaration_identity < b.source_declaration_identity;
+                }
+                return a.backing_node_ids < b.backing_node_ids;
+            });
+
+            std::unordered_map<std::string, std::vector<std::string>> logical_node_ids_by_backing_node_id;
+            for (auto const& logical_node : logical_nodes) {
+                for (auto const& backing_node_id : logical_node.backing_node_ids) {
+                    logical_node_ids_by_backing_node_id[backing_node_id].push_back(logical_node.id);
+                }
+            }
+            for (auto& [_, logical_ids] : logical_node_ids_by_backing_node_id) {
+                std::sort(logical_ids.begin(), logical_ids.end());
+                logical_ids.erase(std::unique(logical_ids.begin(), logical_ids.end()), logical_ids.end());
+            }
+
+            return std::make_pair(
+                std::move(logical_nodes),
+                std::move(logical_node_ids_by_backing_node_id)
+            );
+        }
 
         template<typename Outputs>
         struct fixed_output_count : std::integral_constant<size_t, std::dynamic_extent> {};
@@ -1673,10 +2068,13 @@ namespace iv {
                 return detached_info;
             }();
             auto execution_plan = details::build_execution_plan(g.nodes, g.edges, g.event_edges, detached);
+            auto [logical_nodes, logical_node_ids_by_backing_node_id] = details::build_logical_metadata(g);
 
             GraphIntrospectionMetadata introspection {
                 .lowered_subgraphs = std::move(lowered_subgraphs),
                 .node_source_infos = std::move(g.node_source_infos),
+                .logical_nodes = std::move(logical_nodes),
+                .logical_node_ids_by_backing_node_id = std::move(logical_node_ids_by_backing_node_id),
             };
             auto dormancy_groups = details::compile_dormancy_groups(
                 g,

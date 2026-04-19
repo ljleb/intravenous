@@ -1,6 +1,6 @@
 #pragma once
 
-#include "graph/types.h"
+#include "graph/build_types.h"
 #include "devices/audio_device.h"
 
 #include <chrono>
@@ -38,20 +38,6 @@ namespace iv {
         SourceRange range {};
 
         bool operator==(LiveSourceSpan const&) const = default;
-    };
-
-    enum class LogicalPortConnectivity {
-        disconnected,
-        connected,
-        mixed,
-    };
-
-    struct LogicalPortInfo {
-        std::string name {};
-        std::string type {};
-        LogicalPortConnectivity connectivity = LogicalPortConnectivity::disconnected;
-
-        bool operator==(LogicalPortInfo const&) const = default;
     };
 
     struct LogicalNodeInfo {

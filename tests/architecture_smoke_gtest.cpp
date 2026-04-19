@@ -884,6 +884,56 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderStillLowersThroughNode)
     });
 }
 
+TEST(ArchitectureSmoke, BuilderMetadataCarriesLogicalNodesAndBridgeMappings)
+{
+    iv::Sample sample_period = 1.0f / 48000.0f;
+
+    iv::GraphBuilder g;
+    auto const source_a = g.node<iv::ValueSource>(&sample_period);
+    (void)_annotate_node_source_info(
+        source_a.node_ref(),
+        "decl:shared"
+    );
+    (void)_annotate_node_source_info(source_a.node_ref(), "decl:secondary");
+    auto const source_b = g.node<iv::ValueSource>(&sample_period);
+    (void)_annotate_node_source_info(
+        source_b.node_ref(),
+        "decl:shared"
+    );
+    g.outputs();
+
+    auto built = g.build_with_metadata();
+
+    ASSERT_EQ(built.introspection.logical_nodes.size(), 2u);
+    auto const shared_it = std::find_if(
+        built.introspection.logical_nodes.begin(),
+        built.introspection.logical_nodes.end(),
+        [](auto const& node) { return node.source_declaration_identity == "decl:shared"; }
+    );
+    ASSERT_NE(shared_it, built.introspection.logical_nodes.end());
+    EXPECT_EQ(shared_it->backing_node_ids.size(), 2u);
+
+    auto const secondary_it = std::find_if(
+        built.introspection.logical_nodes.begin(),
+        built.introspection.logical_nodes.end(),
+        [](auto const& node) { return node.source_declaration_identity == "decl:secondary"; }
+    );
+    ASSERT_NE(secondary_it, built.introspection.logical_nodes.end());
+    EXPECT_EQ(secondary_it->backing_node_ids.size(), 1u);
+
+    auto const shared_member_it = std::find(
+        shared_it->backing_node_ids.begin(),
+        shared_it->backing_node_ids.end(),
+        secondary_it->backing_node_ids.front()
+    );
+    ASSERT_NE(shared_member_it, shared_it->backing_node_ids.end());
+    auto const reverse_it = built.introspection.logical_node_ids_by_backing_node_id.find(*shared_member_it);
+    ASSERT_NE(reverse_it, built.introspection.logical_node_ids_by_backing_node_id.end());
+    EXPECT_EQ(reverse_it->second.size(), 2u);
+    EXPECT_TRUE(std::ranges::contains(reverse_it->second, shared_it->id));
+    EXPECT_TRUE(std::ranges::contains(reverse_it->second, secondary_it->id));
+}
+
 TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
 {
     iv::Sample value = 0.0f;

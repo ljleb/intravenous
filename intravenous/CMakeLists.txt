@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(intravenous LANGUAGES C CXX)
 
+include(FetchContent)
+
 # JUCE uses these as compile-time module config macros.
 # Keep them centralized at directory scope so JUCE-related targets pick them up.
 add_compile_definitions(
@@ -40,6 +42,13 @@ function(iv_link_stacktrace_support target)
         target_link_libraries(${target} PUBLIC stdc++exp)
     endif()
 endfunction()
+
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(nlohmann_json)
 
 function(iv_configure_juce)
     set(IV_JUCE_AUDIO_PROCESSORS_TARGET "")
@@ -168,6 +177,10 @@ target_include_directories(intravenous_tooling_runtime SYSTEM PUBLIC
 
 target_link_libraries(intravenous_tooling_runtime PUBLIC
     intravenous_module_runtime
+)
+
+target_link_libraries(intravenous_tooling_runtime PRIVATE
+    nlohmann_json::nlohmann_json
 )
 
 add_executable(intravenous
