@@ -44,6 +44,7 @@ namespace iv {
     struct LogicalNodeInfo {
         std::string id {};
         std::string kind {};
+        std::string source_identity {};
         std::vector<LiveSourceSpan> source_spans {};
         std::vector<LogicalPortInfo> sample_inputs {};
         std::vector<LogicalPortInfo> sample_outputs {};

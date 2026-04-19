@@ -117,7 +117,9 @@ namespace iv {
 
         size_t parent_scope = GRAPH_ID;
         std::string kind;
+        std::string backing_node_id;
         std::vector<std::string> member_node_ids;
+        std::vector<SourceInfo> source_infos;
         std::vector<SourceSpan> source_spans;
         std::vector<InputConfig> sample_inputs;
         std::vector<OutputConfig> sample_outputs;
@@ -133,6 +135,7 @@ namespace iv {
     struct LoweredSubgraph {
         size_t parent_scope = GRAPH_ID;
         std::string kind;
+        std::string backing_node_id;
         std::vector<size_t> member_nodes;
         std::vector<SourceSpan> source_spans;
         std::vector<InputConfig> sample_inputs;

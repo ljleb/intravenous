@@ -892,6 +892,60 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     }));
 }
 
+TEST(RuntimeProjectService, QueryBySpansReturnsPolyphonicOuterLogicalIdentityAtDeclarationSpan)
+{
+    auto const workspace = make_inline_module_workspace(
+        "runtime_project_polyphonic_outer_identity",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+#include "basic_nodes/shaping.h"
+
+void polyphonic_module(iv::ModuleContext const& context)
+{
+    using namespace iv;
+    auto& g = context.builder();
+    auto const& io = context.target_factory();
+    auto const dt = g.node<ValueSource>(&context.sample_period());
+    auto const sink = io.sink(g, 0);
+    auto const voice = iv::polyphonic<2>(g, [&](auto m) {
+        auto const saw = g.node<SawOscillator>();
+        saw(
+            "phase_offset"_P = 0.0,
+            "frequency"_P = 440.0,
+            "dt"_P = dt
+        );
+        return saw * ("amplitude"_P << m);
+    });
+    auto x = voice;
+    sink(x);
+    g.outputs();
+}
+
+IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
+)"
+    );
+
+    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
+    auto audio = make_audio_device_context();
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
+    service.initialize();
+
+    auto const result = service.query_by_spans(
+        module_cpp,
+        {
+            iv::SourceRange {
+                .start = { .line = 12, .column = 16 },
+                .end = { .line = 12, .column = 20 },
+            },
+        }
+    );
+
+    ASSERT_FALSE(result.nodes.empty());
+    EXPECT_EQ(result.nodes.front().kind, "Polyphonic");
+    EXPECT_FALSE(result.nodes.front().source_identity.empty());
+    EXPECT_TRUE(result.nodes.front().source_identity.contains("@voice")) << result.nodes.front().source_identity;
+}
+
 TEST(RuntimeProjectService, MissingMarkerFailsInitialization)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_missing_marker", "local_cmake");

@@ -391,7 +391,10 @@ namespace iv {
             return logical_ports;
         }
 
-        inline auto build_logical_metadata(PreparedGraph const& g)
+        inline auto build_logical_metadata(
+            PreparedGraph const& g,
+            std::span<LoweredSubgraphSpec const> lowered_scopes
+        )
         {
             auto sample_input_connected = [&](size_t node, size_t port) {
                 return std::ranges::any_of(g.edges, [&](GraphEdge const& edge) {
@@ -419,7 +422,9 @@ namespace iv {
             };
 
             std::vector<LogicalConcreteNode> concrete_nodes;
+            std::vector<std::vector<std::string>> concrete_node_logical_ids;
             concrete_nodes.reserve(g.nodes.size());
+            concrete_node_logical_ids.reserve(g.nodes.size() + lowered_scopes.size());
             for (size_t node_i = 0; node_i < g.nodes.size(); ++node_i) {
                 LogicalConcreteNode concrete;
                 concrete.id = g.node_ids[node_i];
@@ -473,6 +478,75 @@ namespace iv {
                 }
 
                 concrete_nodes.push_back(std::move(concrete));
+                concrete_node_logical_ids.push_back(
+                    node_i < g.node_logical_ids.size()
+                        ? g.node_logical_ids[node_i]
+                        : std::vector<std::string> {}
+                );
+            }
+
+            for (auto const& scope : lowered_scopes) {
+                LogicalConcreteNode concrete;
+                concrete.id = scope.backing_node_id;
+                concrete.kind = scope.kind;
+                concrete.source_infos = scope.source_infos;
+
+                concrete.sample_inputs.reserve(scope.sample_inputs.size());
+                for (size_t input_i = 0; input_i < scope.sample_inputs.size(); ++input_i) {
+                    concrete.sample_inputs.push_back(LogicalConcretePortInfo {
+                        .name = scope.sample_inputs[input_i].name,
+                        .type = "sample",
+                        .connected = input_i < scope.sample_input_targets.size() && !scope.sample_input_targets[input_i].empty(),
+                        .history = scope.sample_inputs[input_i].history,
+                        .default_value = scope.sample_inputs[input_i].default_value,
+                    });
+                }
+
+                concrete.sample_outputs.reserve(scope.sample_outputs.size());
+                for (size_t output_i = 0; output_i < scope.sample_outputs.size(); ++output_i) {
+                    concrete.sample_outputs.push_back(LogicalConcretePortInfo {
+                        .name = scope.sample_outputs[output_i].name,
+                        .type = "sample",
+                        .connected = output_i < scope.sample_output_sources.size() &&
+                            (scope.sample_output_sources[output_i].is_graph_port ||
+                             !scope.sample_output_sources[output_i].node_id.empty()),
+                        .history = scope.sample_outputs[output_i].history,
+                        .latency = scope.sample_outputs[output_i].latency,
+                    });
+                }
+
+                concrete.event_inputs.reserve(scope.event_inputs.size());
+                for (size_t input_i = 0; input_i < scope.event_inputs.size(); ++input_i) {
+                    concrete.event_inputs.push_back(LogicalConcretePortInfo {
+                        .name = scope.event_inputs[input_i].name,
+                        .type = event_type_name(scope.event_inputs[input_i].type),
+                        .connected = input_i < scope.event_input_targets.size() && !scope.event_input_targets[input_i].empty(),
+                    });
+                }
+
+                concrete.event_outputs.reserve(scope.event_outputs.size());
+                for (size_t output_i = 0; output_i < scope.event_outputs.size(); ++output_i) {
+                    concrete.event_outputs.push_back(LogicalConcretePortInfo {
+                        .name = scope.event_outputs[output_i].name,
+                        .type = event_type_name(scope.event_outputs[output_i].type),
+                        .connected = output_i < scope.event_output_sources.size() &&
+                            (scope.event_output_sources[output_i].is_graph_port ||
+                             !scope.event_output_sources[output_i].node_id.empty()),
+                    });
+                }
+
+                concrete_nodes.push_back(std::move(concrete));
+
+                std::vector<std::string> logical_node_ids;
+                for (auto const& info : scope.source_infos) {
+                    if (info.declaration_identity.empty()) {
+                        continue;
+                    }
+                    if (!std::ranges::contains(logical_node_ids, info.declaration_identity)) {
+                        logical_node_ids.push_back(info.declaration_identity);
+                    }
+                }
+                concrete_node_logical_ids.push_back(std::move(logical_node_ids));
             }
 
             struct LogicalGroup {
@@ -482,10 +556,10 @@ namespace iv {
 
             std::vector<LogicalGroup> groups;
             for (size_t i = 0; i < concrete_nodes.size(); ++i) {
-                if (i >= g.node_logical_ids.size() || g.node_logical_ids[i].empty()) {
+                if (i >= concrete_node_logical_ids.size() || concrete_node_logical_ids[i].empty()) {
                     continue;
                 }
-                for (auto const& logical_node_id : g.node_logical_ids[i]) {
+                for (auto const& logical_node_id : concrete_node_logical_ids[i]) {
                     auto group_it = std::find_if(groups.begin(), groups.end(), [&](auto const& group) {
                         return group.logical_node_id == logical_node_id;
                     });
@@ -513,6 +587,7 @@ namespace iv {
                 }
 
                 std::sort(backing_node_ids.begin(), backing_node_ids.end());
+                backing_node_ids.erase(std::unique(backing_node_ids.begin(), backing_node_ids.end()), backing_node_ids.end());
                 auto source_spans = source_spans_for(members, group.logical_node_id);
 
                 logical_nodes.push_back(IntrospectionLogicalNode {
@@ -2150,7 +2225,9 @@ namespace iv {
                 auto const& placeholder = _nodes[placeholder_i];
                 iv::LoweredSubgraphSpec scope;
                 scope.kind = placeholder.subgraph_kind;
+                scope.backing_node_id = node_id(placeholder_i);
                 for (auto const& info : placeholder.source_infos) {
+                    scope.source_infos.push_back(info);
                     if (info.span.file_path.empty() || info.span.begin > info.span.end) {
                         continue;
                     }
@@ -2250,7 +2327,7 @@ namespace iv {
             return detached_info;
         }();
         auto execution_plan = details::build_execution_plan(g.nodes, g.edges, g.event_edges, detached);
-        auto [logical_nodes, logical_node_ids_by_backing_node_id] = details::build_logical_metadata(g);
+        auto [logical_nodes, logical_node_ids_by_backing_node_id] = details::build_logical_metadata(g, lowered_scopes);
 
         GraphIntrospectionMetadata introspection {
             .lowered_subgraphs = std::move(lowered_subgraphs),

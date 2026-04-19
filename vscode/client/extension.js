@@ -209,16 +209,19 @@ class LiveGraphProvider {
 
     makeNodeItem(node) {
         const treeKey = `node:${node.id}`;
+        const identity = this.logicalIdentitySummary(node);
         const item = new LiveGraphItem(
             node.kind || node.id,
             this.collapsibleStateFor(treeKey, true),
-            node.memberCount > 1 ? `${node.memberCount} nodes` : (node.id || "")
+            node.memberCount > 1
+                ? (identity ? `${identity} • ${node.memberCount} nodes` : `${node.memberCount} nodes`)
+                : (identity || node.id || "")
         );
         item.treeKey = treeKey;
         item.id = treeKey;
         item.contextValue = "intravenousNode";
         item.node = node;
-        item.tooltip = `${node.kind || "node"}${Array.isArray(node.sourceSpans) ? ` • ${node.sourceSpans.length} source span${node.sourceSpans.length === 1 ? "" : "s"}` : ""}${node.memberCount > 1 ? ` • ${node.memberCount} members` : ""}`;
+        item.tooltip = `${node.kind || "node"}${identity ? ` • ${identity}` : ""}${node.memberCount > 1 ? ` • ${node.memberCount} members` : ""}`;
         item.iconPath = node.memberCount > 1
             ? mergedNodeIconPath
             : (node.memberCount === 1
@@ -226,6 +229,27 @@ class LiveGraphProvider {
                 : new vscode.ThemeIcon("symbol-misc"));
         item.children = this.makeLogicalNodeChildren(treeKey, node);
         return item;
+    }
+
+    logicalIdentitySummary(node) {
+        const identity = typeof node?.sourceIdentity === "string" && node.sourceIdentity.length > 0
+            ? node.sourceIdentity
+            : (typeof node?.id === "string" ? node.id : "");
+        if (!identity) {
+            return "";
+        }
+
+        const matches = [...identity.matchAll(/@([^@#:$]+)$/g)];
+        if (matches.length > 0 && matches[0][1]) {
+            return matches[0][1];
+        }
+
+        const atIndex = identity.lastIndexOf("@");
+        if (atIndex >= 0 && atIndex + 1 < identity.length) {
+            return identity.slice(atIndex + 1);
+        }
+
+        return identity;
     }
 
     makeLogicalNodeChildren(parentTreeKey, node) {
@@ -259,8 +283,11 @@ class LiveGraphProvider {
         item.id = treeKey;
         item.children = ports.map((port, index) => {
             const connectivity = port.connectivity || "disconnected";
-            const description = [port.type || "sample", connectivity].join(" · ");
-            const child = new LiveGraphItem(port.name || `${label} ${index}`, vscode.TreeItemCollapsibleState.None, description);
+            const child = new LiveGraphItem(
+                port.name || `[${index}]`,
+                vscode.TreeItemCollapsibleState.None,
+                connectivity
+            );
             child.iconPath = this.portIcon(direction, portKind, connectivity);
             return child;
         });
@@ -659,18 +686,34 @@ class WorkspaceSession {
                 const spanEnd = this.positionKey(span.end);
                 const spanLength = Math.max(spanEnd - spanStart, 0);
 
-                for (const range of query.ranges) {
+                for (let rangeIndex = 0; rangeIndex < query.ranges.length; ++rangeIndex) {
+                    const range = query.ranges[rangeIndex];
                     const rangeStart = this.positionKey(range.start);
                     const rangeEnd = this.positionKey(range.end);
                     const boundaryDistance = Math.abs(spanStart - rangeStart) + Math.abs(spanEnd - rangeEnd);
-                    const score = [boundaryDistance, spanLength, spanStart];
-                    if (!best || score[0] < best[0] || (score[0] === best[0] && (score[1] < best[1] || (score[1] === best[1] && score[2] < best[2])))) {
+                    const score = [rangeIndex, boundaryDistance, spanLength, spanStart];
+                    if (
+                        !best ||
+                        score[0] < best[0] ||
+                        (score[0] === best[0] && (
+                            score[1] < best[1] ||
+                            (score[1] === best[1] && (
+                                score[2] < best[2] ||
+                                (score[2] === best[2] && score[3] < best[3])
+                            ))
+                        ))
+                    ) {
                         best = score;
                     }
                 }
             }
 
-            return best || [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
+            return best || [
+                Number.MAX_SAFE_INTEGER,
+                Number.MAX_SAFE_INTEGER,
+                Number.MAX_SAFE_INTEGER,
+                Number.MAX_SAFE_INTEGER,
+            ];
         };
 
         return [...nodes].sort((left, right) => {
@@ -684,6 +727,9 @@ class WorkspaceSession {
             }
             if (a[2] !== b[2]) {
                 return a[2] - b[2];
+            }
+            if (a[3] !== b[3]) {
+                return a[3] - b[3];
             }
             return String(left.id).localeCompare(String(right.id));
         });

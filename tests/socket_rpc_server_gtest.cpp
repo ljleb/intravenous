@@ -70,6 +70,32 @@ namespace {
         return workspace;
     }
 
+    std::string unique_workspace_name(std::string const& base_name)
+    {
+        auto const* test_info = ::testing::UnitTest::GetInstance()->current_test_info();
+        if (!test_info) {
+            return base_name;
+        }
+
+        auto sanitize = [](std::string value) {
+            for (char& c : value) {
+                bool const is_alnum = (c >= 'a' && c <= 'z') ||
+                    (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9');
+                if (!is_alnum) {
+                    c = '_';
+                }
+            }
+            return value;
+        };
+
+        return sanitize(
+            base_name + "_" +
+            std::string(test_info->test_suite_name()) + "_" +
+            std::string(test_info->name())
+        );
+    }
+
     void write_text(std::filesystem::path const& path, std::string const& text)
     {
         std::filesystem::create_directories(path.parent_path());
@@ -80,7 +106,7 @@ namespace {
 
     std::filesystem::path make_project_workspace()
     {
-        auto const workspace = make_workspace("socket_rpc_server");
+        auto const workspace = make_workspace(unique_workspace_name("socket_rpc_server"));
         iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", workspace);
         write_text(workspace / ".intravenous", "");
         return workspace;
@@ -88,7 +114,7 @@ namespace {
 
     std::filesystem::path make_polyphonic_project_workspace()
     {
-        auto const workspace = make_workspace("socket_rpc_server_polyphonic");
+        auto const workspace = make_workspace(unique_workspace_name("socket_rpc_server_polyphonic"));
         iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", workspace);
         write_text(workspace / ".intravenous", "");
         write_text(workspace / "module.cpp", R"(#include "dsl.h"
@@ -122,7 +148,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 
     std::filesystem::path make_annotated_symbol_project_workspace()
     {
-        auto const workspace = make_workspace("socket_rpc_server_annotated_symbol");
+        auto const workspace = make_workspace(unique_workspace_name("socket_rpc_server_annotated_symbol"));
         write_text(workspace / ".intravenous", "");
         write_text(workspace / "module.cpp", R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"

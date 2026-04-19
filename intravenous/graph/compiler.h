@@ -236,6 +236,7 @@ namespace iv::details {
             LoweredSubgraph lowered;
             lowered.parent_scope = scope.parent_scope;
             lowered.kind = scope.kind;
+            lowered.backing_node_id = scope.backing_node_id;
             lowered.source_spans = scope.source_spans;
             lowered.sample_inputs = scope.sample_inputs;
             lowered.sample_outputs = scope.sample_outputs;
