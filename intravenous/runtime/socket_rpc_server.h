@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/project_service.h"
+#include "runtime/timeline.h"
 
 #include <chrono>
 #include <filesystem>
@@ -13,6 +14,7 @@ namespace iv {
 
     public:
         explicit SocketRpcServer(
+            Timeline& timeline,
             std::filesystem::path workspace_root,
             std::filesystem::path discovery_start,
             std::filesystem::path socket_path = {},

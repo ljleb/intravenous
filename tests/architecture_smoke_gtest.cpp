@@ -391,7 +391,7 @@ namespace {
         g.outputs();
 
         return iv::NodeExecutor::create(
-            iv::TypeErasedNode(g.build()),
+            iv::TypeErasedNode(g.plan().build()),
             {},
             std::move(execution_target_registry).to_builder()
         );
@@ -407,7 +407,7 @@ namespace {
         });
         sink(src);
         g.outputs();
-        return iv::TypeErasedNode(g.build());
+        return iv::TypeErasedNode(g.plan().build());
     }
 
     void tick_executor_direct(iv::NodeExecutor& executor, size_t index, size_t block_size)
@@ -622,7 +622,7 @@ TEST(ArchitectureSmoke, SameDeviceSameChannelAccumulates)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -664,7 +664,7 @@ TEST(ArchitectureSmoke, ChannelAlignmentPreservesLeftAndRight)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -729,7 +729,7 @@ TEST(ArchitectureSmoke, SubgraphPassthroughFlattensToDirectSignalPath)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -774,7 +774,7 @@ TEST(ArchitectureSmoke, PipeOperatorChainsSingleInputSingleOutputNodes)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -806,7 +806,7 @@ TEST(ArchitectureSmoke, ExactRequestedBlockBecomesReady)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -874,7 +874,7 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderStillLowersThroughNode)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -902,7 +902,7 @@ TEST(ArchitectureSmoke, BuilderMetadataCarriesLogicalNodesAndBridgeMappings)
     );
     g.outputs();
 
-    auto built = g.build_with_metadata();
+    auto built = g.plan().build_with_metadata();
 
     ASSERT_EQ(built.introspection.logical_nodes.size(), 2u);
     auto const shared_it = std::find_if(
@@ -954,7 +954,7 @@ TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
     iv::test::FakeAudioDevice audio_device({ .max_block_frames = output.size() });
     iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_targets).to_builder()
     );
@@ -989,7 +989,7 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderDormancyStopsTickingSilentScope)
     iv::test::FakeAudioDevice audio_device({ .max_block_frames = output.size() });
     iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_targets).to_builder()
     );
@@ -1181,7 +1181,7 @@ TEST(ArchitectureSmoke, DisconnectedEventOutputUsesZeroCapacitySinkBudget)
     [[maybe_unused]] auto const source = g.node<DisconnectedTriggerSource>();
     g.outputs();
 
-    iv::TypeErasedNode root = iv::TypeErasedNode(g.build());
+    iv::TypeErasedNode root = iv::TypeErasedNode(g.plan().build());
     iv::NodeLayoutBuilder builder(8);
     {
         iv::DeclarationContext<iv::TypeErasedNode> ctx(builder, root);
@@ -1237,7 +1237,7 @@ TEST(ArchitectureSmoke, EventConcatenationMergesInputsInTimeOrder)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     auto executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -1267,7 +1267,7 @@ TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
     auto executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -1421,7 +1421,7 @@ TEST(ArchitectureSmoke, ExecuteReloadSwitchesAtExecutorBlockBoundaryWithinActive
     g.outputs();
 
     auto executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         iv::test::make_audio_device_provider(audio_device).to_builder()
     );
@@ -1606,7 +1606,7 @@ TEST(ArchitectureSmoke, StereoExecutorExecuteSurvivesVaryingRequestSizes)
     g.outputs();
 
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(g.build()),
+        iv::TypeErasedNode(g.plan().build()),
         {},
         std::move(execution_target_registry).to_builder()
     );
@@ -1664,7 +1664,7 @@ TEST(ArchitectureSmoke, FileSinkUsesDeviceSampleRateForWavOutput)
             iv::test::make_audio_device_provider(audio_device)
         );
         auto executor = iv::NodeExecutor::create(
-            iv::TypeErasedNode(g.build()),
+            iv::TypeErasedNode(g.plan().build()),
             {},
             std::move(execution_target_registry).to_builder()
         );
@@ -1717,7 +1717,7 @@ TEST(ArchitectureSmoke, FileSinkPreservesContinuityAcrossVaryingAudioRequests)
             iv::test::make_audio_device_provider(audio_device)
         );
         auto executor = iv::NodeExecutor::create(
-            iv::TypeErasedNode(g.build()),
+            iv::TypeErasedNode(g.plan().build()),
             {},
             std::move(execution_target_registry).to_builder()
         );

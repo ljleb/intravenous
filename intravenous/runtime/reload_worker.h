@@ -32,6 +32,8 @@ namespace iv {
         mutable std::mutex _mutex;
         std::optional<PendingReload> _pending_reload;
         std::exception_ptr _pending_exception;
+        volatile bool _has_pending_reload = false;
+        volatile bool _has_pending_exception = false;
         bool _build_in_progress = false;
         bool _shutdown_requested = false;
         std::optional<std::jthread> _thread;
@@ -95,6 +97,7 @@ namespace iv {
                             std::lock_guard lock(_mutex);
                             if (!_shutdown_requested) {
                                 _pending_reload = std::move(next_reload);
+                                _has_pending_reload = true;
                             }
                             _build_in_progress = false;
                             if (_on_build_succeeded) {
@@ -108,6 +111,7 @@ namespace iv {
                             std::lock_guard lock(_mutex);
                             _build_in_progress = false;
                             _pending_exception = exception;
+                            _has_pending_exception = true;
                         }
                     }
 
@@ -135,8 +139,13 @@ namespace iv {
 
         std::optional<ModuleLoader::LoadedGraph> take_completed_reload(std::vector<ModuleDependency>* dependencies = nullptr)
         {
+            if (!_has_pending_reload) {
+                return std::nullopt;
+            }
+
             std::lock_guard lock(_mutex);
             if (!_pending_reload.has_value()) {
+                _has_pending_reload = false;
                 return std::nullopt;
             }
 
@@ -146,15 +155,31 @@ namespace iv {
 
             auto graph = std::move(_pending_reload->graph);
             _pending_reload.reset();
+            _has_pending_reload = false;
             return graph;
         }
 
         std::exception_ptr take_exception()
         {
+            if (!_has_pending_exception) {
+                return nullptr;
+            }
+
             std::lock_guard lock(_mutex);
             auto exception = _pending_exception;
             _pending_exception = nullptr;
+            _has_pending_exception = false;
             return exception;
+        }
+
+        bool has_pending_reload() const
+        {
+            return _has_pending_reload;
+        }
+
+        bool has_pending_exception() const
+        {
+            return _has_pending_exception;
         }
     };
 }

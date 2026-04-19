@@ -276,7 +276,8 @@ namespace iv::test {
 
     inline iv::ModuleLoader make_loader(std::vector<std::filesystem::path> extra_roots = { test_modules_root() })
     {
-        return iv::ModuleLoader(repo_root(), std::move(extra_roots));
+        static thread_local iv::Timeline timeline;
+        return iv::ModuleLoader(timeline, repo_root(), std::move(extra_roots));
     }
 
     template<typename Device>

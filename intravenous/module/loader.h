@@ -3,6 +3,7 @@
 #include "graph/build_types.h"
 #include "module/dependency.h"
 #include "module/module.h"
+#include "runtime/timeline.h"
 
 #include <filesystem>
 #include <memory>
@@ -51,6 +52,7 @@ namespace iv {
         };
 
         explicit ModuleLoader(
+            Timeline& timeline,
             std::filesystem::path discovery_start = std::filesystem::current_path(),
             std::vector<std::filesystem::path> extra_search_roots = {},
             ToolchainConfig toolchain = ToolchainConfig(),

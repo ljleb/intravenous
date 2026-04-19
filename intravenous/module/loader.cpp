@@ -2,6 +2,7 @@
 
 #include "module/loader.h"
 #include "compat.h"
+#include "graph/plan.h"
 
 #include "devices/channel_buffer_sink.h"
 
@@ -599,11 +600,13 @@ namespace iv {
         std::filesystem::path default_template_path;
         std::filesystem::path default_pch_path;
         std::vector<std::filesystem::path> extra_search_roots;
+        Timeline& timeline;
         ToolchainConfig toolchain;
         LogSink log_sink;
         mutable std::mutex build_mutex;
 
         explicit Impl(
+            Timeline& timeline_,
             std::filesystem::path discovery_start,
             std::vector<std::filesystem::path> extra_roots,
             ToolchainConfig toolchain_,
@@ -615,6 +618,7 @@ namespace iv {
             cache_root(repo_root / "build" / "iv_runtime_modules"),
             default_template_path(repo_root / "intravenous" / "module" / "template" / "CMakeLists.txt"),
             default_pch_path(repo_root / "intravenous" / "module" / "template" / "module_pch.h"),
+            timeline(timeline_),
             toolchain(std::move(toolchain_)),
             log_sink(std::move(log_sink_))
         {
@@ -1191,7 +1195,9 @@ namespace iv {
             TypeErasedModule root_module = session.load_module(root.id);
             GraphBuilder::BuildResult built_root = [&]() -> GraphBuilder::BuildResult {
                 try {
-                    return root_module.builder(context).build_with_metadata();
+                    auto plan = root_module.builder(context).plan();
+                    plan.fill_vacant_logical_inputs(timeline);
+                    return plan.build_with_metadata();
                 } catch (std::exception const& e) {
                     throw std::runtime_error(wrap_exception(
                         "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "'",
@@ -1236,12 +1242,14 @@ namespace iv {
     {}
 
     ModuleLoader::ModuleLoader(
+        Timeline& timeline,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots,
         ToolchainConfig toolchain,
         LogSink log_sink
     ) :
         _impl(std::make_unique<Impl>(
+            timeline,
             std::move(discovery_start),
             std::move(extra_search_roots),
             std::move(toolchain),

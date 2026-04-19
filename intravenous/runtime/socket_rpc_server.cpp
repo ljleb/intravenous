@@ -399,6 +399,7 @@ namespace iv {
         std::exception_ptr initialization_exception;
 
         explicit Impl(
+            Timeline& timeline,
             std::filesystem::path workspace_root_,
             std::filesystem::path discovery_start_,
             std::filesystem::path socket_path_,
@@ -410,6 +411,7 @@ namespace iv {
             lock_path_value(socket_path_value.string() + ".lock"),
             audio_device_factory(std::move(audio_device_factory_)),
             service(
+                timeline,
                 workspace_root,
                 discovery_start,
                 {},
@@ -725,12 +727,14 @@ namespace iv {
     };
 
     SocketRpcServer::SocketRpcServer(
+        Timeline& timeline,
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::filesystem::path socket_path,
         AudioDeviceFactory audio_device_factory
     ) :
         _impl(std::make_unique<Impl>(
+            timeline,
             std::move(workspace_root),
             std::move(discovery_start),
             std::move(socket_path),

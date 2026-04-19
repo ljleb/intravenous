@@ -11,10 +11,10 @@
 #include "orchestrator/orchestrator_builder.h"
 #include "runtime/handlers.h"
 #include "runtime/reload_worker.h"
+#include "runtime/timeline.h"
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <condition_variable>
 #include <fstream>
 #include <mutex>
@@ -227,6 +227,7 @@ namespace iv {
 
     class RuntimeProjectService::Impl {
     public:
+        Timeline& timeline;
         std::filesystem::path workspace_root;
         std::filesystem::path discovery_start;
         std::vector<std::filesystem::path> extra_search_roots;
@@ -247,12 +248,14 @@ namespace iv {
         NodeExecutor* executor_state = nullptr;
 
         explicit Impl(
+            Timeline& timeline_,
             std::filesystem::path workspace_root_,
             std::filesystem::path discovery_start_,
             std::vector<std::filesystem::path> extra_search_roots_,
             AudioDeviceFactory audio_device_factory_,
             RuntimeProjectEventSink event_sink_
         ) :
+            timeline(timeline_),
             workspace_root(normalize_path(workspace_root_)),
             discovery_start(std::move(discovery_start_)),
             extra_search_roots(std::move(extra_search_roots_)),
@@ -378,6 +381,7 @@ namespace iv {
                 search_roots.insert(search_roots.end(), extra_search_roots.begin(), extra_search_roots.end());
 
                 ModuleLoader loader(
+                    this->timeline,
                     discovery_start,
                     std::move(search_roots),
                     config->toolchain,
@@ -395,7 +399,7 @@ namespace iv {
                     module_render_config(render_config),
                     &device_sample_period
                 );
-                watcher->update(loaded_graph.dependencies);
+                watcher.update(loaded_graph.dependencies);
                 invalidate_line_indexes(loaded_graph.dependencies);
 
                 std::vector<std::string> created_node_ids;
@@ -426,7 +430,7 @@ namespace iv {
                 }
 
                 ReloadWorker reload_worker(
-                    *watcher,
+                    watcher,
                     config->module_root,
                     [&]() {
                         auto reload = loader.load_root(
@@ -494,6 +498,15 @@ namespace iv {
                 reload_worker.start();
 
                 executor_storage.execute([&]() -> std::optional<ModuleLoader::LoadedGraph> {
+                    if (!reload_worker.has_pending_reload()) {
+                        if (reload_worker.has_pending_exception()) {
+                            if (auto exception = reload_worker.take_exception()) {
+                                log_reload_exception("runtime project reload failed", exception);
+                            }
+                        }
+                        return std::nullopt;
+                    }
+
                     if (auto exception = reload_worker.take_exception()) {
                         log_reload_exception("runtime project reload failed", exception);
                     }
@@ -501,7 +514,7 @@ namespace iv {
                     std::vector<ModuleDependency> dependencies;
                     auto reload = reload_worker.take_completed_reload(&dependencies);
                     if (reload) {
-                        watcher->update(std::move(dependencies));
+                        watcher.update(std::move(dependencies));
                     }
                     return reload;
                 });
@@ -519,6 +532,7 @@ namespace iv {
     };
 
     RuntimeProjectService::RuntimeProjectService(
+        Timeline& timeline,
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots,
@@ -526,6 +540,7 @@ namespace iv {
         RuntimeProjectEventSink event_sink
     ) :
         _impl(std::make_unique<Impl>(
+            timeline,
             std::move(workspace_root),
             std::move(discovery_start),
             std::move(extra_search_roots),

@@ -20,6 +20,12 @@
 namespace {
     using namespace std::chrono_literals;
 
+    iv::Timeline& runtime_timeline()
+    {
+        static thread_local iv::Timeline timeline;
+        return timeline;
+    }
+
     struct DrivenTestAudioDevice {
         std::shared_ptr<iv::test::FakeAudioDevice> device;
         std::jthread driver;
@@ -173,7 +179,7 @@ TEST(RuntimeProjectService, EmptyIntravenousMarkerUsesWorkspaceRoot)
     write_text(workspace / ".intravenous", "");
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     auto const initialized = service.initialize();
 
     EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(workspace));
@@ -189,7 +195,7 @@ TEST(RuntimeProjectService, RelativeRootModulePathResolvesAgainstWorkspaceRoot)
     write_text(workspace / ".intravenous", "rootModulePath=module\n");
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     auto const initialized = service.initialize();
 
     EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(module_root));
@@ -202,7 +208,7 @@ TEST(RuntimeProjectService, QueryBySpansReturnsMatchingLiveNodesWithPorts)
     write_text(workspace / ".intravenous", "");
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     auto const initialized = service.initialize();
 
     auto const result = service.query_by_spans(
@@ -259,7 +265,7 @@ IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
     );
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -312,7 +318,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     );
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -393,7 +399,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     );
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -440,7 +446,7 @@ IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
     );
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -487,7 +493,7 @@ IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
     );
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     EXPECT_THROW(
         {
             try {
@@ -533,7 +539,7 @@ IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
     );
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -593,7 +599,7 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
     );
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -631,7 +637,7 @@ TEST(RuntimeProjectService, QueryBySpansIntersectsMultipleSelections)
     write_text(workspace / ".intravenous", "");
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const dt_range = iv::SourceRange {
@@ -678,7 +684,7 @@ TEST(RuntimeProjectService, QueryBySpansUnionsMultipleSelections)
     write_text(workspace / ".intravenous", "");
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const dt_range = iv::SourceRange {
@@ -721,7 +727,7 @@ TEST(RuntimeProjectService, QueryActiveRegionsReturnsOnlySourceSpans)
     write_text(workspace / ".intravenous", "");
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const nodes = service.query_by_spans(module_cpp, {
@@ -790,7 +796,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -863,7 +869,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -891,7 +897,7 @@ TEST(RuntimeProjectService, MissingMarkerFailsInitialization)
     auto const workspace = copy_fixture_workspace("runtime_project_missing_marker", "local_cmake");
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     EXPECT_THROW(
         {
             try {
@@ -912,7 +918,7 @@ TEST(RuntimeProjectService, ReloadInvalidatesOldNodeIds)
     write_text(workspace / ".intravenous", "");
 
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     auto const initialized = service.initialize();
 
     auto const initial = service.query_by_spans(
@@ -989,7 +995,7 @@ TEST(RuntimeProjectService, ProjectConfigOverridesIntraveniousDefaultsToolchain)
 
     ScopedEnvVar env("INTRAVENOUS_DIR", install_dir.string());
     auto audio = make_audio_device_context();
-    iv::RuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
     auto const initialized = service.initialize();
 
     EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(workspace));

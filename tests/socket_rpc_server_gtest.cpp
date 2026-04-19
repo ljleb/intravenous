@@ -22,6 +22,12 @@
 namespace {
     using namespace std::chrono_literals;
 
+    iv::Timeline& socket_server_timeline()
+    {
+        static thread_local iv::Timeline timeline;
+        return timeline;
+    }
+
     class BackgroundTestAudioDevice {
         iv::RenderConfig _config {};
         std::vector<iv::Sample> _buffer;
@@ -245,7 +251,7 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
 {
     auto const workspace = make_project_workspace();
 
-    iv::SocketRpcServer server(workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 
@@ -335,7 +341,7 @@ TEST(SocketRpcServer, ShutsDownWhenClientDisconnects)
 {
     auto const workspace = make_project_workspace();
 
-    iv::SocketRpcServer server(workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 
@@ -367,7 +373,7 @@ TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
 {
     auto const workspace = make_project_workspace();
 
-    iv::SocketRpcServer server(workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 
@@ -439,7 +445,7 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
 {
     auto const workspace = make_polyphonic_project_workspace();
 
-    iv::SocketRpcServer server(workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 
@@ -510,7 +516,7 @@ TEST(SocketRpcServer, QueryBySpansKeepsAnnotatedLogicalNodeIdStableOverUnixSocke
 {
     auto const workspace = make_annotated_symbol_project_workspace();
 
-    iv::SocketRpcServer server(workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 

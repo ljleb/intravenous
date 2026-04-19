@@ -93,7 +93,7 @@ int main()
     iv::test::FakeAudioDevice audio_device({ .max_block_frames = output.size() });
     iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
     iv::NodeExecutor executor = iv::NodeExecutor::create(
-        iv::TypeErasedNode(graph.build()),
+        iv::TypeErasedNode(graph.plan().build()),
         {},
         std::move(execution_targets).to_builder()
     );

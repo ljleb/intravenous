@@ -2,6 +2,7 @@
 
 #include "graph/build_types.h"
 #include "devices/audio_device.h"
+#include "runtime/timeline.h"
 
 #include <chrono>
 #include <cstddef>
@@ -93,6 +94,7 @@ namespace iv {
 
     public:
         explicit RuntimeProjectService(
+            Timeline& timeline,
             std::filesystem::path workspace_root,
             std::filesystem::path discovery_start,
             std::vector<std::filesystem::path> extra_search_roots = {},

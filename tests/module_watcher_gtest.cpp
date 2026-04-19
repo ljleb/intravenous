@@ -26,8 +26,8 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     );
 
     auto watcher = iv::make_dependency_watcher();
-    watcher->update(graph.dependencies);
-    EXPECT_FALSE(watcher->has_changes());
+    watcher.update(graph.dependencies);
+    EXPECT_FALSE(watcher.has_changes());
 
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
@@ -39,7 +39,7 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
 
     bool saw_change = false;
     for (int i = 0; i < 40; ++i) {
-        if (watcher->has_changes()) {
+        if (watcher.has_changes()) {
             saw_change = true;
             break;
         }
