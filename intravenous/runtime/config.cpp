@@ -162,7 +162,8 @@ namespace iv {
 
             auto const defaults_path = normalize_path(install_dir) / ".intravenous_defaults";
             if (std::filesystem::exists(defaults_path)) {
-                auto const parsed_defaults = parse_config_file(defaults_path, defaults_path.parent_path(), false);
+                auto const parsed_defaults =
+                    parse_config_file(defaults_path, defaults_path.parent_path(), false);
                 overlay_toolchain(config.toolchain, parsed_defaults.toolchain);
             }
         }

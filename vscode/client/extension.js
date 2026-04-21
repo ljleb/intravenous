@@ -407,6 +407,7 @@ class WorkspaceSession {
         this.refreshInFlight = null;
         this.lastQuery = null;
         this.startInFlight = null;
+        this.lastTerminalStatusMessage = "";
     }
 
     resolveServerBinary() {
@@ -490,6 +491,7 @@ class WorkspaceSession {
         if (!this.isIntravenousProject()) {
             return false;
         }
+        this.lastTerminalStatusMessage = "";
 
         const socketPath = this.socketPath();
         const binary = this.serverBinaryPath();
@@ -541,11 +543,19 @@ class WorkspaceSession {
     }
 
     async initializeConnectedClient() {
-        const result = await this.client.request("server.initialize", {
-            workspaceRoot: this.workspaceRoot(),
-        });
-        this.executionEpoch = result.executionEpoch;
-        return result;
+        try {
+            const result = await this.client.request("server.initialize", {
+                workspaceRoot: this.workspaceRoot(),
+            });
+            this.executionEpoch = result.executionEpoch;
+            this.lastTerminalStatusMessage = "";
+            return result;
+        } catch (error) {
+            if (error.message === "Intravenous server connection closed" && this.lastTerminalStatusMessage) {
+                throw new Error(this.lastTerminalStatusMessage);
+            }
+            throw error;
+        }
     }
 
     async waitForSocket(socketPath, timeoutMs) {
@@ -735,7 +745,7 @@ class WorkspaceSession {
         });
     }
 
-    logServerEvent(prefix, params) {
+    logServerState(prefix, params) {
         const parts = [prefix];
         if (params.moduleRoot) {
             parts.push(params.moduleRoot);
@@ -745,12 +755,14 @@ class WorkspaceSession {
         }
         if (params.message) {
             parts.push(params.message);
+        } else if (params.code) {
+            parts.push(params.code);
         }
         this.outputChannel.appendLine(parts.join(": "));
     }
 
     handleNotification(method, params) {
-        if (method === "server.log") {
+        if (method === "server.message") {
             if (params.message) {
                 const lines = String(params.message).split(/\r?\n/);
                 for (const line of lines) {
@@ -762,19 +774,29 @@ class WorkspaceSession {
             return;
         }
 
-        if (method === "server.buildStarted") {
-            this.logServerEvent("Intravenous rebuild started", params);
+        if (method !== "server.status") {
             return;
         }
 
-        if (method === "server.buildFinished") {
+        if (params.code === "startupFailed") {
+            this.lastTerminalStatusMessage = params.message || "Intravenous startup failed";
+            this.logServerState("Intravenous startup failed", params);
+            return;
+        }
+
+        if (params.code === "rebuildStarted") {
+            this.logServerState("Intravenous rebuild started", params);
+            return;
+        }
+
+        if (params.code === "rebuildFinished") {
             if (typeof params.executionEpoch === "number") {
                 this.executionEpoch = params.executionEpoch;
             }
             if (Array.isArray(params.deletedNodeIds)) {
                 this.provider.pruneDeletedNodeState(params.deletedNodeIds);
             }
-            this.logServerEvent("Intravenous rebuild finished", params);
+            this.logServerState("Intravenous rebuild finished", params);
             if (!this.refreshInFlight && vscode.window.activeTextEditor) {
                 this.refreshInFlight = this.updateFromEditor(vscode.window.activeTextEditor)
                     .then((nodes) => {
@@ -794,9 +816,12 @@ class WorkspaceSession {
             return;
         }
 
-        if (method === "server.buildFailed") {
-            this.logServerEvent("Intravenous rebuild failed", params);
+        if (params.code === "rebuildFailed") {
+            this.logServerState("Intravenous rebuild failed", params);
+            return;
         }
+
+        this.logServerState("Intravenous status", params);
     }
 
     async shutdown() {

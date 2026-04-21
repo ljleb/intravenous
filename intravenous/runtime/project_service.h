@@ -69,16 +69,15 @@ namespace iv {
         std::vector<LiveSourceSpan> source_spans {};
     };
 
-    enum class RuntimeProjectEventKind {
-        log,
-        build_started,
-        build_finished,
-        build_failed,
+    enum class RuntimeProjectNotificationKind {
+        message,
+        status,
     };
 
-    struct RuntimeProjectEvent {
-        RuntimeProjectEventKind kind = RuntimeProjectEventKind::log;
+    struct RuntimeProjectNotification {
+        RuntimeProjectNotificationKind kind = RuntimeProjectNotificationKind::message;
         std::string level = "info";
+        std::string code {};
         std::string message {};
         std::filesystem::path module_root {};
         uint64_t execution_epoch = 0;
@@ -87,7 +86,7 @@ namespace iv {
     };
 
     using AudioDeviceFactory = std::function<std::optional<LogicalAudioDevice>()>;
-    using RuntimeProjectEventSink = std::function<void(RuntimeProjectEvent const&)>;
+    using RuntimeProjectNotificationSink = std::function<void(RuntimeProjectNotification const&)>;
 
     class RuntimeProjectService {
         class Impl;
@@ -100,7 +99,7 @@ namespace iv {
             std::filesystem::path discovery_start,
             std::vector<std::filesystem::path> extra_search_roots = {},
             AudioDeviceFactory audio_device_factory = {},
-            RuntimeProjectEventSink event_sink = {}
+            RuntimeProjectNotificationSink notification_sink = {}
         );
         ~RuntimeProjectService();
         RuntimeProjectService(RuntimeProjectService&&) noexcept;

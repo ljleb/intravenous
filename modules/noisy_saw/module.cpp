@@ -10,12 +10,12 @@
 #include <iostream>
 #include <string>
 
-inline void noisy_saw_project(iv::ModuleContext const& context)
+inline void noisy_saw_project(iv::ModuleContext const& c)
 {
     using namespace iv;
-    GraphBuilder& g = context.builder();
-    auto const& io = context.target_factory();
-    auto const dt = g.node<ValueSource>(&context.sample_period());
+    auto& g = c.builder();
+    auto const& io = c.target_factory();
+    auto const dt = g.node<ValueSource>(&c.sample_period());
 
     auto const midi = juce::midi_input(g, "V25");
     // auto const sup = juce::vst(g, "ValhallaSupermassive");
@@ -27,20 +27,20 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     //     "Mode"_P = 2 / 24.f
     // );
 
-    for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
+    size_t seed = 0;
+    for (size_t channel = 0; channel < c.render_config().num_channels; ++channel) {
         // auto const sink = io.file(g, channel, "out.wav");
-        auto const sink = io.sink(g, channel);
+        auto sink = io.sink(g, channel);
 
-        auto const voice = polyphonic<16>(g, [&](auto m) {
-            static size_t seed = 0;
+        auto voice = polyphonic<16>(g, [&](auto m) {
             // m.connect_event_input("midi", midi);
 
-            auto const saw = g.node<SawOscillator>();
-            auto const phi = g.node<PhaseIntegrator>();
-            auto const generator = g.node<DeterministicUniformAESNoise>(seed++);
-            auto const u_to_n = g.node<UniformToGaussian>(0.0, 0.5);
-            auto const lo_pass = g.node<SimpleIirLowPass>();
-            auto const hi_pass = g.node<SimpleIirHighPass>();
+            auto saw = g.node<SawOscillator>();
+            auto phi = g.node<PhaseIntegrator>();
+            auto generator = g.node<DeterministicUniformAESNoise>(seed++);
+            auto u_to_n = g.node<UniformToGaussian>(0.0, 0.5);
+            auto lo_pass = g.node<SimpleIirLowPass>();
+            auto hi_pass = g.node<SimpleIirHighPass>();
 
             saw(
                 "frequency"_P = m >> "frequency"_P,
@@ -56,7 +56,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
         });
         voice < "midi"_F << midi;
 
-        auto x = voice;
+        auto x = std::move(voice);
         // if (channel == 0)
         // {
         //     auto constexpr port = "l0"_P;

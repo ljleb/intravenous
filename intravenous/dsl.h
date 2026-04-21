@@ -8,20 +8,19 @@
 
 namespace iv {
     template<class Ref>
-    concept SourceInfoAnnotatableRef = requires(std::remove_cvref_t<Ref>& ref, std::string_view declaration_identity) {
+    concept SourceInfoAnnotatableRef =
+        requires(std::remove_cvref_t<Ref>& ref, std::string_view declaration_identity) {
+            ref.node_ref();
+        } &&
+        requires(std::remove_cvref_t<Ref>& ref, std::string_view declaration_identity) {
         ref._annotate_source_info(declaration_identity, std::string_view {}, 0u, 0u);
     };
 
     template<class Ref>
-    concept SourceInfoDeclarableRef = requires(std::string_view declaration_identity) {
-        std::remove_cvref_t<Ref>(logical_empty_tag, declaration_identity);
-    };
-
-    template<class Ref>
-    requires SourceInfoDeclarableRef<Ref>
-    std::remove_cvref_t<Ref> _declare_node_source_info(std::string_view declaration_identity)
+    requires SourceInfoAnnotatableRef<Ref>
+    std::remove_cvref_t<Ref> _clone_annotatable_ref(Ref&& ref)
     {
-        return std::remove_cvref_t<Ref>(logical_empty_tag, declaration_identity);
+        return ref._clone_handle();
     }
 
     template<class Ref>
@@ -31,10 +30,9 @@ namespace iv {
         std::string_view declaration_identity
     )
     {
-        using StoredRef = std::remove_cvref_t<Ref>;
-        StoredRef stored_ref = std::forward<Ref>(ref);
+        auto stored_ref = _clone_annotatable_ref(std::forward<Ref>(ref));
         stored_ref._annotate_source_info(declaration_identity, std::string_view {}, 0u, 0u);
-        return stored_ref;
+        return std::move(stored_ref);
     }
 
     template<class Ref>
@@ -47,10 +45,9 @@ namespace iv {
         uint32_t end
     )
     {
-        using StoredRef = std::remove_cvref_t<Ref>;
-        StoredRef stored_ref = std::forward<Ref>(ref);
+        auto stored_ref = _clone_annotatable_ref(std::forward<Ref>(ref));
         stored_ref._annotate_source_info(declaration_identity, file_path, begin, end);
-        return stored_ref;
+        return std::move(stored_ref);
     }
 
     template<fixed_string Name>
@@ -91,12 +88,23 @@ namespace iv {
     concept NodeLike = std::convertible_to<std::remove_cvref_t<T>, NodeRef>;
 
     template<class T>
+    requires NodeLike<T>
+    NodeRef _materialize_node_ref(T&& value)
+    {
+        if constexpr (requires(std::remove_cvref_t<T> const& ref) { ref.node_ref(); }) {
+            return value.node_ref();
+        } else {
+            return static_cast<NodeRef>(std::forward<T>(value));
+        }
+    }
+
+    template<class T>
     EventPortRef lift_event_operand(T&& x)
     {
         if constexpr (EventPortLike<T>) {
             return std::forward<T>(x);
         } else if constexpr (NodeLike<T>) {
-            return static_cast<NodeRef>(std::forward<T>(x)).event_port();
+            return _materialize_node_ref(std::forward<T>(x)).event_port();
         }
     }
 
@@ -104,7 +112,7 @@ namespace iv {
     SamplePortRef lift_sample_operand(GraphBuilder& g, T&& x)
     {
         if constexpr (SamplePortLike<T>) {
-            SamplePortRef s = std::forward<T>(x);
+            SamplePortRef s = static_cast<SamplePortRef>(std::forward<T>(x));
             if (s.graph_builder != &g) {
                 details::error("operand belongs to a different builder");
             }
@@ -127,12 +135,12 @@ namespace iv {
         GraphBuilder* g = nullptr;
 
         if constexpr (SamplePortLike<L>) {
-            SamplePortRef s = std::forward<L>(lhs);
+            SamplePortRef s = static_cast<SamplePortRef>(std::forward<L>(lhs));
             g = s.graph_builder;
         }
 
         if constexpr (SamplePortLike<R>) {
-            SamplePortRef s = std::forward<R>(rhs);
+            SamplePortRef s = static_cast<SamplePortRef>(std::forward<R>(rhs));
             if (!g) {
                 g = s.graph_builder;
             } else if (s.graph_builder != g) {
@@ -194,7 +202,12 @@ namespace iv {
         );
     }
 
-    inline SamplePortRef operator~(SamplePortRef sample_port)
+    inline SamplePortRef operator~(SamplePortRef const& sample_port)
+    {
+        return sample_port.detach();
+    }
+
+    inline SamplePortRef operator~(SamplePortRef&& sample_port)
     {
         return sample_port.detach();
     }
@@ -216,8 +229,8 @@ namespace iv {
     )
     auto connect_unary_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
-        SamplePortRef source = std::forward<L>(lhs);
-        NodeRef target = static_cast<NodeRef>(std::forward<R>(rhs));
+        SamplePortRef source = static_cast<SamplePortRef>(std::forward<L>(lhs));
+        NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
 
         auto const inputs = get_inputs(target.node());
         auto const outputs = get_outputs(target.node());
@@ -278,7 +291,7 @@ namespace iv {
     auto connect_unary_event_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
         EventPortRef source = std::forward<L>(lhs);
-        NodeRef target = static_cast<NodeRef>(std::forward<R>(rhs));
+        NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
 
         auto const event_inputs = get_event_inputs(target.node());
         auto const event_outputs = get_event_outputs(target.node());
@@ -322,7 +335,7 @@ namespace iv {
     {
         return connect_unary_event_node(
             std::forward<R>(rhs),
-            static_cast<NodeRef>(std::forward<L>(lhs)),
+            _materialize_node_ref(std::forward<L>(lhs)),
             "operator<"
         );
     }
@@ -331,7 +344,7 @@ namespace iv {
     requires NodeLike<R>
     SamplePortRef operator<<(PortName<Name, NamedPortKind::sample>, R&& rhs)
     {
-        NodeRef node = static_cast<NodeRef>(std::forward<R>(rhs));
+        NodeRef node = _materialize_node_ref(std::forward<R>(rhs));
         return node[Name.view()];
     }
 
@@ -339,7 +352,7 @@ namespace iv {
     requires NodeLike<L>
     SamplePortRef operator>>(L&& lhs, PortName<Name, NamedPortKind::sample>)
     {
-        NodeRef node = static_cast<NodeRef>(std::forward<L>(lhs));
+        NodeRef node = _materialize_node_ref(std::forward<L>(lhs));
         return node[Name.view()];
     }
 
@@ -347,14 +360,14 @@ namespace iv {
     requires NodeLike<R>
     EventPortRef operator<<(PortName<Name, NamedPortKind::event>, R&& rhs)
     {
-        return static_cast<NodeRef>(std::forward<R>(rhs)).event_port(Name.view());
+        return _materialize_node_ref(std::forward<R>(rhs)).event_port(Name.view());
     }
 
     template<class L, fixed_string Name>
     requires NodeLike<L>
     EventPortRef operator>>(L&& lhs, PortName<Name, NamedPortKind::event>)
     {
-        return static_cast<NodeRef>(std::forward<L>(lhs)).event_port(Name.view());
+        return _materialize_node_ref(std::forward<L>(lhs)).event_port(Name.view());
     }
 
     template<class Derived, class Node>
@@ -369,7 +382,7 @@ namespace iv {
         auto const inputs = get_inputs(node());
         auto const event_inputs = get_event_inputs(node());
 
-        auto connect_input = [&](SamplePortRef ref, size_t input_port, std::string_view input_name = {}) {
+        auto connect_input = [&](SamplePortRef const& ref, size_t input_port, std::string_view input_name = {}) {
             if (input_port >= inputs.size()) {
                 details::error(
                     to_string() + " "
@@ -478,7 +491,7 @@ namespace iv {
 
         (process_arg(std::forward<Args>(args)), ...);
 
-        return derived();
+        return Derived(*_graph_builder, _index);
     }
 
     template<class Derived, class Node>
@@ -519,7 +532,7 @@ namespace iv {
             ref,
             PortId{ _index, input_port },
         });
-        return derived();
+        return Derived(*_graph_builder, _index);
     }
 
     template<class Derived, class Node>
@@ -589,7 +602,7 @@ namespace iv {
             PortId{ _index, input_port },
             EventConversionRegistry::instance().plan(source_type, event_inputs[input_port].type)
         });
-        return derived();
+        return Derived(*_graph_builder, _index);
     }
 
     template<class Derived, class Node>
@@ -657,7 +670,7 @@ namespace iv {
                     && a.type == b.type;
             };
 
-            auto connect_lane_outputs = [&](auto voice_index_c, NodeRef voice) {
+            auto connect_lane_outputs = [&](auto voice_index_c, NodeRef const& voice) {
                 constexpr size_t voice_index = decltype(voice_index_c)::value;
 
                 for (size_t output_port = 0; output_port < output_configs.size(); ++output_port) {
@@ -677,9 +690,9 @@ namespace iv {
 
                 NodeRef voice = g.subgraph([&] {
                     auto const voice_midi = g.event_input("midi", EventTypeId::midi);
-                    auto const midi_driver = g.node<MidiVoiceAllocator<voice_index, voice_count>>();
+                    auto midi_driver = g.node<MidiVoiceAllocator<voice_index, voice_count>>();
                     midi_driver.connect_event_input("midi", voice_midi);
-                    NodeRef voice_node = make_voice(midi_driver).node_ref();
+                    NodeRef voice_node = make_voice(std::move(midi_driver)).node_ref();
                     auto const& voice_impl = voice_node.node();
                     std::vector<OutputRefConfig> voice_outputs;
                     voice_outputs.reserve(voice_impl.output_configs.size());

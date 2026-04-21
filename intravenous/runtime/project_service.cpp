@@ -164,22 +164,19 @@ namespace iv {
             spans.erase(std::unique(spans.begin(), spans.end()), spans.end());
         }
 
-        void log_reload_exception(std::string_view context, std::exception_ptr exception)
+        std::string format_exception_context(std::string_view context, std::exception_ptr exception)
         {
             if (!exception) {
-                return;
+                return std::string(context);
             }
 
-            auto& out = diagnostic_stream();
-            out << context;
             try {
                 std::rethrow_exception(exception);
             } catch (std::exception const& e) {
-                out << ": " << e.what() << '\n';
+                return std::string(context) + ": " + e.what();
             } catch (...) {
-                out << ": unknown exception\n";
+                return std::string(context) + ": unknown exception";
             }
-            out.flush();
         }
 
         std::string describe_exception(std::exception_ptr exception)
@@ -232,7 +229,7 @@ namespace iv {
         std::filesystem::path discovery_start;
         std::vector<std::filesystem::path> extra_search_roots;
         AudioDeviceFactory audio_device_factory;
-        RuntimeProjectEventSink event_sink;
+        RuntimeProjectNotificationSink notification_sink;
 
         mutable std::mutex mutex;
         mutable std::unordered_map<std::string, LineIndex> line_index_cache;
@@ -253,39 +250,61 @@ namespace iv {
             std::filesystem::path discovery_start_,
             std::vector<std::filesystem::path> extra_search_roots_,
             AudioDeviceFactory audio_device_factory_,
-            RuntimeProjectEventSink event_sink_
+            RuntimeProjectNotificationSink notification_sink_
         ) :
             timeline(timeline_),
             workspace_root(normalize_path(workspace_root_)),
             discovery_start(std::move(discovery_start_)),
             extra_search_roots(std::move(extra_search_roots_)),
             audio_device_factory(std::move(audio_device_factory_)),
-            event_sink(std::move(event_sink_))
+            notification_sink(std::move(notification_sink_))
         {}
 
-        void emit_event(RuntimeProjectEvent event)
+        void emit_notification(RuntimeProjectNotification notification)
         {
-            if (event.module_root.empty()) {
+            if (notification.module_root.empty()) {
                 if (config.has_value()) {
-                    event.module_root = config->module_root;
+                    notification.module_root = config->module_root;
                 } else if (snapshot.has_value()) {
-                    event.module_root = snapshot->module_root;
+                    notification.module_root = snapshot->module_root;
                 }
             }
-            if (event.execution_epoch == 0 && snapshot.has_value()) {
-                event.execution_epoch = snapshot->execution_epoch;
+            if (notification.execution_epoch == 0 && snapshot.has_value()) {
+                notification.execution_epoch = snapshot->execution_epoch;
             }
-            if (event_sink) {
-                event_sink(event);
+            if (notification_sink) {
+                notification_sink(notification);
             }
         }
 
-        void emit_log(std::string level, std::string message)
+        void emit_message(std::string level, std::string message)
         {
-            emit_event(RuntimeProjectEvent {
-                .kind = RuntimeProjectEventKind::log,
+            emit_notification(RuntimeProjectNotification {
+                .kind = RuntimeProjectNotificationKind::message,
                 .level = std::move(level),
                 .message = std::move(message),
+            });
+        }
+
+        void emit_status(
+            std::string code,
+            std::string level,
+            std::string message,
+            std::filesystem::path module_root = {},
+            uint64_t execution_epoch = 0,
+            std::vector<std::string> created_node_ids = {},
+            std::vector<std::string> deleted_node_ids = {}
+        )
+        {
+            emit_notification(RuntimeProjectNotification {
+                .kind = RuntimeProjectNotificationKind::status,
+                .level = std::move(level),
+                .code = std::move(code),
+                .message = std::move(message),
+                .module_root = std::move(module_root),
+                .execution_epoch = execution_epoch,
+                .created_node_ids = std::move(created_node_ids),
+                .deleted_node_ids = std::move(deleted_node_ids),
             });
         }
 
@@ -387,7 +406,7 @@ namespace iv {
                     std::move(search_roots),
                     config->toolchain,
                     [this](std::string const& message) {
-                        emit_log("info", message);
+                        emit_message("info", message);
                     }
                 );
                 auto watcher = make_dependency_watcher();
@@ -467,33 +486,33 @@ namespace iv {
                             }
                             deleted_node_ids.assign(previous_logical_ids.begin(), previous_logical_ids.end());
                         }
-                        emit_event(RuntimeProjectEvent {
-                            .kind = RuntimeProjectEventKind::build_finished,
-                            .level = "info",
-                            .message = "rebuild complete " + config->module_root.string(),
-                            .module_root = config->module_root,
-                            .execution_epoch = next_epoch,
-                            .created_node_ids = std::move(created_node_ids),
-                            .deleted_node_ids = std::move(deleted_node_ids),
-                        });
+                        emit_status(
+                            "rebuildFinished",
+                            "info",
+                            "rebuild complete " + config->module_root.string(),
+                            config->module_root,
+                            next_epoch,
+                            std::move(created_node_ids),
+                            std::move(deleted_node_ids)
+                        );
                         return reload;
                     },
                     [this]() {
-                        emit_event(RuntimeProjectEvent {
-                            .kind = RuntimeProjectEventKind::build_started,
-                            .level = "info",
-                            .message = "rebuilding " + config->module_root.string(),
-                            .module_root = config->module_root,
-                        });
+                        emit_status(
+                            "rebuildStarted",
+                            "info",
+                            "rebuilding " + config->module_root.string(),
+                            config->module_root
+                        );
                     },
                     []() {},
                     [this](std::exception_ptr exception) {
-                        emit_event(RuntimeProjectEvent {
-                            .kind = RuntimeProjectEventKind::build_failed,
-                            .level = "error",
-                            .message = describe_exception(exception),
-                            .module_root = config->module_root,
-                        });
+                        emit_status(
+                            "rebuildFailed",
+                            "error",
+                            describe_exception(exception),
+                            config->module_root
+                        );
                     }
                 );
                 reload_worker.start();
@@ -502,14 +521,14 @@ namespace iv {
                     if (!reload_worker.has_pending_reload()) {
                         if (reload_worker.has_pending_exception()) {
                             if (auto exception = reload_worker.take_exception()) {
-                                log_reload_exception("runtime project reload failed", exception);
+                                emit_message("error", format_exception_context("runtime project reload failed", exception));
                             }
                         }
                         return std::nullopt;
                     }
 
                     if (auto exception = reload_worker.take_exception()) {
-                        log_reload_exception("runtime project reload failed", exception);
+                        emit_message("error", format_exception_context("runtime project reload failed", exception));
                     }
 
                     std::vector<ModuleDependency> dependencies;
@@ -522,9 +541,11 @@ namespace iv {
 
                 reload_worker.request_shutdown();
             } catch (...) {
+                auto exception = std::current_exception();
+                emit_status("startupFailed", "error", describe_exception(exception));
                 {
                     std::scoped_lock lock(mutex);
-                    pending_exception = std::current_exception();
+                    pending_exception = exception;
                     initialized = true;
                 }
                 initialized_cv.notify_all();
@@ -538,7 +559,7 @@ namespace iv {
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots,
         AudioDeviceFactory audio_device_factory,
-        RuntimeProjectEventSink event_sink
+        RuntimeProjectNotificationSink notification_sink
     ) :
         _impl(std::make_unique<Impl>(
             timeline,
@@ -546,7 +567,7 @@ namespace iv {
             std::move(discovery_start),
             std::move(extra_search_roots),
             std::move(audio_device_factory),
-            std::move(event_sink)
+            std::move(notification_sink)
         ))
     {}
 

@@ -184,7 +184,6 @@ namespace {
 
         std::string const qualified_name = record->getQualifiedNameAsString();
         return qualified_name == "iv::NodeRef"
-            || qualified_name == "iv::SamplePortRef"
             || qualified_name == "iv::TypedNodeRef"
             || qualified_name == "iv::StructuredNodeRef";
     }

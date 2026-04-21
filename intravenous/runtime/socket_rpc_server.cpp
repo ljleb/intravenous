@@ -350,23 +350,26 @@ namespace iv {
             };
         }
 
-        Json runtime_event_params_json(RuntimeProjectEvent const& event)
+        Json runtime_notification_params_json(RuntimeProjectNotification const& notification)
         {
             Json json = {
-                {"level", event.level},
-                {"message", event.message},
+                {"level", notification.level},
+                {"message", notification.message},
             };
-            if (!event.module_root.empty()) {
-                json["moduleRoot"] = event.module_root.generic_string();
+            if (!notification.code.empty()) {
+                json["code"] = notification.code;
             }
-            if (event.execution_epoch != 0) {
-                json["executionEpoch"] = event.execution_epoch;
+            if (!notification.module_root.empty()) {
+                json["moduleRoot"] = notification.module_root.generic_string();
             }
-            if (event.kind == RuntimeProjectEventKind::build_finished || !event.created_node_ids.empty()) {
-                json["createdNodeIds"] = string_array_json(event.created_node_ids);
+            if (notification.execution_epoch != 0) {
+                json["executionEpoch"] = notification.execution_epoch;
             }
-            if (event.kind == RuntimeProjectEventKind::build_finished || !event.deleted_node_ids.empty()) {
-                json["deletedNodeIds"] = string_array_json(event.deleted_node_ids);
+            if (!notification.created_node_ids.empty()) {
+                json["createdNodeIds"] = string_array_json(notification.created_node_ids);
+            }
+            if (!notification.deleted_node_ids.empty()) {
+                json["deletedNodeIds"] = string_array_json(notification.deleted_node_ids);
             }
             return json;
         }
@@ -417,8 +420,8 @@ namespace iv {
                 discovery_start,
                 {},
                 audio_device_factory,
-                [this](RuntimeProjectEvent const& event) {
-                    notify_event(event);
+                [this](RuntimeProjectNotification const& notification) {
+                    notify_notification(notification);
                 }
             )
         {}
@@ -473,21 +476,15 @@ namespace iv {
             return true;
         }
 
-        void notify_event(RuntimeProjectEvent const& event)
+        void notify_notification(RuntimeProjectNotification const& notification)
         {
             std::string method;
-            switch (event.kind) {
-            case RuntimeProjectEventKind::log:
-                method = "server.log";
+            switch (notification.kind) {
+            case RuntimeProjectNotificationKind::message:
+                method = "server.message";
                 break;
-            case RuntimeProjectEventKind::build_started:
-                method = "server.buildStarted";
-                break;
-            case RuntimeProjectEventKind::build_finished:
-                method = "server.buildFinished";
-                break;
-            case RuntimeProjectEventKind::build_failed:
-                method = "server.buildFailed";
+            case RuntimeProjectNotificationKind::status:
+                method = "server.status";
                 break;
             }
 
@@ -495,15 +492,12 @@ namespace iv {
             {
                 std::scoped_lock client_lock(client_mutex);
                 fd = client_fd;
-                if (!client_initialized) {
-                    return;
-                }
             }
             if (fd < 0) {
                 return;
             }
 
-            auto const message = jsonrpc_notification(method, runtime_event_params_json(event));
+            auto const message = jsonrpc_notification(method, runtime_notification_params_json(notification));
             if (!send_message(fd, message)) {
                 std::scoped_lock client_lock(client_mutex);
                 if (client_fd == fd) {

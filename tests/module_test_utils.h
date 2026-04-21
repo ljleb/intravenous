@@ -16,6 +16,7 @@
 #include <future>
 #include <iterator>
 #include <iostream>
+#include <source_location>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -116,6 +117,52 @@ namespace iv::test {
         }
 
         return sanitized;
+    }
+
+    inline std::string sanitize_test_token(std::string_view text)
+    {
+        std::string sanitized(text);
+        if (sanitized.empty()) {
+            sanitized = "test";
+        }
+
+        for (char& c : sanitized) {
+            bool good =
+                (c >= 'a' && c <= 'z') ||
+                (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9');
+            if (!good) {
+                c = '_';
+            }
+        }
+
+        return sanitized;
+    }
+
+    inline std::string test_location_id(
+        std::string_view base_name,
+        std::source_location location = std::source_location::current()
+    )
+    {
+        std::filesystem::path file = location.file_name();
+        std::ostringstream out;
+        out << sanitize_test_token(base_name)
+            << "_"
+            << sanitize_test_token(file.stem().string())
+            << "_L"
+            << location.line();
+        return out.str();
+    }
+
+    inline std::filesystem::path fresh_test_workspace(
+        std::string_view base_name,
+        std::source_location location = std::source_location::current()
+    )
+    {
+        auto const workspace = runtime_modules_root() / test_location_id(base_name, location);
+        std::filesystem::remove_all(workspace);
+        std::filesystem::create_directories(workspace);
+        return workspace;
     }
 
     inline char const* active_build_config()

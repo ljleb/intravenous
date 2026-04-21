@@ -11,6 +11,7 @@
 #include <fstream>
 #include <optional>
 #include <regex>
+#include <source_location>
 #include <string>
 #include <string_view>
 #include <sys/select.h>
@@ -21,6 +22,9 @@
 
 namespace {
     using namespace std::chrono_literals;
+
+    constexpr auto socket_rpc_response_timeout = 120s;
+    constexpr auto socket_rpc_rebuild_timeout = 120s;
 
     iv::Timeline& socket_server_timeline()
     {
@@ -62,38 +66,12 @@ namespace {
         };
     }
 
-    std::filesystem::path make_workspace(std::string const& name)
+    std::filesystem::path make_workspace(
+        std::string_view name,
+        std::source_location location = std::source_location::current()
+    )
     {
-        auto const workspace = iv::test::runtime_modules_root() / name;
-        std::filesystem::remove_all(workspace);
-        std::filesystem::create_directories(workspace);
-        return workspace;
-    }
-
-    std::string unique_workspace_name(std::string const& base_name)
-    {
-        auto const* test_info = ::testing::UnitTest::GetInstance()->current_test_info();
-        if (!test_info) {
-            return base_name;
-        }
-
-        auto sanitize = [](std::string value) {
-            for (char& c : value) {
-                bool const is_alnum = (c >= 'a' && c <= 'z') ||
-                    (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9');
-                if (!is_alnum) {
-                    c = '_';
-                }
-            }
-            return value;
-        };
-
-        return sanitize(
-            base_name + "_" +
-            std::string(test_info->test_suite_name()) + "_" +
-            std::string(test_info->name())
-        );
+        return iv::test::fresh_test_workspace(name, location);
     }
 
     void write_text(std::filesystem::path const& path, std::string const& text)
@@ -104,17 +82,19 @@ namespace {
         out << text;
     }
 
-    std::filesystem::path make_project_workspace()
+    std::filesystem::path make_project_workspace(std::source_location location = std::source_location::current())
     {
-        auto const workspace = make_workspace(unique_workspace_name("socket_rpc_server"));
+        auto const workspace = make_workspace("socket_rpc_server", location);
         iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", workspace);
         write_text(workspace / ".intravenous", "");
         return workspace;
     }
 
-    std::filesystem::path make_polyphonic_project_workspace()
+    std::filesystem::path make_polyphonic_project_workspace(
+        std::source_location location = std::source_location::current()
+    )
     {
-        auto const workspace = make_workspace(unique_workspace_name("socket_rpc_server_polyphonic"));
+        auto const workspace = make_workspace("socket_rpc_server_polyphonic", location);
         iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", workspace);
         write_text(workspace / ".intravenous", "");
         write_text(workspace / "module.cpp", R"(#include "dsl.h"
@@ -146,9 +126,11 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
         return workspace;
     }
 
-    std::filesystem::path make_annotated_symbol_project_workspace()
+    std::filesystem::path make_annotated_symbol_project_workspace(
+        std::source_location location = std::source_location::current()
+    )
     {
-        auto const workspace = make_workspace(unique_workspace_name("socket_rpc_server_annotated_symbol"));
+        auto const workspace = make_workspace("socket_rpc_server_annotated_symbol", location);
         write_text(workspace / ".intravenous", "");
         write_text(workspace / "module.cpp", R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
@@ -180,25 +162,6 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
         auto line = buffer->substr(0, newline);
         buffer->erase(0, newline + 1);
         return line;
-    }
-
-    std::string read_line(int fd, std::string* buffer)
-    {
-        if (auto line = pop_line(buffer); !line.empty()) {
-            return line;
-        }
-
-        std::array<char, 256> read_buffer {};
-        for (;;) {
-            ssize_t count = ::read(fd, read_buffer.data(), read_buffer.size());
-            if (count <= 0) {
-                return {};
-            }
-            buffer->append(read_buffer.data(), static_cast<size_t>(count));
-            if (auto line = pop_line(buffer); !line.empty()) {
-                return line;
-            }
-        }
     }
 
     std::string read_line_until(int fd, std::string* buffer, std::chrono::milliseconds timeout)
@@ -255,7 +218,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
         int fd,
         std::string* buffer,
         int id,
-        std::chrono::milliseconds timeout = 45s
+        std::chrono::milliseconds timeout = socket_rpc_response_timeout
     )
     {
         auto const deadline = std::chrono::steady_clock::now() + timeout;
@@ -298,7 +261,7 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
 
-    auto const initialize_response = read_line(fd, &response_buffer);
+    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
     EXPECT_TRUE(initialize_response.contains(R"("jsonrpc":"2.0")"));
     EXPECT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
     EXPECT_TRUE(initialize_response.contains(R"("moduleRoot":")"));
@@ -325,7 +288,7 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, active_regions_request.data(), active_regions_request.size()), static_cast<ssize_t>(active_regions_request.size()));
 
-    auto const active_regions_response = read_line(fd, &response_buffer);
+    auto const active_regions_response = read_response_for_id(fd, &response_buffer, 6);
     EXPECT_TRUE(active_regions_response.contains(R"("id":6)"));
     EXPECT_TRUE(active_regions_response.contains(R"("sourceSpans":[)"));
 
@@ -339,7 +302,7 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, get_logical_node_request.data(), get_logical_node_request.size()), static_cast<ssize_t>(get_logical_node_request.size()));
 
-    auto const get_logical_node_response = read_line(fd, &response_buffer);
+    auto const get_logical_node_response = read_response_for_id(fd, &response_buffer, 3);
     EXPECT_TRUE(get_logical_node_response.contains(R"("id":3)"));
     EXPECT_TRUE(get_logical_node_response.contains(R"("memberCount":)"));
 
@@ -349,14 +312,14 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
         R"("]}})" "\n";
     ASSERT_EQ(::write(fd, get_logical_nodes_request.data(), get_logical_nodes_request.size()), static_cast<ssize_t>(get_logical_nodes_request.size()));
 
-    auto const get_logical_nodes_response = read_line(fd, &response_buffer);
+    auto const get_logical_nodes_response = read_response_for_id(fd, &response_buffer, 4);
     EXPECT_TRUE(get_logical_nodes_response.contains(R"("id":4)"));
     EXPECT_TRUE(get_logical_nodes_response.contains(R"([{"id":")"));
 
     std::string const shutdown_request =
         R"({"jsonrpc":"2.0","id":5,"method":"server.shutdown","params":{}})" "\n";
     ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_line(fd, &response_buffer);
+    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 5);
     EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
 
     ::close(fd);
@@ -388,7 +351,7 @@ TEST(SocketRpcServer, ShutsDownWhenClientDisconnects)
     ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
 
     std::string response_buffer;
-    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
+    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1, 120s);
     ASSERT_FALSE(initialize_response.empty());
 
     ::close(fd);
@@ -419,7 +382,7 @@ TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
         std::filesystem::weakly_canonical(workspace).generic_string() +
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
-    auto const initialize_response = read_line(fd, &response_buffer);
+    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
     ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
 
     auto module_text = std::filesystem::exists(workspace / "module.cpp")
@@ -434,33 +397,27 @@ TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
 
     bool saw_started = false;
     bool saw_finished = false;
-    bool saw_created_ids = false;
-    bool saw_deleted_ids = false;
-    auto const deadline = std::chrono::steady_clock::now() + 45s;
+    auto const deadline = std::chrono::steady_clock::now() + socket_rpc_rebuild_timeout;
     while (std::chrono::steady_clock::now() < deadline && (!saw_started || !saw_finished)) {
         auto const line = read_line_until(fd, &response_buffer, 500ms);
         if (line.empty()) {
             continue;
         }
-        if (line.contains(R"("method":"server.buildStarted")")) {
+        if (line.contains(R"("method":"server.status")") && line.contains(R"("code":"rebuildStarted")")) {
             saw_started = true;
         }
-        if (line.contains(R"("method":"server.buildFinished")")) {
+        if (line.contains(R"("method":"server.status")") && line.contains(R"("code":"rebuildFinished")")) {
             saw_finished = true;
-            saw_created_ids = line.contains(R"("createdNodeIds":[)");
-            saw_deleted_ids = line.contains(R"("deletedNodeIds":[)");
         }
     }
 
     EXPECT_TRUE(saw_started);
     EXPECT_TRUE(saw_finished);
-    EXPECT_TRUE(saw_created_ids);
-    EXPECT_TRUE(saw_deleted_ids);
 
     std::string const shutdown_request =
         R"({"jsonrpc":"2.0","id":3,"method":"server.shutdown","params":{}})" "\n";
     ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_line(fd, &response_buffer);
+    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 3);
     EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
 
     ::close(fd);
@@ -491,7 +448,7 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
         std::filesystem::weakly_canonical(workspace).generic_string() +
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
-    auto const initialize_response = read_line(fd, &response_buffer);
+    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
     ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
 
     std::string const query_request =
@@ -531,7 +488,7 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     std::string const shutdown_request =
         R"({"jsonrpc":"2.0","id":4,"method":"server.shutdown","params":{}})" "\n";
     ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_line(fd, &response_buffer);
+    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 4);
     EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
 
     ::close(fd);
@@ -562,7 +519,7 @@ TEST(SocketRpcServer, QueryBySpansKeepsAnnotatedLogicalNodeIdStableOverUnixSocke
         std::filesystem::weakly_canonical(workspace).generic_string() +
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
-    auto const initialize_response = read_line(fd, &response_buffer);
+    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
     ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
 
     std::string const query_request =
@@ -588,20 +545,26 @@ TEST(SocketRpcServer, QueryBySpansKeepsAnnotatedLogicalNodeIdStableOverUnixSocke
     };
     write_text(workspace / "module.cpp", current + "\n");
 
-    std::string reloaded_response;
-    auto const deadline = std::chrono::steady_clock::now() + 45s;
-    do {
-        std::this_thread::sleep_for(100ms);
-        std::string const reload_query_request =
-            R"({"jsonrpc":"2.0","id":4,"method":"graph.queryBySpans","params":{"filePath":")" +
-            std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
-            R"(","ranges":[{"start":{"line":1,"column":1},"end":{"line":17,"column":1}}],"match":"intersection"}})" "\n";
-        ASSERT_EQ(::write(fd, reload_query_request.data(), reload_query_request.size()), static_cast<ssize_t>(reload_query_request.size()));
-        reloaded_response = read_response_for_id(fd, &response_buffer, 4, 2s);
-        if (reloaded_response.contains(R"("executionEpoch":2)") || reloaded_response.contains(R"("executionEpoch":3)") || reloaded_response.contains(R"("executionEpoch":4)")) {
-            break;
+    auto const deadline = std::chrono::steady_clock::now() + socket_rpc_rebuild_timeout;
+    bool saw_rebuild_finished = false;
+    while (std::chrono::steady_clock::now() < deadline && !saw_rebuild_finished) {
+        auto const line = read_line_until(fd, &response_buffer, 500ms);
+        if (line.empty()) {
+            continue;
         }
-    } while (std::chrono::steady_clock::now() < deadline);
+        if (line.contains(R"("method":"server.status")") && line.contains(R"("code":"rebuildFinished")")) {
+            saw_rebuild_finished = true;
+        }
+    }
+
+    ASSERT_TRUE(saw_rebuild_finished);
+
+    std::string const reload_query_request =
+        R"({"jsonrpc":"2.0","id":4,"method":"graph.queryBySpans","params":{"filePath":")" +
+        std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
+        R"(","ranges":[{"start":{"line":1,"column":1},"end":{"line":17,"column":1}}],"match":"intersection"}})" "\n";
+    ASSERT_EQ(::write(fd, reload_query_request.data(), reload_query_request.size()), static_cast<ssize_t>(reload_query_request.size()));
+    auto const reloaded_response = read_response_for_id(fd, &response_buffer, 4, 30s);
 
     ASSERT_FALSE(reloaded_response.empty());
     EXPECT_TRUE(reloaded_response.contains(R"("kind":"iv::ValueSource")")) << reloaded_response;
@@ -612,7 +575,7 @@ TEST(SocketRpcServer, QueryBySpansKeepsAnnotatedLogicalNodeIdStableOverUnixSocke
     std::string const shutdown_request =
         R"({"jsonrpc":"2.0","id":3,"method":"server.shutdown","params":{}})" "\n";
     ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_line(fd, &response_buffer);
+    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 3);
     EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
 
     ::close(fd);

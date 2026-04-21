@@ -50,34 +50,18 @@ namespace iv {
         GraphBuilder* graph_builder{};
         size_t node_index{};
         size_t output_port{};
-        std::string logical_declaration_id {};
-        bool allows_single_assignment = false;
 
         SamplePortRef() = default;
-        SamplePortRef(SamplePortRef const& rhs) :
-            graph_builder(rhs.graph_builder),
-            node_index(rhs.node_index),
-            output_port(rhs.output_port),
-            logical_declaration_id(rhs.allows_single_assignment ? rhs.logical_declaration_id : std::string{}),
-            allows_single_assignment(rhs.allows_single_assignment)
-        {}
-        explicit SamplePortRef(LogicalEmptyTag, std::string_view declaration_identity) :
-            logical_declaration_id(declaration_identity),
-            allows_single_assignment(true)
-        {}
+        SamplePortRef(SamplePortRef const&) = default;
+        SamplePortRef(SamplePortRef&&) noexcept = default;
         explicit SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
         operator PortId() const { return { node_index, output_port }; }
 
-        SamplePortRef& operator=(SamplePortRef const& rhs);
+        SamplePortRef& operator=(SamplePortRef const&) = default;
+        SamplePortRef& operator=(SamplePortRef&& rhs) = default;
+        SamplePortRef _clone_handle() const;
 
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
-        void _annotate_source_info(
-            std::string_view declaration_identity,
-            std::string_view file_path,
-            uint32_t begin,
-            uint32_t end
-        );
-
         std::string to_string() const;
     };
 
@@ -147,10 +131,7 @@ namespace iv {
     template<fixed_string Name, NamedPortKind Kind = NamedPortKind::sample>
     struct PortName {
         template<class T>
-        constexpr auto operator=(T&& value) const
-        {
-            return NamedArg<Name, std::remove_cvref_t<T>, Kind>{ std::forward<T>(value) };
-        }
+        constexpr auto operator=(T&& value) const;
     };
 
     struct BuilderNode {
@@ -168,6 +149,7 @@ namespace iv {
         std::vector<PortId> subgraph_event_output_sources {};
         std::vector<SourceInfo> source_infos {};
         std::vector<std::string> logical_node_ids {};
+        std::string vacant_input_owner_id {};
         std::string subgraph_kind {};
 
         std::vector<InputConfig> const& inputs() const
@@ -805,6 +787,16 @@ namespace iv {
             _logical_declaration_id(rhs._allows_single_assignment ? rhs._logical_declaration_id : std::string{}),
             _allows_single_assignment(rhs._allows_single_assignment)
         {}
+        NodeRefBase(NodeRefBase&& rhs) noexcept :
+            _graph_builder(rhs._graph_builder),
+            _index(rhs._index),
+            _logical_declaration_id(std::move(rhs._logical_declaration_id)),
+            _allows_single_assignment(rhs._allows_single_assignment)
+        {
+            rhs._graph_builder = nullptr;
+            rhs._index = 0;
+            rhs._allows_single_assignment = false;
+        }
         explicit NodeRefBase(LogicalEmptyTag, std::string_view declaration_identity) :
             _logical_declaration_id(declaration_identity),
             _allows_single_assignment(true)
@@ -815,9 +807,11 @@ namespace iv {
         {}
 
         Derived& operator=(Derived const& rhs);
+        Derived& operator=(Derived&& rhs);
 
         BuilderNode const& node() const;
         NodeRef node_ref() const;
+        Derived _clone_handle() const;
 
         SamplePortRef operator[](size_t output_index) const;
         SamplePortRef operator[](std::string_view output_name) const;
@@ -861,11 +855,14 @@ namespace iv {
         using NodeRefBase<NodeRef>::NodeRefBase;
         using NodeRefBase<NodeRef>::operator=;
 
-        NodeRef(NodeRef const&) = default;
+        NodeRef(NodeRef const&) = delete;
+        NodeRef(NodeRef&&) noexcept = default;
 
-        NodeRef& operator=(NodeRef const& rhs)
+        NodeRef& operator=(NodeRef const& rhs) = delete;
+
+        NodeRef& operator=(NodeRef&& rhs)
         {
-            return NodeRefBase<NodeRef>::operator=(rhs);
+            return NodeRefBase<NodeRef>::operator=(std::move(rhs));
         }
     };
 
@@ -878,11 +875,22 @@ namespace iv {
         using Base::Base;
         using Base::operator=;
 
-        TypedNodeRef(TypedNodeRef const&) = default;
+        TypedNodeRef(TypedNodeRef const&) = delete;
+        TypedNodeRef(TypedNodeRef&&) noexcept = default;
 
-        TypedNodeRef& operator=(TypedNodeRef const& rhs)
+        TypedNodeRef& operator=(TypedNodeRef const& rhs) = delete;
+
+        TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
-            return Base::operator=(rhs);
+            return Base::operator=(std::move(rhs));
+        }
+
+        TypedNodeRef _clone_handle() const
+        {
+            if (!this->_graph_builder) {
+                return TypedNodeRef {};
+            }
+            return TypedNodeRef(*this->_graph_builder, this->_index);
         }
 
         operator NodeRef() const
@@ -905,17 +913,28 @@ namespace iv {
         using Base::Base;
         using Base::operator=;
 
-        StructuredNodeRef(StructuredNodeRef const&) = default;
+        StructuredNodeRef(StructuredNodeRef const&) = delete;
+        StructuredNodeRef(StructuredNodeRef&&) noexcept = default;
 
-        StructuredNodeRef& operator=(StructuredNodeRef const& rhs)
+        StructuredNodeRef& operator=(StructuredNodeRef const& rhs) = delete;
+
+        StructuredNodeRef& operator=(StructuredNodeRef&& rhs)
         {
-            return Base::operator=(rhs);
+            return Base::operator=(std::move(rhs));
         }
 
         StructuredNodeRef() = default;
         explicit StructuredNodeRef(GraphBuilder& graph_builder, size_t index) :
             Base(graph_builder, index)
         {}
+
+        StructuredNodeRef _clone_handle() const
+        {
+            if (!this->_graph_builder) {
+                return StructuredNodeRef {};
+            }
+            return StructuredNodeRef(*this->_graph_builder, this->_index);
+        }
 
         template<size_t I>
         SamplePortRef get() const
@@ -1762,36 +1781,27 @@ namespace iv {
             }
         }
 
-        std::optional<NodeRef> _source_node_for_source_span(SamplePortRef ref)
+        void _initialize_node_vacant_input_owner(size_t node_index, std::string_view logical_node_id)
         {
-            if (!ref.graph_builder) {
-                return std::nullopt;
+            if (logical_node_id.empty()) {
+                return;
             }
-
-            if (ref.graph_builder != this) {
-                details::error(
-                    "builder " + _builder_id.value + ": cannot resolve source span origin for " + ref.to_string() +
-                    " because it belongs to another builder"
-                );
+            auto& owner = _nodes[node_index].vacant_input_owner_id;
+            if (owner.empty()) {
+                owner = std::string(logical_node_id);
             }
+        }
 
-            PortId source = ref;
-            for (auto const& [_, info] : _detached_info_by_source) {
-                if (info.reader_output == source) {
-                    source = info.original_source;
-                    break;
-                }
+        void _transfer_node_vacant_input_owner(size_t node_index, std::string_view logical_node_id)
+        {
+            if (logical_node_id.empty()) {
+                return;
             }
-
-            if (source.node == GRAPH_ID) {
-                return std::nullopt;
-            }
-
-            return NodeRef(*this, source.node);
+            _nodes[node_index].vacant_input_owner_id = std::string(logical_node_id);
         }
 
         void _annotate_node_source_info(
-            NodeRef ref,
+            NodeRef const& ref,
             std::string_view declaration_identity,
             std::string_view file_path,
             uint32_t begin,
@@ -1822,6 +1832,7 @@ namespace iv {
                 infos.push_back(std::move(info));
             }
             _add_node_logical_id(ref._index, declaration_identity);
+            _initialize_node_vacant_input_owner(ref._index, declaration_identity);
         }
 
         static std::string allocate_root_builder_id()
@@ -1830,7 +1841,7 @@ namespace iv {
             return std::to_string(next_root_builder_id++);
         }
 
-        SamplePortRef detach_sample_port(SamplePortRef sample_port, size_t loop_extra_latency)
+        SamplePortRef detach_sample_port(SamplePortRef const& sample_port, size_t loop_extra_latency)
         {
             if (!sample_port.graph_builder) {
                 details::error(
@@ -1849,7 +1860,7 @@ namespace iv {
 
             // Already detached: return unchanged.
             if (_detached_reader_outputs.contains(source)) {
-                return sample_port;
+                return sample_port._clone_handle();
             }
 
             // Reuse existing detached bridge for the same source.
@@ -1888,14 +1899,24 @@ namespace iv {
             return detached;
         }
 
-        SamplePortRef lift_to_sample_port(SamplePortRef sample_port)
+        SamplePortRef lift_to_sample_port(SamplePortRef const& sample_port)
         {
             if (sample_port.graph_builder != this) {
                 details::error(
                     "builder " + _builder_id.value + ": sample port " + sample_port.to_string() + " belongs to another builder"
                 );
             }
-            return sample_port;
+            return sample_port._clone_handle();
+        }
+
+        SamplePortRef lift_to_sample_port(SamplePortRef&& sample_port)
+        {
+            if (sample_port.graph_builder != this) {
+                details::error(
+                    "builder " + _builder_id.value + ": sample port " + sample_port.to_string() + " belongs to another builder"
+                );
+            }
+            return std::move(sample_port);
         }
 
         template<class T>
@@ -1913,6 +1934,8 @@ namespace iv {
                     details::error(
                         "builder " + _builder_id.value + ": expected sample/sample-port value, got EventPortRef"
                     );
+                } else if constexpr (std::same_as<T, SamplePortRef>) {
+                    return lift_to_sample_port(v);
                 } else {
                     return lift_to_sample_port(v);
                 }
@@ -1923,22 +1946,29 @@ namespace iv {
 
     inline GraphBuilder& GraphBuilder::augment(Timeline& timeline)
     {
+        TimelineAugmentation augmentation = timeline.begin_augmentation();
         size_t const original_node_count = _nodes.size();
         for (size_t node_i = 0; node_i < original_node_count; ++node_i) {
-            if (!_nodes[node_i].materialize || _nodes[node_i].logical_node_ids.empty()) {
+            if (!_nodes[node_i].materialize) {
                 continue;
             }
-            auto const logical_node_ids = std::span<std::string const>(_nodes[node_i].logical_node_ids);
+
+            auto const& logical_node_id = _nodes[node_i].vacant_input_owner_id;
+            if (logical_node_id.empty()) {
+                continue;
+            }
+
             auto const input_configs = _nodes[node_i].input_configs;
             auto const event_input_configs = _nodes[node_i].event_input_configs;
 
             for (size_t input_i = 0; input_i < input_configs.size(); ++input_i) {
-                if (_placed_input_ports.contains(PortId{ node_i, input_i })) {
+                PortId const target_port{ node_i, input_i };
+                if (_placed_input_ports.contains(target_port)) {
                     continue;
                 }
-                SamplePortRef source = timeline.resolve_sample_input(
+                SamplePortRef source = augmentation.resolve_sample_input(
                     *this,
-                    logical_node_ids,
+                    logical_node_id,
                     input_i,
                     input_configs[input_i]
                 );
@@ -1947,17 +1977,19 @@ namespace iv {
                         "builder " + _builder_id.value + ": timeline returned a sample port from another builder"
                     );
                 }
-                _placed_input_ports.insert(PortId{ node_i, input_i });
-                _timeline_filled_input_ports.insert(PortId{ node_i, input_i });
-                _edges.emplace(GraphEdge{ source, PortId{ node_i, input_i } });
+                _placed_input_ports.insert(target_port);
+                _timeline_filled_input_ports.insert(target_port);
+                _edges.emplace(GraphEdge{ source, target_port });
             }
+
             for (size_t input_i = 0; input_i < event_input_configs.size(); ++input_i) {
-                if (_placed_event_input_ports.contains(PortId{ node_i, input_i })) {
+                PortId const target_port{ node_i, input_i };
+                if (_placed_event_input_ports.contains(target_port)) {
                     continue;
                 }
-                EventPortRef source = timeline.resolve_event_input(
+                EventPortRef source = augmentation.resolve_event_input(
                     *this,
-                    logical_node_ids,
+                    logical_node_id,
                     input_i,
                     event_input_configs[input_i]
                 );
@@ -1969,11 +2001,11 @@ namespace iv {
                 auto const source_type = (source.node_index == GRAPH_ID)
                     ? _public_event_inputs[source.output_port].type
                     : _nodes[source.node_index].event_output_configs[source.output_port].type;
-                _placed_event_input_ports.insert(PortId{ node_i, input_i });
-                _timeline_filled_event_input_ports.insert(PortId{ node_i, input_i });
+                _placed_event_input_ports.insert(target_port);
+                _timeline_filled_event_input_ports.insert(target_port);
                 _event_edges.emplace(GraphEventEdge{
                     PortId{ source.node_index, source.output_port },
-                    PortId{ node_i, input_i },
+                    target_port,
                     EventConversionRegistry::instance().plan(source_type, event_input_configs[input_i].type)
                 });
             }
@@ -2367,26 +2399,31 @@ namespace iv {
         return build_with_metadata(detach_id_offset).graph;
     }
 
-    inline SamplePortRef Timeline::resolve_sample_input(
+    inline TimelineAugmentation Timeline::begin_augmentation()
+    {
+        return TimelineAugmentation {};
+    }
+
+    inline SamplePortRef TimelineAugmentation::resolve_sample_input(
         GraphBuilder& builder,
-        std::span<std::string const> logical_node_ids,
+        std::string_view logical_node_id,
         size_t input_ordinal,
         InputConfig const& input_config
     )
     {
-        (void)logical_node_ids;
+        (void)logical_node_id;
         (void)input_ordinal;
         return builder.node<Constant>(input_config.default_value);
     }
 
-    inline EventPortRef Timeline::resolve_event_input(
+    inline EventPortRef TimelineAugmentation::resolve_event_input(
         GraphBuilder& builder,
-        std::span<std::string const> logical_node_ids,
+        std::string_view logical_node_id,
         size_t input_ordinal,
         EventInputConfig const& input_config
     )
     {
-        (void)logical_node_ids;
+        (void)logical_node_id;
         (void)input_ordinal;
         return builder.node<EventConcatenation>(0, input_config.type).event_port(0);
     }
@@ -2427,40 +2464,6 @@ namespace iv {
         }
     }
 
-    inline SamplePortRef& SamplePortRef::operator=(SamplePortRef const& rhs)
-    {
-        if (this == &rhs) {
-            return *this;
-        }
-
-        if (allows_single_assignment) {
-            if (!rhs.graph_builder) {
-                details::error("cannot initialize a logical-empty sample port from an empty sample port");
-            }
-            graph_builder = rhs.graph_builder;
-            node_index = rhs.node_index;
-            output_port = rhs.output_port;
-            if (!logical_declaration_id.empty() && graph_builder && node_index != GRAPH_ID) {
-                graph_builder->_add_node_logical_id(node_index, logical_declaration_id);
-            }
-            allows_single_assignment = false;
-            return *this;
-        }
-
-        if (graph_builder || !logical_declaration_id.empty()) {
-            details::error(
-                "cannot assign to sample port '" + logical_declaration_id + "' after it has already been initialized"
-            );
-        }
-
-        graph_builder = rhs.graph_builder;
-        node_index = rhs.node_index;
-        output_port = rhs.output_port;
-        logical_declaration_id = rhs.logical_declaration_id;
-        allows_single_assignment = rhs.allows_single_assignment;
-        return *this;
-    }
-
     inline EventPortRef::EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
         graph_builder(&graph_builder_),
         node_index(node_index),
@@ -2495,31 +2498,20 @@ namespace iv {
         }
     }
 
+    inline SamplePortRef SamplePortRef::_clone_handle() const
+    {
+        if (!graph_builder) {
+            return SamplePortRef {};
+        }
+        return SamplePortRef(*graph_builder, node_index, output_port);
+    }
+
     inline SamplePortRef SamplePortRef::detach(size_t loop_extra_latency) const
     {
         if (!graph_builder) {
             details::error("attempted to detach an empty sample port");
         }
         return graph_builder->detach_sample_port(*this, loop_extra_latency);
-    }
-
-    inline void SamplePortRef::_annotate_source_info(
-        std::string_view declaration_identity,
-        std::string_view file_path,
-        uint32_t begin,
-        uint32_t end
-    )
-    {
-        if (!declaration_identity.empty()) {
-            logical_declaration_id = declaration_identity;
-        }
-        if (!graph_builder) {
-            return;
-        }
-
-        if (auto source_node = graph_builder->_source_node_for_source_span(*this); source_node.has_value()) {
-            graph_builder->_annotate_node_source_info(*source_node, declaration_identity, file_path, begin, end);
-        }
     }
 
     inline std::string SamplePortRef::to_string() const
@@ -2563,6 +2555,15 @@ namespace iv {
     }
 
     template<class Derived, class Node>
+    inline Derived NodeRefBase<Derived, Node>::_clone_handle() const
+    {
+        if (!_graph_builder) {
+            return Derived {};
+        }
+        return Derived(*_graph_builder, _index);
+    }
+
+    template<class Derived, class Node>
     inline Derived& NodeRefBase<Derived, Node>::operator=(Derived const& rhs)
     {
         if (this == &rhs) {
@@ -2577,6 +2578,7 @@ namespace iv {
             _index = rhs._index;
             if (!_logical_declaration_id.empty() && _graph_builder) {
                 _graph_builder->_add_node_logical_id(_index, _logical_declaration_id);
+                _graph_builder->_initialize_node_vacant_input_owner(_index, _logical_declaration_id);
             }
             _allows_single_assignment = false;
             return derived();
@@ -2592,6 +2594,48 @@ namespace iv {
         _index = rhs._index;
         _logical_declaration_id = rhs._logical_declaration_id;
         _allows_single_assignment = rhs._allows_single_assignment;
+        return Derived(*_graph_builder, _index);
+    }
+
+    template<class Derived, class Node>
+    inline Derived& NodeRefBase<Derived, Node>::operator=(Derived&& rhs)
+    {
+        if (this == &rhs) {
+            return derived();
+        }
+
+        if (_allows_single_assignment) {
+            if (!rhs._graph_builder) {
+                details::error("cannot initialize a logical-empty NodeRef from an empty NodeRef");
+            }
+            _graph_builder = rhs._graph_builder;
+            _index = rhs._index;
+            if (!_logical_declaration_id.empty() && _graph_builder) {
+                _graph_builder->_add_node_logical_id(_index, _logical_declaration_id);
+                _graph_builder->_transfer_node_vacant_input_owner(_index, _logical_declaration_id);
+            }
+            _allows_single_assignment = false;
+            rhs._graph_builder = nullptr;
+            rhs._index = 0;
+            rhs._logical_declaration_id.clear();
+            rhs._allows_single_assignment = false;
+            return derived();
+        }
+
+        if (_graph_builder || !_logical_declaration_id.empty()) {
+            details::error(
+                "cannot assign to NodeRef '" + _logical_declaration_id + "' after it has already been initialized"
+            );
+        }
+
+        _graph_builder = rhs._graph_builder;
+        _index = rhs._index;
+        _logical_declaration_id = std::move(rhs._logical_declaration_id);
+        _allows_single_assignment = rhs._allows_single_assignment;
+        rhs._graph_builder = nullptr;
+        rhs._index = 0;
+        rhs._logical_declaration_id.clear();
+        rhs._allows_single_assignment = false;
         return derived();
     }
 
@@ -2771,7 +2815,7 @@ namespace iv {
         } else {
             builder_node.ttl_samples = ttl_samples;
         }
-        return derived();
+        return Derived(*_graph_builder, _index);
     }
 
     template<class Derived, class Node>
@@ -2787,5 +2831,26 @@ namespace iv {
             return "empty node";
         }
         return "node at address " + _graph_builder->node_id(_index);
+    }
+
+    template<fixed_string Name, NamedPortKind Kind>
+    template<class T>
+    constexpr auto PortName<Name, Kind>::operator=(T&& value) const
+    {
+        using Value = std::remove_cvref_t<T>;
+        if constexpr (std::same_as<Value, SamplePortRef>) {
+            return NamedArg<Name, SamplePortRef, Kind>{ static_cast<SamplePortRef>(std::forward<T>(value)) };
+        } else if constexpr (std::same_as<Value, EventPortRef>) {
+            if (!value.graph_builder) {
+                return NamedArg<Name, EventPortRef, Kind>{ EventPortRef{} };
+            }
+            return NamedArg<Name, EventPortRef, Kind>{
+                EventPortRef(*value.graph_builder, value.node_index, value.output_port)
+            };
+        } else if constexpr (requires(Value const& ref) { ref.node_ref(); }) {
+            return NamedArg<Name, NodeRef, Kind>{ value.node_ref() };
+        } else {
+            return NamedArg<Name, Value, Kind>{ std::forward<T>(value) };
+        }
     }
 }

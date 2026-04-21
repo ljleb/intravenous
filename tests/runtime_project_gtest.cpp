@@ -11,10 +11,12 @@
 #include <filesystem>
 #include <fstream>
 #include <ranges>
+#include <source_location>
 #include <set>
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -89,12 +91,12 @@ namespace {
         };
     }
 
-    std::filesystem::path make_workspace(std::string const& name)
+    std::filesystem::path make_workspace(
+        std::string_view name,
+        std::source_location location = std::source_location::current()
+    )
     {
-        auto const workspace = iv::test::runtime_modules_root() / name;
-        std::filesystem::remove_all(workspace);
-        std::filesystem::create_directories(workspace);
-        return workspace;
+        return iv::test::fresh_test_workspace(name, location);
     }
 
     void write_text(std::filesystem::path const& path, std::string const& text)
@@ -105,16 +107,24 @@ namespace {
         out << text;
     }
 
-    std::filesystem::path copy_fixture_workspace(std::string const& test_name, std::string const& fixture_name)
+    std::filesystem::path copy_fixture_workspace(
+        std::string_view test_name,
+        std::string const& fixture_name,
+        std::source_location location = std::source_location::current()
+    )
     {
-        auto const workspace = make_workspace(test_name);
+        auto const workspace = make_workspace(test_name, location);
         iv::test::copy_directory(iv::test::test_modules_root() / fixture_name, workspace);
         return workspace;
     }
 
-    std::filesystem::path make_inline_module_workspace(std::string const& test_name, std::string const& module_text)
+    std::filesystem::path make_inline_module_workspace(
+        std::string_view test_name,
+        std::string const& module_text,
+        std::source_location location = std::source_location::current()
+    )
     {
-        auto const workspace = make_workspace(test_name);
+        auto const workspace = make_workspace(test_name, location);
         write_text(workspace / ".intravenous", "");
         write_text(workspace / "module.cpp", module_text);
         return workspace;
@@ -433,7 +443,7 @@ namespace {
     {
         using namespace iv;
         auto& g = context.builder();
-        SamplePortRef x;
+        NodeRef x;
         x = g.node<ValueSource>(&context.sample_period()).node_ref();
         auto const sink = context.target_factory().sink(g, 0);
         sink(x);
@@ -479,7 +489,7 @@ namespace {
     {
         using namespace iv;
         auto& g = context.builder();
-        SamplePortRef x;
+        NodeRef x;
         x = g.node<ValueSource>(&context.sample_period()).node_ref();
         x = g.node<ValueSource>(&context.sample_period()).node_ref();
         auto const sink = context.target_factory().sink(g, 0);
@@ -907,7 +917,7 @@ void polyphonic_module(iv::ModuleContext const& context)
     auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
     auto const sink = io.sink(g, 0);
-    auto const voice = iv::polyphonic<2>(g, [&](auto m) {
+    auto voice = iv::polyphonic<2>(g, [&](auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
             "phase_offset"_P = 0.0,
@@ -916,7 +926,7 @@ void polyphonic_module(iv::ModuleContext const& context)
         );
         return saw * ("amplitude"_P << m);
     });
-    auto x = voice;
+    auto x = std::move(voice);
     sink(x);
     g.outputs();
 }
@@ -934,8 +944,8 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
         module_cpp,
         {
             iv::SourceRange {
-                .start = { .line = 12, .column = 16 },
-                .end = { .line = 12, .column = 20 },
+                .start = { .line = 12, .column = 6 },
+                .end = { .line = 12, .column = 10 },
             },
         }
     );
@@ -1023,7 +1033,7 @@ TEST(RuntimeProjectService, ReloadInvalidatesOldNodeIds)
     );
 }
 
-TEST(RuntimeProjectService, ProjectConfigOverridesIntraveniousDefaultsToolchain)
+TEST(RuntimeProjectService, ProjectConfigOverridesIntravenousDefaultsToolchain)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_toolchain_override", "local_cmake");
     auto const install_dir = workspace / "install";

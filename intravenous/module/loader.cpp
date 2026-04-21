@@ -411,11 +411,6 @@ namespace iv {
             };
 
             auto const log_path = capture_path();
-            {
-                auto& out = diagnostic_stream();
-                out << "running command: " << command << '\n';
-                out.flush();
-            }
             if (log_sink) {
                 log_sink("running command: " + command);
             }
@@ -428,12 +423,6 @@ namespace iv {
             } catch (...) {
             }
             if (!output.empty()) {
-                auto& out = diagnostic_stream();
-                out << output;
-                if (output.back() != '\n') {
-                    out << '\n';
-                }
-                out.flush();
                 if (log_sink) {
                     log_sink(output);
                 }
