@@ -279,12 +279,16 @@ class LiveGraphViewProvider {
             font-family: var(--vscode-font-family);
             font-size: var(--vscode-font-size);
             font-weight: var(--vscode-font-weight);
+            user-select: none;
+            -webkit-user-select: none;
         }
 
         #root {
             display: flex;
             flex-direction: column;
             min-height: 100vh;
+            user-select: none;
+            -webkit-user-select: none;
         }
 
         .empty {
@@ -307,6 +311,10 @@ class LiveGraphViewProvider {
 
         .tree-row:hover {
             background: var(--vscode-list-hoverBackground);
+        }
+
+        body.knob-dragging .tree-row:hover {
+            background: transparent;
         }
 
         .node {
@@ -338,6 +346,7 @@ class LiveGraphViewProvider {
             width: 12px;
             height: 12px;
             fill: currentColor;
+            pointer-events: none;
         }
 
         .disclosure svg.mirrored {
@@ -355,6 +364,7 @@ class LiveGraphViewProvider {
             height: 16px;
             flex: 0 0 16px;
             opacity: 0.95;
+            -webkit-user-drag: none;
         }
 
         .label {
@@ -396,10 +406,6 @@ class LiveGraphViewProvider {
             padding-left: 42px;
         }
 
-        .port-row.has-control {
-            gap: 8px;
-        }
-
         .port-icon {
             width: ${portIconSizePx}px;
             flex: 0 0 ${portIconSizePx}px;
@@ -416,6 +422,7 @@ class LiveGraphViewProvider {
             width: ${portIconSizePx}px;
             height: ${portIconSizePx}px;
             fill: currentColor;
+            pointer-events: none;
         }
 
         .port-icon.mirrored svg {
@@ -462,6 +469,7 @@ class LiveGraphViewProvider {
             width: 18px;
             height: 18px;
             overflow: visible;
+            pointer-events: none;
         }
 
         .knob-track {
@@ -483,6 +491,7 @@ class LiveGraphViewProvider {
             font-variant-numeric: tabular-nums;
             user-select: none;
         }
+
     </style>
 </head>
 <body>
@@ -498,8 +507,9 @@ class LiveGraphViewProvider {
         const knobDrag = {
             active: null,
             currentValue: 0,
-            startValue: 0,
             pointerId: null,
+            lastClientX: 0,
+            lastClientY: 0,
         };
         const icons = {
             merged: ${JSON.stringify(String(mergedIconUri))},
@@ -631,14 +641,31 @@ class LiveGraphViewProvider {
             state.pendingUpdates.set(key, existing);
         }
 
-        function beginKnobDrag(knob, valueEl, nodeId, port, event) {
+        function resolvePortRowFromPoint(clientX, clientY) {
+            const hit = document.elementFromPoint(clientX, clientY);
+            if (!(hit instanceof Element)) {
+                return null;
+            }
+            const portRow = hit.closest(".port-row");
+            if (!portRow || !root.contains(portRow) || !portRow.__knobDrag) {
+                return null;
+            }
+            return { portRow, hit };
+        }
+
+        function beginKnobDrag(captureEl, knob, valueEl, nodeId, port, event) {
+            if (event.button !== 0) {
+                return;
+            }
             event.preventDefault();
-            knobDrag.active = { knob, valueEl, nodeId, port };
+            knobDrag.active = { captureEl, knob, valueEl, nodeId, port };
             knobDrag.currentValue = clamp(Number(port.currentValue || 0), 0, 1);
-            knobDrag.startValue = knobDrag.currentValue;
             knobDrag.pointerId = event.pointerId;
+            knobDrag.lastClientX = event.clientX;
+            knobDrag.lastClientY = event.clientY;
+            document.body.classList.add("knob-dragging");
             try {
-                knob.setPointerCapture(event.pointerId);
+                captureEl.setPointerCapture(event.pointerId);
             } catch (_) {
             }
         }
@@ -647,17 +674,20 @@ class LiveGraphViewProvider {
             if (!knobDrag.active) {
                 return;
             }
-            const { knob } = knobDrag.active;
+            const { captureEl } = knobDrag.active;
             if (pointerId !== undefined) {
                 try {
-                    if (knob.hasPointerCapture(pointerId)) {
-                        knob.releasePointerCapture(pointerId);
+                    if (captureEl.hasPointerCapture(pointerId)) {
+                        captureEl.releasePointerCapture(pointerId);
                     }
                 } catch (_) {
                 }
             }
             knobDrag.active = null;
             knobDrag.pointerId = null;
+            knobDrag.lastClientX = 0;
+            knobDrag.lastClientY = 0;
+            document.body.classList.remove("knob-dragging");
         }
 
         function applyDraggedKnobDelta(delta) {
@@ -679,11 +709,11 @@ class LiveGraphViewProvider {
             if (knobDrag.pointerId !== null && event.pointerId !== knobDrag.pointerId) {
                 return;
             }
-            if ((event.buttons & 1) === 0) {
-                endKnobDrag(event.pointerId);
-                return;
-            }
-            applyDraggedKnobDelta((-event.movementY) / 180);
+            const deltaX = event.clientX - knobDrag.lastClientX;
+            const deltaY = knobDrag.lastClientY - event.clientY;
+            knobDrag.lastClientX = event.clientX;
+            knobDrag.lastClientY = event.clientY;
+            applyDraggedKnobDelta((deltaX + deltaY) / 180);
         });
 
         document.addEventListener("pointerup", (event) => {
@@ -693,6 +723,26 @@ class LiveGraphViewProvider {
         document.addEventListener("pointercancel", (event) => {
             endKnobDrag(event.pointerId);
         });
+
+        document.addEventListener("dragstart", (event) => {
+            event.preventDefault();
+        });
+
+        document.addEventListener("pointerdown", (event) => {
+            if (event.button !== 0 || knobDrag.active) {
+                return;
+            }
+            if (!(event.target instanceof Element)) {
+                return;
+            }
+            const resolved = resolvePortRowFromPoint(event.clientX, event.clientY);
+            if (!resolved) {
+                return;
+            }
+            const { portRow } = resolved;
+            const { knob, valueEl, nodeId, port } = portRow.__knobDrag;
+            beginKnobDrag(portRow, knob, valueEl, nodeId, port, event);
+        }, true);
 
         function attachKnobBehavior(knob, valueEl, nodeId, port) {
             let currentValue = clamp(Number(port.currentValue || 0), 0, 1);
@@ -710,29 +760,6 @@ class LiveGraphViewProvider {
 
             knob.innerHTML = knobSvg(currentValue);
             valueEl.textContent = formatValue(currentValue);
-
-            knob.addEventListener("pointerdown", (event) => {
-                beginKnobDrag(knob, valueEl, nodeId, port, event);
-            });
-
-            knob.addEventListener("pointermove", (event) => {
-                if (!knobDrag.active || knobDrag.active.knob !== knob) {
-                    return;
-                }
-                if (!knob.hasPointerCapture(event.pointerId)) {
-                    return;
-                }
-                event.preventDefault();
-                applyDraggedKnobDelta((-event.movementY) / 180);
-            });
-
-            knob.addEventListener("pointerup", (event) => {
-                endKnobDrag(event.pointerId);
-            });
-
-            knob.addEventListener("pointercancel", (event) => {
-                endKnobDrag(event.pointerId);
-            });
 
             knob.addEventListener("wheel", (event) => {
                 event.preventDefault();
@@ -776,6 +803,7 @@ class LiveGraphViewProvider {
                 knobWrap.appendChild(knob);
                 knobWrap.appendChild(valueEl);
                 portRow.appendChild(knobWrap);
+                portRow.__knobDrag = { knob, valueEl, nodeId, port };
                 attachKnobBehavior(knob, valueEl, nodeId, port);
             }
 
