@@ -32,7 +32,7 @@ namespace iv {
     {
         auto stored_ref = _clone_annotatable_ref(std::forward<Ref>(ref));
         stored_ref._annotate_source_info(declaration_identity, std::string_view {}, 0u, 0u);
-        return std::move(stored_ref);
+        return stored_ref;
     }
 
     template<class Ref>
@@ -47,7 +47,7 @@ namespace iv {
     {
         auto stored_ref = _clone_annotatable_ref(std::forward<Ref>(ref));
         stored_ref._annotate_source_info(declaration_identity, file_path, begin, end);
-        return std::move(stored_ref);
+        return stored_ref;
     }
 
     template<fixed_string Name>

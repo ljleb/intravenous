@@ -17,7 +17,6 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
     auto const& io = c.target_factory();
     auto const dt = g.node<ValueSource>(&c.sample_period());
 
-    auto const midi = juce::midi_input(g, "V25");
     // auto const sup = juce::vst(g, "ValhallaSupermassive");
     // info(sup.node());
     // sup(
@@ -54,7 +53,7 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
 
             return saw * (m >> "amplitude"_P);
         });
-        voice < "midi"_F << midi;
+        // voice < "midi"_F << juce::midi_input(g, "V25");
 
         auto x = std::move(voice);
         // if (channel == 0)

@@ -7,6 +7,10 @@ const os = require("os");
 const path = require("path");
 const mergedNodeIconPath = path.join(__dirname, "media", "merged_node.svg");
 const singleNodeIconPath = path.join(__dirname, "media", "single_node.svg");
+const arrowRightIconPath = path.join(__dirname, "media", "arrow_right.svg");
+const chevronRightSourceIconPath = path.join(__dirname, "media", "chevron_left.svg");
+const chevronDownIconPath = path.join(__dirname, "media", "chevron_down.svg");
+const portIconSizePx = 16;
 
 class JsonRpcSocketClient {
     constructor(socketPath, notificationHandler = null) {
@@ -120,115 +124,19 @@ class JsonRpcSocketClient {
     }
 }
 
-class LiveGraphItem extends vscode.TreeItem {
-    constructor(label, collapsibleState, description = "") {
-        super(label, collapsibleState);
-        this.description = description;
-        this.children = [];
-        this.loadChildren = null;
-        this.childrenLoaded = true;
-        this.treeKey = "";
-    }
-}
-
-class LiveGraphProvider {
-    constructor() {
-        this.items = [];
+class LiveGraphViewProvider {
+    constructor(extensionUri) {
+        this.extensionUri = extensionUri;
+        this.view = null;
         this.nodes = [];
-        this.expandedState = new Map();
-        this.onDidChangeTreeDataEmitter = new vscode.EventEmitter();
-        this.onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
     }
 
     setNodes(nodes) {
-        this.nodes = nodes;
-        this.items = nodes.length > 0
-            ? nodes.map((node) => this.makeNodeItem(node))
-            : [this.makeEmptyItem()];
-        this.onDidChangeTreeDataEmitter.fire();
+        this.nodes = Array.isArray(nodes) ? nodes : [];
+        this.postState();
     }
 
-    makeEmptyItem() {
-        const item = new LiveGraphItem("[no nodes]", vscode.TreeItemCollapsibleState.None, "");
-        item.treeKey = "empty";
-        item.id = item.treeKey;
-        item.contextValue = "intravenousEmpty";
-        item.tooltip = "No visible logical nodes at the current selection";
-        return item;
-    }
-
-    setExpanded(element, expanded) {
-        if (!element || !element.treeKey) {
-            return;
-        }
-        this.expandedState.set(element.treeKey, expanded);
-    }
-
-    pruneDeletedNodeState(deletedNodeIds) {
-        if (!Array.isArray(deletedNodeIds) || deletedNodeIds.length === 0) {
-            return;
-        }
-        const deleted = new Set(deletedNodeIds);
-        for (const key of [...this.expandedState.keys()]) {
-            let shouldDelete = false;
-            for (const nodeId of deleted) {
-                if (key.includes(`node:${nodeId}`)) {
-                    shouldDelete = true;
-                    break;
-                }
-            }
-            if (shouldDelete) {
-                this.expandedState.delete(key);
-            }
-        }
-    }
-
-    collapsibleStateFor(treeKey, defaultExpanded) {
-        const expanded = this.expandedState.has(treeKey)
-            ? this.expandedState.get(treeKey)
-            : defaultExpanded;
-        return expanded
-            ? vscode.TreeItemCollapsibleState.Expanded
-            : vscode.TreeItemCollapsibleState.Collapsed;
-    }
-
-    getTreeItem(element) {
-        return element;
-    }
-
-    async getChildren(element) {
-        if (!element) {
-            return this.items;
-        }
-        if (element.loadChildren && !element.childrenLoaded) {
-            element.children = await element.loadChildren();
-            element.childrenLoaded = true;
-        }
-        return element.children || [];
-    }
-
-    makeNodeItem(node) {
-        const treeKey = `node:${node.id}`;
-        const identity = this.logicalIdentitySummary(node);
-        const item = new LiveGraphItem(
-            node.kind || node.id,
-            this.collapsibleStateFor(treeKey, true),
-            node.memberCount > 1
-                ? (identity ? `${identity} • ${node.memberCount} nodes` : `${node.memberCount} nodes`)
-                : (identity || node.id || "")
-        );
-        item.treeKey = treeKey;
-        item.id = treeKey;
-        item.contextValue = "intravenousNode";
-        item.node = node;
-        item.tooltip = `${node.kind || "node"}${identity ? ` • ${identity}` : ""}${node.memberCount > 1 ? ` • ${node.memberCount} members` : ""}`;
-        item.iconPath = node.memberCount > 1
-            ? mergedNodeIconPath
-            : (node.memberCount === 1
-                ? singleNodeIconPath
-                : new vscode.ThemeIcon("symbol-misc"));
-        item.children = this.makeLogicalNodeChildren(treeKey, node);
-        return item;
+    pruneDeletedNodeState(_deletedNodeIds) {
     }
 
     logicalIdentitySummary(node) {
@@ -252,56 +160,406 @@ class LiveGraphProvider {
         return identity;
     }
 
-    makeLogicalNodeChildren(parentTreeKey, node) {
-        const children = [];
-        const sampleInputs = this.makePortGroup(parentTreeKey, "sample inputs", node.sampleInputs || [], "input", "sample");
-        const sampleOutputs = this.makePortGroup(parentTreeKey, "sample outputs", node.sampleOutputs || [], "output", "sample");
-        const eventInputs = this.makePortGroup(parentTreeKey, "event inputs", node.eventInputs || [], "input", "event");
-        const eventOutputs = this.makePortGroup(parentTreeKey, "event outputs", node.eventOutputs || [], "output", "event");
-        if (sampleInputs) {
-            children.push(sampleInputs);
-        }
-        if (sampleOutputs) {
-            children.push(sampleOutputs);
-        }
-        if (eventInputs) {
-            children.push(eventInputs);
-        }
-        if (eventOutputs) {
-            children.push(eventOutputs);
-        }
-        return children;
+    serializeNodes() {
+        return this.nodes.map((node) => ({
+            id: node.id || "",
+            kind: node.kind || node.id || "",
+            description: node.memberCount > 1
+                ? (() => {
+                    const identity = this.logicalIdentitySummary(node);
+                    return identity ? `${identity} • ${node.memberCount} nodes` : `${node.memberCount} nodes`;
+                })()
+                : (this.logicalIdentitySummary(node) || node.id || ""),
+            tooltip: `${node.kind || "node"}${this.logicalIdentitySummary(node) ? ` • ${this.logicalIdentitySummary(node)}` : ""}${node.memberCount > 1 ? ` • ${node.memberCount} members` : ""}`,
+            memberCount: Number(node.memberCount || 0),
+            icon: node.memberCount > 1 ? "merged" : "single",
+            groups: [
+                this.makePortGroup("sample inputs", node.sampleInputs || [], "input", "sample"),
+                this.makePortGroup("sample outputs", node.sampleOutputs || [], "output", "sample"),
+                this.makePortGroup("event inputs", node.eventInputs || [], "input", "event"),
+                this.makePortGroup("event outputs", node.eventOutputs || [], "output", "event"),
+            ].filter(Boolean),
+        }));
     }
 
-    makePortGroup(parentTreeKey, label, ports, direction, portKind) {
+    makePortGroup(label, ports, direction, portKind) {
         if (!Array.isArray(ports) || ports.length === 0) {
             return null;
         }
-        const treeKey = `${parentTreeKey}/group:${label}`;
-        const item = new LiveGraphItem(label, this.collapsibleStateFor(treeKey, true), `${ports.length}`);
-        item.treeKey = treeKey;
-        item.id = treeKey;
-        item.children = ports.map((port, index) => {
-            const connectivity = port.connectivity || "disconnected";
-            const child = new LiveGraphItem(
-                port.name || `[${index}]`,
-                vscode.TreeItemCollapsibleState.None,
-                connectivity
-            );
-            child.iconPath = this.portIcon(direction, portKind, connectivity);
-            return child;
-        });
-        return item;
+        return {
+            label,
+            count: ports.length,
+            direction,
+            portKind,
+            ports: ports.map((port, index) => ({
+                name: port.name || `[${index}]`,
+                connectivity: port.connectivity || "disconnected",
+            })),
+        };
     }
 
-    portIcon(direction, portKind, connectivity) {
-        const iconName = direction === "input" ? "arrow-right" : "arrow-left";
-        const color = new vscode.ThemeColor(
-            connectivity === "disconnected"
-                ? "terminal.ansiWhite"
-                : (direction === "input" ? "terminal.ansiYellow" : "terminal.ansiBlue")
-        );
-        return new vscode.ThemeIcon(iconName, color);
+    resolveWebviewView(webviewView) {
+        this.view = webviewView;
+        webviewView.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
+        };
+        webviewView.webview.html = this.getHtml(webviewView.webview);
+        this.postState();
+    }
+
+    postState() {
+        if (!this.view) {
+            return;
+        }
+        this.view.webview.postMessage({
+            type: "setState",
+            nodes: this.serializeNodes(),
+        });
+    }
+
+    getHtml(webview) {
+        const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const mergedIconUri = webview.asWebviewUri(vscode.Uri.file(mergedNodeIconPath));
+        const singleIconUri = webview.asWebviewUri(vscode.Uri.file(singleNodeIconPath));
+        const arrowRightSvg = fs.readFileSync(arrowRightIconPath, "utf8")
+            .replace(/fill=\"[^\"]*\"/g, 'fill="currentColor"');
+        const chevronRightSvg = fs.readFileSync(chevronRightSourceIconPath, "utf8")
+            .replace(/fill=\"[^\"]*\"/g, 'fill="currentColor"');
+        const chevronDownSvg = fs.readFileSync(chevronDownIconPath, "utf8")
+            .replace(/fill=\"[^\"]*\"/g, 'fill="currentColor"');
+
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        :root {
+            color-scheme: light dark;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background: var(--vscode-sideBar-background);
+            color: var(--vscode-foreground);
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            font-weight: var(--vscode-font-weight);
+        }
+
+        #root {
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        .empty {
+            padding: 8px 10px;
+            color: var(--vscode-descriptionForeground);
+            font-style: normal;
+        }
+
+        .tree-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-height: 22px;
+            padding: 0 8px;
+            box-sizing: border-box;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .tree-row:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+
+        .node {
+            border: 0;
+            border-bottom: 1px solid transparent;
+        }
+
+        .node-header {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .group-header {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .disclosure {
+            width: 12px;
+            flex: 0 0 12px;
+            color: var(--vscode-descriptionForeground);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .disclosure svg {
+            display: block;
+            width: 12px;
+            height: 12px;
+            fill: currentColor;
+        }
+
+        .disclosure svg.mirrored {
+            transform: scaleX(-1);
+            transform-origin: center;
+        }
+
+        .spacer {
+            width: 10px;
+            flex: 0 0 10px;
+        }
+
+        .node-icon {
+            width: 16px;
+            height: 16px;
+            flex: 0 0 16px;
+            opacity: 0.95;
+        }
+
+        .label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 0 1 auto;
+            user-select: none;
+        }
+
+        .description {
+            flex: 0 1 auto;
+            color: var(--vscode-descriptionForeground);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            user-select: none;
+        }
+
+        .node-children {
+            display: block;
+        }
+
+        .node.collapsed > .node-children {
+            display: none;
+        }
+
+        .group {
+            display: block;
+        }
+
+        .group.collapsed > .group-ports {
+            display: none;
+        }
+
+        .group-header {
+            padding-left: 24px;
+        }
+
+        .port-row {
+            padding-left: 42px;
+        }
+
+        .port-icon {
+            width: ${portIconSizePx}px;
+            flex: 0 0 ${portIconSizePx}px;
+            color: var(--vscode-terminal-ansiWhite);
+            text-align: center;
+            opacity: 0.95;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .port-icon svg {
+            display: block;
+            width: ${portIconSizePx}px;
+            height: ${portIconSizePx}px;
+            fill: currentColor;
+        }
+
+        .port-icon.mirrored svg {
+            transform: scaleX(-1);
+            transform-origin: center;
+        }
+
+        .port-row[data-direction="input"][data-connectivity="connected"] .port-icon,
+        .port-row[data-direction="input"][data-connectivity="mixed"] .port-icon {
+            color: var(--vscode-terminal-ansiYellow);
+        }
+
+        .port-row[data-direction="output"][data-connectivity="connected"] .port-icon,
+        .port-row[data-direction="output"][data-connectivity="mixed"] .port-icon {
+            color: var(--vscode-terminal-ansiBlue);
+        }
+
+        .port-connectivity {
+            margin-left: auto;
+            color: var(--vscode-descriptionForeground);
+            text-transform: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script nonce="${nonce}">
+        const root = document.getElementById("root");
+        const state = {
+            nodes: [],
+            expanded: new Map(),
+        };
+        const icons = {
+            merged: ${JSON.stringify(String(mergedIconUri))},
+            single: ${JSON.stringify(String(singleIconUri))},
+            arrowRight: ${JSON.stringify(arrowRightSvg)},
+            chevronRight: ${JSON.stringify(chevronRightSvg)},
+            chevronDown: ${JSON.stringify(chevronDownSvg)},
+        };
+
+        function expandedValue(key, defaultValue) {
+            return state.expanded.has(key) ? state.expanded.get(key) : defaultValue;
+        }
+
+        function toggleExpanded(key, defaultValue) {
+            state.expanded.set(key, !expandedValue(key, defaultValue));
+            render();
+        }
+
+        function row(label, description) {
+            const element = document.createElement("div");
+            element.className = "tree-row";
+
+            const labelEl = document.createElement("div");
+            labelEl.className = "label";
+            labelEl.textContent = label;
+            element.appendChild(labelEl);
+
+            if (description) {
+                const descriptionEl = document.createElement("div");
+                descriptionEl.className = "description";
+                descriptionEl.textContent = description;
+                element.appendChild(descriptionEl);
+            }
+
+            return element;
+        }
+
+        function disclosure(isExpanded) {
+            const el = document.createElement("div");
+            el.className = "disclosure";
+            el.innerHTML = isExpanded
+                ? icons.chevronDown
+                : icons.chevronRight.replace("<svg ", '<svg class="mirrored" ');
+            return el;
+        }
+
+        function spacer() {
+            const el = document.createElement("div");
+            el.className = "spacer";
+            return el;
+        }
+
+        function renderPort(parent, nodeId, group, port, index) {
+            const portKey = \`node:\${nodeId}/group:\${group.label}/port:\${index}\`;
+            const portRow = row(port.name, port.connectivity);
+            portRow.classList.add("port-row");
+            portRow.dataset.direction = group.direction;
+            portRow.dataset.connectivity = port.connectivity;
+            portRow.prepend(spacer());
+
+            const icon = document.createElement("div");
+            icon.className = group.direction === "input" ? "port-icon" : "port-icon mirrored";
+            icon.innerHTML = icons.arrowRight;
+            portRow.insertBefore(icon, portRow.children[1]);
+            portRow.title = \`\${port.name} • \${port.connectivity}\`;
+            parent.appendChild(portRow);
+            return portKey;
+        }
+
+        function renderGroup(parent, nodeId, group) {
+            const groupKey = \`node:\${nodeId}/group:\${group.label}\`;
+            const isExpanded = expandedValue(groupKey, true);
+
+            const groupEl = document.createElement("div");
+            groupEl.className = isExpanded ? "group" : "group collapsed";
+
+            const header = row(group.label, String(group.count));
+            header.classList.add("group-header");
+            header.prepend(disclosure(isExpanded));
+            header.addEventListener("click", () => toggleExpanded(groupKey, true));
+            groupEl.appendChild(header);
+
+            const ports = document.createElement("div");
+            ports.className = "group-ports";
+            for (let i = 0; i < group.ports.length; ++i) {
+                renderPort(ports, nodeId, group, group.ports[i], i);
+            }
+            groupEl.appendChild(ports);
+            parent.appendChild(groupEl);
+        }
+
+        function renderNode(parent, node) {
+            const nodeKey = \`node:\${node.id}\`;
+            const isExpanded = expandedValue(nodeKey, true);
+
+            const nodeEl = document.createElement("div");
+            nodeEl.className = isExpanded ? "node" : "node collapsed";
+
+            const header = row(node.kind, node.description);
+            header.classList.add("node-header");
+            header.title = node.tooltip || node.kind;
+            header.prepend(disclosure(isExpanded));
+
+            const icon = document.createElement("img");
+            icon.className = "node-icon";
+            icon.src = node.icon === "merged" ? icons.merged : icons.single;
+            icon.alt = "";
+            header.insertBefore(icon, header.children[1]);
+            header.addEventListener("click", () => toggleExpanded(nodeKey, true));
+            nodeEl.appendChild(header);
+
+            const children = document.createElement("div");
+            children.className = "node-children";
+            for (const group of node.groups) {
+                renderGroup(children, node.id, group);
+            }
+            nodeEl.appendChild(children);
+            parent.appendChild(nodeEl);
+        }
+
+        function render() {
+            root.textContent = "";
+            if (!Array.isArray(state.nodes) || state.nodes.length === 0) {
+                const empty = document.createElement("div");
+                empty.className = "empty";
+                empty.textContent = "[no nodes]";
+                empty.title = "No visible logical nodes at the current selection";
+                root.appendChild(empty);
+                return;
+            }
+
+            for (const node of state.nodes) {
+                renderNode(root, node);
+            }
+        }
+
+        window.addEventListener("message", (event) => {
+            const message = event.data || {};
+            if (message.type === "setState") {
+                state.nodes = Array.isArray(message.nodes) ? message.nodes : [];
+                render();
+            }
+        });
+
+        render();
+    </script>
+</body>
+</html>`;
     }
 }
 
@@ -844,17 +1102,14 @@ class WorkspaceSession {
 
 async function activate(context) {
     const outputChannel = vscode.window.createOutputChannel("Intravenous");
-    const provider = new LiveGraphProvider();
+    const provider = new LiveGraphViewProvider(context.extensionUri);
     const highlighter = new NodeSpanHighlighter();
     context.subscriptions.push(outputChannel);
     context.subscriptions.push(highlighter);
-    const treeView = vscode.window.createTreeView("intravenous.liveGraph", { treeDataProvider: provider });
-    context.subscriptions.push(treeView);
-    context.subscriptions.push(treeView.onDidExpandElement((event) => {
-        provider.setExpanded(event.element, true);
-    }));
-    context.subscriptions.push(treeView.onDidCollapseElement((event) => {
-        provider.setExpanded(event.element, false);
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider("intravenous.liveGraph", provider, {
+        webviewOptions: {
+            retainContextWhenHidden: true,
+        },
     }));
 
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];

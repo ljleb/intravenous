@@ -362,6 +362,44 @@ namespace {
             return callee && callee->getQualifiedNameAsString() == "iv::_annotate_node_source_info";
         }
 
+        bool is_std_move_argument_context(clang::Expr const* expr) const
+        {
+            clang::Expr const* current = expr;
+
+            while (true) {
+                auto const parents = _context.getParents(*current);
+                if (parents.empty()) {
+                    return false;
+                }
+
+                auto const* parent_stmt = parents[0].get<clang::Stmt>();
+                if (!parent_stmt) {
+                    return false;
+                }
+
+                if (auto const* parent_expr = llvm::dyn_cast<clang::Expr>(parent_stmt)) {
+                    if (
+                        llvm::isa<clang::ExprWithCleanups>(parent_expr)
+                        || llvm::isa<clang::MaterializeTemporaryExpr>(parent_expr)
+                        || llvm::isa<clang::CXXBindTemporaryExpr>(parent_expr)
+                        || llvm::isa<clang::ImplicitCastExpr>(parent_expr)
+                        || llvm::isa<clang::ParenExpr>(parent_expr)
+                    ) {
+                        current = parent_expr;
+                        continue;
+                    }
+                }
+
+                auto const* call = llvm::dyn_cast<clang::CallExpr>(parent_stmt);
+                if (!call) {
+                    return false;
+                }
+
+                auto const* callee = call->getDirectCallee();
+                return callee && callee->getQualifiedNameAsString() == "std::move";
+            }
+        }
+
         bool is_assignment_lhs_context(clang::Expr const* expr) const
         {
             clang::Expr const* current = expr;
@@ -442,6 +480,10 @@ namespace {
             }
 
             if (is_assignment_lhs_context(expr)) {
+                return;
+            }
+
+            if (is_std_move_argument_context(expr)) {
                 return;
             }
 

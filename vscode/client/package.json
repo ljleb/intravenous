@@ -38,7 +38,8 @@
       "intravenous": [
         {
           "id": "intravenous.liveGraph",
-          "name": "Intravenous"
+          "name": "Intravenous",
+          "type": "webview"
         }
       ]
     }
