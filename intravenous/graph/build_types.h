@@ -22,6 +22,9 @@ namespace iv {
         std::string name {};
         std::string type {};
         LogicalPortConnectivity connectivity = LogicalPortConnectivity::disconnected;
+        size_t ordinal = 0;
+        Sample default_value = 0.0f;
+        Sample current_value = 0.0f;
 
         bool operator==(LogicalPortInfo const&) const = default;
     };

@@ -371,6 +371,9 @@ namespace iv {
             live.source_identity = node.source_identity;
             live.type_identity = node.type_identity;
             live.sample_inputs = node.sample_inputs;
+            for (auto& port : live.sample_inputs) {
+                port.current_value = timeline.live_input_value_or(node.id, port.ordinal, port.default_value);
+            }
             live.sample_outputs = node.sample_outputs;
             live.event_inputs = node.event_inputs;
             live.event_outputs = node.event_outputs;
@@ -809,6 +812,28 @@ namespace iv {
             nodes.push_back(_impl->to_logical_node(_impl->snapshot->logical_nodes[it->second]));
         }
         return nodes;
+    }
+
+    void RuntimeProjectService::set_sample_input_value(
+        uint64_t execution_epoch,
+        std::string const& node_id,
+        size_t input_ordinal,
+        Sample value
+    )
+    {
+        std::scoped_lock lock(_impl->mutex);
+        _impl->rethrow_if_failed();
+        if (!_impl->snapshot.has_value()) {
+            throw std::runtime_error("runtime project service is not initialized");
+        }
+        if (_impl->snapshot->execution_epoch != execution_epoch) {
+            throw std::runtime_error("stale execution epoch for control update");
+        }
+        auto const it = _impl->snapshot->logical_node_index_by_id.find(node_id);
+        if (it == _impl->snapshot->logical_node_index_by_id.end()) {
+            throw std::runtime_error("unknown node id: " + node_id);
+        }
+        _impl->timeline.set_live_input_value(node_id, input_ordinal, value);
     }
 
     void RuntimeProjectService::request_shutdown()

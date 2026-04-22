@@ -370,6 +370,9 @@ namespace iv {
                     .name = first_ports[i].name,
                     .type = first_ports[i].type,
                     .connectivity = aggregate_connectivity(concrete_ports),
+                    .ordinal = i,
+                    .default_value = first_ports[i].default_value,
+                    .current_value = first_ports[i].default_value,
                 });
             }
             return logical_ports;
@@ -1895,7 +1898,7 @@ namespace iv {
 
             // Already detached: return unchanged.
             if (_detached_reader_outputs.contains(source)) {
-                return sample_port._clone_handle();
+                return sample_port;
             }
 
             // Reuse existing detached bridge for the same source.
@@ -1941,7 +1944,7 @@ namespace iv {
                     "builder " + _builder_id.value + ": sample port " + sample_port.to_string() + " belongs to another builder"
                 );
             }
-            return sample_port._clone_handle();
+            return sample_port;
         }
 
         SamplePortRef lift_to_sample_port(SamplePortRef&& sample_port)

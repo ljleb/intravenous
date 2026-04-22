@@ -18,26 +18,18 @@ namespace iv {
 
     template<class Ref>
     requires SourceInfoAnnotatableRef<Ref>
-    std::remove_cvref_t<Ref> _clone_annotatable_ref(Ref&& ref)
-    {
-        return ref._clone_handle();
-    }
-
-    template<class Ref>
-    requires SourceInfoAnnotatableRef<Ref>
-    std::remove_cvref_t<Ref> _annotate_node_source_info(
+    Ref&& _annotate_node_source_info(
         Ref&& ref,
         std::string_view declaration_identity
     )
     {
-        auto stored_ref = _clone_annotatable_ref(std::forward<Ref>(ref));
-        stored_ref._annotate_source_info(declaration_identity, std::string_view {}, 0u, 0u);
-        return stored_ref;
+        ref._annotate_source_info(declaration_identity, std::string_view {}, 0u, 0u);
+        return std::forward<Ref>(ref);
     }
 
     template<class Ref>
     requires SourceInfoAnnotatableRef<Ref>
-    std::remove_cvref_t<Ref> _annotate_node_source_info(
+    Ref&& _annotate_node_source_info(
         Ref&& ref,
         std::string_view declaration_identity,
         std::string_view file_path,
@@ -45,9 +37,8 @@ namespace iv {
         uint32_t end
     )
     {
-        auto stored_ref = _clone_annotatable_ref(std::forward<Ref>(ref));
-        stored_ref._annotate_source_info(declaration_identity, file_path, begin, end);
-        return stored_ref;
+        ref._annotate_source_info(declaration_identity, file_path, begin, end);
+        return std::forward<Ref>(ref);
     }
 
     template<fixed_string Name>

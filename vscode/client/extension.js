@@ -129,6 +129,7 @@ class LiveGraphViewProvider {
         this.extensionUri = extensionUri;
         this.view = null;
         this.nodes = [];
+        this.controlHandler = null;
     }
 
     setNodes(nodes) {
@@ -137,6 +138,24 @@ class LiveGraphViewProvider {
     }
 
     pruneDeletedNodeState(_deletedNodeIds) {
+    }
+
+    setControlHandler(handler) {
+        this.controlHandler = handler;
+    }
+
+    updateSampleInputValue(nodeId, ordinal, value) {
+        for (const node of this.nodes) {
+            if (node.id !== nodeId || !Array.isArray(node.sampleInputs)) {
+                continue;
+            }
+            for (const input of node.sampleInputs) {
+                if (Number(input.ordinal) === Number(ordinal)) {
+                    input.currentValue = value;
+                }
+            }
+        }
+        this.postState();
     }
 
     logicalIdentitySummary(node) {
@@ -194,6 +213,12 @@ class LiveGraphViewProvider {
             ports: ports.map((port, index) => ({
                 name: port.name || `[${index}]`,
                 connectivity: port.connectivity || "disconnected",
+                ordinal: Number.isInteger(port.ordinal) ? port.ordinal : index,
+                defaultValue: typeof port.defaultValue === "number" ? port.defaultValue : 0,
+                currentValue: typeof port.currentValue === "number" ? port.currentValue : 0,
+                tweakable: direction === "input"
+                    && portKind === "sample"
+                    && (port.connectivity === "mixed" || port.connectivity === "disconnected"),
             })),
         };
     }
@@ -204,6 +229,12 @@ class LiveGraphViewProvider {
             enableScripts: true,
             localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
         };
+        webviewView.webview.onDidReceiveMessage(async (message) => {
+            if (!message || message.type !== "setSampleInputValue" || !this.controlHandler) {
+                return;
+            }
+            await this.controlHandler(message);
+        });
         webviewView.webview.html = this.getHtml(webviewView.webview);
         this.postState();
     }
@@ -365,6 +396,10 @@ class LiveGraphViewProvider {
             padding-left: 42px;
         }
 
+        .port-row.has-control {
+            gap: 8px;
+        }
+
         .port-icon {
             width: ${portIconSizePx}px;
             flex: 0 0 ${portIconSizePx}px;
@@ -403,15 +438,68 @@ class LiveGraphViewProvider {
             color: var(--vscode-descriptionForeground);
             text-transform: none;
         }
+
+        .knob-wrap {
+            margin-left: auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 64px;
+        }
+
+        .knob {
+            width: 18px;
+            height: 18px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: ns-resize;
+            touch-action: none;
+        }
+
+        .knob svg {
+            display: block;
+            width: 18px;
+            height: 18px;
+            overflow: visible;
+        }
+
+        .knob-track {
+            fill: none;
+            stroke: none;
+        }
+
+        .knob-band {
+            stroke: var(--vscode-terminal-ansiBlue);
+            stroke-width: 1.8;
+            stroke-linecap: round;
+            fill: none;
+        }
+
+        .knob-value {
+            min-width: 34px;
+            text-align: right;
+            color: var(--vscode-descriptionForeground);
+            font-variant-numeric: tabular-nums;
+            user-select: none;
+        }
     </style>
 </head>
 <body>
     <div id="root"></div>
     <script nonce="${nonce}">
+        const vscode = acquireVsCodeApi();
         const root = document.getElementById("root");
         const state = {
             nodes: [],
             expanded: new Map(),
+            pendingUpdates: new Map(),
+        };
+        const knobDrag = {
+            active: null,
+            currentValue: 0,
+            startValue: 0,
+            pointerId: null,
         };
         const icons = {
             merged: ${JSON.stringify(String(mergedIconUri))},
@@ -464,10 +552,207 @@ class LiveGraphViewProvider {
             return el;
         }
 
+        function clamp(value, min, max) {
+            return Math.min(max, Math.max(min, value));
+        }
+
+        function formatValue(value) {
+            return Number(value).toFixed(3).replace(/\.?0+$/, (match) => match === ".000" ? "" : match);
+        }
+
+        function knobAngle(value) {
+            return -135 + clamp(value, 0, 1) * 270;
+        }
+
+        function knobSvg(value) {
+            const clamped = clamp(value, 0, 1);
+            const circumference = 2 * Math.PI * 7;
+            const visibleLength = circumference * 0.75 * clamped;
+            const hiddenLength = Math.max(circumference - visibleLength, 0.001);
+            return '<svg viewBox="0 0 18 18" aria-hidden="true">' +
+                '<circle class="knob-band" cx="9" cy="9" r="7" ' +
+                    'stroke-dasharray="' + visibleLength.toFixed(3) + ' ' + hiddenLength.toFixed(3) + '" ' +
+                    'transform="rotate(135 9 9)"></circle>' +
+                '</svg>';
+        }
+
+        function queueControlUpdate(nodeId, ordinal, value) {
+            const key = String(nodeId) + ":" + String(ordinal);
+            const now = Date.now();
+            const existing = state.pendingUpdates.get(key) || {
+                lastSentAt: 0,
+                lastSentValue: null,
+                pendingValue: value,
+                timeoutId: null,
+            };
+            existing.pendingValue = value;
+
+            const sendNow = () => {
+                if (existing.lastSentValue === existing.pendingValue) {
+                    if (existing.timeoutId) {
+                        clearTimeout(existing.timeoutId);
+                        existing.timeoutId = null;
+                    }
+                    return;
+                }
+                existing.lastSentAt = Date.now();
+                existing.lastSentValue = existing.pendingValue;
+                if (existing.timeoutId) {
+                    clearTimeout(existing.timeoutId);
+                    existing.timeoutId = null;
+                }
+                vscode.postMessage({
+                    type: "setSampleInputValue",
+                    nodeId,
+                    inputOrdinal: ordinal,
+                    value: existing.pendingValue,
+                });
+            };
+
+            const elapsed = now - existing.lastSentAt;
+            const intervalMs = 24;
+            if (existing.lastSentValue === value && existing.timeoutId == null) {
+                state.pendingUpdates.set(key, existing);
+                return;
+            }
+            if (elapsed >= intervalMs) {
+                sendNow();
+                state.pendingUpdates.set(key, existing);
+                return;
+            }
+
+            if (existing.timeoutId == null) {
+                existing.timeoutId = setTimeout(() => {
+                    sendNow();
+                    state.pendingUpdates.set(key, existing);
+                }, intervalMs - elapsed);
+            }
+
+            state.pendingUpdates.set(key, existing);
+        }
+
+        function beginKnobDrag(knob, valueEl, nodeId, port, event) {
+            event.preventDefault();
+            knobDrag.active = { knob, valueEl, nodeId, port };
+            knobDrag.currentValue = clamp(Number(port.currentValue || 0), 0, 1);
+            knobDrag.startValue = knobDrag.currentValue;
+            knobDrag.pointerId = event.pointerId;
+            try {
+                knob.setPointerCapture(event.pointerId);
+            } catch (_) {
+            }
+        }
+
+        function endKnobDrag(pointerId) {
+            if (!knobDrag.active) {
+                return;
+            }
+            const { knob } = knobDrag.active;
+            if (pointerId !== undefined) {
+                try {
+                    if (knob.hasPointerCapture(pointerId)) {
+                        knob.releasePointerCapture(pointerId);
+                    }
+                } catch (_) {
+                }
+            }
+            knobDrag.active = null;
+            knobDrag.pointerId = null;
+        }
+
+        function applyDraggedKnobDelta(delta) {
+            if (!knobDrag.active || delta === 0) {
+                return;
+            }
+            knobDrag.currentValue = clamp(knobDrag.currentValue + delta, 0, 1);
+            const { knob, valueEl, nodeId, port } = knobDrag.active;
+            knob.innerHTML = knobSvg(knobDrag.currentValue);
+            valueEl.textContent = formatValue(knobDrag.currentValue);
+            port.currentValue = knobDrag.currentValue;
+            queueControlUpdate(nodeId, port.ordinal, knobDrag.currentValue);
+        }
+
+        document.addEventListener("pointermove", (event) => {
+            if (!knobDrag.active) {
+                return;
+            }
+            if (knobDrag.pointerId !== null && event.pointerId !== knobDrag.pointerId) {
+                return;
+            }
+            if ((event.buttons & 1) === 0) {
+                endKnobDrag(event.pointerId);
+                return;
+            }
+            applyDraggedKnobDelta((-event.movementY) / 180);
+        });
+
+        document.addEventListener("pointerup", (event) => {
+            endKnobDrag(event.pointerId);
+        });
+
+        document.addEventListener("pointercancel", (event) => {
+            endKnobDrag(event.pointerId);
+        });
+
+        function attachKnobBehavior(knob, valueEl, nodeId, port) {
+            let currentValue = clamp(Number(port.currentValue || 0), 0, 1);
+
+            const applyValue = (nextValue) => {
+                currentValue = clamp(nextValue, 0, 1);
+                knob.innerHTML = knobSvg(currentValue);
+                valueEl.textContent = formatValue(currentValue);
+                port.currentValue = currentValue;
+                queueControlUpdate(nodeId, port.ordinal, currentValue);
+                if (knobDrag.active && knobDrag.active.knob === knob) {
+                    knobDrag.currentValue = currentValue;
+                }
+            };
+
+            knob.innerHTML = knobSvg(currentValue);
+            valueEl.textContent = formatValue(currentValue);
+
+            knob.addEventListener("pointerdown", (event) => {
+                beginKnobDrag(knob, valueEl, nodeId, port, event);
+            });
+
+            knob.addEventListener("pointermove", (event) => {
+                if (!knobDrag.active || knobDrag.active.knob !== knob) {
+                    return;
+                }
+                if (!knob.hasPointerCapture(event.pointerId)) {
+                    return;
+                }
+                event.preventDefault();
+                applyDraggedKnobDelta((-event.movementY) / 180);
+            });
+
+            knob.addEventListener("pointerup", (event) => {
+                endKnobDrag(event.pointerId);
+            });
+
+            knob.addEventListener("pointercancel", (event) => {
+                endKnobDrag(event.pointerId);
+            });
+
+            knob.addEventListener("wheel", (event) => {
+                event.preventDefault();
+                const step = event.deltaY < 0 ? 0.02 : -0.02;
+                applyValue(currentValue + step);
+            }, { passive: false });
+
+            knob.addEventListener("dblclick", (event) => {
+                event.preventDefault();
+                applyValue(clamp(Number(port.defaultValue || 0), 0, 1));
+            });
+        }
+
         function renderPort(parent, nodeId, group, port, index) {
             const portKey = \`node:\${nodeId}/group:\${group.label}/port:\${index}\`;
             const portRow = row(port.name, port.connectivity);
             portRow.classList.add("port-row");
+            if (port.tweakable) {
+                portRow.classList.add("has-control");
+            }
             portRow.dataset.direction = group.direction;
             portRow.dataset.connectivity = port.connectivity;
             portRow.prepend(spacer());
@@ -476,6 +761,24 @@ class LiveGraphViewProvider {
             icon.className = group.direction === "input" ? "port-icon" : "port-icon mirrored";
             icon.innerHTML = icons.arrowRight;
             portRow.insertBefore(icon, portRow.children[1]);
+
+            if (port.tweakable) {
+                const knobWrap = document.createElement("div");
+                knobWrap.className = "knob-wrap";
+
+                const knob = document.createElement("div");
+                knob.className = "knob";
+                knob.title = "Drag vertically or use the mouse wheel to adjust. Double-click to reset.";
+
+                const valueEl = document.createElement("div");
+                valueEl.className = "knob-value";
+
+                knobWrap.appendChild(knob);
+                knobWrap.appendChild(valueEl);
+                portRow.appendChild(knobWrap);
+                attachKnobBehavior(knob, valueEl, nodeId, port);
+            }
+
             portRow.title = \`\${port.name} • \${port.connectivity}\`;
             parent.appendChild(portRow);
             return portKey;
@@ -816,6 +1119,19 @@ class WorkspaceSession {
         }
     }
 
+    async setSampleInputValue(nodeId, inputOrdinal, value) {
+        if (!(await this.ensureReady())) {
+            return;
+        }
+        await this.client.request("graph.setSampleInputValue", {
+            executionEpoch: this.executionEpoch,
+            nodeId,
+            inputOrdinal,
+            value,
+        });
+        this.provider.updateSampleInputValue(nodeId, inputOrdinal, value);
+    }
+
     async waitForSocket(socketPath, timeoutMs) {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
@@ -1118,6 +1434,9 @@ async function activate(context) {
     }
 
     const session = new WorkspaceSession(workspaceFolder, outputChannel, provider, highlighter);
+    provider.setControlHandler(async ({ nodeId, inputOrdinal, value }) => {
+        await session.setSampleInputValue(nodeId, inputOrdinal, value);
+    });
     context.subscriptions.push({ dispose: () => void session.shutdown() });
     context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(() => {
         highlighter.refresh();

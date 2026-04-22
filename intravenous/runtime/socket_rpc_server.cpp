@@ -159,6 +159,15 @@ namespace iv {
             return static_cast<uint64_t>(value);
         }
 
+        double parse_number_param(Json const& params, std::string const& key)
+        {
+            auto const value_it = params.find(key);
+            if (value_it == params.end() || !value_it->is_number()) {
+                throw std::runtime_error("JSON-RPC request is missing numeric param '" + key + "'");
+            }
+            return value_it->get<double>();
+        }
+
         uint32_t parse_uint32_value(Json const& value, std::string const& context)
         {
             if (!value.is_number_integer()) {
@@ -258,7 +267,10 @@ namespace iv {
                 json.push_back({
                     {"name", port.name},
                     {"type", port.type},
-                    {"connectivity", connectivity_json(port.connectivity)},
+                    {"connectivity", std::string(connectivity_json(port.connectivity))},
+                    {"ordinal", port.ordinal},
+                    {"defaultValue", static_cast<Sample::storage>(port.default_value)},
+                    {"currentValue", static_cast<Sample::storage>(port.current_value)},
                 });
             }
             return json;
@@ -331,6 +343,7 @@ namespace iv {
                      {"queryActiveRegions", true},
                      {"getLogicalNode", true},
                      {"getLogicalNodes", true},
+                     {"setSampleInputValue", true},
                  }},
             };
         }
@@ -574,6 +587,14 @@ namespace iv {
                             auto const execution_epoch = parse_uint64_param(params, "executionEpoch");
                             auto const node_ids = parse_string_array_param(params, "nodeIds");
                             response = jsonrpc_result(request_id, logical_nodes_json(service.get_logical_nodes(execution_epoch, node_ids)));
+                        } else if (method == "graph.setSampleInputValue") {
+                            wait_until_initialized();
+                            auto const execution_epoch = parse_uint64_param(params, "executionEpoch");
+                            auto const node_id = parse_string_param(params, "nodeId");
+                            auto const input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal"));
+                            auto const value = static_cast<Sample>(parse_number_param(params, "value"));
+                            service.set_sample_input_value(execution_epoch, node_id, input_ordinal, value);
+                            response = jsonrpc_result(request_id, Json {{"ok", true}});
                         } else if (method == "server.shutdown") {
                             response = jsonrpc_result(request_id, Json {{"ok", true}});
                             (void)send_message(fd, response);

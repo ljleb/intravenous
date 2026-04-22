@@ -120,6 +120,7 @@ namespace iv {
         ) const;
         LogicalNodeInfo get_logical_node(uint64_t execution_epoch, std::string const& node_id) const;
         std::vector<LogicalNodeInfo> get_logical_nodes(uint64_t execution_epoch, std::vector<std::string> const& node_ids) const;
+        void set_sample_input_value(uint64_t execution_epoch, std::string const& node_id, size_t input_ordinal, Sample value);
         void request_shutdown();
     };
 }
