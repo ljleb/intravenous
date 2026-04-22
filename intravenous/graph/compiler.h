@@ -34,6 +34,23 @@ namespace iv::details {
         throw std::logic_error(msg);
     }
 
+    inline TypeErasedNode make_sum_node(size_t arity)
+    {
+        if (arity == 0 || arity > 64) {
+            error("sum node arity must be between 1 and 64; got " + std::to_string(arity));
+        }
+
+        std::optional<TypeErasedNode> result;
+        [&]<size_t... I>(std::index_sequence<I...>) {
+            ((arity == (I + 1)
+                ? (void)(result.emplace(Sum<I + 1>{}))
+                : (void)0), ...);
+        }(std::make_index_sequence<64>{});
+
+        IV_ASSERT(result.has_value(), "sum node instantiation must succeed for supported arities");
+        return std::move(*result);
+    }
+
     struct PreparedGraph {
         std::vector<TypeErasedNode> nodes;
         std::vector<std::optional<size_t>> explicit_ttl_samples;
@@ -331,7 +348,7 @@ namespace iv::details {
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
-                g.nodes.emplace_back(Sum(port_arity));
+                g.nodes.push_back(make_sum_node(port_arity));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_logical_ids.emplace_back();

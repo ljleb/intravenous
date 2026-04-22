@@ -529,7 +529,7 @@ namespace {
     template<size_t Inputs>
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
-        return g.node<iv::Sum>(Inputs).node_ref();
+        return g.node<iv::Sum<Inputs>>().node_ref();
     }
 
     void schema_mismatch_module(iv::ModuleContext const& context)
@@ -587,7 +587,7 @@ namespace {
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         (void)I;
-        return g.node<iv::Sum>(1).node_ref();
+        return g.node<iv::Sum<1>>().node_ref();
     }
 
     void mixed_connectivity_module(iv::ModuleContext const& context)

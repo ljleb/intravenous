@@ -220,6 +220,107 @@ namespace {
         };
     };
 
+    struct IdentifiedMovable {
+        std::string id;
+
+        struct State {
+            std::span<int> scratch;
+            int initialized = 0;
+            int moved = 0;
+            int released = 0;
+        };
+
+        void declare(iv::DeclarationContext<IdentifiedMovable> const& ctx) const
+        {
+            auto const& state = ctx.state();
+            ctx.local_array(state.scratch, 2);
+        }
+
+        std::string identity() const
+        {
+            return id;
+        }
+
+        void initialize(iv::InitializationContext<IdentifiedMovable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.initialized += 1;
+            state.scratch[0] = 11;
+            state.scratch[1] = 13;
+        }
+
+        void move(iv::MoveContext<IdentifiedMovable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            auto const& previous = ctx.previous_state();
+            state.initialized = previous.initialized;
+            state.moved = previous.moved + 1;
+            state.released = previous.released;
+            state.scratch[0] = previous.scratch[0];
+            state.scratch[1] = previous.scratch[1];
+        }
+
+        void release(iv::ReleaseContext<IdentifiedMovable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.released += 1;
+        }
+    };
+
+    struct IdentifiedAutoMovable {
+        std::string id;
+
+        struct State {
+            std::unique_ptr<int> value;
+            int initialized = 0;
+            int released = 0;
+        };
+
+        std::string identity() const
+        {
+            return id;
+        }
+
+        void initialize(iv::InitializationContext<IdentifiedAutoMovable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.initialized += 1;
+            if (!state.value) {
+                state.value = std::make_unique<int>(29);
+            }
+        }
+
+        void release(iv::ReleaseContext<IdentifiedAutoMovable> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.released += 1;
+        }
+    };
+
+    struct DifferentTypeSameIdentity {
+        std::string id;
+
+        struct State {
+            int initialized = 0;
+            int released = 0;
+        };
+
+        std::string identity() const
+        {
+            return id;
+        }
+
+        void initialize(iv::InitializationContext<DifferentTypeSameIdentity> const& ctx) const
+        {
+            ctx.state().initialized += 1;
+        }
+
+        void release(iv::ReleaseContext<DifferentTypeSameIdentity> const& ctx) const
+        {
+            ctx.state().released += 1;
+        }
+    };
+
     struct NestedParent {
         struct State {
             std::span<std::span<std::byte>> nested;
@@ -332,12 +433,12 @@ int main()
         reloaded.initialize(&original);
         auto& reloaded_state = *static_cast<Movable::State*>(reloaded.state_ptr(0));
 
-        iv::test::require(original.initialized_nodes.empty(), "move reload should transfer old release ownership");
-        iv::test::require(reloaded_state.initialized == 1, "move should preserve initialized count");
-        iv::test::require(reloaded_state.moved == 1, "move should run when layout is compatible");
-        iv::test::require(reloaded_state.scratch.size() == 2, "moved node local span should be patched");
-        iv::test::require(reloaded_state.scratch[0] == 7, "move should preserve scratch[0]");
-        iv::test::require(reloaded_state.scratch[1] == 9, "move should preserve scratch[1]");
+        iv::test::require(original.initialized_nodes.empty(), "reload should transfer old release ownership");
+        iv::test::require(reloaded_state.initialized == 1, "anonymous node should initialize fresh on reload");
+        iv::test::require(reloaded_state.moved == 0, "anonymous node should not move without a migration identity");
+        iv::test::require(reloaded_state.scratch.size() == 2, "reloaded node local span should be patched");
+        iv::test::require(reloaded_state.scratch[0] == 7, "fresh initialize should repopulate scratch[0]");
+        iv::test::require(reloaded_state.scratch[1] == 9, "fresh initialize should repopulate scratch[1]");
     }
 
     {
@@ -358,14 +459,87 @@ int main()
         reloaded.initialize(&original);
         auto& reloaded_state = *static_cast<AutoMovable::State*>(reloaded.state_ptr(0));
 
-        iv::test::require(original.initialized_nodes.empty(), "fallback reload should transfer old release ownership");
-        iv::test::require(original_state.value == nullptr, "state move construction should transfer unique ownership");
-        iv::test::require(reloaded_state.value != nullptr, "reloaded state should receive moved ownership");
-        iv::test::require(*reloaded_state.value == 41, "moved state value should be preserved");
-        iv::test::require(reloaded_state.initialized == 2, "fallback initialize should still run after state move construction");
-        iv::test::require(reloaded_state.released == 1, "fallback release should run on the previous state");
+        iv::test::require(original.initialized_nodes.empty(), "reload should transfer old release ownership");
+        iv::test::require(original_state.value != nullptr, "anonymous node should retain previous ownership when it is not moved");
+        iv::test::require(reloaded_state.value != nullptr, "reloaded anonymous node should initialize its own value");
+        iv::test::require(*reloaded_state.value == 41, "fresh initialize should produce the default owned value");
+        iv::test::require(reloaded_state.initialized == 1, "anonymous auto-movable node should initialize fresh on reload");
+        iv::test::require(original_state.released == 1, "release should run on the previous anonymous state");
+        iv::test::require(reloaded_state.released == 0, "fresh anonymous reload state should not inherit prior release count");
         iv::test::require(reloaded_state.scratch[0] == 41, "initialize should repopulate scratch[0] after repatching");
-        iv::test::require(reloaded_state.scratch[1] == 2, "initialize should observe incremented initialized count");
+        iv::test::require(reloaded_state.scratch[1] == 1, "fresh initialize should observe a fresh initialized count");
+    }
+
+    {
+        iv::NodeLayoutBuilder original_builder(4);
+        IdentifiedMovable original_a { .id = "moved-later" };
+        IdentifiedMovable original_b { .id = "kept" };
+        iv::do_declare(original_a, original_builder);
+        iv::do_declare(original_b, original_builder);
+
+        iv::NodeLayout original_layout = std::move(original_builder).build();
+        auto resources = make_resources();
+
+        iv::NodeStorage original = original_layout.create_storage(resources);
+        original.initialize();
+
+        auto& original_a_state = *static_cast<IdentifiedMovable::State*>(original.state_ptr(0));
+        auto& original_b_state = *static_cast<IdentifiedMovable::State*>(original.state_ptr(1));
+        original_a_state.scratch[0] = 101;
+        original_a_state.scratch[1] = 103;
+        original_b_state.scratch[0] = 107;
+        original_b_state.scratch[1] = 109;
+
+        iv::NodeLayoutBuilder reloaded_builder(4);
+        LocalOnly inserted;
+        IdentifiedMovable reloaded_b { .id = "kept" };
+        IdentifiedMovable reloaded_a { .id = "moved-later" };
+        iv::do_declare(inserted, reloaded_builder);
+        iv::do_declare(reloaded_b, reloaded_builder);
+        iv::do_declare(reloaded_a, reloaded_builder);
+
+        iv::NodeLayout reloaded_layout = std::move(reloaded_builder).build();
+        iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
+        reloaded.initialize(&original);
+
+        auto& inserted_state = *static_cast<LocalOnly::State*>(reloaded.state_ptr(0));
+        auto& reloaded_b_state = *static_cast<IdentifiedMovable::State*>(reloaded.state_ptr(1));
+        auto& reloaded_a_state = *static_cast<IdentifiedMovable::State*>(reloaded.state_ptr(2));
+
+        iv::test::require(inserted_state.guard == 0x1234abcd, "new unmatched node should initialize normally");
+        iv::test::require(reloaded_b_state.moved == 1, "identity match should move even when node indices shift");
+        iv::test::require(reloaded_b_state.scratch[0] == 107, "identity move should preserve kept node scratch[0]");
+        iv::test::require(reloaded_b_state.scratch[1] == 109, "identity move should preserve kept node scratch[1]");
+        iv::test::require(reloaded_a_state.moved == 1, "identity move should preserve later node after insertion");
+        iv::test::require(reloaded_a_state.scratch[0] == 101, "identity move should preserve moved-later scratch[0]");
+        iv::test::require(reloaded_a_state.scratch[1] == 103, "identity move should preserve moved-later scratch[1]");
+    }
+
+    {
+        iv::NodeLayoutBuilder original_builder(4);
+        IdentifiedAutoMovable original_node { .id = "same-name" };
+        iv::do_declare(original_node, original_builder);
+
+        iv::NodeLayout original_layout = std::move(original_builder).build();
+        auto resources = make_resources();
+        iv::NodeStorage original = original_layout.create_storage(resources);
+        original.initialize();
+
+        auto& original_state = *static_cast<IdentifiedAutoMovable::State*>(original.state_ptr(0));
+        iv::test::require(original_state.value != nullptr, "original identified auto-movable should initialize owned value");
+        *original_state.value = 211;
+
+        iv::NodeLayoutBuilder reloaded_builder(4);
+        DifferentTypeSameIdentity changed_node { .id = "same-name" };
+        iv::do_declare(changed_node, reloaded_builder);
+
+        iv::NodeLayout reloaded_layout = std::move(reloaded_builder).build();
+        iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
+        reloaded.initialize(&original);
+
+        auto& reloaded_state = *static_cast<DifferentTypeSameIdentity::State*>(reloaded.state_ptr(0));
+        iv::test::require(reloaded_state.initialized == 1, "same identity with different type should initialize new node");
+        iv::test::require(original.initialized_nodes.empty(), "previous storage should release unmatched old node ownership");
     }
 
     {

@@ -300,6 +300,7 @@ namespace iv {
                 {"id", node.id},
                 {"kind", node.kind},
                 {"sourceIdentity", node.source_identity},
+                {"typeIdentity", node.type_identity},
                 {"sourceSpans", source_spans_json(node.source_spans)},
                 {"sampleInputs", logical_port_json(node.sample_inputs)},
                 {"sampleOutputs", logical_port_json(node.sample_outputs)},

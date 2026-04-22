@@ -162,7 +162,7 @@ namespace iv {
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     NodeRef operator+(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Sum>(
+        return make_binary_op<Sum<2>>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator+"
@@ -173,7 +173,7 @@ namespace iv {
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     NodeRef operator-(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Subtract>(
+        return make_binary_op<Subtract<2>>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator-"
@@ -184,7 +184,7 @@ namespace iv {
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     NodeRef operator*(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Product>(
+        return make_binary_op<Product<2>>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator*"
@@ -195,7 +195,7 @@ namespace iv {
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     NodeRef operator/(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Quotient>(
+        return make_binary_op<Quotient<2>>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator/"

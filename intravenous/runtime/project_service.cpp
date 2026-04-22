@@ -369,6 +369,7 @@ namespace iv {
             live.id = node.id;
             live.kind = node.kind;
             live.source_identity = node.source_identity;
+            live.type_identity = node.type_identity;
             live.sample_inputs = node.sample_inputs;
             live.sample_outputs = node.sample_outputs;
             live.event_inputs = node.event_inputs;

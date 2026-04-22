@@ -1,4 +1,5 @@
 #pragma once
+#include "basic_nodes/buffers.h"
 #include "basic_nodes/routing.h"
 #include "basic_nodes/arithmetic.h"
 #include "basic_nodes/midi.h"
@@ -258,6 +259,7 @@ namespace iv {
         struct LogicalConcreteNode {
             std::string id;
             std::string kind;
+            std::string type_identity;
             std::vector<SourceInfo> source_infos;
             std::vector<LogicalConcretePortInfo> sample_inputs;
             std::vector<LogicalConcretePortInfo> sample_outputs;
@@ -373,6 +375,19 @@ namespace iv {
             return logical_ports;
         }
 
+        inline std::string stable_identity_suffix(std::string_view value)
+        {
+            std::uint64_t hash = 14695981039346656037ull;
+            for (unsigned char c : value) {
+                hash ^= c;
+                hash *= 1099511628211ull;
+            }
+
+            std::ostringstream out;
+            out << std::hex << hash;
+            return out.str();
+        }
+
         inline auto build_logical_metadata(
             PreparedGraph const& g,
             std::span<LoweredSubgraphSpec const> lowered_scopes
@@ -411,6 +426,9 @@ namespace iv {
                 LogicalConcreteNode concrete;
                 concrete.id = g.node_ids[node_i];
                 concrete.kind = demangle_type_name(g.nodes[node_i].type_name());
+                // Temporary approximation: this is only a display-derived stand-in until the
+                // rewriter threads through a real concrete C++ type identity such as a Clang USR.
+                concrete.type_identity = concrete.kind;
                 if (node_i < g.node_source_infos.size()) {
                     concrete.source_infos = g.node_source_infos[node_i];
                 }
@@ -467,10 +485,14 @@ namespace iv {
                 );
             }
 
-            for (auto const& scope : lowered_scopes) {
+            for (size_t scope_i = 0; scope_i < lowered_scopes.size(); ++scope_i) {
+                auto const& scope = lowered_scopes[scope_i];
                 LogicalConcreteNode concrete;
                 concrete.id = scope.backing_node_id;
                 concrete.kind = scope.kind;
+                // Temporary approximation: lowered scopes do not yet carry a real concrete type
+                // identity, so we namespace the display kind instead of pretending this is exact.
+                concrete.type_identity = "lowered-subgraph:" + scope.kind;
                 concrete.source_infos = scope.source_infos;
 
                 concrete.sample_inputs.reserve(scope.sample_inputs.size());
@@ -533,6 +555,7 @@ namespace iv {
 
             struct LogicalGroup {
                 std::string logical_node_id;
+                std::string type_identity;
                 std::vector<size_t> member_indices;
             };
 
@@ -543,11 +566,14 @@ namespace iv {
                 }
                 for (auto const& logical_node_id : concrete_node_logical_ids[i]) {
                     auto group_it = std::find_if(groups.begin(), groups.end(), [&](auto const& group) {
-                        return group.logical_node_id == logical_node_id;
+                        return
+                            group.logical_node_id == logical_node_id &&
+                            group.type_identity == concrete_nodes[i].type_identity;
                     });
                     if (group_it == groups.end()) {
                         groups.push_back(LogicalGroup {
                             .logical_node_id = logical_node_id,
+                            .type_identity = concrete_nodes[i].type_identity,
                             .member_indices = { i },
                         });
                     } else if (!std::ranges::contains(group_it->member_indices, i)) {
@@ -558,7 +584,11 @@ namespace iv {
 
             std::vector<IntrospectionLogicalNode> logical_nodes;
             logical_nodes.reserve(groups.size());
-            for (auto const& group : groups) {
+            for (size_t group_i = 0; group_i < groups.size(); ++group_i) {
+                auto const& group = groups[group_i];
+                size_t const same_identity_group_count = std::ranges::count_if(groups, [&](auto const& candidate) {
+                    return candidate.logical_node_id == group.logical_node_id;
+                });
                 std::vector<LogicalConcreteNode const*> members;
                 members.reserve(group.member_indices.size());
                 std::vector<std::string> backing_node_ids;
@@ -571,11 +601,16 @@ namespace iv {
                 std::sort(backing_node_ids.begin(), backing_node_ids.end());
                 backing_node_ids.erase(std::unique(backing_node_ids.begin(), backing_node_ids.end()), backing_node_ids.end());
                 auto source_spans = source_spans_for(members, group.logical_node_id);
+                std::string logical_id = group.logical_node_id;
+                if (same_identity_group_count > 1) {
+                    logical_id += "#type:" + stable_identity_suffix(group.type_identity);
+                }
 
                 logical_nodes.push_back(IntrospectionLogicalNode {
-                    .id = group.logical_node_id,
+                    .id = std::move(logical_id),
                     .kind = members.front()->kind,
                     .source_identity = group.logical_node_id,
+                    .type_identity = group.type_identity,
                     .source_spans = std::move(source_spans),
                     .sample_inputs = aggregate_ports(members, &LogicalConcreteNode::sample_inputs),
                     .sample_outputs = aggregate_ports(members, &LogicalConcreteNode::sample_outputs),
@@ -1953,7 +1988,7 @@ namespace iv {
                 continue;
             }
 
-            auto const& logical_node_id = _nodes[node_i].vacant_input_owner_id;
+            std::string const logical_node_id = _nodes[node_i].vacant_input_owner_id;
             if (logical_node_id.empty()) {
                 continue;
             }
@@ -2399,11 +2434,6 @@ namespace iv {
         return build_with_metadata(detach_id_offset).graph;
     }
 
-    inline TimelineAugmentation Timeline::begin_augmentation()
-    {
-        return TimelineAugmentation {};
-    }
-
     inline SamplePortRef TimelineAugmentation::resolve_sample_input(
         GraphBuilder& builder,
         std::string_view logical_node_id,
@@ -2411,9 +2441,24 @@ namespace iv {
         InputConfig const& input_config
     )
     {
-        (void)logical_node_id;
-        (void)input_ordinal;
-        return builder.node<Constant>(input_config.default_value);
+        if (_timeline == nullptr) {
+            return builder.node<Constant>(input_config.default_value);
+        }
+
+        auto const identity = TimelineInputValue::nominal_identity(logical_node_id, input_ordinal);
+        auto existing = _control_node_indices.find(identity);
+        if (existing != _control_node_indices.end()) {
+            return SamplePortRef(builder, existing->second, 0);
+        }
+
+        SamplePortRef ref = builder.node<TimelineInputValue>(
+            *_timeline,
+            std::string(logical_node_id),
+            input_ordinal,
+            input_config.default_value
+        );
+        _control_node_indices.emplace(std::move(identity), ref.node_index);
+        return ref;
     }
 
     inline EventPortRef TimelineAugmentation::resolve_event_input(
