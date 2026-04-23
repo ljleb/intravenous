@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node_lifecycle.h"
+#include "node/lifecycle.h"
 #include <array>
 #include <numbers>
 
@@ -43,7 +43,7 @@ namespace iv {
             return std::array {
                 InputConfig { .name = "in", .history = 1 },
                 InputConfig { .name = "cutoff" },
-                InputConfig { .name = "dx", .default_value = 1.0 },
+                InputConfig { .name = "dt", .default_value = 1.0 },
             };
         }
 

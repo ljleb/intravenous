@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 #include "basic_nodes/shaping.h"
 
 inline void behavior_voice(iv::ModuleContext const& context)

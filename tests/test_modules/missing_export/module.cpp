@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 
 namespace {
     iv::TypeErasedNode missing_export_module(iv::ModuleContext const& context)
@@ -10,6 +10,6 @@ namespace {
         }
 
         g.outputs();
-        return iv::TypeErasedNode(std::move(g).build());
+        return iv::TypeErasedNode(g.build());
     }
 }

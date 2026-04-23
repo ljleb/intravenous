@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 
 inline void event_loader_voice(iv::ModuleContext const& context)
 {
@@ -6,7 +6,7 @@ inline void event_loader_voice(iv::ModuleContext const& context)
     auto& g = context.builder();
 
     auto const trigger = g.event_input("trigger", EventTypeId::trigger);
-    g.event_outputs("trigger"_P = trigger);
+    g.event_outputs("trigger"_F = trigger);
     g.outputs();
 }
 

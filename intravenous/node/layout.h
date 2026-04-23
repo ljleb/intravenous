@@ -1,8 +1,8 @@
 #pragma once
 
 #include "compat.h"
-#include "node_traits.h"
-#include "node_resources.h"
+#include "traits.h"
+#include "resources.h"
 #include "orchestrator/orchestrator_builder.h"
 
 #include <algorithm>
@@ -39,12 +39,13 @@ namespace iv {
     struct NodeStorage;
 
     struct NodeLifecycleCallbacks {
-        void (*move_fn)(void const*, size_t, NodeStorage&, NodeStorage const&, OrchestratorBuilder*) = nullptr;
+        void (*move_fn)(void const*, size_t, size_t, NodeStorage&, NodeStorage const&, OrchestratorBuilder*) = nullptr;
         void (*initialize_fn)(void const*, size_t, NodeStorage&, OrchestratorBuilder*) = nullptr;
         void (*release_fn)(void const*, size_t, NodeStorage&, OrchestratorBuilder*) = nullptr;
         void (*default_construct_state_fn)(void*) = nullptr;
         void (*move_construct_state_fn)(void*, void*) = nullptr;
         void (*destroy_state_fn)(void*) = nullptr;
+        std::string (*identity_fn)(void const*) = nullptr;
     };
 
     struct NodeLayout {
@@ -188,6 +189,11 @@ namespace iv {
         struct StorageDeleter {
             size_t alignment = alignof(std::max_align_t);
 
+            constexpr StorageDeleter() noexcept = default;
+            constexpr explicit StorageDeleter(size_t alignment_) noexcept :
+                alignment(alignment_)
+            {}
+
             void operator()(std::byte* p) const noexcept
             {
                 if (p) {
@@ -198,11 +204,13 @@ namespace iv {
 
         NodeLayout const* layout = nullptr;
         ResourceContext const* resources = nullptr;
-        std::unique_ptr<std::byte[], StorageDeleter> storage {};
+        std::unique_ptr<std::byte[], StorageDeleter> storage;
         std::vector<size_t> constructed_nodes;
         std::vector<size_t> initialized_nodes;
 
-        NodeStorage() = default;
+        NodeStorage() :
+            storage(nullptr, StorageDeleter{})
+        {}
         NodeStorage(NodeLayout const& layout, ResourceContext const& resources);
         NodeStorage(NodeStorage&& other) noexcept;
         NodeStorage& operator=(NodeStorage&& other) noexcept;
@@ -215,7 +223,7 @@ namespace iv {
         void* state_ptr(size_t node_index) const;
         template<typename A>
         std::span<A const> resolve_exported_array_storage(std::string const& id) const;
-        bool can_move_from(NodeStorage const& previous, size_t node_index) const;
+        bool can_move_from(NodeStorage const& previous, size_t node_index, size_t previous_node_index) const;
         void initialize(NodeStorage const* previous = nullptr, OrchestratorBuilder* orchestrator = nullptr);
         void release(OrchestratorBuilder* orchestrator = nullptr);
     };
@@ -800,9 +808,9 @@ namespace iv {
         }
 
         if constexpr (requires(Node const& node, MoveContext<Node> ctx) { node.move(ctx); }) {
-            callbacks.move_fn = [](void const* node_ptr, size_t node_index, NodeStorage& storage, NodeStorage const& previous_storage, OrchestratorBuilder* orchestrator) {
+            callbacks.move_fn = [](void const* node_ptr, size_t node_index, size_t previous_node_index, NodeStorage& storage, NodeStorage const& previous_storage, OrchestratorBuilder* orchestrator) {
                 void* state = storage.state_ptr(node_index);
-                void* previous_state = previous_storage.state_ptr(node_index);
+                void* previous_state = previous_storage.state_ptr(previous_node_index);
                 if constexpr (std::is_empty_v<Node>) {
                     (void) node_ptr;
                     Node node {};
@@ -812,6 +820,19 @@ namespace iv {
                     auto const& node = *static_cast<Node const*>(node_ptr);
                     MoveContext<Node> ctx(storage, state, previous_storage, previous_state, *storage.resources, orchestrator);
                     node.move(ctx);
+                }
+            };
+        }
+
+        if constexpr (requires(Node const& node) { { node.identity() } -> std::convertible_to<std::string>; }) {
+            callbacks.identity_fn = [](void const* node_ptr) -> std::string {
+                if constexpr (std::is_empty_v<Node>) {
+                    (void)node_ptr;
+                    Node node {};
+                    return std::string(node.identity());
+                } else {
+                    auto const& node = *static_cast<Node const*>(node_ptr);
+                    return std::string(node.identity());
                 }
             };
         }
@@ -976,17 +997,17 @@ namespace iv {
         return { static_cast<A const*>(data), count };
     }
 
-    inline bool NodeStorage::can_move_from(NodeStorage const& previous, size_t node_index) const
+    inline bool NodeStorage::can_move_from(NodeStorage const& previous, size_t node_index, size_t previous_node_index) const
     {
         if (!layout || !previous.layout) {
             return false;
         }
-        if (node_index >= layout->nodes.size() || node_index >= previous.layout->nodes.size()) {
+        if (node_index >= layout->nodes.size() || previous_node_index >= previous.layout->nodes.size()) {
             return false;
         }
 
         auto const& node = layout->nodes[node_index];
-        auto const& previous_node = previous.layout->nodes[node_index];
+        auto const& previous_node = previous.layout->nodes[previous_node_index];
         if (node.node_type != previous_node.node_type || node.state_size != previous_node.state_size) {
             return false;
         }
@@ -1001,13 +1022,13 @@ namespace iv {
         };
 
         size_t current_index = next_region(*layout, node_index, 0);
-        size_t previous_index = next_region(*previous.layout, node_index, 0);
+        size_t previous_index = next_region(*previous.layout, previous_node_index, 0);
 
         while (current_index < layout->regions.size() && previous_index < previous.layout->regions.size()) {
             auto const& current_region = layout->regions[current_index];
             auto const& previous_region = previous.layout->regions[previous_index];
 
-            if (current_region.owner_node != node_index || previous_region.owner_node != node_index) {
+            if (current_region.owner_node != node_index || previous_region.owner_node != previous_node_index) {
                 break;
             }
 
@@ -1023,18 +1044,88 @@ namespace iv {
             }
 
             current_index = next_region(*layout, node_index, current_index + 1);
-            previous_index = next_region(*previous.layout, node_index, previous_index + 1);
+            previous_index = next_region(*previous.layout, previous_node_index, previous_index + 1);
         }
 
         return
-            next_region(*layout, node_index, current_index) == layout->regions.size() &&
-            next_region(*previous.layout, node_index, previous_index) == previous.layout->regions.size();
+            (current_index == layout->regions.size() || layout->regions[current_index].owner_node != node_index) &&
+            (previous_index == previous.layout->regions.size() || previous.layout->regions[previous_index].owner_node != previous_node_index);
     }
 
     inline void NodeStorage::initialize(NodeStorage const* previous, OrchestratorBuilder* orchestrator)
     {
         if (!layout || !resources) {
             return;
+        }
+
+        constexpr size_t no_node = std::numeric_limits<size_t>::max();
+        std::vector<size_t> previous_node_for_current(layout->nodes.size(), no_node);
+        std::vector<bool> previous_nodes_consumed(
+            previous && previous->layout ? previous->layout->nodes.size() : 0,
+            false
+        );
+
+        if (previous && previous->layout) {
+            std::unordered_map<std::string, size_t> previous_by_identity;
+            previous_by_identity.reserve(previous->layout->nodes.size());
+
+            for (size_t previous_node_index = 0; previous_node_index < previous->layout->nodes.size(); ++previous_node_index) {
+                auto const& previous_record = previous->layout->nodes[previous_node_index];
+                if (!previous_record.lifecycle.identity_fn) {
+                    continue;
+                }
+
+                auto const identity = previous_record.lifecycle.identity_fn(previous_record.node);
+                if (identity.empty()) {
+                    continue;
+                }
+
+                auto [_, inserted] = previous_by_identity.emplace(identity, previous_node_index);
+                if (!inserted) {
+                    throw std::runtime_error(
+                        "duplicate node migration identity in previous storage: " + identity
+                    );
+                }
+            }
+
+            std::unordered_map<std::string, size_t> current_by_identity;
+            current_by_identity.reserve(layout->nodes.size());
+
+            for (size_t node_index = 0; node_index < layout->nodes.size(); ++node_index) {
+                auto const& record = layout->nodes[node_index];
+                if (!record.lifecycle.identity_fn) {
+                    continue;
+                }
+
+                auto const identity = record.lifecycle.identity_fn(record.node);
+                if (identity.empty()) {
+                    continue;
+                }
+
+                auto [_, inserted] = current_by_identity.emplace(identity, node_index);
+                if (!inserted) {
+                    throw std::runtime_error(
+                        "duplicate node migration identity in current storage: " + identity
+                    );
+                }
+
+                auto previous_it = previous_by_identity.find(identity);
+                if (previous_it == previous_by_identity.end()) {
+                    continue;
+                }
+
+                size_t const previous_node_index = previous_it->second;
+                auto const& previous_record = previous->layout->nodes[previous_node_index];
+                if (record.node_type != previous_record.node_type) {
+                    continue;
+                }
+                if (!can_move_from(*previous, node_index, previous_node_index)) {
+                    continue;
+                }
+
+                previous_node_for_current[node_index] = previous_node_index;
+                previous_nodes_consumed[previous_node_index] = true;
+            }
         }
 
         constructed_nodes.clear();
@@ -1046,12 +1137,13 @@ namespace iv {
             }
 
             void* state = state_ptr(node_index);
+            size_t const previous_node_index = previous_node_for_current[node_index];
             if (
                 previous &&
-                can_move_from(*previous, node_index) &&
+                previous_node_index != no_node &&
                 record.lifecycle.move_construct_state_fn
             ) {
-                record.lifecycle.move_construct_state_fn(state, previous->state_ptr(node_index));
+                record.lifecycle.move_construct_state_fn(state, previous->state_ptr(previous_node_index));
             } else if (record.lifecycle.default_construct_state_fn) {
                 record.lifecycle.default_construct_state_fn(state);
             }
@@ -1117,52 +1209,74 @@ namespace iv {
             }
         }
 
-        for (size_t node_index : layout->initialize_order) {
-            auto const& record = layout->nodes[node_index];
-            bool const moved_state =
-                previous &&
-                can_move_from(*previous, node_index) &&
-                record.lifecycle.move_construct_state_fn != nullptr;
+        if (previous && previous->layout) {
+            for (size_t node_index : layout->initialize_order) {
+                auto const& record = layout->nodes[node_index];
+                size_t const previous_node_index = previous_node_for_current[node_index];
+                if (
+                    previous_node_index == no_node ||
+                    !record.lifecycle.move_fn ||
+                    !record.lifecycle.move_construct_state_fn
+                ) {
+                    continue;
+                }
 
-            if (previous && record.lifecycle.move_fn && can_move_from(*previous, node_index)) {
-                record.lifecycle.move_fn(record.node, node_index, *this, *previous, orchestrator);
-                auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
-                previous_initialized_nodes.erase(
-                    std::remove(previous_initialized_nodes.begin(), previous_initialized_nodes.end(), node_index),
-                    previous_initialized_nodes.end()
+                record.lifecycle.move_fn(
+                    record.node,
+                    node_index,
+                    previous_node_index,
+                    *this,
+                    *previous,
+                    orchestrator
                 );
-            } else {
-                if (previous && previous->layout && node_index < previous->layout->nodes.size()) {
-                    auto const& previous_record = previous->layout->nodes[node_index];
-                    if (previous_record.lifecycle.release_fn) {
-                        if (moved_state) {
-                            previous_record.lifecycle.release_fn(previous_record.node, node_index, *this, orchestrator);
-                        } else {
-                            previous_record.lifecycle.release_fn(previous_record.node, node_index, const_cast<NodeStorage&>(*previous), orchestrator);
-                        }
-                    }
-                    auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
-                    previous_initialized_nodes.erase(
-                        std::remove(previous_initialized_nodes.begin(), previous_initialized_nodes.end(), node_index),
-                        previous_initialized_nodes.end()
+                NodeLayoutBuilder::log_node_event("moved", record, node_index);
+                initialized_nodes.push_back(node_index);
+            }
+
+            for (size_t previous_node_index = 0; previous_node_index < previous->layout->nodes.size(); ++previous_node_index) {
+                if (previous_node_index < previous_nodes_consumed.size() && previous_nodes_consumed[previous_node_index]) {
+                    continue;
+                }
+
+                auto const& previous_record = previous->layout->nodes[previous_node_index];
+                if (previous_record.lifecycle.release_fn) {
+                    previous_record.lifecycle.release_fn(
+                        previous_record.node,
+                        previous_node_index,
+                        const_cast<NodeStorage&>(*previous),
+                        orchestrator
                     );
                 }
-                if (record.lifecycle.initialize_fn) {
-                    try {
-                        record.lifecycle.initialize_fn(record.node, node_index, *this, orchestrator);
-                    } catch (std::exception const& e) {
-                        throw std::runtime_error(
-                            "node initialize failed at index " + std::to_string(node_index) + ": " + e.what()
-                        );
-                    } catch (...) {
-                        throw std::runtime_error(
-                            "node initialize failed at index " + std::to_string(node_index)
-                        );
-                    }
+            }
+        }
+
+        for (size_t node_index : layout->initialize_order) {
+            auto const& record = layout->nodes[node_index];
+            if (previous && previous_node_for_current[node_index] != no_node) {
+                continue;
+            }
+
+            if (record.lifecycle.initialize_fn) {
+                try {
+                    record.lifecycle.initialize_fn(record.node, node_index, *this, orchestrator);
+                } catch (std::exception const& e) {
+                    throw std::runtime_error(wrap_exception(
+                        "node initialize failed at index " + std::to_string(node_index),
+                        e
+                    ));
+                } catch (...) {
+                    throw std::runtime_error(
+                        "node initialize failed at index " + std::to_string(node_index)
+                    );
                 }
             }
-            NodeLayoutBuilder::log_node_event(moved_state ? "moved" : "created", record, node_index);
+            NodeLayoutBuilder::log_node_event("created", record, node_index);
             initialized_nodes.push_back(node_index);
+        }
+
+        if (previous) {
+            auto& previous_initialized_nodes = const_cast<NodeStorage&>(*previous).initialized_nodes;
+            previous_initialized_nodes.clear();
         }
     }
 

@@ -1,8 +1,9 @@
 #pragma once
 
-#include "node_lifecycle.h"
+#include "node/lifecycle.h"
 
 #include <array>
+#include <cmath>
 #include <functional>
 #include <vector>
 
@@ -16,19 +17,16 @@ namespace iv {
     template<typename T>
     constexpr T binary_op_default_v<std::divides<T>> = T(1.0);
 
-    template<typename BinaryOp>
-    class BinaryOpNode {
+    template<typename BinaryOp, size_t NumInputs>
+    class FixedBinaryOpNode {
         BinaryOp _binary_op;
-        size_t _num_inputs;
 
     public:
-        explicit BinaryOpNode(size_t num_inputs = 2) :
-            _num_inputs(num_inputs)
-        {}
+        static_assert(NumInputs >= 1, "FixedBinaryOpNode requires at least one input");
 
         auto inputs() const
         {
-            return std::vector<InputConfig>(_num_inputs);
+            return std::array<InputConfig, NumInputs>{};
         }
 
         auto outputs() const
@@ -36,9 +34,9 @@ namespace iv {
             return std::array<OutputConfig, 1>{};
         }
 
-        auto num_inputs() const
+        static constexpr size_t num_inputs()
         {
-            return _num_inputs;
+            return NumInputs;
         }
 
         void tick(auto const& ctx) const
@@ -52,10 +50,17 @@ namespace iv {
         }
     };
 
-    using Sum = BinaryOpNode<std::plus<Sample>>;
-    using Subtract = BinaryOpNode<std::minus<Sample>>;
-    using Product = BinaryOpNode<std::multiplies<Sample>>;
-    using Quotient = BinaryOpNode<std::divides<Sample>>;
+    template<size_t NumInputs>
+    using Sum = FixedBinaryOpNode<std::plus<Sample>, NumInputs>;
+
+    template<size_t NumInputs>
+    using Subtract = FixedBinaryOpNode<std::minus<Sample>, NumInputs>;
+
+    template<size_t NumInputs>
+    using Product = FixedBinaryOpNode<std::multiplies<Sample>, NumInputs>;
+
+    template<size_t NumInputs>
+    using Quotient = FixedBinaryOpNode<std::divides<Sample>, NumInputs>;
 
     struct Invert {
         auto inputs() const
@@ -87,7 +92,7 @@ namespace iv {
 
         void tick(auto const& ctx) const
         {
-            ctx.outputs[0].push(std::powf(ctx.inputs[0].get(), ctx.inputs[1].get()));
+            ctx.outputs[0].push(std::pow(ctx.inputs[0].get(), ctx.inputs[1].get()));
         }
     };
 }

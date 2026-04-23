@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/shaping.h"
 
@@ -12,7 +12,7 @@ inline void benchmark_constant_project(iv::ModuleContext const& context)
     auto const voice_builder = context.load_builder("iv.test.benchmark_constant_voice");
 
     phase(0.0);
-    auto const voice = g.node(voice_builder);
+    auto const voice = g.embed_subgraph(voice_builder);
     auto const tone = voice(
         "amplitude"_P = 0.1,
         "frequency"_P = 110.0,

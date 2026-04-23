@@ -39,6 +39,7 @@ function(add_iv_gtest target source)
     target_link_libraries(${target} PRIVATE
         GTest::gtest_main
         intravenous_module_runtime
+        intravenous_tooling_runtime
     )
 
     gtest_discover_tests(${target})
@@ -52,7 +53,8 @@ add_iv_gtest(intravenous_module_build_behavior_tests module_build_behavior_gtest
 add_iv_gtest(intravenous_module_watcher_tests module_watcher_gtest.cpp)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)
-
+add_iv_gtest(intravenous_runtime_project_tests runtime_project_gtest.cpp)
+add_iv_gtest(intravenous_socket_rpc_server_tests socket_rpc_server_gtest.cpp)
 add_executable(intravenous_node_layout_storage
     node_layout_storage.cpp
     ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
@@ -79,6 +81,9 @@ else()
     target_compile_options(intravenous_node_layout_storage PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-target_link_libraries(intravenous_node_layout_storage PRIVATE intravenous_module_runtime)
+target_link_libraries(intravenous_node_layout_storage PRIVATE
+    intravenous_module_runtime
+    intravenous_tooling_runtime
+)
 
 add_test(NAME intravenous_node_layout_storage COMMAND intravenous_node_layout_storage)

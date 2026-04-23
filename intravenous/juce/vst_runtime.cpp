@@ -1,20 +1,25 @@
-#include "juce_vst_runtime.h"
+#define IV_INTERNAL_TRANSLATION_UNIT
+
+#include "vst_runtime.h"
 
 #if IV_ENABLE_JUCE_VST
 
-#include "../juce_midi_input.h"
-#include "../juce_vst_wrapper.h"
+#include "midi_input.h"
+#include "vst_wrapper.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <deque>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 
 namespace iv {
@@ -59,6 +64,218 @@ namespace iv {
         std::runtime_error make_probe_error(std::string const& message, JuceVstPluginConfig const& config)
         {
             return std::runtime_error(message + ": " + canonical_plugin_path(config.plugin_path));
+        }
+
+        std::string lowercase_ascii(std::string text)
+        {
+            std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return text;
+        }
+
+        char search_path_separator()
+        {
+#if defined(_WIN32)
+            return ';';
+#else
+            return ':';
+#endif
+        }
+
+        std::vector<std::filesystem::path> parse_vst_search_roots_from_env()
+        {
+            std::vector<std::filesystem::path> roots;
+            char const* raw = std::getenv("IV_VST3_PATH");
+            if (!raw || !*raw) {
+                return roots;
+            }
+
+            std::string_view remaining(raw);
+            char const separator = search_path_separator();
+            while (!remaining.empty()) {
+                size_t split = remaining.find(separator);
+                std::string_view token = remaining.substr(0, split);
+                if (!token.empty()) {
+                    roots.emplace_back(std::string(token));
+                }
+                if (split == std::string_view::npos) {
+                    break;
+                }
+                remaining.remove_prefix(split + 1);
+            }
+            return roots;
+        }
+
+        std::vector<std::filesystem::path> default_vst_search_roots()
+        {
+            std::vector<std::filesystem::path> roots;
+#if defined(_WIN32)
+            if (char const* common = std::getenv("COMMONPROGRAMFILES"); common && *common) {
+                roots.emplace_back(std::filesystem::path(common) / "VST3");
+            }
+            if (char const* pf = std::getenv("ProgramFiles"); pf && *pf) {
+                roots.emplace_back(std::filesystem::path(pf) / "Common Files" / "VST3");
+            }
+#else
+            if (char const* home = std::getenv("HOME"); home && *home) {
+                roots.emplace_back(std::filesystem::path(home) / ".vst3");
+            }
+            roots.emplace_back("/usr/lib/vst3");
+            roots.emplace_back("/usr/local/lib/vst3");
+#endif
+            return roots;
+        }
+
+        struct VstSearchCache {
+            std::vector<std::filesystem::path> entries;
+            std::unordered_multimap<std::string, size_t> by_name;
+        };
+
+        std::filesystem::path canonical_or_absolute(std::filesystem::path const& path)
+        {
+            std::error_code ec;
+            auto canonical = std::filesystem::weakly_canonical(path, ec);
+            if (!ec) {
+                return canonical;
+            }
+            return std::filesystem::absolute(path).lexically_normal();
+        }
+
+        void index_vst_entry(VstSearchCache& cache, std::filesystem::path const& entry)
+        {
+            std::filesystem::path normalized = canonical_or_absolute(entry);
+            size_t const index = cache.entries.size();
+            cache.entries.push_back(normalized);
+
+            std::string const filename = lowercase_ascii(normalized.filename().string());
+            std::string const stem = lowercase_ascii(normalized.stem().string());
+            if (!filename.empty()) {
+                cache.by_name.emplace(filename, index);
+            }
+            if (!stem.empty() && stem != filename) {
+                cache.by_name.emplace(stem, index);
+            }
+        }
+
+        VstSearchCache build_vst_search_cache()
+        {
+            VstSearchCache cache;
+
+            std::vector<std::filesystem::path> roots = parse_vst_search_roots_from_env();
+            if (roots.empty()) {
+                roots = default_vst_search_roots();
+            }
+
+            for (auto const& root : roots) {
+                std::error_code ec;
+                if (!std::filesystem::exists(root, ec)) {
+                    continue;
+                }
+
+                if (root.extension() == ".vst3") {
+                    index_vst_entry(cache, root);
+                    continue;
+                }
+
+                if (!std::filesystem::is_directory(root, ec)) {
+                    continue;
+                }
+
+                for (
+                    std::filesystem::recursive_directory_iterator it(
+                        root,
+                        std::filesystem::directory_options::skip_permission_denied
+                    ), end;
+                    it != end;
+                    it.increment(ec)
+                ) {
+                    if (ec) {
+                        ec.clear();
+                        continue;
+                    }
+
+                    std::filesystem::path const path = it->path();
+                    if (path.extension() != ".vst3") {
+                        continue;
+                    }
+                    index_vst_entry(cache, path);
+                }
+            }
+
+            return cache;
+        }
+
+        VstSearchCache const& vst_search_cache()
+        {
+            static VstSearchCache cache = build_vst_search_cache();
+            return cache;
+        }
+
+        std::filesystem::path resolve_plugin_path(std::filesystem::path const& query_path)
+        {
+            if (query_path.empty()) {
+                throw std::runtime_error("plugin path cannot be empty");
+            }
+
+            std::error_code ec;
+            if (
+                std::filesystem::exists(query_path, ec)
+                || (!query_path.has_parent_path() && query_path.extension() == ".vst3" && std::filesystem::exists(std::filesystem::current_path() / query_path, ec))
+            ) {
+                return canonical_or_absolute(query_path);
+            }
+
+            // Treat bare names as lookup keys in startup scan cache.
+            if (query_path.has_parent_path()) {
+                throw std::runtime_error("plugin file was not found: " + canonical_or_absolute(query_path).string());
+            }
+
+            std::string key = lowercase_ascii(query_path.string());
+            if (!key.ends_with(".vst3")) {
+                key += ".vst3";
+            }
+
+            auto const& cache = vst_search_cache();
+            std::vector<size_t> matches;
+            auto range = cache.by_name.equal_range(key);
+            for (auto it = range.first; it != range.second; ++it) {
+                matches.push_back(it->second);
+            }
+
+            if (matches.empty()) {
+                // Retry by stem (name without extension)
+                std::filesystem::path key_path(key);
+                std::string const stem_key = lowercase_ascii(key_path.stem().string());
+                auto stem_range = cache.by_name.equal_range(stem_key);
+                for (auto it = stem_range.first; it != stem_range.second; ++it) {
+                    matches.push_back(it->second);
+                }
+            }
+
+            std::sort(matches.begin(), matches.end());
+            matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
+
+            if (matches.empty()) {
+                throw std::runtime_error(
+                    "plugin '" + query_path.string() + "' was not found in scanned VST3 paths. "
+                    "Set IV_VST3_PATH to a directory or path list."
+                );
+            }
+
+            if (matches.size() > 1) {
+                std::string message = "plugin name '" + query_path.string() + "' is ambiguous";
+                size_t const shown = std::min<size_t>(matches.size(), 8);
+                for (size_t i = 0; i < shown; ++i) {
+                    message += "\nmatch: " + cache.entries[matches[i]].string();
+                }
+                if (matches.size() > shown) {
+                    message += "\nmatch: ...";
+                }
+                throw std::runtime_error(message);
+            }
+
+            return cache.entries[matches.front()];
         }
 
         std::string make_audio_port_name(size_t channel)
@@ -431,6 +648,8 @@ namespace iv {
 
     JuceVstWrapperSpec probe_juce_vst(JuceVstPluginConfig request)
     {
+        request.plugin_path = resolve_plugin_path(request.plugin_path);
+
         ::juce::AudioPluginFormatManager format_manager;
         format_manager.addDefaultFormats();
 
@@ -464,6 +683,11 @@ namespace iv {
             spec.schema.parameters
         );
         return spec;
+    }
+
+    void warmup_juce_vst_scan_cache()
+    {
+        (void)vst_search_cache();
     }
 
     UniqueResource JuceVstRuntimeManager::create_instance(

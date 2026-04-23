@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 
 namespace {
     void duplicate_two(iv::ModuleContext const& context)

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../ports.h"
+#include "ports.h"
 
 #include <cstdint>
 #include <functional>
@@ -64,6 +64,21 @@ namespace iv {
         bool operator==(DetachedInfo const&) const = default;
     };
 
+    struct SourceSpan {
+        std::string file_path {};
+        uint32_t begin = 0;
+        uint32_t end = 0;
+
+        bool operator==(SourceSpan const&) const = default;
+    };
+
+    struct SourceInfo {
+        std::string declaration_identity {};
+        SourceSpan span {};
+
+        bool operator==(SourceInfo const&) const = default;
+    };
+
     inline constexpr size_t GRAPH_ID = std::numeric_limits<size_t>::max();
 
     struct GraphRegion {
@@ -93,9 +108,44 @@ namespace iv {
         bool can_skip = false;
     };
 
-    struct LoweredScopeSpec {
+    struct LoweredSubgraphSpec {
+        struct PortRef {
+            std::string node_id {};
+            size_t port = 0;
+            bool is_graph_port = false;
+        };
+
         size_t parent_scope = GRAPH_ID;
+        std::string kind;
+        std::string backing_node_id;
         std::vector<std::string> member_node_ids;
+        std::vector<SourceInfo> source_infos;
+        std::vector<SourceSpan> source_spans;
+        std::vector<InputConfig> sample_inputs;
+        std::vector<OutputConfig> sample_outputs;
+        std::vector<EventInputConfig> event_inputs;
+        std::vector<EventOutputConfig> event_outputs;
+        std::vector<std::vector<PortRef>> sample_input_targets;
+        std::vector<PortRef> sample_output_sources;
+        std::vector<std::vector<PortRef>> event_input_targets;
+        std::vector<PortRef> event_output_sources;
+        std::optional<size_t> ttl_samples;
+    };
+
+    struct LoweredSubgraph {
+        size_t parent_scope = GRAPH_ID;
+        std::string kind;
+        std::string backing_node_id;
+        std::vector<size_t> member_nodes;
+        std::vector<SourceSpan> source_spans;
+        std::vector<InputConfig> sample_inputs;
+        std::vector<OutputConfig> sample_outputs;
+        std::vector<EventInputConfig> event_inputs;
+        std::vector<EventOutputConfig> event_outputs;
+        std::vector<std::vector<PortId>> sample_input_targets;
+        std::vector<PortId> sample_output_sources;
+        std::vector<std::vector<PortId>> event_input_targets;
+        std::vector<PortId> event_output_sources;
         std::optional<size_t> ttl_samples;
     };
 

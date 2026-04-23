@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../graph_node.h"
-#include "../juce_midi_input.h"
-#include "../juce_vst_wrapper.h"
+#include "graph/node.h"
+#include "juce/midi_input.h"
+#include "juce/vst_wrapper.h"
 
 #include <mutex>
 #include <memory>
@@ -66,6 +66,10 @@ namespace iv {
         std::unique_ptr<Impl> _impl;
         std::mutex _mutex;
     };
+
+    // Builds the process-wide VST search cache once.
+    // Subsequent probes reuse the cached index.
+    void warmup_juce_vst_scan_cache();
 
     void tick_juce_vst_wrapper(
         JuceVstWrapperSpec const& spec,

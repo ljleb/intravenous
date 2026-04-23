@@ -1,4 +1,4 @@
-#include "module/module.h"
+#include "dsl.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/shaping.h"
 
@@ -15,7 +15,7 @@ inline void behavior_project(iv::ModuleContext const& context)
     for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
         auto const sink = io.sink(g, channel);
         auto const phase = g.node<PhaseIntegrator>();
-        auto const voice = g.node(voice_builder);
+        auto const voice = g.embed_subgraph(voice_builder);
 
         phase(0.0);
         auto tone = voice(

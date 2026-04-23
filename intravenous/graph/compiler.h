@@ -3,9 +3,9 @@
 #include "basic_nodes/routing.h"
 #include "basic_nodes/arithmetic.h"
 #include "basic_nodes/type_erased.h"
-#include "graph/build_types.h"
-#include "graph/types.h"
-#include "graph/wiring.h"
+#include "build_types.h"
+#include "types.h"
+#include "wiring.h"
 
 #include <algorithm>
 #include <bit>
@@ -34,12 +34,33 @@ namespace iv::details {
         throw std::logic_error(msg);
     }
 
+    inline TypeErasedNode make_sum_node(size_t arity)
+    {
+        if (arity == 0 || arity > 64) {
+            error("sum node arity must be between 1 and 64; got " + std::to_string(arity));
+        }
+
+        std::optional<TypeErasedNode> result;
+        [&]<size_t... I>(std::index_sequence<I...>) {
+            ((arity == (I + 1)
+                ? (void)(result.emplace(Sum<I + 1>{}))
+                : (void)0), ...);
+        }(std::make_index_sequence<64>{});
+
+        IV_ASSERT(result.has_value(), "sum node instantiation must succeed for supported arities");
+        return std::move(*result);
+    }
+
     struct PreparedGraph {
         std::vector<TypeErasedNode> nodes;
         std::vector<std::optional<size_t>> explicit_ttl_samples;
         std::vector<std::string> node_ids;
+        std::vector<std::vector<std::string>> node_logical_ids;
+        std::vector<std::vector<SourceInfo>> node_source_infos;
         std::unordered_set<GraphEdge> edges;
         std::unordered_set<GraphEventEdge> event_edges;
+        std::unordered_set<PortId> timeline_filled_input_ports;
+        std::unordered_set<PortId> timeline_filled_event_input_ports;
         std::unordered_map<PortId, DetachedInfo> detached_info_by_source;
         std::unordered_set<PortId> detached_reader_outputs;
     };
@@ -83,42 +104,31 @@ namespace iv::details {
 
     inline std::vector<DormancyGroup> compile_dormancy_groups(
         PreparedGraph const& g,
-        std::span<LoweredScopeSpec const> scopes,
+        std::span<LoweredSubgraph const> lowered_subgraphs,
         std::string_view graph_id,
         GraphExecutionPlan const& execution_plan
     )
     {
-        std::unordered_map<std::string, size_t> runtime_index_by_node_id;
-        for (size_t i = 0; i < g.node_ids.size(); ++i) {
-            runtime_index_by_node_id.emplace(g.node_ids[i], i);
-        }
         std::vector<size_t> region_to_order(execution_plan.regions.size(), GRAPH_ID);
         for (size_t ordered_i = 0; ordered_i < execution_plan.region_order.size(); ++ordered_i) {
             region_to_order[execution_plan.region_order[ordered_i]] = ordered_i;
         }
 
         std::vector<DormancyGroup> groups;
-        groups.reserve(scopes.size());
+        groups.reserve(lowered_subgraphs.size());
         std::vector<std::unordered_set<size_t>> member_sets;
-        member_sets.reserve(scopes.size());
+        member_sets.reserve(lowered_subgraphs.size());
 
-        for (auto const& scope : scopes) {
+        for (auto const& lowered_subgraph : lowered_subgraphs) {
             DormancyGroup group;
-            group.parent_group = scope.parent_scope;
-            group.ttl_samples = scope.ttl_samples;
+            group.parent_group = lowered_subgraph.parent_scope;
+            group.ttl_samples = lowered_subgraph.ttl_samples;
+            group.member_nodes = lowered_subgraph.member_nodes;
 
-            std::unordered_set<size_t> member_set;
-            for (auto const& node_id : scope.member_node_ids) {
-                auto it = runtime_index_by_node_id.find(node_id);
-                if (it == runtime_index_by_node_id.end()) {
-                    continue;
-                }
-                group.member_nodes.push_back(it->second);
-                member_set.insert(it->second);
-            }
-
-            std::sort(group.member_nodes.begin(), group.member_nodes.end());
-            group.member_nodes.erase(std::unique(group.member_nodes.begin(), group.member_nodes.end()), group.member_nodes.end());
+            std::unordered_set<size_t> member_set(
+                group.member_nodes.begin(),
+                group.member_nodes.end()
+            );
             member_sets.push_back(std::move(member_set));
             groups.push_back(std::move(group));
         }
@@ -227,6 +237,91 @@ namespace iv::details {
         return filtered;
     }
 
+    inline std::vector<LoweredSubgraph> compile_lowered_subgraphs(
+        PreparedGraph const& g,
+        std::span<LoweredSubgraphSpec const> scopes
+    )
+    {
+        std::unordered_map<std::string, size_t> runtime_index_by_node_id;
+        for (size_t i = 0; i < g.node_ids.size(); ++i) {
+            runtime_index_by_node_id.emplace(g.node_ids[i], i);
+        }
+
+        std::vector<LoweredSubgraph> lowered_subgraphs;
+        lowered_subgraphs.reserve(scopes.size());
+        for (auto const& scope : scopes) {
+            LoweredSubgraph lowered;
+            lowered.parent_scope = scope.parent_scope;
+            lowered.kind = scope.kind;
+            lowered.backing_node_id = scope.backing_node_id;
+            lowered.source_spans = scope.source_spans;
+            lowered.sample_inputs = scope.sample_inputs;
+            lowered.sample_outputs = scope.sample_outputs;
+            lowered.event_inputs = scope.event_inputs;
+            lowered.event_outputs = scope.event_outputs;
+            lowered.ttl_samples = scope.ttl_samples;
+
+            auto remap_port = [&](LoweredSubgraphSpec::PortRef const& port) {
+                if (port.is_graph_port) {
+                    return PortId{ GRAPH_ID, port.port };
+                }
+                auto const it = runtime_index_by_node_id.find(port.node_id);
+                if (it == runtime_index_by_node_id.end()) {
+                    return PortId{ GRAPH_ID, port.port };
+                }
+                return PortId{ it->second, port.port };
+            };
+
+            for (auto const& node_id : scope.member_node_ids) {
+                auto const it = runtime_index_by_node_id.find(node_id);
+                if (it == runtime_index_by_node_id.end()) {
+                    continue;
+                }
+                lowered.member_nodes.push_back(it->second);
+            }
+
+            lowered.sample_input_targets.reserve(scope.sample_input_targets.size());
+            for (auto const& targets : scope.sample_input_targets) {
+                std::vector<PortId> remapped_targets;
+                remapped_targets.reserve(targets.size());
+                for (auto const& target : targets) {
+                    remapped_targets.push_back(remap_port(target));
+                }
+                lowered.sample_input_targets.push_back(std::move(remapped_targets));
+            }
+            lowered.sample_output_sources.reserve(scope.sample_output_sources.size());
+            for (auto const& source : scope.sample_output_sources) {
+                lowered.sample_output_sources.push_back(remap_port(source));
+            }
+            lowered.event_input_targets.reserve(scope.event_input_targets.size());
+            for (auto const& targets : scope.event_input_targets) {
+                std::vector<PortId> remapped_targets;
+                remapped_targets.reserve(targets.size());
+                for (auto const& target : targets) {
+                    remapped_targets.push_back(remap_port(target));
+                }
+                lowered.event_input_targets.push_back(std::move(remapped_targets));
+            }
+            lowered.event_output_sources.reserve(scope.event_output_sources.size());
+            for (auto const& source : scope.event_output_sources) {
+                lowered.event_output_sources.push_back(remap_port(source));
+            }
+
+            std::sort(lowered.member_nodes.begin(), lowered.member_nodes.end());
+            lowered.member_nodes.erase(
+                std::unique(lowered.member_nodes.begin(), lowered.member_nodes.end()),
+                lowered.member_nodes.end()
+            );
+            if (lowered.member_nodes.empty()) {
+                continue;
+            }
+
+            lowered_subgraphs.push_back(std::move(lowered));
+        }
+
+        return lowered_subgraphs;
+    }
+
     inline void expand_hyperedge_ports(PreparedGraph& g, std::string_view builder_id)
     {
         std::unordered_map<PortId, std::vector<GraphEdge>> reverse_edges_map;
@@ -253,9 +348,11 @@ namespace iv::details {
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
-                g.nodes.emplace_back(Sum(port_arity));
+                g.nodes.push_back(make_sum_node(port_arity));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_logical_ids.emplace_back();
+                g.node_source_infos.emplace_back();
                 size_t const sum_node = g.nodes.size() - 1;
 
                 for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
@@ -285,6 +382,8 @@ namespace iv::details {
                 g.nodes.emplace_back(EventConcatenation(port_arity, concat_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_logical_ids.emplace_back();
+                g.node_source_infos.emplace_back();
                 size_t const concat_node = g.nodes.size() - 1;
 
                 for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
@@ -328,6 +427,8 @@ namespace iv::details {
                 g.nodes.emplace_back(Broadcast(port_arity));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_logical_ids.emplace_back();
+                g.node_source_infos.emplace_back();
                 size_t const broadcast_node = g.nodes.size() - 1;
 
                 for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
@@ -357,6 +458,8 @@ namespace iv::details {
                 g.nodes.emplace_back(BroadcastEvent(port_arity, broadcast_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                g.node_logical_ids.emplace_back();
+                g.node_source_infos.emplace_back();
                 size_t const broadcast_node = g.nodes.size() - 1;
 
                 for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
@@ -393,6 +496,8 @@ namespace iv::details {
                     g.nodes.emplace_back(DummySink());
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                    g.node_logical_ids.emplace_back();
+                    g.node_source_infos.emplace_back();
                     size_t const new_node = g.nodes.size() - 1;
                     g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
                 }
@@ -406,6 +511,8 @@ namespace iv::details {
                     g.nodes.emplace_back(DummyEventSink());
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+                    g.node_logical_ids.emplace_back();
+                    g.node_source_infos.emplace_back();
                     size_t const new_node = g.nodes.size() - 1;
                     EventTypeId const source_type = get_event_outputs(g.nodes[node])[output_port].type;
                     g.event_edges.insert(GraphEventEdge{
@@ -481,18 +588,26 @@ namespace iv::details {
         std::vector<TypeErasedNode> sorted_nodes;
         std::vector<std::optional<size_t>> sorted_explicit_ttls;
         std::vector<std::string> sorted_node_ids;
+        std::vector<std::vector<std::string>> sorted_node_logical_ids;
+        std::vector<std::vector<SourceInfo>> sorted_node_source_infos;
         sorted_nodes.reserve(num_nodes);
         sorted_explicit_ttls.reserve(num_nodes);
         sorted_node_ids.reserve(num_nodes);
+        sorted_node_logical_ids.reserve(num_nodes);
+        sorted_node_source_infos.reserve(num_nodes);
         for (size_t old_i = 0; old_i < num_nodes; ++old_i)
         {
             sorted_nodes.push_back(std::move(g.nodes[sorted[old_i]]));
             sorted_explicit_ttls.push_back(std::move(g.explicit_ttl_samples[sorted[old_i]]));
             sorted_node_ids.push_back(std::move(g.node_ids[sorted[old_i]]));
+            sorted_node_logical_ids.push_back(std::move(g.node_logical_ids[sorted[old_i]]));
+            sorted_node_source_infos.push_back(std::move(g.node_source_infos[sorted[old_i]]));
         }
         g.nodes.swap(sorted_nodes);
         g.explicit_ttl_samples.swap(sorted_explicit_ttls);
         g.node_ids.swap(sorted_node_ids);
+        g.node_logical_ids.swap(sorted_node_logical_ids);
+        g.node_source_infos.swap(sorted_node_source_infos);
 
         std::vector<size_t> reverse_sorted(num_nodes);
         for (size_t new_i = 0; new_i < num_nodes; ++new_i) {
@@ -522,6 +637,26 @@ namespace iv::details {
             sorted_event_edges.insert(std::move(edge));
         }
         g.event_edges.swap(sorted_event_edges);
+
+        std::unordered_set<PortId> sorted_timeline_filled_input_ports;
+        sorted_timeline_filled_input_ports.reserve(g.timeline_filled_input_ports.size());
+        for (PortId port : g.timeline_filled_input_ports) {
+            if (port.node != GRAPH_ID) {
+                port.node = reverse_sorted[port.node];
+            }
+            sorted_timeline_filled_input_ports.insert(port);
+        }
+        g.timeline_filled_input_ports.swap(sorted_timeline_filled_input_ports);
+
+        std::unordered_set<PortId> sorted_timeline_filled_event_input_ports;
+        sorted_timeline_filled_event_input_ports.reserve(g.timeline_filled_event_input_ports.size());
+        for (PortId port : g.timeline_filled_event_input_ports) {
+            if (port.node != GRAPH_ID) {
+                port.node = reverse_sorted[port.node];
+            }
+            sorted_timeline_filled_event_input_ports.insert(port);
+        }
+        g.timeline_filled_event_input_ports.swap(sorted_timeline_filled_event_input_ports);
 
         for (auto& [_, info] : g.detached_info_by_source)
         {

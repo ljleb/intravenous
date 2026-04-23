@@ -1,5 +1,6 @@
 #pragma once
 
+#include "compat.h"
 #include "module/dependency.h"
 #include "module/loader.h"
 #include "module/watcher.h"
@@ -21,29 +22,37 @@ namespace iv {
             std::vector<ModuleDependency> dependencies;
         };
 
-        ModuleLoader* _loader = nullptr;
         DependencyWatcher* _watcher = nullptr;
         std::filesystem::path _module_path;
         std::function<ModuleLoader::LoadedGraph()> _build_reload;
+        std::function<void()> _on_build_started;
+        std::function<void()> _on_build_succeeded;
+        std::function<void(std::exception_ptr)> _on_build_failed;
 
         mutable std::mutex _mutex;
         std::optional<PendingReload> _pending_reload;
         std::exception_ptr _pending_exception;
+        volatile bool _has_pending_reload = false;
+        volatile bool _has_pending_exception = false;
         bool _build_in_progress = false;
         bool _shutdown_requested = false;
         std::optional<std::jthread> _thread;
 
     public:
         ReloadWorker(
-            ModuleLoader& loader,
             DependencyWatcher& watcher,
             std::filesystem::path module_path,
-            std::function<ModuleLoader::LoadedGraph()> build_reload
+            std::function<ModuleLoader::LoadedGraph()> build_reload,
+            std::function<void()> on_build_started = {},
+            std::function<void()> on_build_succeeded = {},
+            std::function<void(std::exception_ptr)> on_build_failed = {}
         ) :
-            _loader(&loader),
             _watcher(&watcher),
             _module_path(std::move(module_path)),
-            _build_reload(std::move(build_reload))
+            _build_reload(std::move(build_reload)),
+            _on_build_started(std::move(on_build_started)),
+            _on_build_succeeded(std::move(on_build_succeeded)),
+            _on_build_failed(std::move(on_build_failed))
         {}
 
         void start()
@@ -74,6 +83,9 @@ namespace iv {
                     }
 
                     if (should_build) {
+                        if (_on_build_started) {
+                            _on_build_started();
+                        }
                         try {
                             auto next_graph = _build_reload();
                             auto next_dependencies = next_graph.dependencies;
@@ -85,12 +97,21 @@ namespace iv {
                             std::lock_guard lock(_mutex);
                             if (!_shutdown_requested) {
                                 _pending_reload = std::move(next_reload);
+                                _has_pending_reload = true;
                             }
                             _build_in_progress = false;
+                            if (_on_build_succeeded) {
+                                _on_build_succeeded();
+                            }
                         } catch (...) {
+                            auto exception = std::current_exception();
+                            if (_on_build_failed) {
+                                _on_build_failed(exception);
+                            }
                             std::lock_guard lock(_mutex);
                             _build_in_progress = false;
-                            _pending_exception = std::current_exception();
+                            _pending_exception = exception;
+                            _has_pending_exception = true;
                         }
                     }
 
@@ -118,8 +139,13 @@ namespace iv {
 
         std::optional<ModuleLoader::LoadedGraph> take_completed_reload(std::vector<ModuleDependency>* dependencies = nullptr)
         {
+            if (!_has_pending_reload) {
+                return std::nullopt;
+            }
+
             std::lock_guard lock(_mutex);
             if (!_pending_reload.has_value()) {
+                _has_pending_reload = false;
                 return std::nullopt;
             }
 
@@ -129,15 +155,31 @@ namespace iv {
 
             auto graph = std::move(_pending_reload->graph);
             _pending_reload.reset();
+            _has_pending_reload = false;
             return graph;
         }
 
         std::exception_ptr take_exception()
         {
+            if (!_has_pending_exception) {
+                return nullptr;
+            }
+
             std::lock_guard lock(_mutex);
             auto exception = _pending_exception;
             _pending_exception = nullptr;
+            _has_pending_exception = false;
             return exception;
+        }
+
+        bool has_pending_reload() const
+        {
+            return _has_pending_reload;
+        }
+
+        bool has_pending_exception() const
+        {
+            return _has_pending_exception;
         }
     };
 }

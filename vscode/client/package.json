@@ -1,0 +1,47 @@
+{
+  "name": "iv-client",
+  "displayName": "Intravenous",
+  "description": "Live graph inspection for Intravenous workspaces.",
+  "version": "0.0.1",
+  "publisher": "intravenous",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:.intravenous"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Intravenous",
+      "properties": {
+        "intravenous.intravenousDir": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the directory that directly contains the intravenous executable. INTRAVENOUS_DIR takes precedence when set."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "intravenous",
+          "title": "Intravenous",
+          "icon": "media/intravenous.svg"
+        }
+      ]
+    },
+    "views": {
+      "intravenous": [
+        {
+          "id": "intravenous.liveGraph",
+          "name": "Intravenous",
+          "type": "webview"
+        }
+      ]
+    }
+  }
+}

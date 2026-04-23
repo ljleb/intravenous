@@ -23,12 +23,13 @@ int main()
     iv::test::copy_directory(voice_src, voice_dst);
     iv::test::copy_directory(local_src, local_dst);
 
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.behavior_project", project_dst));
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.behavior_voice", voice_dst));
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst));
+    std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.behavior_project", project_dst));
+    std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.behavior_voice", voice_dst));
+    std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.local_cmake", local_dst));
 
     iv::test::FakeAudioDevice audio_device;
-    iv::ModuleLoader loader(iv::test::repo_root(), { runtime_root });
+    iv::Timeline timeline;
+    iv::ModuleLoader loader(timeline, iv::test::repo_root(), { runtime_root });
 
     {
         auto graph = loader.load_root(
@@ -41,7 +42,6 @@ int main()
 
     auto const project_workspace = iv::test::runtime_module_workspace("iv.test.behavior_project", project_dst);
     auto const voice_workspace = iv::test::runtime_module_workspace("iv.test.behavior_voice", voice_dst);
-    auto const local_workspace = iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst);
 
     auto const project_cache = project_workspace / "build" / "CMakeCache.txt";
     auto const voice_cache = voice_workspace / "build" / "CMakeCache.txt";
@@ -55,13 +55,12 @@ int main()
     );
 #endif
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto project_needle = std::string("SamplePortRef first_output;");
     auto project_replacement = std::string("SamplePortRef first_output;\n    // behavior source marker");
     iv::test::require(project_source.contains(project_needle), "project fixture missing source marker");
     project_source.replace(project_source.find(project_needle), project_needle.size(), project_replacement);
-    iv::test::write_text(project_dst / "module.cpp", project_source);
+    iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
     {
         auto graph = loader.load_root(
@@ -75,13 +74,12 @@ int main()
     iv::test::require(iv::test::write_time(project_cache) == project_cache_before, "source edit should not reconfigure root module");
     iv::test::require(iv::test::write_time(voice_cache) == voice_cache_before, "source edit should not reconfigure dependency module");
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto voice_needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");
     auto voice_replacement = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);/* behavior dependency marker*/");
     iv::test::require(voice_source.contains(voice_needle), "voice fixture missing source marker");
     voice_source.replace(voice_source.find(voice_needle), voice_needle.size(), voice_replacement);
-    iv::test::write_text(voice_dst / "module.cpp", voice_source);
+    iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);
 
     auto const project_cache_mid = iv::test::write_time(project_cache);
     auto const voice_cache_mid = iv::test::write_time(voice_cache);
@@ -107,13 +105,13 @@ int main()
         (void)graph;
     }
 
+    auto const local_workspace = iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst);
     auto const local_configure_signature = local_workspace / "configure.signature";
     auto const local_configure_before = iv::test::write_time(local_configure_signature);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     auto local_cmake = iv::test::read_text(local_dst / "CMakeLists.txt");
     local_cmake += "\n# behavior cmake marker\n";
-    iv::test::write_text(local_dst / "CMakeLists.txt", local_cmake);
+    iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
 
     {
         auto graph = loader.load_root(
@@ -129,35 +127,15 @@ int main()
         "local CMake edit should force reconfigure"
     );
 
-    if (auto ninja_path = std::getenv("IV_RUNTIME_MODULE_PREFER_NINJA"); ninja_path == nullptr || std::string_view(ninja_path) != "0") {
-        auto configured = iv::test::read_text(project_workspace / "generator.txt");
-        if (configured == "Ninja") {
-            iv::test::require(std::filesystem::exists(project_workspace / "build" / "build.ninja"), "ninja workspace should contain build.ninja");
-        }
+    auto const expected_generator = iv::test::configured_build_generator();
+    auto const project_generator = iv::test::read_text(project_workspace / "generator.txt");
+    auto const local_generator = iv::test::read_text(local_workspace / "generator.txt");
+    iv::test::require(project_generator == expected_generator, "project workspace should preserve top-level generator");
+    iv::test::require(local_generator == expected_generator, "local workspace should preserve top-level generator");
+    if (project_generator == "Ninja") {
+        iv::test::require(std::filesystem::exists(project_workspace / "build" / "build.ninja"), "ninja workspace should contain build.ninja");
+        iv::test::require(std::filesystem::exists(local_workspace / "build" / "build.ninja"), "local ninja workspace should contain build.ninja");
     }
-
-    std::filesystem::remove_all(iv::test::runtime_module_workspace("iv.test.local_cmake", local_dst));
-#if defined(_WIN32)
-    _putenv_s("IV_RUNTIME_MODULE_PREFER_NINJA", "0");
-#else
-    setenv("IV_RUNTIME_MODULE_PREFER_NINJA", "0", 1);
-#endif
-    {
-        iv::ModuleLoader fallback_loader(iv::test::repo_root(), { runtime_root });
-        auto graph = fallback_loader.load_root(
-            local_dst,
-            iv::test::module_render_config(audio_device),
-            &audio_device.sample_period()
-        );
-        (void)graph;
-    }
-    auto fallback_generator = iv::test::read_text(local_workspace / "generator.txt");
-    iv::test::require(fallback_generator != "Ninja", "ninja disable flag should force non-ninja generator");
-#if defined(_WIN32)
-    _putenv_s("IV_RUNTIME_MODULE_PREFER_NINJA", "");
-#else
-    unsetenv("IV_RUNTIME_MODULE_PREFER_NINJA");
-#endif
 
     return 0;
 }

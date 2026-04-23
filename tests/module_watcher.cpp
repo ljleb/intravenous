@@ -27,21 +27,20 @@ int main()
     );
 
     auto watcher = iv::make_dependency_watcher();
-    watcher->update(graph.dependencies);
-    iv::test::require(!watcher->has_changes(), "watcher should be clean before edits");
+    watcher.update(graph.dependencies);
+    iv::test::require(!watcher.has_changes(), "watcher should be clean before edits");
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
     auto needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");
     auto replacement = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);/* watcher marker*/");
     iv::test::require(source.contains(needle), "watch fixture did not contain expected marker");
     source.replace(source.find(needle), needle.size(), replacement);
-    iv::test::write_text(module_cpp, source);
+    iv::test::write_text_advancing_timestamp(module_cpp, source);
 
     bool saw_change = false;
     for (int i = 0; i < 40; ++i) {
-        if (watcher->has_changes()) {
+        if (watcher.has_changes()) {
             saw_change = true;
             break;
         }

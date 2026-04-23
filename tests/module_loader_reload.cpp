@@ -18,7 +18,8 @@ int main()
     iv::test::copy_directory(voice_src, voice_dst);
 
     iv::test::FakeAudioDevice audio_device;
-    iv::ModuleLoader loader(repo, { runtime_root });
+    iv::Timeline timeline;
+    iv::ModuleLoader loader(timeline, repo, { runtime_root });
 
     auto graph_a = loader.load_root(
         reload_dst,

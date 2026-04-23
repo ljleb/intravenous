@@ -1,11 +1,11 @@
-#include "module/module.h"
+#include "dsl.h"
 
 namespace iv {
     void missing_dependency(ModuleContext const& context)
     {
         auto& g = context.builder();
         auto const voice = context.load("iv.test.this_does_not_exist");
-        g.outputs(voice);
+        g.outputs("out"_P = voice);
     }
 }
 

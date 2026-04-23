@@ -1,16 +1,19 @@
+#define IV_INTERNAL_TRANSLATION_UNIT
+
 #include "module/watcher.h"
 
 #include <algorithm>
 #include <array>
+#include <utility>
 
 #if defined(__linux__)
 #include <poll.h>
 #include <sys/inotify.h>
-#include <unistd.h>
 #endif
 
 namespace iv {
     namespace {
+#if !defined(__linux__)
         std::filesystem::file_time_type compute_directory_stamp(std::filesystem::path const& dir)
         {
             std::filesystem::file_time_type latest {};
@@ -39,101 +42,104 @@ namespace iv {
 
             return latest;
         }
-
-        class PollingWatcher final : public DependencyWatcher {
-            std::vector<ModuleDependency> _dependencies;
-
-        public:
-            void update(std::vector<ModuleDependency> dependencies) override
-            {
-                _dependencies = std::move(dependencies);
-            }
-
-            bool has_changes() override
-            {
-                for (auto const& dependency : _dependencies) {
-                    if (compute_directory_stamp(dependency.module_dir) != dependency.source_stamp) {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-        };
-
-#if defined(__linux__)
-        class InotifyWatcher final : public DependencyWatcher {
-            int _fd = -1;
-            std::vector<ModuleDependency> _dependencies;
-
-            void reset()
-            {
-                if (_fd != -1) {
-                    close(_fd);
-                    _fd = -1;
-                }
-            }
-
-            void add_directory_recursive(std::filesystem::path const& dir)
-            {
-                (void)inotify_add_watch(_fd, dir.string().c_str(), IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
-
-                for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
-                    if (entry.is_directory()) {
-                        (void)inotify_add_watch(_fd, entry.path().string().c_str(), IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
-                    }
-                }
-            }
-
-        public:
-            InotifyWatcher()
-            {
-                _fd = inotify_init1(IN_NONBLOCK);
-            }
-
-            ~InotifyWatcher() override
-            {
-                reset();
-            }
-
-            void update(std::vector<ModuleDependency> dependencies) override
-            {
-                _dependencies = std::move(dependencies);
-                reset();
-                _fd = inotify_init1(IN_NONBLOCK);
-                if (_fd == -1) {
-                    return;
-                }
-
-                for (auto const& dependency : _dependencies) {
-                    add_directory_recursive(dependency.module_dir);
-                }
-            }
-
-            bool has_changes() override
-            {
-                if (_fd == -1) {
-                    return false;
-                }
-
-                pollfd fd { .fd = _fd, .events = POLLIN, .revents = 0 };
-                if (poll(&fd, 1, 0) <= 0) {
-                    return false;
-                }
-
-                std::array<char, 4096> buffer {};
-                return read(_fd, buffer.data(), buffer.size()) > 0;
-            }
-        };
 #endif
     }
 
-    std::unique_ptr<DependencyWatcher> make_dependency_watcher()
+    DependencyWatcher::DependencyWatcher() = default;
+
+    DependencyWatcher::~DependencyWatcher()
     {
 #if defined(__linux__)
-        return std::make_unique<InotifyWatcher>();
-#else
-        return std::make_unique<PollingWatcher>();
+        reset();
 #endif
+    }
+
+    DependencyWatcher::DependencyWatcher(DependencyWatcher&& other) noexcept :
+        _dependencies(std::move(other._dependencies))
+#if defined(__linux__)
+        , _fd(std::exchange(other._fd, -1))
+#endif
+    {}
+
+    DependencyWatcher& DependencyWatcher::operator=(DependencyWatcher&& other) noexcept
+    {
+        if (this == &other) {
+            return *this;
+        }
+
+#if defined(__linux__)
+        reset();
+        _fd = std::exchange(other._fd, -1);
+#endif
+        _dependencies = std::move(other._dependencies);
+        return *this;
+    }
+
+#if defined(__linux__)
+    void DependencyWatcher::reset()
+    {
+        if (_fd != -1) {
+            close(_fd);
+            _fd = -1;
+        }
+    }
+
+    void DependencyWatcher::add_directory_recursive(std::filesystem::path const& dir)
+    {
+        (void)inotify_add_watch(_fd, dir.string().c_str(), IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+
+        for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
+            if (entry.is_directory()) {
+                (void)inotify_add_watch(_fd, entry.path().string().c_str(), IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+            }
+        }
+    }
+#endif
+
+    void DependencyWatcher::update(std::vector<ModuleDependency> dependencies)
+    {
+        _dependencies = std::move(dependencies);
+
+#if defined(__linux__)
+        reset();
+        _fd = inotify_init1(IN_NONBLOCK);
+        if (_fd == -1) {
+            return;
+        }
+
+        for (auto const& dependency : _dependencies) {
+            add_directory_recursive(dependency.module_dir);
+        }
+#endif
+    }
+
+    bool DependencyWatcher::has_changes()
+    {
+#if defined(__linux__)
+        if (_fd == -1) {
+            return false;
+        }
+
+        pollfd fd { .fd = _fd, .events = POLLIN, .revents = 0 };
+        if (poll(&fd, 1, 0) <= 0) {
+            return false;
+        }
+
+        std::array<char, 4096> buffer {};
+        return read(_fd, buffer.data(), buffer.size()) > 0;
+#else
+        for (auto const& dependency : _dependencies) {
+            if (compute_directory_stamp(dependency.module_dir) != dependency.source_stamp) {
+                return true;
+            }
+        }
+
+        return false;
+#endif
+    }
+
+    DependencyWatcher make_dependency_watcher()
+    {
+        return DependencyWatcher();
     }
 }

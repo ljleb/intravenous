@@ -1,9 +1,10 @@
 #pragma once
 
-#include "node_lifecycle.h"
+#include "node/lifecycle.h"
 
 #include "math/erfinv.h"
 #include "random123/aes.h"
+#include "random123/philox.h"
 #include "random123/uniform.hpp"
 
 #include <algorithm>
@@ -116,7 +117,11 @@ namespace iv {
     };
 
     class DeterministicUniformAESNoise {
+    #if R123_USE_AES_NI
         using Rng = r123::AESNI4x32;
+    #else
+        using Rng = r123::Philox4x32;
+    #endif
         Rng _generator;
         Rng::key_type _seed;
 
@@ -132,7 +137,11 @@ namespace iv {
                 seed_low = std::random_device{}();
                 seed_high = std::random_device{}();
             }
+        #if R123_USE_AES_NI
             return Rng::ukey_type { seed_low, seed_high, 0, 0 };
+        #else
+            return Rng::ukey_type { seed_low, seed_high };
+        #endif
         }
 
         static Rng::ctr_type make_index(uint64_t index)
@@ -149,7 +158,9 @@ namespace iv {
         explicit DeterministicUniformAESNoise(std::optional<uint64_t> seed = {})
         : _seed(make_seed(seed))
         {
+        #if R123_USE_AES_NI
             IV_ASSERT(haveAESNI(), "This machine does not have the AES-NI instruction set, use a different noise node.");
+        #endif
         }
 
         auto inputs() const
@@ -268,7 +279,7 @@ namespace iv {
             auto& state = ctx.state();
 
             for (size_t i = 0; i < state.weights.size(); ++i) {
-                state.weights[i] = std::powf(_lambda, state.weights.size() - 1 - i);
+                state.weights[i] = std::pow(_lambda, state.weights.size() - 1 - i);
             }
             Sample total = 0.0;
             for (size_t i = 0; i < state.weights.size(); ++i) {
@@ -332,7 +343,11 @@ namespace iv {
     };
 
     class DeterministicGaussianAESNoise {
+    #if R123_USE_AES_NI
         using Rng = r123::AESNI4x32;
+    #else
+        using Rng = r123::Philox4x32;
+    #endif
         Rng _generator;
         Rng::key_type _seed;
         Sample _mean;
@@ -350,7 +365,11 @@ namespace iv {
                 seed_low = std::random_device{}();
                 seed_high = std::random_device{}();
             }
+        #if R123_USE_AES_NI
             return Rng::ukey_type { seed_low, seed_high, 0, 0 };
+        #else
+            return Rng::ukey_type { seed_low, seed_high };
+        #endif
         }
 
         static Rng::ctr_type make_index(uint64_t index)
@@ -373,7 +392,9 @@ namespace iv {
         , _mean(mean)
         , _std(std)
         {
+        #if R123_USE_AES_NI
             IV_ASSERT(haveAESNI(), "This machine does not have the AES-NI instruction set, use a different noise node.");
+        #endif
         }
 
         auto outputs() const

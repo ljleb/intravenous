@@ -3,9 +3,9 @@
 #include "block_rate_buffer.h"
 #include "basic_nodes/buffers.h"
 #include "dsl.h"
-#include "graph_node.h"
+#include "graph/node.h"
 #include "module_test_utils.h"
-#include "node_layout.h"
+#include "node/layout.h"
 
 #include <gtest/gtest.h>
 
@@ -27,7 +27,7 @@
 #include <string_view>
 
 namespace {
-    using namespace iv::literals;
+    using namespace iv;
 
     static constexpr auto kMidiToTriggerPlan = iv::EventConversionRegistry::plan(
         iv::EventTypeId::midi,
@@ -327,7 +327,7 @@ namespace {
     static_assert(ShiftRightInvocable<iv::StructuredNodeRef<UnaryPassthrough>, decltype("value"_P)>);
     static_assert(BitNotInvocable<iv::SamplePortRef>);
     static_assert(BitNotInvocable<iv::StructuredNodeRef<UnaryPassthrough>>);
-    static_assert(std::same_as<iv::details::sample_node_ref_for_t<iv::Broadcast>, iv::TypedNodeRef<iv::Broadcast>>);
+    static_assert(std::same_as<iv::details::node_ref_for_t<iv::Broadcast>, iv::TypedNodeRef<iv::Broadcast>>);
 
     void expect_constant_block(std::span<iv::Sample const> block, iv::Sample expected)
     {
@@ -863,7 +863,7 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderStillLowersThroughNode)
     auto const input = child.input();
     child.outputs(input);
 
-    auto const passthrough = g.node(child);
+    auto const passthrough = g.embed_subgraph(child);
     auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
         .device_id = 0,
         .channel = 0,
@@ -882,6 +882,35 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderStillLowersThroughNode)
     execute_requested_block(audio_device, executor, 0, 8, [&] {
         expect_constant_block(audio_device.output_block(), value);
     });
+}
+
+TEST(ArchitectureSmoke, BuilderMetadataCarriesLogicalNodesAndBridgeMappings)
+{
+    iv::Sample sample_period = 1.0f / 48000.0f;
+
+    iv::GraphBuilder g;
+    auto const source_a = g.node<iv::ValueSource>(&sample_period);
+    auto const source_b = g.node<iv::ValueSource>(&sample_period);
+    (void)_annotate_node_source_info(source_a.node_ref(), "llvm:shared");
+    (void)_annotate_node_source_info(source_b.node_ref(), "llvm:shared");
+    g.outputs();
+
+    auto built = g.build_with_metadata();
+
+    ASSERT_EQ(built.introspection.logical_nodes.size(), 1u);
+    auto const shared_it = std::find_if(
+        built.introspection.logical_nodes.begin(),
+        built.introspection.logical_nodes.end(),
+        [](auto const& node) { return node.id == "llvm:shared" && node.source_identity == "llvm:shared"; }
+    );
+    ASSERT_NE(shared_it, built.introspection.logical_nodes.end());
+    EXPECT_EQ(shared_it->backing_node_ids.size(), 2u);
+    for (auto const& backing_node_id : shared_it->backing_node_ids) {
+        auto const reverse_it = built.introspection.logical_node_ids_by_backing_node_id.find(backing_node_id);
+        ASSERT_NE(reverse_it, built.introspection.logical_node_ids_by_backing_node_id.end());
+        ASSERT_EQ(reverse_it->second.size(), 1u);
+        EXPECT_EQ(reverse_it->second.front(), "llvm:shared");
+    }
 }
 
 TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
@@ -930,7 +959,7 @@ TEST(ArchitectureSmoke, IndependentGraphBuilderDormancyStopsTickingSilentScope)
 
     iv::GraphBuilder g;
     auto const src = g.node<iv::ValueSource>(&value);
-    auto const scoped = g.node(child).ttl(8);
+    auto const scoped = g.embed_subgraph(child).ttl(8);
     auto const sink = g.node<BufferSink>(output.data(), output.size());
     scoped(src);
     sink(scoped);
@@ -1180,9 +1209,9 @@ TEST(ArchitectureSmoke, EventConcatenationMergesInputsInTimeOrder)
     auto const concat = g.node<iv::EventConcatenation>(2, iv::EventTypeId::trigger);
     auto const sink = g.node<TriggerOrderRecorder>(TriggerOrderRecorder{ .event_times = &event_times });
 
-    concat.connect_event_input(0, late >> iv::events);
-    concat.connect_event_input(1, early >> iv::events);
-    sink.connect_event_input("trigger", concat >> iv::events);
+    concat.connect_event_input(0, late.event_port());
+    concat.connect_event_input(1, early.event_port());
+    sink.connect_event_input("trigger", concat.event_port());
     g.outputs();
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
@@ -1204,16 +1233,15 @@ TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
     iv::GraphBuilder g;
     auto const late = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 6 });
     auto const early = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 1 });
-    auto const mix = g.node<iv::PolyphonicMix>(
-        2,
+    auto const mix = g.node<iv::PolyphonicMix>(2,
         std::vector<iv::OutputConfig> {},
         std::vector<iv::EventOutputConfig> { iv::EventOutputConfig{ .name = "trigger", .type = iv::EventTypeId::trigger } }
     );
     auto const sink = g.node<TriggerOrderRecorder>(TriggerOrderRecorder{ .event_times = &event_times });
 
-    mix.connect_event_input(0, late >> iv::events);
-    mix.connect_event_input(1, early >> iv::events);
-    sink.connect_event_input("trigger", mix >> iv::events);
+    mix.connect_event_input(0, late.event_port());
+    mix.connect_event_input(1, early.event_port());
+    sink.connect_event_input("trigger", mix.event_port());
     g.outputs();
 
     iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
@@ -1388,6 +1416,7 @@ TEST(ArchitectureSmoke, ExecuteReloadSwitchesAtExecutorBlockBoundaryWithinActive
             reload_sent.store(true, std::memory_order_relaxed);
             return iv::ModuleLoader::LoadedGraph(
                 make_constant_audio_graph(&new_value),
+                {},
                 {},
                 {},
                 "live_reload",

@@ -1,6 +1,7 @@
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/shaping.h"
-#include "graph_node.h"
+#include "dsl.h"
+#include "graph/node.h"
 #include "module_test_utils.h"
 
 #include <array>
@@ -9,7 +10,7 @@
 #include <vector>
 
 namespace {
-    using namespace iv::literals;
+    using namespace iv;
 
     void tick_executor_direct(iv::NodeExecutor& executor, size_t index, size_t block_size)
     {
@@ -61,7 +62,7 @@ namespace {
 
         integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
         warper(integrator + noise);
-        g.outputs(warper["anti_aliased"] * amplitude);
+        g.outputs("out"_P = (warper["anti_aliased"] * amplitude));
     }
 }
 

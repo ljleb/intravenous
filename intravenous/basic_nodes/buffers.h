@@ -1,8 +1,12 @@
 #pragma once
 
-#include "node_lifecycle.h"
+#include "runtime/timeline.h"
+#include "node/lifecycle.h"
+
 #include <array>
 #include <cassert>
+#include <string>
+#include <utility>
 
 namespace iv {
     struct ValueSource {
@@ -53,6 +57,93 @@ namespace iv {
                 out.push(_source[_size - 1]);
             } else {
                 out.push(_source[ctx.index - _time_offset]);
+            }
+        }
+    };
+
+    class TimelineInputValue {
+        Timeline* _timeline;
+        std::string _logical_node_id;
+        size_t _input_ordinal;
+        Sample _default_value;
+
+    public:
+        struct State {
+            Sample staging_value {};
+            Sample buffered_value {};
+        };
+
+        static std::string nominal_identity(
+            std::string_view logical_node_id,
+            size_t input_ordinal
+        )
+        {
+            return "timeline-input:" + std::string(logical_node_id) + ":" + std::to_string(input_ordinal);
+        }
+
+        TimelineInputValue(
+            Timeline& timeline,
+            std::string logical_node_id,
+            size_t input_ordinal,
+            Sample default_value
+        ) :
+            _timeline(&timeline),
+            _logical_node_id(std::move(logical_node_id)),
+            _input_ordinal(input_ordinal),
+            _default_value(default_value)
+        {}
+
+        constexpr auto outputs() const
+        {
+            return std::array { OutputConfig { .name = "value" } };
+        }
+
+        std::string identity() const
+        {
+            return nominal_identity(_logical_node_id, _input_ordinal);
+        }
+
+        void initialize(InitializationContext<TimelineInputValue> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.staging_value = _default_value;
+            state.buffered_value = _default_value;
+            _timeline->register_live_input_value(
+                _logical_node_id,
+                _input_ordinal,
+                &state.staging_value
+            );
+            state.buffered_value = state.staging_value;
+        }
+
+        void move(MoveContext<TimelineInputValue> const& ctx) const
+        {
+            auto& state = ctx.state();
+            auto& previous_state = ctx.previous_state();
+            _timeline->move_live_input_value(
+                _logical_node_id,
+                _input_ordinal,
+                &previous_state.staging_value,
+                &state.staging_value
+            );
+        }
+
+        void release(ReleaseContext<TimelineInputValue> const& ctx) const
+        {
+            auto& state = ctx.state();
+            _timeline->unregister_live_input_value(
+                _logical_node_id,
+                _input_ordinal,
+                &state.staging_value
+            );
+        }
+
+        void tick_block(TickBlockContext<TimelineInputValue> const& ctx) const
+        {
+            auto& state = ctx.state();
+            state.buffered_value = state.staging_value;
+            for (size_t i = 0; i < ctx.block_size; ++i) {
+                ctx.outputs[0].push(state.buffered_value);
             }
         }
     };
