@@ -25,11 +25,23 @@ namespace iv {
         size_t ordinal = 0;
         Sample default_value = 0.0f;
         Sample current_value = 0.0f;
+        bool has_concrete_override = false;
 
         bool operator==(LogicalPortInfo const&) const = default;
     };
 
     struct IntrospectionLogicalNode {
+        struct Member {
+            size_t ordinal = 0;
+            std::string backing_node_id {};
+            std::string kind {};
+            std::string type_identity {};
+            std::vector<LogicalPortInfo> sample_inputs {};
+            std::vector<LogicalPortInfo> sample_outputs {};
+            std::vector<LogicalPortInfo> event_inputs {};
+            std::vector<LogicalPortInfo> event_outputs {};
+        };
+
         std::string id {};
         std::string kind {};
         std::string source_identity {};
@@ -40,6 +52,7 @@ namespace iv {
         std::vector<LogicalPortInfo> event_inputs {};
         std::vector<LogicalPortInfo> event_outputs {};
         std::vector<std::string> backing_node_ids {};
+        std::vector<Member> members {};
     };
 
     struct GraphIntrospectionMetadata {

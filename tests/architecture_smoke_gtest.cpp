@@ -913,6 +913,33 @@ TEST(ArchitectureSmoke, BuilderMetadataCarriesLogicalNodesAndBridgeMappings)
     }
 }
 
+TEST(ArchitectureSmoke, LogicalBackingNodeIdsPreserveConstructionOrder)
+{
+    iv::Sample value = 0.0f;
+
+    iv::GraphBuilder g;
+    auto const later_in_execution = g.node<UnaryPassthrough>();
+    auto const earlier_in_execution = g.node<UnaryPassthrough>();
+    (void)_annotate_node_source_info(later_in_execution.node_ref(), "llvm:ordered-shared");
+    (void)_annotate_node_source_info(earlier_in_execution.node_ref(), "llvm:ordered-shared");
+    auto const src = g.node<iv::ValueSource>(&value);
+    earlier_in_execution(src);
+    later_in_execution(earlier_in_execution);
+    g.outputs(later_in_execution);
+
+    auto built = g.build_with_metadata();
+
+    auto const shared_it = std::find_if(
+        built.introspection.logical_nodes.begin(),
+        built.introspection.logical_nodes.end(),
+        [](auto const& node) { return node.id == "llvm:ordered-shared"; }
+    );
+    ASSERT_NE(shared_it, built.introspection.logical_nodes.end());
+    ASSERT_EQ(shared_it->backing_node_ids.size(), 2u);
+    EXPECT_TRUE(shared_it->backing_node_ids[0].ends_with(".0")) << shared_it->backing_node_ids[0];
+    EXPECT_TRUE(shared_it->backing_node_ids[1].ends_with(".1")) << shared_it->backing_node_ids[1];
+}
+
 TEST(ArchitectureSmoke, ParentAwareSubgraphDormancyStopsTickingSilentScope)
 {
     iv::Sample value = 0.0f;

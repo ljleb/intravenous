@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -159,6 +160,22 @@ namespace iv {
             return static_cast<uint64_t>(value);
         }
 
+        std::optional<uint64_t> parse_optional_uint64_param(Json const& params, std::string const& key)
+        {
+            auto const value_it = params.find(key);
+            if (value_it == params.end() || value_it->is_null()) {
+                return std::nullopt;
+            }
+            if (!value_it->is_number_integer()) {
+                throw std::runtime_error("JSON-RPC request param '" + key + "' must be a non-negative integer");
+            }
+            auto const value = value_it->get<int64_t>();
+            if (value < 0) {
+                throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
+            }
+            return static_cast<uint64_t>(value);
+        }
+
         double parse_number_param(Json const& params, std::string const& key)
         {
             auto const value_it = params.find(key);
@@ -271,6 +288,7 @@ namespace iv {
                     {"ordinal", port.ordinal},
                     {"defaultValue", static_cast<Sample::storage>(port.default_value)},
                     {"currentValue", static_cast<Sample::storage>(port.current_value)},
+                    {"hasConcreteOverride", port.has_concrete_override},
                 });
             }
             return json;
@@ -308,6 +326,22 @@ namespace iv {
 
         Json logical_node_json(LogicalNodeInfo const& node)
         {
+            auto members_json = [&] {
+                Json json = Json::array();
+                for (auto const& member : node.members) {
+                    json.push_back({
+                        {"ordinal", member.ordinal},
+                        {"backingNodeId", member.backing_node_id},
+                        {"kind", member.kind},
+                        {"typeIdentity", member.type_identity},
+                        {"sampleInputs", logical_port_json(member.sample_inputs)},
+                        {"sampleOutputs", logical_port_json(member.sample_outputs)},
+                        {"eventInputs", logical_port_json(member.event_inputs)},
+                        {"eventOutputs", logical_port_json(member.event_outputs)},
+                    });
+                }
+                return json;
+            };
             return Json {
                 {"id", node.id},
                 {"kind", node.kind},
@@ -319,6 +353,7 @@ namespace iv {
                 {"eventInputs", logical_port_json(node.event_inputs)},
                 {"eventOutputs", logical_port_json(node.event_outputs)},
                 {"memberCount", node.member_count},
+                {"members", members_json()},
             };
         }
 
@@ -343,7 +378,10 @@ namespace iv {
                      {"queryActiveRegions", true},
                      {"getLogicalNode", true},
                      {"getLogicalNodes", true},
+                     {"logicalNodeMembers", true},
                      {"setSampleInputValue", true},
+                     {"setMemberSampleInputValue", true},
+                     {"clearSampleInputValueOverride", true},
                  }},
             };
         }
@@ -592,8 +630,30 @@ namespace iv {
                             auto const execution_epoch = parse_uint64_param(params, "executionEpoch");
                             auto const node_id = parse_string_param(params, "nodeId");
                             auto const input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal"));
+                            auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
                             auto const value = static_cast<Sample>(parse_number_param(params, "value"));
-                            service.set_sample_input_value(execution_epoch, node_id, input_ordinal, value);
+                            service.set_sample_input_value(
+                                execution_epoch,
+                                node_id,
+                                input_ordinal,
+                                value,
+                                member_ordinal.has_value()
+                                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
+                                    : std::nullopt
+                            );
+                            response = jsonrpc_result(request_id, Json {{"ok", true}});
+                        } else if (method == "graph.clearSampleInputValueOverride") {
+                            wait_until_initialized();
+                            auto const execution_epoch = parse_uint64_param(params, "executionEpoch");
+                            auto const node_id = parse_string_param(params, "nodeId");
+                            auto const member_ordinal = static_cast<size_t>(parse_uint64_param(params, "memberOrdinal"));
+                            auto const input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal"));
+                            service.clear_sample_input_value_override(
+                                execution_epoch,
+                                node_id,
+                                member_ordinal,
+                                input_ordinal
+                            );
                             response = jsonrpc_result(request_id, Json {{"ok", true}});
                         } else if (method == "server.shutdown") {
                             response = jsonrpc_result(request_id, Json {{"ok", true}});

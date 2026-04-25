@@ -823,6 +823,11 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     auto const& logical = result.nodes.front();
     EXPECT_EQ(logical.kind, "iv::SawOscillator");
     EXPECT_EQ(logical.member_count, 2u);
+    ASSERT_EQ(logical.members.size(), 2u);
+    EXPECT_EQ(logical.members[0].ordinal, 0u);
+    EXPECT_EQ(logical.members[1].ordinal, 1u);
+    EXPECT_EQ(logical.members[0].kind, "iv::SawOscillator");
+    EXPECT_EQ(logical.members[1].kind, "iv::SawOscillator");
     ASSERT_EQ(logical.sample_inputs.size(), 3u);
     EXPECT_EQ(logical.sample_inputs[0].name, "phase_offset");
     EXPECT_EQ(logical.sample_inputs[1].name, "frequency");
@@ -839,6 +844,33 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_EQ(resolved.sample_inputs[2].name, "dt");
     ASSERT_EQ(resolved.sample_outputs.size(), 1u);
     EXPECT_EQ(resolved.sample_outputs[0].name, "out");
+
+    service.set_sample_input_value(result.execution_epoch, logical.id, 1, 0.25f);
+    auto const logical_override = service.get_logical_node(result.execution_epoch, logical.id);
+    ASSERT_EQ(logical_override.members.size(), 2u);
+    EXPECT_FLOAT_EQ(static_cast<float>(logical_override.sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(logical_override.members[0].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(logical_override.members[1].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FALSE(logical_override.members[0].sample_inputs[1].has_concrete_override);
+    EXPECT_FALSE(logical_override.members[1].sample_inputs[1].has_concrete_override);
+
+    service.set_sample_input_value(result.execution_epoch, logical.id, 1, 0.75f, 1u);
+    auto const concrete_override = service.get_logical_node(result.execution_epoch, logical.id);
+    ASSERT_EQ(concrete_override.members.size(), 2u);
+    EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.members[0].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.members[1].sample_inputs[1].current_value), 0.75f);
+    EXPECT_FALSE(concrete_override.members[0].sample_inputs[1].has_concrete_override);
+    EXPECT_TRUE(concrete_override.members[1].sample_inputs[1].has_concrete_override);
+
+    service.clear_sample_input_value_override(result.execution_epoch, logical.id, 1u, 1);
+    auto const cleared_override = service.get_logical_node(result.execution_epoch, logical.id);
+    ASSERT_EQ(cleared_override.members.size(), 2u);
+    EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.members[0].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.members[1].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FALSE(cleared_override.members[0].sample_inputs[1].has_concrete_override);
+    EXPECT_FALSE(cleared_override.members[1].sample_inputs[1].has_concrete_override);
 
     EXPECT_TRUE(std::ranges::none_of(result.nodes, [](auto const& node) {
         return node.kind == "Polyphonic";

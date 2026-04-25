@@ -42,6 +42,17 @@ namespace iv {
     };
 
     struct LogicalNodeInfo {
+        struct Member {
+            size_t ordinal = 0;
+            std::string backing_node_id {};
+            std::string kind {};
+            std::string type_identity {};
+            std::vector<LogicalPortInfo> sample_inputs {};
+            std::vector<LogicalPortInfo> sample_outputs {};
+            std::vector<LogicalPortInfo> event_inputs {};
+            std::vector<LogicalPortInfo> event_outputs {};
+        };
+
         std::string id {};
         std::string kind {};
         std::string source_identity {};
@@ -52,6 +63,7 @@ namespace iv {
         std::vector<LogicalPortInfo> event_inputs {};
         std::vector<LogicalPortInfo> event_outputs {};
         size_t member_count = 0;
+        std::vector<Member> members {};
     };
 
     struct RuntimeProjectInitializeResult {
@@ -120,7 +132,19 @@ namespace iv {
         ) const;
         LogicalNodeInfo get_logical_node(uint64_t execution_epoch, std::string const& node_id) const;
         std::vector<LogicalNodeInfo> get_logical_nodes(uint64_t execution_epoch, std::vector<std::string> const& node_ids) const;
-        void set_sample_input_value(uint64_t execution_epoch, std::string const& node_id, size_t input_ordinal, Sample value);
+        void set_sample_input_value(
+            uint64_t execution_epoch,
+            std::string const& node_id,
+            size_t input_ordinal,
+            Sample value,
+            std::optional<size_t> member_ordinal = std::nullopt
+        );
+        void clear_sample_input_value_override(
+            uint64_t execution_epoch,
+            std::string const& node_id,
+            size_t member_ordinal,
+            size_t input_ordinal
+        );
         void request_shutdown();
     };
 }

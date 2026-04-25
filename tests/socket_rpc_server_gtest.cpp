@@ -460,6 +460,8 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     ASSERT_FALSE(query_response.empty());
     EXPECT_TRUE(query_response.contains(R"("kind":"iv::SawOscillator")")) << query_response;
     EXPECT_TRUE(query_response.contains(R"("memberCount":2)")) << query_response;
+    EXPECT_TRUE(query_response.contains(R"("members":[{"ordinal":0)")) << query_response;
+    EXPECT_TRUE(query_response.contains(R"("ordinal":1)")) << query_response;
     EXPECT_FALSE(query_response.contains(R"("kind":"Polyphonic")")) << query_response;
     EXPECT_FALSE(query_response.contains(R"("kind":"PolyphonicVoice")")) << query_response;
 
@@ -484,11 +486,38 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     EXPECT_TRUE(logical_node_response.contains(R"("name":"dt")"));
     EXPECT_TRUE(logical_node_response.contains(R"("sampleOutputs":[{"name":"out")"));
     EXPECT_TRUE(logical_node_response.contains(R"("memberCount":2)"));
+    EXPECT_TRUE(logical_node_response.contains(R"("members":[{"ordinal":0)"));
+    EXPECT_TRUE(logical_node_response.contains(R"("ordinal":1)"));
+    EXPECT_TRUE(logical_node_response.contains(R"("hasConcreteOverride":false)")) << logical_node_response;
+
+    std::string const set_member_request =
+        R"({"jsonrpc":"2.0","id":4,"method":"graph.setSampleInputValue","params":{"executionEpoch":1,"nodeId":")" +
+        logical_node_id +
+        R"(","memberOrdinal":1,"inputOrdinal":1,"value":0.75}})" "\n";
+    ASSERT_EQ(::write(fd, set_member_request.data(), set_member_request.size()), static_cast<ssize_t>(set_member_request.size()));
+    auto const set_member_response = read_response_for_id(fd, &response_buffer, 4);
+    EXPECT_TRUE(set_member_response.contains(R"("ok":true)")) << set_member_response;
+
+    std::string const member_override_request =
+        R"({"jsonrpc":"2.0","id":5,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
+        logical_node_id +
+        R"("}})" "\n";
+    ASSERT_EQ(::write(fd, member_override_request.data(), member_override_request.size()), static_cast<ssize_t>(member_override_request.size()));
+    auto const member_override_response = read_response_for_id(fd, &response_buffer, 5);
+    EXPECT_TRUE(member_override_response.contains(R"("hasConcreteOverride":true)")) << member_override_response;
+
+    std::string const clear_member_request =
+        R"({"jsonrpc":"2.0","id":6,"method":"graph.clearSampleInputValueOverride","params":{"executionEpoch":1,"nodeId":")" +
+        logical_node_id +
+        R"(","memberOrdinal":1,"inputOrdinal":1}})" "\n";
+    ASSERT_EQ(::write(fd, clear_member_request.data(), clear_member_request.size()), static_cast<ssize_t>(clear_member_request.size()));
+    auto const clear_member_response = read_response_for_id(fd, &response_buffer, 6);
+    EXPECT_TRUE(clear_member_response.contains(R"("ok":true)")) << clear_member_response;
 
     std::string const shutdown_request =
-        R"({"jsonrpc":"2.0","id":4,"method":"server.shutdown","params":{}})" "\n";
+        R"({"jsonrpc":"2.0","id":7,"method":"server.shutdown","params":{}})" "\n";
     ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 4);
+    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 7);
     EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
 
     ::close(fd);

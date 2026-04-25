@@ -378,6 +378,32 @@ namespace iv {
             live.event_inputs = node.event_inputs;
             live.event_outputs = node.event_outputs;
             live.member_count = node.backing_node_ids.size();
+            live.members.reserve(node.members.size());
+            for (auto const& member : node.members) {
+                LogicalNodeInfo::Member live_member;
+                live_member.ordinal = member.ordinal;
+                live_member.backing_node_id = member.backing_node_id;
+                live_member.kind = member.kind;
+                live_member.type_identity = member.type_identity;
+                live_member.sample_inputs = member.sample_inputs;
+                for (auto& port : live_member.sample_inputs) {
+                    port.current_value = timeline.live_input_value_or(
+                        node.id,
+                        member.ordinal,
+                        port.ordinal,
+                        timeline.live_input_value_or(node.id, port.ordinal, port.default_value)
+                    );
+                    port.has_concrete_override = timeline.has_live_input_value_override(
+                        node.id,
+                        member.ordinal,
+                        port.ordinal
+                    );
+                }
+                live_member.sample_outputs = member.sample_outputs;
+                live_member.event_inputs = member.event_inputs;
+                live_member.event_outputs = member.event_outputs;
+                live.members.push_back(std::move(live_member));
+            }
             live.source_spans.reserve(node.source_spans.size());
             for (auto const& span : node.source_spans) {
                 live.source_spans.push_back(to_live_span(span));
@@ -818,7 +844,8 @@ namespace iv {
         uint64_t execution_epoch,
         std::string const& node_id,
         size_t input_ordinal,
-        Sample value
+        Sample value,
+        std::optional<size_t> member_ordinal
     )
     {
         std::scoped_lock lock(_impl->mutex);
@@ -833,7 +860,45 @@ namespace iv {
         if (it == _impl->snapshot->logical_node_index_by_id.end()) {
             throw std::runtime_error("unknown node id: " + node_id);
         }
+        if (member_ordinal.has_value()) {
+            auto const& node = _impl->snapshot->logical_nodes[it->second];
+            if (*member_ordinal >= node.members.size()) {
+                throw std::runtime_error(
+                    "unknown member ordinal " + std::to_string(*member_ordinal) + " for node id: " + node_id
+                );
+            }
+            _impl->timeline.set_live_input_value(node_id, *member_ordinal, input_ordinal, value);
+            return;
+        }
         _impl->timeline.set_live_input_value(node_id, input_ordinal, value);
+    }
+
+    void RuntimeProjectService::clear_sample_input_value_override(
+        uint64_t execution_epoch,
+        std::string const& node_id,
+        size_t member_ordinal,
+        size_t input_ordinal
+    )
+    {
+        std::scoped_lock lock(_impl->mutex);
+        _impl->rethrow_if_failed();
+        if (!_impl->snapshot.has_value()) {
+            throw std::runtime_error("runtime project service is not initialized");
+        }
+        if (_impl->snapshot->execution_epoch != execution_epoch) {
+            throw std::runtime_error("stale execution epoch for control update");
+        }
+        auto const it = _impl->snapshot->logical_node_index_by_id.find(node_id);
+        if (it == _impl->snapshot->logical_node_index_by_id.end()) {
+            throw std::runtime_error("unknown node id: " + node_id);
+        }
+        auto const& node = _impl->snapshot->logical_nodes[it->second];
+        if (member_ordinal >= node.members.size()) {
+            throw std::runtime_error(
+                "unknown member ordinal " + std::to_string(member_ordinal) + " for node id: " + node_id
+            );
+        }
+        _impl->timeline.clear_live_input_value_override(node_id, member_ordinal, input_ordinal);
     }
 
     void RuntimeProjectService::request_shutdown()

@@ -144,14 +144,61 @@ class LiveGraphViewProvider {
         this.controlHandler = handler;
     }
 
-    updateSampleInputValue(nodeId, ordinal, value) {
+    updateSampleInputValue(nodeId, ordinal, value, memberOrdinal = null) {
         for (const node of this.nodes) {
-            if (node.id !== nodeId || !Array.isArray(node.sampleInputs)) {
+            if (node.id !== nodeId) {
                 continue;
             }
-            for (const input of node.sampleInputs) {
+            const updateInputs = (inputs, markOverride) => {
+                if (!Array.isArray(inputs)) {
+                    return;
+                }
+                for (const input of inputs) {
+                    if (Number(input.ordinal) === Number(ordinal)) {
+                        input.currentValue = value;
+                        if (markOverride != null) {
+                            input.hasConcreteOverride = markOverride;
+                        }
+                    }
+                }
+            };
+            const inputs = memberOrdinal == null
+                ? node.sampleInputs
+                : ((node.members || []).find((member) => Number(member.ordinal) === Number(memberOrdinal)) || {}).sampleInputs;
+            updateInputs(inputs, memberOrdinal == null ? null : true);
+            if (memberOrdinal == null) {
+                for (const member of node.members || []) {
+                    const memberInputs = Array.isArray(member.sampleInputs) ? member.sampleInputs : [];
+                    for (const input of memberInputs) {
+                        if (Number(input.ordinal) === Number(ordinal) && !input.hasConcreteOverride) {
+                            input.currentValue = value;
+                        }
+                    }
+                }
+            }
+        }
+        this.postState();
+    }
+
+    clearSampleInputValueOverride(nodeId, memberOrdinal, ordinal) {
+        for (const node of this.nodes) {
+            if (node.id !== nodeId) {
+                continue;
+            }
+            const logicalInput = Array.isArray(node.sampleInputs)
+                ? node.sampleInputs.find((input) => Number(input.ordinal) === Number(ordinal))
+                : null;
+            const logicalValue = logicalInput && typeof logicalInput.currentValue === "number"
+                ? logicalInput.currentValue
+                : null;
+            const member = (node.members || []).find((candidate) => Number(candidate.ordinal) === Number(memberOrdinal));
+            const inputs = member && Array.isArray(member.sampleInputs) ? member.sampleInputs : [];
+            for (const input of inputs) {
                 if (Number(input.ordinal) === Number(ordinal)) {
-                    input.currentValue = value;
+                    input.hasConcreteOverride = false;
+                    if (logicalValue != null) {
+                        input.currentValue = logicalValue;
+                    }
                 }
             }
         }
@@ -179,6 +226,26 @@ class LiveGraphViewProvider {
         return identity;
     }
 
+    sampleInputsForMemberView(node, member) {
+        const logicalInputs = new Map();
+        for (const input of node.sampleInputs || []) {
+            logicalInputs.set(Number(input.ordinal), input);
+        }
+        return (member.sampleInputs || []).map((input) => {
+            if (input.hasConcreteOverride) {
+                return input;
+            }
+            const logicalInput = logicalInputs.get(Number(input.ordinal));
+            if (!logicalInput || typeof logicalInput.currentValue !== "number") {
+                return input;
+            }
+            return {
+                ...input,
+                currentValue: logicalInput.currentValue,
+            };
+        });
+    }
+
     serializeNodes() {
         return this.nodes.map((node) => ({
             id: node.id || "",
@@ -198,10 +265,24 @@ class LiveGraphViewProvider {
                 this.makePortGroup("event inputs", node.eventInputs || [], "input", "event"),
                 this.makePortGroup("event outputs", node.eventOutputs || [], "output", "event"),
             ].filter(Boolean),
+            members: Array.isArray(node.members)
+                ? node.members.map((member) => ({
+                    ordinal: Number(member.ordinal || 0),
+                    backingNodeId: member.backingNodeId || "",
+                    kind: member.kind || node.kind || "",
+                    description: `member ${Number(member.ordinal || 0)}`,
+                    groups: [
+                        this.makePortGroup("sample inputs", this.sampleInputsForMemberView(node, member), "input", "sample", true),
+                        this.makePortGroup("sample outputs", member.sampleOutputs || [], "output", "sample", false),
+                        this.makePortGroup("event inputs", member.eventInputs || [], "input", "event", false),
+                        this.makePortGroup("event outputs", member.eventOutputs || [], "output", "event", false),
+                    ].filter(Boolean),
+                }))
+                : [],
         }));
     }
 
-    makePortGroup(label, ports, direction, portKind) {
+    makePortGroup(label, ports, direction, portKind, forceTweakable = false) {
         if (!Array.isArray(ports) || ports.length === 0) {
             return null;
         }
@@ -216,7 +297,9 @@ class LiveGraphViewProvider {
                 ordinal: Number.isInteger(port.ordinal) ? port.ordinal : index,
                 defaultValue: typeof port.defaultValue === "number" ? port.defaultValue : 0,
                 currentValue: typeof port.currentValue === "number" ? port.currentValue : 0,
-                tweakable: direction === "input"
+                hasConcreteOverride: Boolean(port.hasConcreteOverride),
+                tweakable: (forceTweakable || direction === "input")
+                    && direction === "input"
                     && portKind === "sample"
                     && (port.connectivity === "mixed" || port.connectivity === "disconnected"),
             })),
@@ -230,10 +313,12 @@ class LiveGraphViewProvider {
             localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
         };
         webviewView.webview.onDidReceiveMessage(async (message) => {
-            if (!message || message.type !== "setSampleInputValue" || !this.controlHandler) {
+            if (!message || !this.controlHandler) {
                 return;
             }
-            await this.controlHandler(message);
+            if (message.type === "setSampleInputValue" || message.type === "clearSampleInputValueOverride") {
+                await this.controlHandler(message);
+            }
         });
         webviewView.webview.html = this.getHtml(webviewView.webview);
         this.postState();
@@ -311,6 +396,11 @@ class LiveGraphViewProvider {
 
         .tree-row:hover {
             background: var(--vscode-list-hoverBackground);
+        }
+
+        .tree-row:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
         }
 
         body.knob-dragging .tree-row:hover {
@@ -402,8 +492,73 @@ class LiveGraphViewProvider {
             padding-left: 24px;
         }
 
+        .member-header {
+            padding-left: 42px;
+        }
+
+        .members-header {
+            padding-left: 24px;
+        }
+
+        .member-group-header {
+            padding-left: 60px;
+        }
+
+        .member-port-row {
+            padding-left: 78px;
+        }
+
         .port-row {
             padding-left: 42px;
+        }
+
+        .port-row.concrete-override .knob-band {
+            stroke: var(--vscode-charts-orange);
+        }
+
+        .port-row.concrete-override .knob,
+        .port-row.concrete-override .knob-value {
+            opacity: 1;
+        }
+
+        .port-row.concrete-inherited .knob,
+        .port-row.concrete-inherited .knob-value {
+            opacity: 0.45;
+        }
+
+        .port-row.concrete-inherited .knob-band {
+            opacity: 0.65;
+        }
+
+        .context-menu {
+            position: fixed;
+            z-index: 10;
+            min-width: 168px;
+            padding: 4px;
+            border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border));
+            background: var(--vscode-menu-background, var(--vscode-dropdown-background));
+            color: var(--vscode-menu-foreground, var(--vscode-foreground));
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+        }
+
+        .context-menu.hidden {
+            display: none;
+        }
+
+        .context-menu button {
+            display: block;
+            width: 100%;
+            border: 0;
+            padding: 4px 8px;
+            background: transparent;
+            color: inherit;
+            text-align: left;
+            font: inherit;
+            cursor: pointer;
+        }
+
+        .context-menu button:hover {
+            background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
         }
 
         .port-icon {
@@ -472,9 +627,9 @@ class LiveGraphViewProvider {
             pointer-events: none;
         }
 
-        .knob-track {
-            fill: none;
-            stroke: none;
+        body.knob-dragging,
+        body.knob-dragging * {
+            cursor: none !important;
         }
 
         .knob-band {
@@ -496,18 +651,20 @@ class LiveGraphViewProvider {
 </head>
 <body>
     <div id="root"></div>
+    <div id="contextMenu" class="context-menu hidden"></div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         const root = document.getElementById("root");
+        const contextMenu = document.getElementById("contextMenu");
         const state = {
             nodes: [],
             expanded: new Map(),
             pendingUpdates: new Map(),
+            activeConcretePort: null,
         };
         const knobDrag = {
             active: null,
             currentValue: 0,
-            pointerId: null,
             lastClientX: 0,
             lastClientY: 0,
         };
@@ -570,10 +727,6 @@ class LiveGraphViewProvider {
             return Number(value).toFixed(3).replace(/\.?0+$/, (match) => match === ".000" ? "" : match);
         }
 
-        function knobAngle(value) {
-            return -135 + clamp(value, 0, 1) * 270;
-        }
-
         function knobSvg(value) {
             const clamped = clamp(value, 0, 1);
             const circumference = 2 * Math.PI * 7;
@@ -586,8 +739,8 @@ class LiveGraphViewProvider {
                 '</svg>';
         }
 
-        function queueControlUpdate(nodeId, ordinal, value) {
-            const key = String(nodeId) + ":" + String(ordinal);
+        function queueControlUpdate(nodeId, memberOrdinal, ordinal, value) {
+            const key = String(nodeId) + ":" + String(memberOrdinal == null ? "" : memberOrdinal) + ":" + String(ordinal);
             const now = Date.now();
             const existing = state.pendingUpdates.get(key) || {
                 lastSentAt: 0,
@@ -614,6 +767,7 @@ class LiveGraphViewProvider {
                 vscode.postMessage({
                     type: "setSampleInputValue",
                     nodeId,
+                    memberOrdinal,
                     inputOrdinal: ordinal,
                     value: existing.pendingValue,
                 });
@@ -641,6 +795,59 @@ class LiveGraphViewProvider {
             state.pendingUpdates.set(key, existing);
         }
 
+        function clearPendingUpdate(nodeId, memberOrdinal, ordinal) {
+            const key = String(nodeId) + ":" + String(memberOrdinal == null ? "" : memberOrdinal) + ":" + String(ordinal);
+            const existing = state.pendingUpdates.get(key);
+            if (existing && existing.timeoutId) {
+                clearTimeout(existing.timeoutId);
+            }
+            state.pendingUpdates.delete(key);
+        }
+
+        function setActiveConcretePort(portRef) {
+            state.activeConcretePort = portRef;
+        }
+
+        function hideContextMenu() {
+            contextMenu.classList.add("hidden");
+            contextMenu.textContent = "";
+        }
+
+        function clearSampleInputOverride(portRef) {
+            if (!portRef || portRef.memberOrdinal == null || !portRef.hasConcreteOverride) {
+                return;
+            }
+            clearPendingUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.inputOrdinal);
+            vscode.postMessage({
+                type: "clearSampleInputValueOverride",
+                nodeId: portRef.nodeId,
+                memberOrdinal: portRef.memberOrdinal,
+                inputOrdinal: portRef.inputOrdinal,
+            });
+            hideContextMenu();
+        }
+
+        function showContextMenu(event, portRef) {
+            if (!portRef || !portRef.hasConcreteOverride) {
+                hideContextMenu();
+                return;
+            }
+            setActiveConcretePort(portRef);
+            contextMenu.textContent = "";
+
+            const clearButton = document.createElement("button");
+            clearButton.type = "button";
+            clearButton.textContent = "Follow logical value";
+            clearButton.addEventListener("click", () => clearSampleInputOverride(portRef));
+            contextMenu.appendChild(clearButton);
+
+            contextMenu.classList.remove("hidden");
+            const maxLeft = Math.max(0, window.innerWidth - contextMenu.offsetWidth - 4);
+            const maxTop = Math.max(0, window.innerHeight - contextMenu.offsetHeight - 4);
+            contextMenu.style.left = String(Math.min(event.clientX, maxLeft)) + "px";
+            contextMenu.style.top = String(Math.min(event.clientY, maxTop)) + "px";
+        }
+
         function resolvePortRowFromPoint(clientX, clientY) {
             const hit = document.elementFromPoint(clientX, clientY);
             if (!(hit instanceof Element)) {
@@ -650,43 +857,32 @@ class LiveGraphViewProvider {
             if (!portRow || !root.contains(portRow) || !portRow.__knobDrag) {
                 return null;
             }
-            return { portRow, hit };
+            return portRow;
         }
 
-        function beginKnobDrag(captureEl, knob, valueEl, nodeId, port, event) {
+        function beginKnobDrag(lockEl, knob, valueEl, nodeId, memberOrdinal, port, event) {
             if (event.button !== 0) {
                 return;
             }
             event.preventDefault();
-            knobDrag.active = { captureEl, knob, valueEl, nodeId, port };
+            knobDrag.active = { knob, valueEl, nodeId, memberOrdinal, port };
             knobDrag.currentValue = clamp(Number(port.currentValue || 0), 0, 1);
-            knobDrag.pointerId = event.pointerId;
             knobDrag.lastClientX = event.clientX;
             knobDrag.lastClientY = event.clientY;
             document.body.classList.add("knob-dragging");
             try {
-                captureEl.setPointerCapture(event.pointerId);
+                if (typeof lockEl.setPointerCapture === "function" && event.pointerId != null) {
+                    lockEl.setPointerCapture(event.pointerId);
+                }
             } catch (_) {
             }
         }
 
-        function endKnobDrag(pointerId) {
+        function endKnobDrag() {
             if (!knobDrag.active) {
                 return;
             }
-            const { captureEl } = knobDrag.active;
-            if (pointerId !== undefined) {
-                try {
-                    if (captureEl.hasPointerCapture(pointerId)) {
-                        captureEl.releasePointerCapture(pointerId);
-                    }
-                } catch (_) {
-                }
-            }
             knobDrag.active = null;
-            knobDrag.pointerId = null;
-            knobDrag.lastClientX = 0;
-            knobDrag.lastClientY = 0;
             document.body.classList.remove("knob-dragging");
         }
 
@@ -695,33 +891,51 @@ class LiveGraphViewProvider {
                 return;
             }
             knobDrag.currentValue = clamp(knobDrag.currentValue + delta, 0, 1);
-            const { knob, valueEl, nodeId, port } = knobDrag.active;
+            const { knob, valueEl, nodeId, memberOrdinal, port } = knobDrag.active;
             knob.innerHTML = knobSvg(knobDrag.currentValue);
             valueEl.textContent = formatValue(knobDrag.currentValue);
             port.currentValue = knobDrag.currentValue;
-            queueControlUpdate(nodeId, port.ordinal, knobDrag.currentValue);
+            if (memberOrdinal != null) {
+                port.hasConcreteOverride = true;
+                if (state.activeConcretePort) {
+                    state.activeConcretePort.hasConcreteOverride = true;
+                }
+            }
+            queueControlUpdate(nodeId, memberOrdinal, port.ordinal, knobDrag.currentValue);
         }
 
-        document.addEventListener("pointermove", (event) => {
+        function applyDraggedKnobEvent(event) {
             if (!knobDrag.active) {
                 return;
             }
-            if (knobDrag.pointerId !== null && event.pointerId !== knobDrag.pointerId) {
-                return;
-            }
             const deltaX = event.clientX - knobDrag.lastClientX;
-            const deltaY = knobDrag.lastClientY - event.clientY;
+            const deltaY = event.clientY - knobDrag.lastClientY;
             knobDrag.lastClientX = event.clientX;
             knobDrag.lastClientY = event.clientY;
-            applyDraggedKnobDelta((deltaX + deltaY) / 180);
+            applyDraggedKnobDelta((deltaX - deltaY) / 180);
+        }
+
+        document.addEventListener("pointermove", (event) => {
+            applyDraggedKnobEvent(event);
         });
 
-        document.addEventListener("pointerup", (event) => {
-            endKnobDrag(event.pointerId);
+        document.addEventListener("mousemove", (event) => {
+            if (window.PointerEvent) {
+                return;
+            }
+            applyDraggedKnobEvent(event);
         });
 
-        document.addEventListener("pointercancel", (event) => {
-            endKnobDrag(event.pointerId);
+        document.addEventListener("mouseup", () => {
+            endKnobDrag();
+        });
+
+        document.addEventListener("pointerup", () => {
+            endKnobDrag();
+        });
+
+        document.addEventListener("pointercancel", () => {
+            endKnobDrag();
         });
 
         document.addEventListener("dragstart", (event) => {
@@ -739,12 +953,15 @@ class LiveGraphViewProvider {
             if (!resolved) {
                 return;
             }
-            const { portRow } = resolved;
-            const { knob, valueEl, nodeId, port } = portRow.__knobDrag;
-            beginKnobDrag(portRow, knob, valueEl, nodeId, port, event);
+            const portRow = resolved;
+            const { knob, valueEl, nodeId, memberOrdinal, port } = portRow.__knobDrag;
+            if (portRow.__concretePortRef) {
+                setActiveConcretePort(portRow.__concretePortRef);
+            }
+            beginKnobDrag(portRow, knob, valueEl, nodeId, memberOrdinal, port, event);
         }, true);
 
-        function attachKnobBehavior(knob, valueEl, nodeId, port) {
+        function attachKnobBehavior(knob, valueEl, nodeId, memberOrdinal, port) {
             let currentValue = clamp(Number(port.currentValue || 0), 0, 1);
 
             const applyValue = (nextValue) => {
@@ -752,7 +969,13 @@ class LiveGraphViewProvider {
                 knob.innerHTML = knobSvg(currentValue);
                 valueEl.textContent = formatValue(currentValue);
                 port.currentValue = currentValue;
-                queueControlUpdate(nodeId, port.ordinal, currentValue);
+                if (memberOrdinal != null) {
+                    port.hasConcreteOverride = true;
+                    if (state.activeConcretePort) {
+                        state.activeConcretePort.hasConcreteOverride = true;
+                    }
+                }
+                queueControlUpdate(nodeId, memberOrdinal, port.ordinal, currentValue);
                 if (knobDrag.active && knobDrag.active.knob === knob) {
                     knobDrag.currentValue = currentValue;
                 }
@@ -773,10 +996,20 @@ class LiveGraphViewProvider {
             });
         }
 
-        function renderPort(parent, nodeId, group, port, index) {
-            const portKey = \`node:\${nodeId}/group:\${group.label}/port:\${index}\`;
-            const portRow = row(port.name, port.connectivity);
+        function renderPort(parent, nodeId, memberOrdinal, group, port, index) {
+            const memberKeyPart = memberOrdinal == null ? "" : \`/member:\${memberOrdinal}\`;
+            const portKey = \`node:\${nodeId}\${memberKeyPart}/group:\${group.label}/port:\${index}\`;
+            const portDescription = memberOrdinal != null && port.tweakable
+                ? (port.hasConcreteOverride ? "override" : "inherited")
+                : port.connectivity;
+            const portRow = row(port.name, portDescription);
             portRow.classList.add("port-row");
+            if (memberOrdinal != null) {
+                portRow.classList.add("member-port-row");
+                if (port.tweakable) {
+                    portRow.classList.add(port.hasConcreteOverride ? "concrete-override" : "concrete-inherited");
+                }
+            }
             if (port.tweakable) {
                 portRow.classList.add("has-control");
             }
@@ -803,17 +1036,40 @@ class LiveGraphViewProvider {
                 knobWrap.appendChild(knob);
                 knobWrap.appendChild(valueEl);
                 portRow.appendChild(knobWrap);
-                portRow.__knobDrag = { knob, valueEl, nodeId, port };
-                attachKnobBehavior(knob, valueEl, nodeId, port);
+                portRow.__knobDrag = { knob, valueEl, nodeId, memberOrdinal, port };
+                attachKnobBehavior(knob, valueEl, nodeId, memberOrdinal, port);
             }
 
-            portRow.title = \`\${port.name} • \${port.connectivity}\`;
+            if (memberOrdinal != null && port.tweakable) {
+                portRow.tabIndex = 0;
+                portRow.__concretePortRef = {
+                    nodeId,
+                    memberOrdinal,
+                    inputOrdinal: port.ordinal,
+                    hasConcreteOverride: Boolean(port.hasConcreteOverride),
+                };
+                const refreshConcretePortRef = () => {
+                    portRow.__concretePortRef.hasConcreteOverride = Boolean(port.hasConcreteOverride);
+                    return portRow.__concretePortRef;
+                };
+                portRow.addEventListener("click", () => setActiveConcretePort(refreshConcretePortRef()));
+                portRow.addEventListener("focus", () => setActiveConcretePort(refreshConcretePortRef()));
+                portRow.addEventListener("contextmenu", (event) => {
+                    event.preventDefault();
+                    showContextMenu(event, refreshConcretePortRef());
+                });
+            }
+
+            portRow.title = memberOrdinal != null && port.tweakable
+                ? \`\${port.name} • \${port.hasConcreteOverride ? "override" : "inherited from logical"}\`
+                : \`\${port.name} • \${port.connectivity}\`;
             parent.appendChild(portRow);
             return portKey;
         }
 
-        function renderGroup(parent, nodeId, group) {
-            const groupKey = \`node:\${nodeId}/group:\${group.label}\`;
+        function renderGroup(parent, nodeId, memberOrdinal, group) {
+            const memberKeyPart = memberOrdinal == null ? "" : \`/member:\${memberOrdinal}\`;
+            const groupKey = \`node:\${nodeId}\${memberKeyPart}/group:\${group.label}\`;
             const isExpanded = expandedValue(groupKey, true);
 
             const groupEl = document.createElement("div");
@@ -821,6 +1077,9 @@ class LiveGraphViewProvider {
 
             const header = row(group.label, String(group.count));
             header.classList.add("group-header");
+            if (memberOrdinal != null) {
+                header.classList.add("member-group-header");
+            }
             header.prepend(disclosure(isExpanded));
             header.addEventListener("click", () => toggleExpanded(groupKey, true));
             groupEl.appendChild(header);
@@ -828,9 +1087,56 @@ class LiveGraphViewProvider {
             const ports = document.createElement("div");
             ports.className = "group-ports";
             for (let i = 0; i < group.ports.length; ++i) {
-                renderPort(ports, nodeId, group, group.ports[i], i);
+                renderPort(ports, nodeId, memberOrdinal, group, group.ports[i], i);
             }
             groupEl.appendChild(ports);
+            parent.appendChild(groupEl);
+        }
+
+        function renderMember(parent, node, member) {
+            const memberKey = \`node:\${node.id}/member:\${member.ordinal}\`;
+            const isExpanded = expandedValue(memberKey, false);
+
+            const memberEl = document.createElement("div");
+            memberEl.className = isExpanded ? "group" : "group collapsed";
+
+            const header = row(member.kind || "member", member.description || \`member \${member.ordinal}\`);
+            header.classList.add("member-header");
+            header.prepend(disclosure(isExpanded));
+            header.addEventListener("click", () => toggleExpanded(memberKey, false));
+            memberEl.appendChild(header);
+
+            const groupsEl = document.createElement("div");
+            groupsEl.className = "group-ports";
+            for (const group of member.groups) {
+                renderGroup(groupsEl, node.id, member.ordinal, group);
+            }
+            memberEl.appendChild(groupsEl);
+            parent.appendChild(memberEl);
+        }
+
+        function renderMembersGroup(parent, node) {
+            if (!Array.isArray(node.members) || node.members.length === 0) {
+                return;
+            }
+            const membersKey = \`node:\${node.id}/concrete-members\`;
+            const isExpanded = expandedValue(membersKey, false);
+
+            const groupEl = document.createElement("div");
+            groupEl.className = isExpanded ? "group" : "group collapsed";
+
+            const header = row("concrete members", String(node.members.length));
+            header.classList.add("members-header");
+            header.prepend(disclosure(isExpanded));
+            header.addEventListener("click", () => toggleExpanded(membersKey, false));
+            groupEl.appendChild(header);
+
+            const membersEl = document.createElement("div");
+            membersEl.className = "group-ports";
+            for (const member of node.members) {
+                renderMember(membersEl, node, member);
+            }
+            groupEl.appendChild(membersEl);
             parent.appendChild(groupEl);
         }
 
@@ -857,8 +1163,9 @@ class LiveGraphViewProvider {
             const children = document.createElement("div");
             children.className = "node-children";
             for (const group of node.groups) {
-                renderGroup(children, node.id, group);
+                renderGroup(children, node.id, null, group);
             }
+            renderMembersGroup(children, node);
             nodeEl.appendChild(children);
             parent.appendChild(nodeEl);
         }
@@ -884,6 +1191,23 @@ class LiveGraphViewProvider {
             if (message.type === "setState") {
                 state.nodes = Array.isArray(message.nodes) ? message.nodes : [];
                 render();
+            }
+        });
+
+        window.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                hideContextMenu();
+                return;
+            }
+            if (event.key.toLowerCase() === "d" && state.activeConcretePort) {
+                event.preventDefault();
+                clearSampleInputOverride(state.activeConcretePort);
+            }
+        });
+
+        window.addEventListener("click", (event) => {
+            if (!contextMenu.contains(event.target)) {
+                hideContextMenu();
             }
         });
 
@@ -1147,17 +1471,34 @@ class WorkspaceSession {
         }
     }
 
-    async setSampleInputValue(nodeId, inputOrdinal, value) {
+    async setSampleInputValue(nodeId, inputOrdinal, value, memberOrdinal = null) {
         if (!(await this.ensureReady())) {
             return;
         }
-        await this.client.request("graph.setSampleInputValue", {
+        const params = {
             executionEpoch: this.executionEpoch,
             nodeId,
             inputOrdinal,
             value,
+        };
+        if (memberOrdinal != null) {
+            params.memberOrdinal = memberOrdinal;
+        }
+        await this.client.request("graph.setSampleInputValue", params);
+        this.provider.updateSampleInputValue(nodeId, inputOrdinal, value, memberOrdinal);
+    }
+
+    async clearSampleInputValueOverride(nodeId, memberOrdinal, inputOrdinal) {
+        if (!(await this.ensureReady())) {
+            return;
+        }
+        await this.client.request("graph.clearSampleInputValueOverride", {
+            executionEpoch: this.executionEpoch,
+            nodeId,
+            memberOrdinal,
+            inputOrdinal,
         });
-        this.provider.updateSampleInputValue(nodeId, inputOrdinal, value);
+        this.provider.clearSampleInputValueOverride(nodeId, memberOrdinal, inputOrdinal);
     }
 
     async waitForSocket(socketPath, timeoutMs) {
@@ -1462,8 +1803,21 @@ async function activate(context) {
     }
 
     const session = new WorkspaceSession(workspaceFolder, outputChannel, provider, highlighter);
-    provider.setControlHandler(async ({ nodeId, inputOrdinal, value }) => {
-        await session.setSampleInputValue(nodeId, inputOrdinal, value);
+    provider.setControlHandler(async (message) => {
+        const memberOrdinal = message.memberOrdinal == null ? null : Number(message.memberOrdinal);
+        if (message.type === "clearSampleInputValueOverride") {
+            if (memberOrdinal == null) {
+                return;
+            }
+            await session.clearSampleInputValueOverride(message.nodeId, memberOrdinal, Number(message.inputOrdinal));
+            return;
+        }
+        await session.setSampleInputValue(
+            message.nodeId,
+            Number(message.inputOrdinal),
+            message.value,
+            memberOrdinal
+        );
     });
     context.subscriptions.push({ dispose: () => void session.shutdown() });
     context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(() => {

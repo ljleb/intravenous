@@ -151,6 +151,7 @@ namespace iv {
         std::vector<SourceInfo> source_infos {};
         std::vector<std::string> logical_node_ids {};
         std::string vacant_input_owner_id {};
+        std::string type_identity {};
         std::string subgraph_kind {};
 
         std::vector<InputConfig> const& inputs() const
@@ -260,6 +261,7 @@ namespace iv {
             std::string id;
             std::string kind;
             std::string type_identity;
+            size_t construction_order = 0;
             std::vector<SourceInfo> source_infos;
             std::vector<LogicalConcretePortInfo> sample_inputs;
             std::vector<LogicalConcretePortInfo> sample_outputs;
@@ -429,6 +431,9 @@ namespace iv {
                 LogicalConcreteNode concrete;
                 concrete.id = g.node_ids[node_i];
                 concrete.kind = demangle_type_name(g.nodes[node_i].type_name());
+                concrete.construction_order = node_i < g.node_construction_order.size()
+                    ? g.node_construction_order[node_i]
+                    : node_i;
                 // Temporary approximation: this is only a display-derived stand-in until the
                 // rewriter threads through a real concrete C++ type identity such as a Clang USR.
                 concrete.type_identity = concrete.kind;
@@ -493,6 +498,7 @@ namespace iv {
                 LogicalConcreteNode concrete;
                 concrete.id = scope.backing_node_id;
                 concrete.kind = scope.kind;
+                concrete.construction_order = g.nodes.size() + scope_i;
                 // Temporary approximation: lowered scopes do not yet carry a real concrete type
                 // identity, so we namespace the display kind instead of pretending this is exact.
                 concrete.type_identity = "lowered-subgraph:" + scope.kind;
@@ -594,15 +600,49 @@ namespace iv {
                 });
                 std::vector<LogicalConcreteNode const*> members;
                 members.reserve(group.member_indices.size());
+                auto member_indices = group.member_indices;
+                std::sort(member_indices.begin(), member_indices.end(), [&](auto a, auto b) {
+                    auto const& left = concrete_nodes[a];
+                    auto const& right = concrete_nodes[b];
+                    if (left.construction_order != right.construction_order) {
+                        return left.construction_order < right.construction_order;
+                    }
+                    return left.id < right.id;
+                });
                 std::vector<std::string> backing_node_ids;
                 backing_node_ids.reserve(group.member_indices.size());
-                for (auto member_index : group.member_indices) {
+                std::vector<IntrospectionLogicalNode::Member> logical_members;
+                logical_members.reserve(member_indices.size());
+                for (auto member_index : member_indices) {
                     members.push_back(&concrete_nodes[member_index]);
-                    backing_node_ids.push_back(concrete_nodes[member_index].id);
+                    auto const& backing_node_id = concrete_nodes[member_index].id;
+                    if (!std::ranges::contains(backing_node_ids, backing_node_id)) {
+                        backing_node_ids.push_back(backing_node_id);
+                    }
+                    logical_members.push_back(IntrospectionLogicalNode::Member {
+                        .ordinal = logical_members.size(),
+                        .backing_node_id = backing_node_id,
+                        .kind = concrete_nodes[member_index].kind,
+                        .type_identity = concrete_nodes[member_index].type_identity,
+                        .sample_inputs = aggregate_ports(
+                            std::span<LogicalConcreteNode const* const>(&members.back(), 1),
+                            &LogicalConcreteNode::sample_inputs
+                        ),
+                        .sample_outputs = aggregate_ports(
+                            std::span<LogicalConcreteNode const* const>(&members.back(), 1),
+                            &LogicalConcreteNode::sample_outputs
+                        ),
+                        .event_inputs = aggregate_ports(
+                            std::span<LogicalConcreteNode const* const>(&members.back(), 1),
+                            &LogicalConcreteNode::event_inputs
+                        ),
+                        .event_outputs = aggregate_ports(
+                            std::span<LogicalConcreteNode const* const>(&members.back(), 1),
+                            &LogicalConcreteNode::event_outputs
+                        ),
+                    });
                 }
 
-                std::sort(backing_node_ids.begin(), backing_node_ids.end());
-                backing_node_ids.erase(std::unique(backing_node_ids.begin(), backing_node_ids.end()), backing_node_ids.end());
                 auto source_spans = source_spans_for(members, group.logical_node_id);
                 std::string logical_id = group.logical_node_id;
                 if (same_identity_group_count > 1) {
@@ -620,6 +660,7 @@ namespace iv {
                     .event_inputs = aggregate_ports(members, &LogicalConcreteNode::event_inputs),
                     .event_outputs = aggregate_ports(members, &LogicalConcreteNode::event_outputs),
                     .backing_node_ids = std::move(backing_node_ids),
+                    .members = std::move(logical_members),
                 });
             }
 
@@ -801,7 +842,7 @@ namespace iv {
     protected:
         GraphBuilder* _graph_builder{};
         size_t _index{};
-        std::string _logical_declaration_id {};
+        mutable std::string _logical_declaration_id {};
         bool _allows_single_assignment = false;
 
         friend class GraphBuilder;
@@ -883,7 +924,7 @@ namespace iv {
             std::string_view file_path,
             uint32_t begin,
             uint32_t end
-        );
+        ) const;
 
         std::string to_string() const;
     };
@@ -1186,6 +1227,7 @@ namespace iv {
                 .subgraph_output_sources = std::move(subgraph_output_sources),
                 .subgraph_event_input_targets = std::move(subgraph_event_input_targets),
                 .subgraph_event_output_sources = std::move(subgraph_event_output_sources),
+                .type_identity = "lowered-subgraph:" + subgraph_kind,
                 .subgraph_kind = std::move(subgraph_kind),
             });
             return placeholder_node_index;
@@ -1355,6 +1397,7 @@ namespace iv {
                 .event_input_configs = std::vector<EventInputConfig>(std::begin(event_inputs), std::end(event_inputs)),
                 .event_output_configs = std::vector<EventOutputConfig>(std::begin(event_outputs), std::end(event_outputs)),
                 .materialize = std::move(materialize),
+                .type_identity = details::demangle_type_name(typeid(StoredNode).name()),
             });
             if constexpr (details::has_fixed_output_count_v<StoredNode>) {
                 return StructuredNodeRef<StoredNode>(*this, _nodes.size() - 1);
@@ -1986,6 +2029,14 @@ namespace iv {
     {
         TimelineAugmentation augmentation = timeline.begin_augmentation();
         size_t const original_node_count = _nodes.size();
+        std::unordered_map<std::string, std::unordered_set<std::string>> types_by_logical_id;
+        for (size_t node_i = 0; node_i < original_node_count; ++node_i) {
+            if (!_nodes[node_i].materialize || _nodes[node_i].vacant_input_owner_id.empty()) {
+                continue;
+            }
+            types_by_logical_id[_nodes[node_i].vacant_input_owner_id].insert(_nodes[node_i].type_identity);
+        }
+        std::unordered_map<std::string, size_t> next_member_ordinal_by_logical_id;
         for (size_t node_i = 0; node_i < original_node_count; ++node_i) {
             if (!_nodes[node_i].materialize) {
                 continue;
@@ -1995,6 +2046,12 @@ namespace iv {
             if (logical_node_id.empty()) {
                 continue;
             }
+            std::string final_logical_node_id = logical_node_id;
+            if (auto it = types_by_logical_id.find(logical_node_id);
+                it != types_by_logical_id.end() && it->second.size() > 1) {
+                final_logical_node_id += "#type:" + details::stable_identity_suffix(_nodes[node_i].type_identity);
+            }
+            size_t const member_ordinal = next_member_ordinal_by_logical_id[final_logical_node_id]++;
 
             auto const input_configs = _nodes[node_i].input_configs;
             auto const event_input_configs = _nodes[node_i].event_input_configs;
@@ -2006,7 +2063,8 @@ namespace iv {
                 }
                 SamplePortRef source = augmentation.resolve_sample_input(
                     *this,
-                    logical_node_id,
+                    final_logical_node_id,
+                    member_ordinal,
                     input_i,
                     input_configs[input_i]
                 );
@@ -2027,7 +2085,7 @@ namespace iv {
                 }
                 EventPortRef source = augmentation.resolve_event_input(
                     *this,
-                    logical_node_id,
+                    final_logical_node_id,
                     input_i,
                     event_input_configs[input_i]
                 );
@@ -2063,6 +2121,7 @@ namespace iv {
             .node_ids = {},
             .node_logical_ids = {},
             .node_source_infos = {},
+            .node_construction_order = {},
             .edges = {},
             .event_edges = {},
             .timeline_filled_input_ports = {},
@@ -2090,6 +2149,7 @@ namespace iv {
             g.node_ids.push_back(node_id(node_i));
             g.node_logical_ids.push_back(_nodes[node_i].logical_node_ids);
             g.node_source_infos.push_back(_nodes[node_i].source_infos);
+            g.node_construction_order.push_back(node_i);
         }
 
         for (PortId port : _timeline_filled_input_ports) {
@@ -2112,6 +2172,7 @@ namespace iv {
             g.node_ids.push_back(node_id(placeholder_node) + ".default." + std::to_string(input_port));
             g.node_logical_ids.emplace_back();
             g.node_source_infos.emplace_back();
+            g.node_construction_order.push_back(placeholder_node);
             return PortId{ g.nodes.size() - 1, 0 };
         };
 
@@ -2440,6 +2501,7 @@ namespace iv {
     inline SamplePortRef TimelineAugmentation::resolve_sample_input(
         GraphBuilder& builder,
         std::string_view logical_node_id,
+        std::optional<size_t> member_ordinal,
         size_t input_ordinal,
         InputConfig const& input_config
     )
@@ -2448,7 +2510,7 @@ namespace iv {
             return builder.node<Constant>(input_config.default_value);
         }
 
-        auto const identity = TimelineInputValue::nominal_identity(logical_node_id, input_ordinal);
+        auto const identity = TimelineInputValue::nominal_identity(logical_node_id, member_ordinal, input_ordinal);
         auto existing = _control_node_indices.find(identity);
         if (existing != _control_node_indices.end()) {
             return SamplePortRef(builder, existing->second, 0);
@@ -2457,6 +2519,7 @@ namespace iv {
         SamplePortRef ref = builder.node<TimelineInputValue>(
             *_timeline,
             std::string(logical_node_id),
+            member_ordinal,
             input_ordinal,
             input_config.default_value
         );
@@ -2693,7 +2756,7 @@ namespace iv {
         std::string_view file_path,
         uint32_t begin,
         uint32_t end
-    )
+    ) const
     {
         if (!declaration_identity.empty()) {
             _logical_declaration_id = declaration_identity;

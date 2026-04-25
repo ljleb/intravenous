@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cassert>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -64,6 +65,7 @@ namespace iv {
     class TimelineInputValue {
         Timeline* _timeline;
         std::string _logical_node_id;
+        std::optional<size_t> _member_ordinal;
         size_t _input_ordinal;
         Sample _default_value;
 
@@ -75,20 +77,28 @@ namespace iv {
 
         static std::string nominal_identity(
             std::string_view logical_node_id,
+            std::optional<size_t> member_ordinal,
             size_t input_ordinal
         )
         {
-            return "timeline-input:" + std::string(logical_node_id) + ":" + std::to_string(input_ordinal);
+            std::string identity = "timeline-input:" + std::string(logical_node_id);
+            if (member_ordinal.has_value()) {
+                identity += ":member:" + std::to_string(*member_ordinal);
+            }
+            identity += ":" + std::to_string(input_ordinal);
+            return identity;
         }
 
         TimelineInputValue(
             Timeline& timeline,
             std::string logical_node_id,
+            std::optional<size_t> member_ordinal,
             size_t input_ordinal,
             Sample default_value
         ) :
             _timeline(&timeline),
             _logical_node_id(std::move(logical_node_id)),
+            _member_ordinal(member_ordinal),
             _input_ordinal(input_ordinal),
             _default_value(default_value)
         {}
@@ -100,7 +110,7 @@ namespace iv {
 
         std::string identity() const
         {
-            return nominal_identity(_logical_node_id, _input_ordinal);
+            return nominal_identity(_logical_node_id, _member_ordinal, _input_ordinal);
         }
 
         void initialize(InitializationContext<TimelineInputValue> const& ctx) const
@@ -110,6 +120,7 @@ namespace iv {
             state.buffered_value = _default_value;
             _timeline->register_live_input_value(
                 _logical_node_id,
+                _member_ordinal,
                 _input_ordinal,
                 &state.staging_value
             );
@@ -122,6 +133,7 @@ namespace iv {
             auto& previous_state = ctx.previous_state();
             _timeline->move_live_input_value(
                 _logical_node_id,
+                _member_ordinal,
                 _input_ordinal,
                 &previous_state.staging_value,
                 &state.staging_value
@@ -133,6 +145,7 @@ namespace iv {
             auto& state = ctx.state();
             _timeline->unregister_live_input_value(
                 _logical_node_id,
+                _member_ordinal,
                 _input_ordinal,
                 &state.staging_value
             );
