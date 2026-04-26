@@ -115,10 +115,7 @@ namespace iv {
     template<size_t N>
     fixed_string(char const (&)[N]) -> fixed_string<N>;
 
-    enum class NamedPortKind : std::uint8_t {
-        sample,
-        event,
-    };
+    using NamedPortKind = PortKind;
 
     template<fixed_string Name, class T, NamedPortKind Kind = NamedPortKind::sample>
     struct NamedArg {

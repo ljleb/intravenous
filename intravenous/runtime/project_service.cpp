@@ -89,6 +89,13 @@ namespace iv {
             std::string module_id;
             std::vector<IntrospectionLogicalNode> logical_nodes;
             std::unordered_map<std::string, size_t> logical_node_index_by_id;
+            std::vector<GraphInputLane> graph_input_lanes;
+        };
+
+        struct ActiveTimelineLaneView {
+            TimelineLaneQueryFilter filter {};
+            size_t start_index = 0;
+            size_t visible_lane_count = 0;
         };
 
         std::filesystem::path normalize_path(std::filesystem::path const& path)
@@ -220,6 +227,91 @@ namespace iv {
 
             return snapshot;
         }
+
+        void append_graph_input_lane_targets(
+            std::vector<GraphInputLaneTarget>& targets,
+            std::string const& logical_node_id,
+            std::optional<size_t> concrete_member_ordinal,
+            PortKind port_kind,
+            std::span<LogicalPortInfo const> ports
+        )
+        {
+            targets.reserve(targets.size() + ports.size());
+            for (auto const& port : ports) {
+                targets.push_back(GraphInputLaneTarget {
+                    .logical_node_id = logical_node_id,
+                    .concrete_member_ordinal = concrete_member_ordinal,
+                    .port_kind = port_kind,
+                    .port_ordinal = port.ordinal,
+                    .port_name = port.name,
+                    .port_type = port.type,
+                });
+            }
+        }
+
+        std::vector<GraphInputLaneTarget> graph_input_lane_targets_for(
+            std::span<IntrospectionLogicalNode const> logical_nodes
+        )
+        {
+            std::vector<GraphInputLaneTarget> targets;
+            for (auto const& node : logical_nodes) {
+                append_graph_input_lane_targets(
+                    targets,
+                    node.id,
+                    std::nullopt,
+                    PortKind::sample,
+                    node.sample_inputs
+                );
+                append_graph_input_lane_targets(
+                    targets,
+                    node.id,
+                    std::nullopt,
+                    PortKind::event,
+                    node.event_inputs
+                );
+                for (auto const& member : node.members) {
+                    append_graph_input_lane_targets(
+                        targets,
+                        node.id,
+                        member.ordinal,
+                        PortKind::sample,
+                        member.sample_inputs
+                    );
+                    append_graph_input_lane_targets(
+                        targets,
+                        node.id,
+                        member.ordinal,
+                        PortKind::event,
+                        member.event_inputs
+                    );
+                }
+            }
+            return targets;
+        }
+
+        bool same_graph_input_port(
+            GraphInputLaneTarget const& a,
+            GraphInputLaneTarget const& b
+        )
+        {
+            return a.logical_node_id == b.logical_node_id
+                && a.port_kind == b.port_kind
+                && a.port_ordinal == b.port_ordinal;
+        }
+
+        bool matches_graph_input_sample_target(
+            GraphInputLaneTarget const& target,
+            std::string const& logical_node_id,
+            std::optional<size_t> member_ordinal,
+            size_t input_ordinal
+        )
+        {
+            return target.logical_node_id == logical_node_id
+                && target.concrete_member_ordinal == member_ordinal
+                && target.port_kind == PortKind::sample
+                && target.port_ordinal == input_ordinal;
+        }
+
     }
 
     class RuntimeProjectService::Impl {
@@ -237,6 +329,9 @@ namespace iv {
 
         std::optional<RuntimeProjectConfig> config;
         std::optional<GraphSnapshot> snapshot;
+        uint64_t lane_touch_clock = 0;
+        std::unordered_map<uint64_t, uint64_t> lane_last_touched;
+        std::unordered_map<std::string, ActiveTimelineLaneView> active_lane_views;
         std::exception_ptr pending_exception;
         bool initialized = false;
         bool shutdown_requested = false;
@@ -411,6 +506,153 @@ namespace iv {
             return live;
         }
 
+        TimelineLaneStatus lane_status(GraphInputLaneTarget const& target) const
+        {
+            if (
+                target.concrete_member_ordinal.has_value()
+                && target.port_kind == PortKind::sample
+                && timeline.has_live_input_value_override(
+                    target.logical_node_id,
+                    *target.concrete_member_ordinal,
+                    target.port_ordinal
+                )
+            ) {
+                return TimelineLaneStatus::overridden;
+            }
+            return TimelineLaneStatus::active;
+        }
+
+        uint64_t last_touched(LaneId lane_id) const
+        {
+            auto const it = lane_last_touched.find(lane_id.value);
+            return it == lane_last_touched.end() ? 0 : it->second;
+        }
+
+        void touch_lane(LaneId lane_id)
+        {
+            if (!lane_id) {
+                return;
+            }
+            lane_last_touched[lane_id.value] = ++lane_touch_clock;
+        }
+
+        void touch_sample_input_lanes(
+            std::string const& logical_node_id,
+            size_t input_ordinal,
+            std::optional<size_t> member_ordinal
+        )
+        {
+            if (!snapshot.has_value()) {
+                return;
+            }
+            for (auto const& lane : snapshot->graph_input_lanes) {
+                if (matches_graph_input_sample_target(
+                    lane.target,
+                    logical_node_id,
+                    member_ordinal,
+                    input_ordinal
+                )) {
+                    touch_lane(lane.id);
+                }
+            }
+        }
+
+        TimelineLaneQueryResult query_lanes_locked(
+            TimelineLaneQueryFilter const& filter,
+            std::optional<uint64_t> expected_execution_epoch,
+            std::optional<size_t> start_index = std::nullopt,
+            std::optional<size_t> visible_lane_count = std::nullopt
+        ) const
+        {
+            if (!snapshot.has_value()) {
+                throw std::runtime_error("runtime project service is not initialized");
+            }
+            if (
+                expected_execution_epoch.has_value()
+                && snapshot->execution_epoch != *expected_execution_epoch
+            ) {
+                throw std::runtime_error("stale execution epoch for lane query");
+            }
+            if (filter.kind != "graphInputs") {
+                throw std::runtime_error("unsupported timeline lane filter: " + filter.kind);
+            }
+
+            TimelineLaneQueryResult result;
+            result.execution_epoch = snapshot->execution_epoch;
+            result.total_lane_count = snapshot->graph_input_lanes.size();
+            result.start_index = start_index.value_or(0);
+            result.visible_lane_count = visible_lane_count.value_or(result.total_lane_count);
+
+            size_t const max_start_index = result.total_lane_count == 0
+                ? 0
+                : (result.visible_lane_count >= result.total_lane_count
+                    ? 0
+                    : result.total_lane_count - result.visible_lane_count);
+            size_t const lane_begin = std::min(result.start_index, max_start_index);
+            size_t const remaining_lanes = result.total_lane_count - lane_begin;
+            size_t const window_lane_count = std::min(result.visible_lane_count, remaining_lanes);
+            size_t const lane_end = lane_begin + window_lane_count;
+            bool const restrict_connections_to_window = start_index.has_value() || visible_lane_count.has_value();
+            result.start_index = lane_begin;
+            result.lanes.reserve(window_lane_count);
+
+            std::unordered_set<uint64_t> visible_lane_ids;
+            visible_lane_ids.reserve(window_lane_count);
+            for (size_t lane_index = lane_begin; lane_index < lane_end; ++lane_index) {
+                auto const& lane = snapshot->graph_input_lanes[lane_index];
+                visible_lane_ids.insert(lane.id.value);
+                result.lanes.push_back(TimelineLaneInfo {
+                    .lane_id = lane.id.value,
+                    .domain = LaneDomain::realtime,
+                    .lane_type = "graphInput",
+                    .status = lane_status(lane.target),
+                    .last_touched = last_touched(lane.id),
+                    .graph_input_target = lane.target,
+                });
+            }
+
+            for (auto const& logical_lane : snapshot->graph_input_lanes) {
+                if (logical_lane.target.concrete_member_ordinal.has_value()) {
+                    continue;
+                }
+                for (auto const& concrete_lane : snapshot->graph_input_lanes) {
+                    if (!concrete_lane.target.concrete_member_ordinal.has_value()) {
+                        continue;
+                    }
+                    if (!same_graph_input_port(logical_lane.target, concrete_lane.target)) {
+                        continue;
+                    }
+                    if (
+                        restrict_connections_to_window
+                        && !visible_lane_ids.contains(logical_lane.id.value)
+                        && !visible_lane_ids.contains(concrete_lane.id.value)
+                    ) {
+                        continue;
+                    }
+
+                    auto state = TimelineLaneConnectionState::active;
+                    if (concrete_lane.target.port_kind == PortKind::sample) {
+                        state = timeline.has_live_input_value_override(
+                            concrete_lane.target.logical_node_id,
+                            *concrete_lane.target.concrete_member_ordinal,
+                            concrete_lane.target.port_ordinal
+                        )
+                            ? TimelineLaneConnectionState::overridden
+                            : TimelineLaneConnectionState::active;
+                    }
+                    result.connections.push_back(TimelineLaneConnectionInfo {
+                        .source_lane_id = logical_lane.id.value,
+                        .target_lane_id = concrete_lane.id.value,
+                        .kind = TimelineLaneConnectionKind::logical_to_concrete,
+                        .state = state,
+                        .port_kind = concrete_lane.target.port_kind,
+                        .port_ordinal = concrete_lane.target.port_ordinal,
+                    });
+                }
+            }
+            return result;
+        }
+
         void run_runtime()
         {
             try {
@@ -461,6 +703,9 @@ namespace iv {
                         loaded_graph.module_id,
                         1
                     );
+                    snapshot->graph_input_lanes = timeline.reconcile_graph_input_lanes(
+                        graph_input_lane_targets_for(snapshot->logical_nodes)
+                    );
                     created_node_ids.reserve(snapshot->logical_nodes.size());
                     for (auto const& node : snapshot->logical_nodes) {
                         created_node_ids.push_back(node.id);
@@ -508,6 +753,9 @@ namespace iv {
                                 config->module_root,
                                 reload.module_id,
                                 next_epoch
+                            );
+                            snapshot->graph_input_lanes = timeline.reconcile_graph_input_lanes(
+                                graph_input_lane_targets_for(snapshot->logical_nodes)
                             );
                             for (auto const& node : snapshot->logical_nodes) {
                                 if (!previous_logical_ids.erase(node.id)) {
@@ -840,6 +1088,87 @@ namespace iv {
         return nodes;
     }
 
+    TimelineLaneQueryResult RuntimeProjectService::query_lanes(TimelineLaneQuery const& query) const
+    {
+        std::scoped_lock lock(_impl->mutex);
+        _impl->rethrow_if_failed();
+        return _impl->query_lanes_locked(query.filter, query.execution_epoch);
+    }
+
+    TimelineLaneViewResult RuntimeProjectService::open_lane_view(TimelineLaneViewRequest request)
+    {
+        std::scoped_lock lock(_impl->mutex);
+        _impl->rethrow_if_failed();
+        if (request.view_id.empty()) {
+            throw std::runtime_error("timeline lane view id must not be empty");
+        }
+        auto const query_result = _impl->query_lanes_locked(
+            request.query.filter,
+            request.query.execution_epoch,
+            request.start_index,
+            request.visible_lane_count
+        );
+        _impl->active_lane_views[request.view_id] = ActiveTimelineLaneView {
+            .filter = request.query.filter,
+            .start_index = request.start_index,
+            .visible_lane_count = request.visible_lane_count,
+        };
+        return TimelineLaneViewResult {
+            .view_id = request.view_id,
+            .lanes = query_result,
+        };
+    }
+
+    TimelineLaneViewResult RuntimeProjectService::update_lane_view(TimelineLaneViewRequest request)
+    {
+        std::scoped_lock lock(_impl->mutex);
+        _impl->rethrow_if_failed();
+        if (request.view_id.empty()) {
+            throw std::runtime_error("timeline lane view id must not be empty");
+        }
+        auto const query_result = _impl->query_lanes_locked(
+            request.query.filter,
+            std::nullopt,
+            request.start_index,
+            request.visible_lane_count
+        );
+        _impl->active_lane_views[request.view_id] = ActiveTimelineLaneView {
+            .filter = request.query.filter,
+            .start_index = request.start_index,
+            .visible_lane_count = request.visible_lane_count,
+        };
+        return TimelineLaneViewResult {
+            .view_id = request.view_id,
+            .lanes = query_result,
+        };
+    }
+
+    void RuntimeProjectService::close_lane_view(std::string const& view_id)
+    {
+        std::scoped_lock lock(_impl->mutex);
+        _impl->active_lane_views.erase(view_id);
+    }
+
+    std::vector<TimelineLaneViewResult> RuntimeProjectService::active_lane_view_updates() const
+    {
+        std::scoped_lock lock(_impl->mutex);
+        _impl->rethrow_if_failed();
+        std::vector<TimelineLaneViewResult> updates;
+        updates.reserve(_impl->active_lane_views.size());
+        for (auto const& [view_id, view] : _impl->active_lane_views) {
+            updates.push_back(TimelineLaneViewResult {
+                .view_id = view_id,
+                .lanes = _impl->query_lanes_locked(
+                    view.filter,
+                    std::nullopt,
+                    view.start_index,
+                    view.visible_lane_count
+                ),
+            });
+        }
+        return updates;
+    }
+
     void RuntimeProjectService::set_sample_input_value(
         uint64_t execution_epoch,
         std::string const& node_id,
@@ -868,9 +1197,11 @@ namespace iv {
                 );
             }
             _impl->timeline.set_live_input_value(node_id, *member_ordinal, input_ordinal, value);
+            _impl->touch_sample_input_lanes(node_id, input_ordinal, *member_ordinal);
             return;
         }
         _impl->timeline.set_live_input_value(node_id, input_ordinal, value);
+        _impl->touch_sample_input_lanes(node_id, input_ordinal, std::nullopt);
     }
 
     void RuntimeProjectService::clear_sample_input_value_override(
@@ -899,6 +1230,7 @@ namespace iv {
             );
         }
         _impl->timeline.clear_live_input_value_override(node_id, member_ordinal, input_ordinal);
+        _impl->touch_sample_input_lanes(node_id, input_ordinal, member_ordinal);
     }
 
     void RuntimeProjectService::request_shutdown()

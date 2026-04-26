@@ -1,5 +1,6 @@
 #pragma once
 
+#include "runtime/lane_graph.h"
 #include "sample.h"
 
 #include <algorithm>
@@ -53,6 +54,7 @@ namespace iv {
         std::unordered_map<std::string, std::vector<std::vector<Sample*>>> _live_inputs;
         std::unordered_map<std::string, std::vector<Sample>> _live_input_values;
         std::unordered_set<std::string> _concrete_live_input_overrides;
+        GraphInputLaneRegistry _graph_input_lanes;
 
         static std::string concrete_key(std::string_view logical_node_id, size_t member_ordinal)
         {
@@ -103,6 +105,28 @@ namespace iv {
         TimelineAugmentation begin_augmentation()
         {
             return TimelineAugmentation(*this);
+        }
+
+        std::vector<GraphInputLane> reconcile_graph_input_lanes(
+            std::vector<GraphInputLaneTarget> const& targets
+        )
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            return _graph_input_lanes.reconcile(targets);
+        }
+
+        std::optional<GraphInputLaneTarget> graph_input_lane_target(LaneId lane_id) const
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            return _graph_input_lanes.target_for(lane_id);
+        }
+
+        std::vector<DanglingLaneConnection> dangling_graph_input_connections(
+            std::vector<LaneConnection> const& connections
+        ) const
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            return _graph_input_lanes.dangling_connections(connections);
         }
 
         void register_live_input_value(

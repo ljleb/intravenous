@@ -176,6 +176,22 @@ namespace iv {
             return static_cast<uint64_t>(value);
         }
 
+        size_t parse_optional_size_param(Json const& params, std::string const& key, size_t fallback)
+        {
+            auto const value_it = params.find(key);
+            if (value_it == params.end() || value_it->is_null()) {
+                return fallback;
+            }
+            if (!value_it->is_number_integer()) {
+                throw std::runtime_error("JSON-RPC request param '" + key + "' must be a non-negative integer");
+            }
+            auto const value = value_it->get<int64_t>();
+            if (value < 0) {
+                throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
+            }
+            return static_cast<size_t>(value);
+        }
+
         double parse_number_param(Json const& params, std::string const& key)
         {
             auto const value_it = params.find(key);
@@ -366,6 +382,146 @@ namespace iv {
             return json;
         }
 
+        std::string_view port_kind_json(PortKind kind)
+        {
+            switch (kind) {
+            case PortKind::sample:
+                return "sample";
+            case PortKind::event:
+                return "event";
+            }
+            return "sample";
+        }
+
+        std::string_view lane_domain_json(LaneDomain domain)
+        {
+            switch (domain) {
+            case LaneDomain::compiled:
+                return "compiled";
+            case LaneDomain::realtime:
+                return "realtime";
+            }
+            return "realtime";
+        }
+
+        std::string_view timeline_lane_connection_kind_json(TimelineLaneConnectionKind kind)
+        {
+            switch (kind) {
+            case TimelineLaneConnectionKind::logical_to_concrete:
+                return "logicalToConcrete";
+            }
+            return "logicalToConcrete";
+        }
+
+        std::string_view timeline_lane_connection_state_json(TimelineLaneConnectionState state)
+        {
+            switch (state) {
+            case TimelineLaneConnectionState::active:
+                return "active";
+            case TimelineLaneConnectionState::overridden:
+                return "overridden";
+            }
+            return "active";
+        }
+
+        std::string_view timeline_lane_status_json(TimelineLaneStatus status)
+        {
+            switch (status) {
+            case TimelineLaneStatus::active:
+                return "active";
+            case TimelineLaneStatus::overridden:
+                return "overridden";
+            case TimelineLaneStatus::stale:
+                return "stale";
+            }
+            return "active";
+        }
+
+        TimelineLaneQueryFilter parse_timeline_lane_query_filter(Json const& params)
+        {
+            auto const filter_it = params.find("filter");
+            if (filter_it == params.end() || !filter_it->is_object()) {
+                throw std::runtime_error("timeline lane requests require a filter object");
+            }
+            auto const kind_it = filter_it->find("kind");
+            if (kind_it == filter_it->end() || !kind_it->is_string()) {
+                throw std::runtime_error("timeline lane filter.kind must be a string");
+            }
+            return TimelineLaneQueryFilter {
+                .kind = kind_it->get<std::string>(),
+            };
+        }
+
+        TimelineLaneQuery parse_timeline_lane_query(Json const& params)
+        {
+            return TimelineLaneQuery {
+                .execution_epoch = parse_uint64_param(params, "executionEpoch"),
+                .filter = parse_timeline_lane_query_filter(params),
+            };
+        }
+
+        TimelineLaneViewRequest parse_timeline_lane_view_request(Json const& params)
+        {
+            return TimelineLaneViewRequest {
+                .view_id = parse_string_param(params, "viewId"),
+                .query = parse_timeline_lane_query(params),
+                .start_index = parse_optional_size_param(params, "startIndex", 0),
+                .visible_lane_count = parse_optional_size_param(params, "visibleLaneCount", 0),
+            };
+        }
+
+        Json timeline_lane_query_result_json(TimelineLaneQueryResult const& result)
+        {
+            Json json_lanes = Json::array();
+            for (auto const& lane : result.lanes) {
+                auto const& lane_target = lane.graph_input_target;
+                Json target {
+                    {"logicalNodeId", lane_target.logical_node_id},
+                    {"portKind", std::string(port_kind_json(lane_target.port_kind))},
+                    {"portOrdinal", lane_target.port_ordinal},
+                    {"portName", lane_target.port_name},
+                    {"portType", lane_target.port_type},
+                };
+                if (lane_target.concrete_member_ordinal.has_value()) {
+                    target["memberOrdinal"] = *lane_target.concrete_member_ordinal;
+                }
+                json_lanes.push_back({
+                    {"laneId", lane.lane_id},
+                    {"domain", std::string(lane_domain_json(lane.domain))},
+                    {"laneType", lane.lane_type},
+                    {"status", std::string(timeline_lane_status_json(lane.status))},
+                    {"lastTouched", lane.last_touched},
+                    {"target", std::move(target)},
+                });
+            }
+            Json json_connections = Json::array();
+            for (auto const& connection : result.connections) {
+                json_connections.push_back({
+                    {"sourceLaneId", connection.source_lane_id},
+                    {"targetLaneId", connection.target_lane_id},
+                    {"kind", std::string(timeline_lane_connection_kind_json(connection.kind))},
+                    {"state", std::string(timeline_lane_connection_state_json(connection.state))},
+                    {"portKind", std::string(port_kind_json(connection.port_kind))},
+                    {"portOrdinal", connection.port_ordinal},
+                });
+            }
+            return Json {
+                {"executionEpoch", result.execution_epoch},
+                {"startIndex", result.start_index},
+                {"visibleLaneCount", result.visible_lane_count},
+                {"totalLaneCount", result.total_lane_count},
+                {"lanes", std::move(json_lanes)},
+                {"connections", std::move(json_connections)},
+            };
+        }
+
+        Json timeline_lane_view_result_json(TimelineLaneViewResult const& result)
+        {
+            Json json = timeline_lane_query_result_json(result.lanes);
+            json["viewId"] = result.view_id;
+            return json;
+        }
+
         Json initialize_result_json(RuntimeProjectInitializeResult const& result)
         {
             return Json {
@@ -379,6 +535,8 @@ namespace iv {
                      {"getLogicalNode", true},
                      {"getLogicalNodes", true},
                      {"logicalNodeMembers", true},
+                     {"debugQueryLanes", true},
+                     {"laneViews", true},
                      {"setSampleInputValue", true},
                      {"setMemberSampleInputValue", true},
                      {"clearSampleInputValueOverride", true},
@@ -556,6 +714,46 @@ namespace iv {
                     client_fd = -1;
                 }
             }
+
+            if (
+                notification.kind == RuntimeProjectNotificationKind::status
+                && notification.code == "rebuildFinished"
+            ) {
+                notify_lane_view_updates();
+            }
+        }
+
+        void notify_lane_view_updates()
+        {
+            std::vector<TimelineLaneViewResult> updates;
+            try {
+                updates = service.active_lane_view_updates();
+            } catch (...) {
+                return;
+            }
+
+            int fd = -1;
+            {
+                std::scoped_lock client_lock(client_mutex);
+                fd = client_fd;
+            }
+            if (fd < 0) {
+                return;
+            }
+
+            for (auto const& update : updates) {
+                auto const message = jsonrpc_notification(
+                    "timeline.laneViewUpdated",
+                    timeline_lane_view_result_json(update)
+                );
+                if (!send_message(fd, message)) {
+                    std::scoped_lock client_lock(client_mutex);
+                    if (client_fd == fd) {
+                        client_fd = -1;
+                    }
+                    return;
+                }
+            }
         }
 
         void handle_client(int fd)
@@ -584,6 +782,7 @@ namespace iv {
 
                     int request_id = 0;
                     std::string response;
+                    bool notify_active_lane_views_after_response = false;
                     bool mark_client_initialized = false;
                     try {
                         auto const request = parse_request_json(line);
@@ -625,6 +824,28 @@ namespace iv {
                             auto const execution_epoch = parse_uint64_param(params, "executionEpoch");
                             auto const node_ids = parse_string_array_param(params, "nodeIds");
                             response = jsonrpc_result(request_id, logical_nodes_json(service.get_logical_nodes(execution_epoch, node_ids)));
+                        } else if (method == "timeline.debugQueryLanes") {
+                            wait_until_initialized();
+                            response = jsonrpc_result(
+                                request_id,
+                                timeline_lane_query_result_json(service.query_lanes(parse_timeline_lane_query(params)))
+                            );
+                        } else if (method == "timeline.openLaneView") {
+                            wait_until_initialized();
+                            response = jsonrpc_result(
+                                request_id,
+                                timeline_lane_view_result_json(service.open_lane_view(parse_timeline_lane_view_request(params)))
+                            );
+                        } else if (method == "timeline.updateLaneView") {
+                            wait_until_initialized();
+                            response = jsonrpc_result(
+                                request_id,
+                                timeline_lane_view_result_json(service.update_lane_view(parse_timeline_lane_view_request(params)))
+                            );
+                        } else if (method == "timeline.closeLaneView") {
+                            wait_until_initialized();
+                            service.close_lane_view(parse_string_param(params, "viewId"));
+                            response = jsonrpc_result(request_id, Json {{"ok", true}});
                         } else if (method == "graph.setSampleInputValue") {
                             wait_until_initialized();
                             auto const execution_epoch = parse_uint64_param(params, "executionEpoch");
@@ -642,6 +863,7 @@ namespace iv {
                                     : std::nullopt
                             );
                             response = jsonrpc_result(request_id, Json {{"ok", true}});
+                            notify_active_lane_views_after_response = true;
                         } else if (method == "graph.clearSampleInputValueOverride") {
                             wait_until_initialized();
                             auto const execution_epoch = parse_uint64_param(params, "executionEpoch");
@@ -655,6 +877,7 @@ namespace iv {
                                 input_ordinal
                             );
                             response = jsonrpc_result(request_id, Json {{"ok", true}});
+                            notify_active_lane_views_after_response = true;
                         } else if (method == "server.shutdown") {
                             response = jsonrpc_result(request_id, Json {{"ok", true}});
                             (void)send_message(fd, response);
@@ -669,6 +892,9 @@ namespace iv {
 
                     if (!send_message(fd, response)) {
                         return;
+                    }
+                    if (notify_active_lane_views_after_response) {
+                        notify_lane_view_updates();
                     }
                     if (mark_client_initialized) {
                         std::scoped_lock client_lock(client_mutex);

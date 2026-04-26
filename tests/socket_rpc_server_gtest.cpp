@@ -481,6 +481,7 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     auto const logical_node_response = read_response_for_id(fd, &response_buffer, 3);
     ASSERT_FALSE(logical_node_response.empty());
     EXPECT_TRUE(logical_node_response.contains(R"("kind":"iv::SawOscillator")"));
+    EXPECT_FALSE(logical_node_response.contains(R"("laneId")")) << logical_node_response;
     EXPECT_TRUE(logical_node_response.contains(R"("sampleInputs":[{"name":"phase_offset")"));
     EXPECT_TRUE(logical_node_response.contains(R"("name":"frequency")"));
     EXPECT_TRUE(logical_node_response.contains(R"("name":"dt")"));
@@ -490,34 +491,79 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     EXPECT_TRUE(logical_node_response.contains(R"("ordinal":1)"));
     EXPECT_TRUE(logical_node_response.contains(R"("hasConcreteOverride":false)")) << logical_node_response;
 
+    std::string const open_lanes_request =
+        R"({"jsonrpc":"2.0","id":4,"method":"timeline.openLaneView","params":{"viewId":"test-lanes","executionEpoch":1,"filter":{"kind":"graphInputs"},"startIndex":0,"visibleLaneCount":1000}})" "\n";
+    ASSERT_EQ(::write(fd, open_lanes_request.data(), open_lanes_request.size()), static_cast<ssize_t>(open_lanes_request.size()));
+    auto const open_lanes_response = read_response_for_id(fd, &response_buffer, 4);
+    EXPECT_TRUE(open_lanes_response.contains(R"("viewId":"test-lanes")")) << open_lanes_response;
+    EXPECT_TRUE(open_lanes_response.contains(R"("startIndex":0)")) << open_lanes_response;
+    EXPECT_TRUE(open_lanes_response.contains(R"("visibleLaneCount":)")) << open_lanes_response;
+    EXPECT_TRUE(open_lanes_response.contains(R"("totalLaneCount":)")) << open_lanes_response;
+    EXPECT_TRUE(open_lanes_response.contains(R"("laneType":"graphInput")")) << open_lanes_response;
+    EXPECT_TRUE(open_lanes_response.contains(R"("status":"active")")) << open_lanes_response;
+    EXPECT_TRUE(open_lanes_response.contains(R"("lastTouched":0)")) << open_lanes_response;
+
     std::string const set_member_request =
-        R"({"jsonrpc":"2.0","id":4,"method":"graph.setSampleInputValue","params":{"executionEpoch":1,"nodeId":")" +
+        R"({"jsonrpc":"2.0","id":5,"method":"graph.setSampleInputValue","params":{"executionEpoch":1,"nodeId":")" +
         logical_node_id +
         R"(","memberOrdinal":1,"inputOrdinal":1,"value":0.75}})" "\n";
     ASSERT_EQ(::write(fd, set_member_request.data(), set_member_request.size()), static_cast<ssize_t>(set_member_request.size()));
-    auto const set_member_response = read_response_for_id(fd, &response_buffer, 4);
+    auto const set_member_response = read_response_for_id(fd, &response_buffer, 5);
     EXPECT_TRUE(set_member_response.contains(R"("ok":true)")) << set_member_response;
+    auto const set_member_lane_update = read_line_until(fd, &response_buffer, 5s);
+    EXPECT_TRUE(set_member_lane_update.contains(R"("method":"timeline.laneViewUpdated")")) << set_member_lane_update;
+    EXPECT_TRUE(set_member_lane_update.contains(R"("viewId":"test-lanes")")) << set_member_lane_update;
+    EXPECT_TRUE(set_member_lane_update.contains(R"("status":"overridden")")) << set_member_lane_update;
+    EXPECT_TRUE(set_member_lane_update.contains(R"("lastTouched":1)")) << set_member_lane_update;
 
     std::string const member_override_request =
-        R"({"jsonrpc":"2.0","id":5,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
+        R"({"jsonrpc":"2.0","id":6,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
         logical_node_id +
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, member_override_request.data(), member_override_request.size()), static_cast<ssize_t>(member_override_request.size()));
-    auto const member_override_response = read_response_for_id(fd, &response_buffer, 5);
+    auto const member_override_response = read_response_for_id(fd, &response_buffer, 6);
     EXPECT_TRUE(member_override_response.contains(R"("hasConcreteOverride":true)")) << member_override_response;
 
+    std::string const overridden_lanes_request =
+        R"({"jsonrpc":"2.0","id":7,"method":"timeline.debugQueryLanes","params":{"executionEpoch":1,"filter":{"kind":"graphInputs"}}})" "\n";
+    ASSERT_EQ(::write(fd, overridden_lanes_request.data(), overridden_lanes_request.size()), static_cast<ssize_t>(overridden_lanes_request.size()));
+    auto const overridden_lanes_response = read_response_for_id(fd, &response_buffer, 7);
+    EXPECT_TRUE(overridden_lanes_response.contains(R"("connections":[)")) << overridden_lanes_response;
+    EXPECT_TRUE(overridden_lanes_response.contains(R"("kind":"logicalToConcrete")")) << overridden_lanes_response;
+    EXPECT_TRUE(overridden_lanes_response.contains(R"("state":"overridden")")) << overridden_lanes_response;
+
     std::string const clear_member_request =
-        R"({"jsonrpc":"2.0","id":6,"method":"graph.clearSampleInputValueOverride","params":{"executionEpoch":1,"nodeId":")" +
+        R"({"jsonrpc":"2.0","id":8,"method":"graph.clearSampleInputValueOverride","params":{"executionEpoch":1,"nodeId":")" +
         logical_node_id +
         R"(","memberOrdinal":1,"inputOrdinal":1}})" "\n";
     ASSERT_EQ(::write(fd, clear_member_request.data(), clear_member_request.size()), static_cast<ssize_t>(clear_member_request.size()));
-    auto const clear_member_response = read_response_for_id(fd, &response_buffer, 6);
+    auto const clear_member_response = read_response_for_id(fd, &response_buffer, 8);
     EXPECT_TRUE(clear_member_response.contains(R"("ok":true)")) << clear_member_response;
+    auto const clear_member_lane_update = read_line_until(fd, &response_buffer, 5s);
+    EXPECT_TRUE(clear_member_lane_update.contains(R"("method":"timeline.laneViewUpdated")")) << clear_member_lane_update;
+    EXPECT_TRUE(clear_member_lane_update.contains(R"("viewId":"test-lanes")")) << clear_member_lane_update;
+    EXPECT_TRUE(clear_member_lane_update.contains(R"("status":"active")")) << clear_member_lane_update;
+    EXPECT_TRUE(clear_member_lane_update.contains(R"("lastTouched":2)")) << clear_member_lane_update;
+
+    std::string const lanes_request =
+        R"({"jsonrpc":"2.0","id":9,"method":"timeline.debugQueryLanes","params":{"executionEpoch":1,"filter":{"kind":"graphInputs"}}})" "\n";
+    ASSERT_EQ(::write(fd, lanes_request.data(), lanes_request.size()), static_cast<ssize_t>(lanes_request.size()));
+    auto const lanes_response = read_response_for_id(fd, &response_buffer, 9);
+    EXPECT_TRUE(lanes_response.contains(R"("lanes":[)")) << lanes_response;
+    EXPECT_TRUE(lanes_response.contains(R"("laneId":)")) << lanes_response;
+    EXPECT_TRUE(lanes_response.contains(R"("domain":"realtime")")) << lanes_response;
+    EXPECT_TRUE(lanes_response.contains(R"("logicalNodeId":")" + logical_node_id + R"(")")) << lanes_response;
+    EXPECT_TRUE(lanes_response.contains(R"("portKind":"sample")")) << lanes_response;
+    EXPECT_TRUE(lanes_response.contains(R"("portName":"frequency")")) << lanes_response;
+    EXPECT_TRUE(lanes_response.contains(R"("memberOrdinal":1)")) << lanes_response;
+    EXPECT_TRUE(lanes_response.contains(R"("connections":[)")) << lanes_response;
+    EXPECT_TRUE(lanes_response.contains(R"("kind":"logicalToConcrete")")) << lanes_response;
+    EXPECT_TRUE(lanes_response.contains(R"("state":"active")")) << lanes_response;
 
     std::string const shutdown_request =
-        R"({"jsonrpc":"2.0","id":7,"method":"server.shutdown","params":{}})" "\n";
+        R"({"jsonrpc":"2.0","id":10,"method":"server.shutdown","params":{}})" "\n";
     ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 7);
+    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 10);
     EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
 
     ::close(fd);

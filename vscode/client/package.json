@@ -11,7 +11,8 @@
     "Other"
   ],
   "activationEvents": [
-    "workspaceContains:.intravenous"
+    "workspaceContains:.intravenous",
+    "onWebviewPanel:intravenous.lanes"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -42,6 +43,12 @@
           "type": "webview"
         }
       ]
-    }
+    },
+    "commands": [
+      {
+        "command": "intravenous.openLanes",
+        "title": "Intravenous: Open Lanes"
+      }
+    ]
   }
 }
