@@ -1149,7 +1149,7 @@ namespace iv {
 
         LoadedGraph load_root(
             std::filesystem::path const& module_path,
-            ModuleRenderConfig render_config,
+            ModuleExecutorTarget render_config,
             Sample* sample_period
         ) const
         {
@@ -1251,7 +1251,7 @@ namespace iv {
 
     ModuleLoader::LoadedGraph ModuleLoader::load_root(
         std::filesystem::path const& module_path,
-        ModuleRenderConfig render_config,
+        ModuleExecutorTarget render_config,
         Sample* sample_period
     ) const
     {

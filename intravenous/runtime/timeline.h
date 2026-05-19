@@ -1,14 +1,18 @@
 #pragma once
 
+#include "runtime/graph_input_lane_controller.h"
 #include "runtime/lane_graph.h"
+#include "runtime/timeline_fwd.h"
 #include "sample.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -16,20 +20,13 @@
 #include <vector>
 
 namespace iv {
-    class GraphBuilder;
-    struct InputConfig;
-    struct EventInputConfig;
-    struct SamplePortRef;
-    struct EventPortRef;
-    class Timeline;
-
-    class TimelineAugmentation {
+    class TimelineGraphInputResolver {
         Timeline* _timeline;
         std::unordered_map<std::string, size_t> _control_node_indices;
 
     public:
-        TimelineAugmentation() = default;
-        explicit TimelineAugmentation(Timeline& timeline) :
+        TimelineGraphInputResolver() = default;
+        explicit TimelineGraphInputResolver(Timeline& timeline) :
             _timeline(&timeline)
         {}
 
@@ -49,12 +46,18 @@ namespace iv {
         );
     };
 
+    struct TimelineGraphRuntime {
+        GraphInputLaneController graph_input_lane_controller;
+        LaneGraph lane_graph;
+    };
+
     class Timeline {
-        mutable std::mutex _live_input_bindings_mutex;
+        std::mutex _live_input_bindings_mutex;
         std::unordered_map<std::string, std::vector<std::vector<Sample*>>> _live_inputs;
         std::unordered_map<std::string, std::vector<Sample>> _live_input_values;
         std::unordered_set<std::string> _concrete_live_input_overrides;
-        GraphInputLaneRegistry _graph_input_lanes;
+        std::unordered_map<std::string, TimelineGraphRuntime> _graphs;
+        std::string _default_graph_id = "module";
 
         static std::string concrete_key(std::string_view logical_node_id, size_t member_ordinal)
         {
@@ -99,34 +102,116 @@ namespace iv {
             return values[input_ordinal];
         }
 
-        friend class TimelineAugmentation;
-
-    public:
-        TimelineAugmentation begin_augmentation()
+        TimelineGraphRuntime& default_graph_locked()
         {
-            return TimelineAugmentation(*this);
+            return _graphs[_default_graph_id];
         }
 
-        std::vector<GraphInputLane> reconcile_graph_input_lanes(
-            std::vector<GraphInputLaneTarget> const& targets
+        friend class TimelineGraphInputResolver;
+
+    public:
+        TimelineGraphInputResolver begin_graph_input_resolution()
+        {
+            return TimelineGraphInputResolver(*this);
+        }
+
+        void ensure_graph_input_lane_bindings(
+            std::span<GraphInputPortDescriptor const> ports
         )
         {
             std::scoped_lock lock(_live_input_bindings_mutex);
-            return _graph_input_lanes.reconcile(targets);
+            auto& graph = default_graph_locked();
+            (void)graph.graph_input_lane_controller.reconcile(graph.lane_graph, ports);
         }
 
-        std::optional<GraphInputLaneTarget> graph_input_lane_target(LaneId lane_id) const
+        GraphInputLaneBindings reconcile_graph_input_lane_bindings(
+            std::span<GraphInputPortDescriptor const> ports
+        )
         {
             std::scoped_lock lock(_live_input_bindings_mutex);
-            return _graph_input_lanes.target_for(lane_id);
+            auto& graph = default_graph_locked();
+            return graph.graph_input_lane_controller.reconcile(graph.lane_graph, ports);
         }
 
-        std::vector<DanglingLaneConnection> dangling_graph_input_connections(
-            std::vector<LaneConnection> const& connections
-        ) const
+        LaneId resolve_graph_sample_input_lane(
+            std::string_view logical_node_id,
+            std::optional<size_t> member_ordinal,
+            size_t input_ordinal,
+            std::string_view port_name,
+            Sample default_value
+        )
         {
             std::scoped_lock lock(_live_input_bindings_mutex);
-            return _graph_input_lanes.dangling_connections(connections);
+            GraphInputPortDescriptor logical_port {
+                .logical_node_id = std::string(logical_node_id),
+                .port_kind = PortKind::sample,
+                .port_ordinal = input_ordinal,
+                .port_name = std::string(port_name),
+                .port_type = "sample",
+            };
+            GraphInputPortDescriptor concrete_port = logical_port;
+            concrete_port.concrete_member_ordinal = member_ordinal;
+            std::array ports {
+                logical_port,
+                concrete_port,
+            };
+
+            auto& graph = default_graph_locked();
+            auto const bindings = graph.graph_input_lane_controller.reconcile(graph.lane_graph, ports);
+            for (auto const& binding : bindings.sample_inputs) {
+                if (
+                    binding.port.logical_node_id == logical_node_id
+                    && binding.port.concrete_member_ordinal == member_ordinal
+                    && binding.port.port_ordinal == input_ordinal
+                ) {
+                    if (auto* input = graph.lane_graph
+                            .lane(binding.graph_input_lane)
+                            .node
+                            .try_as<GraphSampleInputLaneNode>()
+                    ) {
+                        input->default_value = default_value;
+                    }
+                    return binding.graph_input_lane;
+                }
+            }
+            return LaneId {};
+        }
+
+        RealtimeSampleBlockLease pull_realtime_lane_sample_block(
+            LaneId lane,
+            size_t start_index,
+            size_t count
+        )
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            return default_graph_locked().lane_graph.pull_realtime_sample_block(lane, start_index, count);
+        }
+
+        bool contains_lane(LaneId lane)
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            return default_graph_locked().lane_graph.contains(lane);
+        }
+
+        std::vector<LaneOutputConnection> lane_outputs_for(LaneId lane)
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            auto const& outputs = default_graph_locked().lane_graph.outputs_for(lane);
+            return { outputs.begin(), outputs.end() };
+        }
+
+        void set_graph_input_sample_value(GraphInputPortDescriptor const& port, Sample value)
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            auto& graph = default_graph_locked();
+            graph.graph_input_lane_controller.set_sample_value(graph.lane_graph, port, value);
+        }
+
+        void restore_graph_input_sample_inheritance(GraphInputPortDescriptor const& port)
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            auto& graph = default_graph_locked();
+            graph.graph_input_lane_controller.restore_sample_inheritance(graph.lane_graph, port);
         }
 
         void register_live_input_value(
@@ -281,7 +366,7 @@ namespace iv {
             std::string_view logical_node_id,
             size_t member_ordinal,
             size_t input_ordinal
-        ) const
+        )
         {
             std::scoped_lock lock(_live_input_bindings_mutex);
             return _concrete_live_input_overrides.contains(
@@ -293,7 +378,7 @@ namespace iv {
             std::string_view logical_node_id,
             size_t input_ordinal,
             Sample fallback
-        ) const
+        )
         {
             std::scoped_lock lock(_live_input_bindings_mutex);
             return live_input_value_or_locked(logical_node_id, input_ordinal, fallback);
@@ -304,7 +389,7 @@ namespace iv {
             size_t member_ordinal,
             size_t input_ordinal,
             Sample fallback
-        ) const
+        )
         {
             std::scoped_lock lock(_live_input_bindings_mutex);
             return live_input_value_or_locked(logical_node_id, member_ordinal, input_ordinal, fallback);
@@ -315,7 +400,7 @@ namespace iv {
             std::string_view logical_node_id,
             size_t input_ordinal,
             Sample fallback
-        ) const
+        )
         {
             auto it = _live_input_values.find(std::string(logical_node_id));
             if (it == _live_input_values.end() || it->second.size() <= input_ordinal) {
@@ -329,7 +414,7 @@ namespace iv {
             size_t member_ordinal,
             size_t input_ordinal,
             Sample fallback
-        ) const
+        )
         {
             auto const override = concrete_override_key(logical_node_id, member_ordinal, input_ordinal);
             auto const key = concrete_key(logical_node_id, member_ordinal);

@@ -5,7 +5,6 @@ class LaneViewProvider {
         this.panel = null;
         this.lanes = [];
         this.connections = [];
-        this.executionEpoch = 0;
         this.closeHandler = null;
         this.viewportHandler = null;
         this.startIndex = 0;
@@ -14,7 +13,6 @@ class LaneViewProvider {
     }
 
     setLanes(result) {
-        this.executionEpoch = Number(result?.executionEpoch || 0);
         this.startIndex = Number(result?.startIndex || 0);
         this.visibleLaneCount = Number(result?.visibleLaneCount ?? this.visibleLaneCount ?? 24);
         this.totalLaneCount = Number(result?.totalLaneCount || 0);
@@ -24,7 +22,6 @@ class LaneViewProvider {
     }
 
     clear() {
-        this.executionEpoch = 0;
         this.startIndex = 0;
         this.totalLaneCount = 0;
         this.lanes = [];
@@ -61,21 +58,20 @@ class LaneViewProvider {
 
     serializeLanes() {
         return this.lanes.map((lane) => {
-            const target = lane.target || {};
-            const member = target.memberOrdinal == null ? "logical" : `member ${target.memberOrdinal}`;
+            const graphInputPort = lane.graphInputPort || {};
+            const member = graphInputPort.memberOrdinal == null ? "logical" : `member ${graphInputPort.memberOrdinal}`;
             return {
                 laneId: Number(lane.laneId || 0),
                 domain: lane.domain || "realtime",
                 laneType: lane.laneType || "graphInput",
                 status: lane.status || "active",
-                lastTouched: Number(lane.lastTouched || 0),
-                title: target.portName || `[${target.portOrdinal ?? "?"}]`,
-                description: `${target.portKind || "port"} • ${member}`,
-                nodeId: target.logicalNodeId || "",
-                portKind: target.portKind || "",
-                portOrdinal: Number(target.portOrdinal || 0),
-                portType: target.portType || "",
-                memberOrdinal: target.memberOrdinal,
+                title: graphInputPort.portName || `[${graphInputPort.portOrdinal ?? "?"}]`,
+                description: `${graphInputPort.portKind || "port"} • ${member}`,
+                nodeId: graphInputPort.logicalNodeId || "",
+                portKind: graphInputPort.portKind || "",
+                portOrdinal: Number(graphInputPort.portOrdinal || 0),
+                portType: graphInputPort.portType || "",
+                memberOrdinal: graphInputPort.memberOrdinal,
             };
         });
     }
@@ -168,7 +164,6 @@ class LaneViewProvider {
         }
         this.panel.webview.postMessage({
             type: "setState",
-            executionEpoch: this.executionEpoch,
             startIndex: this.startIndex,
             visibleLaneCount: this.visibleLaneCount,
             totalLaneCount: this.totalLaneCount,
@@ -327,7 +322,6 @@ class LaneViewProvider {
         const laneHeight = 24;
         const restoredState = vscode.getState() || {};
         const state = {
-            executionEpoch: 0,
             startIndex: Number(restoredState.startIndex || 0),
             visibleLaneCount: Number(restoredState.visibleLaneCount || 0),
             totalLaneCount: 0,
@@ -357,9 +351,7 @@ class LaneViewProvider {
                 laneWindow.style.transform = "translateY(" + String(state.startIndex * laneHeight) + "px)";
             }
             if (summary) {
-                summary.textContent = state.executionEpoch
-                    ? String(state.startIndex) + "-" + String(state.startIndex + state.lanes.length) + " / " + String(state.totalLaneCount) + " lanes • " + String(state.connections.length) + " links • epoch " + String(state.executionEpoch)
-                    : "lanes";
+                summary.textContent = String(state.startIndex) + "-" + String(state.startIndex + state.lanes.length) + " / " + String(state.totalLaneCount) + " lanes • " + String(state.connections.length) + " links";
             }
             vscode.setState({
                 startIndex: state.startIndex,
@@ -538,9 +530,7 @@ class LaneViewProvider {
 
         function render() {
             ensureLayout();
-            summary.textContent = state.executionEpoch
-                ? String(state.startIndex) + "-" + String(state.startIndex + state.lanes.length) + " / " + String(state.totalLaneCount) + " lanes • " + String(state.connections.length) + " links • epoch " + String(state.executionEpoch)
-                : "lanes";
+            summary.textContent = String(state.startIndex) + "-" + String(state.startIndex + state.lanes.length) + " / " + String(state.totalLaneCount) + " lanes • " + String(state.connections.length) + " links";
             renderLanes();
             renderConnections();
 
@@ -561,7 +551,6 @@ class LaneViewProvider {
         window.addEventListener("message", (event) => {
             const message = event.data || {};
             if (message.type === "setState") {
-                state.executionEpoch = Number(message.executionEpoch || 0);
                 state.startIndex = Number(message.startIndex || 0);
                 state.visibleLaneCount = Number(message.visibleLaneCount || 0);
                 state.totalLaneCount = Number(message.totalLaneCount || 0);

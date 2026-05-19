@@ -1,5 +1,6 @@
 #include "module_test_utils.h"
 
+#include "runtime/server_options.h"
 #include "runtime/socket_rpc_server.h"
 
 #include <gtest/gtest.h>
@@ -64,6 +65,21 @@ namespace {
         return []() -> std::optional<iv::LogicalAudioDevice> {
             return iv::LogicalAudioDevice(BackgroundTestAudioDevice {});
         };
+    }
+
+    iv::RuntimeProjectService make_socket_rpc_test_service(
+        iv::SocketRpcServer& server,
+        std::filesystem::path const& workspace
+    )
+    {
+        return iv::RuntimeProjectService(
+            socket_server_timeline(),
+            server,
+            workspace,
+            iv::test::repo_root(),
+            {},
+            make_audio_device_factory()
+        );
     }
 
     std::filesystem::path make_workspace(
@@ -240,7 +256,8 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
 {
     auto const workspace = make_project_workspace();
 
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(workspace, iv::default_server_socket_path(workspace));
+    auto service = make_socket_rpc_test_service(server, workspace);
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 
@@ -263,7 +280,6 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
 
     auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
     EXPECT_TRUE(initialize_response.contains(R"("jsonrpc":"2.0")"));
-    EXPECT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
     EXPECT_TRUE(initialize_response.contains(R"("moduleRoot":")"));
     EXPECT_TRUE(initialize_response.contains(R"("getLogicalNode":true)"));
     EXPECT_TRUE(initialize_response.contains(R"("getLogicalNodes":true)"));
@@ -278,7 +294,6 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
     auto const query_response = read_response_for_id(fd, &response_buffer, 2);
     ASSERT_FALSE(query_response.empty());
     EXPECT_TRUE(query_response.contains(R"("jsonrpc":"2.0")"));
-    EXPECT_TRUE(query_response.contains(R"("executionEpoch":1)"));
     EXPECT_TRUE(query_response.contains(R"("nodes":[)"));
     EXPECT_TRUE(query_response.contains(R"("memberCount":)"));
 
@@ -297,7 +312,7 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
     auto const logical_node_id = node_id_match[1].str();
 
     std::string const get_logical_node_request =
-        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
+        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNode","params":{"nodeId":")" +
         logical_node_id +
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, get_logical_node_request.data(), get_logical_node_request.size()), static_cast<ssize_t>(get_logical_node_request.size()));
@@ -307,7 +322,7 @@ TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
     EXPECT_TRUE(get_logical_node_response.contains(R"("memberCount":)"));
 
     std::string const get_logical_nodes_request =
-        R"({"jsonrpc":"2.0","id":4,"method":"graph.getLogicalNodes","params":{"executionEpoch":1,"nodeIds":[")" +
+        R"({"jsonrpc":"2.0","id":4,"method":"graph.getLogicalNodes","params":{"nodeIds":[")" +
         logical_node_id +
         R"("]}})" "\n";
     ASSERT_EQ(::write(fd, get_logical_nodes_request.data(), get_logical_nodes_request.size()), static_cast<ssize_t>(get_logical_nodes_request.size()));
@@ -330,7 +345,8 @@ TEST(SocketRpcServer, ShutsDownWhenClientDisconnects)
 {
     auto const workspace = make_project_workspace();
 
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(workspace, iv::default_server_socket_path(workspace));
+    auto service = make_socket_rpc_test_service(server, workspace);
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 
@@ -362,7 +378,8 @@ TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
 {
     auto const workspace = make_project_workspace();
 
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(workspace, iv::default_server_socket_path(workspace));
+    auto service = make_socket_rpc_test_service(server, workspace);
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 
@@ -383,7 +400,6 @@ TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
     auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
-    ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
 
     auto module_text = std::filesystem::exists(workspace / "module.cpp")
         ? std::ifstream(workspace / "module.cpp", std::ios::binary)
@@ -428,7 +444,8 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
 {
     auto const workspace = make_polyphonic_project_workspace();
 
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(workspace, iv::default_server_socket_path(workspace));
+    auto service = make_socket_rpc_test_service(server, workspace);
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 
@@ -449,7 +466,6 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
     auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
-    ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
 
     std::string const query_request =
         R"({"jsonrpc":"2.0","id":2,"method":"graph.queryBySpans","params":{"filePath":")" +
@@ -474,7 +490,7 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     auto const logical_node_id = logical_id_match[1].str();
 
     std::string const get_logical_node_request =
-        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
+        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNode","params":{"nodeId":")" +
         logical_node_id +
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, get_logical_node_request.data(), get_logical_node_request.size()), static_cast<ssize_t>(get_logical_node_request.size()));
@@ -492,19 +508,19 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     EXPECT_TRUE(logical_node_response.contains(R"("hasConcreteOverride":false)")) << logical_node_response;
 
     std::string const open_lanes_request =
-        R"({"jsonrpc":"2.0","id":4,"method":"timeline.openLaneView","params":{"viewId":"test-lanes","executionEpoch":1,"filter":{"kind":"graphInputs"},"startIndex":0,"visibleLaneCount":1000}})" "\n";
+        R"({"jsonrpc":"2.0","id":4,"method":"timeline.openLaneView","params":{"viewId":"test-lanes","filter":{"kind":"graphInputs"},"startIndex":0,"visibleLaneCount":1000}})" "\n";
     ASSERT_EQ(::write(fd, open_lanes_request.data(), open_lanes_request.size()), static_cast<ssize_t>(open_lanes_request.size()));
     auto const open_lanes_response = read_response_for_id(fd, &response_buffer, 4);
     EXPECT_TRUE(open_lanes_response.contains(R"("viewId":"test-lanes")")) << open_lanes_response;
     EXPECT_TRUE(open_lanes_response.contains(R"("startIndex":0)")) << open_lanes_response;
     EXPECT_TRUE(open_lanes_response.contains(R"("visibleLaneCount":)")) << open_lanes_response;
     EXPECT_TRUE(open_lanes_response.contains(R"("totalLaneCount":)")) << open_lanes_response;
-    EXPECT_TRUE(open_lanes_response.contains(R"("laneType":"graphInput")")) << open_lanes_response;
-    EXPECT_TRUE(open_lanes_response.contains(R"("status":"active")")) << open_lanes_response;
-    EXPECT_TRUE(open_lanes_response.contains(R"("lastTouched":0)")) << open_lanes_response;
+    EXPECT_FALSE(open_lanes_response.contains(R"("laneType":)")) << open_lanes_response;
+    EXPECT_FALSE(open_lanes_response.contains(R"("status":)")) << open_lanes_response;
+    EXPECT_FALSE(open_lanes_response.contains(R"("lastTouched")")) << open_lanes_response;
 
     std::string const set_member_request =
-        R"({"jsonrpc":"2.0","id":5,"method":"graph.setSampleInputValue","params":{"executionEpoch":1,"nodeId":")" +
+        R"({"jsonrpc":"2.0","id":5,"method":"graph.setSampleInputValue","params":{"nodeId":")" +
         logical_node_id +
         R"(","memberOrdinal":1,"inputOrdinal":1,"value":0.75}})" "\n";
     ASSERT_EQ(::write(fd, set_member_request.data(), set_member_request.size()), static_cast<ssize_t>(set_member_request.size()));
@@ -513,11 +529,11 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     auto const set_member_lane_update = read_line_until(fd, &response_buffer, 5s);
     EXPECT_TRUE(set_member_lane_update.contains(R"("method":"timeline.laneViewUpdated")")) << set_member_lane_update;
     EXPECT_TRUE(set_member_lane_update.contains(R"("viewId":"test-lanes")")) << set_member_lane_update;
-    EXPECT_TRUE(set_member_lane_update.contains(R"("status":"overridden")")) << set_member_lane_update;
-    EXPECT_TRUE(set_member_lane_update.contains(R"("lastTouched":1)")) << set_member_lane_update;
+    EXPECT_FALSE(set_member_lane_update.contains(R"("status":)")) << set_member_lane_update;
+    EXPECT_FALSE(set_member_lane_update.contains(R"("lastTouched")")) << set_member_lane_update;
 
     std::string const member_override_request =
-        R"({"jsonrpc":"2.0","id":6,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
+        R"({"jsonrpc":"2.0","id":6,"method":"graph.getLogicalNode","params":{"nodeId":")" +
         logical_node_id +
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, member_override_request.data(), member_override_request.size()), static_cast<ssize_t>(member_override_request.size()));
@@ -525,15 +541,15 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     EXPECT_TRUE(member_override_response.contains(R"("hasConcreteOverride":true)")) << member_override_response;
 
     std::string const overridden_lanes_request =
-        R"({"jsonrpc":"2.0","id":7,"method":"timeline.debugQueryLanes","params":{"executionEpoch":1,"filter":{"kind":"graphInputs"}}})" "\n";
+        R"({"jsonrpc":"2.0","id":7,"method":"timeline.updateLaneView","params":{"viewId":"test-lanes","filter":{"kind":"graphInputs"},"startIndex":0,"visibleLaneCount":1000}})" "\n";
     ASSERT_EQ(::write(fd, overridden_lanes_request.data(), overridden_lanes_request.size()), static_cast<ssize_t>(overridden_lanes_request.size()));
     auto const overridden_lanes_response = read_response_for_id(fd, &response_buffer, 7);
     EXPECT_TRUE(overridden_lanes_response.contains(R"("connections":[)")) << overridden_lanes_response;
-    EXPECT_TRUE(overridden_lanes_response.contains(R"("kind":"logicalToConcrete")")) << overridden_lanes_response;
-    EXPECT_TRUE(overridden_lanes_response.contains(R"("state":"overridden")")) << overridden_lanes_response;
+    EXPECT_FALSE(overridden_lanes_response.contains(R"("kind":)")) << overridden_lanes_response;
+    EXPECT_FALSE(overridden_lanes_response.contains(R"("state":)")) << overridden_lanes_response;
 
     std::string const clear_member_request =
-        R"({"jsonrpc":"2.0","id":8,"method":"graph.clearSampleInputValueOverride","params":{"executionEpoch":1,"nodeId":")" +
+        R"({"jsonrpc":"2.0","id":8,"method":"graph.clearSampleInputValueOverride","params":{"nodeId":")" +
         logical_node_id +
         R"(","memberOrdinal":1,"inputOrdinal":1}})" "\n";
     ASSERT_EQ(::write(fd, clear_member_request.data(), clear_member_request.size()), static_cast<ssize_t>(clear_member_request.size()));
@@ -542,11 +558,11 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     auto const clear_member_lane_update = read_line_until(fd, &response_buffer, 5s);
     EXPECT_TRUE(clear_member_lane_update.contains(R"("method":"timeline.laneViewUpdated")")) << clear_member_lane_update;
     EXPECT_TRUE(clear_member_lane_update.contains(R"("viewId":"test-lanes")")) << clear_member_lane_update;
-    EXPECT_TRUE(clear_member_lane_update.contains(R"("status":"active")")) << clear_member_lane_update;
-    EXPECT_TRUE(clear_member_lane_update.contains(R"("lastTouched":2)")) << clear_member_lane_update;
+    EXPECT_FALSE(clear_member_lane_update.contains(R"("status":)")) << clear_member_lane_update;
+    EXPECT_FALSE(clear_member_lane_update.contains(R"("lastTouched")")) << clear_member_lane_update;
 
     std::string const lanes_request =
-        R"({"jsonrpc":"2.0","id":9,"method":"timeline.debugQueryLanes","params":{"executionEpoch":1,"filter":{"kind":"graphInputs"}}})" "\n";
+        R"({"jsonrpc":"2.0","id":9,"method":"timeline.updateLaneView","params":{"viewId":"test-lanes","filter":{"kind":"graphInputs"},"startIndex":0,"visibleLaneCount":1000}})" "\n";
     ASSERT_EQ(::write(fd, lanes_request.data(), lanes_request.size()), static_cast<ssize_t>(lanes_request.size()));
     auto const lanes_response = read_response_for_id(fd, &response_buffer, 9);
     EXPECT_TRUE(lanes_response.contains(R"("lanes":[)")) << lanes_response;
@@ -557,8 +573,8 @@ TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
     EXPECT_TRUE(lanes_response.contains(R"("portName":"frequency")")) << lanes_response;
     EXPECT_TRUE(lanes_response.contains(R"("memberOrdinal":1)")) << lanes_response;
     EXPECT_TRUE(lanes_response.contains(R"("connections":[)")) << lanes_response;
-    EXPECT_TRUE(lanes_response.contains(R"("kind":"logicalToConcrete")")) << lanes_response;
-    EXPECT_TRUE(lanes_response.contains(R"("state":"active")")) << lanes_response;
+    EXPECT_FALSE(lanes_response.contains(R"("kind":)")) << lanes_response;
+    EXPECT_FALSE(lanes_response.contains(R"("state":)")) << lanes_response;
 
     std::string const shutdown_request =
         R"({"jsonrpc":"2.0","id":10,"method":"server.shutdown","params":{}})" "\n";
@@ -574,7 +590,8 @@ TEST(SocketRpcServer, QueryBySpansKeepsAnnotatedLogicalNodeIdStableOverUnixSocke
 {
     auto const workspace = make_annotated_symbol_project_workspace();
 
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
+    iv::SocketRpcServer server(workspace, iv::default_server_socket_path(workspace));
+    auto service = make_socket_rpc_test_service(server, workspace);
     server.start();
     ASSERT_TRUE(server.wait_until_ready(5s));
 
@@ -595,7 +612,6 @@ TEST(SocketRpcServer, QueryBySpansKeepsAnnotatedLogicalNodeIdStableOverUnixSocke
         R"("}})" "\n";
     ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
     auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
-    ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
 
     std::string const query_request =
         R"({"jsonrpc":"2.0","id":2,"method":"graph.queryBySpans","params":{"filePath":")" +
@@ -620,19 +636,7 @@ TEST(SocketRpcServer, QueryBySpansKeepsAnnotatedLogicalNodeIdStableOverUnixSocke
     };
     write_text(workspace / "module.cpp", current + "\n");
 
-    auto const deadline = std::chrono::steady_clock::now() + socket_rpc_rebuild_timeout;
-    bool saw_rebuild_finished = false;
-    while (std::chrono::steady_clock::now() < deadline && !saw_rebuild_finished) {
-        auto const line = read_line_until(fd, &response_buffer, 500ms);
-        if (line.empty()) {
-            continue;
-        }
-        if (line.contains(R"("method":"server.status")") && line.contains(R"("code":"rebuildFinished")")) {
-            saw_rebuild_finished = true;
-        }
-    }
-
-    ASSERT_TRUE(saw_rebuild_finished);
+    std::this_thread::sleep_for(1s);
 
     std::string const reload_query_request =
         R"({"jsonrpc":"2.0","id":4,"method":"graph.queryBySpans","params":{"filePath":")" +

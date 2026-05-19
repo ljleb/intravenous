@@ -39,6 +39,7 @@ function(add_iv_gtest target source)
     target_link_libraries(${target} PRIVATE
         GTest::gtest_main
         intravenous_module_runtime
+        intravenous_json_rpc_server
         intravenous_tooling_runtime
     )
 
@@ -54,6 +55,7 @@ add_iv_gtest(intravenous_module_watcher_tests module_watcher_gtest.cpp)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)
 add_iv_gtest(intravenous_timeline_lanes_tests timeline_lanes_gtest.cpp)
+add_iv_gtest(intravenous_local_gamma_time_aligner_tests local_gamma_time_aligner_gtest.cpp)
 add_iv_gtest(intravenous_runtime_project_tests runtime_project_gtest.cpp)
 add_iv_gtest(intravenous_socket_rpc_server_tests socket_rpc_server_gtest.cpp)
 add_executable(intravenous_node_layout_storage

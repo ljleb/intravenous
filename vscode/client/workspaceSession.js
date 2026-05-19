@@ -16,7 +16,6 @@ class WorkspaceSession {
         this.highlighter = highlighter;
         this.process = null;
         this.client = null;
-        this.executionEpoch = 0;
         this.lastQueryError = "";
         this.refreshInFlight = null;
         this.lastQuery = null;
@@ -163,7 +162,6 @@ class WorkspaceSession {
             const result = await this.client.request("server.initialize", {
                 workspaceRoot: this.workspaceRoot(),
             });
-            this.executionEpoch = result.executionEpoch;
             this.lastTerminalStatusMessage = "";
             return result;
         } catch (error) {
@@ -179,7 +177,6 @@ class WorkspaceSession {
             return;
         }
         const params = {
-            executionEpoch: this.executionEpoch,
             nodeId,
             inputOrdinal,
             value,
@@ -196,7 +193,6 @@ class WorkspaceSession {
             return;
         }
         await this.client.request("graph.clearSampleInputValueOverride", {
-            executionEpoch: this.executionEpoch,
             nodeId,
             memberOrdinal,
             inputOrdinal,
@@ -208,7 +204,6 @@ class WorkspaceSession {
         const viewport = this.laneProvider.viewportState();
         return {
             viewId: this.laneViewId,
-            executionEpoch: this.executionEpoch,
             filter: { kind: "graphInputs" },
             startIndex: viewport.startIndex,
             visibleLaneCount: viewport.visibleLaneCount,
@@ -216,7 +211,7 @@ class WorkspaceSession {
     }
 
     async openLaneView() {
-        if (!(await this.ensureReady()) || !this.executionEpoch) {
+        if (!(await this.ensureReady())) {
             this.laneProvider.clear();
             return;
         }
@@ -227,7 +222,7 @@ class WorkspaceSession {
     }
 
     async updateLaneViewVisibleLanes() {
-        if (!this.laneViewOpen || !(await this.ensureReady()) || !this.executionEpoch) {
+        if (!this.laneViewOpen || !(await this.ensureReady())) {
             return;
         }
         const result = await this.client.request("timeline.updateLaneView", this.laneViewRequestParams());
@@ -347,7 +342,6 @@ class WorkspaceSession {
         const activeRegionsResult = await this.client.request("graph.queryActiveRegions", {
             filePath: editor.document.uri.fsPath,
         });
-        this.executionEpoch = result.executionEpoch || this.executionEpoch;
         this.lastQueryError = "";
         const nodes = this.sortNodesByRelevance(result.nodes || [], this.lastQuery);
         this.provider.setNodes(nodes);
@@ -439,9 +433,6 @@ class WorkspaceSession {
         if (params.moduleRoot) {
             parts.push(params.moduleRoot);
         }
-        if (params.executionEpoch) {
-            parts.push(`epoch=${params.executionEpoch}`);
-        }
         if (params.message) {
             parts.push(params.message);
         } else if (params.code) {
@@ -466,9 +457,6 @@ class WorkspaceSession {
         if (method === "timeline.laneViewUpdated") {
             if (params.viewId === this.laneViewId) {
                 this.laneProvider.setLanes(params);
-                this.updateLaneViewVisibleLanes().catch((error) => {
-                    this.outputChannel.appendLine(`Intravenous lane view update failed: ${error.message}`);
-                });
             }
             return;
         }
@@ -489,9 +477,6 @@ class WorkspaceSession {
         }
 
         if (params.code === "rebuildFinished") {
-            if (typeof params.executionEpoch === "number") {
-                this.executionEpoch = params.executionEpoch;
-            }
             if (Array.isArray(params.deletedNodeIds)) {
                 this.provider.pruneDeletedNodeState(params.deletedNodeIds);
             }

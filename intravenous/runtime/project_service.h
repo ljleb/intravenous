@@ -1,219 +1,224 @@
 #pragma once
 
-#include "graph/build_types.h"
 #include "devices/audio_device.h"
+#include "graph/build_types.h"
+#include "module/dependency.h"
+#include "runtime/config.h"
 #include "runtime/lane_graph.h"
+#include "runtime/lane_view_service.h"
 #include "runtime/timeline.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
-#include <memory>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string>
+#include <thread>
+#include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace iv {
-    struct SourcePosition {
-        uint32_t line = 1;
-        uint32_t column = 1;
+class SocketRpcServer;
 
-        bool operator==(SourcePosition const&) const = default;
-    };
+struct SourcePosition {
+  uint32_t line = 1;
+  uint32_t column = 1;
 
-    struct SourceRange {
-        SourcePosition start {};
-        SourcePosition end {};
+  bool operator==(SourcePosition const &) const = default;
+};
 
-        bool operator==(SourceRange const&) const = default;
-    };
+struct SourceRange {
+  SourcePosition start{};
+  SourcePosition end{};
 
-    enum class SourceRangeMatchMode {
-        intersection,
-        union_,
-    };
+  bool operator==(SourceRange const &) const = default;
+};
 
-    struct LiveSourceSpan {
-        std::string file_path {};
-        SourceRange range {};
+struct SourceTextLineMap {
+  std::string text;
+  std::vector<size_t> line_offsets;
 
-        bool operator==(LiveSourceSpan const&) const = default;
-    };
+  static SourceTextLineMap from_file(std::filesystem::path const &path);
+  size_t offset_for(SourcePosition position) const;
+  SourcePosition position_for(size_t offset) const;
+};
 
-    struct LogicalNodeInfo {
-        struct Member {
-            size_t ordinal = 0;
-            std::string backing_node_id {};
-            std::string kind {};
-            std::string type_identity {};
-            std::vector<LogicalPortInfo> sample_inputs {};
-            std::vector<LogicalPortInfo> sample_outputs {};
-            std::vector<LogicalPortInfo> event_inputs {};
-            std::vector<LogicalPortInfo> event_outputs {};
-        };
+enum class SourceRangeMatchMode {
+  intersection,
+  union_,
+};
 
-        std::string id {};
-        std::string kind {};
-        std::string source_identity {};
-        std::string type_identity {};
-        std::vector<LiveSourceSpan> source_spans {};
-        std::vector<LogicalPortInfo> sample_inputs {};
-        std::vector<LogicalPortInfo> sample_outputs {};
-        std::vector<LogicalPortInfo> event_inputs {};
-        std::vector<LogicalPortInfo> event_outputs {};
-        size_t member_count = 0;
-        std::vector<Member> members {};
-    };
+struct LiveSourceSpan {
+  std::string file_path{};
+  SourceRange range{};
 
-    struct RuntimeProjectInitializeResult {
-        std::filesystem::path module_root {};
-        std::string module_id {};
-        uint64_t execution_epoch = 0;
-    };
+  bool operator==(LiveSourceSpan const &) const = default;
+};
 
-    struct RuntimeProjectQueryResult {
-        uint64_t execution_epoch = 0;
-        std::vector<LogicalNodeInfo> nodes {};
-    };
+struct LogicalNodeMemberInfo {
+  size_t ordinal = 0;
+  std::string backing_node_id{};
+  std::string kind{};
+  std::string type_identity{};
+  std::vector<LogicalPortInfo> sample_inputs{};
+  std::vector<LogicalPortInfo> sample_outputs{};
+  std::vector<LogicalPortInfo> event_inputs{};
+  std::vector<LogicalPortInfo> event_outputs{};
+};
 
-    struct RuntimeProjectRegionQueryResult {
-        uint64_t execution_epoch = 0;
-        std::vector<LiveSourceSpan> source_spans {};
-    };
+struct LogicalNodeInfo {
+  std::string id{};
+  std::string kind{};
+  std::string source_identity{};
+  std::string type_identity{};
+  std::vector<LiveSourceSpan> source_spans{};
+  std::vector<LogicalPortInfo> sample_inputs{};
+  std::vector<LogicalPortInfo> sample_outputs{};
+  std::vector<LogicalPortInfo> event_inputs{};
+  std::vector<LogicalPortInfo> event_outputs{};
+  size_t member_count = 0;
+  std::vector<LogicalNodeMemberInfo> members{};
+};
 
-    enum class TimelineLaneConnectionKind {
-        logical_to_concrete,
-    };
+struct RuntimeProjectInitializeResult {
+  std::filesystem::path module_root{};
+  std::string module_id{};
+};
 
-    enum class TimelineLaneConnectionState {
-        active,
-        overridden,
-    };
+struct RuntimeProjectQueryResult {
+  std::vector<LogicalNodeInfo> nodes{};
+};
 
-    enum class TimelineLaneStatus {
-        active,
-        overridden,
-        stale,
-    };
+struct RuntimeProjectRegionQueryResult {
+  std::vector<LiveSourceSpan> source_spans{};
+};
 
-    struct TimelineLaneInfo {
-        uint64_t lane_id = 0;
-        LaneDomain domain = LaneDomain::realtime;
-        std::string lane_type = "graphInput";
-        TimelineLaneStatus status = TimelineLaneStatus::active;
-        uint64_t last_touched = 0;
-        GraphInputLaneTarget graph_input_target {};
-    };
+struct RuntimeProjectMessageNotification {
+  std::string level = "info";
+  std::string message{};
+  std::filesystem::path module_root{};
+};
 
-    struct TimelineLaneConnectionInfo {
-        uint64_t source_lane_id = 0;
-        uint64_t target_lane_id = 0;
-        TimelineLaneConnectionKind kind = TimelineLaneConnectionKind::logical_to_concrete;
-        TimelineLaneConnectionState state = TimelineLaneConnectionState::active;
-        PortKind port_kind = PortKind::sample;
-        size_t port_ordinal = 0;
-    };
+struct RuntimeProjectStatusNotification {
+  std::string level = "info";
+  std::string code{};
+  std::string message{};
+  std::filesystem::path module_root{};
+  std::vector<std::string> created_node_ids{};
+  std::vector<std::string> deleted_node_ids{};
+};
 
-    struct TimelineLaneQueryFilter {
-        std::string kind {};
-    };
+struct RuntimeProjectLaneViewNotification {
+  LaneViewResult lane_view{};
+};
 
-    struct TimelineLaneQuery {
-        uint64_t execution_epoch = 0;
-        TimelineLaneQueryFilter filter {};
-    };
+using RuntimeProjectNotification = std::variant<
+    RuntimeProjectMessageNotification,
+    RuntimeProjectStatusNotification,
+    RuntimeProjectLaneViewNotification>;
 
-    struct TimelineLaneQueryResult {
-        uint64_t execution_epoch = 0;
-        size_t start_index = 0;
-        size_t visible_lane_count = 0;
-        size_t total_lane_count = 0;
-        std::vector<TimelineLaneInfo> lanes {};
-        std::vector<TimelineLaneConnectionInfo> connections {};
-    };
+using AudioDeviceFactory = std::function<std::optional<LogicalAudioDevice>()>;
 
-    struct TimelineLaneViewRequest {
-        std::string view_id {};
-        TimelineLaneQuery query {};
-        size_t start_index = 0;
-        size_t visible_lane_count = 0;
-    };
+struct LoadedGraphIntrospectionIndex {
+  std::filesystem::path module_root;
+  std::string module_id;
+  std::vector<IntrospectionLogicalNode> logical_nodes;
+  std::unordered_map<std::string, size_t> logical_node_index_by_id;
+};
 
-    struct TimelineLaneViewResult {
-        std::string view_id {};
-        TimelineLaneQueryResult lanes {};
-    };
+class NodeExecutor;
 
-    enum class RuntimeProjectNotificationKind {
-        message,
-        status,
-    };
+class RuntimeProjectService {
+  Timeline &timeline;
+  SocketRpcServer *server = nullptr;
+  std::filesystem::path workspace_root;
+  std::filesystem::path discovery_start;
+  std::vector<std::filesystem::path> extra_search_roots;
+  AudioDeviceFactory audio_device_factory;
 
-    struct RuntimeProjectNotification {
-        RuntimeProjectNotificationKind kind = RuntimeProjectNotificationKind::message;
-        std::string level = "info";
-        std::string code {};
-        std::string message {};
-        std::filesystem::path module_root {};
-        uint64_t execution_epoch = 0;
-        std::vector<std::string> created_node_ids {};
-        std::vector<std::string> deleted_node_ids {};
-    };
+  mutable std::mutex mutex;
+  mutable std::unordered_map<std::string, SourceTextLineMap> source_text_cache;
+  std::condition_variable initialized_cv;
 
-    using AudioDeviceFactory = std::function<std::optional<LogicalAudioDevice>()>;
-    using RuntimeProjectNotificationSink = std::function<void(RuntimeProjectNotification const&)>;
+  std::optional<RuntimeProjectConfig> config;
+  std::optional<LoadedGraphIntrospectionIndex> graph_index;
+  LaneViewService lane_views;
+  std::exception_ptr pending_exception;
+  bool initialized = false;
+  bool shutdown_requested = false;
 
-    class RuntimeProjectService {
-        class Impl;
-        std::unique_ptr<Impl> _impl;
+  std::optional<std::jthread> runtime_thread;
+  NodeExecutor *executor_state = nullptr;
 
-    public:
-        explicit RuntimeProjectService(
-            Timeline& timeline,
-            std::filesystem::path workspace_root,
-            std::filesystem::path discovery_start,
-            std::vector<std::filesystem::path> extra_search_roots = {},
-            AudioDeviceFactory audio_device_factory = {},
-            RuntimeProjectNotificationSink notification_sink = {}
-        );
-        ~RuntimeProjectService();
-        RuntimeProjectService(RuntimeProjectService&&) noexcept;
-        RuntimeProjectService& operator=(RuntimeProjectService&&) noexcept;
+  void emit_notification(RuntimeProjectNotification notification);
+  void emit_message(std::string level, std::string message);
+  void emit_status(std::string code, std::string level, std::string message,
+                   std::filesystem::path module_root = {},
+                   std::vector<std::string> created_node_ids = {},
+                   std::vector<std::string> deleted_node_ids = {});
+  void rethrow_if_failed() const;
+  SourceTextLineMap const &
+  source_text_for(std::string const &normalized_path) const;
+  void invalidate_source_text(std::string const &normalized_path);
+  void invalidate_source_texts(std::span<ModuleDependency const> dependencies);
+  std::pair<uint32_t, uint32_t>
+  byte_range_for(std::string const &normalized_path,
+                 SourceRange const &range) const;
+  LiveSourceSpan to_live_span(SourceSpan const &span) const;
+  LogicalNodeInfo to_logical_node(IntrospectionLogicalNode const &node) const;
+  LaneQueryResult query_lanes_locked(
+      LaneQueryFilter const &filter,
+      std::optional<size_t> start_index = std::nullopt,
+      std::optional<size_t> visible_lane_count = std::nullopt) const;
+  void configure_lane_views();
+  void run_runtime();
 
-        RuntimeProjectService(RuntimeProjectService const&) = delete;
-        RuntimeProjectService& operator=(RuntimeProjectService const&) = delete;
+public:
+  explicit RuntimeProjectService(
+      Timeline &timeline, std::filesystem::path workspace_root,
+      std::filesystem::path discovery_start,
+      std::vector<std::filesystem::path> extra_search_roots = {},
+      AudioDeviceFactory audio_device_factory = {});
+  explicit RuntimeProjectService(
+      Timeline &timeline, SocketRpcServer &server,
+      std::filesystem::path workspace_root,
+      std::filesystem::path discovery_start,
+      std::vector<std::filesystem::path> extra_search_roots = {},
+      AudioDeviceFactory audio_device_factory = {});
+  ~RuntimeProjectService();
+  RuntimeProjectService(RuntimeProjectService &&) = delete;
+  RuntimeProjectService &operator=(RuntimeProjectService &&) = delete;
 
-        RuntimeProjectInitializeResult initialize();
-        RuntimeProjectQueryResult query_by_spans(
-            std::filesystem::path const& file_path,
-            std::vector<SourceRange> const& ranges,
-            SourceRangeMatchMode match_mode = SourceRangeMatchMode::intersection
-        ) const;
-        RuntimeProjectRegionQueryResult query_active_regions(
-            std::filesystem::path const& file_path
-        ) const;
-        LogicalNodeInfo get_logical_node(uint64_t execution_epoch, std::string const& node_id) const;
-        std::vector<LogicalNodeInfo> get_logical_nodes(uint64_t execution_epoch, std::vector<std::string> const& node_ids) const;
-        TimelineLaneQueryResult query_lanes(TimelineLaneQuery const& query) const;
-        TimelineLaneViewResult open_lane_view(TimelineLaneViewRequest request);
-        TimelineLaneViewResult update_lane_view(TimelineLaneViewRequest request);
-        void close_lane_view(std::string const& view_id);
-        std::vector<TimelineLaneViewResult> active_lane_view_updates() const;
-        void set_sample_input_value(
-            uint64_t execution_epoch,
-            std::string const& node_id,
-            size_t input_ordinal,
-            Sample value,
-            std::optional<size_t> member_ordinal = std::nullopt
-        );
-        void clear_sample_input_value_override(
-            uint64_t execution_epoch,
-            std::string const& node_id,
-            size_t member_ordinal,
-            size_t input_ordinal
-        );
-        void request_shutdown();
-    };
-}
+  RuntimeProjectService(RuntimeProjectService const &) = delete;
+  RuntimeProjectService &operator=(RuntimeProjectService const &) = delete;
+
+  RuntimeProjectInitializeResult initialize();
+  RuntimeProjectQueryResult
+  query_by_spans(std::filesystem::path const &file_path,
+                 std::vector<SourceRange> const &ranges,
+                 SourceRangeMatchMode match_mode =
+                     SourceRangeMatchMode::intersection) const;
+  RuntimeProjectRegionQueryResult
+  query_active_regions(std::filesystem::path const &file_path) const;
+  LogicalNodeInfo get_logical_node(std::string const &node_id) const;
+  std::vector<LogicalNodeInfo>
+  get_logical_nodes(std::vector<std::string> const &node_ids) const;
+  LaneViewResult open_lane_view(LaneViewRequest request);
+  LaneViewResult update_lane_view(LaneViewRequest request);
+  void close_lane_view(std::string const &view_id);
+  void set_sample_input_value(std::string const &node_id, size_t input_ordinal,
+                              Sample value,
+                              std::optional<size_t> member_ordinal = std::nullopt);
+  void clear_sample_input_value_override(std::string const &node_id,
+                                         size_t member_ordinal,
+                                         size_t input_ordinal);
+  void request_shutdown();
+};
+} // namespace iv

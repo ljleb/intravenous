@@ -160,6 +160,7 @@ target_compile_definitions(intravenous_module_runtime PUBLIC
 
 add_library(intravenous_tooling_runtime STATIC
     runtime/config.cpp
+    runtime/lane_view_service.cpp
     runtime/project_service.cpp
     runtime/socket_rpc_server.cpp
 )
@@ -183,6 +184,11 @@ target_link_libraries(intravenous_tooling_runtime PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+add_library(intravenous_json_rpc_server INTERFACE)
+target_link_libraries(intravenous_json_rpc_server INTERFACE
+    intravenous_tooling_runtime
+)
+
 add_executable(intravenous
     third_party/miniaudio/miniaudio.c
     main.cpp
@@ -201,6 +207,7 @@ target_include_directories(intravenous SYSTEM PRIVATE
 
 target_link_libraries(intravenous PRIVATE
     intravenous_module_runtime
+    intravenous_json_rpc_server
     intravenous_tooling_runtime
 )
 

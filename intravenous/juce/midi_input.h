@@ -11,6 +11,12 @@
 #define IV_ENABLE_JUCE_VST 0
 #endif
 
+#if IV_ENABLE_JUCE_VST
+#include "local_gamma_time_aligner.h"
+
+#include <optional>
+#endif
+
 namespace iv {
     namespace details {
         template<class...>
@@ -42,11 +48,20 @@ namespace iv {
     public:
         struct State {
             UniqueResource live_input { nullptr, +[](void*) {} };
+            LocalGammaTimeAligner time_aligner;
+            std::optional<size_t> expected_next_sample;
         };
 
         explicit JuceMidiInputSource(JuceMidiInputSpec spec) :
             _spec(std::make_shared<JuceMidiInputSpec const>(std::move(spec)))
         {}
+
+        auto inputs() const
+        {
+            return std::array {
+                InputConfig { .name = "dt", .default_value = 1.0 },
+            };
+        }
 
         auto event_outputs() const
         {
@@ -55,11 +70,7 @@ namespace iv {
             }};
         }
 
-        void initialize(InitializationContext<JuceMidiInputSource> const& ctx) const
-        {
-            auto& state = ctx.state();
-            state.live_input = ctx.resources.midi_input.create(*_spec);
-        }
+        void initialize(InitializationContext<JuceMidiInputSource> const& ctx) const;
 
         void tick_block(TickBlockContext<JuceMidiInputSource> const& ctx) const;
     };

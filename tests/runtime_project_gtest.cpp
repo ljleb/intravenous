@@ -193,7 +193,6 @@ TEST(RuntimeProjectService, EmptyIntravenousMarkerUsesWorkspaceRoot)
     auto const initialized = service.initialize();
 
     EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(workspace));
-    EXPECT_EQ(initialized.execution_epoch, 1u);
     EXPECT_FALSE(initialized.module_id.empty());
 }
 
@@ -209,7 +208,6 @@ TEST(RuntimeProjectService, RelativeRootModulePathResolvesAgainstWorkspaceRoot)
     auto const initialized = service.initialize();
 
     EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(module_root));
-    EXPECT_EQ(initialized.execution_epoch, 1u);
 }
 
 TEST(RuntimeProjectService, QueryBySpansReturnsMatchingLiveNodesWithPorts)
@@ -230,8 +228,6 @@ TEST(RuntimeProjectService, QueryBySpansReturnsMatchingLiveNodesWithPorts)
             },
         }
     );
-
-    ASSERT_EQ(result.execution_epoch, initialized.execution_epoch);
     ASSERT_FALSE(result.nodes.empty());
 
     auto const& node = result.nodes.front();
@@ -353,27 +349,19 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     auto const original_text = iv::test::read_text(module_cpp);
     iv::test::write_text(module_cpp, original_text + "\n");
 
-    iv::RuntimeProjectQueryResult reloaded;
-    auto const deadline = std::chrono::steady_clock::now() + 45s;
-    do {
-        std::this_thread::sleep_for(100ms);
-        reloaded = service.query_by_spans(
-            module_cpp,
-            {
-                iv::SourceRange {
-                    .start = { .line = 1, .column = 1 },
-                    .end = { .line = 25, .column = 1 },
-                },
-            }
-        );
-        if (reloaded.execution_epoch > initial.execution_epoch) {
-            break;
+    std::this_thread::sleep_for(1s);
+    auto const reloaded = service.query_by_spans(
+        module_cpp,
+        {
+            iv::SourceRange {
+                .start = { .line = 1, .column = 1 },
+                .end = { .line = 25, .column = 1 },
+            },
         }
-    } while (std::chrono::steady_clock::now() < deadline);
+    );
 
     iv::test::write_text(module_cpp, original_text);
 
-    ASSERT_GT(reloaded.execution_epoch, initial.execution_epoch);
     auto const reloaded_it = std::find_if(reloaded.nodes.begin(), reloaded.nodes.end(), [](auto const& node) {
         return node.kind.contains("ValueSource");
     });
@@ -681,9 +669,6 @@ TEST(RuntimeProjectService, QueryBySpansIntersectsMultipleSelections)
         sink_ids.begin(), sink_ids.end(),
         std::inserter(intersection, intersection.end())
     );
-
-    EXPECT_EQ(both.execution_epoch, dt_only.execution_epoch);
-    EXPECT_EQ(both.execution_epoch, sink_only.execution_epoch);
     EXPECT_EQ(both_ids, intersection);
 }
 
@@ -724,9 +709,6 @@ TEST(RuntimeProjectService, QueryBySpansUnionsMultipleSelections)
 
     std::set<std::string> expected_union = dt_ids;
     expected_union.insert(sink_ids.begin(), sink_ids.end());
-
-    EXPECT_EQ(both.execution_epoch, dt_only.execution_epoch);
-    EXPECT_EQ(both.execution_epoch, sink_only.execution_epoch);
     EXPECT_EQ(both_ids, expected_union);
 }
 
@@ -767,8 +749,6 @@ TEST(RuntimeProjectService, QueryActiveRegionsReturnsOnlySourceSpans)
     for (auto const& span : active_regions.source_spans) {
         actual_spans.insert(span_key(span));
     }
-
-    EXPECT_EQ(active_regions.execution_epoch, nodes.execution_epoch);
     EXPECT_EQ(actual_spans, expected_spans);
 }
 
@@ -835,7 +815,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     ASSERT_EQ(logical.sample_outputs.size(), 1u);
     EXPECT_EQ(logical.sample_outputs[0].name, "out");
 
-    auto const resolved = service.get_logical_node(result.execution_epoch, logical.id);
+    auto const resolved = service.get_logical_node(logical.id);
     EXPECT_EQ(resolved.kind, "iv::SawOscillator");
     EXPECT_EQ(resolved.member_count, 2u);
     ASSERT_EQ(resolved.sample_inputs.size(), 3u);
@@ -845,8 +825,8 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     ASSERT_EQ(resolved.sample_outputs.size(), 1u);
     EXPECT_EQ(resolved.sample_outputs[0].name, "out");
 
-    service.set_sample_input_value(result.execution_epoch, logical.id, 1, 0.25f);
-    auto const logical_override = service.get_logical_node(result.execution_epoch, logical.id);
+    service.set_sample_input_value(logical.id, 1, 0.25f);
+    auto const logical_override = service.get_logical_node(logical.id);
     ASSERT_EQ(logical_override.members.size(), 2u);
     EXPECT_FLOAT_EQ(static_cast<float>(logical_override.sample_inputs[1].current_value), 0.25f);
     EXPECT_FLOAT_EQ(static_cast<float>(logical_override.members[0].sample_inputs[1].current_value), 0.25f);
@@ -854,8 +834,8 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_FALSE(logical_override.members[0].sample_inputs[1].has_concrete_override);
     EXPECT_FALSE(logical_override.members[1].sample_inputs[1].has_concrete_override);
 
-    service.set_sample_input_value(result.execution_epoch, logical.id, 1, 0.75f, 1u);
-    auto const concrete_override = service.get_logical_node(result.execution_epoch, logical.id);
+    service.set_sample_input_value(logical.id, 1, 0.75f, 1u);
+    auto const concrete_override = service.get_logical_node(logical.id);
     ASSERT_EQ(concrete_override.members.size(), 2u);
     EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.sample_inputs[1].current_value), 0.25f);
     EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.members[0].sample_inputs[1].current_value), 0.25f);
@@ -863,8 +843,8 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_FALSE(concrete_override.members[0].sample_inputs[1].has_concrete_override);
     EXPECT_TRUE(concrete_override.members[1].sample_inputs[1].has_concrete_override);
 
-    service.clear_sample_input_value_override(result.execution_epoch, logical.id, 1u, 1);
-    auto const cleared_override = service.get_logical_node(result.execution_epoch, logical.id);
+    service.clear_sample_input_value_override(logical.id, 1u, 1);
+    auto const cleared_override = service.get_logical_node(logical.id);
     ASSERT_EQ(cleared_override.members.size(), 2u);
     EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.sample_inputs[1].current_value), 0.25f);
     EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.members[0].sample_inputs[1].current_value), 0.25f);
@@ -1007,7 +987,7 @@ TEST(RuntimeProjectService, MissingMarkerFailsInitialization)
     );
 }
 
-TEST(RuntimeProjectService, ReloadInvalidatesOldNodeIds)
+TEST(RuntimeProjectService, ReloadKeepsLogicalNodeIdsAddressable)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_reload_epoch", "local_cmake");
     auto const module_cpp = workspace / "module.cpp";
@@ -1015,7 +995,7 @@ TEST(RuntimeProjectService, ReloadInvalidatesOldNodeIds)
 
     auto audio = make_audio_device_context();
     iv::RuntimeProjectService service(runtime_timeline(), workspace, iv::test::repo_root(), {}, audio.make_factory());
-    auto const initialized = service.initialize();
+    service.initialize();
 
     auto const initial = service.query_by_spans(
         std::filesystem::weakly_canonical(module_cpp),
@@ -1031,38 +1011,21 @@ TEST(RuntimeProjectService, ReloadInvalidatesOldNodeIds)
     auto const original_text = iv::test::read_text(module_cpp);
     iv::test::write_text(module_cpp, original_text + "\n");
 
-    iv::RuntimeProjectQueryResult reloaded;
-    auto const deadline = std::chrono::steady_clock::now() + 45s;
-    do {
-        std::this_thread::sleep_for(100ms);
-        reloaded = service.query_by_spans(
-            std::filesystem::weakly_canonical(module_cpp),
-            {
-                iv::SourceRange {
-                    .start = { .line = 7, .column = 1 },
-                    .end = { .line = 16, .column = 1 },
-                },
-            }
-        );
-        if (reloaded.execution_epoch > initialized.execution_epoch) {
-            break;
+    std::this_thread::sleep_for(1s);
+    auto const reloaded = service.query_by_spans(
+        std::filesystem::weakly_canonical(module_cpp),
+        {
+            iv::SourceRange {
+                .start = { .line = 7, .column = 1 },
+                .end = { .line = 16, .column = 1 },
+            },
         }
-    } while (std::chrono::steady_clock::now() < deadline);
+    );
 
     iv::test::write_text(module_cpp, original_text);
 
-    ASSERT_GT(reloaded.execution_epoch, initialized.execution_epoch);
-    EXPECT_THROW(
-        {
-            try {
-                (void)service.get_logical_node(initialized.execution_epoch, initial.nodes.front().id);
-            } catch (std::exception const& e) {
-                EXPECT_TRUE(std::string(e.what()).contains("stale"));
-                throw;
-            }
-        },
-        std::exception
-    );
+    EXPECT_FALSE(reloaded.nodes.empty());
+    EXPECT_NO_THROW((void)service.get_logical_node(initial.nodes.front().id));
 }
 
 TEST(RuntimeProjectService, ProjectConfigOverridesIntravenousDefaultsToolchain)
@@ -1095,5 +1058,4 @@ TEST(RuntimeProjectService, ProjectConfigOverridesIntravenousDefaultsToolchain)
     auto const initialized = service.initialize();
 
     EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(workspace));
-    EXPECT_EQ(initialized.execution_epoch, 1u);
 }

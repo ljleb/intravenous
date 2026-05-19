@@ -67,7 +67,7 @@ namespace iv {
         bool operator==(LaneConnection const&) const = default;
     };
 
-    struct GraphInputLaneTarget {
+    struct GraphInputPortDescriptor {
         std::string logical_node_id {};
         std::optional<size_t> concrete_member_ordinal {};
         PortKind port_kind = PortKind::sample;
@@ -75,61 +75,61 @@ namespace iv {
         std::string port_name {};
         std::string port_type {};
 
-        bool operator==(GraphInputLaneTarget const&) const = default;
+        bool operator==(GraphInputPortDescriptor const&) const = default;
     };
 
     struct GraphInputLane {
         LaneId id {};
-        GraphInputLaneTarget target {};
+        GraphInputPortDescriptor port {};
     };
 
     struct DanglingLaneConnection {
         LaneConnection connection {};
-        std::optional<GraphInputLaneTarget> missing_target {};
+        std::optional<GraphInputPortDescriptor> missing_port {};
     };
 
     class GraphInputLaneRegistry {
         LaneIdAllocator _ids;
         std::unordered_map<std::string, LaneId> _lane_ids_by_key;
-        std::unordered_map<LaneId, GraphInputLaneTarget, LaneIdHash> _targets_by_lane_id;
-        std::unordered_map<LaneId, GraphInputLaneTarget, LaneIdHash> _last_targets_by_lane_id;
+        std::unordered_map<LaneId, GraphInputPortDescriptor, LaneIdHash> _ports_by_lane_id;
+        std::unordered_map<LaneId, GraphInputPortDescriptor, LaneIdHash> _last_ports_by_lane_id;
 
-        static std::string target_key(GraphInputLaneTarget const& target)
+        static std::string port_descriptor_key(GraphInputPortDescriptor const& port)
         {
-            std::string key = target.logical_node_id;
+            std::string key = port.logical_node_id;
             key += "\x1fmember:";
-            if (target.concrete_member_ordinal.has_value()) {
-                key += std::to_string(*target.concrete_member_ordinal);
+            if (port.concrete_member_ordinal.has_value()) {
+                key += std::to_string(*port.concrete_member_ordinal);
             } else {
                 key += "logical";
             }
             key += "\x1fkind:";
-            key += target.port_kind == PortKind::sample ? "sample" : "event";
+            key += port.port_kind == PortKind::sample ? "sample" : "event";
             key += "\x1fordinal:";
-            key += std::to_string(target.port_ordinal);
+            key += std::to_string(port.port_ordinal);
             return key;
         }
 
     public:
-        std::vector<GraphInputLane> reconcile(std::vector<GraphInputLaneTarget> const& targets)
+        std::vector<GraphInputLane> reconcile(std::vector<GraphInputPortDescriptor> const& ports)
         {
             std::unordered_set<std::string> live_keys;
             std::vector<GraphInputLane> lanes;
-            lanes.reserve(targets.size());
+            lanes.reserve(ports.size());
 
-            for (auto const& target : targets) {
-                auto const key = target_key(target);
+            for (auto const& port : ports) {
+                auto const key = port_descriptor_key(port);
                 live_keys.insert(key);
 
                 auto [it, inserted] = _lane_ids_by_key.emplace(key, LaneId {});
                 if (inserted || !it->second) {
                     it->second = _ids.next();
                 }
-                _targets_by_lane_id[it->second] = target;
-                _last_targets_by_lane_id[it->second] = target;
+                _ports_by_lane_id[it->second] = port;
+                _last_ports_by_lane_id[it->second] = port;
                 lanes.push_back(GraphInputLane {
                     .id = it->second,
-                    .target = target,
+                    .port = port,
                 });
             }
 
@@ -138,17 +138,17 @@ namespace iv {
                     ++it;
                     continue;
                 }
-                _targets_by_lane_id.erase(it->second);
+                _ports_by_lane_id.erase(it->second);
                 it = _lane_ids_by_key.erase(it);
             }
 
             return lanes;
         }
 
-        std::optional<GraphInputLaneTarget> target_for(LaneId lane_id) const
+        std::optional<GraphInputPortDescriptor> port_descriptor_for(LaneId lane_id) const
         {
-            auto const it = _targets_by_lane_id.find(lane_id);
-            if (it == _targets_by_lane_id.end()) {
+            auto const it = _ports_by_lane_id.find(lane_id);
+            if (it == _ports_by_lane_id.end()) {
                 return std::nullopt;
             }
             return it->second;
@@ -160,15 +160,15 @@ namespace iv {
         {
             std::vector<DanglingLaneConnection> dangling;
             for (auto const& connection : connections) {
-                if (_targets_by_lane_id.contains(connection.target.lane)) {
+                if (_ports_by_lane_id.contains(connection.target.lane)) {
                     continue;
                 }
-                auto const missing_target = _last_targets_by_lane_id.find(connection.target.lane);
+                auto const missing_port = _last_ports_by_lane_id.find(connection.target.lane);
                 dangling.push_back(DanglingLaneConnection {
                     .connection = connection,
-                    .missing_target = missing_target == _last_targets_by_lane_id.end()
+                    .missing_port = missing_port == _last_ports_by_lane_id.end()
                         ? std::nullopt
-                        : std::optional<GraphInputLaneTarget>(missing_target->second),
+                        : std::optional<GraphInputPortDescriptor>(missing_port->second),
                 });
             }
             return dangling;

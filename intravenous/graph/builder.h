@@ -33,6 +33,12 @@
 #include <utility>
 #include <vector>
 
+// ...
+// I have no words, this file is just incomprehensible
+// it's not reasonable in any way
+// this file is absolutely splittable in multiple smaller modules
+// i.e. template things, ref things, ACTUAL syntax sugar things, and you have to come up with a proper separation and not just what I'm telling you
+// I don't want to read all this. there are OBVIOUS groups and separations to be made here.
 namespace iv {
     struct LogicalEmptyTag {
         explicit constexpr LogicalEmptyTag() = default;
@@ -133,6 +139,10 @@ namespace iv {
     };
 
     struct BuilderNode {
+        // HOLY SHIT
+        // this class has been accumulating state after state after state to accomodate everybody
+        // each orthogonal use case needs its own ENCAPSULATED subobject class each with a proper semantic interface
+        // do NOT expose implementation details through the members. let each contribute their part to the build process from within
         std::vector<InputConfig> input_configs;
         std::vector<OutputConfig> output_configs;
         std::vector<EventInputConfig> event_input_configs;
@@ -2024,7 +2034,7 @@ namespace iv {
 
     inline GraphBuilder& GraphBuilder::augment(Timeline& timeline)
     {
-        TimelineAugmentation augmentation = timeline.begin_augmentation();
+        TimelineGraphInputResolver graph_input_resolver = timeline.begin_graph_input_resolution();
         size_t const original_node_count = _nodes.size();
         std::unordered_map<std::string, std::unordered_set<std::string>> types_by_logical_id;
         for (size_t node_i = 0; node_i < original_node_count; ++node_i) {
@@ -2058,7 +2068,7 @@ namespace iv {
                 if (_placed_input_ports.contains(target_port)) {
                     continue;
                 }
-                SamplePortRef source = augmentation.resolve_sample_input(
+                SamplePortRef source = graph_input_resolver.resolve_sample_input(
                     *this,
                     final_logical_node_id,
                     member_ordinal,
@@ -2080,7 +2090,7 @@ namespace iv {
                 if (_placed_event_input_ports.contains(target_port)) {
                     continue;
                 }
-                EventPortRef source = augmentation.resolve_event_input(
+                EventPortRef source = graph_input_resolver.resolve_event_input(
                     *this,
                     final_logical_node_id,
                     input_i,
@@ -2495,7 +2505,7 @@ namespace iv {
         return build_with_metadata(detach_id_offset).graph;
     }
 
-    inline SamplePortRef TimelineAugmentation::resolve_sample_input(
+    inline SamplePortRef TimelineGraphInputResolver::resolve_sample_input(
         GraphBuilder& builder,
         std::string_view logical_node_id,
         std::optional<size_t> member_ordinal,
@@ -2507,7 +2517,18 @@ namespace iv {
             return builder.node<Constant>(input_config.default_value);
         }
 
-        auto const identity = TimelineInputValue::nominal_identity(logical_node_id, member_ordinal, input_ordinal);
+        LaneId const lane = _timeline->resolve_graph_sample_input_lane(
+            logical_node_id,
+            member_ordinal,
+            input_ordinal,
+            input_config.name,
+            input_config.default_value
+        );
+        if (!lane) {
+            details::error("timeline could not resolve graph input lane");
+        }
+
+        auto const identity = TimelineInputValue::nominal_identity(lane);
         auto existing = _control_node_indices.find(identity);
         if (existing != _control_node_indices.end()) {
             return SamplePortRef(builder, existing->second, 0);
@@ -2515,16 +2536,13 @@ namespace iv {
 
         SamplePortRef ref = builder.node<TimelineInputValue>(
             *_timeline,
-            std::string(logical_node_id),
-            member_ordinal,
-            input_ordinal,
-            input_config.default_value
+            lane
         );
         _control_node_indices.emplace(std::move(identity), ref.node_index);
         return ref;
     }
 
-    inline EventPortRef TimelineAugmentation::resolve_event_input(
+    inline EventPortRef TimelineGraphInputResolver::resolve_event_input(
         GraphBuilder& builder,
         std::string_view logical_node_id,
         size_t input_ordinal,

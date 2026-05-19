@@ -3,7 +3,7 @@
   "cmake.generator": "Ninja",
   "clangd.arguments": [
     "--compile-commands-dir=${workspaceFolder}/build",
-    "--query-driver=C:/Program Files/Microsoft Visual Studio/*/*/VC/Tools/MSVC/**/bin/Hostx64/x64/cl.exe",
+    "--query-driver=/nix/store/*/bin/clang,/nix/store/*/bin/clang++,C:/Program Files/Microsoft Visual Studio/*/*/VC/Tools/MSVC/**/bin/Hostx64/x64/cl.exe",
     "--log=verbose"
   ],
   "terminal.integrated.profiles.windows": {

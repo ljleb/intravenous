@@ -1116,6 +1116,50 @@ namespace iv::details {
         return std::max(region_block(source.node), region_block(target.node));
     }
 
+    inline size_t region_internal_latency(
+        GraphRegion const& region,
+        std::vector<TypeErasedNode> const& nodes,
+        std::unordered_set<GraphEdge> const& edges
+    )
+    {
+        std::unordered_set<size_t> region_nodes(region.nodes.begin(), region.nodes.end());
+        std::unordered_map<PortId, PortId> target_of;
+        for (GraphEdge const& edge : edges) {
+            if (
+                edge.source.node == GRAPH_ID
+                || edge.target.node == GRAPH_ID
+                || !region_nodes.contains(edge.source.node)
+                || !region_nodes.contains(edge.target.node)
+            ) {
+                continue;
+            }
+            target_of[edge.source] = edge.target;
+        }
+
+        std::unordered_map<PortId, size_t> input_latencies;
+        size_t max_latency = 0;
+        for (size_t const node_i : region.execution_order) {
+            size_t node_latency = 0;
+            auto const inputs = nodes[node_i].inputs();
+            for (size_t input_port = 0; input_port < inputs.size(); ++input_port) {
+                node_latency = std::max(node_latency, input_latencies[{ node_i, input_port }]);
+            }
+
+            node_latency += nodes[node_i].internal_latency();
+            max_latency = std::max(max_latency, node_latency);
+
+            auto const outputs = nodes[node_i].outputs();
+            for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
+                size_t const output_latency = node_latency + outputs[output_port].latency;
+                max_latency = std::max(max_latency, output_latency);
+                if (auto it = target_of.find({ node_i, output_port }); it != target_of.end()) {
+                    input_latencies[it->second] = output_latency;
+                }
+            }
+        }
+        return max_latency;
+    }
+
     inline GraphBuildArtifact build_graph_artifact(
         std::string graph_id,
         std::vector<TypeErasedNode> nodes,
@@ -1343,11 +1387,7 @@ namespace iv::details {
                 region_global_node_indices.push_back(global_i);
             }
 
-            size_t internal_latency = 0;
-            // TODO: solve SCC-local internal latency explicitly instead of collapsing to the max child latency.
-            for (auto const& node : region_nodes) {
-                internal_latency = std::max(internal_latency, node.internal_latency());
-            }
+            size_t const internal_latency = region_internal_latency(region, nodes, artifact.edges);
 
             artifact.scc_wrappers.emplace_back(
                 std::move(region_nodes),

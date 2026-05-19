@@ -360,9 +360,9 @@ namespace iv::test {
     }
 
     template<typename Device>
-    inline iv::ModuleRenderConfig module_render_config(Device const& audio_device)
+    inline iv::ModuleExecutorTarget module_executor_target(Device const& audio_device)
     {
-        return iv::ModuleRenderConfig{
+        return iv::ModuleExecutorTarget{
             .sample_rate = audio_device.config().sample_rate,
             .num_channels = audio_device.config().num_channels,
             .max_block_frames = audio_device.config().max_block_frames,
@@ -395,7 +395,7 @@ namespace iv::test {
     {
         auto graph = loader.load_root(
             module_path,
-            module_render_config(audio_device),
+            module_executor_target(audio_device),
             &audio_device.sample_period()
         );
 
