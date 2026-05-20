@@ -162,6 +162,7 @@ add_library(intravenous_tooling_runtime STATIC
     runtime/config.cpp
     runtime/lane_view_service.cpp
     runtime/project_service.cpp
+    runtime/socket_rpc_response_builders.cpp
     runtime/socket_rpc_server.cpp
 )
 

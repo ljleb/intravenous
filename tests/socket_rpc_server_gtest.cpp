@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -26,6 +27,7 @@ namespace {
 
     constexpr auto socket_rpc_response_timeout = 120s;
     constexpr auto socket_rpc_rebuild_timeout = 120s;
+    std::atomic<int> static_callback_route_hits { 0 };
 
     iv::Timeline& socket_server_timeline()
     {
@@ -250,6 +252,61 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
         }
         return {};
     }
+
+    void handle_test_static_callback_one(iv::SocketRpcRequestContext&)
+    {
+        static_callback_route_hits.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void handle_test_static_callback_two(iv::SocketRpcRequestContext& context)
+    {
+        static_callback_route_hits.fetch_add(1, std::memory_order_relaxed);
+        context.respond_ok();
+    }
+
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::SocketRpcEventCallback,
+        iv_socket_rpc_event,
+        iv::socket_rpc_event_subscription<"test.staticCallbacks", handle_test_static_callback_one>
+    )
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::SocketRpcEventCallback,
+        iv_socket_rpc_event,
+        iv::socket_rpc_event_subscription<"test.staticCallbacks", handle_test_static_callback_two>
+    )
+}
+
+TEST(SocketRpcServer, InvokesAllStaticRouteSubscribers)
+{
+    static_callback_route_hits.store(0, std::memory_order_relaxed);
+    auto const workspace = make_project_workspace();
+
+    iv::SocketRpcServer server(workspace, iv::default_server_socket_path(workspace));
+    auto service = make_socket_rpc_test_service(server, workspace);
+    server.start();
+    ASSERT_TRUE(server.wait_until_ready(5s));
+
+    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    ASSERT_GE(fd, 0) << std::strerror(errno);
+
+    sockaddr_un address {};
+    address.sun_family = AF_UNIX;
+    auto const socket_path = server.socket_path().string();
+    ASSERT_LT(socket_path.size(), sizeof(address.sun_path));
+    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
+    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0) << std::strerror(errno);
+    std::string response_buffer;
+
+    std::string const callback_request =
+        R"({"jsonrpc":"2.0","id":1,"method":"test.staticCallbacks","params":{}})" "\n";
+    ASSERT_EQ(::write(fd, callback_request.data(), callback_request.size()), static_cast<ssize_t>(callback_request.size()));
+
+    auto const callback_response = read_response_for_id(fd, &response_buffer, 1);
+    EXPECT_TRUE(callback_response.contains(R"("ok":true)")) << callback_response;
+    EXPECT_EQ(static_callback_route_hits.load(std::memory_order_relaxed), 2);
+
+    ::close(fd);
+    server.request_shutdown();
 }
 
 TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
