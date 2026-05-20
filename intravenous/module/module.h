@@ -16,9 +16,7 @@
 namespace iv {
     class TypeErasedModule;
 
-    struct ModuleRenderConfig {
-        // TODO: This is still a bootstrap/runtime hint passed into module loading.
-        // The long-term source of truth should come from executor-target negotiation.
+    struct ModuleExecutorTarget {
         size_t sample_rate = 48000;
         size_t num_channels = 2;
         size_t max_block_frames = 4096;
@@ -64,7 +62,7 @@ namespace iv {
     class ModuleContext {
         GraphBuilder* _builder = nullptr;
         ModuleTargetFactory _target_factory;
-        ModuleRenderConfig _render_config;
+        ModuleExecutorTarget _render_config;
         Sample* _sample_period = nullptr;
         TypeErasedModule (*_load_fn)(void*, std::string_view) = nullptr;
         void* _load_user_data = nullptr;
@@ -73,7 +71,7 @@ namespace iv {
         ModuleContext(
             GraphBuilder& builder,
             ModuleTargetFactory target_factory = {},
-            ModuleRenderConfig render_config = {},
+            ModuleExecutorTarget render_config = {},
             Sample* sample_period = nullptr,
             TypeErasedModule (*load_fn)(void*, std::string_view) = nullptr,
             void* load_user_data = nullptr
@@ -96,7 +94,7 @@ namespace iv {
             return _target_factory;
         }
 
-        ModuleRenderConfig const& render_config() const
+        ModuleExecutorTarget const& render_config() const
         {
             return _render_config;
         }

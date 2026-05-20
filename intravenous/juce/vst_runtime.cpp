@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <deque>
@@ -587,14 +586,11 @@ namespace iv {
 
     struct JuceVstRuntimeManager::LiveMidiInput : ::juce::MidiInputCallback {
         struct PendingMessage {
-            std::chrono::steady_clock::time_point arrival_time {};
+            double timestamp = 0.0;
             MidiEvent midi {};
         };
 
         std::unique_ptr<::juce::MidiInput> input;
-        double sample_rate = 48000.0;
-        std::optional<std::chrono::steady_clock::time_point> render_epoch_time;
-        int64_t render_epoch_sample = 0;
         std::mutex mutex;
         std::deque<PendingMessage> pending_messages;
 
@@ -607,7 +603,7 @@ namespace iv {
 
             std::lock_guard lock(mutex);
             pending_messages.push_back(PendingMessage {
-                .arrival_time = std::chrono::steady_clock::now(),
+                .timestamp = message.getTimeStamp(),
                 .midi = midi,
             });
         }
@@ -724,8 +720,8 @@ namespace iv {
         double sample_rate
     )
     {
+        (void)sample_rate;
         auto live = std::make_unique<LiveMidiInput>();
-        live->sample_rate = sample_rate > 0.0 ? sample_rate : 48000.0;
 
         auto const device = resolve_midi_input_device(spec.device_query);
         live->input = ::juce::MidiInput::openDevice(device.identifier, live.get());
@@ -826,35 +822,43 @@ namespace iv {
         }
 
         auto& live_input = *static_cast<JuceVstRuntimeManager::LiveMidiInput*>(live_instance_ptr);
-        int64_t const block_start = static_cast<int64_t>(ctx.index);
-        int64_t const block_end = static_cast<int64_t>(ctx.index + ctx.block_size);
+        size_t const block_start = ctx.index;
+        auto& midi_state = ctx.state();
+        double const dt = static_cast<double>(ctx.inputs[0].get());
+        double const block_timestamp = ::juce::Time::getMillisecondCounterHiRes() * 0.001;
 
         std::lock_guard lock(live_input.mutex);
-        if (!live_input.render_epoch_time.has_value()) {
-            live_input.render_epoch_time = std::chrono::steady_clock::now();
-            live_input.render_epoch_sample = block_start;
-        }
 
-        auto const to_sample_time = [&](std::chrono::steady_clock::time_point arrival_time) {
-            auto const elapsed = arrival_time - *live_input.render_epoch_time;
-            double const seconds = std::chrono::duration<double>(elapsed).count();
-            double const samples = seconds * live_input.sample_rate;
-            return live_input.render_epoch_sample + static_cast<int64_t>(std::floor(samples));
-        };
+        bool const discontinuous = midi_state.expected_next_sample.has_value()
+            && *midi_state.expected_next_sample != block_start;
+        if (discontinuous) {
+            midi_state.time_aligner.reset();
+        }
+        midi_state.time_aligner.observe_callback(block_timestamp, block_start, dt);
 
         while (!live_input.pending_messages.empty()) {
             auto const& pending = live_input.pending_messages.front();
-            int64_t const sample_time = to_sample_time(pending.arrival_time);
-            if (sample_time >= block_end) {
+            double const predicted_offset = midi_state.time_aligner.predict_sample_offset(pending.timestamp, dt);
+            if (predicted_offset >= static_cast<double>(ctx.block_size)) {
                 break;
             }
 
-            size_t const sample_offset = sample_time <= block_start
+            size_t const sample_offset = predicted_offset <= 0.0
                 ? 0
-                : static_cast<size_t>(sample_time - block_start);
+                : static_cast<size_t>(std::floor(predicted_offset));
             ctx.event_outputs[0].push(pending.midi, sample_offset, ctx.index, ctx.block_size);
             live_input.pending_messages.pop_front();
         }
+
+        midi_state.expected_next_sample = block_start + ctx.block_size;
+    }
+
+    void JuceMidiInputSource::initialize(InitializationContext<JuceMidiInputSource> const& ctx) const
+    {
+        auto& state = ctx.state();
+        state.live_input = ctx.resources.midi_input.create(*_spec);
+        state.time_aligner.reset();
+        state.expected_next_sample.reset();
     }
 
     void JuceMidiInputSource::tick_block(TickBlockContext<JuceMidiInputSource> const& ctx) const

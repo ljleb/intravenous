@@ -3,6 +3,7 @@
 #include "compat.h"
 #include "juce/vst_runtime.h"
 #include "runtime/handlers.h"
+#include "runtime/server_options.h"
 #include "runtime/socket_rpc_server.h"
 #include "runtime/timeline.h"
 
@@ -23,26 +24,17 @@ namespace iv {
 
         int run_server_mode(Timeline& timeline, int argc, char** argv)
         {
-            std::filesystem::path workspace_root;
-            std::filesystem::path socket_path;
-
-            for (int i = 2; i < argc; ++i) {
-                std::string_view const arg = argv[i];
-                if (arg == "--workspace-root" && i + 1 < argc) {
-                    workspace_root = argv[++i];
-                } else if (arg == "--socket-path" && i + 1 < argc) {
-                    socket_path = argv[++i];
-                } else {
-                    throw std::runtime_error("unknown server argument: " + std::string(arg));
-                }
-            }
-
-            if (workspace_root.empty()) {
-                throw std::runtime_error("--server requires --workspace-root <path>");
-            }
-
-            SocketRpcServer server(timeline, workspace_root, std::filesystem::current_path(), socket_path);
+            auto const options = RuntimeServerOptions::parse(argc, argv);
+            SocketRpcServer server(options.workspace_root, options.socket_path);
+            RuntimeProjectService service(
+                timeline,
+                server,
+                options.workspace_root,
+                std::filesystem::current_path(),
+                {}
+            );
             std::function<void()> shutdown = [&]() {
+                service.request_shutdown();
                 server.request_shutdown();
             };
             shutdown_callback = &shutdown;
@@ -51,6 +43,7 @@ namespace iv {
             server.start();
             std::cout << "Intravenous server listening on " << server.socket_path().string() << '\n';
             server.wait();
+            service.request_shutdown();
             shutdown_callback = nullptr;
             return 0;
         }

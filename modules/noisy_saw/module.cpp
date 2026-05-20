@@ -53,7 +53,7 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
 
             return saw * (m >> "amplitude"_P);
         });
-        voice < "midi"_F << juce::midi_input(g, "V25");
+        // voice < "midi"_F << juce::midi_input(g, "V25");
 
         auto lp = g.node<SimpleIirLowPass>();
         sink(lp(voice, "dt"_P = dt) * 0.5);

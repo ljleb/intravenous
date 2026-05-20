@@ -57,6 +57,7 @@ namespace iv::details {
         std::vector<std::string> node_ids;
         std::vector<std::vector<std::string>> node_logical_ids;
         std::vector<std::vector<SourceInfo>> node_source_infos;
+        std::vector<size_t> node_construction_order;
         std::unordered_set<GraphEdge> edges;
         std::unordered_set<GraphEventEdge> event_edges;
         std::unordered_set<PortId> timeline_filled_input_ports;
@@ -74,6 +75,13 @@ namespace iv::details {
         id += "generated.";
         id += std::to_string(generated_index);
         return id;
+    }
+
+    inline size_t next_construction_order(PreparedGraph const& g)
+    {
+        return g.node_construction_order.empty()
+            ? 0
+            : (*std::ranges::max_element(g.node_construction_order) + 1);
     }
 
     inline auto make_source_target_edge_maps(PreparedGraph const& g)
@@ -353,6 +361,7 @@ namespace iv::details {
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_logical_ids.emplace_back();
                 g.node_source_infos.emplace_back();
+                g.node_construction_order.push_back(next_construction_order(g));
                 size_t const sum_node = g.nodes.size() - 1;
 
                 for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
@@ -384,6 +393,7 @@ namespace iv::details {
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_logical_ids.emplace_back();
                 g.node_source_infos.emplace_back();
+                g.node_construction_order.push_back(next_construction_order(g));
                 size_t const concat_node = g.nodes.size() - 1;
 
                 for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
@@ -429,6 +439,7 @@ namespace iv::details {
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_logical_ids.emplace_back();
                 g.node_source_infos.emplace_back();
+                g.node_construction_order.push_back(next_construction_order(g));
                 size_t const broadcast_node = g.nodes.size() - 1;
 
                 for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
@@ -460,6 +471,7 @@ namespace iv::details {
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_logical_ids.emplace_back();
                 g.node_source_infos.emplace_back();
+                g.node_construction_order.push_back(next_construction_order(g));
                 size_t const broadcast_node = g.nodes.size() - 1;
 
                 for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
@@ -498,6 +510,7 @@ namespace iv::details {
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     g.node_logical_ids.emplace_back();
                     g.node_source_infos.emplace_back();
+                    g.node_construction_order.push_back(next_construction_order(g));
                     size_t const new_node = g.nodes.size() - 1;
                     g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
                 }
@@ -513,6 +526,7 @@ namespace iv::details {
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     g.node_logical_ids.emplace_back();
                     g.node_source_infos.emplace_back();
+                    g.node_construction_order.push_back(next_construction_order(g));
                     size_t const new_node = g.nodes.size() - 1;
                     EventTypeId const source_type = get_event_outputs(g.nodes[node])[output_port].type;
                     g.event_edges.insert(GraphEventEdge{
@@ -590,11 +604,13 @@ namespace iv::details {
         std::vector<std::string> sorted_node_ids;
         std::vector<std::vector<std::string>> sorted_node_logical_ids;
         std::vector<std::vector<SourceInfo>> sorted_node_source_infos;
+        std::vector<size_t> sorted_node_construction_order;
         sorted_nodes.reserve(num_nodes);
         sorted_explicit_ttls.reserve(num_nodes);
         sorted_node_ids.reserve(num_nodes);
         sorted_node_logical_ids.reserve(num_nodes);
         sorted_node_source_infos.reserve(num_nodes);
+        sorted_node_construction_order.reserve(num_nodes);
         for (size_t old_i = 0; old_i < num_nodes; ++old_i)
         {
             sorted_nodes.push_back(std::move(g.nodes[sorted[old_i]]));
@@ -602,12 +618,14 @@ namespace iv::details {
             sorted_node_ids.push_back(std::move(g.node_ids[sorted[old_i]]));
             sorted_node_logical_ids.push_back(std::move(g.node_logical_ids[sorted[old_i]]));
             sorted_node_source_infos.push_back(std::move(g.node_source_infos[sorted[old_i]]));
+            sorted_node_construction_order.push_back(g.node_construction_order[sorted[old_i]]);
         }
         g.nodes.swap(sorted_nodes);
         g.explicit_ttl_samples.swap(sorted_explicit_ttls);
         g.node_ids.swap(sorted_node_ids);
         g.node_logical_ids.swap(sorted_node_logical_ids);
         g.node_source_infos.swap(sorted_node_source_infos);
+        g.node_construction_order.swap(sorted_node_construction_order);
 
         std::vector<size_t> reverse_sorted(num_nodes);
         for (size_t new_i = 0; new_i < num_nodes; ++new_i) {
@@ -1098,6 +1116,50 @@ namespace iv::details {
         return std::max(region_block(source.node), region_block(target.node));
     }
 
+    inline size_t region_internal_latency(
+        GraphRegion const& region,
+        std::vector<TypeErasedNode> const& nodes,
+        std::unordered_set<GraphEdge> const& edges
+    )
+    {
+        std::unordered_set<size_t> region_nodes(region.nodes.begin(), region.nodes.end());
+        std::unordered_map<PortId, PortId> target_of;
+        for (GraphEdge const& edge : edges) {
+            if (
+                edge.source.node == GRAPH_ID
+                || edge.target.node == GRAPH_ID
+                || !region_nodes.contains(edge.source.node)
+                || !region_nodes.contains(edge.target.node)
+            ) {
+                continue;
+            }
+            target_of[edge.source] = edge.target;
+        }
+
+        std::unordered_map<PortId, size_t> input_latencies;
+        size_t max_latency = 0;
+        for (size_t const node_i : region.execution_order) {
+            size_t node_latency = 0;
+            auto const inputs = nodes[node_i].inputs();
+            for (size_t input_port = 0; input_port < inputs.size(); ++input_port) {
+                node_latency = std::max(node_latency, input_latencies[{ node_i, input_port }]);
+            }
+
+            node_latency += nodes[node_i].internal_latency();
+            max_latency = std::max(max_latency, node_latency);
+
+            auto const outputs = nodes[node_i].outputs();
+            for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
+                size_t const output_latency = node_latency + outputs[output_port].latency;
+                max_latency = std::max(max_latency, output_latency);
+                if (auto it = target_of.find({ node_i, output_port }); it != target_of.end()) {
+                    input_latencies[it->second] = output_latency;
+                }
+            }
+        }
+        return max_latency;
+    }
+
     inline GraphBuildArtifact build_graph_artifact(
         std::string graph_id,
         std::vector<TypeErasedNode> nodes,
@@ -1325,11 +1387,7 @@ namespace iv::details {
                 region_global_node_indices.push_back(global_i);
             }
 
-            size_t internal_latency = 0;
-            // TODO: solve SCC-local internal latency explicitly instead of collapsing to the max child latency.
-            for (auto const& node : region_nodes) {
-                internal_latency = std::max(internal_latency, node.internal_latency());
-            }
+            size_t const internal_latency = region_internal_latency(region, nodes, artifact.edges);
 
             artifact.scc_wrappers.emplace_back(
                 std::move(region_nodes),

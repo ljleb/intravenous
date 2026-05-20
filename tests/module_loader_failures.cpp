@@ -17,7 +17,7 @@ int main()
         std::filesystem::create_directories(missing_dir);
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(missing_dir, iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+            [&] { (void)loader.load_root(missing_dir, iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
             "module.cpp",
             "missing module.cpp should fail"
         );
@@ -28,7 +28,7 @@ int main()
         auto loader = iv::test::make_loader();
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(fixtures / "missing_export", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+            [&] { (void)loader.load_root(fixtures / "missing_export", iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
             "does not declare IV_EXPORT_MODULE",
             "missing export symbol should fail"
         );
@@ -39,7 +39,7 @@ int main()
         auto loader = iv::test::make_loader();
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(fixtures / "build_failure", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+            [&] { (void)loader.load_root(fixtures / "build_failure", iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
             "command failed",
             "build failure should propagate"
         );
@@ -50,7 +50,7 @@ int main()
         auto loader = iv::test::make_loader();
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(fixtures / "missing_dependency", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+            [&] { (void)loader.load_root(fixtures / "missing_dependency", iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
             "unknown module id",
             "missing dependency id should fail"
         );
@@ -61,7 +61,7 @@ int main()
         auto loader = iv::test::make_loader({ fixtures, iv::test::duplicate_modules_root() });
 
         iv::test::expect_failure(
-            [&] { (void)loader.load_root(fixtures / "nested_loader_project", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+            [&] { (void)loader.load_root(fixtures / "nested_loader_project", iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
             "duplicate module id",
             "duplicate module id should fail"
         );

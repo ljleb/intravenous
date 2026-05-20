@@ -77,6 +77,11 @@ namespace iv {
         count,
     };
 
+    enum class PortKind : std::uint8_t {
+        sample,
+        event,
+    };
+
     using EventTime = size_t;
 
     using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent>;

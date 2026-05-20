@@ -34,7 +34,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     {
         auto graph = loader.load_root(
             project_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;
@@ -62,7 +62,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     {
         auto graph = loader.load_root(
             project_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;
@@ -84,7 +84,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     {
         auto graph = loader.load_root(
             project_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;
@@ -96,7 +96,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     {
         auto graph = loader.load_root(
             local_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;
@@ -113,7 +113,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     {
         auto graph = loader.load_root(
             local_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;

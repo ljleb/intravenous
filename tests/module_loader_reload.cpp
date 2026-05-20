@@ -23,7 +23,7 @@ int main()
 
     auto graph_a = loader.load_root(
         reload_dst,
-        iv::ModuleRenderConfig{
+        iv::ModuleExecutorTarget{
             .sample_rate = audio_device.config().sample_rate,
             .num_channels = audio_device.config().num_channels,
             .max_block_frames = audio_device.config().max_block_frames,
@@ -52,7 +52,7 @@ int main()
 
     auto graph_b = loader.load_root(
         reload_dst,
-        iv::ModuleRenderConfig{
+        iv::ModuleExecutorTarget{
             .sample_rate = audio_device.config().sample_rate,
             .num_channels = audio_device.config().num_channels,
             .max_block_frames = audio_device.config().max_block_frames,
