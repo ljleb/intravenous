@@ -41,6 +41,7 @@ function(add_iv_gtest target source)
         intravenous_module_runtime
         intravenous_json_rpc_server
         intravenous_tooling_runtime
+        nlohmann_json::nlohmann_json
     )
 
     gtest_discover_tests(${target})
@@ -58,6 +59,8 @@ add_iv_gtest(intravenous_timeline_lanes_tests timeline_lanes_gtest.cpp)
 add_iv_gtest(intravenous_local_gamma_time_aligner_tests local_gamma_time_aligner_gtest.cpp)
 add_iv_gtest(intravenous_runtime_project_tests runtime_project_gtest.cpp)
 add_iv_gtest(intravenous_socket_rpc_server_tests socket_rpc_server_gtest.cpp)
+add_iv_gtest(intravenous_socket_rpc_support_tests socket_rpc_support_gtest.cpp)
+add_iv_gtest(intravenous_socket_rpc_bridge_tests socket_rpc_bridge_gtest.cpp)
 add_executable(intravenous_node_layout_storage
     node_layout_storage.cpp
     ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c

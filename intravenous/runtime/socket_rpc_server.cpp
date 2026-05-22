@@ -10,23 +10,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <sys/file.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <type_traits>
 #include <unistd.h>
 
 namespace iv {
 namespace {
 using Json = nlohmann::ordered_json;
-
-Json parse_request_json(std::string const &line) {
-    try {
-        return Json::parse(line);
-    } catch (Json::parse_error const &e) {
-        throw std::runtime_error(std::string("invalid JSON-RPC request: ") + e.what());
-    }
-}
 
 std::string serialize_json_line(Json const &value) {
     return value.dump() + "\n";
@@ -48,206 +38,6 @@ std::string jsonrpc_notification(std::string const &method, Json params_json) {
     });
 }
 
-Json const &parse_request_params(Json const &request) {
-    auto const params_it = request.find("params");
-    if (params_it == request.end() || !params_it->is_object()) {
-        throw std::runtime_error("JSON-RPC request is missing params object");
-    }
-    return *params_it;
-}
-
-int parse_request_id(Json const &request) {
-    auto const id_it = request.find("id");
-    if (id_it == request.end() || !id_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request is missing numeric id");
-    }
-    return id_it->get<int>();
-}
-
-std::string parse_request_method(Json const &request) {
-    auto const method_it = request.find("method");
-    if (method_it == request.end() || !method_it->is_string()) {
-        throw std::runtime_error("JSON-RPC request is missing method");
-    }
-    return method_it->get<std::string>();
-}
-
-std::string parse_string_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || !value_it->is_string()) {
-        throw std::runtime_error("JSON-RPC request is missing string param '" + key + "'");
-    }
-    return value_it->get<std::string>();
-}
-
-std::vector<std::string> parse_string_array_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || !value_it->is_array()) {
-        throw std::runtime_error("JSON-RPC request is missing string array param '" + key + "'");
-    }
-
-    std::vector<std::string> values;
-    values.reserve(value_it->size());
-    for (auto const &item : *value_it) {
-        if (!item.is_string()) {
-            throw std::runtime_error("JSON-RPC request param '" + key + "' must be an array of strings");
-        }
-        values.push_back(item.get<std::string>());
-    }
-    return values;
-}
-
-uint64_t parse_uint64_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || !value_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request is missing integer param '" + key + "'");
-    }
-    auto const value = value_it->get<int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
-    }
-    return static_cast<uint64_t>(value);
-}
-
-std::optional<uint64_t> parse_optional_uint64_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || value_it->is_null()) {
-        return std::nullopt;
-    }
-    if (!value_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be a non-negative integer");
-    }
-    auto const value = value_it->get<int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
-    }
-    return static_cast<uint64_t>(value);
-}
-
-size_t parse_optional_size_param(Json const &params, std::string const &key, size_t fallback) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || value_it->is_null()) {
-        return fallback;
-    }
-    if (!value_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be a non-negative integer");
-    }
-    auto const value = value_it->get<int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
-    }
-    return static_cast<size_t>(value);
-}
-
-double parse_number_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || !value_it->is_number()) {
-        throw std::runtime_error("JSON-RPC request is missing numeric param '" + key + "'");
-    }
-    return value_it->get<double>();
-}
-
-uint32_t parse_uint32_value(Json const &value, std::string const &context) {
-    if (!value.is_number_integer()) {
-        throw std::runtime_error(context);
-    }
-    auto const parsed = value.get<int64_t>();
-    if (parsed < 0) {
-        throw std::runtime_error(context);
-    }
-    return static_cast<uint32_t>(parsed);
-}
-
-std::vector<SourceRange> parse_ranges(Json const &params, bool require_non_empty = true) {
-    std::vector<SourceRange> ranges;
-    auto const ranges_it = params.find("ranges");
-    if (ranges_it != params.end()) {
-        if (!ranges_it->is_array()) {
-            throw std::runtime_error("graph.queryBySpans ranges must be an array");
-        }
-        ranges.reserve(ranges_it->size());
-        for (auto const &range_json : *ranges_it) {
-            if (!range_json.is_object()) {
-                throw std::runtime_error("graph.queryBySpans range entries must be objects");
-            }
-            auto const start_it = range_json.find("start");
-            auto const end_it = range_json.find("end");
-            if (start_it == range_json.end() || end_it == range_json.end() ||
-                !start_it->is_object() || !end_it->is_object()) {
-                throw std::runtime_error("graph.queryBySpans ranges must include start and end positions");
-            }
-
-            auto const start_line_it = start_it->find("line");
-            auto const start_column_it = start_it->find("column");
-            auto const end_line_it = end_it->find("line");
-            auto const end_column_it = end_it->find("column");
-            if (start_line_it == start_it->end() ||
-                start_column_it == start_it->end() ||
-                end_line_it == end_it->end() ||
-                end_column_it == end_it->end()) {
-                throw std::runtime_error("graph.queryBySpans positions must use unsigned line/column values");
-            }
-
-            ranges.push_back(SourceRange{
-                .start = {
-                    .line = parse_uint32_value(*start_line_it, "graph.queryBySpans positions must use unsigned line/column values"),
-                    .column = parse_uint32_value(*start_column_it, "graph.queryBySpans positions must use unsigned line/column values"),
-                },
-                .end = {
-                    .line = parse_uint32_value(*end_line_it, "graph.queryBySpans positions must use unsigned line/column values"),
-                    .column = parse_uint32_value(*end_column_it, "graph.queryBySpans positions must use unsigned line/column values"),
-                },
-            });
-        }
-    }
-    if (require_non_empty && ranges.empty()) {
-        throw std::runtime_error("graph.queryBySpans requires at least one range");
-    }
-    return ranges;
-}
-
-SourceRangeMatchMode parse_match_mode(Json const &params) {
-    auto const mode_it = params.find("match");
-    if (mode_it == params.end()) {
-        return SourceRangeMatchMode::intersection;
-    }
-    if (!mode_it->is_string()) {
-        throw std::runtime_error("graph.queryBySpans match must be 'union' or 'intersection'");
-    }
-    auto const mode = mode_it->get<std::string>();
-    if (mode == "union") {
-        return SourceRangeMatchMode::union_;
-    }
-    if (mode == "intersection") {
-        return SourceRangeMatchMode::intersection;
-    }
-    throw std::runtime_error("graph.queryBySpans match must be 'union' or 'intersection'");
-}
-
-LaneQueryFilter parse_lane_query_filter(Json const &params) {
-    auto const filter_it = params.find("filter");
-    if (filter_it == params.end() || !filter_it->is_object()) {
-        throw std::runtime_error("lane requests require a filter object");
-    }
-    auto const kind_it = filter_it->find("kind");
-    if (kind_it == filter_it->end() || !kind_it->is_string()) {
-        throw std::runtime_error("lane filter.kind must be a string");
-    }
-    return LaneQueryFilter{.kind = kind_it->get<std::string>()};
-}
-
-LaneQuery parse_lane_query(Json const &params) {
-    return LaneQuery{.filter = parse_lane_query_filter(params)};
-}
-
-LaneViewRequest parse_lane_view_request(Json const &params) {
-    return LaneViewRequest{
-        .view_id = parse_string_param(params, "viewId"),
-        .query = parse_lane_query(params),
-        .start_index = parse_optional_size_param(params, "startIndex", 0),
-        .visible_lane_count = parse_optional_size_param(params, "visibleLaneCount", 0),
-    };
-}
 
 Json string_array_json(std::vector<std::string> const &values) {
     Json json = Json::array();
@@ -355,7 +145,6 @@ Json server_status_json(SocketRpcServerStatus const &notification) {
 }
 } // namespace
 
-IV_DEFINE_LINKER_EVENT(SocketRpcInitializeEvent, iv_socket_rpc_server_initialize_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcGraphQueryBySpansEvent, iv_socket_rpc_graph_query_by_spans_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcGraphQueryActiveRegionsEvent, iv_socket_rpc_graph_query_active_regions_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcGetLogicalNodeEvent, iv_socket_rpc_get_logical_node_event)
@@ -367,35 +156,11 @@ IV_DEFINE_LINKER_EVENT(SocketRpcSetSampleInputValueEvent, iv_socket_rpc_set_samp
 IV_DEFINE_LINKER_EVENT(SocketRpcClearSampleInputValueOverrideEvent, iv_socket_rpc_clear_sample_input_value_override_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcServerShutdownEvent, iv_socket_rpc_server_shutdown_event)
 
-SocketRpcServer::SocketRpcServer(std::filesystem::path workspace_root_, std::filesystem::path socket_path_)
+SocketRpcServer::SocketRpcServer(std::filesystem::path workspace_root_, int rpc_fd)
     : workspace_root(normalize_path(workspace_root_)),
-      socket_path_value(std::move(socket_path_)),
-      lock_path_value(socket_path_value.string() + ".lock") {}
+      rpc_fd_value(rpc_fd) {}
 
 SocketRpcServer::~SocketRpcServer() { request_shutdown(); }
-
-void SocketRpcServer::acquire_workspace_lock() {
-    std::filesystem::create_directories(lock_path_value.parent_path());
-    lock_fd = ::open(lock_path_value.c_str(), O_CREAT | O_RDWR, 0600);
-    if (lock_fd < 0) {
-        throw std::runtime_error(std::string("failed to open server lock file: ") + std::strerror(errno));
-    }
-    if (::flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
-        ::close(lock_fd);
-        lock_fd = -1;
-        throw std::runtime_error("another Intravenous server is already running for this workspace");
-    }
-}
-
-void SocketRpcServer::release_workspace_lock() {
-    if (lock_fd >= 0) {
-        ::flock(lock_fd, LOCK_UN);
-        ::close(lock_fd);
-        lock_fd = -1;
-    }
-    std::error_code ec;
-    std::filesystem::remove(lock_path_value, ec);
-}
 
 bool SocketRpcServer::send_message(int fd, std::string const &message) {
     std::scoped_lock write_lock(write_mutex);
@@ -434,6 +199,10 @@ void SocketRpcServer::handle_client(int fd) {
     std::string buffer;
     std::array<char, 4096> read_buffer{};
 
+    if (!send_message(fd, jsonrpc_notification("server.ready", Json::object()))) {
+        return;
+    }
+
     for (;;) {
         ssize_t count = ::read(fd, read_buffer.data(), read_buffer.size());
         if (count <= 0) {
@@ -458,89 +227,54 @@ void SocketRpcServer::handle_client(int fd) {
             bool shutdown_after_response = false;
             begin_deferring_current_request_notifications();
             try {
-                auto const request = parse_request_json(line);
-                request_id = parse_request_id(request);
-                auto const method = parse_request_method(request);
-                auto const &params = parse_request_params(request);
+                auto const request = parse_socket_rpc_request(line);
+                request_id = request.request_id;
 
-                if (method == "server.initialize") {
-                    auto const requested_workspace = normalize_path(parse_string_param(params, "workspaceRoot"));
-                    ServerInitializeRequest event_request{.workspace_root = requested_workspace};
-                    SocketRpcInitializeResultBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_server_initialize_event, event_request, builder);
-                    response = builder.build(request_id);
-                } else if (method == "graph.queryBySpans") {
-                    GraphQueryBySpansRequest event_request{
-                        .file_path = parse_string_param(params, "filePath"),
-                        .ranges = parse_ranges(params),
-                        .match_mode = parse_match_mode(params),
-                    };
-                    SocketRpcGraphQueryResultBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_graph_query_by_spans_event, event_request, builder);
-                    response = builder.build(request_id);
-                } else if (method == "graph.queryActiveRegions") {
-                    GraphQueryActiveRegionsRequest event_request{
-                        .file_path = parse_string_param(params, "filePath"),
-                    };
-                    SocketRpcRegionQueryResultBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_graph_query_active_regions_event, event_request, builder);
-                    response = builder.build(request_id);
-                } else if (method == "graph.getLogicalNode") {
-                    GetLogicalNodeRequest event_request{.node_id = parse_string_param(params, "nodeId")};
-                    SocketRpcLogicalNodeResultBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_logical_node_event, event_request, builder);
-                    response = builder.build(request_id);
-                } else if (method == "graph.getLogicalNodes") {
-                    GetLogicalNodesRequest event_request{.node_ids = parse_string_array_param(params, "nodeIds")};
-                    SocketRpcLogicalNodesResultBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_logical_nodes_event, event_request, builder);
-                    response = builder.build(request_id);
-                } else if (method == "timeline.openLaneView") {
-                    auto const event_request = parse_lane_view_request(params);
-                    SocketRpcLaneViewResultBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_open_lane_view_event, event_request, builder);
-                    response = builder.build(request_id);
-                } else if (method == "timeline.updateLaneView") {
-                    auto const event_request = parse_lane_view_request(params);
-                    SocketRpcLaneViewResultBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_update_lane_view_event, event_request, builder);
-                    response = builder.build(request_id);
-                } else if (method == "timeline.closeLaneView") {
-                    auto const view_id = parse_string_param(params, "viewId");
-                    SocketRpcAckResponseBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_close_lane_view_event, view_id, builder);
-                    response = builder.build(request_id);
-                } else if (method == "graph.setSampleInputValue") {
-                    auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-                    SetSampleInputValueRequest event_request{
-                        .node_id = parse_string_param(params, "nodeId"),
-                        .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
-                        .value = static_cast<Sample>(parse_number_param(params, "value")),
-                        .member_ordinal = member_ordinal.has_value()
-                            ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                            : std::nullopt,
-                    };
-                    SocketRpcAckResponseBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_input_value_event, event_request, builder);
-                    response = builder.build(request_id);
-                } else if (method == "graph.clearSampleInputValueOverride") {
-                    ClearSampleInputValueOverrideRequest event_request{
-                        .node_id = parse_string_param(params, "nodeId"),
-                        .member_ordinal = static_cast<size_t>(parse_uint64_param(params, "memberOrdinal")),
-                        .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
-                    };
-                    SocketRpcAckResponseBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_clear_sample_input_value_override_event, event_request, builder);
-                    response = builder.build(request_id);
-                } else if (method == "server.shutdown") {
-                    ServerShutdownRequest event_request{};
-                    SocketRpcAckResponseBuilder builder;
-                    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_server_shutdown_event, event_request, builder);
-                    response = builder.build(request_id);
-                    shutdown_after_response = true;
-                } else {
-                    throw std::runtime_error("unsupported JSON-RPC method: " + method);
-                }
+                std::visit([&](auto const &event_request) {
+                    using Request = std::remove_cvref_t<decltype(event_request)>;
+                    if constexpr (std::same_as<Request, GraphQueryBySpansRequest>) {
+                        SocketRpcGraphQueryResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_graph_query_by_spans_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, GraphQueryActiveRegionsRequest>) {
+                        SocketRpcRegionQueryResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_graph_query_active_regions_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, GetLogicalNodeRequest>) {
+                        SocketRpcLogicalNodeResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_logical_node_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, GetLogicalNodesRequest>) {
+                        SocketRpcLogicalNodesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_logical_nodes_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, OpenLaneViewRpcRequest>) {
+                        SocketRpcLaneViewResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_open_lane_view_event, event_request.request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, UpdateLaneViewRpcRequest>) {
+                        SocketRpcLaneViewResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_update_lane_view_event, event_request.request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, std::string>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_close_lane_view_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, SetSampleInputValueRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_input_value_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, ClearSampleInputValueOverrideRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_clear_sample_input_value_override_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, ServerShutdownRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_server_shutdown_event, event_request, builder);
+                        response = builder.build(request_id);
+                        shutdown_after_response = true;
+                    }
+                }, request.payload);
             } catch (std::exception const &e) {
                 response = jsonrpc_error(request_id, -32000, e.what());
             }
@@ -564,63 +298,14 @@ void SocketRpcServer::handle_client(int fd) {
     }
 }
 
-void SocketRpcServer::accept_loop(std::stop_token stop_token) {
-    while (!stop_token.stop_requested()) {
-        int accepted_fd = ::accept(listen_fd, nullptr, nullptr);
-        if (accepted_fd < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            break;
-        }
-
-        {
-            std::scoped_lock client_lock(client_mutex);
-            client_fd = accepted_fd;
-        }
-        handle_client(accepted_fd);
-        {
-            std::scoped_lock client_lock(client_mutex);
-            if (client_fd == accepted_fd) {
-                client_fd = -1;
-            }
-        }
-        ::close(accepted_fd);
-        request_shutdown();
-        break;
+void SocketRpcServer::start() {
+    if (rpc_fd_value < 0) {
+        throw std::runtime_error("SocketRpcServer requires a valid connected rpc fd");
     }
 
     {
-        std::scoped_lock lock(mutex);
-        stopped = true;
-    }
-    stopped_cv.notify_all();
-}
-
-void SocketRpcServer::start() {
-    acquire_workspace_lock();
-    std::filesystem::create_directories(socket_path_value.parent_path());
-    std::error_code ec;
-    std::filesystem::remove(socket_path_value, ec);
-
-    listen_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (listen_fd < 0) {
-        throw std::runtime_error(std::string("failed to create socket: ") + std::strerror(errno));
-    }
-
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    auto const socket_string = socket_path_value.string();
-    if (socket_string.size() >= sizeof(address.sun_path)) {
-        throw std::runtime_error("socket path is too long: " + socket_string);
-    }
-    std::memcpy(address.sun_path, socket_string.c_str(), socket_string.size() + 1);
-
-    if (::bind(listen_fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
-        throw std::runtime_error(std::string("failed to bind socket: ") + std::strerror(errno));
-    }
-    if (::listen(listen_fd, 8) != 0) {
-        throw std::runtime_error(std::string("failed to listen on socket: ") + std::strerror(errno));
+        std::scoped_lock client_lock(client_mutex);
+        client_fd = rpc_fd_value;
     }
 
     {
@@ -629,7 +314,28 @@ void SocketRpcServer::start() {
     }
     ready_cv.notify_all();
 
-    accept_thread.emplace([this](std::stop_token stop_token) { accept_loop(stop_token); });
+    worker_thread.emplace([this](std::stop_token) {
+        int fd = -1;
+        {
+            std::scoped_lock client_lock(client_mutex);
+            fd = client_fd;
+        }
+        if (fd >= 0) {
+            handle_client(fd);
+            ::close(fd);
+        }
+        {
+            std::scoped_lock client_lock(client_mutex);
+            if (client_fd == fd) {
+                client_fd = -1;
+            }
+        }
+        {
+            std::scoped_lock lock(mutex);
+            stopped = true;
+        }
+        stopped_cv.notify_all();
+    });
 }
 
 void SocketRpcServer::request_shutdown() {
@@ -639,17 +345,9 @@ void SocketRpcServer::request_shutdown() {
             ::shutdown(client_fd, SHUT_RDWR);
         }
     }
-    if (listen_fd >= 0) {
-        ::shutdown(listen_fd, SHUT_RDWR);
-        ::close(listen_fd);
-        listen_fd = -1;
+    if (worker_thread.has_value()) {
+        worker_thread->request_stop();
     }
-    std::error_code ec;
-    std::filesystem::remove(socket_path_value, ec);
-    if (accept_thread.has_value()) {
-        accept_thread->request_stop();
-    }
-    release_workspace_lock();
 }
 
 bool SocketRpcServer::wait_until_ready(std::chrono::milliseconds timeout) const {
@@ -660,10 +358,6 @@ bool SocketRpcServer::wait_until_ready(std::chrono::milliseconds timeout) const 
 void SocketRpcServer::wait() {
     std::unique_lock lock(mutex);
     stopped_cv.wait(lock, [&] { return stopped; });
-}
-
-std::filesystem::path SocketRpcServer::socket_path() const {
-    return socket_path_value;
 }
 
 void SocketRpcServer::send_server_message(SocketRpcServerMessage const &notification) {

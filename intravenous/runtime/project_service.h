@@ -2,12 +2,10 @@
 
 #include "devices/audio_device.h"
 #include "graph/build_types.h"
+#include "runtime/iv_modules.h"
 #include "module/dependency.h"
-#include "runtime/config.h"
-#include "runtime/lane_graph.h"
-#include "runtime/lane_view_service.h"
+#include "runtime/project_service_events.h"
 #include "runtime/runtime_project_api_types.h"
-#include "runtime/timeline.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -18,6 +16,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <memory>
 #include <span>
 #include <string>
 #include <thread>
@@ -26,8 +25,6 @@
 #include <vector>
 
 namespace iv {
-class SocketRpcServer;
-
 struct SourceTextLineMap {
     std::string text;
     std::vector<size_t> line_offsets;
@@ -36,8 +33,6 @@ struct SourceTextLineMap {
     size_t offset_for(SourcePosition position) const;
     SourcePosition position_for(size_t offset) const;
 };
-
-using AudioDeviceFactory = std::function<std::optional<LogicalAudioDevice>()>;
 
 struct LoadedGraphIntrospectionIndex {
     std::filesystem::path module_root;
@@ -49,37 +44,13 @@ struct LoadedGraphIntrospectionIndex {
 class NodeExecutor;
 
 class RuntimeProjectService {
-    Timeline &timeline;
-    SocketRpcServer *server = nullptr;
-    std::filesystem::path workspace_root;
-    std::filesystem::path discovery_start;
-    std::vector<std::filesystem::path> extra_search_roots;
-    AudioDeviceFactory audio_device_factory;
+    std::unique_ptr<RuntimeIvModules> iv_modules;
 
     mutable std::mutex mutex;
     mutable std::unordered_map<std::string, SourceTextLineMap> source_text_cache;
-    std::condition_variable initialized_cv;
-
-    std::optional<RuntimeProjectConfig> config;
     std::optional<LoadedGraphIntrospectionIndex> graph_index;
-    LaneViewService lane_views;
-    std::exception_ptr pending_exception;
-    bool initialized = false;
-    bool shutdown_requested = false;
-
-    std::optional<std::jthread> runtime_thread;
-    NodeExecutor *executor_state = nullptr;
 
     void emit_notification(RuntimeProjectNotification notification);
-    void emit_message(std::string level, std::string message);
-    void emit_status(
-        std::string code,
-        std::string level,
-        std::string message,
-        std::filesystem::path module_root = {},
-        std::vector<std::string> created_node_ids = {},
-        std::vector<std::string> deleted_node_ids = {});
-    void rethrow_if_failed() const;
     SourceTextLineMap const &
     source_text_for(std::string const &normalized_path) const;
     void invalidate_source_text(std::string const &normalized_path);
@@ -88,25 +59,10 @@ class RuntimeProjectService {
     byte_range_for(std::string const &normalized_path, SourceRange const &range) const;
     LiveSourceSpan to_live_span(SourceSpan const &span) const;
     LogicalNodeInfo to_logical_node(IntrospectionLogicalNode const &node) const;
-    LaneQueryResult query_lanes_locked(
-        LaneQueryFilter const &filter,
-        std::optional<size_t> start_index = std::nullopt,
-        std::optional<size_t> visible_lane_count = std::nullopt) const;
-    void configure_lane_views();
-    void run_runtime();
 
 public:
     explicit RuntimeProjectService(
-        Timeline &timeline, std::filesystem::path workspace_root,
-        std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots = {},
-        AudioDeviceFactory audio_device_factory = {});
-    explicit RuntimeProjectService(
-        Timeline &timeline, SocketRpcServer &server,
-        std::filesystem::path workspace_root,
-        std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots = {},
-        AudioDeviceFactory audio_device_factory = {});
+        std::unique_ptr<RuntimeIvModules> iv_modules = {});
     ~RuntimeProjectService();
     RuntimeProjectService(RuntimeProjectService &&) = delete;
     RuntimeProjectService &operator=(RuntimeProjectService &&) = delete;
@@ -115,6 +71,8 @@ public:
     RuntimeProjectService &operator=(RuntimeProjectService const &) = delete;
 
     RuntimeProjectInitializeResult initialize();
+    void handle_iv_modules_definitions_changed(
+        RuntimeIvModuleDefinitionsChanged const &diff);
     RuntimeProjectQueryResult
     query_by_spans(
         std::filesystem::path const &file_path,
@@ -125,9 +83,6 @@ public:
     LogicalNodeInfo get_logical_node(std::string const &node_id) const;
     std::vector<LogicalNodeInfo>
     get_logical_nodes(std::vector<std::string> const &node_ids) const;
-    LaneViewResult open_lane_view(LaneViewRequest request);
-    LaneViewResult update_lane_view(LaneViewRequest request);
-    void close_lane_view(std::string const &view_id);
     void set_sample_input_value(
         std::string const &node_id, size_t input_ordinal,
         Sample value,

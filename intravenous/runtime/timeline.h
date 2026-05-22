@@ -200,6 +200,28 @@ namespace iv {
             return { outputs.begin(), outputs.end() };
         }
 
+        std::vector<LaneId> lane_ids()
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            std::vector<LaneId> ids;
+            default_graph_locked().lane_graph.for_each_lane([&](LaneRecord const& lane) {
+                ids.push_back(lane.id);
+            });
+            return ids;
+        }
+
+        LaneMetadata lane_metadata(LaneId lane)
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            return default_graph_locked().lane_graph.lane(lane).metadata;
+        }
+
+        void remove_lane(LaneId lane)
+        {
+            std::scoped_lock lock(_live_input_bindings_mutex);
+            default_graph_locked().lane_graph.remove_lane(lane);
+        }
+
         void set_graph_input_sample_value(GraphInputPortDescriptor const& port, Sample value)
         {
             std::scoped_lock lock(_live_input_bindings_mutex);

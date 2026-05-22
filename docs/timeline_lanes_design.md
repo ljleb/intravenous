@@ -3,6 +3,13 @@
 This document captures the current working design for Intravenous timeline
 lanes. It is intentionally a design checkpoint, not a final specification.
 
+For current runtime execution ownership and playback-direction decisions, also
+see [execution_model_direction.md](./execution_model_direction.md).
+
+Some older execution wording in this document is superseded by that newer note.
+This document should remain the primary place for lane kinds, lane semantics,
+and lane-model structure.
+
 ## Core Model
 
 Everything time-varying or controllable is represented as a lane.
@@ -35,16 +42,16 @@ physical controllers, DSP graph inputs and outputs, and output devices.
 Lane nodes can mix compiled and real-time ports. The output domain defines the
 node's execution style:
 
-- Real-time output lanes are pull-based. They respond to graph/timeline requests
-  for a concrete timeline block or span.
+- Real-time output lanes are push-oriented. They should produce data forward in
+  time and be scheduled or throttled by runtime demand rather than being
+  modeled as purely random-access timeline queries.
 - Compiled output lanes are push/invalidation-based. Edits, recording, imports,
   or dependency changes enqueue invalidated spans for regeneration.
 
-All lane nodes, including real-time-output lane nodes, must produce output for
-requested timeline indices directly or through a predictable sweep controlled by
-the lane processor. This is why lane nodes are distinct from DSP nodes: DSP nodes
-are optimized around forward real-time execution, while lane nodes are optimized
-around timeline-addressable access.
+The exact execution ownership and scheduling model is being revised. In
+particular, realtime DSP execution is moving toward instance-owned execution
+coordinated by the timeline, rather than a purely pull-shaped model. Lane-domain
+semantics should stay stable even as that runtime execution model changes.
 
 ## DSP Nodes And Compiled Data
 
@@ -165,6 +172,15 @@ one source lane output -> many target lane inputs
 The compiled dependency graph should be a DAG. Real-time edges can reach DSP
 graphs, devices, and other runtime endpoints through explicit lane/DSP bridge
 nodes installed during graph build and cleaned up through graph lifecycle hooks.
+
+## Lane Change Events And Views
+
+The timeline should be the owner of lane change events.
+
+Lane views should react to timeline-owned lane-change notifications through
+isolating bridges, rather than being coupled directly to DSP-specific lane
+management modules. This keeps lane ownership, lane mutation, and lane-view
+projection separate.
 
 ## Outputs
 

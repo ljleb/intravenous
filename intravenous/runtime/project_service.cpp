@@ -1,20 +1,9 @@
 #include "runtime/project_service.h"
 
 #include "compat.h"
-#include "devices/miniaudio_device.h"
 #include "filesystem_paths.h"
-#include "juce/vst_runtime.h"
-#include "module/loader.h"
-#include "module/search_paths.h"
-#include "module/watcher.h"
-#include "node/executor.h"
-#include "orchestrator/orchestrator_builder.h"
-#include "runtime/config.h"
-#include "runtime/graph_input_lane_controller.h"
 #include "runtime/handlers.h"
-#include "runtime/reload_worker.h"
-#include "runtime/socket_rpc_server.h"
-#include "runtime/timeline.h"
+#include "runtime/project_service_events.h"
 
 #include <algorithm>
 #include <array>
@@ -31,6 +20,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <numeric>
 
 // there is SO MUCH SHIT in this file
 // this file should do ONLY ROUTING. read again: ONLY ROUTING
@@ -91,79 +81,12 @@ SourcePosition SourceTextLineMap::position_for(size_t offset) const {
 
 namespace {
 
-ModuleExecutorTarget module_executor_target(RenderConfig const &config) {
-    return ModuleExecutorTarget{
-            .sample_rate = config.sample_rate,
-            .num_channels = config.num_channels,
-            .max_block_frames = config.max_block_frames,
-    };
-}
-
-DeviceOrchestrator make_audio_device_provider(LogicalAudioDevice audio_device) {
-    std::vector<OutputDeviceMixer> mixers;
-    mixers.emplace_back(std::move(audio_device), [](OrchestratorBuilder &builder,
-                                                                                                    OutputDeviceMixer &&mixer) {
-        builder.add_audio_mixer(0, std::move(mixer));
-    });
-    return DeviceOrchestrator(std::move(mixers));
-}
-
-ResourceContext make_resource_context(RenderConfig const &render_config) {
-    ResourceContext resources{};
-#if IV_ENABLE_JUCE_VST
-    static JuceVstRuntimeManager juce_vst_runtime_manager;
-    static std::unique_ptr<JuceVstRuntimeSupport> juce_vst_runtime_support;
-    juce_vst_runtime_support = std::make_unique<JuceVstRuntimeSupport>(
-            juce_vst_runtime_manager, static_cast<double>(render_config.sample_rate));
-    resources = juce_vst_runtime_support->resources();
-#endif
-    return resources;
-}
-
-NodeExecutor make_executor(RenderConfig const &render_config,
-                                                      DeviceOrchestrator &device_orchestrator,
-                                                      ModuleLoader::LoadedGraph loaded_graph) {
-    return NodeExecutor::create(std::move(loaded_graph.root),
-                                                            make_resource_context(render_config),
-                                                            std::move(device_orchestrator).to_builder(),
-                                                            std::move(loaded_graph.module_refs));
-}
-
 void sort_and_deduplicate_spans(std::vector<SourceSpan> &spans) {
     std::sort(spans.begin(), spans.end(), [](auto const &a, auto const &b) {
         return std::tie(a.file_path, a.begin, a.end) <
                       std::tie(b.file_path, b.begin, b.end);
     });
     spans.erase(std::unique(spans.begin(), spans.end()), spans.end());
-}
-
-std::string format_exception_context(std::string_view context,
-                                                                          std::exception_ptr exception) {
-    if (!exception) {
-        return std::string(context);
-    }
-
-    try {
-        std::rethrow_exception(exception);
-    } catch (std::exception const &e) {
-        return std::string(context) + ": " + e.what();
-    } catch (...) {
-        return std::string(context) + ": unknown exception";
-    }
-}
-
-std::string describe_exception(std::exception_ptr exception) {
-    if (!exception) {
-        return "unknown exception";
-    }
-
-    try {
-        std::rethrow_exception(exception);
-    } catch (std::exception const &e) {
-        return e.what();
-    } catch (...) {
-        return "unknown exception";
-    }
 }
 
 LoadedGraphIntrospectionIndex
@@ -188,42 +111,6 @@ build_graph_introspection_index(GraphIntrospectionMetadata const &introspection,
     }
 
     return graph_index;
-}
-
-void append_graph_input_port_descriptors(
-        std::vector<GraphInputPortDescriptor> &ports,
-        std::string const &logical_node_id,
-        std::optional<size_t> concrete_member_ordinal, PortKind port_kind,
-        std::span<LogicalPortInfo const> logical_ports) {
-    ports.reserve(ports.size() + logical_ports.size());
-    for (auto const &port : logical_ports) {
-        ports.push_back(GraphInputPortDescriptor{
-                .logical_node_id = logical_node_id,
-                .concrete_member_ordinal = concrete_member_ordinal,
-                .port_kind = port_kind,
-                .port_ordinal = port.ordinal,
-                .port_name = port.name,
-                .port_type = port.type,
-        });
-    }
-}
-
-std::vector<GraphInputPortDescriptor> graph_input_port_descriptors_for(
-        std::span<IntrospectionLogicalNode const> logical_nodes) {
-    std::vector<GraphInputPortDescriptor> ports;
-    for (auto const &node : logical_nodes) {
-        append_graph_input_port_descriptors(ports, node.id, std::nullopt,
-                                                                        PortKind::sample, node.sample_inputs);
-        append_graph_input_port_descriptors(ports, node.id, std::nullopt,
-                                                                        PortKind::event, node.event_inputs);
-        for (auto const &member : node.members) {
-            append_graph_input_port_descriptors(ports, node.id, member.ordinal,
-                                                                            PortKind::sample, member.sample_inputs);
-            append_graph_input_port_descriptors(ports, node.id, member.ordinal,
-                                                                            PortKind::event, member.event_inputs);
-        }
-    }
-    return ports;
 }
 
 GraphInputPortDescriptor
@@ -251,70 +138,39 @@ sample_graph_input_port_for(IntrospectionLogicalNode const &node,
     };
 }
 
+std::string live_input_snapshot_key(
+        std::string_view logical_node_id,
+        std::optional<size_t> member_ordinal,
+        size_t input_ordinal) {
+    std::string key(logical_node_id);
+    key += "#input:";
+    key += std::to_string(input_ordinal);
+    if (member_ordinal.has_value()) {
+        key += "#member:";
+        key += std::to_string(*member_ordinal);
+    }
+    return key;
+}
+
 } // namespace
 
 void RuntimeProjectService::emit_notification(
         RuntimeProjectNotification notification) {
     std::visit(
             [&](auto &payload) {
-                using Payload = std::remove_cvref_t<decltype(payload)>;
-                if constexpr (std::same_as<Payload, RuntimeProjectLaneViewNotification>) {
-                    return;
-                } else {
+        using Payload = std::remove_cvref_t<decltype(payload)>;
+        if constexpr (std::same_as<Payload, RuntimeProjectLaneViewNotification>) {
+            return;
+        } else {
                     if (payload.module_root.empty()) {
-                        if (config.has_value()) {
-                            payload.module_root = config->module_root;
-                        } else if (graph_index.has_value()) {
+                        if (graph_index.has_value()) {
                             payload.module_root = graph_index->module_root;
                         }
                     }
                 }
             },
             notification);
-    if (server != nullptr) {
-        std::visit(
-                [this](auto const &payload) {
-                    using Payload = std::remove_cvref_t<decltype(payload)>;
-                    if constexpr (std::same_as<Payload, RuntimeProjectMessageNotification>) {
-                        server->send_server_message(payload);
-                    } else if constexpr (std::same_as<Payload, RuntimeProjectStatusNotification>) {
-                        server->send_server_status(payload);
-                    } else if constexpr (std::same_as<Payload, RuntimeProjectLaneViewNotification>) {
-                        server->send_lane_view_updated(payload.lane_view);
-                    }
-                },
-                notification);
-    }
-}
-
-void RuntimeProjectService::emit_message(std::string level,
-                                                                                  std::string message) {
-    emit_notification(RuntimeProjectMessageNotification{
-            .level = std::move(level),
-            .message = std::move(message),
-    });
-}
-
-void RuntimeProjectService::emit_status(
-        std::string code, std::string level, std::string message,
-        std::filesystem::path module_root, std::vector<std::string> created_node_ids,
-        std::vector<std::string> deleted_node_ids) {
-    emit_notification(RuntimeProjectNotification{
-            RuntimeProjectStatusNotification{
-                    .level = std::move(level),
-                    .code = std::move(code),
-                    .message = std::move(message),
-                    .module_root = std::move(module_root),
-                    .created_node_ids = std::move(created_node_ids),
-                    .deleted_node_ids = std::move(deleted_node_ids),
-            },
-    });
-}
-
-void RuntimeProjectService::rethrow_if_failed() const {
-    if (pending_exception) {
-        std::rethrow_exception(pending_exception);
-    }
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_notification_event, notification);
 }
 
 SourceTextLineMap const &RuntimeProjectService::source_text_for(
@@ -367,6 +223,52 @@ RuntimeProjectService::to_live_span(SourceSpan const &span) const {
 
 LogicalNodeInfo RuntimeProjectService::to_logical_node(
         IntrospectionLogicalNode const &node) const {
+    std::vector<RuntimeProjectLiveInputSnapshotRequest> snapshot_requests;
+    snapshot_requests.reserve(
+        node.sample_inputs.size() +
+        std::accumulate(
+            node.members.begin(),
+            node.members.end(),
+            size_t{0},
+            [](size_t sum, auto const &member) {
+                return sum + member.sample_inputs.size();
+            }));
+    for (auto const &port : node.sample_inputs) {
+        snapshot_requests.push_back(RuntimeProjectLiveInputSnapshotRequest{
+            .logical_node_id = node.id,
+            .member_ordinal = std::nullopt,
+            .input_ordinal = port.ordinal,
+            .fallback = port.default_value,
+        });
+    }
+    for (auto const &member : node.members) {
+        for (auto const &port : member.sample_inputs) {
+            snapshot_requests.push_back(RuntimeProjectLiveInputSnapshotRequest{
+                .logical_node_id = node.id,
+                .member_ordinal = member.ordinal,
+                .input_ordinal = port.ordinal,
+                .fallback = port.default_value,
+            });
+        }
+    }
+
+    RuntimeProjectLiveInputSnapshotsBuilder snapshot_builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_live_input_snapshots_requested_event,
+        snapshot_requests,
+        snapshot_builder);
+    auto const snapshots = snapshot_builder.build();
+    std::unordered_map<std::string, RuntimeProjectLiveInputSnapshot> snapshots_by_key;
+    snapshots_by_key.reserve(snapshots.size());
+    for (auto const &snapshot : snapshots) {
+        snapshots_by_key.emplace(
+            live_input_snapshot_key(
+                snapshot.logical_node_id,
+                snapshot.member_ordinal,
+                snapshot.input_ordinal),
+            snapshot);
+    }
+
     LogicalNodeInfo live;
     live.id = node.id;
     live.kind = node.kind;
@@ -374,8 +276,12 @@ LogicalNodeInfo RuntimeProjectService::to_logical_node(
     live.type_identity = node.type_identity;
     live.sample_inputs = node.sample_inputs;
     for (auto &port : live.sample_inputs) {
-        port.current_value =
-                timeline.live_input_value_or(node.id, port.ordinal, port.default_value);
+        auto const snapshot_it = snapshots_by_key.find(
+            live_input_snapshot_key(node.id, std::nullopt, port.ordinal));
+        if (snapshot_it == snapshots_by_key.end()) {
+            throw std::runtime_error("missing live input snapshot for logical input");
+        }
+        port.current_value = snapshot_it->second.current_value;
     }
     live.sample_outputs = node.sample_outputs;
     live.event_inputs = node.event_inputs;
@@ -390,12 +296,13 @@ LogicalNodeInfo RuntimeProjectService::to_logical_node(
         live_member.type_identity = member.type_identity;
         live_member.sample_inputs = member.sample_inputs;
         for (auto &port : live_member.sample_inputs) {
-            port.current_value = timeline.live_input_value_or(
-                    node.id, member.ordinal, port.ordinal,
-                    timeline.live_input_value_or(node.id, port.ordinal,
-                                                                              port.default_value));
-            port.has_concrete_override = timeline.has_live_input_value_override(
-                    node.id, member.ordinal, port.ordinal);
+            auto const snapshot_it = snapshots_by_key.find(
+                live_input_snapshot_key(node.id, member.ordinal, port.ordinal));
+            if (snapshot_it == snapshots_by_key.end()) {
+                throw std::runtime_error("missing live input snapshot for concrete input");
+            }
+            port.current_value = snapshot_it->second.current_value;
+            port.has_concrete_override = snapshot_it->second.has_concrete_override;
         }
         live_member.sample_outputs = member.sample_outputs;
         live_member.event_inputs = member.event_inputs;
@@ -409,303 +316,18 @@ LogicalNodeInfo RuntimeProjectService::to_logical_node(
     return live;
 }
 
-LaneQueryResult RuntimeProjectService::query_lanes_locked(
-        LaneQueryFilter const &filter,
-        std::optional<size_t> start_index,
-        std::optional<size_t> visible_lane_count) const {
-    if (!graph_index.has_value()) {
-        throw std::runtime_error("runtime project service is not initialized");
-    }
-    if (filter.kind != "graphInputs") {
-        throw std::runtime_error("unsupported lane filter: " + filter.kind);
-    }
-
-    LaneQueryResult result;
-    auto const controls = timeline.reconcile_graph_input_lane_bindings(
-            graph_input_port_descriptors_for(graph_index->logical_nodes));
-
-    std::vector<LaneInfo> lane_infos;
-    lane_infos.reserve(controls.logical_sample_knobs.size() +
-                                          controls.sample_inputs.size() +
-                                          controls.event_inputs.size());
-    for (auto const &control : controls.logical_sample_knobs) {
-        lane_infos.push_back(LaneInfo{
-                .lane_id = control.knob_lane.value,
-                .domain = LaneDomain::realtime,
-                .graph_input_port = control.port,
-        });
-    }
-    for (auto const &control : controls.sample_inputs) {
-        lane_infos.push_back(LaneInfo{
-                .lane_id = control.knob_lane.value,
-                .domain = LaneDomain::realtime,
-                .graph_input_port = control.port,
-        });
-    }
-    for (auto const &event_input : controls.event_inputs) {
-        lane_infos.push_back(LaneInfo{
-                .lane_id = event_input.graph_input_lane.value,
-                .domain = LaneDomain::realtime,
-                .graph_input_port = event_input.port,
-        });
-    }
-
-    result.total_lane_count = lane_infos.size();
-    result.start_index = start_index.value_or(0);
-    result.visible_lane_count =
-            visible_lane_count.value_or(result.total_lane_count);
-
-    size_t const max_start_index =
-            result.total_lane_count == 0
-                    ? 0
-                    : (result.visible_lane_count >= result.total_lane_count
-                                  ? 0
-                                  : result.total_lane_count - result.visible_lane_count);
-    size_t const lane_begin = std::min(result.start_index, max_start_index);
-    size_t const remaining_lanes = result.total_lane_count - lane_begin;
-    size_t const window_lane_count =
-            std::min(result.visible_lane_count, remaining_lanes);
-    size_t const lane_end = lane_begin + window_lane_count;
-    bool const restrict_connections_to_window =
-            start_index.has_value() || visible_lane_count.has_value();
-    result.start_index = lane_begin;
-    result.lanes.reserve(window_lane_count);
-
-    std::unordered_set<uint64_t> visible_lane_ids;
-    visible_lane_ids.reserve(window_lane_count);
-    for (size_t lane_index = lane_begin; lane_index < lane_end; ++lane_index) {
-        auto const &lane = lane_infos[lane_index];
-        visible_lane_ids.insert(lane.lane_id);
-        result.lanes.push_back(lane);
-    }
-
-    for (auto const &lane : lane_infos) {
-        if (!visible_lane_ids.contains(lane.lane_id) &&
-                restrict_connections_to_window) {
-            continue;
-        }
-        LaneId const source{lane.lane_id};
-        for (auto const &output : timeline.lane_outputs_for(source)) {
-            if (restrict_connections_to_window &&
-                    !visible_lane_ids.contains(source.value) &&
-                    !visible_lane_ids.contains(output.target.value)) {
-                continue;
-            }
-            result.connections.push_back(LaneConnectionInfo{
-                    .source_lane_id = source.value,
-                    .target_lane_id = output.target.value,
-                    .port_kind = output.input.kind,
-                    .port_ordinal = output.input.ordinal,
-            });
-        }
-    }
-    return result;
-}
-
-void RuntimeProjectService::run_runtime() {
-    try {
-        config = load_runtime_project_config(workspace_root);
-
-        auto audio_device = audio_device_factory ? audio_device_factory()
-                                                                                          : make_miniaudio_device({});
-        if (!audio_device) {
-            throw std::runtime_error(
-                    "no production audio backend is currently configured");
-        }
-
-#if IV_ENABLE_JUCE_VST
-        warmup_juce_vst_scan_cache();
-#endif
-
-        auto search_roots = parse_search_path_env();
-        search_roots.insert(search_roots.end(), extra_search_roots.begin(),
-                                                extra_search_roots.end());
-
-        ModuleLoader loader(
-                this->timeline, discovery_start, std::move(search_roots),
-                config->toolchain,
-                [this](std::string const &message) { emit_message("info", message); });
-        auto watcher = make_dependency_watcher();
-
-        RenderConfig const render_config = audio_device->config();
-        Sample device_sample_period = sample_period(render_config);
-
-        auto loaded_graph = loader.load_root(config->module_root,
-                                                                                  module_executor_target(render_config),
-                                                                                  &device_sample_period);
-        watcher.update(loaded_graph.dependencies);
-        invalidate_source_texts(loaded_graph.dependencies);
-
-        std::vector<std::string> created_node_ids;
-        {
-            std::scoped_lock lock(mutex);
-            graph_index = build_graph_introspection_index(loaded_graph.introspection,
-                                                                                                        config->module_root,
-                                                                                                        loaded_graph.module_id);
-            timeline.ensure_graph_input_lane_bindings(
-                    graph_input_port_descriptors_for(graph_index->logical_nodes));
-            lane_views.mark_lane_set_changed();
-            created_node_ids.reserve(graph_index->logical_nodes.size());
-            for (auto const &node : graph_index->logical_nodes) {
-                created_node_ids.push_back(node.id);
-            }
-            initialized = true;
-        }
-        initialized_cv.notify_all();
-
-        DeviceOrchestrator output_devices(
-                make_audio_device_provider(std::move(*audio_device)));
-        auto executor_storage =
-                make_executor(render_config, output_devices, std::move(loaded_graph));
-        {
-            std::scoped_lock lock(mutex);
-            executor_state = &executor_storage;
-            if (shutdown_requested) {
-                executor_state->request_shutdown();
-            }
-        }
-
-        ReloadWorker reload_worker(
-                watcher, config->module_root,
-                [&]() {
-                    auto reload = loader.load_root(config->module_root,
-                                                                                  module_executor_target(render_config),
-                                                                                  &device_sample_period);
-                    invalidate_source_texts(reload.dependencies);
-                    std::vector<std::string> deleted_node_ids;
-                    std::vector<std::string> created_node_ids;
-                    {
-                        std::scoped_lock lock(mutex);
-                        std::unordered_set<std::string> previous_logical_ids;
-                        if (graph_index.has_value()) {
-                            deleted_node_ids.reserve(graph_index->logical_nodes.size());
-                            for (auto const &node : graph_index->logical_nodes) {
-                                deleted_node_ids.push_back(node.id);
-                                previous_logical_ids.insert(node.id);
-                            }
-                        }
-                        graph_index = build_graph_introspection_index(
-                                reload.introspection, config->module_root, reload.module_id);
-                        timeline.ensure_graph_input_lane_bindings(
-                                graph_input_port_descriptors_for(graph_index->logical_nodes));
-                        lane_views.mark_lane_set_changed();
-                        for (auto const &node : graph_index->logical_nodes) {
-                            if (!previous_logical_ids.erase(node.id)) {
-                                created_node_ids.push_back(node.id);
-                            }
-                        }
-                        deleted_node_ids.assign(previous_logical_ids.begin(),
-                                                                        previous_logical_ids.end());
-                    }
-                    emit_status("rebuildFinished", "info",
-                                            "rebuild complete " + config->module_root.string(),
-                                            config->module_root, std::move(created_node_ids),
-                                            std::move(deleted_node_ids));
-                    return reload;
-                },
-                [this]() {
-                    emit_status("rebuildStarted", "info",
-                                            "rebuilding " + config->module_root.string(),
-                                            config->module_root);
-                },
-                []() {},
-                [this](std::exception_ptr exception) {
-                    emit_status("rebuildFailed", "error", describe_exception(exception),
-                                            config->module_root);
-                });
-        reload_worker.start();
-
-        executor_storage.execute([&]() -> std::optional<ModuleLoader::LoadedGraph> {
-            if (!reload_worker.has_pending_reload()) {
-                if (reload_worker.has_pending_exception()) {
-                    if (auto exception = reload_worker.take_exception()) {
-                        emit_message("error",
-                                                  format_exception_context(
-                                                          "runtime project reload failed", exception));
-                    }
-                }
-                return std::nullopt;
-            }
-
-            if (auto exception = reload_worker.take_exception()) {
-                emit_message("error", format_exception_context(
-                                                                    "runtime project reload failed", exception));
-            }
-
-            std::vector<ModuleDependency> dependencies;
-            auto reload = reload_worker.take_completed_reload(&dependencies);
-            if (reload) {
-                watcher.update(std::move(dependencies));
-            }
-            return reload;
-        });
-
-        reload_worker.request_shutdown();
-    } catch (...) {
-        auto exception = std::current_exception();
-        emit_status("startupFailed", "error", describe_exception(exception));
-        {
-            std::scoped_lock lock(mutex);
-            pending_exception = exception;
-            initialized = true;
-        }
-        initialized_cv.notify_all();
-    }
-}
-
-void RuntimeProjectService::configure_lane_views() {
-    lane_views.set_query_provider(
-            [this](LaneQueryFilter const &filter,
-                          std::optional<size_t> start_index,
-                          std::optional<size_t> visible_lane_count) {
-                return query_lanes_locked(filter, start_index, visible_lane_count);
-            });
-    lane_views.set_update_sink([this](LaneViewResult const &update) {
-        emit_notification(RuntimeProjectLaneViewNotification{
-                .lane_view = update,
-        });
-    });
-}
-
 RuntimeProjectService::RuntimeProjectService(
-        Timeline &timeline, std::filesystem::path workspace_root,
-        std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots,
-        AudioDeviceFactory audio_device_factory)
-        : timeline(timeline), workspace_root(normalize_path(workspace_root)),
-            discovery_start(std::move(discovery_start)),
-            extra_search_roots(std::move(extra_search_roots)),
-            audio_device_factory(std::move(audio_device_factory)) {
-    configure_lane_views();
-}
-
-RuntimeProjectService::RuntimeProjectService(
-        Timeline &timeline, SocketRpcServer &server,
-        std::filesystem::path workspace_root, std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots,
-        AudioDeviceFactory audio_device_factory)
-        : timeline(timeline), server(&server),
-            workspace_root(normalize_path(workspace_root)),
-            discovery_start(std::move(discovery_start)),
-            extra_search_roots(std::move(extra_search_roots)),
-            audio_device_factory(std::move(audio_device_factory)) {
-    configure_lane_views();
-}
+        std::unique_ptr<RuntimeIvModules> iv_modules_)
+        : iv_modules(std::move(iv_modules_)) {}
 
 RuntimeProjectService::~RuntimeProjectService() {
     request_shutdown();
 }
 
 RuntimeProjectInitializeResult RuntimeProjectService::initialize() {
-    if (!runtime_thread.has_value()) {
-        runtime_thread.emplace([this](std::stop_token) { run_runtime(); });
+    if (iv_modules) {
+        (void)iv_modules->initialize();
     }
-
-    std::unique_lock lock(mutex);
-    initialized_cv.wait(
-            lock, [&] { return initialized || pending_exception != nullptr; });
-    rethrow_if_failed();
-
     if (!graph_index.has_value()) {
         throw std::runtime_error("runtime project service failed to produce an "
                                                           "initial graph graph_index");
@@ -717,12 +339,34 @@ RuntimeProjectInitializeResult RuntimeProjectService::initialize() {
     };
 }
 
+void RuntimeProjectService::handle_iv_modules_definitions_changed(
+        RuntimeIvModuleDefinitionsChanged const &diff) {
+    auto const changed_count = diff.added.size() + diff.updated.size();
+    if (changed_count == 0 && diff.removed_definition_ids.empty()) {
+        return;
+    }
+    if (changed_count > 1 || (!diff.added.empty() && !diff.updated.empty()) ||
+        !diff.removed_definition_ids.empty()) {
+        throw std::runtime_error(
+            "multiple iv-module definition changes are not yet supported");
+    }
+
+    RuntimeIvModuleDefinition const &definition =
+        !diff.added.empty() ? diff.added.front() : diff.updated.front();
+    invalidate_source_texts(definition.dependencies);
+
+    std::scoped_lock lock(mutex);
+    graph_index = build_graph_introspection_index(
+        definition.introspection,
+        definition.module_root,
+        definition.module_id);
+}
+
 RuntimeProjectQueryResult
 RuntimeProjectService::query_by_spans(std::filesystem::path const &file_path,
                                                                             std::vector<SourceRange> const &ranges,
                                                                             SourceRangeMatchMode match_mode) const {
     std::scoped_lock lock(mutex);
-    rethrow_if_failed();
     if (!graph_index.has_value()) {
         throw std::runtime_error("runtime project service is not initialized");
     }
@@ -854,7 +498,6 @@ RuntimeProjectService::query_by_spans(std::filesystem::path const &file_path,
 RuntimeProjectRegionQueryResult RuntimeProjectService::query_active_regions(
         std::filesystem::path const &file_path) const {
     std::scoped_lock lock(mutex);
-    rethrow_if_failed();
     if (!graph_index.has_value()) {
         throw std::runtime_error("runtime project service is not initialized");
     }
@@ -888,7 +531,6 @@ RuntimeProjectRegionQueryResult RuntimeProjectService::query_active_regions(
 LogicalNodeInfo
 RuntimeProjectService::get_logical_node(std::string const &node_id) const {
     std::scoped_lock lock(mutex);
-    rethrow_if_failed();
     if (!graph_index.has_value()) {
         throw std::runtime_error("runtime project service is not initialized");
     }
@@ -903,7 +545,6 @@ RuntimeProjectService::get_logical_node(std::string const &node_id) const {
 std::vector<LogicalNodeInfo> RuntimeProjectService::get_logical_nodes(
         std::vector<std::string> const &node_ids) const {
     std::scoped_lock lock(mutex);
-    rethrow_if_failed();
     if (!graph_index.has_value()) {
         throw std::runtime_error("runtime project service is not initialized");
     }
@@ -920,29 +561,10 @@ std::vector<LogicalNodeInfo> RuntimeProjectService::get_logical_nodes(
     return nodes;
 }
 
-LaneViewResult RuntimeProjectService::open_lane_view(LaneViewRequest request) {
-    std::scoped_lock lock(mutex);
-    rethrow_if_failed();
-    return lane_views.open_view(std::move(request));
-}
-
-LaneViewResult
-RuntimeProjectService::update_lane_view(LaneViewRequest request) {
-    std::scoped_lock lock(mutex);
-    rethrow_if_failed();
-    return lane_views.update_view(std::move(request));
-}
-
-void RuntimeProjectService::close_lane_view(std::string const &view_id) {
-    std::scoped_lock lock(mutex);
-    lane_views.close_view(view_id);
-}
-
 void RuntimeProjectService::set_sample_input_value(
         std::string const &node_id, size_t input_ordinal, Sample value,
         std::optional<size_t> member_ordinal) {
     std::scoped_lock lock(mutex);
-    rethrow_if_failed();
     if (!graph_index.has_value()) {
         throw std::runtime_error("runtime project service is not initialized");
     }
@@ -959,24 +581,40 @@ void RuntimeProjectService::set_sample_input_value(
         }
         auto const port =
             sample_graph_input_port_for(node, *member_ordinal, input_ordinal);
-        timeline.set_live_input_value(node_id, *member_ordinal, input_ordinal,
-                                                                    value);
-        timeline.set_graph_input_sample_value(port, value);
-        lane_views.mark_lane_set_changed();
+        RuntimeProjectAckBuilder builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_sample_input_value_requested_event,
+            RuntimeProjectSetSampleInputValueRequest{
+                .node_id = node_id,
+                .member_ordinal = *member_ordinal,
+                .input_ordinal = input_ordinal,
+                .value = value,
+                .graph_input_port = port,
+            },
+            builder);
+        builder.build();
         return;
     }
     auto const &node = graph_index->logical_nodes[it->second];
     auto const port =
             sample_graph_input_port_for(node, std::nullopt, input_ordinal);
-    timeline.set_live_input_value(node_id, input_ordinal, value);
-    timeline.set_graph_input_sample_value(port, value);
-    lane_views.mark_lane_set_changed();
+    RuntimeProjectAckBuilder builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_set_sample_input_value_requested_event,
+        RuntimeProjectSetSampleInputValueRequest{
+            .node_id = node_id,
+            .member_ordinal = std::nullopt,
+            .input_ordinal = input_ordinal,
+            .value = value,
+            .graph_input_port = port,
+        },
+        builder);
+    builder.build();
 }
 
 void RuntimeProjectService::clear_sample_input_value_override(
         std::string const &node_id, size_t member_ordinal, size_t input_ordinal) {
     std::scoped_lock lock(mutex);
-    rethrow_if_failed();
     if (!graph_index.has_value()) {
         throw std::runtime_error("runtime project service is not initialized");
     }
@@ -992,17 +630,22 @@ void RuntimeProjectService::clear_sample_input_value_override(
     }
     auto const port =
             sample_graph_input_port_for(node, member_ordinal, input_ordinal);
-    timeline.clear_live_input_value_override(node_id, member_ordinal,
-                                                                                      input_ordinal);
-    timeline.restore_graph_input_sample_inheritance(port);
-    lane_views.mark_lane_set_changed();
+    RuntimeProjectAckBuilder builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_clear_sample_input_value_override_requested_event,
+        RuntimeProjectClearSampleInputValueOverrideRequest{
+            .node_id = node_id,
+            .member_ordinal = member_ordinal,
+            .input_ordinal = input_ordinal,
+            .graph_input_port = port,
+        },
+        builder);
+    builder.build();
 }
 
 void RuntimeProjectService::request_shutdown() {
-    std::scoped_lock lock(mutex);
-    shutdown_requested = true;
-    if (executor_state) {
-        executor_state->request_shutdown();
+    if (iv_modules) {
+        iv_modules->request_shutdown();
     }
 }
 } // namespace iv
