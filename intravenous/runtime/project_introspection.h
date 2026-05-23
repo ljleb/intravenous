@@ -45,7 +45,7 @@ public:
     RuntimeProjectIntrospection() = default;
 
     RuntimeProjectInitializeResult initialize() const;
-    void handle_iv_modules_definitions_changed(
+    void handle_iv_module_definitions_changed(
         RuntimeIvModuleDefinitionsChanged const &diff);
     RuntimeProjectQueryResult
     query_by_spans(

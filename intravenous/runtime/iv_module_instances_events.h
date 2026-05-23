@@ -1,17 +1,25 @@
 #pragma once
 
+#include "runtime/iv_module_instance_types.h"
 #include "linker_event.h"
 #include "runtime/lane_ref.h"
 #include "graph/types.h"
 
+#include <filesystem>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace iv {
+struct RuntimeIvModuleRequiredDefinitionsChanged;
+using RuntimeIvModuleRequiredDefinitionsChangedEvent =
+    void (*)(RuntimeIvModuleRequiredDefinitionsChanged const &);
 struct RuntimeIvModuleInstancesChanged;
 using RuntimeIvModuleInstancesChangedEvent =
     void (*)(RuntimeIvModuleInstancesChanged const &);
+using RuntimeIvModuleInstancesListChangedEvent =
+    void (*)(std::vector<RuntimeIvModuleInstanceInfo> const &);
 
 struct RuntimeIvModuleSampleInputResolutionRequest {
     std::string logical_node_id{};
@@ -48,8 +56,14 @@ using RuntimeIvModuleSampleInputResolutionRequestedEvent =
         RuntimeIvModuleSampleInputResolutionBuilder &);
 
 IV_DECLARE_LINKER_EVENT(
+    RuntimeIvModuleRequiredDefinitionsChangedEvent,
+    iv_runtime_iv_module_required_definitions_changed_event);
+IV_DECLARE_LINKER_EVENT(
     RuntimeIvModuleInstancesChangedEvent,
     iv_runtime_iv_module_instances_changed_event);
+IV_DECLARE_LINKER_EVENT(
+    RuntimeIvModuleInstancesListChangedEvent,
+    iv_runtime_iv_module_instances_list_changed_event);
 IV_DECLARE_LINKER_EVENT(
     RuntimeIvModuleSampleInputResolutionRequestedEvent,
     iv_runtime_iv_module_sample_input_resolution_requested_event);

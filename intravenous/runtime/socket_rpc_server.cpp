@@ -113,6 +113,27 @@ Json lane_view_result_json(LaneViewResult const &result) {
     return json;
 }
 
+Json iv_module_instance_json(RuntimeIvModuleInstanceInfo const &instance) {
+    Json json{
+        {"instanceId", instance.instance_id},
+        {"definitionId", instance.definition_id},
+        {"moduleRoot", instance.module_root.generic_string()},
+        {"realized", instance.realized},
+    };
+    if (!instance.module_id.empty()) {
+        json["moduleId"] = instance.module_id;
+    }
+    return json;
+}
+
+Json iv_module_instances_json(std::vector<RuntimeIvModuleInstanceInfo> const &instances) {
+    Json json = Json::array();
+    for (auto const &instance : instances) {
+        json.push_back(iv_module_instance_json(instance));
+    }
+    return json;
+}
+
 Json server_message_json(SocketRpcServerMessage const &notification) {
     Json json = {
         {"level", notification.level},
@@ -149,6 +170,8 @@ IV_DEFINE_LINKER_EVENT(SocketRpcGraphQueryBySpansEvent, iv_socket_rpc_graph_quer
 IV_DEFINE_LINKER_EVENT(SocketRpcGraphQueryActiveRegionsEvent, iv_socket_rpc_graph_query_active_regions_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcGetLogicalNodeEvent, iv_socket_rpc_get_logical_node_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcGetLogicalNodesEvent, iv_socket_rpc_get_logical_nodes_event)
+IV_DEFINE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event)
+IV_DEFINE_LINKER_EVENT(SocketRpcDeleteIvModuleInstanceEvent, iv_socket_rpc_delete_iv_module_instance_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcOpenLaneViewEvent, iv_socket_rpc_open_lane_view_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcUpdateLaneViewEvent, iv_socket_rpc_update_lane_view_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcCloseLaneViewEvent, iv_socket_rpc_close_lane_view_event)
@@ -247,6 +270,14 @@ void SocketRpcServer::handle_client(int fd) {
                     } else if constexpr (std::same_as<Request, GetLogicalNodesRequest>) {
                         SocketRpcLogicalNodesResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_logical_nodes_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, CreateIvModuleInstanceRequest>) {
+                        SocketRpcCreateIvModuleInstanceResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_iv_module_instance_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, DeleteIvModuleInstanceRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_delete_iv_module_instance_event, event_request, builder);
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, OpenLaneViewRpcRequest>) {
                         SocketRpcLaneViewResultBuilder builder;
@@ -408,6 +439,38 @@ void SocketRpcServer::send_lane_view_updated(LaneViewResult const &notification)
 
     auto const message =
         jsonrpc_notification("timeline.laneViewUpdated", lane_view_result_json(notification));
+    {
+        std::scoped_lock deferred_lock(deferred_notification_mutex);
+        if (defer_current_request_notifications &&
+            deferred_notification_thread == std::this_thread::get_id()) {
+            deferred_notifications.push_back(message);
+            return;
+        }
+    }
+
+    if (!send_message(fd, message)) {
+        std::scoped_lock client_lock(client_mutex);
+        if (client_fd == fd) {
+            client_fd = -1;
+        }
+    }
+}
+
+void SocketRpcServer::send_iv_module_instances_updated(
+    std::vector<RuntimeIvModuleInstanceInfo> const &instances) {
+    int fd = -1;
+    {
+        std::scoped_lock client_lock(client_mutex);
+        fd = client_fd;
+    }
+    if (fd < 0) {
+        return;
+    }
+
+    auto const message = jsonrpc_notification(
+        "ivModuleInstances.updated",
+        Json{{"instances", iv_module_instances_json(instances)}});
+
     {
         std::scoped_lock deferred_lock(deferred_notification_mutex);
         if (defer_current_request_notifications &&

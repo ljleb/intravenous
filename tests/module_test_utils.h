@@ -5,6 +5,9 @@
 #include "module/loader.h"
 #include "node/executor.h"
 #include "runtime/handlers.h"
+#include "runtime/iv_module_definitions.h"
+#include "runtime/iv_module_reload.h"
+#include "runtime/startup_config.h"
 #include "runtime/timeline.h"
 #include "juce/vst_runtime.h"
 
@@ -30,9 +33,11 @@
 #endif
 
 namespace iv::test {
+    inline void copy_directory(std::filesystem::path const& from, std::filesystem::path const& to);
+
     inline std::filesystem::path repo_root()
     {
-        return std::filesystem::path(__FILE__).parent_path().parent_path();
+        return std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path();
     }
 
     inline std::filesystem::path test_modules_root()
@@ -255,6 +260,111 @@ namespace iv::test {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         require(static_cast<bool>(out), "failed to open output file");
         out << text;
+    }
+
+    inline std::filesystem::path copy_fixture_workspace(
+        std::string_view test_name,
+        std::string const& fixture_name,
+        std::source_location location = std::source_location::current())
+    {
+        auto const workspace = fresh_test_workspace(test_name, location);
+        copy_directory(test_modules_root() / fixture_name, workspace);
+        return workspace;
+    }
+
+    inline std::filesystem::path make_inline_module_workspace(
+        std::string_view test_name,
+        std::string const& module_text,
+        std::source_location location = std::source_location::current())
+    {
+        auto const workspace = fresh_test_workspace(test_name, location);
+        std::filesystem::create_directories(workspace);
+        write_text(workspace / ".intravenous", "");
+        write_text(workspace / "module.cpp", module_text);
+        return workspace;
+    }
+
+    inline std::string find_program(std::string const& name)
+    {
+        std::string command = "command -v " + name;
+        FILE* pipe = popen(command.c_str(), "r");
+        if (!pipe) {
+            return {};
+        }
+
+        std::string output;
+        char buffer[256];
+        while (fgets(buffer, sizeof(buffer), pipe)) {
+            output += buffer;
+        }
+        pclose(pipe);
+
+        while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
+            output.pop_back();
+        }
+        return output;
+    }
+
+    inline std::string configured_program_or_find(
+        std::string const& name,
+        char const* configured_path)
+    {
+        if (configured_path != nullptr && *configured_path != '\0') {
+            return configured_path;
+        }
+        return find_program(name);
+    }
+
+    struct ScopedEnvVar {
+        std::string key;
+        std::optional<std::string> original;
+
+        ScopedEnvVar(std::string key_, std::string value)
+            : key(std::move(key_))
+        {
+            if (char const* existing = std::getenv(key.c_str())) {
+                original = existing;
+            }
+            setenv(key.c_str(), value.c_str(), 1);
+        }
+
+        ~ScopedEnvVar()
+        {
+            if (original.has_value()) {
+                setenv(key.c_str(), original->c_str(), 1);
+            } else {
+                unsetenv(key.c_str());
+            }
+        }
+    };
+
+    inline iv::RuntimeIvModuleReloadedDefinition load_runtime_iv_module_definition(
+        iv::StartupConfigState const& config,
+        std::filesystem::path module_root)
+    {
+        iv::ModuleLoader loader(
+            config.discovery_start,
+            config.search_roots,
+            config.toolchain);
+        iv::RenderConfig const render_config{};
+        iv::Sample device_sample_period = iv::sample_period(render_config);
+        auto loaded_graph = loader.load_root(
+            module_root,
+            {
+                .sample_rate = render_config.sample_rate,
+                .num_channels = render_config.num_channels,
+                .max_block_frames = render_config.max_block_frames,
+            },
+            &device_sample_period);
+        return iv::RuntimeIvModuleReloadedDefinition{
+            .definition_id = std::filesystem::weakly_canonical(module_root).lexically_normal().string(),
+            .module_root = std::move(module_root),
+            .module_id = loaded_graph.module_id,
+            .introspection = loaded_graph.introspection,
+            .dependencies = loaded_graph.dependencies,
+            .module_refs = loaded_graph.module_refs,
+            .canonical_builder = *loaded_graph.canonical_builder,
+        };
     }
 
     inline void advance_write_time(std::filesystem::path const& path, std::chrono::seconds delta = std::chrono::seconds(2))
@@ -507,5 +617,26 @@ namespace iv::test {
     inline void install_crash_handlers()
     {
         iv::install_crash_handlers();
+    }
+}
+
+namespace iv::test_support {
+    using iv::test::configured_program_or_find;
+    using iv::test::copy_directory;
+    using iv::test::copy_fixture_workspace;
+    using iv::test::find_program;
+    using iv::test::fresh_test_workspace;
+    using iv::test::load_runtime_iv_module_definition;
+    using iv::test::make_inline_module_workspace;
+    using iv::test::read_text;
+    using iv::test::ScopedEnvVar;
+    using iv::test::test_modules_root;
+    using iv::test::write_text;
+
+    inline std::filesystem::path make_workspace(
+        std::string_view name,
+        std::source_location location = std::source_location::current())
+    {
+        return iv::test::fresh_test_workspace(name, location);
     }
 }

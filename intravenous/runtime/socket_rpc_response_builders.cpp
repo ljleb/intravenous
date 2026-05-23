@@ -300,6 +300,30 @@ std::string SocketRpcLogicalNodesResultBuilder::build(int request_id) const {
     return jsonrpc_result(request_id, Json{{"nodes", logical_nodes_json(*result)}});
 }
 
+void SocketRpcCreateIvModuleInstanceResultBuilder::succeed(std::string created_instance_id) {
+    instance_id = std::move(created_instance_id);
+}
+
+void SocketRpcCreateIvModuleInstanceResultBuilder::fail(std::string message) {
+    error_code = -32000;
+    error_message = std::move(message);
+}
+
+void SocketRpcCreateIvModuleInstanceResultBuilder::fail(int code, std::string message) {
+    error_code = code;
+    error_message = std::move(message);
+}
+
+std::string SocketRpcCreateIvModuleInstanceResultBuilder::build(int request_id) const {
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    if (!instance_id.has_value()) {
+        throw_unbuilt_response("SocketRpcCreateIvModuleInstanceResultBuilder");
+    }
+    return jsonrpc_result(request_id, Json{{"instanceId", *instance_id}});
+}
+
 void SocketRpcLaneViewResultBuilder::succeed(LaneViewResult value) {
     result = std::move(value);
 }

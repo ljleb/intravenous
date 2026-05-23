@@ -1,5 +1,7 @@
 #include "module_test_utils.h"
 
+#include "runtime/iv_module_instances.h"
+#include "runtime/iv_module_instances_events.h"
 #include "runtime/runtime_project_events.h"
 #include "runtime/socket_rpc_notification_bridge.h"
 #include "runtime/socket_rpc_server.h"
@@ -211,6 +213,41 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
     auto const lane_json = parse_json_line(lane_line);
     EXPECT_EQ(lane_json["method"], "timeline.laneViewUpdated");
     EXPECT_EQ(lane_json["params"]["viewId"], "view-1");
+
+    unbind_socket_rpc_notification_bridge(harness.server);
+}
+
+TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
+{
+    auto harness = NotificationServerHarness(iv::test::fresh_test_workspace("socket_rpc_instances_notification_server"));
+    bind_socket_rpc_notification_bridge(harness.server);
+
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_runtime_iv_module_instances_list_changed_event,
+        std::vector<iv::RuntimeIvModuleInstanceInfo>{
+            iv::RuntimeIvModuleInstanceInfo{
+                .instance_id = "instance:1",
+                .definition_id = "/tmp/module-a",
+                .module_root = "/tmp/module-a",
+                .realized = true,
+                .module_id = "module.a",
+            },
+            iv::RuntimeIvModuleInstanceInfo{
+                .instance_id = "instance:2",
+                .definition_id = "/tmp/module-b",
+                .module_root = "/tmp/module-b",
+                .realized = false,
+            },
+        });
+
+    auto const line = harness.read_line();
+    ASSERT_FALSE(line.empty());
+    auto const json = parse_json_line(line);
+    EXPECT_EQ(json["method"], "ivModuleInstances.updated");
+    ASSERT_EQ(json["params"]["instances"].size(), 2u);
+    EXPECT_EQ(json["params"]["instances"][0]["instanceId"], "instance:1");
+    EXPECT_EQ(json["params"]["instances"][0]["moduleId"], "module.a");
+    EXPECT_EQ(json["params"]["instances"][1]["realized"], false);
 
     unbind_socket_rpc_notification_bridge(harness.server);
 }

@@ -1,19 +1,12 @@
-#include "module_test_utils.h"
+#include "../module_test_utils.h"
+
 #include "runtime/graph_input_lanes.h"
-#include "runtime/graph_input_lanes_lane_views_bridge.h"
-#include "runtime/graph_input_lanes_timeline_bridge.h"
 #include "runtime/iv_module_definitions.h"
-#include "runtime/iv_module_definitions_iv_module_instances_bridge.h"
 #include "runtime/iv_module_definitions_project_introspection_bridge.h"
-#include "runtime/iv_module_instances.h"
-#include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
-#include "runtime/lane_views.h"
-#include "runtime/lane_views_timeline_bridge.h"
 #include "runtime/project_introspection.h"
-#include "runtime/project_introspection_graph_input_lanes_bridge.h"
-#include "runtime/socket_rpc_lane_views_bridge.h"
 #include "runtime/socket_rpc_project_introspection_bridge.h"
 #include "runtime/socket_rpc_server.h"
+#include "runtime/startup_config.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -26,7 +19,6 @@
 namespace {
 using Json = nlohmann::ordered_json;
 using namespace iv;
-
 std::filesystem::path make_project_workspace()
 {
     auto const workspace = iv::test::fresh_test_workspace("socket_rpc_project_introspection_bridge");
@@ -40,6 +32,40 @@ Json parse_json_line(std::string_view line)
 {
     return Json::parse(line);
 }
+
+struct SeededProjectIntrospectionOwner {
+    RuntimeIvModuleDefinitions definitions;
+    RuntimeGraphInputLanes graph_input_lanes;
+    RuntimeProjectIntrospection introspection;
+    StartupConfig startup_config;
+
+    SeededProjectIntrospectionOwner(
+        std::filesystem::path workspace_root,
+        std::filesystem::path discovery_start,
+        std::vector<std::filesystem::path> extra_search_roots)
+        : startup_config(
+              std::move(workspace_root),
+              std::move(discovery_start),
+              std::move(extra_search_roots))
+    {
+        bind_iv_module_definitions_project_introspection_bridge(introspection);
+    }
+
+    ~SeededProjectIntrospectionOwner()
+    {
+        unbind_iv_module_definitions_project_introspection_bridge(introspection);
+    }
+
+    void initialize()
+    {
+        auto const startup = startup_config.initialize();
+        auto const module_root =
+            std::filesystem::weakly_canonical(startup.workspace_root);
+        definitions.seed_loaded_definition(
+            iv::test::load_runtime_iv_module_definition(startup, module_root));
+        (void)introspection.initialize();
+    }
+};
 } // namespace
 
 TEST(SocketRpcProjectIntrospectionBridge, UnboundQueryEventLeavesBuilderUnbuilt)
@@ -67,28 +93,11 @@ TEST(SocketRpcProjectIntrospectionBridge, UnboundQueryEventLeavesBuilderUnbuilt)
 TEST(SocketRpcProjectIntrospectionBridge, BoundQueryEventPopulatesBuilderFromOwners)
 {
     auto const workspace = make_project_workspace();
-    Timeline timeline;
-    RuntimeIvModuleDefinitions iv_module_definitions(
-        workspace,
-        iv::test::repo_root(),
-        std::vector<std::filesystem::path>{},
-        {});
-    RuntimeIvModuleInstances iv_module_instances;
-    RuntimeGraphInputLanes graph_input_lanes;
-    RuntimeLaneViews lane_views;
-    RuntimeProjectIntrospection introspection;
-
-    bind_graph_input_lanes_timeline_bridge(timeline);
-    bind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
-    bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
-    bind_iv_module_definitions_project_introspection_bridge(introspection);
-    bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-    bind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
-    bind_lane_views_timeline_bridge(lane_views);
-    bind_socket_rpc_lane_views_bridge(lane_views);
-    (void)iv_module_definitions.initialize();
-    introspection.initialize();
-    bind_socket_rpc_project_introspection_bridge(introspection, graph_input_lanes);
+    SeededProjectIntrospectionOwner owner(workspace, iv::test::repo_root(), {});
+    owner.initialize();
+    bind_socket_rpc_project_introspection_bridge(
+        owner.introspection,
+        owner.graph_input_lanes);
 
     SocketRpcGraphQueryResultBuilder builder;
     IV_INVOKE_LINKER_EVENT(
@@ -107,16 +116,9 @@ TEST(SocketRpcProjectIntrospectionBridge, BoundQueryEventPopulatesBuilderFromOwn
 
     auto const response = parse_json_line(builder.build(2));
 
-    unbind_socket_rpc_project_introspection_bridge(introspection, graph_input_lanes);
-    unbind_socket_rpc_lane_views_bridge(lane_views);
-    unbind_lane_views_timeline_bridge(lane_views);
-    unbind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
-    unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-    unbind_iv_module_definitions_project_introspection_bridge(introspection);
-    unbind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
-    unbind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
-    unbind_graph_input_lanes_timeline_bridge(timeline);
-    iv_module_definitions.request_shutdown();
+    unbind_socket_rpc_project_introspection_bridge(
+        owner.introspection,
+        owner.graph_input_lanes);
 
     EXPECT_EQ(response["id"], 2);
     ASSERT_TRUE(response["result"].contains("nodes"));

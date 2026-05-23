@@ -3,6 +3,7 @@
 #include "graph/build_types.h"
 #include "linker_event.h"
 #include "runtime/lane_view_service.h"
+#include "runtime/iv_module_instances.h"
 #include "runtime/runtime_project_api_types.h"
 #include "runtime/socket_rpc_requests.h"
 #include "runtime/socket_rpc_response_builders.h"
@@ -33,6 +34,10 @@ namespace iv {
         void (*)(GetLogicalNodeRequest const &, SocketRpcLogicalNodeResultBuilder &);
     using SocketRpcGetLogicalNodesEvent =
         void (*)(GetLogicalNodesRequest const &, SocketRpcLogicalNodesResultBuilder &);
+    using SocketRpcCreateIvModuleInstanceEvent =
+        void (*)(CreateIvModuleInstanceRequest const &, SocketRpcCreateIvModuleInstanceResultBuilder &);
+    using SocketRpcDeleteIvModuleInstanceEvent =
+        void (*)(DeleteIvModuleInstanceRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcOpenLaneViewEvent =
         void (*)(LaneViewRequest const &, SocketRpcLaneViewResultBuilder &);
     using SocketRpcUpdateLaneViewEvent =
@@ -50,6 +55,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryActiveRegionsEvent, iv_socket_rpc_graph_query_active_regions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetLogicalNodeEvent, iv_socket_rpc_get_logical_node_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetLogicalNodesEvent, iv_socket_rpc_get_logical_nodes_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDeleteIvModuleInstanceEvent, iv_socket_rpc_delete_iv_module_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcOpenLaneViewEvent, iv_socket_rpc_open_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateLaneViewEvent, iv_socket_rpc_update_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCloseLaneViewEvent, iv_socket_rpc_close_lane_view_event);
@@ -99,5 +106,7 @@ namespace iv {
         void send_server_message(SocketRpcServerMessage const &notification);
         void send_server_status(SocketRpcServerStatus const &notification);
         void send_lane_view_updated(LaneViewResult const &notification);
+        void send_iv_module_instances_updated(
+            std::vector<RuntimeIvModuleInstanceInfo> const &instances);
     };
 } // namespace iv

@@ -261,6 +261,22 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
+    if (method == "ivModuleInstances.create") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = CreateIvModuleInstanceRequest{
+                .module_root = parse_string_param(params, "moduleRoot"),
+            },
+        };
+    }
+    if (method == "ivModuleInstances.delete") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = DeleteIvModuleInstanceRequest{
+                .instance_id = parse_string_param(params, "instanceId"),
+            },
+        };
+    }
     if (method == "timeline.openLaneView" || method == "timeline.updateLaneView") {
         auto const request_payload = parse_lane_view_request(params);
         if (method == "timeline.openLaneView") {

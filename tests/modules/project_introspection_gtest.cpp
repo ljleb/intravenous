@@ -1,4 +1,11 @@
-#include "runtime_test_harness.h"
+#include "../module_test_utils.h"
+
+#include "runtime/graph_input_lanes.h"
+#include "runtime/graph_input_lanes_timeline_bridge.h"
+#include "runtime/iv_module_definitions_project_introspection_bridge.h"
+#include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
+#include "runtime/project_introspection_graph_input_lanes_bridge.h"
+#include "runtime/timeline.h"
 
 #include <gtest/gtest.h>
 
@@ -12,17 +19,130 @@
 
 namespace {
 using namespace std::chrono_literals;
-using iv::test_support::BoundRuntimeProjectIntrospection;
 using iv::test_support::copy_fixture_workspace;
 using iv::test_support::make_inline_module_workspace;
-}
+
+struct SeededProjectIntrospectionApp {
+    iv::Timeline timeline;
+    iv::RuntimeIvModuleDefinitions definitions;
+    iv::RuntimeGraphInputLanes graph_input_lanes;
+    iv::RuntimeProjectIntrospection introspection;
+    iv::StartupConfig startup_config;
+
+    SeededProjectIntrospectionApp(
+        std::filesystem::path workspace_root,
+        std::filesystem::path discovery_start,
+        std::vector<std::filesystem::path> extra_search_roots)
+        : startup_config(
+              std::move(workspace_root),
+              std::move(discovery_start),
+              std::move(extra_search_roots))
+    {
+        iv::bind_graph_input_lanes_timeline_bridge(timeline);
+        iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+        iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
+        iv::bind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
+    }
+
+    ~SeededProjectIntrospectionApp()
+    {
+        iv::unbind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
+        iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
+        iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+        iv::unbind_graph_input_lanes_timeline_bridge(timeline);
+    }
+
+    auto initialize()
+    {
+        auto const config = startup_config.initialize();
+        auto const module_root = std::filesystem::weakly_canonical(config.workspace_root);
+        auto loaded = iv::test::load_runtime_iv_module_definition(
+            config,
+            module_root);
+
+        iv::RuntimeIvModuleInstance instance {
+            .instance_id = "instance:1",
+            .definition_id = loaded.definition_id,
+            .module_root = loaded.module_root,
+            .module_id = loaded.module_id,
+            .introspection = loaded.introspection,
+        };
+        graph_input_lanes.handle_iv_module_instances_changed(
+            iv::RuntimeIvModuleInstancesChanged {.created = {instance}});
+
+        definitions.seed_loaded_definition(std::move(loaded));
+        return introspection.initialize();
+    }
+
+    auto query_by_spans(
+        std::filesystem::path const &file_path,
+        std::vector<iv::SourceRange> const &ranges,
+        iv::SourceRangeMatchMode match_mode = iv::SourceRangeMatchMode::intersection) const
+    {
+        return introspection.query_by_spans(file_path, ranges, match_mode);
+    }
+
+    auto query_active_regions(std::filesystem::path const &file_path) const
+    {
+        return introspection.query_active_regions(file_path);
+    }
+
+    auto get_logical_node(std::string const &node_id) const
+    {
+        return introspection.get_logical_node(node_id);
+    }
+
+    auto get_logical_nodes(std::vector<std::string> const &node_ids) const
+    {
+        return introspection.get_logical_nodes(node_ids);
+    }
+
+    void set_sample_input_value(
+        std::string const &node_id,
+        size_t input_ordinal,
+        iv::Sample value,
+        std::optional<size_t> member_ordinal = std::nullopt)
+    {
+        auto const port = introspection.sample_graph_input_port_for_node(
+            node_id,
+            member_ordinal,
+            input_ordinal);
+        graph_input_lanes.set_sample_input_value(
+            iv::RuntimeProjectSetSampleInputValueRequest {
+                .node_id = node_id,
+                .member_ordinal = member_ordinal,
+                .input_ordinal = input_ordinal,
+                .value = value,
+                .graph_input_port = port,
+            });
+    }
+
+    void clear_sample_input_value_override(
+        std::string const &node_id,
+        size_t member_ordinal,
+        size_t input_ordinal)
+    {
+        auto const port = introspection.sample_graph_input_port_for_node(
+            node_id,
+            member_ordinal,
+            input_ordinal);
+        graph_input_lanes.clear_sample_input_value_override(
+            iv::RuntimeProjectClearSampleInputValueOverrideRequest {
+                .node_id = node_id,
+                .member_ordinal = member_ordinal,
+                .input_ordinal = input_ordinal,
+                .graph_input_port = port,
+            });
+    }
+};
+} // namespace
 
 TEST(RuntimeProjectIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 {
     auto const workspace = copy_fixture_workspace("project_introspection_query_by_spans", "local_cmake");
     iv::test_support::write_text(workspace / ".intravenous", "");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -75,7 +195,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
 )");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -120,7 +240,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 )");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -180,7 +300,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 )");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -219,7 +339,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
 )");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -258,7 +378,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
 )");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     EXPECT_THROW(
         {
             try {
@@ -301,7 +421,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
 )");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -352,7 +472,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module);
 )");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -384,7 +504,7 @@ TEST(RuntimeProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
     iv::test_support::write_text(workspace / ".intravenous", "");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const dt_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
@@ -424,7 +544,7 @@ TEST(RuntimeProjectIntrospection, QueryBySpansUnionsMultipleSelections)
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
     iv::test_support::write_text(workspace / ".intravenous", "");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const dt_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
@@ -458,7 +578,7 @@ TEST(RuntimeProjectIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
     iv::test_support::write_text(workspace / ".intravenous", "");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const nodes = app.query_by_spans(
@@ -519,7 +639,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -622,7 +742,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -672,7 +792,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -692,7 +812,7 @@ TEST(RuntimeProjectIntrospection, ReloadKeepsLogicalNodeIdsAddressable)
     auto const module_cpp = workspace / "module.cpp";
     iv::test_support::write_text(workspace / ".intravenous", "");
 
-    BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const initial = app.query_by_spans(

@@ -12,7 +12,7 @@ void handle_definitions_changed(RuntimeIvModuleDefinitionsChanged const &diff)
     if (bound_introspection == nullptr) {
         return;
     }
-    bound_introspection->handle_iv_modules_definitions_changed(diff);
+    bound_introspection->handle_iv_module_definitions_changed(diff);
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(

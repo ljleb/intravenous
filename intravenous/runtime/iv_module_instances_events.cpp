@@ -2,8 +2,14 @@
 
 namespace iv {
 IV_DEFINE_LINKER_EVENT(
+    RuntimeIvModuleRequiredDefinitionsChangedEvent,
+    iv_runtime_iv_module_required_definitions_changed_event);
+IV_DEFINE_LINKER_EVENT(
     RuntimeIvModuleInstancesChangedEvent,
     iv_runtime_iv_module_instances_changed_event);
+IV_DEFINE_LINKER_EVENT(
+    RuntimeIvModuleInstancesListChangedEvent,
+    iv_runtime_iv_module_instances_list_changed_event);
 IV_DEFINE_LINKER_EVENT(
     RuntimeIvModuleSampleInputResolutionRequestedEvent,
     iv_runtime_iv_module_sample_input_resolution_requested_event);

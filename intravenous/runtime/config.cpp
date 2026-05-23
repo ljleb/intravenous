@@ -51,14 +51,12 @@ namespace iv {
         }
 
         struct ParsedConfig {
-            std::optional<std::filesystem::path> root_module_path;
             ModuleLoader::ToolchainConfig toolchain;
         };
 
         ParsedConfig parse_config_file(
             std::filesystem::path const& path,
-            std::filesystem::path const& base_dir,
-            bool allow_root_module_path
+            std::filesystem::path const& base_dir
         )
         {
             std::ifstream in(path);
@@ -80,16 +78,6 @@ namespace iv {
 
                 auto const key = trim(line.substr(0, equals));
                 auto const value = trim(line.substr(equals + 1));
-
-                if (key == "rootModulePath") {
-                    if (!allow_root_module_path) {
-                        throw std::runtime_error("rootModulePath is not allowed in " + path.string());
-                    }
-                    parsed.root_module_path = value.empty()
-                        ? base_dir
-                        : path_value(value, base_dir);
-                    continue;
-                }
 
                 auto assign_path = [&](std::optional<std::filesystem::path>& target) {
                     target = path_value(value, base_dir);
@@ -151,7 +139,6 @@ namespace iv {
 
         RuntimeProjectConfig config {
             .workspace_root = normalized_workspace,
-            .module_root = normalized_workspace,
         };
 
         if (char const* env_dir = std::getenv("INTRAVENOUS_DIR"); env_dir && *env_dir != '\0') {
@@ -163,15 +150,12 @@ namespace iv {
             auto const defaults_path = normalize_path(install_dir) / ".intravenous_defaults";
             if (std::filesystem::exists(defaults_path)) {
                 auto const parsed_defaults =
-                    parse_config_file(defaults_path, defaults_path.parent_path(), false);
+                    parse_config_file(defaults_path, defaults_path.parent_path());
                 overlay_toolchain(config.toolchain, parsed_defaults.toolchain);
             }
         }
 
-        auto const project_config = parse_config_file(marker_path, normalized_workspace, true);
-        if (project_config.root_module_path) {
-            config.module_root = normalize_path(*project_config.root_module_path);
-        }
+        auto const project_config = parse_config_file(marker_path, normalized_workspace);
         overlay_toolchain(config.toolchain, project_config.toolchain);
 
         return config;

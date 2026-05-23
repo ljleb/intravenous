@@ -30,6 +30,14 @@ namespace iv {
         std::vector<std::string> node_ids{};
     };
 
+    struct CreateIvModuleInstanceRequest {
+        std::filesystem::path module_root{};
+    };
+
+    struct DeleteIvModuleInstanceRequest {
+        std::string instance_id{};
+    };
+
     struct OpenLaneViewRpcRequest {
         LaneViewRequest request{};
     };
@@ -58,6 +66,8 @@ namespace iv {
         GraphQueryActiveRegionsRequest,
         GetLogicalNodeRequest,
         GetLogicalNodesRequest,
+        CreateIvModuleInstanceRequest,
+        DeleteIvModuleInstanceRequest,
         OpenLaneViewRpcRequest,
         UpdateLaneViewRpcRequest,
         SetSampleInputValueRequest,

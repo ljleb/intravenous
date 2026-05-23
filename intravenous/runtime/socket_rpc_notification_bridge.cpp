@@ -3,6 +3,7 @@
 #include "runtime/graph_input_lanes_events.h"
 #include "runtime/iv_module_definitions.h"
 #include "runtime/iv_module_definitions_events.h"
+#include "runtime/iv_module_instances_events.h"
 #include "runtime/lane_views_events.h"
 #include "runtime/runtime_project_events.h"
 #include "runtime/socket_rpc_server.h"
@@ -80,6 +81,15 @@ namespace {
         bound_server->send_lane_view_updated(lane_view);
     }
 
+    void forward_runtime_iv_module_instances_list_changed(
+        std::vector<RuntimeIvModuleInstanceInfo> const &instances)
+    {
+        if (bound_server == nullptr) {
+            return;
+        }
+        bound_server->send_iv_module_instances_updated(instances);
+    }
+
     IV_SUBSCRIBE_LINKER_EVENT(
         RuntimeProjectNotificationEvent,
         iv_runtime_project_notification_event,
@@ -92,6 +102,10 @@ namespace {
         RuntimeLaneViewsUpdatedEvent,
         iv_runtime_lane_views_updated_event,
         forward_runtime_lane_views_updated);
+    IV_SUBSCRIBE_LINKER_EVENT(
+        RuntimeIvModuleInstancesListChangedEvent,
+        iv_runtime_iv_module_instances_list_changed_event,
+        forward_runtime_iv_module_instances_list_changed);
 } // namespace
 
 void bind_socket_rpc_notification_bridge(SocketRpcServer &server) {

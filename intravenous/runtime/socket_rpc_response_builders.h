@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/lane_view_service.h"
+#include "runtime/iv_module_instances.h"
 #include "runtime/runtime_project_api_types.h"
 
 #include <optional>
@@ -65,6 +66,19 @@ namespace iv {
 
     public:
         void succeed(std::vector<LogicalNodeInfo> value);
+        void fail(std::string message);
+        void fail(int code, std::string message);
+
+        [[nodiscard]] std::string build(int request_id) const;
+    };
+
+    class SocketRpcCreateIvModuleInstanceResultBuilder {
+        int error_code = -32000;
+        std::string error_message;
+        std::optional<std::string> instance_id;
+
+    public:
+        void succeed(std::string created_instance_id);
         void fail(std::string message);
         void fail(int code, std::string message);
 

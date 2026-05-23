@@ -7,7 +7,6 @@
 namespace iv {
     struct RuntimeProjectConfig {
         std::filesystem::path workspace_root {};
-        std::filesystem::path module_root {};
         ModuleLoader::ToolchainConfig toolchain {};
     };
 

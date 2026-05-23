@@ -299,7 +299,7 @@ RuntimeProjectInitializeResult RuntimeProjectIntrospection::initialize() const
     };
 }
 
-void RuntimeProjectIntrospection::handle_iv_modules_definitions_changed(
+void RuntimeProjectIntrospection::handle_iv_module_definitions_changed(
     RuntimeIvModuleDefinitionsChanged const &diff)
 {
     auto const changed_count = diff.created.size() + diff.updated.size();

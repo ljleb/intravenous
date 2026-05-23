@@ -112,6 +112,28 @@ TEST(SocketRpcRequestParser, ParsesSetSampleInputValueRequest)
     EXPECT_FLOAT_EQ(request->value, 0.75f);
 }
 
+TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":26,"method":"ivModuleInstances.create","params":{"moduleRoot":"/tmp/mod"}})");
+
+    EXPECT_EQ(parsed.request_id, 26);
+    auto const *request = std::get_if<iv::CreateIvModuleInstanceRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->module_root, "/tmp/mod");
+}
+
+TEST(SocketRpcRequestParser, ParsesDeleteIvModuleInstanceRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":27,"method":"ivModuleInstances.delete","params":{"instanceId":"instance:1"}})");
+
+    EXPECT_EQ(parsed.request_id, 27);
+    auto const *request = std::get_if<iv::DeleteIvModuleInstanceRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->instance_id, "instance:1");
+}
+
 TEST(SocketRpcRequestParser, RejectsMissingParamsObject)
 {
     EXPECT_THROW(
@@ -246,4 +268,15 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
     EXPECT_EQ(response["result"]["lanes"][0]["domain"], "realtime");
     EXPECT_EQ(response["result"]["lanes"][0]["graphInputPort"]["memberOrdinal"], 1);
     EXPECT_EQ(response["result"]["connections"][0]["targetLaneId"], 99);
+}
+
+TEST(SocketRpcCreateIvModuleInstanceResultBuilder, SerializesCreatedInstanceId)
+{
+    iv::SocketRpcCreateIvModuleInstanceResultBuilder builder;
+    builder.succeed("instance:7");
+
+    auto const response = parse_json_line(builder.build(17));
+
+    EXPECT_EQ(response["id"], 17);
+    EXPECT_EQ(response["result"]["instanceId"], "instance:7");
 }

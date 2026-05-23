@@ -8,11 +8,16 @@
 #include "runtime/iv_module_definitions_iv_module_instances_bridge.h"
 #include "runtime/iv_module_definitions_project_introspection_bridge.h"
 #include "runtime/iv_module_instances.h"
+#include "runtime/iv_module_instances_iv_module_definitions_bridge.h"
 #include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
+#include "runtime/iv_module_reload.h"
 #include "runtime/lane_views.h"
 #include "runtime/lane_views_timeline_bridge.h"
 #include "runtime/project_introspection.h"
 #include "runtime/project_introspection_graph_input_lanes_bridge.h"
+#include "runtime/startup_config.h"
+
+#include "module/loader.h"
 
 #include <filesystem>
 #include <fstream>
@@ -120,25 +125,54 @@ struct ScopedEnvVar {
 
 struct BoundRuntimeProjectIntrospection {
     iv::Timeline timeline;
-    iv::RuntimeIvModuleDefinitions iv_module_definitions;
     iv::RuntimeIvModuleInstances iv_module_instances;
+    iv::RuntimeIvModuleDefinitions iv_module_definitions;
     iv::RuntimeGraphInputLanes graph_input_lanes;
     iv::RuntimeLaneViews lane_views;
     iv::RuntimeProjectIntrospection introspection;
+    iv::StartupConfig startup_config;
+
+    static iv::RuntimeIvModuleReloadedDefinition load_definition(
+        iv::StartupConfigState const &config,
+        std::filesystem::path module_root)
+    {
+        iv::ModuleLoader loader(
+            config.discovery_start,
+            config.search_roots,
+            config.toolchain);
+        iv::RenderConfig const render_config{};
+        iv::Sample device_sample_period = iv::sample_period(render_config);
+        auto loaded_graph = loader.load_root(
+            module_root,
+            {
+                .sample_rate = render_config.sample_rate,
+                .num_channels = render_config.num_channels,
+                .max_block_frames = render_config.max_block_frames,
+            },
+            &device_sample_period);
+        return iv::RuntimeIvModuleReloadedDefinition{
+            .definition_id = std::filesystem::weakly_canonical(module_root).lexically_normal().string(),
+            .module_root = std::move(module_root),
+            .module_id = loaded_graph.module_id,
+            .introspection = loaded_graph.introspection,
+            .dependencies = loaded_graph.dependencies,
+            .module_refs = loaded_graph.module_refs,
+            .canonical_builder = *loaded_graph.canonical_builder,
+        };
+    }
 
     BoundRuntimeProjectIntrospection(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots,
-        iv::AudioDeviceFactory audio_device_factory = {})
-        : iv_module_definitions(
+        std::vector<std::filesystem::path> extra_search_roots)
+        : startup_config(
               std::move(workspace_root),
               std::move(discovery_start),
-              std::vector<std::filesystem::path>(std::move(extra_search_roots)),
-              std::move(audio_device_factory))
+              std::vector<std::filesystem::path>(std::move(extra_search_roots)))
     {
         iv::bind_graph_input_lanes_timeline_bridge(timeline);
         iv::bind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
+        iv::bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
         iv::bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
         iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
         iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
@@ -153,14 +187,17 @@ struct BoundRuntimeProjectIntrospection {
         iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
         iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
         iv::unbind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
+        iv::unbind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
         iv::unbind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
         iv::unbind_graph_input_lanes_timeline_bridge(timeline);
-        iv_module_definitions.request_shutdown();
     }
 
     auto initialize()
     {
-        (void)iv_module_definitions.initialize();
+        auto const config = startup_config.initialize();
+        auto const module_root = std::filesystem::weakly_canonical(config.workspace_root);
+        (void)iv_module_instances.create_instance(module_root);
+        iv_module_definitions.seed_loaded_definition(load_definition(config, module_root));
         return introspection.initialize();
     }
 

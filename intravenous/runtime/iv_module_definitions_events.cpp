@@ -2,6 +2,9 @@
 
 namespace iv {
 IV_DEFINE_LINKER_EVENT(
+    RuntimeIvModuleDefinitionDeclarationsChangedEvent,
+    iv_runtime_iv_module_definitions_declarations_changed_event);
+IV_DEFINE_LINKER_EVENT(
     RuntimeIvModuleDefinitionsChangedEvent,
     iv_runtime_iv_module_definitions_changed_event);
 IV_DEFINE_LINKER_EVENT(
