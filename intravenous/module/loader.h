@@ -3,8 +3,6 @@
 #include "graph/build_types.h"
 #include "module/dependency.h"
 #include "module/module.h"
-#include "runtime/timeline.h"
-
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -13,6 +11,7 @@
 #include <functional>
 
 namespace iv {
+    class GraphBuilder;
     using ModuleRef = std::shared_ptr<void>;
 
     class ModuleLoader {
@@ -34,6 +33,7 @@ namespace iv {
         struct LoadedGraph {
             std::vector<ModuleRef> module_refs;
             TypeErasedNode root;
+            std::unique_ptr<GraphBuilder> canonical_builder;
             GraphIntrospectionMetadata introspection;
             std::filesystem::path module_path;
             std::string module_id;
@@ -43,6 +43,7 @@ namespace iv {
             LoadedGraph(
                 TypeErasedNode root_,
                 std::vector<ModuleRef> module_refs_,
+                std::unique_ptr<GraphBuilder> canonical_builder_,
                 GraphIntrospectionMetadata introspection_,
                 std::filesystem::path module_path_,
                 std::string module_id_,
@@ -52,7 +53,6 @@ namespace iv {
         };
 
         explicit ModuleLoader(
-            Timeline& timeline,
             std::filesystem::path discovery_start = std::filesystem::current_path(),
             std::vector<std::filesystem::path> extra_search_roots = {},
             ToolchainConfig toolchain = ToolchainConfig(),

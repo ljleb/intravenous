@@ -171,12 +171,12 @@ LaneQueryResult RuntimeGraphInputLanes::query_lanes_locked(
     return result;
 }
 
-void RuntimeGraphInputLanes::handle_iv_modules_definitions_changed(
-    RuntimeIvModuleDefinitionsChanged const &diff)
+void RuntimeGraphInputLanes::handle_iv_module_instances_changed(
+    RuntimeIvModuleInstancesChanged const &diff)
 {
-    auto const changed_count = diff.added.size() + diff.updated.size();
+    auto const changed_count = diff.created.size() + diff.updated.size();
     if (changed_count == 0) {
-        if (!diff.removed_definition_ids.empty()) {
+        if (!diff.deleted_instance_ids.empty()) {
             std::scoped_lock lock(mutex);
             current_ports.clear();
             RuntimeGraphInputLanesAckBuilder builder;
@@ -188,17 +188,17 @@ void RuntimeGraphInputLanes::handle_iv_modules_definitions_changed(
         }
         return;
     }
-    if (changed_count > 1 || (!diff.added.empty() && !diff.updated.empty())) {
+    if (changed_count > 1 || (!diff.created.empty() && !diff.updated.empty())) {
         throw std::runtime_error(
-            "multiple iv-module definition changes are not yet supported");
+            "multiple iv-module instance changes are not yet supported");
     }
 
-    RuntimeIvModuleDefinition const &definition =
-        !diff.added.empty() ? diff.added.front() : diff.updated.front();
+    RuntimeIvModuleInstance const &instance =
+        !diff.created.empty() ? diff.created.front() : diff.updated.front();
 
     std::scoped_lock lock(mutex);
     current_ports = graph_input_port_descriptors_for(
-        definition.introspection.logical_nodes);
+        instance.introspection.logical_nodes);
     RuntimeGraphInputLanesAckBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_ports_changed_event,
@@ -207,9 +207,9 @@ void RuntimeGraphInputLanes::handle_iv_modules_definitions_changed(
     builder.build();
 }
 
-std::vector<RuntimeProjectLiveInputSnapshot>
+std::vector<RuntimeProjectIntrospectionLiveInputSnapshot>
 RuntimeGraphInputLanes::collect_live_input_snapshots(
-    std::vector<RuntimeProjectLiveInputSnapshotRequest> const &requests)
+    std::vector<RuntimeProjectIntrospectionLiveInputSnapshotRequest> const &requests)
 {
     std::vector<RuntimeGraphInputLanesLiveInputSnapshotRequest> lane_requests;
     lane_requests.reserve(requests.size());
@@ -229,10 +229,10 @@ RuntimeGraphInputLanes::collect_live_input_snapshots(
         builder);
     auto const lane_snapshots = builder.build();
 
-    std::vector<RuntimeProjectLiveInputSnapshot> snapshots;
+    std::vector<RuntimeProjectIntrospectionLiveInputSnapshot> snapshots;
     snapshots.reserve(lane_snapshots.size());
     for (auto const &snapshot : lane_snapshots) {
-        snapshots.push_back(RuntimeProjectLiveInputSnapshot{
+        snapshots.push_back(RuntimeProjectIntrospectionLiveInputSnapshot{
             .logical_node_id = snapshot.logical_node_id,
             .member_ordinal = snapshot.member_ordinal,
             .input_ordinal = snapshot.input_ordinal,
@@ -319,6 +319,17 @@ void RuntimeGraphInputLanes::clear_sample_input_value_override(
         },
         builder);
     builder.build();
+}
+
+RealtimeLaneRef RuntimeGraphInputLanes::resolve_sample_input_lane_ref(
+    RuntimeGraphInputLanesSampleInputLaneRefRequest const &request)
+{
+    RuntimeGraphInputLanesSampleInputLaneRefBuilder builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_graph_input_lanes_sample_input_lane_ref_requested_event,
+        request,
+        builder);
+    return builder.build();
 }
 
 LaneQueryResult RuntimeGraphInputLanes::query_lanes(

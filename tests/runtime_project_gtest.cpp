@@ -1,16 +1,18 @@
 #include "module_test_utils.h"
-#include "fake_audio_device.h"
-
 #include "runtime/graph_input_lanes.h"
 #include "runtime/graph_input_lanes_lane_views_bridge.h"
 #include "runtime/graph_input_lanes_timeline_bridge.h"
-#include "runtime/iv_modules.h"
-#include "runtime/iv_modules_graph_input_lanes_bridge.h"
-#include "runtime/iv_modules_project_service_bridge.h"
+#include "runtime/iv_module_definitions.h"
+#include "runtime/iv_module_definitions_iv_module_instances_bridge.h"
+#include "runtime/iv_module_definitions_project_introspection_bridge.h"
+#include "runtime/iv_module_instances.h"
+#include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
 #include "runtime/lane_views.h"
 #include "runtime/lane_views_timeline_bridge.h"
-#include "runtime/project_service.h"
-#include "runtime/project_service_graph_input_lanes_bridge.h"
+#include "runtime/project_introspection.h"
+#include "runtime/project_introspection_graph_input_lanes_bridge.h"
+#include "runtime/runtime_project_events.h"
+#include "runtime/timeline.h"
 
 #include <gtest/gtest.h>
 
@@ -30,69 +32,6 @@
 
 namespace {
     using namespace std::chrono_literals;
-
-    struct DrivenTestAudioDevice {
-        std::shared_ptr<iv::test::FakeAudioDevice> device;
-        std::jthread driver;
-
-        auto make_factory() const
-        {
-            return [device = this->device]() -> std::optional<iv::LogicalAudioDevice> {
-                struct RefBackend {
-                    std::shared_ptr<iv::test::FakeAudioDevice> device;
-
-                    iv::RenderConfig const& config() const
-                    {
-                        return device->config();
-                    }
-
-                    std::span<iv::Sample> wait_for_block_request()
-                    {
-                        return device->wait_for_block_request();
-                    }
-
-                    void submit_response()
-                    {
-                        try {
-                            device->submit_response();
-                        } catch (std::logic_error const&) {
-                        }
-                    }
-                };
-
-                return iv::LogicalAudioDevice(RefBackend { device });
-            };
-        }
-    };
-
-    DrivenTestAudioDevice make_audio_device_context()
-    {
-        auto device = std::make_shared<iv::test::FakeAudioDevice>(iv::RenderConfig {
-            .sample_rate = 48000,
-            .num_channels = 2,
-            .max_block_frames = 256,
-            .preferred_block_size = 64,
-        });
-
-        std::jthread driver([device](std::stop_token stop_token) {
-            size_t frame_index = 0;
-            while (!stop_token.stop_requested()) {
-                device->begin_requested_block(frame_index, device->config().preferred_block_size);
-                if (!device->wait_until_block_ready_for(200ms)) {
-                    break;
-                }
-                device->finish_requested_block();
-                frame_index += device->config().preferred_block_size;
-                std::this_thread::sleep_for(1ms);
-            }
-            device->request_shutdown();
-        });
-
-        return DrivenTestAudioDevice {
-            .device = std::move(device),
-            .driver = std::move(driver),
-        };
-    }
 
     std::filesystem::path make_workspace(
         std::string_view name,
@@ -185,62 +124,69 @@ namespace {
         }
     };
 
-    struct BoundRuntimeProjectService {
+    struct BoundRuntimeProjectIntrospection {
         iv::Timeline timeline;
+        iv::RuntimeIvModuleDefinitions iv_module_definitions;
+        iv::RuntimeIvModuleInstances iv_module_instances;
         iv::RuntimeGraphInputLanes graph_input_lanes;
         iv::RuntimeLaneViews lane_views;
-        iv::RuntimeProjectService service;
+        iv::RuntimeProjectIntrospection introspection;
 
-        BoundRuntimeProjectService(
+        BoundRuntimeProjectIntrospection(
             std::filesystem::path workspace_root,
             std::filesystem::path discovery_start,
             std::vector<std::filesystem::path> extra_search_roots,
-            iv::AudioDeviceFactory audio_device_factory) :
-            service(std::make_unique<iv::RuntimeIvModules>(
-                timeline,
+            iv::AudioDeviceFactory audio_device_factory = {}) :
+            iv_module_definitions(
                 std::move(workspace_root),
                 std::move(discovery_start),
                 std::vector<std::filesystem::path>(std::move(extra_search_roots)),
-                std::move(audio_device_factory)))
+                std::move(audio_device_factory))
         {
             iv::bind_graph_input_lanes_timeline_bridge(timeline);
             iv::bind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
-            iv::bind_iv_modules_graph_input_lanes_bridge(graph_input_lanes);
-            iv::bind_iv_modules_project_service_bridge(service);
-            iv::bind_project_service_graph_input_lanes_bridge(graph_input_lanes);
+            iv::bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
+            iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
+            iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+            iv::bind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
             iv::bind_lane_views_timeline_bridge(lane_views);
         }
 
-        ~BoundRuntimeProjectService()
+        ~BoundRuntimeProjectIntrospection()
         {
             iv::unbind_lane_views_timeline_bridge(lane_views);
-            iv::unbind_project_service_graph_input_lanes_bridge(graph_input_lanes);
-            iv::unbind_iv_modules_project_service_bridge(service);
-            iv::unbind_iv_modules_graph_input_lanes_bridge(graph_input_lanes);
+            iv::unbind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
+            iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+            iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
+            iv::unbind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
             iv::unbind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
             iv::unbind_graph_input_lanes_timeline_bridge(timeline);
-            service.request_shutdown();
+            iv_module_definitions.request_shutdown();
         }
 
-        auto initialize() { return service.initialize(); }
+        auto initialize()
+        {
+            (void)iv_module_definitions.initialize();
+            return introspection.initialize();
+        }
         auto query_by_spans(
             std::filesystem::path const& file_path,
             std::vector<iv::SourceRange> const& ranges,
             iv::SourceRangeMatchMode match_mode = iv::SourceRangeMatchMode::intersection) const
         {
-            return service.query_by_spans(file_path, ranges, match_mode);
+            return introspection.query_by_spans(file_path, ranges, match_mode);
         }
         auto query_active_regions(std::filesystem::path const& file_path) const
         {
-            return service.query_active_regions(file_path);
+            return introspection.query_active_regions(file_path);
         }
         auto get_logical_node(std::string const& node_id) const
         {
-            return service.get_logical_node(node_id);
+            return introspection.get_logical_node(node_id);
         }
         auto get_logical_nodes(std::vector<std::string> const& node_ids) const
         {
-            return service.get_logical_nodes(node_ids);
+            return introspection.get_logical_nodes(node_ids);
         }
         auto open_lane_view(iv::LaneViewRequest request)
         {
@@ -260,61 +206,70 @@ namespace {
             iv::Sample value,
             std::optional<size_t> member_ordinal = std::nullopt)
         {
-            service.set_sample_input_value(node_id, input_ordinal, value, member_ordinal);
+            auto const port = introspection.sample_graph_input_port_for_node(
+                node_id,
+                member_ordinal,
+                input_ordinal);
+            graph_input_lanes.set_sample_input_value(
+                iv::RuntimeProjectSetSampleInputValueRequest{
+                    .node_id = node_id,
+                    .member_ordinal = member_ordinal,
+                    .input_ordinal = input_ordinal,
+                    .value = value,
+                    .graph_input_port = port,
+                });
         }
         void clear_sample_input_value_override(
             std::string const& node_id,
             size_t member_ordinal,
             size_t input_ordinal)
         {
-            service.clear_sample_input_value_override(node_id, member_ordinal, input_ordinal);
+            auto const port = introspection.sample_graph_input_port_for_node(
+                node_id,
+                member_ordinal,
+                input_ordinal);
+            graph_input_lanes.clear_sample_input_value_override(
+                iv::RuntimeProjectClearSampleInputValueOverrideRequest{
+                    .node_id = node_id,
+                    .member_ordinal = member_ordinal,
+                    .input_ordinal = input_ordinal,
+                    .graph_input_port = port,
+                });
         }
-        void request_shutdown()
-        {
-            service.request_shutdown();
-        }
-
-        iv::RuntimeProjectService* operator->() { return &service; }
-        iv::RuntimeProjectService const* operator->() const { return &service; }
-        operator iv::RuntimeProjectService&() { return service; }
-        operator iv::RuntimeProjectService const&() const { return service; }
     };
 }
 
-TEST(RuntimeProjectService, EmptyIntravenousMarkerUsesWorkspaceRoot)
+TEST(RuntimeProjectIntrospection, EmptyIntravenousMarkerUsesWorkspaceRoot)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_empty_marker", "local_cmake");
     write_text(workspace / ".intravenous", "");
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     auto const initialized = service.initialize();
 
     EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(workspace));
     EXPECT_FALSE(initialized.module_id.empty());
 }
 
-TEST(RuntimeProjectService, RelativeRootModulePathResolvesAgainstWorkspaceRoot)
+TEST(RuntimeProjectIntrospection, RelativeRootModulePathResolvesAgainstWorkspaceRoot)
 {
     auto const workspace = make_workspace("runtime_project_relative_root");
     auto const module_root = workspace / "module";
     iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", module_root);
     write_text(workspace / ".intravenous", "rootModulePath=module\n");
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     auto const initialized = service.initialize();
 
     EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(module_root));
 }
 
-TEST(RuntimeProjectService, QueryBySpansReturnsMatchingLiveNodesWithPorts)
+TEST(RuntimeProjectIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_query_by_spans", "local_cmake");
     write_text(workspace / ".intravenous", "");
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     auto const initialized = service.initialize();
 
     auto const result = service.query_by_spans(
@@ -337,7 +292,82 @@ TEST(RuntimeProjectService, QueryBySpansReturnsMatchingLiveNodesWithPorts)
     EXPECT_TRUE(has_any_port);
 }
 
-TEST(RuntimeProjectService, QueryBySpansKeepsDistinctDeclarationsSeparate)
+TEST(RuntimeProjectArchitecture, IvModuleDefinitionsInitializeAndShutdownWithoutBridges)
+{
+    auto const workspace = copy_fixture_workspace(
+        "runtime_project_architecture_definitions_only", "local_cmake");
+    write_text(workspace / ".intravenous", "");
+
+    iv::RuntimeIvModuleDefinitions definitions(
+        workspace,
+        iv::test::repo_root(),
+        {},
+        {});
+
+    auto const definition = definitions.initialize();
+    EXPECT_FALSE(definition.definition_id.empty());
+    EXPECT_FALSE(definition.module_id.empty());
+    EXPECT_FALSE(definition.module_root.empty());
+
+    definitions.request_shutdown();
+}
+
+TEST(RuntimeProjectArchitecture, DefinitionsAndProjectIntrospectionInitializeAndShutdown)
+{
+    auto const workspace = copy_fixture_workspace(
+        "runtime_project_architecture_project_introspection", "local_cmake");
+    write_text(workspace / ".intravenous", "");
+
+    iv::RuntimeIvModuleDefinitions definitions(
+        workspace,
+        iv::test::repo_root(),
+        {},
+        {});
+    iv::RuntimeProjectIntrospection introspection;
+    iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
+
+    auto const definition = definitions.initialize();
+    auto const initialized = introspection.initialize();
+
+    EXPECT_EQ(initialized.module_id, definition.module_id);
+
+    iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
+    definitions.request_shutdown();
+}
+
+TEST(RuntimeProjectArchitecture, DefinitionsInstancesAndGraphInputLanesInitializeAndShutdown)
+{
+    auto const workspace = copy_fixture_workspace(
+        "runtime_project_architecture_graph_input_lanes", "local_cmake");
+    write_text(workspace / ".intravenous", "");
+
+    iv::Timeline timeline;
+    iv::RuntimeIvModuleDefinitions definitions(
+        workspace,
+        iv::test::repo_root(),
+        {},
+        {});
+    iv::RuntimeIvModuleInstances instances;
+    iv::RuntimeGraphInputLanes graph_input_lanes;
+
+    iv::bind_graph_input_lanes_timeline_bridge(timeline);
+    iv::bind_iv_module_definitions_iv_module_instances_bridge(instances);
+    iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+
+    auto const definition = definitions.initialize();
+    EXPECT_FALSE(definition.introspection.logical_nodes.empty());
+
+    auto const lanes = graph_input_lanes.query_lanes(
+        iv::LaneQueryFilter{ .kind = "graphInputs" });
+    EXPECT_GT(lanes.total_lane_count, 0u);
+
+    iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+    iv::unbind_iv_module_definitions_iv_module_instances_bridge(instances);
+    iv::unbind_graph_input_lanes_timeline_bridge(timeline);
+    definitions.request_shutdown();
+}
+
+TEST(RuntimeProjectIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_query_by_spans_merged_logical",
@@ -368,8 +398,7 @@ IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
 )"
     );
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -395,7 +424,7 @@ IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
     EXPECT_EQ(value_source_count, 2u);
 }
 
-TEST(RuntimeProjectService, QueryBySpansKeepsAnnotatedLogicalNodeIdStableAcrossReload)
+TEST(RuntimeProjectIntrospection, QueryBySpansKeepsAnnotatedLogicalNodeIdStableAcrossReload)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_query_by_spans_stable_annotated_id",
@@ -421,8 +450,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 )"
     );
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -468,7 +496,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     EXPECT_EQ(reloaded_it->id, initial_id);
 }
 
-TEST(RuntimeProjectService, QueryBySpansReturnsAnnotatedLogicalNode)
+TEST(RuntimeProjectIntrospection, QueryBySpansReturnsAnnotatedLogicalNode)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_query_by_spans_annotated_symbol",
@@ -494,8 +522,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 )"
     );
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -517,7 +544,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     EXPECT_FALSE(it->source_spans.empty());
 }
 
-TEST(RuntimeProjectService, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
+TEST(RuntimeProjectIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_query_by_spans_single_assigned_ref",
@@ -541,8 +568,7 @@ IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
 )"
     );
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -563,7 +589,7 @@ IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
     EXPECT_FALSE(it->source_spans.empty());
 }
 
-TEST(RuntimeProjectService, InitializationFailsWhenDeclarationBackedRefIsAssignedTwice)
+TEST(RuntimeProjectIntrospection, InitializationFailsWhenDeclarationBackedRefIsAssignedTwice)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_double_assignment_fails",
@@ -588,8 +614,7 @@ IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
 )"
     );
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     EXPECT_THROW(
         {
             try {
@@ -603,7 +628,7 @@ IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
     );
 }
 
-TEST(RuntimeProjectService, QueryBySpansDoesNotMergeDifferentSchemas)
+TEST(RuntimeProjectIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_query_by_spans_schema_mismatch",
@@ -634,8 +659,7 @@ IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
 )"
     );
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -660,7 +684,7 @@ IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
     EXPECT_GE(singleton_sum_count, 2u);
 }
 
-TEST(RuntimeProjectService, QueryBySpansAggregatesMixedConnectivity)
+TEST(RuntimeProjectIntrospection, QueryBySpansAggregatesMixedConnectivity)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_query_by_spans_mixed_connectivity",
@@ -694,8 +718,7 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
 )"
     );
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -726,14 +749,13 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
     EXPECT_EQ(disconnected_sum_count, 1u);
 }
 
-TEST(RuntimeProjectService, QueryBySpansIntersectsMultipleSelections)
+TEST(RuntimeProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_query_by_spans_intersection", "local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
     write_text(workspace / ".intravenous", "");
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const dt_range = iv::SourceRange {
@@ -770,14 +792,13 @@ TEST(RuntimeProjectService, QueryBySpansIntersectsMultipleSelections)
     EXPECT_EQ(both_ids, intersection);
 }
 
-TEST(RuntimeProjectService, QueryBySpansUnionsMultipleSelections)
+TEST(RuntimeProjectIntrospection, QueryBySpansUnionsMultipleSelections)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_query_by_spans_union", "local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
     write_text(workspace / ".intravenous", "");
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const dt_range = iv::SourceRange {
@@ -810,14 +831,13 @@ TEST(RuntimeProjectService, QueryBySpansUnionsMultipleSelections)
     EXPECT_EQ(both_ids, expected_union);
 }
 
-TEST(RuntimeProjectService, QueryActiveRegionsReturnsOnlySourceSpans)
+TEST(RuntimeProjectIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_query_active_regions", "local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
     write_text(workspace / ".intravenous", "");
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const nodes = service.query_by_spans(module_cpp, {
@@ -850,7 +870,7 @@ TEST(RuntimeProjectService, QueryActiveRegionsReturnsOnlySourceSpans)
     EXPECT_EQ(actual_spans, expected_spans);
 }
 
-TEST(RuntimeProjectService, QueryBySpansMergesPolyphonicCallbackNodesByExactSourceSpan)
+TEST(RuntimeProjectIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExactSourceSpan)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_polyphonic_exact_spans",
@@ -883,8 +903,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     );
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -955,7 +974,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     }));
 }
 
-TEST(RuntimeProjectService, QueryBySpansDoesNotAttributeInteriorPolyphonicLambdaSpansToOuterSubgraph)
+TEST(RuntimeProjectIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonicLambdaSpansToOuterSubgraph)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_polyphonic_interior_span",
@@ -988,8 +1007,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     );
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -1012,7 +1030,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     }));
 }
 
-TEST(RuntimeProjectService, QueryBySpansReturnsPolyphonicOuterLogicalIdentityAtDeclarationSpan)
+TEST(RuntimeProjectIntrospection, QueryBySpansReturnsPolyphonicOuterLogicalIdentityAtDeclarationSpan)
 {
     auto const workspace = make_inline_module_workspace(
         "runtime_project_polyphonic_outer_identity",
@@ -1046,8 +1064,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     );
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const result = service.query_by_spans(
@@ -1066,12 +1083,11 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_TRUE(result.nodes.front().source_identity.contains("@voice")) << result.nodes.front().source_identity;
 }
 
-TEST(RuntimeProjectService, MissingMarkerFailsInitialization)
+TEST(RuntimeProjectIntrospection, MissingMarkerFailsInitialization)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_missing_marker", "local_cmake");
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     EXPECT_THROW(
         {
             try {
@@ -1085,14 +1101,13 @@ TEST(RuntimeProjectService, MissingMarkerFailsInitialization)
     );
 }
 
-TEST(RuntimeProjectService, ReloadKeepsLogicalNodeIdsAddressable)
+TEST(RuntimeProjectIntrospection, ReloadKeepsLogicalNodeIdsAddressable)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_reload_epoch", "local_cmake");
     auto const module_cpp = workspace / "module.cpp";
     write_text(workspace / ".intravenous", "");
 
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     service.initialize();
 
     auto const initial = service.query_by_spans(
@@ -1126,7 +1141,7 @@ TEST(RuntimeProjectService, ReloadKeepsLogicalNodeIdsAddressable)
     EXPECT_NO_THROW((void)service.get_logical_node(initial.nodes.front().id));
 }
 
-TEST(RuntimeProjectService, ProjectConfigOverridesIntravenousDefaultsToolchain)
+TEST(RuntimeProjectIntrospection, ProjectConfigOverridesIntravenousDefaultsToolchain)
 {
     auto const workspace = copy_fixture_workspace("runtime_project_toolchain_override", "local_cmake");
     auto const install_dir = workspace / "install";
@@ -1151,8 +1166,7 @@ TEST(RuntimeProjectService, ProjectConfigOverridesIntravenousDefaultsToolchain)
     );
 
     ScopedEnvVar env("INTRAVENOUS_DIR", install_dir.string());
-    auto audio = make_audio_device_context();
-    BoundRuntimeProjectService service(workspace, iv::test::repo_root(), {}, audio.make_factory());
+    BoundRuntimeProjectIntrospection service(workspace, iv::test::repo_root(), {});
     auto const initialized = service.initialize();
 
     EXPECT_EQ(initialized.module_root, std::filesystem::weakly_canonical(workspace));

@@ -5,7 +5,7 @@
 #include "basic_nodes/midi.h"
 #include "compiler.h"
 #include "node.h"
-#include "runtime/timeline.h"
+#include "runtime/iv_module_instances_events.h"
 
 #include <algorithm>
 #include <array>
@@ -1853,7 +1853,7 @@ namespace iv {
             GraphIntrospectionMetadata introspection;
         };
 
-        GraphBuilder& augment(Timeline& timeline);
+        GraphBuilder& augment();
         BuildResult build_with_metadata(size_t detach_id_offset = 0) const;
         Graph build(size_t detach_id_offset = 0) const;
 
@@ -2032,9 +2032,9 @@ namespace iv {
 
     };
 
-    inline GraphBuilder& GraphBuilder::augment(Timeline& timeline)
+    inline GraphBuilder& GraphBuilder::augment()
     {
-        TimelineGraphInputResolver graph_input_resolver = timeline.begin_graph_input_resolution();
+        std::unordered_map<std::string, size_t> control_node_indices;
         size_t const original_node_count = _nodes.size();
         std::unordered_map<std::string, std::unordered_set<std::string>> types_by_logical_id;
         for (size_t node_i = 0; node_i < original_node_count; ++node_i) {
@@ -2068,17 +2068,26 @@ namespace iv {
                 if (_placed_input_ports.contains(target_port)) {
                     continue;
                 }
-                SamplePortRef source = graph_input_resolver.resolve_sample_input(
-                    *this,
-                    final_logical_node_id,
-                    member_ordinal,
-                    input_i,
-                    input_configs[input_i]
-                );
-                if (source.graph_builder != this) {
-                    details::error(
-                        "builder " + _builder_id.value + ": timeline returned a sample port from another builder"
-                    );
+                RuntimeIvModuleSampleInputResolutionBuilder resolution_builder;
+                IV_INVOKE_LINKER_EVENT(
+                    iv_runtime_iv_module_sample_input_resolution_requested_event,
+                    RuntimeIvModuleSampleInputResolutionRequest{
+                        .logical_node_id = final_logical_node_id,
+                        .member_ordinal = member_ordinal,
+                        .input_ordinal = input_i,
+                        .input_name = input_configs[input_i].name,
+                        .default_value = input_configs[input_i].default_value,
+                    },
+                    resolution_builder);
+                auto const lane_ref = resolution_builder.build();
+                auto const identity = LaneInputValue::nominal_identity(lane_ref);
+                SamplePortRef source;
+                if (auto const existing = control_node_indices.find(identity);
+                    existing != control_node_indices.end()) {
+                    source = SamplePortRef(*this, existing->second, 0);
+                } else {
+                    source = node<LaneInputValue>(lane_ref);
+                    control_node_indices.emplace(identity, source.node_index);
                 }
                 _placed_input_ports.insert(target_port);
                 _timeline_filled_input_ports.insert(target_port);
@@ -2090,17 +2099,9 @@ namespace iv {
                 if (_placed_event_input_ports.contains(target_port)) {
                     continue;
                 }
-                EventPortRef source = graph_input_resolver.resolve_event_input(
-                    *this,
-                    final_logical_node_id,
-                    input_i,
-                    event_input_configs[input_i]
-                );
-                if (source.graph_builder != this) {
-                    details::error(
-                        "builder " + _builder_id.value + ": timeline returned an event port from another builder"
-                    );
-                }
+                EventPortRef source =
+                    node<EventConcatenation>(0, event_input_configs[input_i].type)
+                        .event_port(0);
                 auto const source_type = (source.node_index == GRAPH_ID)
                     ? _public_event_inputs[source.output_port].type
                     : _nodes[source.node_index].event_output_configs[source.output_port].type;
@@ -2503,55 +2504,6 @@ namespace iv {
     inline Graph GraphBuilder::build(size_t detach_id_offset) const
     {
         return build_with_metadata(detach_id_offset).graph;
-    }
-
-    inline SamplePortRef TimelineGraphInputResolver::resolve_sample_input(
-        GraphBuilder& builder,
-        std::string_view logical_node_id,
-        std::optional<size_t> member_ordinal,
-        size_t input_ordinal,
-        InputConfig const& input_config
-    )
-    {
-        if (_timeline == nullptr) {
-            return builder.node<Constant>(input_config.default_value);
-        }
-
-        LaneId const lane = _timeline->resolve_graph_sample_input_lane(
-            logical_node_id,
-            member_ordinal,
-            input_ordinal,
-            input_config.name,
-            input_config.default_value
-        );
-        if (!lane) {
-            details::error("timeline could not resolve graph input lane");
-        }
-
-        auto const identity = TimelineInputValue::nominal_identity(lane);
-        auto existing = _control_node_indices.find(identity);
-        if (existing != _control_node_indices.end()) {
-            return SamplePortRef(builder, existing->second, 0);
-        }
-
-        SamplePortRef ref = builder.node<TimelineInputValue>(
-            *_timeline,
-            lane
-        );
-        _control_node_indices.emplace(std::move(identity), ref.node_index);
-        return ref;
-    }
-
-    inline EventPortRef TimelineGraphInputResolver::resolve_event_input(
-        GraphBuilder& builder,
-        std::string_view logical_node_id,
-        size_t input_ordinal,
-        EventInputConfig const& input_config
-    )
-    {
-        (void)logical_node_id;
-        (void)input_ordinal;
-        return builder.node<EventConcatenation>(0, input_config.type).event_port(0);
     }
 
     inline SamplePortRef::SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :

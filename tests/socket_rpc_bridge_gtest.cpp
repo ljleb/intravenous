@@ -3,17 +3,18 @@
 #include "runtime/graph_input_lanes.h"
 #include "runtime/graph_input_lanes_lane_views_bridge.h"
 #include "runtime/graph_input_lanes_timeline_bridge.h"
-#include "runtime/iv_modules.h"
-#include "runtime/iv_modules_graph_input_lanes_bridge.h"
-#include "runtime/iv_modules_project_service_bridge.h"
+#include "runtime/iv_module_definitions.h"
+#include "runtime/iv_module_definitions_iv_module_instances_bridge.h"
+#include "runtime/iv_module_definitions_project_introspection_bridge.h"
+#include "runtime/iv_module_instances.h"
+#include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
 #include "runtime/lane_views.h"
 #include "runtime/lane_views_timeline_bridge.h"
-#include "runtime/project_service.h"
-#include "runtime/project_service_events.h"
-#include "runtime/project_service_graph_input_lanes_bridge.h"
+#include "runtime/project_introspection.h"
+#include "runtime/project_introspection_graph_input_lanes_bridge.h"
 #include "runtime/socket_rpc_lane_views_bridge.h"
 #include "runtime/socket_rpc_notification_bridge.h"
-#include "runtime/socket_rpc_runtime_project_bridge.h"
+#include "runtime/socket_rpc_project_introspection_bridge.h"
 #include "runtime/socket_rpc_server.h"
 
 #include <gtest/gtest.h>
@@ -225,23 +226,26 @@ TEST(SocketRpcRuntimeProjectBridge, BoundQueryEventPopulatesBuilderFromService)
 {
     auto const workspace = make_project_workspace();
     iv::Timeline timeline;
-    iv::RuntimeGraphInputLanes graph_input_lanes;
-    iv::RuntimeLaneViews lane_views;
-    iv::RuntimeProjectService service(std::make_unique<iv::RuntimeIvModules>(
-        timeline,
+    iv::RuntimeIvModuleDefinitions iv_module_definitions(
         workspace,
         iv::test::repo_root(),
         std::vector<std::filesystem::path>{},
-        make_audio_device_factory()));
+        make_audio_device_factory());
+    iv::RuntimeIvModuleInstances iv_module_instances;
+    iv::RuntimeGraphInputLanes graph_input_lanes;
+    iv::RuntimeLaneViews lane_views;
+    iv::RuntimeProjectIntrospection introspection;
     iv::bind_graph_input_lanes_timeline_bridge(timeline);
     iv::bind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
-    iv::bind_iv_modules_graph_input_lanes_bridge(graph_input_lanes);
-    iv::bind_iv_modules_project_service_bridge(service);
-    iv::bind_project_service_graph_input_lanes_bridge(graph_input_lanes);
+    iv::bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
+    iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
+    iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+    iv::bind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
     iv::bind_lane_views_timeline_bridge(lane_views);
     iv::bind_socket_rpc_lane_views_bridge(lane_views);
-    service.initialize();
-    iv::bind_socket_rpc_runtime_project_bridge(service);
+    (void)iv_module_definitions.initialize();
+    introspection.initialize();
+    iv::bind_socket_rpc_project_introspection_bridge(introspection, graph_input_lanes);
 
     iv::SocketRpcGraphQueryResultBuilder builder;
     IV_INVOKE_LINKER_EVENT(
@@ -259,15 +263,16 @@ TEST(SocketRpcRuntimeProjectBridge, BoundQueryEventPopulatesBuilderFromService)
         builder);
 
     auto const response = parse_json_line(builder.build(2));
-    iv::unbind_socket_rpc_runtime_project_bridge(service);
+    iv::unbind_socket_rpc_project_introspection_bridge(introspection, graph_input_lanes);
     iv::unbind_socket_rpc_lane_views_bridge(lane_views);
     iv::unbind_lane_views_timeline_bridge(lane_views);
-    iv::unbind_project_service_graph_input_lanes_bridge(graph_input_lanes);
-    iv::unbind_iv_modules_project_service_bridge(service);
-    iv::unbind_iv_modules_graph_input_lanes_bridge(graph_input_lanes);
+    iv::unbind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
+    iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+    iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
+    iv::unbind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
     iv::unbind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
     iv::unbind_graph_input_lanes_timeline_bridge(timeline);
-    service.request_shutdown();
+    iv_module_definitions.request_shutdown();
 
     EXPECT_EQ(response["id"], 2);
     ASSERT_TRUE(response["result"].contains("nodes"));

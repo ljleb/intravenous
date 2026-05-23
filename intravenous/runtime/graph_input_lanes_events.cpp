@@ -73,6 +73,20 @@ RuntimeGraphInputLanesLaneOutputsBuilder::build() const
     return *result;
 }
 
+void RuntimeGraphInputLanesSampleInputLaneRefBuilder::succeed(RealtimeLaneRef value)
+{
+    result = std::move(value);
+}
+
+RealtimeLaneRef RuntimeGraphInputLanesSampleInputLaneRefBuilder::build() const
+{
+    if (!result.has_value()) {
+        throw std::runtime_error(
+            "runtime graph input lane ref was not provided");
+    }
+    return *result;
+}
+
 IV_DEFINE_LINKER_EVENT(
     RuntimeGraphInputLanesPortsChangedEvent,
     iv_runtime_graph_input_lanes_ports_changed_event);
@@ -94,6 +108,9 @@ IV_DEFINE_LINKER_EVENT(
 IV_DEFINE_LINKER_EVENT(
     RuntimeGraphInputLanesClearSampleInputValueOverrideRequestedEvent,
     iv_runtime_graph_input_lanes_clear_sample_input_value_override_requested_event);
+IV_DEFINE_LINKER_EVENT(
+    RuntimeGraphInputLanesSampleInputLaneRefRequestedEvent,
+    iv_runtime_graph_input_lanes_sample_input_lane_ref_requested_event);
 IV_DEFINE_LINKER_EVENT(
     RuntimeGraphInputLanesLaneViewUpdatedEvent,
     iv_runtime_graph_input_lanes_lane_view_updated_event);

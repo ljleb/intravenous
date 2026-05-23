@@ -338,15 +338,13 @@ Avoid:
 
 ## Immediate Implication
 
-`RuntimeProjectService` is currently too broad.
+This split is already underway in the codebase.
 
-Future refactors should move its embedded domains into standalone application
-modules, especially:
+The remaining work should continue to prefer true domain boundaries over
+convenience helper boundaries, especially around:
 
-- intravenous-module definition lifecycle
-- intravenous-module instance lifecycle
-- introspection/query model
-- lane graph/view state
-
-The first extraction should prefer a true domain boundary over a convenience
-helper boundary.
+- iv-module instance lifecycle and instance management requests
+- introspection/query ownership and direct JSON-RPC routing
+- DSP-generated lane policy versus generic timeline lane ownership
+- devices as their own long-lived app module
+- future execution orchestration as its own module boundary

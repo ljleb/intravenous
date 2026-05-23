@@ -2,6 +2,7 @@
 
 #include "linker_event.h"
 #include "runtime/graph_input_lane_controller.h"
+#include "runtime/lane_ref.h"
 #include "runtime/lane_view_service.h"
 
 #include <optional>
@@ -48,6 +49,14 @@ struct RuntimeGraphInputLanesClearSampleInputValueOverrideRequest {
     GraphInputPortDescriptor graph_input_port;
 };
 
+struct RuntimeGraphInputLanesSampleInputLaneRefRequest {
+    std::string logical_node_id {};
+    std::optional<size_t> member_ordinal {};
+    size_t input_ordinal = 0;
+    std::string input_name {};
+    Sample default_value = Sample {0.0f};
+};
+
 class RuntimeGraphInputLanesAckBuilder {
     std::optional<std::string> error_message;
     bool handled = false;
@@ -82,6 +91,14 @@ public:
     [[nodiscard]] std::vector<RuntimeGraphInputLanesLaneOutputs> build() const;
 };
 
+class RuntimeGraphInputLanesSampleInputLaneRefBuilder {
+    std::optional<RealtimeLaneRef> result;
+
+public:
+    void succeed(RealtimeLaneRef value);
+    [[nodiscard]] RealtimeLaneRef build() const;
+};
+
 using RuntimeGraphInputLanesPortsChangedEvent =
     void (*)(RuntimeGraphInputLanesPortsChangedRequest const &, RuntimeGraphInputLanesAckBuilder &);
 using RuntimeGraphInputLanesLiveInputSnapshotsRequestedEvent =
@@ -96,6 +113,8 @@ using RuntimeGraphInputLanesSetSampleInputValueRequestedEvent =
     void (*)(RuntimeGraphInputLanesSetSampleInputValueRequest const &, RuntimeGraphInputLanesAckBuilder &);
 using RuntimeGraphInputLanesClearSampleInputValueOverrideRequestedEvent =
     void (*)(RuntimeGraphInputLanesClearSampleInputValueOverrideRequest const &, RuntimeGraphInputLanesAckBuilder &);
+using RuntimeGraphInputLanesSampleInputLaneRefRequestedEvent =
+    void (*)(RuntimeGraphInputLanesSampleInputLaneRefRequest const &, RuntimeGraphInputLanesSampleInputLaneRefBuilder &);
 using RuntimeGraphInputLanesLaneViewUpdatedEvent =
     void (*)(LaneViewResult const &);
 
@@ -120,6 +139,9 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     RuntimeGraphInputLanesClearSampleInputValueOverrideRequestedEvent,
     iv_runtime_graph_input_lanes_clear_sample_input_value_override_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    RuntimeGraphInputLanesSampleInputLaneRefRequestedEvent,
+    iv_runtime_graph_input_lanes_sample_input_lane_ref_requested_event);
 IV_DECLARE_LINKER_EVENT(
     RuntimeGraphInputLanesLaneViewUpdatedEvent,
     iv_runtime_graph_input_lanes_lane_view_updated_event);

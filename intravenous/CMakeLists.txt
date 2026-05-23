@@ -164,23 +164,27 @@ add_library(intravenous_tooling_runtime STATIC
     runtime/graph_input_lanes_events.cpp
     runtime/graph_input_lanes_lane_views_bridge.cpp
     runtime/graph_input_lanes_timeline_bridge.cpp
-    runtime/iv_modules.cpp
-    runtime/iv_modules_graph_input_lanes_bridge.cpp
-    runtime/iv_modules_events.cpp
-    runtime/iv_modules_project_service_bridge.cpp
+    runtime/iv_module_definitions.cpp
+    runtime/iv_module_definitions_events.cpp
+    runtime/iv_module_definitions_iv_module_instances_bridge.cpp
+    runtime/iv_module_definitions_project_introspection_bridge.cpp
+    runtime/iv_module_instances.cpp
+    runtime/iv_module_instances_events.cpp
+    runtime/iv_module_instances_graph_input_lanes_bridge.cpp
+    runtime/lane_ref.cpp
     runtime/lane_views.cpp
     runtime/lane_views_events.cpp
     runtime/lane_views_timeline_bridge.cpp
     runtime/lane_view_service.cpp
-    runtime/project_service.cpp
-    runtime/project_service_events.cpp
-    runtime/project_service_graph_input_lanes_bridge.cpp
+    runtime/project_introspection.cpp
+    runtime/project_introspection_events.cpp
+    runtime/project_introspection_graph_input_lanes_bridge.cpp
+    runtime/runtime_project_events.cpp
     runtime/socket_rpc_lane_views_bridge.cpp
-    runtime/project_service_timeline_bridge.cpp
+    runtime/socket_rpc_project_introspection_bridge.cpp
     runtime/socket_rpc_notification_bridge.cpp
     runtime/socket_rpc_requests.cpp
     runtime/socket_rpc_response_builders.cpp
-    runtime/socket_rpc_runtime_project_bridge.cpp
     runtime/socket_rpc_server.cpp
     runtime/timeline_events.cpp
 )

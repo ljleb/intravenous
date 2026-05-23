@@ -180,6 +180,25 @@ void handle_set_sample_input_value_requested(
     builder.succeed();
 }
 
+void handle_sample_input_lane_ref_requested(
+    RuntimeGraphInputLanesSampleInputLaneRefRequest const &request,
+    RuntimeGraphInputLanesSampleInputLaneRefBuilder &builder)
+{
+    if (bound_timeline == nullptr) {
+        return;
+    }
+    auto const lane = bound_timeline->resolve_graph_sample_input_lane(
+        request.logical_node_id,
+        request.member_ordinal,
+        request.input_ordinal,
+        request.input_name,
+        request.default_value);
+    if (!lane) {
+        return;
+    }
+    builder.succeed(RealtimeLaneRef(*bound_timeline, lane));
+}
+
 void handle_clear_sample_input_value_override_requested(
     RuntimeGraphInputLanesClearSampleInputValueOverrideRequest const &request,
     RuntimeGraphInputLanesAckBuilder &builder)
@@ -222,6 +241,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     RuntimeGraphInputLanesSetSampleInputValueRequestedEvent,
     iv_runtime_graph_input_lanes_set_sample_input_value_requested_event,
     handle_set_sample_input_value_requested);
+IV_SUBSCRIBE_LINKER_EVENT(
+    RuntimeGraphInputLanesSampleInputLaneRefRequestedEvent,
+    iv_runtime_graph_input_lanes_sample_input_lane_ref_requested_event,
+    handle_sample_input_lane_ref_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
     RuntimeGraphInputLanesClearSampleInputValueOverrideRequestedEvent,
     iv_runtime_graph_input_lanes_clear_sample_input_value_override_requested_event,

@@ -4,6 +4,7 @@
 #include "compat.h"
 
 #include "devices/channel_buffer_sink.h"
+#include "graph/builder.h"
 
 #include <algorithm>
 #include <chrono>
@@ -588,13 +589,11 @@ namespace iv {
         std::filesystem::path default_template_path;
         std::filesystem::path default_pch_path;
         std::vector<std::filesystem::path> extra_search_roots;
-        Timeline& timeline;
         ToolchainConfig toolchain;
         LogSink log_sink;
         mutable std::mutex build_mutex;
 
         explicit Impl(
-            Timeline& timeline_,
             std::filesystem::path discovery_start,
             std::vector<std::filesystem::path> extra_roots,
             ToolchainConfig toolchain_,
@@ -606,7 +605,6 @@ namespace iv {
             cache_root(repo_root / "build" / "iv_runtime_modules"),
             default_template_path(repo_root / "intravenous" / "module" / "template" / "CMakeLists.txt"),
             default_pch_path(repo_root / "intravenous" / "module" / "template" / "module_pch.h"),
-            timeline(timeline_),
             toolchain(std::move(toolchain_)),
             log_sink(std::move(log_sink_))
         {
@@ -1181,10 +1179,11 @@ namespace iv {
                 &session
             );
             TypeErasedModule root_module = session.load_module(root.id);
+            GraphBuilder root_builder;
             GraphBuilder::BuildResult built_root = [&]() -> GraphBuilder::BuildResult {
                 try {
-                    GraphBuilder root_builder = root_module.builder(context);
-                    root_builder.augment(timeline);
+                    root_builder = root_module.builder(context);
+                    root_builder.augment();
                     return root_builder.build_with_metadata();
                 } catch (std::exception const& e) {
                     throw std::runtime_error(wrap_exception(
@@ -1202,6 +1201,7 @@ namespace iv {
             return LoadedGraph(
                 std::move(built_root.graph),
                 std::move(session.module_refs),
+                std::make_unique<GraphBuilder>(std::move(root_builder)),
                 std::move(built_root.introspection),
                 root.request_path,
                 root.id,
@@ -1214,6 +1214,7 @@ namespace iv {
     ModuleLoader::LoadedGraph::LoadedGraph(
         TypeErasedNode root_,
         std::vector<ModuleRef> module_refs_,
+        std::unique_ptr<GraphBuilder> canonical_builder_,
         GraphIntrospectionMetadata introspection_,
         std::filesystem::path module_path_,
         std::string module_id_,
@@ -1222,6 +1223,7 @@ namespace iv {
     ) :
         module_refs(std::move(module_refs_)),
         root(std::move(root_)),
+        canonical_builder(std::move(canonical_builder_)),
         introspection(std::move(introspection_)),
         module_path(std::move(module_path_)),
         module_id(std::move(module_id_)),
@@ -1230,14 +1232,12 @@ namespace iv {
     {}
 
     ModuleLoader::ModuleLoader(
-        Timeline& timeline,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots,
         ToolchainConfig toolchain,
         LogSink log_sink
     ) :
         _impl(std::make_unique<Impl>(
-            timeline,
             std::move(discovery_start),
             std::move(extra_search_roots),
             std::move(toolchain),

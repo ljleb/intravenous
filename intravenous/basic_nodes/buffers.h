@@ -1,6 +1,6 @@
 #pragma once
 
-#include "runtime/timeline.h"
+#include "runtime/lane_ref.h"
 #include "node/lifecycle.h"
 
 #include <array>
@@ -63,25 +63,22 @@ namespace iv {
         }
     };
 
-    class TimelineInputValue {
-        Timeline* _timeline;
-        LaneId _lane;
+    class LaneInputValue {
+        RealtimeLaneRef _lane;
         std::string _identity;
 
     public:
         static std::string nominal_identity(
-            LaneId lane
+            RealtimeLaneRef const& lane
         )
         {
-            return "timeline-input-lane:" + std::to_string(lane.value);
+            return lane.nominal_identity();
         }
 
-        TimelineInputValue(
-            Timeline& timeline,
-            LaneId lane
+        explicit LaneInputValue(
+            RealtimeLaneRef lane
         ) :
-            _timeline(&timeline),
-            _lane(lane),
+            _lane(std::move(lane)),
             _identity(nominal_identity(lane))
         {}
 
@@ -95,9 +92,9 @@ namespace iv {
             return _identity;
         }
 
-        void tick_block(TickBlockContext<TimelineInputValue> const& ctx) const
+        void tick_block(TickBlockContext<LaneInputValue> const& ctx) const
         {
-            auto block = _timeline->pull_realtime_lane_sample_block(_lane, ctx.index, ctx.block_size);
+            auto block = _lane.pull_sample_block(ctx.index, ctx.block_size);
             ctx.outputs[0].push_block(block.samples());
         }
     };

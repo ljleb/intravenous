@@ -24,10 +24,15 @@ The important consequence is that DSP execution should not be owned by a global 
 - the lane graph
 - playing / paused state
 - the current realtime request frontier
+- current playback position / seek-resume position
 - lane-to-lane dependency ordering
 - dynamic wiring between producers and consumers
 
 `Timeline` should not own DSP graph internals. It should coordinate execution, not become the owner of every DSP graph instance.
+
+`Timeline` should also remain the authority for realtime transport state.
+Device callbacks may request work, but they should not become the source of
+truth for timeline position or playback advancement.
 
 ## DSP instance responsibilities
 
@@ -87,8 +92,12 @@ Assumptions:
 - the rate ratio between any two lanes is always a power of 2
 - some lanes may process faster or slower than others
 - not all lanes need to advance at the same time
+- graph inputs, graph outputs, and lane connections may eventually run at over-
+  or under-sampled rates relative to one another
 
 This means the runtime should be designed around a shared time protocol, not around lockstep advancement of every lane.
+The API shape should leave room for timeline-owned scheduling, rate conversion,
+and block-size adaptation rather than assuming one global realtime lane format.
 
 ## Paused / playing behavior
 
@@ -105,6 +114,10 @@ This keeps live inputs tied to the present while preserving a meaningful paused 
 The design should avoid blocking waits on realtime device callback threads.
 
 If concurrency is introduced later, it should be done through bounded, realtime-safe scheduling and readiness tracking, not through arbitrary blocking in the audio callback path.
+
+Realtime DSP graph instances should eventually execute as timeline-managed or
+timeline-scheduled participants whose inputs and outputs are represented through
+realtime lanes.
 
 ## Architectural implication
 

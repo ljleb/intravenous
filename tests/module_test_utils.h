@@ -5,6 +5,7 @@
 #include "module/loader.h"
 #include "node/executor.h"
 #include "runtime/handlers.h"
+#include "runtime/timeline.h"
 #include "juce/vst_runtime.h"
 
 #include <chrono>
@@ -323,8 +324,7 @@ namespace iv::test {
 
     inline iv::ModuleLoader make_loader(std::vector<std::filesystem::path> extra_roots = { test_modules_root() })
     {
-        static thread_local iv::Timeline timeline;
-        return iv::ModuleLoader(timeline, repo_root(), std::move(extra_roots));
+        return iv::ModuleLoader(repo_root(), std::move(extra_roots));
     }
 
     template<typename Device>

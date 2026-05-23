@@ -1,10 +1,10 @@
 #include "runtime/socket_rpc_notification_bridge.h"
 
 #include "runtime/graph_input_lanes_events.h"
-#include "runtime/iv_modules.h"
-#include "runtime/iv_modules_events.h"
+#include "runtime/iv_module_definitions.h"
+#include "runtime/iv_module_definitions_events.h"
 #include "runtime/lane_views_events.h"
-#include "runtime/project_service_events.h"
+#include "runtime/runtime_project_events.h"
 #include "runtime/socket_rpc_server.h"
 
 #include <type_traits>
@@ -41,8 +41,8 @@ namespace {
             notification);
     }
 
-    void forward_runtime_iv_modules_notification(
-        RuntimeIvModulesNotification const &notification)
+    void forward_runtime_iv_module_definitions_notification(
+        RuntimeIvModuleDefinitionsNotification const &notification)
     {
         if (bound_server == nullptr) {
             return;
@@ -51,13 +51,13 @@ namespace {
         std::visit(
             [&](auto const &payload) {
                 using Payload = std::remove_cvref_t<decltype(payload)>;
-                if constexpr (std::same_as<Payload, RuntimeIvModulesMessage>) {
+                if constexpr (std::same_as<Payload, RuntimeIvModuleDefinitionsMessage>) {
                     bound_server->send_server_message(RuntimeProjectMessageNotification{
                         .level = payload.level,
                         .message = payload.message,
                         .module_root = payload.module_root,
                     });
-                } else if constexpr (std::same_as<Payload, RuntimeIvModulesStatus>) {
+                } else if constexpr (std::same_as<Payload, RuntimeIvModuleDefinitionsStatus>) {
                     bound_server->send_server_status(RuntimeProjectStatusNotification{
                         .level = payload.level,
                         .code = payload.code,
@@ -85,9 +85,9 @@ namespace {
         iv_runtime_project_notification_event,
         forward_runtime_project_notification);
     IV_SUBSCRIBE_LINKER_EVENT(
-        RuntimeIvModulesNotificationEvent,
-        iv_runtime_iv_modules_notification_event,
-        forward_runtime_iv_modules_notification);
+        RuntimeIvModuleDefinitionsNotificationEvent,
+        iv_runtime_iv_module_definitions_notification_event,
+        forward_runtime_iv_module_definitions_notification);
     IV_SUBSCRIBE_LINKER_EVENT(
         RuntimeLaneViewsUpdatedEvent,
         iv_runtime_lane_views_updated_event,
