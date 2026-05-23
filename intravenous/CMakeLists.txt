@@ -95,6 +95,8 @@ endfunction()
 add_library(intravenous_module_runtime STATIC
     module/loader.cpp
     module/watcher.cpp
+    runtime/iv_module_instances_events.cpp
+    runtime/lane_ref.cpp
 )
 
 iv_apply_common_cxx_settings(intravenous_module_runtime PUBLIC)
@@ -169,9 +171,7 @@ add_library(intravenous_tooling_runtime STATIC
     runtime/iv_module_definitions_iv_module_instances_bridge.cpp
     runtime/iv_module_definitions_project_introspection_bridge.cpp
     runtime/iv_module_instances.cpp
-    runtime/iv_module_instances_events.cpp
     runtime/iv_module_instances_graph_input_lanes_bridge.cpp
-    runtime/lane_ref.cpp
     runtime/lane_views.cpp
     runtime/lane_views_events.cpp
     runtime/lane_views_timeline_bridge.cpp

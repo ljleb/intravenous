@@ -28,8 +28,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.local_cmake", local_dst));
 
     iv::test::FakeAudioDevice audio_device;
-    iv::Timeline timeline;
-    iv::ModuleLoader loader(timeline, iv::test::repo_root(), { runtime_root });
+    iv::ModuleLoader loader(iv::test::repo_root(), { runtime_root });
 
     {
         auto graph = loader.load_root(

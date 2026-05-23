@@ -1444,6 +1444,7 @@ TEST(ArchitectureSmoke, ExecuteReloadSwitchesAtExecutorBlockBoundaryWithinActive
             return iv::ModuleLoader::LoadedGraph(
                 make_constant_audio_graph(&new_value),
                 {},
+                std::make_unique<iv::GraphBuilder>(),
                 {},
                 {},
                 "live_reload",
