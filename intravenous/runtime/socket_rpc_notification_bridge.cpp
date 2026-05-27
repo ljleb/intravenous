@@ -16,7 +16,7 @@ namespace {
     SocketRpcServer *bound_server = nullptr;
 
     void forward_runtime_project_notification(
-        RuntimeProjectNotification const &notification)
+        ProjectNotification const &notification)
     {
         if (bound_server == nullptr) {
             return;
@@ -27,15 +27,15 @@ namespace {
                 using Payload = std::remove_cvref_t<decltype(payload)>;
                 if constexpr (std::same_as<
                                   Payload,
-                                  RuntimeProjectMessageNotification>) {
+                                  ProjectMessageNotification>) {
                     bound_server->send_server_message(payload);
                 } else if constexpr (std::same_as<
                                          Payload,
-                                         RuntimeProjectStatusNotification>) {
+                                         ProjectStatusNotification>) {
                     bound_server->send_server_status(payload);
                 } else if constexpr (std::same_as<
                                          Payload,
-                                         RuntimeProjectLaneViewNotification>) {
+                                         ProjectLaneViewNotification>) {
                     bound_server->send_lane_view_updated(payload.lane_view);
                 }
             },
@@ -43,7 +43,7 @@ namespace {
     }
 
     void forward_runtime_iv_module_definitions_notification(
-        RuntimeIvModuleDefinitionsNotification const &notification)
+        IvModuleDefinitionsNotification const &notification)
     {
         if (bound_server == nullptr) {
             return;
@@ -52,14 +52,14 @@ namespace {
         std::visit(
             [&](auto const &payload) {
                 using Payload = std::remove_cvref_t<decltype(payload)>;
-                if constexpr (std::same_as<Payload, RuntimeIvModuleDefinitionsMessage>) {
-                    bound_server->send_server_message(RuntimeProjectMessageNotification{
+                if constexpr (std::same_as<Payload, IvModuleDefinitionsMessage>) {
+                    bound_server->send_server_message(ProjectMessageNotification{
                         .level = payload.level,
                         .message = payload.message,
                         .module_root = payload.module_root,
                     });
-                } else if constexpr (std::same_as<Payload, RuntimeIvModuleDefinitionsStatus>) {
-                    bound_server->send_server_status(RuntimeProjectStatusNotification{
+                } else if constexpr (std::same_as<Payload, IvModuleDefinitionsStatus>) {
+                    bound_server->send_server_status(ProjectStatusNotification{
                         .level = payload.level,
                         .code = payload.code,
                         .message = payload.message,
@@ -82,7 +82,7 @@ namespace {
     }
 
     void forward_runtime_iv_module_instances_list_changed(
-        std::vector<RuntimeIvModuleInstanceInfo> const &instances)
+        std::vector<IvModuleInstanceInfo> const &instances)
     {
         if (bound_server == nullptr) {
             return;
@@ -91,19 +91,19 @@ namespace {
     }
 
     IV_SUBSCRIBE_LINKER_EVENT(
-        RuntimeProjectNotificationEvent,
+        ProjectNotificationEvent,
         iv_runtime_project_notification_event,
         forward_runtime_project_notification);
     IV_SUBSCRIBE_LINKER_EVENT(
-        RuntimeIvModuleDefinitionsNotificationEvent,
+        IvModuleDefinitionsNotificationEvent,
         iv_runtime_iv_module_definitions_notification_event,
         forward_runtime_iv_module_definitions_notification);
     IV_SUBSCRIBE_LINKER_EVENT(
-        RuntimeLaneViewsUpdatedEvent,
+        LaneViewsUpdatedEvent,
         iv_runtime_lane_views_updated_event,
         forward_runtime_lane_views_updated);
     IV_SUBSCRIBE_LINKER_EVENT(
-        RuntimeIvModuleInstancesListChangedEvent,
+        IvModuleInstancesListChangedEvent,
         iv_runtime_iv_module_instances_list_changed_event,
         forward_runtime_iv_module_instances_list_changed);
 } // namespace

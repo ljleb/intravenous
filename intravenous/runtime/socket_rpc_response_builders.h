@@ -23,10 +23,10 @@ namespace iv {
     class SocketRpcGraphQueryResultBuilder {
         int error_code = -32000;
         std::string error_message;
-        std::optional<RuntimeProjectQueryResult> result;
+        std::optional<ProjectQueryResult> result;
 
     public:
-        void succeed(RuntimeProjectQueryResult value);
+        void succeed(ProjectQueryResult value);
         void fail(std::string message);
         void fail(int code, std::string message);
 
@@ -36,10 +36,10 @@ namespace iv {
     class SocketRpcRegionQueryResultBuilder {
         int error_code = -32000;
         std::string error_message;
-        std::optional<RuntimeProjectRegionQueryResult> result;
+        std::optional<ProjectRegionQueryResult> result;
 
     public:
-        void succeed(RuntimeProjectRegionQueryResult value);
+        void succeed(ProjectRegionQueryResult value);
         void fail(std::string message);
         void fail(int code, std::string message);
 

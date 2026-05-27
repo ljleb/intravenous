@@ -10,18 +10,18 @@
 #include <vector>
 
 namespace iv {
-struct RuntimeGraphInputLanesPortsChangedRequest {
+struct GraphInputLanesPortsChangedRequest {
     std::vector<GraphInputPortDescriptor> ports;
 };
 
-struct RuntimeGraphInputLanesLiveInputSnapshotRequest {
+struct GraphInputLanesLiveInputSnapshotRequest {
     std::string logical_node_id;
     std::optional<size_t> member_ordinal;
     size_t input_ordinal = 0;
     Sample fallback = Sample {0.0f};
 };
 
-struct RuntimeGraphInputLanesLiveInputSnapshot {
+struct GraphInputLanesLiveInputSnapshot {
     std::string logical_node_id;
     std::optional<size_t> member_ordinal;
     size_t input_ordinal = 0;
@@ -29,12 +29,12 @@ struct RuntimeGraphInputLanesLiveInputSnapshot {
     bool has_concrete_override = false;
 };
 
-struct RuntimeGraphInputLanesLaneOutputs {
+struct GraphInputLanesLaneOutputs {
     LaneId lane;
     std::vector<LaneOutputConnection> outputs;
 };
 
-struct RuntimeGraphInputLanesSetSampleInputValueRequest {
+struct GraphInputLanesSetSampleInputValueRequest {
     std::string node_id;
     std::optional<size_t> member_ordinal;
     size_t input_ordinal = 0;
@@ -42,14 +42,14 @@ struct RuntimeGraphInputLanesSetSampleInputValueRequest {
     GraphInputPortDescriptor graph_input_port;
 };
 
-struct RuntimeGraphInputLanesClearSampleInputValueOverrideRequest {
+struct GraphInputLanesClearSampleInputValueOverrideRequest {
     std::string node_id;
     size_t member_ordinal = 0;
     size_t input_ordinal = 0;
     GraphInputPortDescriptor graph_input_port;
 };
 
-struct RuntimeGraphInputLanesSampleInputLaneRefRequest {
+struct GraphInputLanesSampleInputLaneRefRequest {
     std::string logical_node_id {};
     std::optional<size_t> member_ordinal {};
     size_t input_ordinal = 0;
@@ -57,7 +57,7 @@ struct RuntimeGraphInputLanesSampleInputLaneRefRequest {
     Sample default_value = Sample {0.0f};
 };
 
-class RuntimeGraphInputLanesAckBuilder {
+class GraphInputLanesAckBuilder {
     std::optional<std::string> error_message;
     bool handled = false;
 
@@ -67,15 +67,15 @@ public:
     void build() const;
 };
 
-class RuntimeGraphInputLanesLiveInputSnapshotsBuilder {
-    std::optional<std::vector<RuntimeGraphInputLanesLiveInputSnapshot>> result;
+class GraphInputLanesLiveInputSnapshotsBuilder {
+    std::optional<std::vector<GraphInputLanesLiveInputSnapshot>> result;
 
 public:
-    void succeed(std::vector<RuntimeGraphInputLanesLiveInputSnapshot> value);
-    [[nodiscard]] std::vector<RuntimeGraphInputLanesLiveInputSnapshot> build() const;
+    void succeed(std::vector<GraphInputLanesLiveInputSnapshot> value);
+    [[nodiscard]] std::vector<GraphInputLanesLiveInputSnapshot> build() const;
 };
 
-class RuntimeGraphInputLanesLaneBindingsBuilder {
+class GraphInputLanesLaneBindingsBuilder {
     std::optional<GraphInputLaneBindings> result;
 
 public:
@@ -83,15 +83,15 @@ public:
     [[nodiscard]] GraphInputLaneBindings build() const;
 };
 
-class RuntimeGraphInputLanesLaneOutputsBuilder {
-    std::optional<std::vector<RuntimeGraphInputLanesLaneOutputs>> result;
+class GraphInputLanesLaneOutputsBuilder {
+    std::optional<std::vector<GraphInputLanesLaneOutputs>> result;
 
 public:
-    void succeed(std::vector<RuntimeGraphInputLanesLaneOutputs> value);
-    [[nodiscard]] std::vector<RuntimeGraphInputLanesLaneOutputs> build() const;
+    void succeed(std::vector<GraphInputLanesLaneOutputs> value);
+    [[nodiscard]] std::vector<GraphInputLanesLaneOutputs> build() const;
 };
 
-class RuntimeGraphInputLanesSampleInputLaneRefBuilder {
+class GraphInputLanesSampleInputLaneRefBuilder {
     std::optional<RealtimeLaneRef> result;
 
 public:
@@ -99,50 +99,50 @@ public:
     [[nodiscard]] RealtimeLaneRef build() const;
 };
 
-using RuntimeGraphInputLanesPortsChangedEvent =
-    void (*)(RuntimeGraphInputLanesPortsChangedRequest const &, RuntimeGraphInputLanesAckBuilder &);
-using RuntimeGraphInputLanesLiveInputSnapshotsRequestedEvent =
-    void (*)(std::vector<RuntimeGraphInputLanesLiveInputSnapshotRequest> const &, RuntimeGraphInputLanesLiveInputSnapshotsBuilder &);
-using RuntimeGraphInputLanesLaneBindingsEnsuredEvent =
-    void (*)(RuntimeGraphInputLanesPortsChangedRequest const &, RuntimeGraphInputLanesAckBuilder &);
-using RuntimeGraphInputLanesLaneBindingsRequestedEvent =
-    void (*)(RuntimeGraphInputLanesPortsChangedRequest const &, RuntimeGraphInputLanesLaneBindingsBuilder &);
-using RuntimeGraphInputLanesLaneOutputsRequestedEvent =
-    void (*)(std::vector<LaneId> const &, RuntimeGraphInputLanesLaneOutputsBuilder &);
-using RuntimeGraphInputLanesSetSampleInputValueRequestedEvent =
-    void (*)(RuntimeGraphInputLanesSetSampleInputValueRequest const &, RuntimeGraphInputLanesAckBuilder &);
-using RuntimeGraphInputLanesClearSampleInputValueOverrideRequestedEvent =
-    void (*)(RuntimeGraphInputLanesClearSampleInputValueOverrideRequest const &, RuntimeGraphInputLanesAckBuilder &);
-using RuntimeGraphInputLanesSampleInputLaneRefRequestedEvent =
-    void (*)(RuntimeGraphInputLanesSampleInputLaneRefRequest const &, RuntimeGraphInputLanesSampleInputLaneRefBuilder &);
-using RuntimeGraphInputLanesLaneViewUpdatedEvent =
+using GraphInputLanesPortsChangedEvent =
+    void (*)(GraphInputLanesPortsChangedRequest const &, GraphInputLanesAckBuilder &);
+using GraphInputLanesLiveInputSnapshotsRequestedEvent =
+    void (*)(std::vector<GraphInputLanesLiveInputSnapshotRequest> const &, GraphInputLanesLiveInputSnapshotsBuilder &);
+using GraphInputLanesLaneBindingsEnsuredEvent =
+    void (*)(GraphInputLanesPortsChangedRequest const &, GraphInputLanesAckBuilder &);
+using GraphInputLanesLaneBindingsRequestedEvent =
+    void (*)(GraphInputLanesPortsChangedRequest const &, GraphInputLanesLaneBindingsBuilder &);
+using GraphInputLanesLaneOutputsRequestedEvent =
+    void (*)(std::vector<LaneId> const &, GraphInputLanesLaneOutputsBuilder &);
+using GraphInputLanesSetSampleInputValueRequestedEvent =
+    void (*)(GraphInputLanesSetSampleInputValueRequest const &, GraphInputLanesAckBuilder &);
+using GraphInputLanesClearSampleInputValueOverrideRequestedEvent =
+    void (*)(GraphInputLanesClearSampleInputValueOverrideRequest const &, GraphInputLanesAckBuilder &);
+using GraphInputLanesSampleInputLaneRefRequestedEvent =
+    void (*)(GraphInputLanesSampleInputLaneRefRequest const &, GraphInputLanesSampleInputLaneRefBuilder &);
+using GraphInputLanesLaneViewUpdatedEvent =
     void (*)(LaneViewResult const &);
 
 IV_DECLARE_LINKER_EVENT(
-    RuntimeGraphInputLanesPortsChangedEvent,
+    GraphInputLanesPortsChangedEvent,
     iv_runtime_graph_input_lanes_ports_changed_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeGraphInputLanesLiveInputSnapshotsRequestedEvent,
+    GraphInputLanesLiveInputSnapshotsRequestedEvent,
     iv_runtime_graph_input_lanes_live_input_snapshots_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneBindingsEnsuredEvent,
+    GraphInputLanesLaneBindingsEnsuredEvent,
     iv_runtime_graph_input_lanes_lane_bindings_ensured_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneBindingsRequestedEvent,
+    GraphInputLanesLaneBindingsRequestedEvent,
     iv_runtime_graph_input_lanes_lane_bindings_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneOutputsRequestedEvent,
+    GraphInputLanesLaneOutputsRequestedEvent,
     iv_runtime_graph_input_lanes_lane_outputs_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeGraphInputLanesSetSampleInputValueRequestedEvent,
+    GraphInputLanesSetSampleInputValueRequestedEvent,
     iv_runtime_graph_input_lanes_set_sample_input_value_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeGraphInputLanesClearSampleInputValueOverrideRequestedEvent,
+    GraphInputLanesClearSampleInputValueOverrideRequestedEvent,
     iv_runtime_graph_input_lanes_clear_sample_input_value_override_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeGraphInputLanesSampleInputLaneRefRequestedEvent,
+    GraphInputLanesSampleInputLaneRefRequestedEvent,
     iv_runtime_graph_input_lanes_sample_input_lane_ref_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneViewUpdatedEvent,
+    GraphInputLanesLaneViewUpdatedEvent,
     iv_runtime_graph_input_lanes_lane_view_updated_event);
 } // namespace iv

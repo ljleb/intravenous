@@ -23,16 +23,16 @@
 #include <vector>
 
 namespace iv::test_support {
-struct BoundRuntimeProjectIntrospection {
+struct BoundProjectIntrospection {
     iv::Timeline timeline;
-    iv::RuntimeIvModuleInstances iv_module_instances;
-    iv::RuntimeIvModuleDefinitions iv_module_definitions;
-    iv::RuntimeGraphInputLanes graph_input_lanes;
-    iv::RuntimeLaneViews lane_views;
-    iv::RuntimeProjectIntrospection introspection;
+    iv::IvModuleInstances iv_module_instances;
+    iv::IvModuleDefinitions iv_module_definitions;
+    iv::GraphInputLanes graph_input_lanes;
+    iv::LaneViews lane_views;
+    iv::ProjectIntrospection introspection;
     iv::StartupConfig startup_config;
 
-    static iv::RuntimeIvModuleReloadedDefinition load_definition(
+    static iv::IvModuleReloadedDefinition load_definition(
         iv::StartupConfigState const &config,
         std::filesystem::path module_root)
     {
@@ -41,7 +41,7 @@ struct BoundRuntimeProjectIntrospection {
             std::move(module_root));
     }
 
-    BoundRuntimeProjectIntrospection(
+    BoundProjectIntrospection(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots)
@@ -60,7 +60,7 @@ struct BoundRuntimeProjectIntrospection {
         iv::bind_lane_views_timeline_bridge(lane_views);
     }
 
-    ~BoundRuntimeProjectIntrospection()
+    ~BoundProjectIntrospection()
     {
         iv::unbind_lane_views_timeline_bridge(lane_views);
         iv::unbind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
@@ -130,7 +130,7 @@ struct BoundRuntimeProjectIntrospection {
             member_ordinal,
             input_ordinal);
         graph_input_lanes.set_sample_input_value(
-            iv::RuntimeProjectSetSampleInputValueRequest{
+            iv::ProjectSetSampleInputValueRequest{
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,
@@ -149,7 +149,7 @@ struct BoundRuntimeProjectIntrospection {
             member_ordinal,
             input_ordinal);
         graph_input_lanes.clear_sample_input_value_override(
-            iv::RuntimeProjectClearSampleInputValueOverrideRequest{
+            iv::ProjectClearSampleInputValueOverrideRequest{
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,

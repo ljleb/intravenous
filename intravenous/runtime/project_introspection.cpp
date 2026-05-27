@@ -139,7 +139,7 @@ GraphInputPortDescriptor sample_graph_input_port_for(
 } // namespace
 
 SourceTextLineMap const &
-RuntimeProjectIntrospection::source_text_for(std::string const &normalized_path) const
+ProjectIntrospection::source_text_for(std::string const &normalized_path) const
 {
     auto it = source_text_cache.find(normalized_path);
     if (it == source_text_cache.end()) {
@@ -149,12 +149,12 @@ RuntimeProjectIntrospection::source_text_for(std::string const &normalized_path)
     return it->second;
 }
 
-void RuntimeProjectIntrospection::invalidate_source_text(std::string const &normalized_path)
+void ProjectIntrospection::invalidate_source_text(std::string const &normalized_path)
 {
     source_text_cache.erase(normalized_path);
 }
 
-void RuntimeProjectIntrospection::invalidate_source_texts(
+void ProjectIntrospection::invalidate_source_texts(
     std::span<ModuleDependency const> dependencies)
 {
     for (auto const &dependency : dependencies) {
@@ -165,7 +165,7 @@ void RuntimeProjectIntrospection::invalidate_source_texts(
     }
 }
 
-std::pair<uint32_t, uint32_t> RuntimeProjectIntrospection::byte_range_for(
+std::pair<uint32_t, uint32_t> ProjectIntrospection::byte_range_for(
     std::string const &normalized_path,
     SourceRange const &range) const
 {
@@ -176,7 +176,7 @@ std::pair<uint32_t, uint32_t> RuntimeProjectIntrospection::byte_range_for(
     };
 }
 
-LiveSourceSpan RuntimeProjectIntrospection::to_live_span(SourceSpan const &span) const
+LiveSourceSpan ProjectIntrospection::to_live_span(SourceSpan const &span) const
 {
     SourceTextLineMap const &index = source_text_for(span.file_path);
     return LiveSourceSpan{
@@ -188,10 +188,10 @@ LiveSourceSpan RuntimeProjectIntrospection::to_live_span(SourceSpan const &span)
     };
 }
 
-LogicalNodeInfo RuntimeProjectIntrospection::to_logical_node(
+LogicalNodeInfo ProjectIntrospection::to_logical_node(
     IntrospectionLogicalNode const &node) const
 {
-    std::vector<RuntimeProjectIntrospectionLiveInputSnapshotRequest> snapshot_requests;
+    std::vector<ProjectIntrospectionLiveInputSnapshotRequest> snapshot_requests;
     snapshot_requests.reserve(
         node.sample_inputs.size() +
         std::accumulate(
@@ -202,7 +202,7 @@ LogicalNodeInfo RuntimeProjectIntrospection::to_logical_node(
                 return sum + member.sample_inputs.size();
             }));
     for (auto const &port : node.sample_inputs) {
-        snapshot_requests.push_back(RuntimeProjectIntrospectionLiveInputSnapshotRequest{
+        snapshot_requests.push_back(ProjectIntrospectionLiveInputSnapshotRequest{
             .logical_node_id = node.id,
             .member_ordinal = std::nullopt,
             .input_ordinal = port.ordinal,
@@ -211,7 +211,7 @@ LogicalNodeInfo RuntimeProjectIntrospection::to_logical_node(
     }
     for (auto const &member : node.members) {
         for (auto const &port : member.sample_inputs) {
-            snapshot_requests.push_back(RuntimeProjectIntrospectionLiveInputSnapshotRequest{
+            snapshot_requests.push_back(ProjectIntrospectionLiveInputSnapshotRequest{
                 .logical_node_id = node.id,
                 .member_ordinal = member.ordinal,
                 .input_ordinal = port.ordinal,
@@ -220,14 +220,14 @@ LogicalNodeInfo RuntimeProjectIntrospection::to_logical_node(
         }
     }
 
-    RuntimeProjectIntrospectionLiveInputSnapshotsBuilder snapshot_builder;
+    ProjectIntrospectionLiveInputSnapshotsBuilder snapshot_builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_introspection_live_input_snapshots_requested_event,
         snapshot_requests,
         snapshot_builder);
     auto const snapshots = snapshot_builder.build();
 
-    std::unordered_map<std::string, RuntimeProjectIntrospectionLiveInputSnapshot> snapshots_by_key;
+    std::unordered_map<std::string, ProjectIntrospectionLiveInputSnapshot> snapshots_by_key;
     snapshots_by_key.reserve(snapshots.size());
     for (auto const &snapshot : snapshots) {
         snapshots_by_key.emplace(
@@ -285,7 +285,7 @@ LogicalNodeInfo RuntimeProjectIntrospection::to_logical_node(
     return live;
 }
 
-RuntimeProjectInitializeResult RuntimeProjectIntrospection::initialize() const
+ProjectInitializeResult ProjectIntrospection::initialize() const
 {
     std::scoped_lock lock(mutex);
     if (!graph_index.has_value()) {
@@ -293,14 +293,14 @@ RuntimeProjectInitializeResult RuntimeProjectIntrospection::initialize() const
             "runtime project introspection failed to produce an initial graph index");
     }
 
-    return RuntimeProjectInitializeResult{
+    return ProjectInitializeResult{
         .module_root = graph_index->module_root,
         .module_id = graph_index->module_id,
     };
 }
 
-void RuntimeProjectIntrospection::handle_iv_module_definitions_changed(
-    RuntimeIvModuleDefinitionsChanged const &diff)
+void ProjectIntrospection::handle_iv_module_definitions_changed(
+    IvModuleDefinitionsChanged const &diff)
 {
     auto const changed_count = diff.created.size() + diff.updated.size();
     if (changed_count == 0 && diff.deleted_definition_ids.empty()) {
@@ -312,7 +312,7 @@ void RuntimeProjectIntrospection::handle_iv_module_definitions_changed(
             "multiple iv-module definition changes are not yet supported");
     }
 
-    RuntimeIvModuleDefinition const &definition =
+    IvModuleDefinition const &definition =
         !diff.created.empty() ? diff.created.front() : diff.updated.front();
     invalidate_source_texts(definition.dependencies);
 
@@ -323,7 +323,7 @@ void RuntimeProjectIntrospection::handle_iv_module_definitions_changed(
         definition.module_id);
 }
 
-RuntimeProjectQueryResult RuntimeProjectIntrospection::query_by_spans(
+ProjectQueryResult ProjectIntrospection::query_by_spans(
     std::filesystem::path const &file_path,
     std::vector<SourceRange> const &ranges,
     SourceRangeMatchMode match_mode) const
@@ -340,7 +340,7 @@ RuntimeProjectQueryResult RuntimeProjectIntrospection::query_by_spans(
         requested_ranges.push_back(byte_range_for(normalized_file_path, range));
     }
 
-    RuntimeProjectQueryResult result;
+    ProjectQueryResult result;
 
     auto span_touches_range =
         [](SourceSpan const &span,
@@ -455,7 +455,7 @@ RuntimeProjectQueryResult RuntimeProjectIntrospection::query_by_spans(
     return result;
 }
 
-RuntimeProjectRegionQueryResult RuntimeProjectIntrospection::query_active_regions(
+ProjectRegionQueryResult ProjectIntrospection::query_active_regions(
     std::filesystem::path const &file_path) const
 {
     std::scoped_lock lock(mutex);
@@ -464,7 +464,7 @@ RuntimeProjectRegionQueryResult RuntimeProjectIntrospection::query_active_region
     }
 
     std::string const normalized_file_path = normalized_path_string(file_path);
-    RuntimeProjectRegionQueryResult result;
+    ProjectRegionQueryResult result;
 
     std::unordered_set<std::string> emitted_spans;
     for (auto const &node : graph_index->logical_nodes) {
@@ -487,7 +487,7 @@ RuntimeProjectRegionQueryResult RuntimeProjectIntrospection::query_active_region
     return result;
 }
 
-LogicalNodeInfo RuntimeProjectIntrospection::get_logical_node(std::string const &node_id) const
+LogicalNodeInfo ProjectIntrospection::get_logical_node(std::string const &node_id) const
 {
     std::scoped_lock lock(mutex);
     if (!graph_index.has_value()) {
@@ -501,7 +501,7 @@ LogicalNodeInfo RuntimeProjectIntrospection::get_logical_node(std::string const 
     return to_logical_node(graph_index->logical_nodes[it->second]);
 }
 
-std::vector<LogicalNodeInfo> RuntimeProjectIntrospection::get_logical_nodes(
+std::vector<LogicalNodeInfo> ProjectIntrospection::get_logical_nodes(
     std::vector<std::string> const &node_ids) const
 {
     std::scoped_lock lock(mutex);
@@ -521,7 +521,7 @@ std::vector<LogicalNodeInfo> RuntimeProjectIntrospection::get_logical_nodes(
     return nodes;
 }
 
-GraphInputPortDescriptor RuntimeProjectIntrospection::sample_graph_input_port_for_node(
+GraphInputPortDescriptor ProjectIntrospection::sample_graph_input_port_for_node(
     std::string const &node_id,
     std::optional<size_t> concrete_member_ordinal,
     size_t input_ordinal) const

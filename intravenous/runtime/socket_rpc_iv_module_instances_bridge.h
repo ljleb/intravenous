@@ -1,8 +1,8 @@
 #pragma once
 
 namespace iv {
-class RuntimeIvModuleInstances;
+class IvModuleInstances;
 
-void bind_socket_rpc_iv_module_instances_bridge(RuntimeIvModuleInstances &iv_module_instances);
-void unbind_socket_rpc_iv_module_instances_bridge(RuntimeIvModuleInstances const &iv_module_instances);
+void bind_socket_rpc_iv_module_instances_bridge(IvModuleInstances &iv_module_instances);
+void unbind_socket_rpc_iv_module_instances_bridge(IvModuleInstances const &iv_module_instances);
 } // namespace iv

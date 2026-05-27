@@ -28,7 +28,7 @@ void append_graph_input_port_descriptors(
 } // namespace
 
 std::vector<GraphInputPortDescriptor>
-RuntimeGraphInputLanes::graph_input_port_descriptors_for(
+GraphInputLanes::graph_input_port_descriptors_for(
     std::span<IntrospectionLogicalNode const> logical_nodes)
 {
     std::vector<GraphInputPortDescriptor> ports;
@@ -55,7 +55,7 @@ RuntimeGraphInputLanes::graph_input_port_descriptors_for(
     return ports;
 }
 
-LaneQueryResult RuntimeGraphInputLanes::query_lanes_locked(
+LaneQueryResult GraphInputLanes::query_lanes_locked(
     LaneQueryFilter const &filter,
     std::optional<size_t> start_index,
     std::optional<size_t> visible_lane_count)
@@ -65,10 +65,10 @@ LaneQueryResult RuntimeGraphInputLanes::query_lanes_locked(
     }
 
     LaneQueryResult result;
-    RuntimeGraphInputLanesLaneBindingsBuilder lane_bindings_builder;
+    GraphInputLanesLaneBindingsBuilder lane_bindings_builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_lane_bindings_requested_event,
-        RuntimeGraphInputLanesPortsChangedRequest{ .ports = current_ports },
+        GraphInputLanesPortsChangedRequest{ .ports = current_ports },
         lane_bindings_builder);
     auto const controls = lane_bindings_builder.build();
 
@@ -144,7 +144,7 @@ LaneQueryResult RuntimeGraphInputLanes::query_lanes_locked(
         requested_output_lanes.push_back(LaneId{lane.lane_id});
     }
 
-    RuntimeGraphInputLanesLaneOutputsBuilder lane_outputs_builder;
+    GraphInputLanesLaneOutputsBuilder lane_outputs_builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_lane_outputs_requested_event,
         requested_output_lanes,
@@ -171,18 +171,18 @@ LaneQueryResult RuntimeGraphInputLanes::query_lanes_locked(
     return result;
 }
 
-void RuntimeGraphInputLanes::handle_iv_module_instances_changed(
-    RuntimeIvModuleInstancesChanged const &diff)
+void GraphInputLanes::handle_iv_module_instances_changed(
+    IvModuleInstancesChanged const &diff)
 {
     auto const changed_count = diff.created.size() + diff.updated.size();
     if (changed_count == 0) {
         if (!diff.deleted_instance_ids.empty()) {
             std::scoped_lock lock(mutex);
             current_ports.clear();
-            RuntimeGraphInputLanesAckBuilder builder;
+            GraphInputLanesAckBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_graph_input_lanes_ports_changed_event,
-                RuntimeGraphInputLanesPortsChangedRequest{ .ports = current_ports },
+                GraphInputLanesPortsChangedRequest{ .ports = current_ports },
                 builder);
             builder.build();
         }
@@ -193,28 +193,28 @@ void RuntimeGraphInputLanes::handle_iv_module_instances_changed(
             "multiple iv-module instance changes are not yet supported");
     }
 
-    RuntimeIvModuleInstance const &instance =
+    IvModuleInstance const &instance =
         !diff.created.empty() ? diff.created.front() : diff.updated.front();
 
     std::scoped_lock lock(mutex);
     current_ports = graph_input_port_descriptors_for(
         instance.introspection.logical_nodes);
-    RuntimeGraphInputLanesAckBuilder builder;
+    GraphInputLanesAckBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_ports_changed_event,
-        RuntimeGraphInputLanesPortsChangedRequest{ .ports = current_ports },
+        GraphInputLanesPortsChangedRequest{ .ports = current_ports },
         builder);
     builder.build();
 }
 
-std::vector<RuntimeProjectIntrospectionLiveInputSnapshot>
-RuntimeGraphInputLanes::collect_live_input_snapshots(
-    std::vector<RuntimeProjectIntrospectionLiveInputSnapshotRequest> const &requests)
+std::vector<ProjectIntrospectionLiveInputSnapshot>
+GraphInputLanes::collect_live_input_snapshots(
+    std::vector<ProjectIntrospectionLiveInputSnapshotRequest> const &requests)
 {
-    std::vector<RuntimeGraphInputLanesLiveInputSnapshotRequest> lane_requests;
+    std::vector<GraphInputLanesLiveInputSnapshotRequest> lane_requests;
     lane_requests.reserve(requests.size());
     for (auto const &request : requests) {
-        lane_requests.push_back(RuntimeGraphInputLanesLiveInputSnapshotRequest{
+        lane_requests.push_back(GraphInputLanesLiveInputSnapshotRequest{
             .logical_node_id = request.logical_node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
@@ -222,17 +222,17 @@ RuntimeGraphInputLanes::collect_live_input_snapshots(
         });
     }
 
-    RuntimeGraphInputLanesLiveInputSnapshotsBuilder builder;
+    GraphInputLanesLiveInputSnapshotsBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_live_input_snapshots_requested_event,
         lane_requests,
         builder);
     auto const lane_snapshots = builder.build();
 
-    std::vector<RuntimeProjectIntrospectionLiveInputSnapshot> snapshots;
+    std::vector<ProjectIntrospectionLiveInputSnapshot> snapshots;
     snapshots.reserve(lane_snapshots.size());
     for (auto const &snapshot : lane_snapshots) {
-        snapshots.push_back(RuntimeProjectIntrospectionLiveInputSnapshot{
+        snapshots.push_back(ProjectIntrospectionLiveInputSnapshot{
             .logical_node_id = snapshot.logical_node_id,
             .member_ordinal = snapshot.member_ordinal,
             .input_ordinal = snapshot.input_ordinal,
@@ -243,42 +243,42 @@ RuntimeGraphInputLanes::collect_live_input_snapshots(
     return snapshots;
 }
 
-void RuntimeGraphInputLanes::ensure_graph_input_lane_bindings(
-    RuntimeProjectGraphInputLaneBindingsRequest const &request)
+void GraphInputLanes::ensure_graph_input_lane_bindings(
+    ProjectGraphInputLaneBindingsRequest const &request)
 {
-    RuntimeGraphInputLanesAckBuilder builder;
+    GraphInputLanesAckBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_lane_bindings_ensured_event,
-        RuntimeGraphInputLanesPortsChangedRequest{ .ports = request.ports },
+        GraphInputLanesPortsChangedRequest{ .ports = request.ports },
         builder);
     builder.build();
 }
 
-GraphInputLaneBindings RuntimeGraphInputLanes::query_graph_input_lane_bindings(
-    RuntimeProjectGraphInputLaneBindingsRequest const &request)
+GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
+    ProjectGraphInputLaneBindingsRequest const &request)
 {
-    RuntimeGraphInputLanesLaneBindingsBuilder builder;
+    GraphInputLanesLaneBindingsBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_lane_bindings_requested_event,
-        RuntimeGraphInputLanesPortsChangedRequest{ .ports = request.ports },
+        GraphInputLanesPortsChangedRequest{ .ports = request.ports },
         builder);
     return builder.build();
 }
 
-std::vector<RuntimeProjectLaneOutputs> RuntimeGraphInputLanes::query_lane_outputs(
-    RuntimeProjectLaneOutputsRequest const &request)
+std::vector<ProjectLaneOutputs> GraphInputLanes::query_lane_outputs(
+    ProjectLaneOutputsRequest const &request)
 {
-    RuntimeGraphInputLanesLaneOutputsBuilder builder;
+    GraphInputLanesLaneOutputsBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_lane_outputs_requested_event,
         request.lanes,
         builder);
     auto const lane_outputs = builder.build();
 
-    std::vector<RuntimeProjectLaneOutputs> results;
+    std::vector<ProjectLaneOutputs> results;
     results.reserve(lane_outputs.size());
     for (auto const &lane_output : lane_outputs) {
-        results.push_back(RuntimeProjectLaneOutputs{
+        results.push_back(ProjectLaneOutputs{
             .lane = lane_output.lane,
             .outputs = lane_output.outputs,
         });
@@ -286,14 +286,14 @@ std::vector<RuntimeProjectLaneOutputs> RuntimeGraphInputLanes::query_lane_output
     return results;
 }
 
-void RuntimeGraphInputLanes::set_sample_input_value(
-    RuntimeProjectSetSampleInputValueRequest const &request)
+void GraphInputLanes::set_sample_input_value(
+    ProjectSetSampleInputValueRequest const &request)
 {
     std::scoped_lock lock(mutex);
-    RuntimeGraphInputLanesAckBuilder builder;
+    GraphInputLanesAckBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_set_sample_input_value_requested_event,
-        RuntimeGraphInputLanesSetSampleInputValueRequest{
+        GraphInputLanesSetSampleInputValueRequest{
             .node_id = request.node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
@@ -304,14 +304,14 @@ void RuntimeGraphInputLanes::set_sample_input_value(
     builder.build();
 }
 
-void RuntimeGraphInputLanes::clear_sample_input_value_override(
-    RuntimeProjectClearSampleInputValueOverrideRequest const &request)
+void GraphInputLanes::clear_sample_input_value_override(
+    ProjectClearSampleInputValueOverrideRequest const &request)
 {
     std::scoped_lock lock(mutex);
-    RuntimeGraphInputLanesAckBuilder builder;
+    GraphInputLanesAckBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_clear_sample_input_value_override_requested_event,
-        RuntimeGraphInputLanesClearSampleInputValueOverrideRequest{
+        GraphInputLanesClearSampleInputValueOverrideRequest{
             .node_id = request.node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
@@ -321,10 +321,10 @@ void RuntimeGraphInputLanes::clear_sample_input_value_override(
     builder.build();
 }
 
-RealtimeLaneRef RuntimeGraphInputLanes::resolve_sample_input_lane_ref(
-    RuntimeGraphInputLanesSampleInputLaneRefRequest const &request)
+RealtimeLaneRef GraphInputLanes::resolve_sample_input_lane_ref(
+    GraphInputLanesSampleInputLaneRefRequest const &request)
 {
-    RuntimeGraphInputLanesSampleInputLaneRefBuilder builder;
+    GraphInputLanesSampleInputLaneRefBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_sample_input_lane_ref_requested_event,
         request,
@@ -332,7 +332,7 @@ RealtimeLaneRef RuntimeGraphInputLanes::resolve_sample_input_lane_ref(
     return builder.build();
 }
 
-LaneQueryResult RuntimeGraphInputLanes::query_lanes(
+LaneQueryResult GraphInputLanes::query_lanes(
     LaneQueryFilter const &filter,
     std::optional<size_t> start_index,
     std::optional<size_t> visible_lane_count)

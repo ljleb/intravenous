@@ -1,10 +1,10 @@
 #pragma once
 
 namespace iv {
-class RuntimeGraphInputLanes;
+class GraphInputLanes;
 
 void bind_iv_module_instances_graph_input_lanes_bridge(
-    RuntimeGraphInputLanes &lanes);
+    GraphInputLanes &lanes);
 void unbind_iv_module_instances_graph_input_lanes_bridge(
-    RuntimeGraphInputLanes const &lanes);
+    GraphInputLanes const &lanes);
 } // namespace iv

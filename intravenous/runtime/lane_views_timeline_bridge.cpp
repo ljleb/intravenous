@@ -5,9 +5,9 @@
 
 namespace iv {
 namespace {
-    RuntimeLaneViews *bound_lane_views = nullptr;
+    LaneViews *bound_lane_views = nullptr;
 
-    void handle_timeline_lanes_changed(RuntimeTimelineLanesChanged const &change)
+    void handle_timeline_lanes_changed(TimelineLanesChanged const &change)
     {
         if (bound_lane_views == nullptr) {
             return;
@@ -16,17 +16,17 @@ namespace {
     }
 
     IV_SUBSCRIBE_LINKER_EVENT(
-        RuntimeTimelineLanesChangedEvent,
+        TimelineLanesChangedEvent,
         iv_runtime_timeline_lanes_changed_event,
         handle_timeline_lanes_changed);
 }
 
-void bind_lane_views_timeline_bridge(RuntimeLaneViews &lane_views)
+void bind_lane_views_timeline_bridge(LaneViews &lane_views)
 {
     bound_lane_views = &lane_views;
 }
 
-void unbind_lane_views_timeline_bridge(RuntimeLaneViews const &lane_views)
+void unbind_lane_views_timeline_bridge(LaneViews const &lane_views)
 {
     if (bound_lane_views == &lane_views) {
         bound_lane_views = nullptr;

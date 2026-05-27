@@ -5,7 +5,7 @@
 
 namespace iv {
 namespace {
-    RuntimeLaneViews *bound_lane_views = nullptr;
+    LaneViews *bound_lane_views = nullptr;
 
     void handle_open_lane_view(
         LaneViewRequest const &request,
@@ -51,12 +51,12 @@ namespace {
         handle_close_lane_view);
 } // namespace
 
-void bind_socket_rpc_lane_views_bridge(RuntimeLaneViews &lane_views)
+void bind_socket_rpc_lane_views_bridge(LaneViews &lane_views)
 {
     bound_lane_views = &lane_views;
 }
 
-void unbind_socket_rpc_lane_views_bridge(RuntimeLaneViews const &lane_views)
+void unbind_socket_rpc_lane_views_bridge(LaneViews const &lane_views)
 {
     if (bound_lane_views == &lane_views) {
         bound_lane_views = nullptr;

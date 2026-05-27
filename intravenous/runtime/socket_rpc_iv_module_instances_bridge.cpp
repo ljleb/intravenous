@@ -5,7 +5,7 @@
 
 namespace iv {
 namespace {
-RuntimeIvModuleInstances *bound_iv_module_instances = nullptr;
+IvModuleInstances *bound_iv_module_instances = nullptr;
 
 void handle_create_iv_module_instance(
     CreateIvModuleInstanceRequest const &request,
@@ -37,13 +37,13 @@ IV_SUBSCRIBE_LINKER_EVENT(
     handle_delete_iv_module_instance);
 } // namespace
 
-void bind_socket_rpc_iv_module_instances_bridge(RuntimeIvModuleInstances &iv_module_instances)
+void bind_socket_rpc_iv_module_instances_bridge(IvModuleInstances &iv_module_instances)
 {
     bound_iv_module_instances = &iv_module_instances;
 }
 
 void unbind_socket_rpc_iv_module_instances_bridge(
-    RuntimeIvModuleInstances const &iv_module_instances)
+    IvModuleInstances const &iv_module_instances)
 {
     if (bound_iv_module_instances == &iv_module_instances) {
         bound_iv_module_instances = nullptr;

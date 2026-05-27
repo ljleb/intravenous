@@ -23,18 +23,18 @@ using iv::test_support::shared_project_fixture_workspace;
 using iv::test_support::shared_inline_module_workspace;
 }
 
-TEST(RuntimeIntegration, StartupConfigDefinitionsAndProjectIntrospectionInitializeAndShutdown)
+TEST(Integration, StartupConfigDefinitionsAndProjectIntrospectionInitializeAndShutdown)
 {
     auto const workspace =
         shared_project_fixture_workspace("local_cmake");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
-    iv::RuntimeIvModuleDefinitions definitions;
-    iv::RuntimeProjectIntrospection introspection;
+    iv::IvModuleDefinitions definitions;
+    iv::ProjectIntrospection introspection;
     iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
 
-    auto const loaded = iv::test_support::BoundRuntimeProjectIntrospection::load_definition(
+    auto const loaded = iv::test_support::BoundProjectIntrospection::load_definition(
         startup,
         std::filesystem::weakly_canonical(workspace));
     auto const module_id = loaded.module_id;
@@ -46,7 +46,7 @@ TEST(RuntimeIntegration, StartupConfigDefinitionsAndProjectIntrospectionInitiali
     iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
 }
 
-TEST(RuntimeIntegration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutdown)
+TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutdown)
 {
     auto const workspace =
         shared_project_fixture_workspace("local_cmake");
@@ -54,10 +54,10 @@ TEST(RuntimeIntegration, InstancesDefinitionsReloadAndGraphInputLanesInitializeA
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
     iv::Timeline timeline;
-    iv::RuntimeIvModuleInstances instances;
-    iv::RuntimeIvModuleDefinitions definitions;
-    iv::RuntimeIvModuleReload reload(startup);
-    iv::RuntimeGraphInputLanes graph_input_lanes;
+    iv::IvModuleInstances instances;
+    iv::IvModuleDefinitions definitions;
+    iv::IvModuleReload reload(startup);
+    iv::GraphInputLanes graph_input_lanes;
 
     iv::bind_graph_input_lanes_timeline_bridge(timeline);
     iv::bind_iv_module_instances_iv_module_definitions_bridge(definitions);
@@ -83,7 +83,7 @@ TEST(RuntimeIntegration, InstancesDefinitionsReloadAndGraphInputLanesInitializeA
     iv::unbind_graph_input_lanes_timeline_bridge(timeline);
 }
 
-TEST(RuntimeIntegration, SampleInputMutationsFlowThroughLiveSnapshots)
+TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
 {
     auto const workspace = shared_inline_module_workspace(
         "runtime_integration_live_input_snapshots",
@@ -115,7 +115,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    iv::test_support::BoundRuntimeProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    iv::test_support::BoundProjectIntrospection app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(

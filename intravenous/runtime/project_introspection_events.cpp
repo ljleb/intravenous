@@ -3,14 +3,14 @@
 #include <stdexcept>
 
 namespace iv {
-void RuntimeProjectIntrospectionLiveInputSnapshotsBuilder::succeed(
-    std::vector<RuntimeProjectIntrospectionLiveInputSnapshot> value)
+void ProjectIntrospectionLiveInputSnapshotsBuilder::succeed(
+    std::vector<ProjectIntrospectionLiveInputSnapshot> value)
 {
     result = std::move(value);
 }
 
-std::vector<RuntimeProjectIntrospectionLiveInputSnapshot>
-RuntimeProjectIntrospectionLiveInputSnapshotsBuilder::build() const
+std::vector<ProjectIntrospectionLiveInputSnapshot>
+ProjectIntrospectionLiveInputSnapshotsBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
@@ -20,6 +20,6 @@ RuntimeProjectIntrospectionLiveInputSnapshotsBuilder::build() const
 }
 
 IV_DEFINE_LINKER_EVENT(
-    RuntimeProjectIntrospectionLiveInputSnapshotsRequestedEvent,
+    ProjectIntrospectionLiveInputSnapshotsRequestedEvent,
     iv_runtime_project_introspection_live_input_snapshots_requested_event);
 } // namespace iv

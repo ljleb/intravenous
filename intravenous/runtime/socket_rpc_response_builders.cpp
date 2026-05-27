@@ -202,7 +202,7 @@ std::string SocketRpcAckResponseBuilder::build(int request_id) const {
     return jsonrpc_result(request_id, Json{{"ok", true}});
 }
 
-void SocketRpcGraphQueryResultBuilder::succeed(RuntimeProjectQueryResult value) {
+void SocketRpcGraphQueryResultBuilder::succeed(ProjectQueryResult value) {
     result = std::move(value);
 }
 
@@ -226,7 +226,7 @@ std::string SocketRpcGraphQueryResultBuilder::build(int request_id) const {
     return jsonrpc_result(request_id, Json{{"nodes", logical_nodes_json(result->nodes)}});
 }
 
-void SocketRpcRegionQueryResultBuilder::succeed(RuntimeProjectRegionQueryResult value) {
+void SocketRpcRegionQueryResultBuilder::succeed(ProjectRegionQueryResult value) {
     result = std::move(value);
 }
 

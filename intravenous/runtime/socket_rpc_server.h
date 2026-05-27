@@ -21,10 +21,10 @@
 #include <vector>
 
 namespace iv {
-    using SocketRpcGraphQueryResult = RuntimeProjectQueryResult;
-    using SocketRpcRegionQueryResult = RuntimeProjectRegionQueryResult;
-    using SocketRpcServerMessage = RuntimeProjectMessageNotification;
-    using SocketRpcServerStatus = RuntimeProjectStatusNotification;
+    using SocketRpcGraphQueryResult = ProjectQueryResult;
+    using SocketRpcRegionQueryResult = ProjectRegionQueryResult;
+    using SocketRpcServerMessage = ProjectMessageNotification;
+    using SocketRpcServerStatus = ProjectStatusNotification;
 
     using SocketRpcGraphQueryBySpansEvent =
         void (*)(GraphQueryBySpansRequest const &, SocketRpcGraphQueryResultBuilder &);
@@ -107,6 +107,6 @@ namespace iv {
         void send_server_status(SocketRpcServerStatus const &notification);
         void send_lane_view_updated(LaneViewResult const &notification);
         void send_iv_module_instances_updated(
-            std::vector<RuntimeIvModuleInstanceInfo> const &instances);
+            std::vector<IvModuleInstanceInfo> const &instances);
     };
 } // namespace iv

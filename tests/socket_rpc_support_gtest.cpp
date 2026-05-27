@@ -18,7 +18,7 @@ namespace {
     }
 }
 
-TEST(RuntimeServerOptions, ParsesWorkspaceRootAndRpcFd)
+TEST(ServerOptions, ParsesWorkspaceRootAndRpcFd)
 {
     char arg0[] = "intravenous";
     char arg1[] = "--server";
@@ -28,7 +28,7 @@ TEST(RuntimeServerOptions, ParsesWorkspaceRootAndRpcFd)
     char arg5[] = "7";
     std::array<char*, 6> argv { arg0, arg1, arg2, arg3, arg4, arg5 };
 
-    auto const options = iv::RuntimeServerOptions::parse(
+    auto const options = iv::ServerOptions::parse(
         static_cast<int>(argv.size()),
         argv.data());
 
@@ -36,7 +36,7 @@ TEST(RuntimeServerOptions, ParsesWorkspaceRootAndRpcFd)
     EXPECT_EQ(options.rpc_fd, 7);
 }
 
-TEST(RuntimeServerOptions, RejectsMissingWorkspaceRoot)
+TEST(ServerOptions, RejectsMissingWorkspaceRoot)
 {
     char arg0[] = "intravenous";
     char arg1[] = "--server";
@@ -45,13 +45,13 @@ TEST(RuntimeServerOptions, RejectsMissingWorkspaceRoot)
     std::array<char*, 4> argv { arg0, arg1, arg2, arg3 };
 
     EXPECT_THROW(
-        (void)iv::RuntimeServerOptions::parse(
+        (void)iv::ServerOptions::parse(
             static_cast<int>(argv.size()),
             argv.data()),
         std::runtime_error);
 }
 
-TEST(RuntimeServerOptions, RejectsInvalidRpcFd)
+TEST(ServerOptions, RejectsInvalidRpcFd)
 {
     char arg0[] = "intravenous";
     char arg1[] = "--server";
@@ -62,7 +62,7 @@ TEST(RuntimeServerOptions, RejectsInvalidRpcFd)
     std::array<char*, 6> argv { arg0, arg1, arg2, arg3, arg4, arg5 };
 
     EXPECT_THROW(
-        (void)iv::RuntimeServerOptions::parse(
+        (void)iv::ServerOptions::parse(
             static_cast<int>(argv.size()),
             argv.data()),
         std::runtime_error);
@@ -184,7 +184,7 @@ TEST(SocketRpcGraphQueryResultBuilder, RequiresExplicitResult)
 TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
 {
     iv::SocketRpcGraphQueryResultBuilder builder;
-    iv::RuntimeProjectQueryResult result;
+    iv::ProjectQueryResult result;
     result.nodes.push_back(iv::LogicalNodeInfo {
         .id = "node-1",
         .kind = "Oscillator",

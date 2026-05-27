@@ -5,7 +5,7 @@
 #include <optional>
 #include <vector>
 
-TEST(RuntimeLaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
+TEST(LaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
 {
     size_t query_count = 0;
     std::vector<iv::LaneViewResult> updates;
@@ -57,7 +57,7 @@ TEST(RuntimeLaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
     EXPECT_EQ(query_count, 2u);
 }
 
-TEST(RuntimeLaneViews, LaneViewServiceCloseStopsPushedUpdates)
+TEST(LaneViews, LaneViewServiceCloseStopsPushedUpdates)
 {
     std::vector<iv::LaneViewResult> updates;
     iv::LaneViewService views(

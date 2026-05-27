@@ -16,18 +16,18 @@ namespace iv {
 class GraphBuilder;
 using ModuleRef = std::shared_ptr<void>;
 
-struct RuntimeIvModuleDefinitionDeclaration {
+struct IvModuleDefinitionDeclaration {
     std::string definition_id{};
     std::filesystem::path module_root{};
 };
 
-struct RuntimeIvModuleDefinitionDeclarationsChanged {
-    std::vector<RuntimeIvModuleDefinitionDeclaration> created{};
-    std::vector<RuntimeIvModuleDefinitionDeclaration> updated{};
+struct IvModuleDefinitionDeclarationsChanged {
+    std::vector<IvModuleDefinitionDeclaration> created{};
+    std::vector<IvModuleDefinitionDeclaration> updated{};
     std::vector<std::string> deleted_definition_ids{};
 };
 
-struct RuntimeIvModuleDefinition {
+struct IvModuleDefinition {
     std::string definition_id{};
     std::filesystem::path module_root{};
     std::string module_id{};
@@ -36,19 +36,19 @@ struct RuntimeIvModuleDefinition {
     GraphBuilder const *canonical_builder = nullptr;
 };
 
-struct RuntimeIvModuleDefinitionsChanged {
-    std::vector<RuntimeIvModuleDefinition> created{};
-    std::vector<RuntimeIvModuleDefinition> updated{};
+struct IvModuleDefinitionsChanged {
+    std::vector<IvModuleDefinition> created{};
+    std::vector<IvModuleDefinition> updated{};
     std::vector<std::string> deleted_definition_ids{};
 };
 
-struct RuntimeIvModuleDefinitionsMessage {
+struct IvModuleDefinitionsMessage {
     std::string level = "info";
     std::string message{};
     std::filesystem::path module_root{};
 };
 
-struct RuntimeIvModuleDefinitionsStatus {
+struct IvModuleDefinitionsStatus {
     std::string level = "info";
     std::string code{};
     std::string message{};
@@ -57,27 +57,27 @@ struct RuntimeIvModuleDefinitionsStatus {
     std::vector<std::string> deleted_definition_ids{};
 };
 
-using RuntimeIvModuleDefinitionsNotification =
-    std::variant<RuntimeIvModuleDefinitionsMessage, RuntimeIvModuleDefinitionsStatus>;
+using IvModuleDefinitionsNotification =
+    std::variant<IvModuleDefinitionsMessage, IvModuleDefinitionsStatus>;
 
-struct RuntimeIvModuleRequiredDefinitionsChanged;
-struct RuntimeIvModuleReloadResults;
-struct RuntimeIvModuleReloadedDefinition;
+struct IvModuleRequiredDefinitionsChanged;
+struct IvModuleReloadResults;
+struct IvModuleReloadedDefinition;
 
-class RuntimeIvModuleDefinitions {
+class IvModuleDefinitions {
 public:
     struct DefinitionState {
         std::vector<ModuleRef> module_refs{};
-        RuntimeIvModuleDefinition snapshot{};
+        IvModuleDefinition snapshot{};
         GraphBuilder canonical_builder{};
     };
 
 private:
     mutable std::mutex mutex;
-    std::unordered_map<std::string, RuntimeIvModuleDefinitionDeclaration> declarations_by_id;
+    std::unordered_map<std::string, IvModuleDefinitionDeclaration> declarations_by_id;
     std::unordered_map<std::string, std::unique_ptr<DefinitionState>> loaded_definitions_by_id;
 
-    void emit_notification(RuntimeIvModuleDefinitionsNotification notification) const;
+    void emit_notification(IvModuleDefinitionsNotification notification) const;
     void emit_message(std::string level, std::string message, std::filesystem::path module_root = {}) const;
     void emit_status(
         std::string code,
@@ -88,18 +88,18 @@ private:
         std::vector<std::string> deleted_definition_ids = {}) const;
 
 public:
-    RuntimeIvModuleDefinitions() = default;
-    ~RuntimeIvModuleDefinitions();
+    IvModuleDefinitions() = default;
+    ~IvModuleDefinitions();
 
     std::string declare_definition(std::filesystem::path module_root);
     void remove_definition(std::string const &definition_id);
 
     void handle_required_definitions_changed(
-        RuntimeIvModuleRequiredDefinitionsChanged const &diff);
-    void handle_reload_results(RuntimeIvModuleReloadResults const &results);
+        IvModuleRequiredDefinitionsChanged const &diff);
+    void handle_reload_results(IvModuleReloadResults const &results);
 
-    void seed_loaded_definition(RuntimeIvModuleReloadedDefinition loaded_definition);
+    void seed_loaded_definition(IvModuleReloadedDefinition loaded_definition);
 
-    [[nodiscard]] std::vector<RuntimeIvModuleDefinition> loaded_definitions() const;
+    [[nodiscard]] std::vector<IvModuleDefinition> loaded_definitions() const;
 };
 } // namespace iv

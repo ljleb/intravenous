@@ -23,11 +23,11 @@ std::string definition_id_for(std::filesystem::path const &module_root)
     return normalize_path(module_root).string();
 }
 
-RuntimeIvModuleInstance make_instance_from_definition(
-    RuntimeIvModuleDefinition const &definition,
+IvModuleInstance make_instance_from_definition(
+    IvModuleDefinition const &definition,
     std::string const &instance_id)
 {
-    RuntimeIvModuleInstance instance{};
+    IvModuleInstance instance{};
     instance.instance_id = instance_id;
     instance.definition_id = definition.definition_id;
     instance.module_root = definition.module_root;
@@ -37,9 +37,9 @@ RuntimeIvModuleInstance make_instance_from_definition(
 }
 } // namespace
 
-std::string RuntimeIvModuleInstances::create_instance(std::filesystem::path module_root)
+std::string IvModuleInstances::create_instance(std::filesystem::path module_root)
 {
-    RuntimeIvModuleRequiredDefinitionsChanged required_diff{};
+    IvModuleRequiredDefinitionsChanged required_diff{};
     bool list_changed = false;
     auto normalized_root = normalize_path(module_root);
     auto definition_id = definition_id_for(normalized_root);
@@ -56,7 +56,7 @@ std::string RuntimeIvModuleInstances::create_instance(std::filesystem::path modu
         list_changed = true;
 
         if (!required_definitions_by_id.contains(definition_id)) {
-            RuntimeIvModuleRequiredDefinition required{
+            IvModuleRequiredDefinition required{
                 .definition_id = definition_id,
                 .module_root = normalized_root,
             };
@@ -78,10 +78,10 @@ std::string RuntimeIvModuleInstances::create_instance(std::filesystem::path modu
     return instance_id;
 }
 
-void RuntimeIvModuleInstances::remove_instance(std::string const &instance_id)
+void IvModuleInstances::remove_instance(std::string const &instance_id)
 {
-    RuntimeIvModuleRequiredDefinitionsChanged required_diff{};
-    RuntimeIvModuleInstancesChanged instance_diff{};
+    IvModuleRequiredDefinitionsChanged required_diff{};
+    IvModuleInstancesChanged instance_diff{};
     bool list_changed = false;
 
     {
@@ -130,14 +130,14 @@ void RuntimeIvModuleInstances::remove_instance(std::string const &instance_id)
     }
 }
 
-std::vector<RuntimeIvModuleInstanceInfo> RuntimeIvModuleInstances::list_instances() const
+std::vector<IvModuleInstanceInfo> IvModuleInstances::list_instances() const
 {
-    std::vector<RuntimeIvModuleInstanceInfo> instances;
+    std::vector<IvModuleInstanceInfo> instances;
 
     std::scoped_lock lock(mutex);
     instances.reserve(desired_instances_by_id.size());
     for (auto const &entry : desired_instances_by_id) {
-        auto info = RuntimeIvModuleInstanceInfo{
+        auto info = IvModuleInstanceInfo{
             .instance_id = entry.second.instance_id,
             .definition_id = entry.second.definition_id,
             .module_root = entry.second.module_root,
@@ -156,10 +156,10 @@ std::vector<RuntimeIvModuleInstanceInfo> RuntimeIvModuleInstances::list_instance
     return instances;
 }
 
-void RuntimeIvModuleInstances::handle_iv_module_definitions_changed(
-    RuntimeIvModuleDefinitionsChanged const &diff)
+void IvModuleInstances::handle_iv_module_definitions_changed(
+    IvModuleDefinitionsChanged const &diff)
 {
-    RuntimeIvModuleInstancesChanged instance_diff{};
+    IvModuleInstancesChanged instance_diff{};
     bool list_changed = false;
 
     {

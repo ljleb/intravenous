@@ -27,9 +27,9 @@ using iv::test_support::shared_inline_module_workspace;
 
 struct SeededProjectIntrospectionApp {
     iv::Timeline timeline;
-    iv::RuntimeIvModuleDefinitions definitions;
-    iv::RuntimeGraphInputLanes graph_input_lanes;
-    iv::RuntimeProjectIntrospection introspection;
+    iv::IvModuleDefinitions definitions;
+    iv::GraphInputLanes graph_input_lanes;
+    iv::ProjectIntrospection introspection;
     iv::StartupConfig startup_config;
 
     SeededProjectIntrospectionApp(
@@ -63,7 +63,7 @@ struct SeededProjectIntrospectionApp {
             config,
             module_root);
 
-        iv::RuntimeIvModuleInstance instance {
+        iv::IvModuleInstance instance {
             .instance_id = "instance:1",
             .definition_id = loaded.definition_id,
             .module_root = loaded.module_root,
@@ -71,7 +71,7 @@ struct SeededProjectIntrospectionApp {
             .introspection = loaded.introspection,
         };
         graph_input_lanes.handle_iv_module_instances_changed(
-            iv::RuntimeIvModuleInstancesChanged {.created = {instance}});
+            iv::IvModuleInstancesChanged {.created = {instance}});
 
         definitions.seed_loaded_definition(std::move(loaded));
         return introspection.initialize();
@@ -111,7 +111,7 @@ struct SeededProjectIntrospectionApp {
             member_ordinal,
             input_ordinal);
         graph_input_lanes.set_sample_input_value(
-            iv::RuntimeProjectSetSampleInputValueRequest {
+            iv::ProjectSetSampleInputValueRequest {
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,
@@ -130,7 +130,7 @@ struct SeededProjectIntrospectionApp {
             member_ordinal,
             input_ordinal);
         graph_input_lanes.clear_sample_input_value_override(
-            iv::RuntimeProjectClearSampleInputValueOverrideRequest {
+            iv::ProjectClearSampleInputValueOverrideRequest {
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,
@@ -140,7 +140,7 @@ struct SeededProjectIntrospectionApp {
 };
 } // namespace
 
-TEST(RuntimeProjectIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
+TEST(ProjectIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 {
     auto const workspace = shared_project_fixture_workspace("local_cmake");
 
@@ -167,7 +167,7 @@ TEST(RuntimeProjectIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
     EXPECT_TRUE(has_any_port);
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
+TEST(ProjectIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
     auto const workspace = shared_inline_module_workspace(
         "project_introspection_merged_logical",
@@ -217,7 +217,7 @@ IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
     EXPECT_EQ(value_source_count, 2u);
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansKeepsAnnotatedLogicalNodeIdStableAcrossReload)
+TEST(ProjectIntrospection, QueryBySpansKeepsAnnotatedLogicalNodeIdStableAcrossReload)
 {
     auto const workspace = make_inline_module_workspace(
         "project_introspection_stable_annotated_id",
@@ -277,7 +277,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     EXPECT_EQ(reloaded_it->id, initial_id);
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansReturnsAnnotatedLogicalNode)
+TEST(ProjectIntrospection, QueryBySpansReturnsAnnotatedLogicalNode)
 {
     auto const workspace = shared_inline_module_workspace(
         "project_introspection_annotated_symbol",
@@ -318,7 +318,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     EXPECT_FALSE(it->source_spans.empty());
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
+TEST(ProjectIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
 {
     auto const workspace = shared_inline_module_workspace(
         "project_introspection_single_assigned_ref",
@@ -356,7 +356,7 @@ IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
     EXPECT_FALSE(it->source_spans.empty());
 }
 
-TEST(RuntimeProjectIntrospection, InitializationFailsWhenDeclarationBackedRefIsAssignedTwice)
+TEST(ProjectIntrospection, InitializationFailsWhenDeclarationBackedRefIsAssignedTwice)
 {
     auto const workspace = shared_inline_module_workspace(
         "project_introspection_double_assignment_fails",
@@ -393,7 +393,7 @@ IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
         std::exception);
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
+TEST(ProjectIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
 {
     auto const workspace = shared_inline_module_workspace(
         "project_introspection_schema_mismatch",
@@ -441,7 +441,7 @@ IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
     EXPECT_GE(singleton_sum_count, 2u);
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansAggregatesMixedConnectivity)
+TEST(ProjectIntrospection, QueryBySpansAggregatesMixedConnectivity)
 {
     auto const workspace = shared_inline_module_workspace(
         "project_introspection_mixed_connectivity",
@@ -500,7 +500,7 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
     EXPECT_EQ(disconnected_sum_count, 1u);
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
+TEST(ProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
 {
     auto const workspace = shared_project_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -517,7 +517,7 @@ TEST(RuntimeProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
     auto const both =
         app.query_by_spans(module_cpp, {dt_range, sink_range}, iv::SourceRangeMatchMode::intersection);
 
-    auto const ids = [](iv::RuntimeProjectQueryResult const &query) {
+    auto const ids = [](iv::ProjectQueryResult const &query) {
         std::set<std::string> node_ids;
         for (auto const &node : query.nodes) {
             node_ids.insert(node.id);
@@ -539,7 +539,7 @@ TEST(RuntimeProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
     EXPECT_EQ(both_ids, intersection);
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansUnionsMultipleSelections)
+TEST(ProjectIntrospection, QueryBySpansUnionsMultipleSelections)
 {
     auto const workspace = shared_project_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -555,7 +555,7 @@ TEST(RuntimeProjectIntrospection, QueryBySpansUnionsMultipleSelections)
     auto const sink_only = app.query_by_spans(module_cpp, {sink_range}, iv::SourceRangeMatchMode::intersection);
     auto const both = app.query_by_spans(module_cpp, {dt_range, sink_range}, iv::SourceRangeMatchMode::union_);
 
-    auto const ids = [](iv::RuntimeProjectQueryResult const &query) {
+    auto const ids = [](iv::ProjectQueryResult const &query) {
         std::set<std::string> node_ids;
         for (auto const &node : query.nodes) {
             node_ids.insert(node.id);
@@ -572,7 +572,7 @@ TEST(RuntimeProjectIntrospection, QueryBySpansUnionsMultipleSelections)
     EXPECT_EQ(both_ids, expected_union);
 }
 
-TEST(RuntimeProjectIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
+TEST(ProjectIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
 {
     auto const workspace = shared_project_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -606,7 +606,7 @@ TEST(RuntimeProjectIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
     EXPECT_EQ(actual_spans, expected_spans);
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExactSourceSpan)
+TEST(ProjectIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExactSourceSpan)
 {
     auto const workspace = shared_inline_module_workspace(
         "project_introspection_polyphonic_exact_spans",
@@ -709,7 +709,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     }));
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonicLambdaSpansToOuterSubgraph)
+TEST(ProjectIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonicLambdaSpansToOuterSubgraph)
 {
     auto const workspace = shared_inline_module_workspace(
         "project_introspection_polyphonic_interior_span",
@@ -758,7 +758,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     }));
 }
 
-TEST(RuntimeProjectIntrospection, QueryBySpansReturnsPolyphonicOuterLogicalIdentityAtDeclarationSpan)
+TEST(ProjectIntrospection, QueryBySpansReturnsPolyphonicOuterLogicalIdentityAtDeclarationSpan)
 {
     auto const workspace = shared_inline_module_workspace(
         "project_introspection_polyphonic_outer_identity",
@@ -805,7 +805,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
         << result.nodes.front().source_identity;
 }
 
-TEST(RuntimeProjectIntrospection, ReloadKeepsLogicalNodeIdsAddressable)
+TEST(ProjectIntrospection, ReloadKeepsLogicalNodeIdsAddressable)
 {
     auto const workspace = copy_fixture_workspace("project_introspection_reload_epoch", "local_cmake");
     auto const module_cpp = workspace / "module.cpp";

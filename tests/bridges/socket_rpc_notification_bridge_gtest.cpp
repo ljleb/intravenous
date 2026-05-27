@@ -14,7 +14,6 @@
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -26,15 +25,6 @@ namespace iv {
 namespace {
 using namespace std::chrono_literals;
 using Json = nlohmann::ordered_json;
-
-std::filesystem::path make_project_workspace()
-{
-    auto const workspace = iv::test::fresh_test_workspace("socket_rpc_notification_bridge");
-    iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", workspace);
-    std::ofstream marker(workspace / ".intravenous", std::ios::binary | std::ios::trunc);
-    EXPECT_TRUE(static_cast<bool>(marker));
-    return workspace;
-}
 
 std::string pop_line(std::string *buffer)
 {
@@ -156,7 +146,7 @@ namespace iv {
 
 TEST(SocketRpcNotificationBridge, UnboundServerDropsNotifications)
 {
-    RuntimeProjectNotification notification = RuntimeProjectMessageNotification{
+    ProjectNotification notification = ProjectMessageNotification{
         .level = "info",
         .message = "hello",
     };
@@ -171,7 +161,7 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
 
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
-        RuntimeProjectNotification(RuntimeProjectMessageNotification{
+        ProjectNotification(ProjectMessageNotification{
             .level = "warning",
             .message = "bridge message",
         }));
@@ -184,7 +174,7 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
 
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
-        RuntimeProjectNotification(RuntimeProjectStatusNotification{
+        ProjectNotification(ProjectStatusNotification{
             .level = "info",
             .code = "rebuildFinished",
             .message = "done",
@@ -198,7 +188,7 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
 
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
-        RuntimeProjectNotification(RuntimeProjectLaneViewNotification{
+        ProjectNotification(ProjectLaneViewNotification{
             .lane_view = LaneViewResult{
                 .view_id = "view-1",
                 .lanes = LaneQueryResult{
@@ -224,15 +214,15 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
 
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_iv_module_instances_list_changed_event,
-        std::vector<iv::RuntimeIvModuleInstanceInfo>{
-            iv::RuntimeIvModuleInstanceInfo{
+        std::vector<iv::IvModuleInstanceInfo>{
+            iv::IvModuleInstanceInfo{
                 .instance_id = "instance:1",
                 .definition_id = "/tmp/module-a",
                 .module_root = "/tmp/module-a",
                 .realized = true,
                 .module_id = "module.a",
             },
-            iv::RuntimeIvModuleInstanceInfo{
+            iv::IvModuleInstanceInfo{
                 .instance_id = "instance:2",
                 .definition_id = "/tmp/module-b",
                 .module_root = "/tmp/module-b",

@@ -13,23 +13,23 @@ using iv::test_support::fresh_test_workspace;
 using iv::test_support::make_loaded_definition;
 }
 
-TEST(RuntimeBridges, DefinitionsToProjectIntrospectionRequiresBinding)
+TEST(IntrospectionBridges, DefinitionsToProjectIntrospectionRequiresBinding)
 {
     auto const workspace =
         fresh_test_workspace("runtime_bridges_defs_to_introspection_unbound");
-    iv::RuntimeIvModuleDefinitions definitions;
-    iv::RuntimeProjectIntrospection introspection;
+    iv::IvModuleDefinitions definitions;
+    iv::ProjectIntrospection introspection;
 
     definitions.seed_loaded_definition(make_loaded_definition(workspace));
     EXPECT_THROW((void)introspection.initialize(), std::runtime_error);
 }
 
-TEST(RuntimeBridges, DefinitionsToProjectIntrospectionForwardsWhenBound)
+TEST(IntrospectionBridges, DefinitionsToProjectIntrospectionForwardsWhenBound)
 {
     auto const workspace =
         fresh_test_workspace("runtime_bridges_defs_to_introspection_bound");
-    iv::RuntimeIvModuleDefinitions definitions;
-    iv::RuntimeProjectIntrospection introspection;
+    iv::IvModuleDefinitions definitions;
+    iv::ProjectIntrospection introspection;
     iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
 
     auto const loaded = make_loaded_definition(workspace);
@@ -42,13 +42,13 @@ TEST(RuntimeBridges, DefinitionsToProjectIntrospectionForwardsWhenBound)
     iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
 }
 
-TEST(RuntimeBridges, InstancesToDefinitionsRequiresBinding)
+TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)
 {
     auto const workspace =
         fresh_test_workspace("runtime_bridges_instances_to_definitions_unbound");
 
-    iv::RuntimeIvModuleInstances instances;
-    iv::RuntimeIvModuleDefinitions definitions;
+    iv::IvModuleInstances instances;
+    iv::IvModuleDefinitions definitions;
 
     (void)instances.create_instance(std::filesystem::weakly_canonical(workspace));
 

@@ -63,7 +63,7 @@ Private physical nodes that have no associated logical id should remain private.
 
 ## Graph-input-lanes role
 
-`RuntimeGraphInputLanes` is the right owner for DSP graph-input lane policy.
+`GraphInputLanes` is the right owner for DSP graph-input lane policy.
 
 It should own:
 
@@ -94,5 +94,5 @@ Graph-input identity policy should live outside timeline.
 
 JSON-RPC currently needs to fetch and manipulate logical node input knob state.
 
-That state belongs with `RuntimeGraphInputLanes`, not with
-`RuntimeProjectService`.
+That state belongs with `GraphInputLanes`, not with
+`ProjectService`.

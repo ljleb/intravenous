@@ -1,8 +1,8 @@
 #pragma once
 
 namespace iv {
-class RuntimeGraphInputLanes;
+class GraphInputLanes;
 
-void bind_graph_input_lanes_lane_views_bridge(RuntimeGraphInputLanes &graph_input_lanes);
-void unbind_graph_input_lanes_lane_views_bridge(RuntimeGraphInputLanes const &graph_input_lanes);
+void bind_graph_input_lanes_lane_views_bridge(GraphInputLanes &graph_input_lanes);
+void unbind_graph_input_lanes_lane_views_bridge(GraphInputLanes const &graph_input_lanes);
 } // namespace iv

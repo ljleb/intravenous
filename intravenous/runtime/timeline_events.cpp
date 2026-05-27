@@ -2,6 +2,6 @@
 
 namespace iv {
     IV_DEFINE_LINKER_EVENT(
-        RuntimeTimelineLanesChangedEvent,
+        TimelineLanesChangedEvent,
         iv_runtime_timeline_lanes_changed_event);
 } // namespace iv

@@ -3,16 +3,16 @@
 #include "runtime/lane_views_events.h"
 
 namespace iv {
-    RuntimeLaneViews::RuntimeLaneViews()
+    LaneViews::LaneViews()
     {
         lane_views.set_query_provider(
             [](LaneQueryFilter const &filter,
                std::optional<size_t> start_index,
                std::optional<size_t> visible_lane_count) {
-                RuntimeLaneViewsQueryResultBuilder builder;
+                LaneViewsQueryResultBuilder builder;
                 IV_INVOKE_LINKER_EVENT(
                     iv_runtime_lane_views_query_requested_event,
-                    RuntimeLaneViewsQueryRequest{
+                    LaneViewsQueryRequest{
                         .filter = filter,
                         .start_index = start_index,
                         .visible_lane_count = visible_lane_count,
@@ -25,28 +25,28 @@ namespace iv {
         });
     }
 
-    void RuntimeLaneViews::emit_updated(LaneViewResult update) const
+    void LaneViews::emit_updated(LaneViewResult update) const
     {
         IV_INVOKE_LINKER_EVENT(iv_runtime_lane_views_updated_event, update);
     }
 
-    LaneViewResult RuntimeLaneViews::open_view(LaneViewRequest request)
+    LaneViewResult LaneViews::open_view(LaneViewRequest request)
     {
         return lane_views.open_view(std::move(request));
     }
 
-    LaneViewResult RuntimeLaneViews::update_view(LaneViewRequest request)
+    LaneViewResult LaneViews::update_view(LaneViewRequest request)
     {
         return lane_views.update_view(std::move(request));
     }
 
-    void RuntimeLaneViews::close_view(std::string const &view_id)
+    void LaneViews::close_view(std::string const &view_id)
     {
         lane_views.close_view(view_id);
     }
 
-    void RuntimeLaneViews::handle_timeline_lanes_changed(
-        RuntimeTimelineLanesChanged const &change)
+    void LaneViews::handle_timeline_lanes_changed(
+        TimelineLanesChanged const &change)
     {
         if (change.lane_set_changed) {
             lane_views.mark_lane_set_changed();

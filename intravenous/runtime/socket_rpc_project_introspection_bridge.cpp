@@ -6,8 +6,8 @@
 
 namespace iv {
 namespace {
-RuntimeProjectIntrospection *bound_introspection = nullptr;
-RuntimeGraphInputLanes *bound_graph_input_lanes = nullptr;
+ProjectIntrospection *bound_introspection = nullptr;
+GraphInputLanes *bound_graph_input_lanes = nullptr;
 std::function<void()> *bound_shutdown = nullptr;
 
 void handle_graph_query_by_spans(
@@ -65,7 +65,7 @@ void handle_set_sample_input_value(
         request.member_ordinal,
         request.input_ordinal);
     bound_graph_input_lanes->set_sample_input_value(
-        RuntimeProjectSetSampleInputValueRequest{
+        ProjectSetSampleInputValueRequest{
             .node_id = request.node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
@@ -86,7 +86,7 @@ void handle_clear_sample_input_value_override(
         request.member_ordinal,
         request.input_ordinal);
     bound_graph_input_lanes->clear_sample_input_value_override(
-        RuntimeProjectClearSampleInputValueOverrideRequest{
+        ProjectClearSampleInputValueOverrideRequest{
             .node_id = request.node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
@@ -134,8 +134,8 @@ IV_SUBSCRIBE_LINKER_EVENT(
 } // namespace
 
 void bind_socket_rpc_project_introspection_bridge(
-    RuntimeProjectIntrospection &introspection,
-    RuntimeGraphInputLanes &graph_input_lanes,
+    ProjectIntrospection &introspection,
+    GraphInputLanes &graph_input_lanes,
     std::function<void()> *shutdown_callback)
 {
     bound_introspection = &introspection;
@@ -144,8 +144,8 @@ void bind_socket_rpc_project_introspection_bridge(
 }
 
 void unbind_socket_rpc_project_introspection_bridge(
-    RuntimeProjectIntrospection const &introspection,
-    RuntimeGraphInputLanes const &graph_input_lanes)
+    ProjectIntrospection const &introspection,
+    GraphInputLanes const &graph_input_lanes)
 {
     if (bound_introspection == &introspection) {
         bound_introspection = nullptr;

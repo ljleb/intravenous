@@ -5,10 +5,10 @@
 
 namespace iv {
 namespace {
-RuntimeIvModuleDefinitions *bound_definitions = nullptr;
+IvModuleDefinitions *bound_definitions = nullptr;
 
 void handle_required_definitions_changed(
-    RuntimeIvModuleRequiredDefinitionsChanged const &diff)
+    IvModuleRequiredDefinitionsChanged const &diff)
 {
     if (bound_definitions == nullptr) {
         return;
@@ -17,19 +17,19 @@ void handle_required_definitions_changed(
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeIvModuleRequiredDefinitionsChangedEvent,
+    IvModuleRequiredDefinitionsChangedEvent,
     iv_runtime_iv_module_required_definitions_changed_event,
     handle_required_definitions_changed);
 } // namespace
 
 void bind_iv_module_instances_iv_module_definitions_bridge(
-    RuntimeIvModuleDefinitions &definitions)
+    IvModuleDefinitions &definitions)
 {
     bound_definitions = &definitions;
 }
 
 void unbind_iv_module_instances_iv_module_definitions_bridge(
-    RuntimeIvModuleDefinitions const &definitions)
+    IvModuleDefinitions const &definitions)
 {
     if (bound_definitions == &definitions) {
         bound_definitions = nullptr;

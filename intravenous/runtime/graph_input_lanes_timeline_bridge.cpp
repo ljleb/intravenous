@@ -11,7 +11,7 @@ namespace iv {
 namespace {
 Timeline *bound_timeline = nullptr;
 
-void emit_lane_change(RuntimeTimelineLanesChanged change)
+void emit_lane_change(TimelineLanesChanged change)
 {
     IV_INVOKE_LINKER_EVENT(iv_runtime_timeline_lanes_changed_event, change);
 }
@@ -61,32 +61,32 @@ void prune_stale_graph_input_lanes(
 }
 
 void handle_ports_changed(
-    RuntimeGraphInputLanesPortsChangedRequest const &request,
-    RuntimeGraphInputLanesAckBuilder &builder)
+    GraphInputLanesPortsChangedRequest const &request,
+    GraphInputLanesAckBuilder &builder)
 {
     if (bound_timeline == nullptr) {
         return;
     }
     prune_stale_graph_input_lanes(*bound_timeline, request.ports);
     bound_timeline->ensure_graph_input_lane_bindings(request.ports);
-    emit_lane_change(RuntimeTimelineLanesChanged{
+    emit_lane_change(TimelineLanesChanged{
         .lane_set_changed = true,
     });
     builder.succeed();
 }
 
 void handle_live_input_snapshots_requested(
-    std::vector<RuntimeGraphInputLanesLiveInputSnapshotRequest> const &requests,
-    RuntimeGraphInputLanesLiveInputSnapshotsBuilder &builder)
+    std::vector<GraphInputLanesLiveInputSnapshotRequest> const &requests,
+    GraphInputLanesLiveInputSnapshotsBuilder &builder)
 {
     if (bound_timeline == nullptr) {
         return;
     }
 
-    std::vector<RuntimeGraphInputLanesLiveInputSnapshot> snapshots;
+    std::vector<GraphInputLanesLiveInputSnapshot> snapshots;
     snapshots.reserve(requests.size());
     for (auto const &request : requests) {
-        snapshots.push_back(RuntimeGraphInputLanesLiveInputSnapshot{
+        snapshots.push_back(GraphInputLanesLiveInputSnapshot{
             .logical_node_id = request.logical_node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
@@ -112,22 +112,22 @@ void handle_live_input_snapshots_requested(
 }
 
 void handle_lane_bindings_ensured(
-    RuntimeGraphInputLanesPortsChangedRequest const &request,
-    RuntimeGraphInputLanesAckBuilder &builder)
+    GraphInputLanesPortsChangedRequest const &request,
+    GraphInputLanesAckBuilder &builder)
 {
     if (bound_timeline == nullptr) {
         return;
     }
     bound_timeline->ensure_graph_input_lane_bindings(request.ports);
-    emit_lane_change(RuntimeTimelineLanesChanged{
+    emit_lane_change(TimelineLanesChanged{
         .lane_set_changed = true,
     });
     builder.succeed();
 }
 
 void handle_lane_bindings_requested(
-    RuntimeGraphInputLanesPortsChangedRequest const &request,
-    RuntimeGraphInputLanesLaneBindingsBuilder &builder)
+    GraphInputLanesPortsChangedRequest const &request,
+    GraphInputLanesLaneBindingsBuilder &builder)
 {
     if (bound_timeline == nullptr) {
         return;
@@ -137,16 +137,16 @@ void handle_lane_bindings_requested(
 
 void handle_lane_outputs_requested(
     std::vector<LaneId> const &lanes,
-    RuntimeGraphInputLanesLaneOutputsBuilder &builder)
+    GraphInputLanesLaneOutputsBuilder &builder)
 {
     if (bound_timeline == nullptr) {
         return;
     }
 
-    std::vector<RuntimeGraphInputLanesLaneOutputs> results;
+    std::vector<GraphInputLanesLaneOutputs> results;
     results.reserve(lanes.size());
     for (auto const lane : lanes) {
-        results.push_back(RuntimeGraphInputLanesLaneOutputs{
+        results.push_back(GraphInputLanesLaneOutputs{
             .lane = lane,
             .outputs = bound_timeline->lane_outputs_for(lane),
         });
@@ -155,8 +155,8 @@ void handle_lane_outputs_requested(
 }
 
 void handle_set_sample_input_value_requested(
-    RuntimeGraphInputLanesSetSampleInputValueRequest const &request,
-    RuntimeGraphInputLanesAckBuilder &builder)
+    GraphInputLanesSetSampleInputValueRequest const &request,
+    GraphInputLanesAckBuilder &builder)
 {
     if (bound_timeline == nullptr) {
         return;
@@ -174,15 +174,15 @@ void handle_set_sample_input_value_requested(
             request.value);
     }
     bound_timeline->set_graph_input_sample_value(request.graph_input_port, request.value);
-    emit_lane_change(RuntimeTimelineLanesChanged{
+    emit_lane_change(TimelineLanesChanged{
         .lane_set_changed = true,
     });
     builder.succeed();
 }
 
 void handle_sample_input_lane_ref_requested(
-    RuntimeGraphInputLanesSampleInputLaneRefRequest const &request,
-    RuntimeGraphInputLanesSampleInputLaneRefBuilder &builder)
+    GraphInputLanesSampleInputLaneRefRequest const &request,
+    GraphInputLanesSampleInputLaneRefBuilder &builder)
 {
     if (bound_timeline == nullptr) {
         return;
@@ -200,8 +200,8 @@ void handle_sample_input_lane_ref_requested(
 }
 
 void handle_clear_sample_input_value_override_requested(
-    RuntimeGraphInputLanesClearSampleInputValueOverrideRequest const &request,
-    RuntimeGraphInputLanesAckBuilder &builder)
+    GraphInputLanesClearSampleInputValueOverrideRequest const &request,
+    GraphInputLanesAckBuilder &builder)
 {
     if (bound_timeline == nullptr) {
         return;
@@ -211,42 +211,42 @@ void handle_clear_sample_input_value_override_requested(
         request.member_ordinal,
         request.input_ordinal);
     bound_timeline->restore_graph_input_sample_inheritance(request.graph_input_port);
-    emit_lane_change(RuntimeTimelineLanesChanged{
+    emit_lane_change(TimelineLanesChanged{
         .lane_set_changed = true,
     });
     builder.succeed();
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeGraphInputLanesPortsChangedEvent,
+    GraphInputLanesPortsChangedEvent,
     iv_runtime_graph_input_lanes_ports_changed_event,
     handle_ports_changed);
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeGraphInputLanesLiveInputSnapshotsRequestedEvent,
+    GraphInputLanesLiveInputSnapshotsRequestedEvent,
     iv_runtime_graph_input_lanes_live_input_snapshots_requested_event,
     handle_live_input_snapshots_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneBindingsEnsuredEvent,
+    GraphInputLanesLaneBindingsEnsuredEvent,
     iv_runtime_graph_input_lanes_lane_bindings_ensured_event,
     handle_lane_bindings_ensured);
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneBindingsRequestedEvent,
+    GraphInputLanesLaneBindingsRequestedEvent,
     iv_runtime_graph_input_lanes_lane_bindings_requested_event,
     handle_lane_bindings_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneOutputsRequestedEvent,
+    GraphInputLanesLaneOutputsRequestedEvent,
     iv_runtime_graph_input_lanes_lane_outputs_requested_event,
     handle_lane_outputs_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeGraphInputLanesSetSampleInputValueRequestedEvent,
+    GraphInputLanesSetSampleInputValueRequestedEvent,
     iv_runtime_graph_input_lanes_set_sample_input_value_requested_event,
     handle_set_sample_input_value_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeGraphInputLanesSampleInputLaneRefRequestedEvent,
+    GraphInputLanesSampleInputLaneRefRequestedEvent,
     iv_runtime_graph_input_lanes_sample_input_lane_ref_requested_event,
     handle_sample_input_lane_ref_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeGraphInputLanesClearSampleInputValueOverrideRequestedEvent,
+    GraphInputLanesClearSampleInputValueOverrideRequestedEvent,
     iv_runtime_graph_input_lanes_clear_sample_input_value_override_requested_event,
     handle_clear_sample_input_value_override_requested);
 } // namespace

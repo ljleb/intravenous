@@ -2,15 +2,15 @@
 
 namespace iv {
 IV_DEFINE_LINKER_EVENT(
-    RuntimeIvModuleRequiredDefinitionsChangedEvent,
+    IvModuleRequiredDefinitionsChangedEvent,
     iv_runtime_iv_module_required_definitions_changed_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeIvModuleInstancesChangedEvent,
+    IvModuleInstancesChangedEvent,
     iv_runtime_iv_module_instances_changed_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeIvModuleInstancesListChangedEvent,
+    IvModuleInstancesListChangedEvent,
     iv_runtime_iv_module_instances_list_changed_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeIvModuleSampleInputResolutionRequestedEvent,
+    IvModuleSampleInputResolutionRequestedEvent,
     iv_runtime_iv_module_sample_input_resolution_requested_event);
 } // namespace iv

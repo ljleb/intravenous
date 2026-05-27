@@ -5,9 +5,9 @@
 
 namespace iv {
 namespace {
-RuntimeIvModuleInstances *bound_instances = nullptr;
+IvModuleInstances *bound_instances = nullptr;
 
-void handle_definitions_changed(RuntimeIvModuleDefinitionsChanged const &diff)
+void handle_definitions_changed(IvModuleDefinitionsChanged const &diff)
 {
     if (bound_instances == nullptr) {
         return;
@@ -16,19 +16,19 @@ void handle_definitions_changed(RuntimeIvModuleDefinitionsChanged const &diff)
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeIvModuleDefinitionsChangedEvent,
+    IvModuleDefinitionsChangedEvent,
     iv_runtime_iv_module_definitions_changed_event,
     handle_definitions_changed);
 } // namespace
 
 void bind_iv_module_definitions_iv_module_instances_bridge(
-    RuntimeIvModuleInstances &instances)
+    IvModuleInstances &instances)
 {
     bound_instances = &instances;
 }
 
 void unbind_iv_module_definitions_iv_module_instances_bridge(
-    RuntimeIvModuleInstances const &instances)
+    IvModuleInstances const &instances)
 {
     if (bound_instances == &instances) {
         bound_instances = nullptr;

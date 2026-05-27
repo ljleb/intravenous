@@ -16,7 +16,7 @@ namespace iv {
         Sample fallback = Sample {0.0f};
     };
 
-    struct RuntimeProjectLiveInputSnapshot {
+    struct ProjectLiveInputSnapshot {
         std::string logical_node_id;
         std::optional<size_t> member_ordinal;
         size_t input_ordinal = 0;
@@ -24,7 +24,7 @@ namespace iv {
         bool has_concrete_override = false;
     };
 
-    class RuntimeProjectAckBuilder {
+    class ProjectAckBuilder {
         std::optional<std::string> error_message;
         bool handled = false;
 
@@ -34,15 +34,15 @@ namespace iv {
         void build() const;
     };
 
-    class RuntimeProjectLiveInputSnapshotsBuilder {
-        std::optional<std::vector<RuntimeProjectLiveInputSnapshot>> result;
+    class ProjectLiveInputSnapshotsBuilder {
+        std::optional<std::vector<ProjectLiveInputSnapshot>> result;
 
     public:
-        void succeed(std::vector<RuntimeProjectLiveInputSnapshot> value);
-        [[nodiscard]] std::vector<RuntimeProjectLiveInputSnapshot> build() const;
+        void succeed(std::vector<ProjectLiveInputSnapshot> value);
+        [[nodiscard]] std::vector<ProjectLiveInputSnapshot> build() const;
     };
 
-    class RuntimeProjectGraphInputLaneBindingsBuilder {
+    class ProjectGraphInputLaneBindingsBuilder {
         std::optional<GraphInputLaneBindings> result;
 
     public:
@@ -50,28 +50,28 @@ namespace iv {
         [[nodiscard]] GraphInputLaneBindings build() const;
     };
 
-    struct RuntimeProjectLaneOutputs {
+    struct ProjectLaneOutputs {
         LaneId lane;
         std::vector<LaneOutputConnection> outputs;
     };
 
-    class RuntimeProjectLaneOutputsBuilder {
-        std::optional<std::vector<RuntimeProjectLaneOutputs>> result;
+    class ProjectLaneOutputsBuilder {
+        std::optional<std::vector<ProjectLaneOutputs>> result;
 
     public:
-        void succeed(std::vector<RuntimeProjectLaneOutputs> value);
-        [[nodiscard]] std::vector<RuntimeProjectLaneOutputs> build() const;
+        void succeed(std::vector<ProjectLaneOutputs> value);
+        [[nodiscard]] std::vector<ProjectLaneOutputs> build() const;
     };
 
-    struct RuntimeProjectGraphInputLaneBindingsRequest {
+    struct ProjectGraphInputLaneBindingsRequest {
         std::vector<GraphInputPortDescriptor> ports;
     };
 
-    struct RuntimeProjectLaneOutputsRequest {
+    struct ProjectLaneOutputsRequest {
         std::vector<LaneId> lanes;
     };
 
-    struct RuntimeProjectSetSampleInputValueRequest {
+    struct ProjectSetSampleInputValueRequest {
         std::string node_id;
         std::optional<size_t> member_ordinal;
         size_t input_ordinal = 0;
@@ -79,47 +79,47 @@ namespace iv {
         GraphInputPortDescriptor graph_input_port;
     };
 
-    struct RuntimeProjectClearSampleInputValueOverrideRequest {
+    struct ProjectClearSampleInputValueOverrideRequest {
         std::string node_id;
         size_t member_ordinal = 0;
         size_t input_ordinal = 0;
         GraphInputPortDescriptor graph_input_port;
     };
 
-    using RuntimeProjectNotificationEvent =
-        void (*)(RuntimeProjectNotification const &);
-    using RuntimeProjectLiveInputSnapshotsRequestedEvent =
-        void (*)(std::vector<RuntimeProjectLiveInputSnapshotRequest> const &, RuntimeProjectLiveInputSnapshotsBuilder &);
-    using RuntimeProjectGraphInputLaneBindingsEnsuredEvent =
-        void (*)(RuntimeProjectGraphInputLaneBindingsRequest const &, RuntimeProjectAckBuilder &);
-    using RuntimeProjectGraphInputLaneBindingsRequestedEvent =
-        void (*)(RuntimeProjectGraphInputLaneBindingsRequest const &, RuntimeProjectGraphInputLaneBindingsBuilder &);
-    using RuntimeProjectLaneOutputsRequestedEvent =
-        void (*)(RuntimeProjectLaneOutputsRequest const &, RuntimeProjectLaneOutputsBuilder &);
-    using RuntimeProjectSetSampleInputValueRequestedEvent =
-        void (*)(RuntimeProjectSetSampleInputValueRequest const &, RuntimeProjectAckBuilder &);
-    using RuntimeProjectClearSampleInputValueOverrideRequestedEvent =
-        void (*)(RuntimeProjectClearSampleInputValueOverrideRequest const &, RuntimeProjectAckBuilder &);
+    using ProjectNotificationEvent =
+        void (*)(ProjectNotification const &);
+    using ProjectLiveInputSnapshotsRequestedEvent =
+        void (*)(std::vector<RuntimeProjectLiveInputSnapshotRequest> const &, ProjectLiveInputSnapshotsBuilder &);
+    using ProjectGraphInputLaneBindingsEnsuredEvent =
+        void (*)(ProjectGraphInputLaneBindingsRequest const &, ProjectAckBuilder &);
+    using ProjectGraphInputLaneBindingsRequestedEvent =
+        void (*)(ProjectGraphInputLaneBindingsRequest const &, ProjectGraphInputLaneBindingsBuilder &);
+    using ProjectLaneOutputsRequestedEvent =
+        void (*)(ProjectLaneOutputsRequest const &, ProjectLaneOutputsBuilder &);
+    using ProjectSetSampleInputValueRequestedEvent =
+        void (*)(ProjectSetSampleInputValueRequest const &, ProjectAckBuilder &);
+    using ProjectClearSampleInputValueOverrideRequestedEvent =
+        void (*)(ProjectClearSampleInputValueOverrideRequest const &, ProjectAckBuilder &);
 
     IV_DECLARE_LINKER_EVENT(
-        RuntimeProjectNotificationEvent,
+        ProjectNotificationEvent,
         iv_runtime_project_notification_event);
     IV_DECLARE_LINKER_EVENT(
-        RuntimeProjectLiveInputSnapshotsRequestedEvent,
+        ProjectLiveInputSnapshotsRequestedEvent,
         iv_runtime_project_live_input_snapshots_requested_event);
     IV_DECLARE_LINKER_EVENT(
-        RuntimeProjectGraphInputLaneBindingsEnsuredEvent,
+        ProjectGraphInputLaneBindingsEnsuredEvent,
         iv_runtime_project_graph_input_lane_bindings_ensured_event);
     IV_DECLARE_LINKER_EVENT(
-        RuntimeProjectGraphInputLaneBindingsRequestedEvent,
+        ProjectGraphInputLaneBindingsRequestedEvent,
         iv_runtime_project_graph_input_lane_bindings_requested_event);
     IV_DECLARE_LINKER_EVENT(
-        RuntimeProjectLaneOutputsRequestedEvent,
+        ProjectLaneOutputsRequestedEvent,
         iv_runtime_project_lane_outputs_requested_event);
     IV_DECLARE_LINKER_EVENT(
-        RuntimeProjectSetSampleInputValueRequestedEvent,
+        ProjectSetSampleInputValueRequestedEvent,
         iv_runtime_project_set_sample_input_value_requested_event);
     IV_DECLARE_LINKER_EVENT(
-        RuntimeProjectClearSampleInputValueOverrideRequestedEvent,
+        ProjectClearSampleInputValueOverrideRequestedEvent,
         iv_runtime_project_clear_sample_input_value_override_requested_event);
 } // namespace iv

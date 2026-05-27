@@ -4,17 +4,17 @@
 #include "runtime/timeline_events.h"
 
 namespace iv {
-    class RuntimeLaneViews {
+    class LaneViews {
         LaneViewService lane_views;
 
         void emit_updated(LaneViewResult update) const;
 
     public:
-        RuntimeLaneViews();
+        LaneViews();
 
         LaneViewResult open_view(LaneViewRequest request);
         LaneViewResult update_view(LaneViewRequest request);
         void close_view(std::string const &view_id);
-        void handle_timeline_lanes_changed(RuntimeTimelineLanesChanged const &change);
+        void handle_timeline_lanes_changed(TimelineLanesChanged const &change);
     };
 } // namespace iv

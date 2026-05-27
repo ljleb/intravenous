@@ -8,14 +8,14 @@
 #include <vector>
 
 namespace iv {
-struct RuntimeProjectIntrospectionLiveInputSnapshotRequest {
+struct ProjectIntrospectionLiveInputSnapshotRequest {
     std::string logical_node_id;
     std::optional<size_t> member_ordinal;
     size_t input_ordinal = 0;
     Sample fallback = Sample{0.0f};
 };
 
-struct RuntimeProjectIntrospectionLiveInputSnapshot {
+struct ProjectIntrospectionLiveInputSnapshot {
     std::string logical_node_id;
     std::optional<size_t> member_ordinal;
     size_t input_ordinal = 0;
@@ -23,19 +23,19 @@ struct RuntimeProjectIntrospectionLiveInputSnapshot {
     bool has_concrete_override = false;
 };
 
-class RuntimeProjectIntrospectionLiveInputSnapshotsBuilder {
-    std::optional<std::vector<RuntimeProjectIntrospectionLiveInputSnapshot>> result;
+class ProjectIntrospectionLiveInputSnapshotsBuilder {
+    std::optional<std::vector<ProjectIntrospectionLiveInputSnapshot>> result;
 
 public:
-    void succeed(std::vector<RuntimeProjectIntrospectionLiveInputSnapshot> value);
-    [[nodiscard]] std::vector<RuntimeProjectIntrospectionLiveInputSnapshot> build() const;
+    void succeed(std::vector<ProjectIntrospectionLiveInputSnapshot> value);
+    [[nodiscard]] std::vector<ProjectIntrospectionLiveInputSnapshot> build() const;
 };
 
-using RuntimeProjectIntrospectionLiveInputSnapshotsRequestedEvent =
-    void (*)(std::vector<RuntimeProjectIntrospectionLiveInputSnapshotRequest> const &,
-             RuntimeProjectIntrospectionLiveInputSnapshotsBuilder &);
+using ProjectIntrospectionLiveInputSnapshotsRequestedEvent =
+    void (*)(std::vector<ProjectIntrospectionLiveInputSnapshotRequest> const &,
+             ProjectIntrospectionLiveInputSnapshotsBuilder &);
 
 IV_DECLARE_LINKER_EVENT(
-    RuntimeProjectIntrospectionLiveInputSnapshotsRequestedEvent,
+    ProjectIntrospectionLiveInputSnapshotsRequestedEvent,
     iv_runtime_project_introspection_live_input_snapshots_requested_event);
 } // namespace iv

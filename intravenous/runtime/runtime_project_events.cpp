@@ -4,19 +4,19 @@
 #include <utility>
 
 namespace iv {
-void RuntimeProjectAckBuilder::succeed()
+void ProjectAckBuilder::succeed()
 {
     handled = true;
     error_message.reset();
 }
 
-void RuntimeProjectAckBuilder::fail(std::string message)
+void ProjectAckBuilder::fail(std::string message)
 {
     handled = false;
     error_message = std::move(message);
 }
 
-void RuntimeProjectAckBuilder::build() const
+void ProjectAckBuilder::build() const
 {
     if (error_message.has_value()) {
         throw std::runtime_error(*error_message);
@@ -26,14 +26,14 @@ void RuntimeProjectAckBuilder::build() const
     }
 }
 
-void RuntimeProjectLiveInputSnapshotsBuilder::succeed(
-    std::vector<RuntimeProjectLiveInputSnapshot> value)
+void ProjectLiveInputSnapshotsBuilder::succeed(
+    std::vector<ProjectLiveInputSnapshot> value)
 {
     result = std::move(value);
 }
 
-std::vector<RuntimeProjectLiveInputSnapshot>
-RuntimeProjectLiveInputSnapshotsBuilder::build() const
+std::vector<ProjectLiveInputSnapshot>
+ProjectLiveInputSnapshotsBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
@@ -42,13 +42,13 @@ RuntimeProjectLiveInputSnapshotsBuilder::build() const
     return *result;
 }
 
-void RuntimeProjectGraphInputLaneBindingsBuilder::succeed(
+void ProjectGraphInputLaneBindingsBuilder::succeed(
     GraphInputLaneBindings value)
 {
     result = std::move(value);
 }
 
-GraphInputLaneBindings RuntimeProjectGraphInputLaneBindingsBuilder::build() const
+GraphInputLaneBindings ProjectGraphInputLaneBindingsBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
@@ -57,14 +57,14 @@ GraphInputLaneBindings RuntimeProjectGraphInputLaneBindingsBuilder::build() cons
     return *result;
 }
 
-void RuntimeProjectLaneOutputsBuilder::succeed(
-    std::vector<RuntimeProjectLaneOutputs> value)
+void ProjectLaneOutputsBuilder::succeed(
+    std::vector<ProjectLaneOutputs> value)
 {
     result = std::move(value);
 }
 
-std::vector<RuntimeProjectLaneOutputs>
-RuntimeProjectLaneOutputsBuilder::build() const
+std::vector<ProjectLaneOutputs>
+ProjectLaneOutputsBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
@@ -74,24 +74,24 @@ RuntimeProjectLaneOutputsBuilder::build() const
 }
 
 IV_DEFINE_LINKER_EVENT(
-    RuntimeProjectNotificationEvent,
+    ProjectNotificationEvent,
     iv_runtime_project_notification_event)
 IV_DEFINE_LINKER_EVENT(
-    RuntimeProjectLiveInputSnapshotsRequestedEvent,
+    ProjectLiveInputSnapshotsRequestedEvent,
     iv_runtime_project_live_input_snapshots_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    RuntimeProjectGraphInputLaneBindingsEnsuredEvent,
+    ProjectGraphInputLaneBindingsEnsuredEvent,
     iv_runtime_project_graph_input_lane_bindings_ensured_event)
 IV_DEFINE_LINKER_EVENT(
-    RuntimeProjectGraphInputLaneBindingsRequestedEvent,
+    ProjectGraphInputLaneBindingsRequestedEvent,
     iv_runtime_project_graph_input_lane_bindings_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    RuntimeProjectLaneOutputsRequestedEvent,
+    ProjectLaneOutputsRequestedEvent,
     iv_runtime_project_lane_outputs_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    RuntimeProjectSetSampleInputValueRequestedEvent,
+    ProjectSetSampleInputValueRequestedEvent,
     iv_runtime_project_set_sample_input_value_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    RuntimeProjectClearSampleInputValueOverrideRequestedEvent,
+    ProjectClearSampleInputValueOverrideRequestedEvent,
     iv_runtime_project_clear_sample_input_value_override_requested_event)
 } // namespace iv

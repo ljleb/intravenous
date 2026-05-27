@@ -1,10 +1,10 @@
 #pragma once
 
 namespace iv {
-class RuntimeProjectIntrospection;
+class ProjectIntrospection;
 
 void bind_iv_module_definitions_project_introspection_bridge(
-    RuntimeProjectIntrospection &introspection);
+    ProjectIntrospection &introspection);
 void unbind_iv_module_definitions_project_introspection_bridge(
-    RuntimeProjectIntrospection const &introspection);
+    ProjectIntrospection const &introspection);
 } // namespace iv

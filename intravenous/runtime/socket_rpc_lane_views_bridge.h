@@ -1,8 +1,8 @@
 #pragma once
 
 namespace iv {
-class RuntimeLaneViews;
+class LaneViews;
 
-void bind_socket_rpc_lane_views_bridge(RuntimeLaneViews &lane_views);
-void unbind_socket_rpc_lane_views_bridge(RuntimeLaneViews const &lane_views);
+void bind_socket_rpc_lane_views_bridge(LaneViews &lane_views);
+void unbind_socket_rpc_lane_views_bridge(LaneViews const &lane_views);
 } // namespace iv

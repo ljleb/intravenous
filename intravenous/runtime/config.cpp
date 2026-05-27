@@ -129,7 +129,7 @@ namespace iv {
         }
     }
 
-    RuntimeProjectConfig load_runtime_project_config(std::filesystem::path const& workspace_root)
+    ProjectConfig load_runtime_project_config(std::filesystem::path const& workspace_root)
     {
         auto const normalized_workspace = normalize_path(workspace_root);
         auto const marker_path = normalized_workspace / ".intravenous";
@@ -137,7 +137,7 @@ namespace iv {
             throw std::runtime_error("missing .intravenous marker at " + marker_path.string());
         }
 
-        RuntimeProjectConfig config {
+        ProjectConfig config {
             .workspace_root = normalized_workspace,
         };
 

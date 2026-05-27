@@ -73,7 +73,7 @@ Examples:
 ```cpp
 struct QueryBySpansResponseBuilder {
     void add_node(LogicalNodeInfo node);
-    RuntimeProjectQueryResult build();
+    ProjectQueryResult build();
 };
 
 struct LogicalNodeResponseBuilder {

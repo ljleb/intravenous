@@ -2068,10 +2068,10 @@ namespace iv {
                 if (_placed_input_ports.contains(target_port)) {
                     continue;
                 }
-                RuntimeIvModuleSampleInputResolutionBuilder resolution_builder;
+                IvModuleSampleInputResolutionBuilder resolution_builder;
                 IV_INVOKE_LINKER_EVENT(
                     iv_runtime_iv_module_sample_input_resolution_requested_event,
-                    RuntimeIvModuleSampleInputResolutionRequest{
+                    IvModuleSampleInputResolutionRequest{
                         .logical_node_id = final_logical_node_id,
                         .member_ordinal = member_ordinal,
                         .input_ordinal = input_i,

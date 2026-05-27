@@ -62,26 +62,26 @@ namespace iv {
         std::vector<LogicalNodeMemberInfo> members{};
     };
 
-    struct RuntimeProjectInitializeResult {
+    struct ProjectInitializeResult {
         std::filesystem::path module_root{};
         std::string module_id{};
     };
 
-    struct RuntimeProjectQueryResult {
+    struct ProjectQueryResult {
         std::vector<LogicalNodeInfo> nodes{};
     };
 
-    struct RuntimeProjectRegionQueryResult {
+    struct ProjectRegionQueryResult {
         std::vector<LiveSourceSpan> source_spans{};
     };
 
-    struct RuntimeProjectMessageNotification {
+    struct ProjectMessageNotification {
         std::string level = "info";
         std::string message{};
         std::filesystem::path module_root{};
     };
 
-    struct RuntimeProjectStatusNotification {
+    struct ProjectStatusNotification {
         std::string level = "info";
         std::string code{};
         std::string message{};
@@ -90,12 +90,12 @@ namespace iv {
         std::vector<std::string> deleted_node_ids{};
     };
 
-    struct RuntimeProjectLaneViewNotification {
+    struct ProjectLaneViewNotification {
         LaneViewResult lane_view{};
     };
 
-    using RuntimeProjectNotification = std::variant<
-        RuntimeProjectMessageNotification,
-        RuntimeProjectStatusNotification,
-        RuntimeProjectLaneViewNotification>;
+    using ProjectNotification = std::variant<
+        ProjectMessageNotification,
+        ProjectStatusNotification,
+        ProjectLaneViewNotification>;
 } // namespace iv

@@ -22,18 +22,18 @@ using namespace iv;
 bool g_answer_live_input_snapshots = false;
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeProjectIntrospectionLiveInputSnapshotsRequestedEvent,
+    ProjectIntrospectionLiveInputSnapshotsRequestedEvent,
     iv_runtime_project_introspection_live_input_snapshots_requested_event,
-    +[](std::vector<RuntimeProjectIntrospectionLiveInputSnapshotRequest> const &requests,
-        RuntimeProjectIntrospectionLiveInputSnapshotsBuilder &builder) {
+    +[](std::vector<ProjectIntrospectionLiveInputSnapshotRequest> const &requests,
+        ProjectIntrospectionLiveInputSnapshotsBuilder &builder) {
         if (!g_answer_live_input_snapshots) {
             return;
         }
 
-        std::vector<RuntimeProjectIntrospectionLiveInputSnapshot> snapshots;
+        std::vector<ProjectIntrospectionLiveInputSnapshot> snapshots;
         snapshots.reserve(requests.size());
         for (auto const &request : requests) {
-            snapshots.push_back(RuntimeProjectIntrospectionLiveInputSnapshot{
+            snapshots.push_back(ProjectIntrospectionLiveInputSnapshot{
                 .logical_node_id = request.logical_node_id,
                 .member_ordinal = request.member_ordinal,
                 .input_ordinal = request.input_ordinal,
@@ -55,8 +55,8 @@ Json parse_json_line(std::string_view line)
 }
 
 struct SeededProjectIntrospectionOwner {
-    RuntimeGraphInputLanes graph_input_lanes;
-    RuntimeProjectIntrospection introspection;
+    GraphInputLanes graph_input_lanes;
+    ProjectIntrospection introspection;
     StartupConfig startup_config;
 
     SeededProjectIntrospectionOwner(
@@ -80,8 +80,8 @@ struct SeededProjectIntrospectionOwner {
         auto loaded =
             iv::test::load_runtime_iv_module_definition(startup, module_root);
         introspection.handle_iv_module_definitions_changed(
-            RuntimeIvModuleDefinitionsChanged{
-                .created = {RuntimeIvModuleDefinition{
+            IvModuleDefinitionsChanged{
+                .created = {IvModuleDefinition{
                     .definition_id = loaded.definition_id,
                     .module_root = loaded.module_root,
                     .module_id = loaded.module_id,

@@ -7,13 +7,13 @@
 #include <string_view>
 
 namespace iv {
-    struct RuntimeServerOptions {
+    struct ServerOptions {
         std::filesystem::path workspace_root;
         int rpc_fd = -1;
 
-        static RuntimeServerOptions parse(int argc, char** argv)
+        static ServerOptions parse(int argc, char** argv)
         {
-            RuntimeServerOptions options;
+            ServerOptions options;
             for (int i = 2; i < argc; ++i) {
                 std::string_view const arg = argv[i];
                 if (arg == "--workspace-root" && i + 1 < argc) {

@@ -6,15 +6,15 @@
 #include <vector>
 
 namespace iv {
-    struct RuntimeTimelineLanesChanged {
+    struct TimelineLanesChanged {
         bool lane_set_changed = false;
         std::vector<LaneId> changed_lanes {};
     };
 
-    using RuntimeTimelineLanesChangedEvent =
-        void (*)(RuntimeTimelineLanesChanged const &);
+    using TimelineLanesChangedEvent =
+        void (*)(TimelineLanesChanged const &);
 
     IV_DECLARE_LINKER_EVENT(
-        RuntimeTimelineLanesChangedEvent,
+        TimelineLanesChangedEvent,
         iv_runtime_timeline_lanes_changed_event);
 } // namespace iv

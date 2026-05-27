@@ -26,7 +26,7 @@ namespace {
         iv::SocketRpcServer *current_server = nullptr;
 
         std::vector<iv::GraphQueryBySpansRequest> graph_query_requests;
-        iv::RuntimeProjectQueryResult graph_query_result;
+        iv::ProjectQueryResult graph_query_result;
         bool graph_query_should_fail = false;
         int graph_query_fail_code = -32000;
         std::string graph_query_fail_message;

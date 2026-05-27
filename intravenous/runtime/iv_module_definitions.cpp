@@ -24,13 +24,13 @@ std::string make_definition_id(std::filesystem::path const &module_root)
     return normalize_path(module_root).string();
 }
 
-std::unique_ptr<RuntimeIvModuleDefinitions::DefinitionState> make_definition_state(
-    RuntimeIvModuleReloadedDefinition const &loaded)
+std::unique_ptr<IvModuleDefinitions::DefinitionState> make_definition_state(
+    IvModuleReloadedDefinition const &loaded)
 {
-    auto state = std::make_unique<RuntimeIvModuleDefinitions::DefinitionState>();
+    auto state = std::make_unique<IvModuleDefinitions::DefinitionState>();
     state->module_refs = loaded.module_refs;
     state->canonical_builder = loaded.canonical_builder;
-    state->snapshot = RuntimeIvModuleDefinition{
+    state->snapshot = IvModuleDefinition{
         .definition_id = loaded.definition_id,
         .module_root = normalize_path(loaded.module_root),
         .module_id = loaded.module_id,
@@ -42,29 +42,29 @@ std::unique_ptr<RuntimeIvModuleDefinitions::DefinitionState> make_definition_sta
 }
 } // namespace
 
-RuntimeIvModuleDefinitions::~RuntimeIvModuleDefinitions() = default;
+IvModuleDefinitions::~IvModuleDefinitions() = default;
 
-void RuntimeIvModuleDefinitions::emit_notification(
-    RuntimeIvModuleDefinitionsNotification notification) const
+void IvModuleDefinitions::emit_notification(
+    IvModuleDefinitionsNotification notification) const
 {
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_iv_module_definitions_notification_event,
         notification);
 }
 
-void RuntimeIvModuleDefinitions::emit_message(
+void IvModuleDefinitions::emit_message(
     std::string level,
     std::string message,
     std::filesystem::path module_root) const
 {
-    emit_notification(RuntimeIvModuleDefinitionsMessage{
+    emit_notification(IvModuleDefinitionsMessage{
         .level = std::move(level),
         .message = std::move(message),
         .module_root = std::move(module_root),
     });
 }
 
-void RuntimeIvModuleDefinitions::emit_status(
+void IvModuleDefinitions::emit_status(
     std::string code,
     std::string level,
     std::string message,
@@ -72,7 +72,7 @@ void RuntimeIvModuleDefinitions::emit_status(
     std::vector<std::string> created_definition_ids,
     std::vector<std::string> deleted_definition_ids) const
 {
-    emit_notification(RuntimeIvModuleDefinitionsStatus{
+    emit_notification(IvModuleDefinitionsStatus{
         .level = std::move(level),
         .code = std::move(code),
         .message = std::move(message),
@@ -82,9 +82,9 @@ void RuntimeIvModuleDefinitions::emit_status(
     });
 }
 
-std::string RuntimeIvModuleDefinitions::declare_definition(std::filesystem::path module_root)
+std::string IvModuleDefinitions::declare_definition(std::filesystem::path module_root)
 {
-    RuntimeIvModuleDefinitionDeclaration declaration{
+    IvModuleDefinitionDeclaration declaration{
         .definition_id = make_definition_id(module_root),
         .module_root = normalize_path(module_root),
     };
@@ -105,18 +105,18 @@ std::string RuntimeIvModuleDefinitions::declare_definition(std::filesystem::path
 
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_iv_module_definitions_declarations_changed_event,
-        RuntimeIvModuleDefinitionDeclarationsChanged{
-            .created = inserted ? std::vector<RuntimeIvModuleDefinitionDeclaration>{declaration}
-                                : std::vector<RuntimeIvModuleDefinitionDeclaration>{},
-            .updated = inserted ? std::vector<RuntimeIvModuleDefinitionDeclaration>{}
-                                : std::vector<RuntimeIvModuleDefinitionDeclaration>{declaration},
+        IvModuleDefinitionDeclarationsChanged{
+            .created = inserted ? std::vector<IvModuleDefinitionDeclaration>{declaration}
+                                : std::vector<IvModuleDefinitionDeclaration>{},
+            .updated = inserted ? std::vector<IvModuleDefinitionDeclaration>{}
+                                : std::vector<IvModuleDefinitionDeclaration>{declaration},
         });
     return declaration.definition_id;
 }
 
-void RuntimeIvModuleDefinitions::remove_definition(std::string const &definition_id)
+void IvModuleDefinitions::remove_definition(std::string const &definition_id)
 {
-    RuntimeIvModuleDefinitionsChanged public_diff{};
+    IvModuleDefinitionsChanged public_diff{};
     bool removed_declaration = false;
     {
         std::scoped_lock lock(mutex);
@@ -129,7 +129,7 @@ void RuntimeIvModuleDefinitions::remove_definition(std::string const &definition
     if (removed_declaration) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_definitions_declarations_changed_event,
-            RuntimeIvModuleDefinitionDeclarationsChanged{
+            IvModuleDefinitionDeclarationsChanged{
                 .deleted_definition_ids = {definition_id},
             });
     }
@@ -140,16 +140,16 @@ void RuntimeIvModuleDefinitions::remove_definition(std::string const &definition
     }
 }
 
-void RuntimeIvModuleDefinitions::handle_required_definitions_changed(
-    RuntimeIvModuleRequiredDefinitionsChanged const &diff)
+void IvModuleDefinitions::handle_required_definitions_changed(
+    IvModuleRequiredDefinitionsChanged const &diff)
 {
-    RuntimeIvModuleDefinitionDeclarationsChanged declaration_diff{};
-    RuntimeIvModuleDefinitionsChanged public_diff{};
+    IvModuleDefinitionDeclarationsChanged declaration_diff{};
+    IvModuleDefinitionsChanged public_diff{};
 
     {
         std::scoped_lock lock(mutex);
         for (auto const &required : diff.created) {
-            auto [it, inserted] = declarations_by_id.emplace(required.definition_id, RuntimeIvModuleDefinitionDeclaration{
+            auto [it, inserted] = declarations_by_id.emplace(required.definition_id, IvModuleDefinitionDeclaration{
                 .definition_id = required.definition_id,
                 .module_root = normalize_path(required.module_root),
             });
@@ -161,7 +161,7 @@ void RuntimeIvModuleDefinitions::handle_required_definitions_changed(
             auto normalized_root = normalize_path(required.module_root);
             auto existing = declarations_by_id.find(required.definition_id);
             if (existing == declarations_by_id.end()) {
-                RuntimeIvModuleDefinitionDeclaration declaration{
+                IvModuleDefinitionDeclaration declaration{
                     .definition_id = required.definition_id,
                     .module_root = normalized_root,
                 };
@@ -196,9 +196,9 @@ void RuntimeIvModuleDefinitions::handle_required_definitions_changed(
     }
 }
 
-void RuntimeIvModuleDefinitions::handle_reload_results(RuntimeIvModuleReloadResults const &results)
+void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const &results)
 {
-    RuntimeIvModuleDefinitionsChanged public_diff{};
+    IvModuleDefinitionsChanged public_diff{};
 
     {
         std::scoped_lock lock(mutex);
@@ -238,24 +238,24 @@ void RuntimeIvModuleDefinitions::handle_reload_results(RuntimeIvModuleReloadResu
     }
 }
 
-void RuntimeIvModuleDefinitions::seed_loaded_definition(
-    RuntimeIvModuleReloadedDefinition loaded_definition)
+void IvModuleDefinitions::seed_loaded_definition(
+    IvModuleReloadedDefinition loaded_definition)
 {
     {
         std::scoped_lock lock(mutex);
-        declarations_by_id[loaded_definition.definition_id] = RuntimeIvModuleDefinitionDeclaration{
+        declarations_by_id[loaded_definition.definition_id] = IvModuleDefinitionDeclaration{
             .definition_id = loaded_definition.definition_id,
             .module_root = normalize_path(loaded_definition.module_root),
         };
     }
-    RuntimeIvModuleReloadResults results;
+    IvModuleReloadResults results;
     results.loaded.push_back(std::move(loaded_definition));
     handle_reload_results(results);
 }
 
-std::vector<RuntimeIvModuleDefinition> RuntimeIvModuleDefinitions::loaded_definitions() const
+std::vector<IvModuleDefinition> IvModuleDefinitions::loaded_definitions() const
 {
-    std::vector<RuntimeIvModuleDefinition> definitions;
+    std::vector<IvModuleDefinition> definitions;
     std::scoped_lock lock(mutex);
     definitions.reserve(loaded_definitions_by_id.size());
     for (auto const &entry : loaded_definitions_by_id) {

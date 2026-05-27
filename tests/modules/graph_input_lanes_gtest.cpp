@@ -27,9 +27,9 @@ std::vector<iv::GraphInputPortDescriptor> const &recorded_ports()
     return g_graph_input_lanes_witness->last_ports;
 }
 
-iv::RuntimeIvModuleInstance make_instance_with_ports()
+iv::IvModuleInstance make_instance_with_ports()
 {
-    iv::RuntimeIvModuleInstance instance {};
+    iv::IvModuleInstance instance {};
     instance.instance_id = "instance:1";
     instance.definition_id = "definition:1";
     instance.module_root = std::filesystem::path("/tmp/module");
@@ -57,10 +57,10 @@ iv::RuntimeIvModuleInstance make_instance_with_ports()
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::RuntimeGraphInputLanesPortsChangedEvent,
+    iv::GraphInputLanesPortsChangedEvent,
     iv_runtime_graph_input_lanes_ports_changed_event,
-    +[](iv::RuntimeGraphInputLanesPortsChangedRequest const &request,
-        iv::RuntimeGraphInputLanesAckBuilder &builder) {
+    +[](iv::GraphInputLanesPortsChangedRequest const &request,
+        iv::GraphInputLanesAckBuilder &builder) {
         if (g_graph_input_lanes_witness != nullptr) {
             g_graph_input_lanes_witness->last_ports = request.ports;
         }
@@ -68,10 +68,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     });
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::RuntimeGraphInputLanesLaneBindingsRequestedEvent,
+    iv::GraphInputLanesLaneBindingsRequestedEvent,
     iv_runtime_graph_input_lanes_lane_bindings_requested_event,
-    +[](iv::RuntimeGraphInputLanesPortsChangedRequest const &,
-        iv::RuntimeGraphInputLanesLaneBindingsBuilder &builder) {
+    +[](iv::GraphInputLanesPortsChangedRequest const &,
+        iv::GraphInputLanesLaneBindingsBuilder &builder) {
         auto const &ports = recorded_ports();
 
         iv::GraphInputLaneBindings bindings {};
@@ -101,14 +101,14 @@ IV_SUBSCRIBE_LINKER_EVENT(
     });
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::RuntimeGraphInputLanesLaneOutputsRequestedEvent,
+    iv::GraphInputLanesLaneOutputsRequestedEvent,
     iv_runtime_graph_input_lanes_lane_outputs_requested_event,
     +[](std::vector<iv::LaneId> const &,
-        iv::RuntimeGraphInputLanesLaneOutputsBuilder &builder) {
+        iv::GraphInputLanesLaneOutputsBuilder &builder) {
         builder.succeed({});
     });
 
-class RuntimeGraphInputLanesTest : public ::testing::Test {
+class GraphInputLanesTest : public ::testing::Test {
 protected:
     GraphInputLanesWitness witness {};
 
@@ -124,11 +124,11 @@ protected:
 };
 } // namespace
 
-TEST_F(RuntimeGraphInputLanesTest, QueryLanesReturnsGraphInputSubset)
+TEST_F(GraphInputLanesTest, QueryLanesReturnsGraphInputSubset)
 {
-    iv::RuntimeGraphInputLanes lanes;
+    iv::GraphInputLanes lanes;
 
-    lanes.handle_iv_module_instances_changed(iv::RuntimeIvModuleInstancesChanged {
+    lanes.handle_iv_module_instances_changed(iv::IvModuleInstancesChanged {
         .created = {make_instance_with_ports()},
     });
 
@@ -142,11 +142,11 @@ TEST_F(RuntimeGraphInputLanesTest, QueryLanesReturnsGraphInputSubset)
     }
 }
 
-TEST_F(RuntimeGraphInputLanesTest, QueryLanesRejectsUnsupportedFilter)
+TEST_F(GraphInputLanesTest, QueryLanesRejectsUnsupportedFilter)
 {
-    iv::RuntimeGraphInputLanes lanes;
+    iv::GraphInputLanes lanes;
 
-    lanes.handle_iv_module_instances_changed(iv::RuntimeIvModuleInstancesChanged {
+    lanes.handle_iv_module_instances_changed(iv::IvModuleInstancesChanged {
         .created = {make_instance_with_ports()},
     });
 

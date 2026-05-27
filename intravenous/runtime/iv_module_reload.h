@@ -14,7 +14,7 @@
 #include <vector>
 
 namespace iv {
-struct RuntimeIvModuleReloadedDefinition {
+struct IvModuleReloadedDefinition {
     std::string definition_id{};
     std::filesystem::path module_root{};
     std::string module_id{};
@@ -24,33 +24,33 @@ struct RuntimeIvModuleReloadedDefinition {
     GraphBuilder canonical_builder{};
 };
 
-struct RuntimeIvModuleReloadFailure {
+struct IvModuleReloadFailure {
     std::string definition_id{};
     std::filesystem::path module_root{};
     std::string message{};
 };
 
-struct RuntimeIvModuleReloadResults {
-    std::vector<RuntimeIvModuleReloadedDefinition> loaded{};
-    std::vector<RuntimeIvModuleReloadFailure> failed{};
+struct IvModuleReloadResults {
+    std::vector<IvModuleReloadedDefinition> loaded{};
+    std::vector<IvModuleReloadFailure> failed{};
 };
 
-class RuntimeIvModuleReload {
+class IvModuleReload {
     StartupConfigState startup_config;
     mutable std::mutex mutex;
-    std::unordered_map<std::string, RuntimeIvModuleDefinitionDeclaration> declarations_by_id;
+    std::unordered_map<std::string, IvModuleDefinitionDeclaration> declarations_by_id;
     std::unordered_map<std::string, std::vector<ModuleDependency>> dependencies_by_definition_id;
     DependencyWatcher watcher;
 
     void reload_declarations(
-        std::vector<RuntimeIvModuleDefinitionDeclaration> const &declarations);
+        std::vector<IvModuleDefinitionDeclaration> const &declarations);
     void refresh_watched_dependencies_locked();
 
 public:
-    explicit RuntimeIvModuleReload(StartupConfigState startup_config_);
+    explicit IvModuleReload(StartupConfigState startup_config_);
 
     void handle_definition_declarations_changed(
-        RuntimeIvModuleDefinitionDeclarationsChanged const &diff);
+        IvModuleDefinitionDeclarationsChanged const &diff);
 
     bool has_changes();
     void reload_changed_definitions();

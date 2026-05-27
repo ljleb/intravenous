@@ -5,11 +5,11 @@
 
 namespace iv {
 namespace {
-    RuntimeGraphInputLanes *bound_graph_input_lanes = nullptr;
+    GraphInputLanes *bound_graph_input_lanes = nullptr;
 
     void handle_query_requested(
-        RuntimeLaneViewsQueryRequest const &request,
-        RuntimeLaneViewsQueryResultBuilder &builder)
+        LaneViewsQueryRequest const &request,
+        LaneViewsQueryResultBuilder &builder)
     {
         if (bound_graph_input_lanes == nullptr) {
             return;
@@ -21,18 +21,18 @@ namespace {
     }
 
     IV_SUBSCRIBE_LINKER_EVENT(
-        RuntimeLaneViewsQueryRequestedEvent,
+        LaneViewsQueryRequestedEvent,
         iv_runtime_lane_views_query_requested_event,
         handle_query_requested);
 }
 
-void bind_graph_input_lanes_lane_views_bridge(RuntimeGraphInputLanes &graph_input_lanes)
+void bind_graph_input_lanes_lane_views_bridge(GraphInputLanes &graph_input_lanes)
 {
     bound_graph_input_lanes = &graph_input_lanes;
 }
 
 void unbind_graph_input_lanes_lane_views_bridge(
-    RuntimeGraphInputLanes const &graph_input_lanes)
+    GraphInputLanes const &graph_input_lanes)
 {
     if (bound_graph_input_lanes == &graph_input_lanes) {
         bound_graph_input_lanes = nullptr;

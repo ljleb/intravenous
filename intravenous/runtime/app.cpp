@@ -45,18 +45,18 @@ namespace iv {
 
         int run_server_mode(Timeline& timeline, int argc, char** argv)
         {
-            auto const options = RuntimeServerOptions::parse(argc, argv);
+            auto const options = ServerOptions::parse(argc, argv);
             StartupConfig startup_config(
                 options.workspace_root,
                 std::filesystem::current_path(),
                 std::vector<std::filesystem::path>{});
             auto const startup = startup_config.initialize();
-            RuntimeIvModuleInstances iv_module_instances;
-            RuntimeIvModuleDefinitions iv_module_definitions;
-            RuntimeIvModuleReload iv_module_reload(startup);
-            RuntimeGraphInputLanes graph_input_lanes;
-            RuntimeLaneViews lane_views;
-            RuntimeProjectIntrospection introspection;
+            IvModuleInstances iv_module_instances;
+            IvModuleDefinitions iv_module_definitions;
+            IvModuleReload iv_module_reload(startup);
+            GraphInputLanes graph_input_lanes;
+            LaneViews lane_views;
+            ProjectIntrospection introspection;
             bind_graph_input_lanes_timeline_bridge(timeline);
             bind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
             bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);

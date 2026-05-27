@@ -28,7 +28,7 @@ struct LoadedGraphIntrospectionIndex {
     std::unordered_map<std::string, size_t> logical_node_index_by_id;
 };
 
-class RuntimeProjectIntrospection {
+class ProjectIntrospection {
     mutable std::mutex mutex;
     mutable std::unordered_map<std::string, SourceTextLineMap> source_text_cache;
     std::optional<LoadedGraphIntrospectionIndex> graph_index;
@@ -42,17 +42,17 @@ class RuntimeProjectIntrospection {
     LogicalNodeInfo to_logical_node(IntrospectionLogicalNode const &node) const;
 
 public:
-    RuntimeProjectIntrospection() = default;
+    ProjectIntrospection() = default;
 
-    RuntimeProjectInitializeResult initialize() const;
+    ProjectInitializeResult initialize() const;
     void handle_iv_module_definitions_changed(
-        RuntimeIvModuleDefinitionsChanged const &diff);
-    RuntimeProjectQueryResult
+        IvModuleDefinitionsChanged const &diff);
+    ProjectQueryResult
     query_by_spans(
         std::filesystem::path const &file_path,
         std::vector<SourceRange> const &ranges,
         SourceRangeMatchMode match_mode = SourceRangeMatchMode::intersection) const;
-    RuntimeProjectRegionQueryResult
+    ProjectRegionQueryResult
     query_active_regions(std::filesystem::path const &file_path) const;
     LogicalNodeInfo get_logical_node(std::string const &node_id) const;
     std::vector<LogicalNodeInfo>

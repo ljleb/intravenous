@@ -4,12 +4,12 @@
 #include <utility>
 
 namespace iv {
-    void RuntimeLaneViewsQueryResultBuilder::succeed(LaneQueryResult value)
+    void LaneViewsQueryResultBuilder::succeed(LaneQueryResult value)
     {
         result = std::move(value);
     }
 
-    LaneQueryResult RuntimeLaneViewsQueryResultBuilder::build() const
+    LaneQueryResult LaneViewsQueryResultBuilder::build() const
     {
         if (!result.has_value()) {
             throw std::runtime_error("runtime lane views query result was not provided");
@@ -18,9 +18,9 @@ namespace iv {
     }
 
     IV_DEFINE_LINKER_EVENT(
-        RuntimeLaneViewsQueryRequestedEvent,
+        LaneViewsQueryRequestedEvent,
         iv_runtime_lane_views_query_requested_event);
     IV_DEFINE_LINKER_EVENT(
-        RuntimeLaneViewsUpdatedEvent,
+        LaneViewsUpdatedEvent,
         iv_runtime_lane_views_updated_event);
 } // namespace iv

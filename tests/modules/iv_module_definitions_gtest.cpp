@@ -10,12 +10,12 @@ using iv::test_support::fresh_test_workspace;
 using iv::test_support::make_loaded_definition;
 }
 
-TEST(RuntimeIvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
+TEST(IvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
 {
     auto const workspace =
         fresh_test_workspace("iv_module_definitions_seed_loaded_definition");
 
-    iv::RuntimeIvModuleDefinitions definitions;
+    iv::IvModuleDefinitions definitions;
     auto const loaded = make_loaded_definition(workspace);
     auto const definition_id = loaded.definition_id;
 
@@ -28,12 +28,12 @@ TEST(RuntimeIvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
     EXPECT_NE(loaded_definitions.front().canonical_builder, nullptr);
 }
 
-TEST(RuntimeIvModuleDefinitions, RemoveDefinitionClearsLoadedSnapshot)
+TEST(IvModuleDefinitions, RemoveDefinitionClearsLoadedSnapshot)
 {
     auto const workspace =
         fresh_test_workspace("iv_module_definitions_remove_definition");
 
-    iv::RuntimeIvModuleDefinitions definitions;
+    iv::IvModuleDefinitions definitions;
     auto const loaded = make_loaded_definition(workspace);
     auto const definition_id = loaded.definition_id;
     definitions.seed_loaded_definition(loaded);

@@ -4,7 +4,7 @@
 #include <string>
 
 namespace iv {
-struct RuntimeIvModuleInstanceInfo {
+struct IvModuleInstanceInfo {
     std::string instance_id{};
     std::string definition_id{};
     std::filesystem::path module_root{};

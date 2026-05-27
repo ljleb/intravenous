@@ -13,7 +13,7 @@
 #include <vector>
 
 namespace iv {
-class RuntimeGraphInputLanes {
+class GraphInputLanes {
     mutable std::mutex mutex;
     std::vector<GraphInputPortDescriptor> current_ports;
 
@@ -25,24 +25,24 @@ class RuntimeGraphInputLanes {
         std::optional<size_t> visible_lane_count = std::nullopt);
 
 public:
-    RuntimeGraphInputLanes() = default;
+    GraphInputLanes() = default;
 
     void handle_iv_module_instances_changed(
-        RuntimeIvModuleInstancesChanged const &diff);
-    std::vector<RuntimeProjectIntrospectionLiveInputSnapshot> collect_live_input_snapshots(
-        std::vector<RuntimeProjectIntrospectionLiveInputSnapshotRequest> const &requests);
+        IvModuleInstancesChanged const &diff);
+    std::vector<ProjectIntrospectionLiveInputSnapshot> collect_live_input_snapshots(
+        std::vector<ProjectIntrospectionLiveInputSnapshotRequest> const &requests);
     void ensure_graph_input_lane_bindings(
-        RuntimeProjectGraphInputLaneBindingsRequest const &request);
+        ProjectGraphInputLaneBindingsRequest const &request);
     GraphInputLaneBindings query_graph_input_lane_bindings(
-        RuntimeProjectGraphInputLaneBindingsRequest const &request);
-    std::vector<RuntimeProjectLaneOutputs> query_lane_outputs(
-        RuntimeProjectLaneOutputsRequest const &request);
+        ProjectGraphInputLaneBindingsRequest const &request);
+    std::vector<ProjectLaneOutputs> query_lane_outputs(
+        ProjectLaneOutputsRequest const &request);
     void set_sample_input_value(
-        RuntimeProjectSetSampleInputValueRequest const &request);
+        ProjectSetSampleInputValueRequest const &request);
     void clear_sample_input_value_override(
-        RuntimeProjectClearSampleInputValueOverrideRequest const &request);
+        ProjectClearSampleInputValueOverrideRequest const &request);
     RealtimeLaneRef resolve_sample_input_lane_ref(
-        RuntimeGraphInputLanesSampleInputLaneRefRequest const &request);
+        GraphInputLanesSampleInputLaneRefRequest const &request);
     LaneQueryResult query_lanes(
         LaneQueryFilter const &filter,
         std::optional<size_t> start_index = std::nullopt,

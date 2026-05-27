@@ -1,10 +1,10 @@
 #pragma once
 
 namespace iv {
-class RuntimeIvModuleInstances;
+class IvModuleInstances;
 
 void bind_iv_module_definitions_iv_module_instances_bridge(
-    RuntimeIvModuleInstances &instances);
+    IvModuleInstances &instances);
 void unbind_iv_module_definitions_iv_module_instances_bridge(
-    RuntimeIvModuleInstances const &instances);
+    IvModuleInstances const &instances);
 } // namespace iv

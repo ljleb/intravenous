@@ -5,11 +5,11 @@
 
 namespace iv {
 namespace {
-RuntimeGraphInputLanes *bound_lanes = nullptr;
+GraphInputLanes *bound_lanes = nullptr;
 
 void handle_live_input_snapshots_requested(
-    std::vector<RuntimeProjectIntrospectionLiveInputSnapshotRequest> const &requests,
-    RuntimeProjectIntrospectionLiveInputSnapshotsBuilder &builder)
+    std::vector<ProjectIntrospectionLiveInputSnapshotRequest> const &requests,
+    ProjectIntrospectionLiveInputSnapshotsBuilder &builder)
 {
     if (bound_lanes == nullptr) {
         return;
@@ -18,18 +18,18 @@ void handle_live_input_snapshots_requested(
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeProjectIntrospectionLiveInputSnapshotsRequestedEvent,
+    ProjectIntrospectionLiveInputSnapshotsRequestedEvent,
     iv_runtime_project_introspection_live_input_snapshots_requested_event,
     handle_live_input_snapshots_requested);
 } // namespace
 
-void bind_project_introspection_graph_input_lanes_bridge(RuntimeGraphInputLanes &lanes)
+void bind_project_introspection_graph_input_lanes_bridge(GraphInputLanes &lanes)
 {
     bound_lanes = &lanes;
 }
 
 void unbind_project_introspection_graph_input_lanes_bridge(
-    RuntimeGraphInputLanes const &lanes)
+    GraphInputLanes const &lanes)
 {
     if (bound_lanes == &lanes) {
         bound_lanes = nullptr;

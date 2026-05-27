@@ -113,7 +113,7 @@ Json lane_view_result_json(LaneViewResult const &result) {
     return json;
 }
 
-Json iv_module_instance_json(RuntimeIvModuleInstanceInfo const &instance) {
+Json iv_module_instance_json(IvModuleInstanceInfo const &instance) {
     Json json{
         {"instanceId", instance.instance_id},
         {"definitionId", instance.definition_id},
@@ -126,7 +126,7 @@ Json iv_module_instance_json(RuntimeIvModuleInstanceInfo const &instance) {
     return json;
 }
 
-Json iv_module_instances_json(std::vector<RuntimeIvModuleInstanceInfo> const &instances) {
+Json iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &instances) {
     Json json = Json::array();
     for (auto const &instance : instances) {
         json.push_back(iv_module_instance_json(instance));
@@ -457,7 +457,7 @@ void SocketRpcServer::send_lane_view_updated(LaneViewResult const &notification)
 }
 
 void SocketRpcServer::send_iv_module_instances_updated(
-    std::vector<RuntimeIvModuleInstanceInfo> const &instances) {
+    std::vector<IvModuleInstanceInfo> const &instances) {
     int fd = -1;
     {
         std::scoped_lock client_lock(client_mutex);

@@ -5,10 +5,10 @@
 #include <filesystem>
 
 namespace iv {
-    struct RuntimeProjectConfig {
+    struct ProjectConfig {
         std::filesystem::path workspace_root {};
         ModuleLoader::ToolchainConfig toolchain {};
     };
 
-    RuntimeProjectConfig load_runtime_project_config(std::filesystem::path const& workspace_root);
+    ProjectConfig load_runtime_project_config(std::filesystem::path const& workspace_root);
 }

@@ -4,19 +4,19 @@
 #include <utility>
 
 namespace iv {
-void RuntimeGraphInputLanesAckBuilder::succeed()
+void GraphInputLanesAckBuilder::succeed()
 {
     handled = true;
     error_message.reset();
 }
 
-void RuntimeGraphInputLanesAckBuilder::fail(std::string message)
+void GraphInputLanesAckBuilder::fail(std::string message)
 {
     handled = false;
     error_message = std::move(message);
 }
 
-void RuntimeGraphInputLanesAckBuilder::build() const
+void GraphInputLanesAckBuilder::build() const
 {
     if (error_message.has_value()) {
         throw std::runtime_error(*error_message);
@@ -26,14 +26,14 @@ void RuntimeGraphInputLanesAckBuilder::build() const
     }
 }
 
-void RuntimeGraphInputLanesLiveInputSnapshotsBuilder::succeed(
-    std::vector<RuntimeGraphInputLanesLiveInputSnapshot> value)
+void GraphInputLanesLiveInputSnapshotsBuilder::succeed(
+    std::vector<GraphInputLanesLiveInputSnapshot> value)
 {
     result = std::move(value);
 }
 
-std::vector<RuntimeGraphInputLanesLiveInputSnapshot>
-RuntimeGraphInputLanesLiveInputSnapshotsBuilder::build() const
+std::vector<GraphInputLanesLiveInputSnapshot>
+GraphInputLanesLiveInputSnapshotsBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
@@ -42,13 +42,13 @@ RuntimeGraphInputLanesLiveInputSnapshotsBuilder::build() const
     return *result;
 }
 
-void RuntimeGraphInputLanesLaneBindingsBuilder::succeed(
+void GraphInputLanesLaneBindingsBuilder::succeed(
     GraphInputLaneBindings value)
 {
     result = std::move(value);
 }
 
-GraphInputLaneBindings RuntimeGraphInputLanesLaneBindingsBuilder::build() const
+GraphInputLaneBindings GraphInputLanesLaneBindingsBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
@@ -57,14 +57,14 @@ GraphInputLaneBindings RuntimeGraphInputLanesLaneBindingsBuilder::build() const
     return *result;
 }
 
-void RuntimeGraphInputLanesLaneOutputsBuilder::succeed(
-    std::vector<RuntimeGraphInputLanesLaneOutputs> value)
+void GraphInputLanesLaneOutputsBuilder::succeed(
+    std::vector<GraphInputLanesLaneOutputs> value)
 {
     result = std::move(value);
 }
 
-std::vector<RuntimeGraphInputLanesLaneOutputs>
-RuntimeGraphInputLanesLaneOutputsBuilder::build() const
+std::vector<GraphInputLanesLaneOutputs>
+GraphInputLanesLaneOutputsBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
@@ -73,12 +73,12 @@ RuntimeGraphInputLanesLaneOutputsBuilder::build() const
     return *result;
 }
 
-void RuntimeGraphInputLanesSampleInputLaneRefBuilder::succeed(RealtimeLaneRef value)
+void GraphInputLanesSampleInputLaneRefBuilder::succeed(RealtimeLaneRef value)
 {
     result = std::move(value);
 }
 
-RealtimeLaneRef RuntimeGraphInputLanesSampleInputLaneRefBuilder::build() const
+RealtimeLaneRef GraphInputLanesSampleInputLaneRefBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
@@ -88,30 +88,30 @@ RealtimeLaneRef RuntimeGraphInputLanesSampleInputLaneRefBuilder::build() const
 }
 
 IV_DEFINE_LINKER_EVENT(
-    RuntimeGraphInputLanesPortsChangedEvent,
+    GraphInputLanesPortsChangedEvent,
     iv_runtime_graph_input_lanes_ports_changed_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeGraphInputLanesLiveInputSnapshotsRequestedEvent,
+    GraphInputLanesLiveInputSnapshotsRequestedEvent,
     iv_runtime_graph_input_lanes_live_input_snapshots_requested_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneBindingsEnsuredEvent,
+    GraphInputLanesLaneBindingsEnsuredEvent,
     iv_runtime_graph_input_lanes_lane_bindings_ensured_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneBindingsRequestedEvent,
+    GraphInputLanesLaneBindingsRequestedEvent,
     iv_runtime_graph_input_lanes_lane_bindings_requested_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneOutputsRequestedEvent,
+    GraphInputLanesLaneOutputsRequestedEvent,
     iv_runtime_graph_input_lanes_lane_outputs_requested_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeGraphInputLanesSetSampleInputValueRequestedEvent,
+    GraphInputLanesSetSampleInputValueRequestedEvent,
     iv_runtime_graph_input_lanes_set_sample_input_value_requested_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeGraphInputLanesClearSampleInputValueOverrideRequestedEvent,
+    GraphInputLanesClearSampleInputValueOverrideRequestedEvent,
     iv_runtime_graph_input_lanes_clear_sample_input_value_override_requested_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeGraphInputLanesSampleInputLaneRefRequestedEvent,
+    GraphInputLanesSampleInputLaneRefRequestedEvent,
     iv_runtime_graph_input_lanes_sample_input_lane_ref_requested_event);
 IV_DEFINE_LINKER_EVENT(
-    RuntimeGraphInputLanesLaneViewUpdatedEvent,
+    GraphInputLanesLaneViewUpdatedEvent,
     iv_runtime_graph_input_lanes_lane_view_updated_event);
 } // namespace iv

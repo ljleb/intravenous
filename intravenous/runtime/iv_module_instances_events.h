@@ -12,16 +12,16 @@
 #include <vector>
 
 namespace iv {
-struct RuntimeIvModuleRequiredDefinitionsChanged;
-using RuntimeIvModuleRequiredDefinitionsChangedEvent =
-    void (*)(RuntimeIvModuleRequiredDefinitionsChanged const &);
-struct RuntimeIvModuleInstancesChanged;
-using RuntimeIvModuleInstancesChangedEvent =
-    void (*)(RuntimeIvModuleInstancesChanged const &);
-using RuntimeIvModuleInstancesListChangedEvent =
-    void (*)(std::vector<RuntimeIvModuleInstanceInfo> const &);
+struct IvModuleRequiredDefinitionsChanged;
+using IvModuleRequiredDefinitionsChangedEvent =
+    void (*)(IvModuleRequiredDefinitionsChanged const &);
+struct IvModuleInstancesChanged;
+using IvModuleInstancesChangedEvent =
+    void (*)(IvModuleInstancesChanged const &);
+using IvModuleInstancesListChangedEvent =
+    void (*)(std::vector<IvModuleInstanceInfo> const &);
 
-struct RuntimeIvModuleSampleInputResolutionRequest {
+struct IvModuleSampleInputResolutionRequest {
     std::string logical_node_id{};
     size_t member_ordinal = 0;
     size_t input_ordinal = 0;
@@ -29,7 +29,7 @@ struct RuntimeIvModuleSampleInputResolutionRequest {
     Sample default_value = 0.0f;
 };
 
-class RuntimeIvModuleSampleInputResolutionBuilder {
+class IvModuleSampleInputResolutionBuilder {
     bool resolved_ = false;
     std::optional<RealtimeLaneRef> lane_ref_{};
 
@@ -50,21 +50,21 @@ public:
     }
 };
 
-using RuntimeIvModuleSampleInputResolutionRequestedEvent =
+using IvModuleSampleInputResolutionRequestedEvent =
     void (*)(
-        RuntimeIvModuleSampleInputResolutionRequest const &,
-        RuntimeIvModuleSampleInputResolutionBuilder &);
+        IvModuleSampleInputResolutionRequest const &,
+        IvModuleSampleInputResolutionBuilder &);
 
 IV_DECLARE_LINKER_EVENT(
-    RuntimeIvModuleRequiredDefinitionsChangedEvent,
+    IvModuleRequiredDefinitionsChangedEvent,
     iv_runtime_iv_module_required_definitions_changed_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeIvModuleInstancesChangedEvent,
+    IvModuleInstancesChangedEvent,
     iv_runtime_iv_module_instances_changed_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeIvModuleInstancesListChangedEvent,
+    IvModuleInstancesListChangedEvent,
     iv_runtime_iv_module_instances_list_changed_event);
 IV_DECLARE_LINKER_EVENT(
-    RuntimeIvModuleSampleInputResolutionRequestedEvent,
+    IvModuleSampleInputResolutionRequestedEvent,
     iv_runtime_iv_module_sample_input_resolution_requested_event);
 } // namespace iv

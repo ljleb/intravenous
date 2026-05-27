@@ -409,7 +409,7 @@ namespace iv::test {
         }
     };
 
-    inline iv::RuntimeIvModuleReloadedDefinition load_runtime_iv_module_definition(
+    inline iv::IvModuleReloadedDefinition load_runtime_iv_module_definition(
         iv::StartupConfigState const& config,
         std::filesystem::path module_root)
     {
@@ -431,7 +431,7 @@ namespace iv::test {
                 .max_block_frames = render_config.max_block_frames,
             },
             &device_sample_period);
-        return iv::RuntimeIvModuleReloadedDefinition{
+        return iv::IvModuleReloadedDefinition{
             .definition_id = normalized_module_root.string(),
             .module_root = normalized_module_root,
             .module_id = loaded_graph.module_id,
@@ -442,14 +442,14 @@ namespace iv::test {
         };
     }
 
-    inline iv::RuntimeIvModuleReloadedDefinition make_loaded_definition(
+    inline iv::IvModuleReloadedDefinition make_loaded_definition(
         std::filesystem::path module_root,
         std::string module_id = "iv.test.module",
         iv::GraphIntrospectionMetadata introspection = {},
         std::vector<iv::ModuleDependency> dependencies = {})
     {
         auto const normalized_module_root = std::filesystem::weakly_canonical(module_root).lexically_normal();
-        return iv::RuntimeIvModuleReloadedDefinition{
+        return iv::IvModuleReloadedDefinition{
             .definition_id = normalized_module_root.string(),
             .module_root = normalized_module_root,
             .module_id = std::move(module_id),

@@ -33,7 +33,7 @@ TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesBuilderUnbuilt)
 
 TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
 {
-    iv::RuntimeIvModuleInstances instances;
+    iv::IvModuleInstances instances;
     iv::bind_socket_rpc_iv_module_instances_bridge(instances);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;

@@ -1,10 +1,10 @@
 #pragma once
 
 namespace iv {
-class RuntimeIvModuleReload;
+class IvModuleReload;
 
 void bind_iv_module_definitions_iv_module_reload_bridge(
-    RuntimeIvModuleReload &reload);
+    IvModuleReload &reload);
 void unbind_iv_module_definitions_iv_module_reload_bridge(
-    RuntimeIvModuleReload const &reload);
+    IvModuleReload const &reload);
 } // namespace iv

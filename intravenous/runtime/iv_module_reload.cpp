@@ -33,13 +33,13 @@ std::string describe_exception(std::exception_ptr exception)
 }
 } // namespace
 
-RuntimeIvModuleReload::RuntimeIvModuleReload(StartupConfigState startup_config_)
+IvModuleReload::IvModuleReload(StartupConfigState startup_config_)
     : startup_config(std::move(startup_config_)),
       watcher(make_dependency_watcher())
 {
 }
 
-void RuntimeIvModuleReload::refresh_watched_dependencies_locked()
+void IvModuleReload::refresh_watched_dependencies_locked()
 {
     std::vector<ModuleDependency> dependencies;
     for (auto const &entry : dependencies_by_definition_id) {
@@ -51,14 +51,14 @@ void RuntimeIvModuleReload::refresh_watched_dependencies_locked()
     watcher.update(std::move(dependencies));
 }
 
-void RuntimeIvModuleReload::reload_declarations(
-    std::vector<RuntimeIvModuleDefinitionDeclaration> const &declarations)
+void IvModuleReload::reload_declarations(
+    std::vector<IvModuleDefinitionDeclaration> const &declarations)
 {
 #if IV_ENABLE_JUCE_VST
     warmup_juce_vst_scan_cache();
 #endif
 
-    RuntimeIvModuleReloadResults results;
+    IvModuleReloadResults results;
     ModuleLoader loader(
         startup_config.discovery_start,
         startup_config.search_roots,
@@ -74,7 +74,7 @@ void RuntimeIvModuleReload::reload_declarations(
                 module_executor_target(render_config),
                 &device_sample_period);
 
-            RuntimeIvModuleReloadedDefinition loaded{
+            IvModuleReloadedDefinition loaded{
                 .definition_id = declaration.definition_id,
                 .module_root = declaration.module_root,
                 .module_id = loaded_graph.module_id,
@@ -90,7 +90,7 @@ void RuntimeIvModuleReload::reload_declarations(
             }
             results.loaded.push_back(std::move(loaded));
         } catch (...) {
-            results.failed.push_back(RuntimeIvModuleReloadFailure{
+            results.failed.push_back(IvModuleReloadFailure{
                 .definition_id = declaration.definition_id,
                 .module_root = declaration.module_root,
                 .message = describe_exception(std::current_exception()),
@@ -105,10 +105,10 @@ void RuntimeIvModuleReload::reload_declarations(
     }
 }
 
-void RuntimeIvModuleReload::handle_definition_declarations_changed(
-    RuntimeIvModuleDefinitionDeclarationsChanged const &diff)
+void IvModuleReload::handle_definition_declarations_changed(
+    IvModuleDefinitionDeclarationsChanged const &diff)
 {
-    std::vector<RuntimeIvModuleDefinitionDeclaration> to_reload;
+    std::vector<IvModuleDefinitionDeclaration> to_reload;
     {
         std::scoped_lock lock(mutex);
         for (auto const &declaration : diff.created) {
@@ -131,15 +131,15 @@ void RuntimeIvModuleReload::handle_definition_declarations_changed(
     }
 }
 
-bool RuntimeIvModuleReload::has_changes()
+bool IvModuleReload::has_changes()
 {
     std::scoped_lock lock(mutex);
     return watcher.has_changes();
 }
 
-void RuntimeIvModuleReload::reload_changed_definitions()
+void IvModuleReload::reload_changed_definitions()
 {
-    std::vector<RuntimeIvModuleDefinitionDeclaration> declarations;
+    std::vector<IvModuleDefinitionDeclaration> declarations;
     {
         std::scoped_lock lock(mutex);
         if (!watcher.has_changes()) {

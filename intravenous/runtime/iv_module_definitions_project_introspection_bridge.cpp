@@ -5,9 +5,9 @@
 
 namespace iv {
 namespace {
-RuntimeProjectIntrospection *bound_introspection = nullptr;
+ProjectIntrospection *bound_introspection = nullptr;
 
-void handle_definitions_changed(RuntimeIvModuleDefinitionsChanged const &diff)
+void handle_definitions_changed(IvModuleDefinitionsChanged const &diff)
 {
     if (bound_introspection == nullptr) {
         return;
@@ -16,19 +16,19 @@ void handle_definitions_changed(RuntimeIvModuleDefinitionsChanged const &diff)
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    RuntimeIvModuleDefinitionsChangedEvent,
+    IvModuleDefinitionsChangedEvent,
     iv_runtime_iv_module_definitions_changed_event,
     handle_definitions_changed);
 } // namespace
 
 void bind_iv_module_definitions_project_introspection_bridge(
-    RuntimeProjectIntrospection &introspection)
+    ProjectIntrospection &introspection)
 {
     bound_introspection = &introspection;
 }
 
 void unbind_iv_module_definitions_project_introspection_bridge(
-    RuntimeProjectIntrospection const &introspection)
+    ProjectIntrospection const &introspection)
 {
     if (bound_introspection == &introspection) {
         bound_introspection = nullptr;

@@ -6,13 +6,13 @@
 #include <optional>
 
 namespace iv {
-    struct RuntimeLaneViewsQueryRequest {
+    struct LaneViewsQueryRequest {
         LaneQueryFilter filter {};
         std::optional<size_t> start_index;
         std::optional<size_t> visible_lane_count;
     };
 
-    class RuntimeLaneViewsQueryResultBuilder {
+    class LaneViewsQueryResultBuilder {
         std::optional<LaneQueryResult> result;
 
     public:
@@ -20,15 +20,15 @@ namespace iv {
         [[nodiscard]] LaneQueryResult build() const;
     };
 
-    using RuntimeLaneViewsQueryRequestedEvent =
-        void (*)(RuntimeLaneViewsQueryRequest const &, RuntimeLaneViewsQueryResultBuilder &);
-    using RuntimeLaneViewsUpdatedEvent =
+    using LaneViewsQueryRequestedEvent =
+        void (*)(LaneViewsQueryRequest const &, LaneViewsQueryResultBuilder &);
+    using LaneViewsUpdatedEvent =
         void (*)(LaneViewResult const &);
 
     IV_DECLARE_LINKER_EVENT(
-        RuntimeLaneViewsQueryRequestedEvent,
+        LaneViewsQueryRequestedEvent,
         iv_runtime_lane_views_query_requested_event);
     IV_DECLARE_LINKER_EVENT(
-        RuntimeLaneViewsUpdatedEvent,
+        LaneViewsUpdatedEvent,
         iv_runtime_lane_views_updated_event);
 } // namespace iv
