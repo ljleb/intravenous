@@ -19,13 +19,14 @@
 
 namespace {
 using iv::test_support::copy_fixture_workspace;
+using iv::test_support::shared_project_fixture_workspace;
+using iv::test_support::shared_inline_module_workspace;
 }
 
 TEST(RuntimeIntegration, StartupConfigDefinitionsAndProjectIntrospectionInitializeAndShutdown)
 {
     auto const workspace =
-        copy_fixture_workspace("runtime_integration_project_introspection", "local_cmake");
-    iv::test_support::write_text(workspace / ".intravenous", "");
+        shared_project_fixture_workspace("local_cmake");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
@@ -48,8 +49,7 @@ TEST(RuntimeIntegration, StartupConfigDefinitionsAndProjectIntrospectionInitiali
 TEST(RuntimeIntegration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutdown)
 {
     auto const workspace =
-        copy_fixture_workspace("runtime_integration_graph_input_lanes", "local_cmake");
-    iv::test_support::write_text(workspace / ".intravenous", "");
+        shared_project_fixture_workspace("local_cmake");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
@@ -85,7 +85,7 @@ TEST(RuntimeIntegration, InstancesDefinitionsReloadAndGraphInputLanesInitializeA
 
 TEST(RuntimeIntegration, SampleInputMutationsFlowThroughLiveSnapshots)
 {
-    auto const workspace = iv::test_support::make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "runtime_integration_live_input_snapshots",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"

@@ -13,7 +13,6 @@
 
 namespace iv {
     namespace {
-#if !defined(__linux__)
         std::filesystem::file_time_type compute_directory_stamp(std::filesystem::path const& dir)
         {
             std::filesystem::file_time_type latest {};
@@ -42,7 +41,6 @@ namespace iv {
 
             return latest;
         }
-#endif
     }
 
     DependencyWatcher::DependencyWatcher() = default;
@@ -115,26 +113,31 @@ namespace iv {
 
     bool DependencyWatcher::has_changes()
     {
+        auto const stamps_changed = [&] {
+            for (auto const& dependency : _dependencies) {
+                if (compute_directory_stamp(dependency.module_dir) != dependency.source_stamp) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
 #if defined(__linux__)
         if (_fd == -1) {
-            return false;
+            return stamps_changed();
         }
 
         pollfd fd { .fd = _fd, .events = POLLIN, .revents = 0 };
-        if (poll(&fd, 1, 0) <= 0) {
-            return false;
-        }
-
-        std::array<char, 4096> buffer {};
-        return read(_fd, buffer.data(), buffer.size()) > 0;
-#else
-        for (auto const& dependency : _dependencies) {
-            if (compute_directory_stamp(dependency.module_dir) != dependency.source_stamp) {
+        if (poll(&fd, 1, 0) > 0) {
+            std::array<char, 4096> buffer {};
+            if (read(_fd, buffer.data(), buffer.size()) > 0) {
                 return true;
             }
         }
 
-        return false;
+        return stamps_changed();
+#else
+        return stamps_changed();
 #endif
     }
 

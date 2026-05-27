@@ -1,4 +1,4 @@
-#include "module_test_utils.h"
+#include "../module_test_utils.h"
 
 #include "runtime/iv_module_instances.h"
 #include "runtime/iv_module_instances_events.h"

@@ -17,112 +17,12 @@
 #include "runtime/project_introspection_graph_input_lanes_bridge.h"
 #include "runtime/startup_config.h"
 
-#include "module/loader.h"
-
 #include <filesystem>
-#include <fstream>
-#include <cstdio>
-#include <cstdlib>
-#include <optional>
-#include <source_location>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace iv::test_support {
-inline std::filesystem::path make_workspace(
-    std::string_view name,
-    std::source_location location = std::source_location::current())
-{
-    return iv::test::fresh_test_workspace(name, location);
-}
-
-inline void write_text(std::filesystem::path const &path, std::string const &text)
-{
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        throw std::runtime_error("failed to open " + path.string());
-    }
-    out << text;
-}
-
-inline std::filesystem::path copy_fixture_workspace(
-    std::string_view test_name,
-    std::string const &fixture_name,
-    std::source_location location = std::source_location::current())
-{
-    auto const workspace = make_workspace(test_name, location);
-    iv::test::copy_directory(iv::test::test_modules_root() / fixture_name, workspace);
-    return workspace;
-}
-
-inline std::filesystem::path make_inline_module_workspace(
-    std::string_view test_name,
-    std::string const &module_text,
-    std::source_location location = std::source_location::current())
-{
-    auto const workspace = make_workspace(test_name, location);
-    write_text(workspace / ".intravenous", "");
-    write_text(workspace / "module.cpp", module_text);
-    return workspace;
-}
-
-inline std::string find_program(std::string const &name)
-{
-    std::string command = "command -v " + name;
-    FILE *pipe = popen(command.c_str(), "r");
-    if (!pipe) {
-        return {};
-    }
-
-    std::string output;
-    char buffer[256];
-    while (fgets(buffer, sizeof(buffer), pipe)) {
-        output += buffer;
-    }
-    pclose(pipe);
-
-    while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
-        output.pop_back();
-    }
-    return output;
-}
-
-inline std::string configured_program_or_find(
-    std::string const &name,
-    char const *configured_path)
-{
-    if (configured_path != nullptr && *configured_path != '\0') {
-        return configured_path;
-    }
-    return find_program(name);
-}
-
-struct ScopedEnvVar {
-    std::string key;
-    std::optional<std::string> original;
-
-    ScopedEnvVar(std::string key_, std::string value)
-        : key(std::move(key_))
-    {
-        if (char const *existing = std::getenv(key.c_str())) {
-            original = existing;
-        }
-        setenv(key.c_str(), value.c_str(), 1);
-    }
-
-    ~ScopedEnvVar()
-    {
-        if (original.has_value()) {
-            setenv(key.c_str(), original->c_str(), 1);
-        } else {
-            unsetenv(key.c_str());
-        }
-    }
-};
-
 struct BoundRuntimeProjectIntrospection {
     iv::Timeline timeline;
     iv::RuntimeIvModuleInstances iv_module_instances;
@@ -136,29 +36,9 @@ struct BoundRuntimeProjectIntrospection {
         iv::StartupConfigState const &config,
         std::filesystem::path module_root)
     {
-        iv::ModuleLoader loader(
-            config.discovery_start,
-            config.search_roots,
-            config.toolchain);
-        iv::RenderConfig const render_config{};
-        iv::Sample device_sample_period = iv::sample_period(render_config);
-        auto loaded_graph = loader.load_root(
-            module_root,
-            {
-                .sample_rate = render_config.sample_rate,
-                .num_channels = render_config.num_channels,
-                .max_block_frames = render_config.max_block_frames,
-            },
-            &device_sample_period);
-        return iv::RuntimeIvModuleReloadedDefinition{
-            .definition_id = std::filesystem::weakly_canonical(module_root).lexically_normal().string(),
-            .module_root = std::move(module_root),
-            .module_id = loaded_graph.module_id,
-            .introspection = loaded_graph.introspection,
-            .dependencies = loaded_graph.dependencies,
-            .module_refs = loaded_graph.module_refs,
-            .canonical_builder = *loaded_graph.canonical_builder,
-        };
+        return iv::test::load_runtime_iv_module_definition(
+            config,
+            std::move(module_root));
     }
 
     BoundRuntimeProjectIntrospection(

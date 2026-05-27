@@ -4,6 +4,7 @@
 #include "runtime/graph_input_lanes_timeline_bridge.h"
 #include "runtime/iv_module_definitions_project_introspection_bridge.h"
 #include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
+#include "runtime/project_introspection.h"
 #include "runtime/project_introspection_graph_input_lanes_bridge.h"
 #include "runtime/timeline.h"
 
@@ -21,6 +22,8 @@ namespace {
 using namespace std::chrono_literals;
 using iv::test_support::copy_fixture_workspace;
 using iv::test_support::make_inline_module_workspace;
+using iv::test_support::shared_project_fixture_workspace;
+using iv::test_support::shared_inline_module_workspace;
 
 struct SeededProjectIntrospectionApp {
     iv::Timeline timeline;
@@ -139,8 +142,7 @@ struct SeededProjectIntrospectionApp {
 
 TEST(RuntimeProjectIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 {
-    auto const workspace = copy_fixture_workspace("project_introspection_query_by_spans", "local_cmake");
-    iv::test_support::write_text(workspace / ".intravenous", "");
+    auto const workspace = shared_project_fixture_workspace("local_cmake");
 
     SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
@@ -167,7 +169,7 @@ TEST(RuntimeProjectIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 
 TEST(RuntimeProjectIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
-    auto const workspace = make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "project_introspection_merged_logical",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
@@ -277,7 +279,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 
 TEST(RuntimeProjectIntrospection, QueryBySpansReturnsAnnotatedLogicalNode)
 {
-    auto const workspace = make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "project_introspection_annotated_symbol",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
@@ -318,7 +320,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 
 TEST(RuntimeProjectIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
 {
-    auto const workspace = make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "project_introspection_single_assigned_ref",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
@@ -356,7 +358,7 @@ IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
 
 TEST(RuntimeProjectIntrospection, InitializationFailsWhenDeclarationBackedRefIsAssignedTwice)
 {
-    auto const workspace = make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "project_introspection_double_assignment_fails",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
@@ -393,7 +395,7 @@ IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
 
 TEST(RuntimeProjectIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
 {
-    auto const workspace = make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "project_introspection_schema_mismatch",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
@@ -441,7 +443,7 @@ IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
 
 TEST(RuntimeProjectIntrospection, QueryBySpansAggregatesMixedConnectivity)
 {
-    auto const workspace = make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "project_introspection_mixed_connectivity",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
@@ -500,9 +502,8 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
 
 TEST(RuntimeProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
 {
-    auto const workspace = copy_fixture_workspace("project_introspection_intersection", "local_cmake");
+    auto const workspace = shared_project_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    iv::test_support::write_text(workspace / ".intravenous", "");
 
     SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
@@ -540,9 +541,8 @@ TEST(RuntimeProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
 
 TEST(RuntimeProjectIntrospection, QueryBySpansUnionsMultipleSelections)
 {
-    auto const workspace = copy_fixture_workspace("project_introspection_union", "local_cmake");
+    auto const workspace = shared_project_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    iv::test_support::write_text(workspace / ".intravenous", "");
 
     SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
@@ -574,9 +574,8 @@ TEST(RuntimeProjectIntrospection, QueryBySpansUnionsMultipleSelections)
 
 TEST(RuntimeProjectIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
 {
-    auto const workspace = copy_fixture_workspace("project_introspection_active_regions", "local_cmake");
+    auto const workspace = shared_project_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    iv::test_support::write_text(workspace / ".intravenous", "");
 
     SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
@@ -609,7 +608,7 @@ TEST(RuntimeProjectIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
 
 TEST(RuntimeProjectIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExactSourceSpan)
 {
-    auto const workspace = make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "project_introspection_polyphonic_exact_spans",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
@@ -712,7 +711,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 
 TEST(RuntimeProjectIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonicLambdaSpansToOuterSubgraph)
 {
-    auto const workspace = make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "project_introspection_polyphonic_interior_span",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
@@ -761,7 +760,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 
 TEST(RuntimeProjectIntrospection, QueryBySpansReturnsPolyphonicOuterLogicalIdentityAtDeclarationSpan)
 {
-    auto const workspace = make_inline_module_workspace(
+    auto const workspace = shared_inline_module_workspace(
         "project_introspection_polyphonic_outer_identity",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"

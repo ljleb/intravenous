@@ -29,6 +29,7 @@ TEST(ModuleLoaderReload, OldAndNewProcessorsRetainModuleRefs)
         },
         &audio_device.sample_period()
     );
+    graph_a.canonical_builder.reset();
     iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
     auto processor_a = std::make_unique<iv::NodeExecutor>(
         iv::NodeExecutor::create(
@@ -47,7 +48,7 @@ TEST(ModuleLoaderReload, OldAndNewProcessorsRetainModuleRefs)
     auto replacement = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);/* reload marker*/");
     ASSERT_NE(source.find(needle), std::string::npos);
     source.replace(source.find(needle), needle.size(), replacement);
-    iv::test::write_text(module_cpp, source);
+    iv::test::write_text_advancing_timestamp(module_cpp, source);
 
     auto graph_b = loader.load_root(
         reload_dst,
@@ -58,6 +59,7 @@ TEST(ModuleLoaderReload, OldAndNewProcessorsRetainModuleRefs)
         },
         &audio_device.sample_period()
     );
+    graph_b.canonical_builder.reset();
     auto dependency_count = graph_b.dependencies.size();
     iv::ExecutionTargetRegistry execution_targets_b(iv::test::make_audio_device_provider(audio_device));
     auto processor_b = std::make_unique<iv::NodeExecutor>(

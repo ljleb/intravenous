@@ -6,22 +6,17 @@
 #include <gtest/gtest.h>
 
 namespace {
-using iv::test_support::copy_fixture_workspace;
+using iv::test_support::fresh_test_workspace;
+using iv::test_support::make_loaded_definition;
 }
 
 TEST(RuntimeIvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
 {
     auto const workspace =
-        copy_fixture_workspace("iv_module_definitions_seed_loaded_definition", "local_cmake");
-    iv::test_support::write_text(workspace / ".intravenous", "");
-
-    iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
-    auto const startup = startup_config.initialize();
+        fresh_test_workspace("iv_module_definitions_seed_loaded_definition");
 
     iv::RuntimeIvModuleDefinitions definitions;
-    auto const loaded = iv::test::load_runtime_iv_module_definition(
-        startup,
-        std::filesystem::weakly_canonical(workspace));
+    auto const loaded = make_loaded_definition(workspace);
     auto const definition_id = loaded.definition_id;
 
     definitions.seed_loaded_definition(loaded);
@@ -36,16 +31,10 @@ TEST(RuntimeIvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
 TEST(RuntimeIvModuleDefinitions, RemoveDefinitionClearsLoadedSnapshot)
 {
     auto const workspace =
-        copy_fixture_workspace("iv_module_definitions_remove_definition", "local_cmake");
-    iv::test_support::write_text(workspace / ".intravenous", "");
-
-    iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
-    auto const startup = startup_config.initialize();
+        fresh_test_workspace("iv_module_definitions_remove_definition");
 
     iv::RuntimeIvModuleDefinitions definitions;
-    auto const loaded = iv::test::load_runtime_iv_module_definition(
-        startup,
-        std::filesystem::weakly_canonical(workspace));
+    auto const loaded = make_loaded_definition(workspace);
     auto const definition_id = loaded.definition_id;
     definitions.seed_loaded_definition(loaded);
 

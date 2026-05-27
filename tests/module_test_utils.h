@@ -29,6 +29,8 @@
 #define NOMINMAX
 #include <Windows.h>
 #else
+#include <sys/file.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -103,6 +105,11 @@ namespace iv::test {
     inline std::filesystem::path runtime_module_cache_root()
     {
         return repo_root() / "build" / "iv_runtime_modules";
+    }
+
+    inline std::filesystem::path shared_test_fixtures_root()
+    {
+        return repo_root() / "build" / "test_shared_fixtures";
     }
 
     inline std::string sanitize_module_id(std::string_view id)
@@ -262,6 +269,38 @@ namespace iv::test {
         out << text;
     }
 
+    class ScopedFileLock {
+#if !defined(_WIN32)
+        int _fd = -1;
+#endif
+
+    public:
+        explicit ScopedFileLock(std::filesystem::path const& path)
+        {
+#if !defined(_WIN32)
+            std::filesystem::create_directories(path.parent_path());
+            _fd = ::open(path.c_str(), O_CREAT | O_RDWR, 0666);
+            require(_fd >= 0, "failed to open lock file");
+            require(::flock(_fd, LOCK_EX) == 0, "failed to lock file");
+#else
+            (void)path;
+#endif
+        }
+
+        ~ScopedFileLock()
+        {
+#if !defined(_WIN32)
+            if (_fd >= 0) {
+                ::flock(_fd, LOCK_UN);
+                ::close(_fd);
+            }
+#endif
+        }
+
+        ScopedFileLock(ScopedFileLock const&) = delete;
+        ScopedFileLock& operator=(ScopedFileLock const&) = delete;
+    };
+
     inline std::filesystem::path copy_fixture_workspace(
         std::string_view test_name,
         std::string const& fixture_name,
@@ -272,12 +311,44 @@ namespace iv::test {
         return workspace;
     }
 
+    inline std::filesystem::path shared_fixture_workspace(std::string const& fixture_name)
+    {
+        auto const workspace = shared_test_fixtures_root() / sanitize_test_token(fixture_name);
+        auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(fixture_name) + ".lock"));
+        if (!std::filesystem::exists(workspace)) {
+            copy_directory(test_modules_root() / fixture_name, workspace);
+        }
+        return workspace;
+    }
+
+    inline std::filesystem::path shared_project_fixture_workspace(std::string const& fixture_name)
+    {
+        auto const workspace = shared_fixture_workspace(fixture_name);
+        auto const lock = ScopedFileLock(
+            shared_test_fixtures_root() /
+            (sanitize_test_token(fixture_name) + ".project.lock"));
+        write_text(workspace / ".intravenous", "");
+        return workspace;
+    }
+
     inline std::filesystem::path make_inline_module_workspace(
         std::string_view test_name,
         std::string const& module_text,
         std::source_location location = std::source_location::current())
     {
         auto const workspace = fresh_test_workspace(test_name, location);
+        std::filesystem::create_directories(workspace);
+        write_text(workspace / ".intravenous", "");
+        write_text(workspace / "module.cpp", module_text);
+        return workspace;
+    }
+
+    inline std::filesystem::path shared_inline_module_workspace(
+        std::string_view test_name,
+        std::string const& module_text)
+    {
+        auto const workspace = shared_test_fixtures_root() / sanitize_test_token(test_name);
+        auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(test_name) + ".lock"));
         std::filesystem::create_directories(workspace);
         write_text(workspace / ".intravenous", "");
         write_text(workspace / "module.cpp", module_text);
@@ -342,6 +413,10 @@ namespace iv::test {
         iv::StartupConfigState const& config,
         std::filesystem::path module_root)
     {
+        auto const normalized_module_root = std::filesystem::weakly_canonical(module_root).lexically_normal();
+        auto const load_lock = ScopedFileLock(
+            runtime_module_cache_root() /
+            ("load_" + stable_path_hash(normalized_module_root) + ".lock"));
         iv::ModuleLoader loader(
             config.discovery_start,
             config.search_roots,
@@ -357,13 +432,31 @@ namespace iv::test {
             },
             &device_sample_period);
         return iv::RuntimeIvModuleReloadedDefinition{
-            .definition_id = std::filesystem::weakly_canonical(module_root).lexically_normal().string(),
-            .module_root = std::move(module_root),
+            .definition_id = normalized_module_root.string(),
+            .module_root = normalized_module_root,
             .module_id = loaded_graph.module_id,
             .introspection = loaded_graph.introspection,
             .dependencies = loaded_graph.dependencies,
             .module_refs = loaded_graph.module_refs,
             .canonical_builder = *loaded_graph.canonical_builder,
+        };
+    }
+
+    inline iv::RuntimeIvModuleReloadedDefinition make_loaded_definition(
+        std::filesystem::path module_root,
+        std::string module_id = "iv.test.module",
+        iv::GraphIntrospectionMetadata introspection = {},
+        std::vector<iv::ModuleDependency> dependencies = {})
+    {
+        auto const normalized_module_root = std::filesystem::weakly_canonical(module_root).lexically_normal();
+        return iv::RuntimeIvModuleReloadedDefinition{
+            .definition_id = normalized_module_root.string(),
+            .module_root = normalized_module_root,
+            .module_id = std::move(module_id),
+            .introspection = std::move(introspection),
+            .dependencies = std::move(dependencies),
+            .module_refs = {},
+            .canonical_builder = {},
         };
     }
 
@@ -627,9 +720,13 @@ namespace iv::test_support {
     using iv::test::find_program;
     using iv::test::fresh_test_workspace;
     using iv::test::load_runtime_iv_module_definition;
+    using iv::test::make_loaded_definition;
     using iv::test::make_inline_module_workspace;
     using iv::test::read_text;
     using iv::test::ScopedEnvVar;
+    using iv::test::shared_fixture_workspace;
+    using iv::test::shared_project_fixture_workspace;
+    using iv::test::shared_inline_module_workspace;
     using iv::test::test_modules_root;
     using iv::test::write_text;
 
