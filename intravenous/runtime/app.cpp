@@ -3,30 +3,31 @@
 #include "compat.h"
 #include "juce/vst_runtime.h"
 #include "runtime/graph_input_lanes.h"
-#include "runtime/graph_input_lanes_lane_views_bridge.h"
 #include "runtime/graph_input_lanes_timeline_bridge.h"
 #include "runtime/handlers.h"
 #include "runtime/iv_module_definitions.h"
 #include "runtime/iv_module_definitions_iv_module_instances_bridge.h"
 #include "runtime/iv_module_definitions_iv_module_reload_bridge.h"
-#include "runtime/iv_module_definitions_project_introspection_bridge.h"
+#include "runtime/iv_module_definitions_iv_module_source_introspection_bridge.h"
 #include "runtime/iv_module_instances.h"
 #include "runtime/iv_module_instances_iv_module_definitions_bridge.h"
 #include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
 #include "runtime/iv_module_reload.h"
 #include "runtime/iv_module_reload_iv_module_definitions_bridge.h"
+#include "runtime/lane_filters.h"
+#include "runtime/lane_filters_lane_views_bridge.h"
 #include "runtime/lane_views.h"
-#include "runtime/lane_views_timeline_bridge.h"
-#include "runtime/project_introspection.h"
-#include "runtime/project_introspection_graph_input_lanes_bridge.h"
+#include "runtime/iv_module_source_introspection.h"
+#include "runtime/iv_module_source_introspection_graph_input_lanes_bridge.h"
 #include "runtime/server_options.h"
 #include "runtime/socket_rpc_lane_views_bridge.h"
 #include "runtime/socket_rpc_iv_module_instances_bridge.h"
 #include "runtime/socket_rpc_notification_bridge.h"
-#include "runtime/socket_rpc_project_introspection_bridge.h"
+#include "runtime/socket_rpc_iv_module_source_introspection_bridge.h"
 #include "runtime/startup_config.h"
 #include "runtime/socket_rpc_server.h"
 #include "runtime/timeline.h"
+#include "runtime/timeline_lane_filters_bridge.h"
 
 #include <filesystem>
 #include <functional>
@@ -55,18 +56,19 @@ namespace iv {
             IvModuleDefinitions iv_module_definitions;
             IvModuleReload iv_module_reload(startup);
             GraphInputLanes graph_input_lanes;
+            LaneFilters lane_filters;
             LaneViews lane_views;
-            ProjectIntrospection introspection;
-            bind_graph_input_lanes_timeline_bridge(timeline);
-            bind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
+            IvModuleSourceIntrospection introspection;
+            bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
             bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
             bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
             bind_iv_module_definitions_iv_module_reload_bridge(iv_module_reload);
-            bind_iv_module_definitions_project_introspection_bridge(introspection);
+            bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
             bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
             bind_iv_module_reload_iv_module_definitions_bridge(iv_module_definitions);
-            bind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
-            bind_lane_views_timeline_bridge(lane_views);
+            bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
+            bind_timeline_lane_filters_bridge(lane_filters);
+            bind_lane_filters_lane_views_bridge(lane_filters, lane_views);
 
             SocketRpcServer server(options.workspace_root, options.rpc_fd);
             std::function<void()> shutdown = [&]() {
@@ -76,7 +78,7 @@ namespace iv {
             install_shutdown_handlers(request_shutdown);
             bind_socket_rpc_lane_views_bridge(lane_views);
             bind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
-            bind_socket_rpc_project_introspection_bridge(
+            bind_socket_rpc_iv_module_source_introspection_bridge(
                 introspection,
                 graph_input_lanes,
                 &shutdown);
@@ -88,19 +90,19 @@ namespace iv {
             unbind_socket_rpc_notification_bridge(server);
             unbind_socket_rpc_lane_views_bridge(lane_views);
             unbind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
-            unbind_socket_rpc_project_introspection_bridge(
+            unbind_socket_rpc_iv_module_source_introspection_bridge(
                 introspection,
                 graph_input_lanes);
-            unbind_lane_views_timeline_bridge(lane_views);
-            unbind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
+            unbind_lane_filters_lane_views_bridge(lane_filters, lane_views);
+            unbind_timeline_lane_filters_bridge(lane_filters);
+            unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
             unbind_iv_module_reload_iv_module_definitions_bridge(iv_module_definitions);
             unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-            unbind_iv_module_definitions_project_introspection_bridge(introspection);
+            unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
             unbind_iv_module_definitions_iv_module_reload_bridge(iv_module_reload);
             unbind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
             unbind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
-            unbind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
-            unbind_graph_input_lanes_timeline_bridge(timeline);
+            unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
             shutdown_callback = nullptr;
             return 0;
         }

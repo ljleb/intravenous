@@ -1,9 +1,10 @@
 # Application Modules And Batched Event Architecture
 
-This note captures a preliminary architectural direction for Intravenous.
+This note captures the current architectural direction for Intravenous as it is
+actually being implemented.
 
-It is intentionally high level. The goal is to establish boundaries and event
-semantics before code is split further.
+It is intentionally high level. The goal is to keep ownership boundaries and
+control-flow seams clear as the runtime grows.
 
 ## Goal
 
@@ -13,31 +14,32 @@ application modules.
 An application module is:
 
 - fixed in quantity at runtime
-- responsible for one clear kind of data or one clear conversion concern
+- responsible for one clear kind of owned state or one clear translation domain
 - privately stateful
 - connected to other application modules only through static events and bridges
 
 This is distinct from an `intravenous-module`, which refers to DSP code and its
-runtime build/load/reload lifecycle.
+build/load/reload lifecycle.
 
 ## Core Principles
 
-### One module per kind of maintained data
+### One module per maintained domain
 
-We should split around real domains of owned state, not around vague
-"responsibilities".
+We should split around real owned data, not vague “responsibilities”.
 
 Examples:
 
-- intravenous-module definitions
-- intravenous-module instances
+- iv-module definitions
+- iv-module instances
+- iv-module reload state
+- graph-input lane policy
 - lane graph state
 - lane views
-- JSON-RPC transport/conversion
+- JSON-RPC transport
 
-Some application modules may own collections. Others may own no list-like data
-at all and instead exist only to translate between representations or protocols.
-`SocketRpcServer` is an example of the latter.
+Some modules own dynamic collections. Others own no durable domain data and
+exist only to translate between modules or protocols. `SocketRpcServer` is an
+example of the latter.
 
 ### Fixed module count, dynamic owned data
 
@@ -45,306 +47,326 @@ Application modules are fixed in count for the lifetime of the process.
 
 Dynamic objects such as:
 
-- intravenous-module definitions
-- intravenous-module instances
-- lane views
-- watched files
+- iv-module definitions
+- iv-module instances
+- watched dependencies
 - introspection snapshots
+- lane views
 
-should be owned inside those fixed modules, not promoted to separate global
+should be owned inside those fixed modules, not promoted to new global
 singletons.
 
-### Communicate only through events
+### Communicate through events and bridges
 
-Application modules should not directly reach into one another's internal state.
+Application modules should not directly reach into one another’s internal
+state.
 
 They should instead:
 
 - publish domain events
-- subscribe through bridges or direct handlers
-- gate their behavior on whether the receiving module has been initialized
+- consume those events through bridges or explicit handlers
+- treat initialization and binding as external wiring concerns
 
 This keeps modules independently testable and reduces construction-order
 coupling.
 
-### Batch events, do not emit repeated partial updates
+### Batch updates
 
-If one control-flow source would naturally produce several updates of the same
-kind in a row, those updates should be bundled into a single event object.
+If one control-flow source naturally produces several updates of the same kind
+in a row, those updates should be bundled into a single event object.
 
 Prefer:
 
-- `FilesChanged`
-- `ModuleInstancesDiff`
-- `LaneGraphChanged`
+- `IvModuleDefinitionsChanged`
+- `IvModuleInstancesChanged`
+- `TimelineLanesChanged`
 - `LaneViewsUpdated`
 
-over:
-
-- `FileChanged`
-- repeated `InstanceAdded` / `InstanceRemoved` / `InstanceChanged`
-- repeated per-lane notifications during one reconciliation pass
+over repeated single-item notifications during one reconciliation pass.
 
 This avoids:
 
-- repeated expensive downstream work
+- repeated downstream work
 - temporary inconsistent states
-- UI partial updates
-- fragile user interactions in the middle of an update sequence
-
-Not every event must contain a list, but repeated same-kind events from the same
-source should be treated as a design smell.
+- partial UI updates
+- user interactions during an unstable intermediate state
 
 ## Important Distinctions
 
-### File watching is not reloading
+### Watching is not reloading
 
-The file watcher should be generic infrastructure.
+File watching should remain generic infrastructure at the utility-class level.
 
-It should:
+The app-level owner should be domain specific.
 
-- own watched roots/files
-- report batched file-change events
+The current intended split is:
 
-It should not:
+- a generic watcher utility class handles low-level path watching
+- `IvModuleReload` owns:
+  - watched definition declarations
+  - dependency tracking for reload purposes
+  - change detection
+  - reload attempts
 
-- know what an intravenous-module is
-- decide how a file change should be handled
-- trigger reloads directly
+`IvModuleReload` should not own the live loaded definition map. It should only
+produce reload results.
 
-Reload decisions belong to the application module that understands the affected
-domain.
+### Definitions are not reload
 
-### Intravenous-module definitions are not instances
+`IvModuleDefinitions` is the owner of declared and live loaded definitions.
 
-An intravenous-module definition is analogous to a class.
+It should own:
 
-An intravenous-module instance is analogous to an instance of that class.
+- declared definition ids and module roots
+- current live loaded definition state
+- canonical builder ownership
+- public created/updated/deleted definition diffs
+- definition-domain notifications
+
+It should not own:
+
+- file watching policy
+- dependency watching state
+- reload scheduling
+
+Those belong to `IvModuleReload`.
+
+### Definitions are not instances
+
+An iv-module definition is analogous to a class.
+
+An iv-module instance is analogous to an instance of that class.
 
 These should be owned separately.
 
-The definitions module should own:
+`IvModuleInstances` should own:
 
-- loading
-- reloading
-- loaded definition state
-- dependency knowledge
+- desired instance declarations
+- instance identity
+- mapping from instance to definition id / module root
+- realized instance state derived from live definitions
+- user-facing instance CRUD
 
-The instances module should own:
-
-- created instances of those definitions
-- reconstruction after definition reload
-- diffing instance-level changes
+`IvModuleDefinitions` should not be a user-facing control surface in the real
+app flow. In normal operation, active definitions are derived from the instance
+set.
 
 ### Loading/reloading is not introspection
 
-The system that knows how to build/load/reload intravenous-modules should not
-also be the place that owns the query/introspection model.
+The system that knows how to build/load/reload iv-modules should not also own
+the query model.
 
 A better split is:
 
-- one application module owns intravenous-module definition lifecycle
-- another owns introspection/query state derived from those definitions
+- `IvModuleDefinitions` owns live definition state
+- `IvModuleSourceIntrospection` owns source-span / logical-node / port query state
 
-This separation is important for tests and for future support of multiple
-definitions and multiple instances.
+This separation matters for tests, for multi-definition support, and for future
+instance-oriented project state.
 
-## Preliminary Application Modules
+### Graph-input policy is not timeline policy
 
-This is not yet a complete final list, but it reflects the current direction.
+`GraphInputLanes` should own DSP graph-input lane policy.
 
-### Application environment
+It should own:
 
-Owns stable shared process/application context such as:
+- graph-input port set derived from iv-module instances
+- logical knob state
+- concrete override state
+- graph-input lane queries and mutations
+
+`Timeline` should remain the generic lane substrate:
+
+- lane storage
+- lane connections
+- lane change events
+- generic lane execution substrate
+
+Timeline should not become the owner of logical-node-id-driven graph-input
+policy.
+
+## Current Module Set
+
+This reflects the current code direction.
+
+### StartupConfig
+
+Owns stable startup context such as:
 
 - workspace root
 - discovery roots
-- toolchain settings/defaults
+- toolchain/search-path settings
 
-This is global because it is stable shared context, not because it owns dynamic
-project state.
+This is process/application context, not dynamic project state.
 
-### File watcher
-
-Owns:
-
-- watched files/roots
-- any debounce/coalescing policy
-
-Publishes:
-
-- `FilesChanged`
-
-Consumes:
-
-- watch/unwatch/update-watch requests
-
-### Intravenous-module definitions
+### IvModuleInstances
 
 Owns:
 
-- loaded intravenous-module definitions
-- build/load/reload mechanics
-- dependencies per definition
+- desired iv-module instances
+- realized instance list
+- required-definition derivation from the instance set
+- instance list notifications and instance CRUD
 
 Publishes:
 
-- definition load/reload success
-- definition load/reload failure
-- batched definition change events where appropriate
+- required-definition diffs
+- instance diffs
+- instance-list updates
 
 Consumes:
 
-- file-change events
-- definition lifecycle requests
+- definition change events
+- JSON-RPC instance create/delete requests
 
-### Intravenous-module instances
+### IvModuleDefinitions
 
 Owns:
 
-- instances of loaded intravenous-module definitions
-- mapping from instance to definition
-- reconstruction/diffing when a definition changes
+- declared definitions
+- live loaded definitions
+- canonical builders
+- definition-domain notifications
+- public definition diffs
 
 Publishes:
 
-- batched instance diffs
+- declaration changes toward reload
+- live definition changes toward downstream consumers
+- definition status/message notifications
 
 Consumes:
 
-- definition lifecycle events
-- instance create/delete requests
+- required-definition diffs from instances
+- reload results from `IvModuleReload`
 
-### Intravenous-module introspection
+### IvModuleReload
+
+Owns:
+
+- reload-oriented dependency state
+- watcher integration
+- reload attempts
+- success/failure reload results
+
+Publishes:
+
+- reload results
+
+Consumes:
+
+- definition declaration changes
+- watcher-detected change signals
+
+### IvModuleSourceIntrospection
 
 Owns:
 
 - introspection snapshots
 - logical-node/source-span/type/port indexes
-- query-facing model derived from current definitions and/or instances
+- query-facing projection from current live definitions
 
 Publishes:
 
-- batched introspection/model change events
+- query results only when requested
 
 Consumes:
 
-- definition events
-- instance events where necessary
+- definition changes
+- live input snapshot answers from `GraphInputLanes`
 
-### Timeline lanes
+### GraphInputLanes
+
+Owns:
+
+- the DSP graph-input lane subset
+- logical knob state
+- concrete override state
+- graph-input lane queries/mutations
+
+Publishes:
+
+- graph-input lane requests toward timeline
+- live input snapshot responses toward introspection
+
+Consumes:
+
+- instance changes
+- JSON-RPC-driven control mutations routed through owners
+
+### Timeline
 
 Owns:
 
 - lane graph
 - lane bindings
-- connections
-- lane-affecting timeline state
+- lane connections
+- lane change notifications
+- generic timeline/lane substrate behavior
 
 Publishes:
 
-- batched lane graph diffs
+- timeline lane change events
 
 Consumes:
 
-- instance/introspection change events
+- graph-input lane requests
+- lane-view queries through bridges
 
-### Lane views
+### LaneViews
 
 Owns:
 
-- all lane views
-- each view's visible window and related per-view state
-
-Each lane view needs to remember at least:
-
-- first visible element
-- visible count
-
-Potentially also:
-
-- filter state
-- sort state
-- cached visible slice
+- lane views
+- view-local filtering/window state
 
 Publishes:
 
-- batched lane view updates
+- lane-view updates
 
 Consumes:
 
-- lane graph diff events
+- timeline lane change events
+- lane query requests through bridges
 
-### JSON-RPC server
+### SocketRpcServer
 
 Owns:
 
-- JSON-RPC transport
-- request parsing
-- response formatting
-- notification formatting
+- JSON-RPC protocol mechanics
+- request/response envelopes
+- client connection lifecycle
+- outgoing notifications
 
-Publishes:
+It should remain a transport adapter, not a domain-state owner.
 
-- inbound request events
+## Current Control-Flow Spine
 
-Consumes:
+The intended app flow is now:
 
-- lane view updates
-- status/message/model events that should be forwarded to clients
+1. `StartupConfig` resolves startup context
+2. `IvModuleInstances` owns desired instances
+3. `IvModuleInstances` emits required-definition diffs
+4. `IvModuleDefinitions` owns the active live definitions for that required set
+5. `IvModuleDefinitions` emits declaration diffs to `IvModuleReload`
+6. `IvModuleReload` emits `loaded[]` / `failed[]` results
+7. `IvModuleDefinitions` applies those results and emits public definition diffs
+8. downstream modules (`IvModuleSourceIntrospection`, `GraphInputLanes`, later
+   execution owners) react
 
-This module is primarily a conversion boundary and may not own list-like domain
-state.
+The important asymmetry is:
 
-## Event Chaining
+- instances control which definitions should exist
+- reload does not own live definitions
+- definitions compute public diffs
 
-The intended shape is an event chain where each step only understands its own
-domain.
+## Intentional Non-Goals
 
-For example:
+This architecture does not imply:
 
-1. file watcher publishes `FilesChanged`
-2. intravenous-module definitions react and publish definition reload events
-3. intravenous-module instances react and publish instance diffs
-4. timeline lanes react and publish lane graph diffs
-5. lane views react and publish view updates
-6. JSON-RPC reacts and notifies the client
+- a generic project-state god object
+- a generic filesystem app module
+- direct cross-module mutation of private state
+- per-item same-kind event spam
 
-Each stage should consume domain events and publish domain events. No stage
-should need to reach into the internal state of the previous one.
-
-## Design Guidance For Future Splits
-
-When introducing or revising an application module, define:
-
-1. what state it owns
-2. what events it publishes
-3. what events it consumes
-
-If those three lists are not clear, the boundary is probably wrong.
-
-When designing events, prefer:
-
-- one event that reports one coherent domain transition
-- one payload that can be processed atomically
-
-Avoid:
-
-- repeated same-kind events for one source transition
-- partial updates that require subscribers to guess when the update stream is
-  complete
-- event names that hide whether the payload is authoritative state, a diff, or
-  a request
-
-## Immediate Implication
-
-This split is already underway in the codebase.
-
-The remaining work should continue to prefer true domain boundaries over
-convenience helper boundaries, especially around:
-
-- iv-module instance lifecycle and instance management requests
-- introspection/query ownership and direct JSON-RPC routing
-- DSP-generated lane policy versus generic timeline lane ownership
-- devices as their own long-lived app module
-- future execution orchestration as its own module boundary
+Those are exactly the shapes we are trying to avoid.

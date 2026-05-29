@@ -93,7 +93,9 @@ add_iv_gtest(
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)
 add_iv_gtest(intravenous_timeline_lanes_tests modules/timeline_lanes_gtest.cpp)
+add_iv_gtest(intravenous_lane_filters_tests modules/lane_filters_gtest.cpp)
 add_iv_gtest(intravenous_lane_views_tests modules/lane_views_gtest.cpp)
+add_iv_gtest(intravenous_lane_query_tests query/lane_query_gtest.cpp)
 add_iv_gtest(intravenous_local_gamma_time_aligner_tests local_gamma_time_aligner_gtest.cpp)
 add_iv_gtest(intravenous_startup_config_tests modules/startup_config_gtest.cpp)
 add_iv_gtest(intravenous_iv_module_definitions_tests modules/iv_module_definitions_gtest.cpp)
@@ -103,10 +105,11 @@ add_iv_gtest(
     modules/iv_module_reload_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(
-    intravenous_project_introspection_tests
-    modules/project_introspection_gtest.cpp
+    intravenous_iv_module_source_introspection_tests
+    modules/iv_module_source_introspection_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(intravenous_graph_input_lanes_tests modules/graph_input_lanes_gtest.cpp)
+add_iv_gtest(intravenous_lane_filters_bridges_tests bridges/lane_filters_bridges_gtest.cpp)
 add_iv_gtest(intravenous_runtime_module_bridges_tests bridges/runtime_module_bridges_gtest.cpp)
 add_iv_gtest(
     intravenous_runtime_integration_tests
@@ -115,10 +118,10 @@ add_iv_gtest(
 add_iv_gtest(intravenous_socket_rpc_server_tests socket_rpc_server_gtest.cpp)
 add_iv_gtest(intravenous_socket_rpc_support_tests socket_rpc_support_gtest.cpp)
 add_iv_gtest(
-    intravenous_socket_rpc_project_introspection_bridge_tests
-    bridges/socket_rpc_project_introspection_bridge_gtest.cpp
+    intravenous_socket_rpc_iv_module_source_introspection_bridge_tests
+    bridges/socket_rpc_iv_module_source_introspection_bridge_gtest.cpp
     IV_MODULE_COMPILATION_TESTS
-        SocketRpcProjectIntrospectionBridge.BoundQueryEventPopulatesBuilderFromOwners)
+        SocketRpcIvModuleSourceIntrospectionBridge.BoundQueryEventPopulatesBuilderFromOwners)
 add_iv_gtest(
     intravenous_socket_rpc_iv_module_instances_bridge_tests
     bridges/socket_rpc_iv_module_instances_bridge_gtest.cpp)

@@ -40,6 +40,19 @@ namespace iv {
         std::atomic<std::uint64_t> _next { 1 };
 
     public:
+        void observe(LaneId id)
+        {
+            auto current = _next.load(std::memory_order_relaxed);
+            auto desired = id.value + 1;
+            while (current < desired &&
+                   !_next.compare_exchange_weak(
+                       current,
+                       desired,
+                       std::memory_order_relaxed,
+                       std::memory_order_relaxed)) {
+            }
+        }
+
         LaneId next()
         {
             return LaneId { _next.fetch_add(1, std::memory_order_relaxed) };

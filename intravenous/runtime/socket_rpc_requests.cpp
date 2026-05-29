@@ -200,11 +200,22 @@ LaneQueryFilter parse_lane_query_filter(Json const &params) {
     if (filter_it == params.end() || !filter_it->is_object()) {
         throw std::runtime_error("lane requests require a filter object");
     }
+    auto const query_it = filter_it->find("query");
+    if (query_it != filter_it->end()) {
+        if (!query_it->is_string()) {
+            throw std::runtime_error("lane filter.query must be a string");
+        }
+        return LaneQueryFilter{.source = query_it->get<std::string>()};
+    }
     auto const kind_it = filter_it->find("kind");
     if (kind_it == filter_it->end() || !kind_it->is_string()) {
-        throw std::runtime_error("lane filter.kind must be a string");
+        throw std::runtime_error("lane filter must provide string query or kind");
     }
-    return LaneQueryFilter{.kind = kind_it->get<std::string>()};
+    auto const kind = kind_it->get<std::string>();
+    if (kind == "graphInputs") {
+        return LaneQueryFilter{.source = "dsp_graph.graph_input"};
+    }
+    return LaneQueryFilter{.source = kind};
 }
 
 LaneQuery parse_lane_query(Json const &params) {

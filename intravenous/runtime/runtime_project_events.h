@@ -76,14 +76,12 @@ namespace iv {
         std::optional<size_t> member_ordinal;
         size_t input_ordinal = 0;
         Sample value = Sample {0.0f};
-        GraphInputPortDescriptor graph_input_port;
     };
 
     struct ProjectClearSampleInputValueOverrideRequest {
         std::string node_id;
         size_t member_ordinal = 0;
         size_t input_ordinal = 0;
-        GraphInputPortDescriptor graph_input_port;
     };
 
     using ProjectNotificationEvent =

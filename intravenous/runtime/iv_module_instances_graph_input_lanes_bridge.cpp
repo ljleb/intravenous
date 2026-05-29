@@ -9,27 +9,15 @@ GraphInputLanes *bound_lanes = nullptr;
 
 void handle_instances_changed(IvModuleInstancesChanged const &diff)
 {
-    if (bound_lanes == nullptr) {
-        return;
-    }
-    bound_lanes->handle_iv_module_instances_changed(diff);
+    (void)diff;
 }
 
-void handle_sample_input_resolution_requested(
-    IvModuleSampleInputResolutionRequest const &request,
-    IvModuleSampleInputResolutionBuilder &builder)
+void handle_instance_builders_changed(IvModuleInstanceBuildersChanged const &diff)
 {
     if (bound_lanes == nullptr) {
         return;
     }
-    builder.succeed(bound_lanes->resolve_sample_input_lane_ref(
-        GraphInputLanesSampleInputLaneRefRequest{
-            .logical_node_id = request.logical_node_id,
-            .member_ordinal = request.member_ordinal,
-            .input_ordinal = request.input_ordinal,
-            .input_name = request.input_name,
-            .default_value = request.default_value,
-        }));
+    bound_lanes->handle_iv_module_instance_builders_changed(diff);
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
@@ -37,9 +25,9 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_runtime_iv_module_instances_changed_event,
     handle_instances_changed);
 IV_SUBSCRIBE_LINKER_EVENT(
-    IvModuleSampleInputResolutionRequestedEvent,
-    iv_runtime_iv_module_sample_input_resolution_requested_event,
-    handle_sample_input_resolution_requested);
+    IvModuleInstanceBuildersChangedEvent,
+    iv_runtime_iv_module_instance_builders_changed_event,
+    handle_instance_builders_changed);
 } // namespace
 
 void bind_iv_module_instances_graph_input_lanes_bridge(

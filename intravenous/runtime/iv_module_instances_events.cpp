@@ -8,9 +8,9 @@ IV_DEFINE_LINKER_EVENT(
     IvModuleInstancesChangedEvent,
     iv_runtime_iv_module_instances_changed_event);
 IV_DEFINE_LINKER_EVENT(
+    IvModuleInstanceBuildersChangedEvent,
+    iv_runtime_iv_module_instance_builders_changed_event);
+IV_DEFINE_LINKER_EVENT(
     IvModuleInstancesListChangedEvent,
     iv_runtime_iv_module_instances_list_changed_event);
-IV_DEFINE_LINKER_EVENT(
-    IvModuleSampleInputResolutionRequestedEvent,
-    iv_runtime_iv_module_sample_input_resolution_requested_event);
 } // namespace iv

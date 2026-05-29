@@ -144,7 +144,7 @@ namespace {
 
     std::filesystem::path make_server_workspace()
     {
-        auto const workspace = iv::test::fresh_test_workspace("socket_rpc_server");
+        auto const workspace = iv::test::fresh_module_fixture_workspace("socket_rpc_server");
         std::ofstream marker(workspace / ".intravenous", std::ios::binary | std::ios::trunc);
         EXPECT_TRUE(static_cast<bool>(marker));
         std::ofstream module_cpp(workspace / "module.cpp", std::ios::binary | std::ios::trunc);

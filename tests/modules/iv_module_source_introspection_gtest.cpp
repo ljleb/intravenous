@@ -2,10 +2,12 @@
 
 #include "runtime/graph_input_lanes.h"
 #include "runtime/graph_input_lanes_timeline_bridge.h"
-#include "runtime/iv_module_definitions_project_introspection_bridge.h"
+#include "runtime/iv_module_definitions_iv_module_source_introspection_bridge.h"
 #include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
-#include "runtime/project_introspection.h"
-#include "runtime/project_introspection_graph_input_lanes_bridge.h"
+#include "runtime/lane_filters.h"
+#include "runtime/timeline_lane_filters_bridge.h"
+#include "runtime/iv_module_source_introspection.h"
+#include "runtime/iv_module_source_introspection_graph_input_lanes_bridge.h"
 #include "runtime/timeline.h"
 
 #include <gtest/gtest.h>
@@ -20,19 +22,20 @@
 
 namespace {
 using namespace std::chrono_literals;
-using iv::test_support::copy_fixture_workspace;
+using iv::test_support::mutable_module_fixture_workspace;
 using iv::test_support::make_inline_module_workspace;
-using iv::test_support::shared_project_fixture_workspace;
+using iv::test_support::read_only_module_fixture_workspace;
 using iv::test_support::shared_inline_module_workspace;
 
-struct SeededProjectIntrospectionApp {
+struct SeededIvModuleSourceIntrospectionApp {
     iv::Timeline timeline;
     iv::IvModuleDefinitions definitions;
     iv::GraphInputLanes graph_input_lanes;
-    iv::ProjectIntrospection introspection;
+    iv::LaneFilters lane_filters;
+    iv::IvModuleSourceIntrospection introspection;
     iv::StartupConfig startup_config;
 
-    SeededProjectIntrospectionApp(
+    SeededIvModuleSourceIntrospectionApp(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots)
@@ -41,18 +44,20 @@ struct SeededProjectIntrospectionApp {
               std::move(discovery_start),
               std::move(extra_search_roots))
     {
-        iv::bind_graph_input_lanes_timeline_bridge(timeline);
+        iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
         iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-        iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
-        iv::bind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
+        iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
+        iv::bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
+        iv::bind_timeline_lane_filters_bridge(lane_filters);
     }
 
-    ~SeededProjectIntrospectionApp()
+    ~SeededIvModuleSourceIntrospectionApp()
     {
-        iv::unbind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
-        iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
+        iv::unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
+        iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
         iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-        iv::unbind_graph_input_lanes_timeline_bridge(timeline);
+        iv::unbind_timeline_lane_filters_bridge(lane_filters);
+        iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
     }
 
     auto initialize()
@@ -63,15 +68,21 @@ struct SeededProjectIntrospectionApp {
             config,
             module_root);
 
-        iv::IvModuleInstance instance {
-            .instance_id = "instance:1",
-            .definition_id = loaded.definition_id,
-            .module_root = loaded.module_root,
-            .module_id = loaded.module_id,
-            .introspection = loaded.introspection,
-        };
-        graph_input_lanes.handle_iv_module_instances_changed(
-            iv::IvModuleInstancesChanged {.created = {instance}});
+        graph_input_lanes.handle_iv_module_instance_builders_changed(
+            iv::IvModuleInstanceBuildersChanged{
+                .created = {
+                    iv::IvModuleInstanceBuilder{
+                        .instance = iv::IvModuleInstance{
+                            .instance_id = "instance:1",
+                            .definition_id = loaded.definition_id,
+                            .module_root = loaded.module_root,
+                            .module_id = loaded.module_id,
+                            .introspection = loaded.introspection,
+                        },
+                        .builder = loaded.canonical_builder,
+                    },
+                },
+            });
 
         definitions.seed_loaded_definition(std::move(loaded));
         return introspection.initialize();
@@ -106,17 +117,12 @@ struct SeededProjectIntrospectionApp {
         iv::Sample value,
         std::optional<size_t> member_ordinal = std::nullopt)
     {
-        auto const port = introspection.sample_graph_input_port_for_node(
-            node_id,
-            member_ordinal,
-            input_ordinal);
         graph_input_lanes.set_sample_input_value(
             iv::ProjectSetSampleInputValueRequest {
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,
                 .value = value,
-                .graph_input_port = port,
             });
     }
 
@@ -125,26 +131,21 @@ struct SeededProjectIntrospectionApp {
         size_t member_ordinal,
         size_t input_ordinal)
     {
-        auto const port = introspection.sample_graph_input_port_for_node(
-            node_id,
-            member_ordinal,
-            input_ordinal);
         graph_input_lanes.clear_sample_input_value_override(
             iv::ProjectClearSampleInputValueOverrideRequest {
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,
-                .graph_input_port = port,
             });
     }
 };
 } // namespace
 
-TEST(ProjectIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
+TEST(IvModuleSourceIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 {
-    auto const workspace = shared_project_fixture_workspace("local_cmake");
+    auto const workspace = read_only_module_fixture_workspace("local_cmake");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -167,10 +168,10 @@ TEST(ProjectIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
     EXPECT_TRUE(has_any_port);
 }
 
-TEST(ProjectIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
+TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
     auto const workspace = shared_inline_module_workspace(
-        "project_introspection_merged_logical",
+        "iv_module_source_introspection_merged_logical",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 
@@ -197,7 +198,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
 )");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -217,10 +218,10 @@ IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
     EXPECT_EQ(value_source_count, 2u);
 }
 
-TEST(ProjectIntrospection, QueryBySpansKeepsAnnotatedLogicalNodeIdStableAcrossReload)
+TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedLogicalNodeIdStableAcrossReload)
 {
     auto const workspace = make_inline_module_workspace(
-        "project_introspection_stable_annotated_id",
+        "iv_module_source_introspection_stable_annotated_id",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 
@@ -242,7 +243,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 )");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -277,10 +278,10 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     EXPECT_EQ(reloaded_it->id, initial_id);
 }
 
-TEST(ProjectIntrospection, QueryBySpansReturnsAnnotatedLogicalNode)
+TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedLogicalNode)
 {
     auto const workspace = shared_inline_module_workspace(
-        "project_introspection_annotated_symbol",
+        "iv_module_source_introspection_annotated_symbol",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 
@@ -302,7 +303,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 )");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -318,10 +319,10 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     EXPECT_FALSE(it->source_spans.empty());
 }
 
-TEST(ProjectIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
+TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
 {
     auto const workspace = shared_inline_module_workspace(
-        "project_introspection_single_assigned_ref",
+        "iv_module_source_introspection_single_assigned_ref",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 
@@ -341,7 +342,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
 )");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -356,10 +357,10 @@ IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
     EXPECT_FALSE(it->source_spans.empty());
 }
 
-TEST(ProjectIntrospection, InitializationFailsWhenDeclarationBackedRefIsAssignedTwice)
+TEST(IvModuleSourceIntrospection, InitializationFailsWhenDeclarationBackedRefIsAssignedTwice)
 {
     auto const workspace = shared_inline_module_workspace(
-        "project_introspection_double_assignment_fails",
+        "iv_module_source_introspection_double_assignment_fails",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 
@@ -380,7 +381,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
 )");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     EXPECT_THROW(
         {
             try {
@@ -393,10 +394,10 @@ IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
         std::exception);
 }
 
-TEST(ProjectIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
+TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
 {
     auto const workspace = shared_inline_module_workspace(
-        "project_introspection_schema_mismatch",
+        "iv_module_source_introspection_schema_mismatch",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/arithmetic.h"
@@ -423,7 +424,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
 )");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -441,10 +442,10 @@ IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
     EXPECT_GE(singleton_sum_count, 2u);
 }
 
-TEST(ProjectIntrospection, QueryBySpansAggregatesMixedConnectivity)
+TEST(IvModuleSourceIntrospection, QueryBySpansAggregatesMixedConnectivity)
 {
     auto const workspace = shared_inline_module_workspace(
-        "project_introspection_mixed_connectivity",
+        "iv_module_source_introspection_mixed_connectivity",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/arithmetic.h"
@@ -474,7 +475,7 @@ namespace {
 IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module);
 )");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -500,12 +501,12 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
     EXPECT_EQ(disconnected_sum_count, 1u);
 }
 
-TEST(ProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
+TEST(IvModuleSourceIntrospection, QueryBySpansIntersectsMultipleSelections)
 {
-    auto const workspace = shared_project_fixture_workspace("local_cmake");
+    auto const workspace = read_only_module_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const dt_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
@@ -539,12 +540,12 @@ TEST(ProjectIntrospection, QueryBySpansIntersectsMultipleSelections)
     EXPECT_EQ(both_ids, intersection);
 }
 
-TEST(ProjectIntrospection, QueryBySpansUnionsMultipleSelections)
+TEST(IvModuleSourceIntrospection, QueryBySpansUnionsMultipleSelections)
 {
-    auto const workspace = shared_project_fixture_workspace("local_cmake");
+    auto const workspace = read_only_module_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const dt_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
@@ -572,12 +573,12 @@ TEST(ProjectIntrospection, QueryBySpansUnionsMultipleSelections)
     EXPECT_EQ(both_ids, expected_union);
 }
 
-TEST(ProjectIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
+TEST(IvModuleSourceIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
 {
-    auto const workspace = shared_project_fixture_workspace("local_cmake");
+    auto const workspace = read_only_module_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const nodes = app.query_by_spans(
@@ -606,10 +607,10 @@ TEST(ProjectIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
     EXPECT_EQ(actual_spans, expected_spans);
 }
 
-TEST(ProjectIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExactSourceSpan)
+TEST(IvModuleSourceIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExactSourceSpan)
 {
     auto const workspace = shared_inline_module_workspace(
-        "project_introspection_polyphonic_exact_spans",
+        "iv_module_source_introspection_polyphonic_exact_spans",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/shaping.h"
@@ -638,7 +639,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -709,10 +710,10 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     }));
 }
 
-TEST(ProjectIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonicLambdaSpansToOuterSubgraph)
+TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonicLambdaSpansToOuterSubgraph)
 {
     auto const workspace = shared_inline_module_workspace(
-        "project_introspection_polyphonic_interior_span",
+        "iv_module_source_introspection_polyphonic_interior_span",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/shaping.h"
@@ -741,7 +742,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -758,10 +759,10 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     }));
 }
 
-TEST(ProjectIntrospection, QueryBySpansReturnsPolyphonicOuterLogicalIdentityAtDeclarationSpan)
+TEST(IvModuleSourceIntrospection, QueryBySpansReturnsPolyphonicOuterLogicalIdentityAtDeclarationSpan)
 {
     auto const workspace = shared_inline_module_workspace(
-        "project_introspection_polyphonic_outer_identity",
+        "iv_module_source_introspection_polyphonic_outer_identity",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
 #include "basic_nodes/shaping.h"
@@ -791,7 +792,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -805,13 +806,13 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
         << result.nodes.front().source_identity;
 }
 
-TEST(ProjectIntrospection, ReloadKeepsLogicalNodeIdsAddressable)
+TEST(IvModuleSourceIntrospection, ReloadKeepsLogicalNodeIdsAddressable)
 {
-    auto const workspace = copy_fixture_workspace("project_introspection_reload_epoch", "local_cmake");
+    auto const workspace = mutable_module_fixture_workspace("iv_module_source_introspection_reload_epoch", "local_cmake");
     auto const module_cpp = workspace / "module.cpp";
     iv::test_support::write_text(workspace / ".intravenous", "");
 
-    SeededProjectIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const initial = app.query_by_spans(

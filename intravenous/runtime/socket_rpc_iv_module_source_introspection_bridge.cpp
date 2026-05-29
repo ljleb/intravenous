@@ -1,12 +1,12 @@
-#include "runtime/socket_rpc_project_introspection_bridge.h"
+#include "runtime/socket_rpc_iv_module_source_introspection_bridge.h"
 
 #include "runtime/graph_input_lanes.h"
-#include "runtime/project_introspection.h"
+#include "runtime/iv_module_source_introspection.h"
 #include "runtime/socket_rpc_server.h"
 
 namespace iv {
 namespace {
-ProjectIntrospection *bound_introspection = nullptr;
+IvModuleSourceIntrospection *bound_introspection = nullptr;
 GraphInputLanes *bound_graph_input_lanes = nullptr;
 std::function<void()> *bound_shutdown = nullptr;
 
@@ -57,20 +57,15 @@ void handle_set_sample_input_value(
     SetSampleInputValueRequest const &request,
     SocketRpcAckResponseBuilder &)
 {
-    if (bound_introspection == nullptr || bound_graph_input_lanes == nullptr) {
+    if (bound_graph_input_lanes == nullptr) {
         return;
     }
-    auto const port = bound_introspection->sample_graph_input_port_for_node(
-        request.node_id,
-        request.member_ordinal,
-        request.input_ordinal);
     bound_graph_input_lanes->set_sample_input_value(
         ProjectSetSampleInputValueRequest{
             .node_id = request.node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
             .value = request.value,
-            .graph_input_port = port,
         });
 }
 
@@ -78,19 +73,14 @@ void handle_clear_sample_input_value_override(
     ClearSampleInputValueOverrideRequest const &request,
     SocketRpcAckResponseBuilder &)
 {
-    if (bound_introspection == nullptr || bound_graph_input_lanes == nullptr) {
+    if (bound_graph_input_lanes == nullptr) {
         return;
     }
-    auto const port = bound_introspection->sample_graph_input_port_for_node(
-        request.node_id,
-        request.member_ordinal,
-        request.input_ordinal);
     bound_graph_input_lanes->clear_sample_input_value_override(
         ProjectClearSampleInputValueOverrideRequest{
             .node_id = request.node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
-            .graph_input_port = port,
         });
 }
 
@@ -133,8 +123,8 @@ IV_SUBSCRIBE_LINKER_EVENT(
     handle_server_shutdown);
 } // namespace
 
-void bind_socket_rpc_project_introspection_bridge(
-    ProjectIntrospection &introspection,
+void bind_socket_rpc_iv_module_source_introspection_bridge(
+    IvModuleSourceIntrospection &introspection,
     GraphInputLanes &graph_input_lanes,
     std::function<void()> *shutdown_callback)
 {
@@ -143,8 +133,8 @@ void bind_socket_rpc_project_introspection_bridge(
     bound_shutdown = shutdown_callback;
 }
 
-void unbind_socket_rpc_project_introspection_bridge(
-    ProjectIntrospection const &introspection,
+void unbind_socket_rpc_iv_module_source_introspection_bridge(
+    IvModuleSourceIntrospection const &introspection,
     GraphInputLanes const &graph_input_lanes)
 {
     if (bound_introspection == &introspection) {

@@ -156,7 +156,7 @@ TEST(SocketRpcNotificationBridge, UnboundServerDropsNotifications)
 
 TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
 {
-    auto harness = NotificationServerHarness(iv::test::fresh_test_workspace("socket_rpc_notification_server"));
+    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_notification_server"));
     bind_socket_rpc_notification_bridge(harness.server);
 
     IV_INVOKE_LINKER_EVENT(
@@ -209,7 +209,7 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
 
 TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
 {
-    auto harness = NotificationServerHarness(iv::test::fresh_test_workspace("socket_rpc_instances_notification_server"));
+    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_instances_notification_server"));
     bind_socket_rpc_notification_bridge(harness.server);
 
     IV_INVOKE_LINKER_EVENT(

@@ -83,7 +83,7 @@ protected:
 TEST_F(IvModuleInstancesTest, CreateInstancePublishesRequiredDefinitionAndListChange)
 {
     auto const workspace =
-        iv::test_support::fresh_test_workspace("iv_module_instances_create");
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_create");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::IvModuleInstances instances;
 
@@ -105,7 +105,7 @@ TEST_F(IvModuleInstancesTest, CreateInstancePublishesRequiredDefinitionAndListCh
 TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionDoesNotRepublishRequirement)
 {
     auto const workspace =
-        iv::test_support::fresh_test_workspace("iv_module_instances_dedup_required");
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_dedup_required");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::IvModuleInstances instances;
 
@@ -123,7 +123,7 @@ TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionDoesNotRepubl
 TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPublishesDiff)
 {
     auto const workspace =
-        iv::test_support::fresh_test_workspace("iv_module_instances_realize");
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_realize");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::IvModuleInstances instances;
 
@@ -149,7 +149,7 @@ TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPubl
 TEST_F(IvModuleInstancesTest, RemoveLastRealizedInstancePublishesDeleteAndDropsRequirement)
 {
     auto const workspace =
-        iv::test_support::fresh_test_workspace("iv_module_instances_remove");
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_remove");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::IvModuleInstances instances;
 

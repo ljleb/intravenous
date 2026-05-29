@@ -67,24 +67,27 @@ std::string_view lane_domain_json(LaneDomain domain) {
     return "realtime";
 }
 
+Json lane_metadata_json(LaneMetadata const &metadata) {
+    Json json = Json::object();
+    for (auto const &key : metadata.unit_values) {
+        json[key] = nullptr;
+    }
+    for (auto const &[key, value] : metadata.int_values) {
+        json[key] = value;
+    }
+    for (auto const &[key, value] : metadata.float_values) {
+        json[key] = value;
+    }
+    return json;
+}
+
 Json lane_query_result_json(LaneQueryResult const &result) {
     Json json_lanes = Json::array();
     for (auto const &lane : result.lanes) {
-        auto const &graph_input_port = lane.graph_input_port;
-        Json port{
-            {"logicalNodeId", graph_input_port.logical_node_id},
-            {"portKind", std::string(port_kind_json(graph_input_port.port_kind))},
-            {"portOrdinal", graph_input_port.port_ordinal},
-            {"portName", graph_input_port.port_name},
-            {"portType", graph_input_port.port_type},
-        };
-        if (graph_input_port.concrete_member_ordinal.has_value()) {
-            port["memberOrdinal"] = *graph_input_port.concrete_member_ordinal;
-        }
         json_lanes.push_back({
             {"laneId", lane.lane_id},
             {"domain", std::string(lane_domain_json(lane.domain))},
-            {"graphInputPort", std::move(port)},
+            {"metadata", lane_metadata_json(lane.metadata)},
         });
     }
 
@@ -98,13 +101,17 @@ Json lane_query_result_json(LaneQueryResult const &result) {
         });
     }
 
-    return Json{
+    Json json = Json{
         {"startIndex", result.start_index},
         {"visibleLaneCount", result.visible_lane_count},
         {"totalLaneCount", result.total_lane_count},
         {"lanes", std::move(json_lanes)},
         {"connections", std::move(json_connections)},
     };
+    if (result.error_message.has_value()) {
+        json["error"] = *result.error_message;
+    }
+    return json;
 }
 
 Json lane_view_result_json(LaneViewResult const &result) {

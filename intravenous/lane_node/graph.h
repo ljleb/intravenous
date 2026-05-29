@@ -1,12 +1,14 @@
 #pragma once
 
 #include "basic_lane_nodes/type_erased.h"
+#include "query/lane_query_schema.h"
 #include "runtime/lane_graph.h"
 
 #include <algorithm>
 #include <functional>
-#include <memory>
 #include <optional>
+#include <variant>
+#include <memory>
 #include <queue>
 #include <span>
 #include <stdexcept>
@@ -76,9 +78,69 @@ namespace iv {
     };
 
     struct LaneMetadata {
-        std::string semantic_identity {};
-        std::vector<std::string> tags {};
-        std::optional<GraphInputPortDescriptor> graph_input_port {};
+        std::unordered_set<std::string> unit_values {};
+        std::unordered_map<std::string, int> int_values {};
+        std::unordered_map<std::string, float> float_values {};
+
+        void set_unit(std::string key)
+        {
+            int_values.erase(key);
+            float_values.erase(key);
+            unit_values.insert(std::move(key));
+        }
+
+        void set_int(std::string key, int value)
+        {
+            unit_values.erase(key);
+            float_values.erase(key);
+            int_values[std::move(key)] = value;
+        }
+
+        void set_float(std::string key, float value)
+        {
+            unit_values.erase(key);
+            int_values.erase(key);
+            float_values[std::move(key)] = value;
+        }
+
+        [[nodiscard]] bool has_unit(std::string_view key) const
+        {
+            return unit_values.contains(std::string(key));
+        }
+
+        [[nodiscard]] std::optional<int> int_value(std::string_view key) const
+        {
+            auto const it = int_values.find(std::string(key));
+            if (it == int_values.end()) {
+                return std::nullopt;
+            }
+            return it->second;
+        }
+
+        [[nodiscard]] std::optional<float> float_value(std::string_view key) const
+        {
+            auto const it = float_values.find(std::string(key));
+            if (it == float_values.end()) {
+                return std::nullopt;
+            }
+            return it->second;
+        }
+
+        [[nodiscard]] std::vector<std::pair<std::string, query::LaneQueryValueType>> schema_entries() const
+        {
+            std::vector<std::pair<std::string, query::LaneQueryValueType>> entries;
+            entries.reserve(unit_values.size() + int_values.size() + float_values.size());
+            for (auto const &key : unit_values) {
+                entries.emplace_back(key, query::LaneQueryValueType::unit);
+            }
+            for (auto const &[key, _] : int_values) {
+                entries.emplace_back(key, query::LaneQueryValueType::int_);
+            }
+            for (auto const &[key, _] : float_values) {
+                entries.emplace_back(key, query::LaneQueryValueType::float_);
+            }
+            return entries;
+        }
     };
 
     inline LanePortDomain lane_output_domain(LaneOutputConfig const& output)
@@ -475,6 +537,49 @@ namespace iv {
                 });
             }
             return id;
+        }
+
+        void upsert_lane(LaneId id, TypeErasedLaneNode node, LaneMetadata metadata = {})
+        {
+            LaneOutputConfig output = node.output();
+            LanePortDomain const domain = lane_output_domain(output);
+            if (contains(id)) {
+                auto const location = location_for(id);
+                if (location.domain != domain) {
+                    throw std::runtime_error("lane upsert cannot change output domain");
+                }
+                auto& record = lane(id);
+                record.node = std::move(node);
+                record.output = std::move(output);
+                record.metadata = std::move(metadata);
+                clear_realtime_sample_caches();
+                return;
+            }
+
+            _lanes.ids.observe(id);
+            auto record = LaneRecord {
+                .id = id,
+                .node = std::move(node),
+                .output = std::move(output),
+                .metadata = std::move(metadata),
+            };
+            if (domain == LanePortDomain::compiled) {
+                _lanes.indices.emplace(id, LaneLocation {
+                    .domain = domain,
+                    .index = _lanes.compiled.size(),
+                });
+                _lanes.compiled.push_back(CompiledLaneRecord {
+                    .lane = std::move(record),
+                });
+            } else {
+                _lanes.indices.emplace(id, LaneLocation {
+                    .domain = domain,
+                    .index = _lanes.realtime.size(),
+                });
+                _lanes.realtime.push_back(RealtimeLaneRecord {
+                    .lane = std::move(record),
+                });
+            }
         }
 
         bool contains(LaneId id) const

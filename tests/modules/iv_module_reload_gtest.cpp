@@ -60,7 +60,7 @@ protected:
 TEST_F(IvModuleReloadTest, CreatedDeclarationPublishesLoadedDefinition)
 {
     auto const workspace =
-        iv::test_support::shared_project_fixture_workspace("local_cmake");
+        iv::test_support::read_only_module_fixture_workspace("local_cmake");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
@@ -81,7 +81,7 @@ TEST_F(IvModuleReloadTest, CreatedDeclarationPublishesLoadedDefinition)
 TEST_F(IvModuleReloadTest, InvalidDeclarationPublishesFailure)
 {
     auto const workspace =
-        iv::test_support::shared_project_fixture_workspace("missing_export");
+        iv::test_support::read_only_module_fixture_workspace("missing_export");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
@@ -102,7 +102,7 @@ TEST_F(IvModuleReloadTest, InvalidDeclarationPublishesFailure)
 TEST_F(IvModuleReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherChanges)
 {
     auto const workspace =
-        iv::test_support::shared_project_fixture_workspace("local_cmake");
+        iv::test_support::read_only_module_fixture_workspace("local_cmake");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();

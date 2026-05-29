@@ -5,36 +5,40 @@
 #include "runtime/iv_module_definitions.h"
 #include "runtime/iv_module_definitions_iv_module_instances_bridge.h"
 #include "runtime/iv_module_definitions_iv_module_reload_bridge.h"
-#include "runtime/iv_module_definitions_project_introspection_bridge.h"
+#include "runtime/iv_module_definitions_iv_module_source_introspection_bridge.h"
 #include "runtime/iv_module_instances.h"
 #include "runtime/iv_module_instances_iv_module_definitions_bridge.h"
 #include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
 #include "runtime/iv_module_reload.h"
 #include "runtime/iv_module_reload_iv_module_definitions_bridge.h"
-#include "runtime/project_introspection.h"
+#include "runtime/lane_filters.h"
+#include "runtime/lane_filters_lane_views_bridge.h"
+#include "runtime/lane_views.h"
+#include "runtime/iv_module_source_introspection.h"
 #include "runtime/startup_config.h"
 #include "runtime/timeline.h"
+#include "runtime/timeline_lane_filters_bridge.h"
 
 #include <gtest/gtest.h>
 
 namespace {
-using iv::test_support::copy_fixture_workspace;
-using iv::test_support::shared_project_fixture_workspace;
+using iv::test_support::mutable_module_fixture_workspace;
+using iv::test_support::read_only_module_fixture_workspace;
 using iv::test_support::shared_inline_module_workspace;
 }
 
-TEST(Integration, StartupConfigDefinitionsAndProjectIntrospectionInitializeAndShutdown)
+TEST(Integration, StartupConfigDefinitionsAndIvModuleSourceIntrospectionInitializeAndShutdown)
 {
     auto const workspace =
-        shared_project_fixture_workspace("local_cmake");
+        read_only_module_fixture_workspace("local_cmake");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
     iv::IvModuleDefinitions definitions;
-    iv::ProjectIntrospection introspection;
-    iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
+    iv::IvModuleSourceIntrospection introspection;
+    iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
 
-    auto const loaded = iv::test_support::BoundProjectIntrospection::load_definition(
+    auto const loaded = iv::test_support::BoundIvModuleSourceIntrospection::load_definition(
         startup,
         std::filesystem::weakly_canonical(workspace));
     auto const module_id = loaded.module_id;
@@ -43,13 +47,30 @@ TEST(Integration, StartupConfigDefinitionsAndProjectIntrospectionInitializeAndSh
 
     EXPECT_EQ(initialized.module_id, module_id);
 
-    iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
+    iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
 }
 
 TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutdown)
 {
-    auto const workspace =
-        shared_project_fixture_workspace("local_cmake");
+    auto const workspace = shared_inline_module_workspace(
+        "runtime_integration_graph_input_lanes_initialize",
+        R"(#include "dsl.h"
+#include "basic_nodes/buffers.h"
+
+namespace {
+    void graph_input_module(iv::ModuleContext const& context)
+    {
+        using namespace iv;
+        auto& g = context.builder();
+        auto const dt = g.node<ValueSource>(&context.sample_period());
+        auto const sink = context.target_factory().sink(g, 0);
+        sink(("amplitude"_P << dt) * 0.0f);
+        g.outputs();
+    }
+}
+
+IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
+)");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();
@@ -58,8 +79,12 @@ TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutd
     iv::IvModuleDefinitions definitions;
     iv::IvModuleReload reload(startup);
     iv::GraphInputLanes graph_input_lanes;
+    iv::LaneFilters lane_filters;
+    iv::LaneViews lane_views;
 
-    iv::bind_graph_input_lanes_timeline_bridge(timeline);
+    iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
+    iv::bind_timeline_lane_filters_bridge(lane_filters);
+    iv::bind_lane_filters_lane_views_bridge(lane_filters, lane_views);
     iv::bind_iv_module_instances_iv_module_definitions_bridge(definitions);
     iv::bind_iv_module_definitions_iv_module_instances_bridge(instances);
     iv::bind_iv_module_definitions_iv_module_reload_bridge(reload);
@@ -72,15 +97,22 @@ TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutd
     ASSERT_EQ(loaded_definitions.size(), 1u);
     EXPECT_FALSE(loaded_definitions.front().introspection.logical_nodes.empty());
 
-    auto const lanes = graph_input_lanes.query_lanes(iv::LaneQueryFilter{.kind = "graphInputs"});
-    EXPECT_GT(lanes.total_lane_count, 0u);
+    auto const view = lane_views.open_view(iv::LaneViewRequest{
+        .view_id = "view",
+        .query = iv::LaneQuery{
+            .filter = iv::LaneQueryFilter{.source = "dsp_graph.graph_input"},
+        },
+    });
+    EXPECT_GT(view.lanes.total_lane_count, 0u);
 
     iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
     iv::unbind_iv_module_reload_iv_module_definitions_bridge(definitions);
     iv::unbind_iv_module_definitions_iv_module_reload_bridge(reload);
     iv::unbind_iv_module_definitions_iv_module_instances_bridge(instances);
     iv::unbind_iv_module_instances_iv_module_definitions_bridge(definitions);
-    iv::unbind_graph_input_lanes_timeline_bridge(timeline);
+    iv::unbind_lane_filters_lane_views_bridge(lane_filters, lane_views);
+    iv::unbind_timeline_lane_filters_bridge(lane_filters);
+    iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
 }
 
 TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
@@ -115,7 +147,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    iv::test_support::BoundProjectIntrospection app(workspace, iv::test::repo_root(), {});
+    iv::test_support::BoundIvModuleSourceIntrospection app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(

@@ -1,51 +1,131 @@
 #pragma once
 
 #include "runtime/iv_module_instances.h"
+#include "runtime/iv_module_instances_events.h"
 #include "runtime/graph_input_lanes_events.h"
-#include "runtime/lane_view_service.h"
-#include "runtime/project_introspection_events.h"
+#include "runtime/iv_module_source_introspection_events.h"
+#include "runtime/lane_ref.h"
 #include "runtime/runtime_project_events.h"
+#include "runtime/lane_graph.h"
 
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace iv {
 class GraphInputLanes {
-    mutable std::mutex mutex;
-    std::vector<GraphInputPortDescriptor> current_ports;
+public:
+    struct DesiredGraphInputPort {
+        std::string instance_id {};
+        int module_instance_id = 0;
+        GraphInputPortDescriptor port {};
+    };
 
-    static std::vector<GraphInputPortDescriptor> graph_input_port_descriptors_for(
-        std::span<IntrospectionLogicalNode const> logical_nodes);
-    LaneQueryResult query_lanes_locked(
-        LaneQueryFilter const &filter,
-        std::optional<size_t> start_index = std::nullopt,
-        std::optional<size_t> visible_lane_count = std::nullopt);
+    struct ExistingTrackedLane {
+        LaneId lane {};
+        LaneMetadata metadata {};
+    };
+
+    struct CompletedSampleInput {
+        GraphBuilder::VacantSampleInput input {};
+        LaneId lane {};
+    };
+
+    struct CompletedEventInput {
+        GraphBuilder::VacantEventInput input {};
+        LaneId lane {};
+    };
+
+    struct BuilderCompletionDiff {
+        TimelineLaneBatchUpdate timeline_batch {};
+        std::vector<CompletedSampleInput> sample_inputs {};
+        std::vector<CompletedEventInput> event_inputs {};
+    };
+
+private:
+    mutable std::mutex mutex;
+    LaneIdAllocator lane_ids;
+    std::unordered_map<std::string, IvModuleInstanceBuilder> builders_by_instance_id;
+    std::vector<DesiredGraphInputPort> desired_ports;
+    std::vector<ExistingTrackedLane> tracked_lanes;
+    std::function<RealtimeLaneRef(LaneId)> realtime_lane_ref_for_lane;
+    std::unordered_map<std::string, std::vector<std::vector<Sample*>>> live_inputs;
+    std::unordered_map<std::string, std::vector<Sample>> live_input_values;
+    std::unordered_map<std::string, Sample> sample_input_default_values;
+    std::unordered_set<std::string> concrete_live_input_overrides;
+
+    static std::vector<DesiredGraphInputPort> graph_input_port_descriptors_for(
+        IvModuleInstanceBuilder const &instance_builder);
+    static int module_instance_numeric_id(std::string_view instance_id);
+    static int hash_string(std::string const &value);
+    static std::string concrete_key(std::string_view logical_node_id, size_t member_ordinal);
+    static std::string concrete_key_prefix(std::string_view logical_node_id);
+    static std::string concrete_override_key(
+        std::string_view logical_node_id,
+        size_t member_ordinal,
+        size_t input_ordinal);
+    static std::string desired_port_key(DesiredGraphInputPort const &port);
+    static std::string graph_input_port_key(GraphInputPortDescriptor const &port);
+    static std::string sample_default_value_key(
+        std::string_view instance_id,
+        GraphInputPortDescriptor const &port);
+    static GraphInputPortDescriptor sample_input_descriptor(
+        std::string const &node_id,
+        std::optional<size_t> member_ordinal,
+        size_t input_ordinal);
+    static LaneMetadata graph_input_metadata(
+        DesiredGraphInputPort const &port,
+        bool knob,
+        bool logical,
+        bool concrete,
+        bool sample,
+        bool event);
+    static bool lane_metadata_matches_port(
+        LaneMetadata const &metadata,
+        DesiredGraphInputPort const &port);
+    static bool has_concrete_descriptor_for_port(
+        std::span<DesiredGraphInputPort const> ports,
+        DesiredGraphInputPort const &logical_port);
+    std::vector<Sample*>& ensure_live_input_slots_locked(std::string_view key, size_t input_ordinal);
+    Sample& ensure_live_input_value_locked(std::string_view key, size_t input_ordinal);
+    Sample live_input_value_or_locked(std::string_view logical_node_id, size_t input_ordinal, Sample fallback) const;
+    Sample live_input_value_or_locked(
+        std::string_view logical_node_id,
+        size_t member_ordinal,
+        size_t input_ordinal,
+        Sample fallback) const;
+    GraphInputLaneBindings reconcile_ports_locked(TimelineLaneBatchUpdate *batch = nullptr);
+    void refresh_desired_ports_locked();
+    GraphInputLaneBindings sample_input_bindings(
+        std::string const &node_id,
+        std::optional<size_t> member_ordinal,
+        size_t input_ordinal);
+    GraphInputLaneBindings query_graph_input_lane_bindings(
+        ProjectGraphInputLaneBindingsRequest const &request);
+    std::optional<LaneMetadata> tracked_lane_metadata_locked(LaneId lane) const;
+    void apply_tracked_batch_locked(TimelineLaneBatchUpdate const &batch);
+    void apply_timeline_batch(TimelineLaneBatchUpdate const &batch);
 
 public:
     GraphInputLanes() = default;
 
-    void handle_iv_module_instances_changed(
-        IvModuleInstancesChanged const &diff);
-    std::vector<ProjectIntrospectionLiveInputSnapshot> collect_live_input_snapshots(
-        std::vector<ProjectIntrospectionLiveInputSnapshotRequest> const &requests);
-    void ensure_graph_input_lane_bindings(
-        ProjectGraphInputLaneBindingsRequest const &request);
-    GraphInputLaneBindings query_graph_input_lane_bindings(
-        ProjectGraphInputLaneBindingsRequest const &request);
-    std::vector<ProjectLaneOutputs> query_lane_outputs(
-        ProjectLaneOutputsRequest const &request);
+    void set_realtime_lane_ref_factory(
+        std::function<RealtimeLaneRef(LaneId)> factory);
+    void handle_iv_module_instance_builders_changed(
+        IvModuleInstanceBuildersChanged const &diff);
+    std::vector<IvModuleSourceIntrospectionLiveInputSnapshot> collect_live_input_snapshots(
+        std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &requests);
     void set_sample_input_value(
         ProjectSetSampleInputValueRequest const &request);
     void clear_sample_input_value_override(
         ProjectClearSampleInputValueOverrideRequest const &request);
-    RealtimeLaneRef resolve_sample_input_lane_ref(
-        GraphInputLanesSampleInputLaneRefRequest const &request);
-    LaneQueryResult query_lanes(
-        LaneQueryFilter const &filter,
-        std::optional<size_t> start_index = std::nullopt,
-        std::optional<size_t> visible_lane_count = std::nullopt);
+    BuilderCompletionDiff complete_builder(
+        std::string const &instance_id,
+        GraphBuilder &builder);
 };
 } // namespace iv

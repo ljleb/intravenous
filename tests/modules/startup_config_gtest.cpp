@@ -9,13 +9,13 @@
 namespace {
 using iv::test_support::ScopedEnvVar;
 using iv::test_support::configured_program_or_find;
-using iv::test_support::copy_fixture_workspace;
+using iv::test_support::mutable_module_fixture_workspace;
 using iv::test_support::make_workspace;
 }
 
 TEST(StartupConfig, EmptyIntravenousMarkerUsesWorkspaceRoot)
 {
-    auto const workspace = copy_fixture_workspace("startup_config_empty_marker", "local_cmake");
+    auto const workspace = mutable_module_fixture_workspace("startup_config_empty_marker", "local_cmake");
     iv::test_support::write_text(workspace / ".intravenous", "");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
@@ -46,7 +46,7 @@ TEST(StartupConfig, RootModulePathIsRejected)
 
 TEST(StartupConfig, MissingMarkerFailsInitialization)
 {
-    auto const workspace = copy_fixture_workspace("startup_config_missing_marker", "local_cmake");
+    auto const workspace = mutable_module_fixture_workspace("startup_config_missing_marker", "local_cmake");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     EXPECT_THROW(
@@ -63,7 +63,7 @@ TEST(StartupConfig, MissingMarkerFailsInitialization)
 
 TEST(StartupConfig, ProjectConfigOverridesIntravenousDefaultsToolchain)
 {
-    auto const workspace = copy_fixture_workspace("startup_config_toolchain_override", "local_cmake");
+    auto const workspace = mutable_module_fixture_workspace("startup_config_toolchain_override", "local_cmake");
     auto const install_dir = workspace / "install";
     std::filesystem::create_directories(install_dir);
     std::filesystem::remove_all(

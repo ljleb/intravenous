@@ -36,6 +36,17 @@ struct IvModuleInstancesChanged {
     std::vector<std::string> deleted_instance_ids{};
 };
 
+struct IvModuleInstanceBuilder {
+    IvModuleInstance instance {};
+    GraphBuilder builder {};
+};
+
+struct IvModuleInstanceBuildersChanged {
+    std::vector<IvModuleInstanceBuilder> created {};
+    std::vector<IvModuleInstanceBuilder> updated {};
+    std::vector<std::string> deleted_instance_ids {};
+};
+
 class IvModuleInstances {
     struct DesiredInstance {
         std::string instance_id{};

@@ -1,9 +1,66 @@
+#include "linker_event.h"
+#include "runtime/lane_filters_events.h"
+#include "runtime/lane_views.h"
+#include "runtime/lane_views_events.h"
 #include "runtime/lane_view_service.h"
 
 #include <gtest/gtest.h>
 
 #include <optional>
+#include <string>
 #include <vector>
+
+namespace {
+struct LaneViewsWitness {
+    std::vector<iv::LaneFilterStoredRequest> stored_filters {};
+    std::vector<std::string> removed_filters {};
+    std::vector<iv::LaneViewResult> updates {};
+};
+
+LaneViewsWitness *g_lane_views_witness = nullptr;
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv::LaneFilterStoredEvent,
+    iv_runtime_lane_filter_stored_event,
+    +[](iv::LaneFilterStoredRequest const &request) {
+        if (g_lane_views_witness != nullptr) {
+            g_lane_views_witness->stored_filters.push_back(request);
+        }
+    });
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv::LaneFilterRemovedEvent,
+    iv_runtime_lane_filter_removed_event,
+    +[](std::string const &filter_name) {
+        if (g_lane_views_witness != nullptr) {
+            g_lane_views_witness->removed_filters.push_back(filter_name);
+        }
+    });
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv::LaneViewsUpdatedEvent,
+    iv_runtime_lane_views_updated_event,
+    +[](iv::LaneViewResult const &update) {
+        if (g_lane_views_witness != nullptr) {
+            g_lane_views_witness->updates.push_back(update);
+        }
+    });
+
+class LaneViewsModuleTest : public ::testing::Test {
+protected:
+    LaneViewsWitness witness {};
+
+    void SetUp() override
+    {
+        g_lane_views_witness = &witness;
+    }
+
+    void TearDown() override
+    {
+        g_lane_views_witness = nullptr;
+    }
+};
+} // namespace
 
 TEST(LaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
 {
@@ -15,7 +72,7 @@ TEST(LaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
             std::optional<size_t> start_index,
             std::optional<size_t> visible_lane_count) {
             ++query_count;
-            EXPECT_EQ(filter.kind, "graphInputs");
+            EXPECT_EQ(filter.source, "graph_input");
             iv::LaneQueryResult result;
             result.start_index = start_index.value_or(0);
             result.visible_lane_count = visible_lane_count.value_or(2);
@@ -32,7 +89,7 @@ TEST(LaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
     auto opened = views.open_view(iv::LaneViewRequest{
         .view_id = "view",
         .query = iv::LaneQuery{
-            .filter = iv::LaneQueryFilter{.kind = "graphInputs"},
+            .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
         .start_index = 1,
         .visible_lane_count = 2,
@@ -71,7 +128,7 @@ TEST(LaneViews, LaneViewServiceCloseStopsPushedUpdates)
     views.open_view(iv::LaneViewRequest{
         .view_id = "view",
         .query = iv::LaneQuery{
-            .filter = iv::LaneQueryFilter{.kind = "graphInputs"},
+            .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
     });
     views.mark_lane_set_changed();
@@ -81,4 +138,130 @@ TEST(LaneViews, LaneViewServiceCloseStopsPushedUpdates)
     views.mark_lane_set_changed();
 
     EXPECT_TRUE(updates.empty());
+}
+
+TEST_F(LaneViewsModuleTest, OpenViewStoresFilterAsLaneViewDotId)
+{
+    iv::LaneViews views;
+
+    auto result = views.open_view(iv::LaneViewRequest{
+        .view_id = "abc",
+        .query = iv::LaneQuery{
+            .filter = iv::LaneQueryFilter{.source = "graph_input"},
+        },
+    });
+
+    EXPECT_EQ(result.view_id, "abc");
+    ASSERT_EQ(witness.stored_filters.size(), 1u);
+    EXPECT_EQ(witness.stored_filters.front().filter_name, "lane_view.abc");
+    EXPECT_EQ(witness.stored_filters.front().query_source, "graph_input");
+}
+
+TEST_F(LaneViewsModuleTest, UpdateViewReplacesFilterForLaneViewDotId)
+{
+    iv::LaneViews views;
+
+    (void)views.open_view(iv::LaneViewRequest{
+        .view_id = "abc",
+        .query = iv::LaneQuery{
+            .filter = iv::LaneQueryFilter{.source = "graph_input"},
+        },
+    });
+    witness.stored_filters.clear();
+
+    (void)views.update_view(iv::LaneViewRequest{
+        .view_id = "abc",
+        .query = iv::LaneQuery{
+            .filter = iv::LaneQueryFilter{.source = "graph_input knob"},
+        },
+    });
+
+    ASSERT_EQ(witness.stored_filters.size(), 1u);
+    EXPECT_EQ(witness.stored_filters.front().filter_name, "lane_view.abc");
+    EXPECT_EQ(witness.stored_filters.front().query_source, "graph_input knob");
+}
+
+TEST_F(LaneViewsModuleTest, CloseViewRemovesLaneViewDotIdFilter)
+{
+    iv::LaneViews views;
+
+    (void)views.open_view(iv::LaneViewRequest{
+        .view_id = "abc",
+        .query = iv::LaneQuery{
+            .filter = iv::LaneQueryFilter{.source = "graph_input"},
+        },
+    });
+    witness.removed_filters.clear();
+
+    views.close_view("abc");
+
+    ASSERT_EQ(witness.removed_filters.size(), 1u);
+    EXPECT_EQ(witness.removed_filters.front(), "lane_view.abc");
+}
+
+TEST_F(LaneViewsModuleTest, MatchingSnapshotRefreshesOpenView)
+{
+    iv::LaneViews views;
+    (void)views.open_view(iv::LaneViewRequest{
+        .view_id = "abc",
+        .query = iv::LaneQuery{
+            .filter = iv::LaneQueryFilter{.source = "graph_input"},
+        },
+        .visible_lane_count = 8,
+    });
+    witness.updates.clear();
+
+    views.handle_lane_filters_changed(iv::LaneFiltersChanged{
+        .all_filters_changed = true,
+        .results = {
+            iv::LaneFilterResult{
+                .filter_name = "lane_view.abc",
+                .query_source = "graph_input",
+                .outcome = iv::FilteredLanesSnapshot{
+                    .filter_name = "lane_view.abc",
+                    .query_source = "graph_input",
+                    .revision = 1,
+                    .lane_ids = {iv::LaneId{42}},
+                },
+            },
+        },
+    });
+
+    ASSERT_EQ(witness.updates.size(), 1u);
+    EXPECT_EQ(witness.updates.front().view_id, "abc");
+    ASSERT_EQ(witness.updates.front().lanes.lanes.size(), 1u);
+    EXPECT_EQ(witness.updates.front().lanes.lanes.front().lane_id, 42u);
+}
+
+TEST_F(LaneViewsModuleTest, MatchingFilterErrorRefreshesOpenView)
+{
+    iv::LaneViews views;
+    (void)views.open_view(iv::LaneViewRequest{
+        .view_id = "abc",
+        .query = iv::LaneQuery{
+            .filter = iv::LaneQueryFilter{.source = "graph_input"},
+        },
+        .visible_lane_count = 8,
+    });
+    witness.updates.clear();
+
+    views.handle_lane_filters_changed(iv::LaneFiltersChanged{
+        .all_filters_changed = true,
+        .results = {
+            iv::LaneFilterResult{
+                .filter_name = "lane_view.abc",
+                .query_source = "graph_input",
+                .outcome = iv::LaneFilterError{
+                    .filter_name = "lane_view.abc",
+                    .query_source = "graph_input",
+                    .message = "bad filter",
+                },
+            },
+        },
+    });
+
+    ASSERT_EQ(witness.updates.size(), 1u);
+    EXPECT_EQ(witness.updates.front().view_id, "abc");
+    ASSERT_TRUE(witness.updates.front().lanes.error_message.has_value());
+    EXPECT_EQ(*witness.updates.front().lanes.error_message, "bad filter");
 }

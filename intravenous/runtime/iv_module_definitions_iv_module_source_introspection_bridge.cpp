@@ -1,11 +1,11 @@
-#include "runtime/iv_module_definitions_project_introspection_bridge.h"
+#include "runtime/iv_module_definitions_iv_module_source_introspection_bridge.h"
 
 #include "runtime/iv_module_definitions_events.h"
-#include "runtime/project_introspection.h"
+#include "runtime/iv_module_source_introspection.h"
 
 namespace iv {
 namespace {
-ProjectIntrospection *bound_introspection = nullptr;
+IvModuleSourceIntrospection *bound_introspection = nullptr;
 
 void handle_definitions_changed(IvModuleDefinitionsChanged const &diff)
 {
@@ -21,14 +21,14 @@ IV_SUBSCRIBE_LINKER_EVENT(
     handle_definitions_changed);
 } // namespace
 
-void bind_iv_module_definitions_project_introspection_bridge(
-    ProjectIntrospection &introspection)
+void bind_iv_module_definitions_iv_module_source_introspection_bridge(
+    IvModuleSourceIntrospection &introspection)
 {
     bound_introspection = &introspection;
 }
 
-void unbind_iv_module_definitions_project_introspection_bridge(
-    ProjectIntrospection const &introspection)
+void unbind_iv_module_definitions_iv_module_source_introspection_bridge(
+    IvModuleSourceIntrospection const &introspection)
 {
     if (bound_introspection == &introspection) {
         bound_introspection = nullptr;

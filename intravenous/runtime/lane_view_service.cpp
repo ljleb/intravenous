@@ -53,8 +53,8 @@ namespace iv {
         );
         _active_views[request.view_id] = ActiveView {
             .filter = request.query.filter,
-            .start_index = lanes.start_index,
-            .visible_lane_count = lanes.visible_lane_count,
+            .start_index = request.start_index,
+            .visible_lane_count = request.visible_lane_count,
             .visible_lane_ids = visible_lane_ids(lanes),
         };
         return LaneViewResult {
@@ -76,8 +76,8 @@ namespace iv {
         );
         _active_views[request.view_id] = ActiveView {
             .filter = request.query.filter,
-            .start_index = lanes.start_index,
-            .visible_lane_count = lanes.visible_lane_count,
+            .start_index = request.start_index,
+            .visible_lane_count = request.visible_lane_count,
             .visible_lane_ids = visible_lane_ids(lanes),
         };
         return LaneViewResult {

@@ -1183,7 +1183,6 @@ namespace iv {
             GraphBuilder::BuildResult built_root = [&]() -> GraphBuilder::BuildResult {
                 try {
                     root_builder = root_module.builder(context);
-                    root_builder.augment();
                     return root_builder.build_with_metadata();
                 } catch (std::exception const& e) {
                     throw std::runtime_error(wrap_exception(

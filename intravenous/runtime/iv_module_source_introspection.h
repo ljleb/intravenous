@@ -28,7 +28,7 @@ struct LoadedGraphIntrospectionIndex {
     std::unordered_map<std::string, size_t> logical_node_index_by_id;
 };
 
-class ProjectIntrospection {
+class IvModuleSourceIntrospection {
     mutable std::mutex mutex;
     mutable std::unordered_map<std::string, SourceTextLineMap> source_text_cache;
     std::optional<LoadedGraphIntrospectionIndex> graph_index;
@@ -42,7 +42,7 @@ class ProjectIntrospection {
     LogicalNodeInfo to_logical_node(IntrospectionLogicalNode const &node) const;
 
 public:
-    ProjectIntrospection() = default;
+    IvModuleSourceIntrospection() = default;
 
     ProjectInitializeResult initialize() const;
     void handle_iv_module_definitions_changed(

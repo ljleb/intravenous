@@ -2,9 +2,9 @@
 
 #include "runtime/graph_input_lanes.h"
 #include "runtime/iv_module_definitions.h"
-#include "runtime/project_introspection.h"
-#include "runtime/project_introspection_events.h"
-#include "runtime/socket_rpc_project_introspection_bridge.h"
+#include "runtime/iv_module_source_introspection.h"
+#include "runtime/iv_module_source_introspection_events.h"
+#include "runtime/socket_rpc_iv_module_source_introspection_bridge.h"
 #include "runtime/socket_rpc_server.h"
 #include "runtime/startup_config.h"
 
@@ -22,18 +22,18 @@ using namespace iv;
 bool g_answer_live_input_snapshots = false;
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    ProjectIntrospectionLiveInputSnapshotsRequestedEvent,
-    iv_runtime_project_introspection_live_input_snapshots_requested_event,
-    +[](std::vector<ProjectIntrospectionLiveInputSnapshotRequest> const &requests,
-        ProjectIntrospectionLiveInputSnapshotsBuilder &builder) {
+    IvModuleSourceIntrospectionLiveInputSnapshotsRequestedEvent,
+    iv_runtime_iv_module_source_introspection_live_input_snapshots_requested_event,
+    +[](std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &requests,
+        IvModuleSourceIntrospectionLiveInputSnapshotsBuilder &builder) {
         if (!g_answer_live_input_snapshots) {
             return;
         }
 
-        std::vector<ProjectIntrospectionLiveInputSnapshot> snapshots;
+        std::vector<IvModuleSourceIntrospectionLiveInputSnapshot> snapshots;
         snapshots.reserve(requests.size());
         for (auto const &request : requests) {
-            snapshots.push_back(ProjectIntrospectionLiveInputSnapshot{
+            snapshots.push_back(IvModuleSourceIntrospectionLiveInputSnapshot{
                 .logical_node_id = request.logical_node_id,
                 .member_ordinal = request.member_ordinal,
                 .input_ordinal = request.input_ordinal,
@@ -46,7 +46,7 @@ IV_SUBSCRIBE_LINKER_EVENT(
 
 std::filesystem::path make_project_workspace()
 {
-    return iv::test::shared_project_fixture_workspace("local_cmake");
+    return iv::test::read_only_module_fixture_workspace("local_cmake");
 }
 
 Json parse_json_line(std::string_view line)
@@ -54,12 +54,12 @@ Json parse_json_line(std::string_view line)
     return Json::parse(line);
 }
 
-struct SeededProjectIntrospectionOwner {
+struct SeededIvModuleSourceIntrospectionOwner {
     GraphInputLanes graph_input_lanes;
-    ProjectIntrospection introspection;
+    IvModuleSourceIntrospection introspection;
     StartupConfig startup_config;
 
-    SeededProjectIntrospectionOwner(
+    SeededIvModuleSourceIntrospectionOwner(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots)
@@ -70,7 +70,7 @@ struct SeededProjectIntrospectionOwner {
     {
     }
 
-    ~SeededProjectIntrospectionOwner() = default;
+    ~SeededIvModuleSourceIntrospectionOwner() = default;
 
     void initialize()
     {
@@ -95,7 +95,7 @@ struct SeededProjectIntrospectionOwner {
 };
 } // namespace
 
-TEST(SocketRpcProjectIntrospectionBridge, UnboundQueryEventLeavesBuilderUnbuilt)
+TEST(SocketRpcIvModuleSourceIntrospectionBridge, UnboundQueryEventLeavesBuilderUnbuilt)
 {
     auto const workspace = make_project_workspace();
     SocketRpcGraphQueryResultBuilder builder;
@@ -117,13 +117,13 @@ TEST(SocketRpcProjectIntrospectionBridge, UnboundQueryEventLeavesBuilderUnbuilt)
     EXPECT_THROW((void)builder.build(1), std::runtime_error);
 }
 
-TEST(SocketRpcProjectIntrospectionBridge, BoundQueryEventPopulatesBuilderFromOwners)
+TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilderFromOwners)
 {
     auto const workspace = make_project_workspace();
     g_answer_live_input_snapshots = true;
-    SeededProjectIntrospectionOwner owner(workspace, iv::test::repo_root(), {});
+    SeededIvModuleSourceIntrospectionOwner owner(workspace, iv::test::repo_root(), {});
     owner.initialize();
-    bind_socket_rpc_project_introspection_bridge(
+    bind_socket_rpc_iv_module_source_introspection_bridge(
         owner.introspection,
         owner.graph_input_lanes);
 
@@ -144,7 +144,7 @@ TEST(SocketRpcProjectIntrospectionBridge, BoundQueryEventPopulatesBuilderFromOwn
 
     auto const response = parse_json_line(builder.build(2));
 
-    unbind_socket_rpc_project_introspection_bridge(
+    unbind_socket_rpc_iv_module_source_introspection_bridge(
         owner.introspection,
         owner.graph_input_lanes);
     g_answer_live_input_snapshots = false;

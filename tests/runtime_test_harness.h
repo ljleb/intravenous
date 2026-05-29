@@ -2,20 +2,21 @@
 
 #include "module_test_utils.h"
 #include "runtime/graph_input_lanes.h"
-#include "runtime/graph_input_lanes_lane_views_bridge.h"
 #include "runtime/graph_input_lanes_timeline_bridge.h"
 #include "runtime/iv_module_definitions.h"
 #include "runtime/iv_module_definitions_iv_module_instances_bridge.h"
-#include "runtime/iv_module_definitions_project_introspection_bridge.h"
+#include "runtime/iv_module_definitions_iv_module_source_introspection_bridge.h"
 #include "runtime/iv_module_instances.h"
 #include "runtime/iv_module_instances_iv_module_definitions_bridge.h"
 #include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
 #include "runtime/iv_module_reload.h"
+#include "runtime/lane_filters.h"
+#include "runtime/lane_filters_lane_views_bridge.h"
 #include "runtime/lane_views.h"
-#include "runtime/lane_views_timeline_bridge.h"
-#include "runtime/project_introspection.h"
-#include "runtime/project_introspection_graph_input_lanes_bridge.h"
+#include "runtime/iv_module_source_introspection.h"
+#include "runtime/iv_module_source_introspection_graph_input_lanes_bridge.h"
 #include "runtime/startup_config.h"
+#include "runtime/timeline_lane_filters_bridge.h"
 
 #include <filesystem>
 #include <string>
@@ -23,13 +24,14 @@
 #include <vector>
 
 namespace iv::test_support {
-struct BoundProjectIntrospection {
+struct BoundIvModuleSourceIntrospection {
     iv::Timeline timeline;
     iv::IvModuleInstances iv_module_instances;
     iv::IvModuleDefinitions iv_module_definitions;
     iv::GraphInputLanes graph_input_lanes;
+    iv::LaneFilters lane_filters;
     iv::LaneViews lane_views;
-    iv::ProjectIntrospection introspection;
+    iv::IvModuleSourceIntrospection introspection;
     iv::StartupConfig startup_config;
 
     static iv::IvModuleReloadedDefinition load_definition(
@@ -41,7 +43,7 @@ struct BoundProjectIntrospection {
             std::move(module_root));
     }
 
-    BoundProjectIntrospection(
+    BoundIvModuleSourceIntrospection(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots)
@@ -50,26 +52,26 @@ struct BoundProjectIntrospection {
               std::move(discovery_start),
               std::vector<std::filesystem::path>(std::move(extra_search_roots)))
     {
-        iv::bind_graph_input_lanes_timeline_bridge(timeline);
-        iv::bind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
+        iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
         iv::bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
         iv::bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
-        iv::bind_iv_module_definitions_project_introspection_bridge(introspection);
+        iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
         iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-        iv::bind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
-        iv::bind_lane_views_timeline_bridge(lane_views);
+        iv::bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
+        iv::bind_timeline_lane_filters_bridge(lane_filters);
+        iv::bind_lane_filters_lane_views_bridge(lane_filters, lane_views);
     }
 
-    ~BoundProjectIntrospection()
+    ~BoundIvModuleSourceIntrospection()
     {
-        iv::unbind_lane_views_timeline_bridge(lane_views);
-        iv::unbind_project_introspection_graph_input_lanes_bridge(graph_input_lanes);
+        iv::unbind_lane_filters_lane_views_bridge(lane_filters, lane_views);
+        iv::unbind_timeline_lane_filters_bridge(lane_filters);
+        iv::unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
         iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-        iv::unbind_iv_module_definitions_project_introspection_bridge(introspection);
+        iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
         iv::unbind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
         iv::unbind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
-        iv::unbind_graph_input_lanes_lane_views_bridge(graph_input_lanes);
-        iv::unbind_graph_input_lanes_timeline_bridge(timeline);
+        iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
     }
 
     auto initialize()
@@ -125,17 +127,12 @@ struct BoundProjectIntrospection {
         iv::Sample value,
         std::optional<size_t> member_ordinal = std::nullopt)
     {
-        auto const port = introspection.sample_graph_input_port_for_node(
-            node_id,
-            member_ordinal,
-            input_ordinal);
         graph_input_lanes.set_sample_input_value(
             iv::ProjectSetSampleInputValueRequest{
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,
                 .value = value,
-                .graph_input_port = port,
             });
     }
 
@@ -144,16 +141,11 @@ struct BoundProjectIntrospection {
         size_t member_ordinal,
         size_t input_ordinal)
     {
-        auto const port = introspection.sample_graph_input_port_for_node(
-            node_id,
-            member_ordinal,
-            input_ordinal);
         graph_input_lanes.clear_sample_input_value_override(
             iv::ProjectClearSampleInputValueOverrideRequest{
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,
-                .graph_input_port = port,
             });
     }
 };

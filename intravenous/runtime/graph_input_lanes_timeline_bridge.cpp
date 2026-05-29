@@ -1,263 +1,173 @@
 #include "runtime/graph_input_lanes_timeline_bridge.h"
 
+#include "runtime/graph_input_lanes.h"
 #include "runtime/graph_input_lanes_events.h"
 #include "runtime/timeline.h"
 #include "runtime/timeline_events.h"
 
-#include <ranges>
-#include <unordered_set>
+#include <memory>
+#include <utility>
 
 namespace iv {
 namespace {
+GraphInputLanes *bound_graph_input_lanes = nullptr;
 Timeline *bound_timeline = nullptr;
+query::LaneQuerySchema last_schema;
+std::uint64_t schema_revision = 0;
 
-void emit_lane_change(TimelineLanesChanged change)
-{
-    IV_INVOKE_LINKER_EVENT(iv_runtime_timeline_lanes_changed_event, change);
-}
+class TimelineLaneQueryDatasetView final : public query::LaneQueryDataset {
+    Timeline *timeline = nullptr;
+    query::LaneQuerySchema schema_snapshot;
+    std::vector<LaneId> lanes;
 
-std::string graph_input_port_key(GraphInputPortDescriptor const &port)
-{
-    std::string key = port.logical_node_id;
-    key += "\x1fmember:";
-    key += port.concrete_member_ordinal.has_value()
-        ? std::to_string(*port.concrete_member_ordinal)
-        : "logical";
-    key += "\x1fkind:";
-    key += port.port_kind == PortKind::sample ? "sample" : "event";
-    key += "\x1fordinal:";
-    key += std::to_string(port.port_ordinal);
-    return key;
-}
+public:
+    TimelineLaneQueryDatasetView(
+        Timeline &timeline_in,
+        query::LaneQuerySchema schema_in,
+        std::vector<LaneId> lanes_in)
+        : timeline(&timeline_in),
+          schema_snapshot(std::move(schema_in)),
+          lanes(std::move(lanes_in))
+    {}
 
-void prune_stale_graph_input_lanes(
+    query::LaneQuerySchema const &schema() const override
+    {
+        return schema_snapshot;
+    }
+
+    size_t lane_count() const override
+    {
+        return lanes.size();
+    }
+
+    std::uint64_t lane_id_at(size_t lane_index) const override
+    {
+        return lanes.at(lane_index).value;
+    }
+
+    bool in_filter(size_t, std::string_view) const override
+    {
+        return false;
+    }
+
+    bool has_unit(size_t lane_index, query::LaneQueryPropertyId property) const override
+    {
+        return timeline->lane_has_unit_metadata(lanes.at(lane_index), schema_snapshot.key_of(property));
+    }
+
+    std::optional<int> int_value(size_t lane_index, query::LaneQueryPropertyId property) const override
+    {
+        return timeline->lane_int_metadata(lanes.at(lane_index), schema_snapshot.key_of(property));
+    }
+
+    std::optional<float> float_value(size_t lane_index, query::LaneQueryPropertyId property) const override
+    {
+        return timeline->lane_float_metadata(lanes.at(lane_index), schema_snapshot.key_of(property));
+    }
+};
+
+std::vector<TimelineLaneOutputs> outputs_for_lanes(
     Timeline &timeline,
-    std::vector<GraphInputPortDescriptor> const &ports)
+    std::vector<LaneId> const &lanes)
 {
-    std::unordered_set<std::string> live_ports;
-    live_ports.reserve(ports.size());
-    for (auto const &port : ports) {
-        live_ports.insert(graph_input_port_key(port));
-    }
-
-    std::vector<LaneId> to_remove;
-    for (auto const lane_id : timeline.lane_ids()) {
-        auto const metadata = timeline.lane_metadata(lane_id);
-        if (!metadata.graph_input_port.has_value()) {
-            continue;
-        }
-        if (std::ranges::find(metadata.tags, "graph-input") == metadata.tags.end()) {
-            continue;
-        }
-        if (live_ports.contains(graph_input_port_key(*metadata.graph_input_port))) {
-            continue;
-        }
-        to_remove.push_back(lane_id);
-    }
-
-    for (auto const lane_id : to_remove) {
-        timeline.remove_lane(lane_id);
-    }
-}
-
-void handle_ports_changed(
-    GraphInputLanesPortsChangedRequest const &request,
-    GraphInputLanesAckBuilder &builder)
-{
-    if (bound_timeline == nullptr) {
-        return;
-    }
-    prune_stale_graph_input_lanes(*bound_timeline, request.ports);
-    bound_timeline->ensure_graph_input_lane_bindings(request.ports);
-    emit_lane_change(TimelineLanesChanged{
-        .lane_set_changed = true,
-    });
-    builder.succeed();
-}
-
-void handle_live_input_snapshots_requested(
-    std::vector<GraphInputLanesLiveInputSnapshotRequest> const &requests,
-    GraphInputLanesLiveInputSnapshotsBuilder &builder)
-{
-    if (bound_timeline == nullptr) {
-        return;
-    }
-
-    std::vector<GraphInputLanesLiveInputSnapshot> snapshots;
-    snapshots.reserve(requests.size());
-    for (auto const &request : requests) {
-        snapshots.push_back(GraphInputLanesLiveInputSnapshot{
-            .logical_node_id = request.logical_node_id,
-            .member_ordinal = request.member_ordinal,
-            .input_ordinal = request.input_ordinal,
-            .current_value = request.member_ordinal.has_value()
-                ? bound_timeline->live_input_value_or(
-                    request.logical_node_id,
-                    *request.member_ordinal,
-                    request.input_ordinal,
-                    request.fallback)
-                : bound_timeline->live_input_value_or(
-                    request.logical_node_id,
-                    request.input_ordinal,
-                    request.fallback),
-            .has_concrete_override = request.member_ordinal.has_value()
-                ? bound_timeline->has_live_input_value_override(
-                    request.logical_node_id,
-                    *request.member_ordinal,
-                    request.input_ordinal)
-                : false,
-        });
-    }
-    builder.succeed(std::move(snapshots));
-}
-
-void handle_lane_bindings_ensured(
-    GraphInputLanesPortsChangedRequest const &request,
-    GraphInputLanesAckBuilder &builder)
-{
-    if (bound_timeline == nullptr) {
-        return;
-    }
-    bound_timeline->ensure_graph_input_lane_bindings(request.ports);
-    emit_lane_change(TimelineLanesChanged{
-        .lane_set_changed = true,
-    });
-    builder.succeed();
-}
-
-void handle_lane_bindings_requested(
-    GraphInputLanesPortsChangedRequest const &request,
-    GraphInputLanesLaneBindingsBuilder &builder)
-{
-    if (bound_timeline == nullptr) {
-        return;
-    }
-    builder.succeed(bound_timeline->reconcile_graph_input_lane_bindings(request.ports));
-}
-
-void handle_lane_outputs_requested(
-    std::vector<LaneId> const &lanes,
-    GraphInputLanesLaneOutputsBuilder &builder)
-{
-    if (bound_timeline == nullptr) {
-        return;
-    }
-
-    std::vector<GraphInputLanesLaneOutputs> results;
+    std::vector<TimelineLaneOutputs> results;
     results.reserve(lanes.size());
     for (auto const lane : lanes) {
-        results.push_back(GraphInputLanesLaneOutputs{
+        results.push_back(TimelineLaneOutputs{
             .lane = lane,
-            .outputs = bound_timeline->lane_outputs_for(lane),
+            .outputs = timeline.lane_outputs_for(lane),
         });
     }
-    builder.succeed(std::move(results));
+    return results;
 }
 
-void handle_set_sample_input_value_requested(
-    GraphInputLanesSetSampleInputValueRequest const &request,
-    GraphInputLanesAckBuilder &builder)
+void emit_lane_change(
+    bool lane_set_changed,
+    std::vector<LaneId> created_lanes = {},
+    std::vector<LaneId> removed_lanes = {},
+    std::vector<LaneId> changed_lanes = {})
 {
     if (bound_timeline == nullptr) {
         return;
     }
-    if (request.member_ordinal.has_value()) {
-        bound_timeline->set_live_input_value(
-            request.node_id,
-            *request.member_ordinal,
-            request.input_ordinal,
-            request.value);
+    auto candidate_schema = bound_timeline->lane_query_schema(schema_revision + 1);
+    auto diff = query::diff_lane_query_schemas(last_schema, candidate_schema);
+    if (!diff.changed) {
+        candidate_schema = bound_timeline->lane_query_schema(schema_revision);
+        diff = query::diff_lane_query_schemas(last_schema, candidate_schema);
     } else {
-        bound_timeline->set_live_input_value(
-            request.node_id,
-            request.input_ordinal,
-            request.value);
+        schema_revision += 1;
     }
-    bound_timeline->set_graph_input_sample_value(request.graph_input_port, request.value);
-    emit_lane_change(TimelineLanesChanged{
-        .lane_set_changed = true,
-    });
-    builder.succeed();
+    auto const schema = candidate_schema;
+    auto const schema_change = diff;
+    last_schema = schema;
+    auto dataset = std::make_shared<TimelineLaneQueryDatasetView>(
+        *bound_timeline,
+        schema,
+        bound_timeline->lane_ids());
+
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_timeline_lanes_changed_event,
+        TimelineLanesChanged{
+            .lane_set_changed = lane_set_changed,
+            .dataset = std::move(dataset),
+            .schema_change = schema_change,
+            .metadata_for_lane = [timeline = bound_timeline](LaneId lane) {
+                return timeline->lane_metadata(lane);
+            },
+            .outputs_for_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes) {
+                return outputs_for_lanes(*timeline, lanes);
+            },
+            .created_lanes = std::move(created_lanes),
+            .removed_lanes = std::move(removed_lanes),
+            .changed_lanes = std::move(changed_lanes),
+        });
 }
 
-void handle_sample_input_lane_ref_requested(
-    GraphInputLanesSampleInputLaneRefRequest const &request,
-    GraphInputLanesSampleInputLaneRefBuilder &builder)
-{
-    if (bound_timeline == nullptr) {
-        return;
-    }
-    auto const lane = bound_timeline->resolve_graph_sample_input_lane(
-        request.logical_node_id,
-        request.member_ordinal,
-        request.input_ordinal,
-        request.input_name,
-        request.default_value);
-    if (!lane) {
-        return;
-    }
-    builder.succeed(RealtimeLaneRef(*bound_timeline, lane));
-}
-
-void handle_clear_sample_input_value_override_requested(
-    GraphInputLanesClearSampleInputValueOverrideRequest const &request,
+void handle_timeline_batch_requested(
+    TimelineLaneBatchUpdate const &batch,
     GraphInputLanesAckBuilder &builder)
 {
     if (bound_timeline == nullptr) {
         return;
     }
-    bound_timeline->clear_live_input_value_override(
-        request.node_id,
-        request.member_ordinal,
-        request.input_ordinal);
-    bound_timeline->restore_graph_input_sample_inheritance(request.graph_input_port);
-    emit_lane_change(TimelineLanesChanged{
-        .lane_set_changed = true,
-    });
+    bound_timeline->apply_lane_batch(batch);
+
+    std::vector<LaneId> upserted_lanes;
+    upserted_lanes.reserve(batch.upserts.size());
+    for (auto const &upsert : batch.upserts) {
+        upserted_lanes.push_back(upsert.lane);
+    }
+    emit_lane_change(true, std::move(upserted_lanes), batch.removals);
     builder.succeed();
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    GraphInputLanesPortsChangedEvent,
-    iv_runtime_graph_input_lanes_ports_changed_event,
-    handle_ports_changed);
-IV_SUBSCRIBE_LINKER_EVENT(
-    GraphInputLanesLiveInputSnapshotsRequestedEvent,
-    iv_runtime_graph_input_lanes_live_input_snapshots_requested_event,
-    handle_live_input_snapshots_requested);
-IV_SUBSCRIBE_LINKER_EVENT(
-    GraphInputLanesLaneBindingsEnsuredEvent,
-    iv_runtime_graph_input_lanes_lane_bindings_ensured_event,
-    handle_lane_bindings_ensured);
-IV_SUBSCRIBE_LINKER_EVENT(
-    GraphInputLanesLaneBindingsRequestedEvent,
-    iv_runtime_graph_input_lanes_lane_bindings_requested_event,
-    handle_lane_bindings_requested);
-IV_SUBSCRIBE_LINKER_EVENT(
-    GraphInputLanesLaneOutputsRequestedEvent,
-    iv_runtime_graph_input_lanes_lane_outputs_requested_event,
-    handle_lane_outputs_requested);
-IV_SUBSCRIBE_LINKER_EVENT(
-    GraphInputLanesSetSampleInputValueRequestedEvent,
-    iv_runtime_graph_input_lanes_set_sample_input_value_requested_event,
-    handle_set_sample_input_value_requested);
-IV_SUBSCRIBE_LINKER_EVENT(
-    GraphInputLanesSampleInputLaneRefRequestedEvent,
-    iv_runtime_graph_input_lanes_sample_input_lane_ref_requested_event,
-    handle_sample_input_lane_ref_requested);
-IV_SUBSCRIBE_LINKER_EVENT(
-    GraphInputLanesClearSampleInputValueOverrideRequestedEvent,
-    iv_runtime_graph_input_lanes_clear_sample_input_value_override_requested_event,
-    handle_clear_sample_input_value_override_requested);
+    GraphInputLanesTimelineBatchRequestedEvent,
+    iv_runtime_graph_input_lanes_timeline_batch_requested_event,
+    handle_timeline_batch_requested);
 } // namespace
 
-void bind_graph_input_lanes_timeline_bridge(Timeline &timeline)
+void bind_graph_input_lanes_timeline_bridge(GraphInputLanes &graph_input_lanes, Timeline &timeline)
 {
+    bound_graph_input_lanes = &graph_input_lanes;
     bound_timeline = &timeline;
+    schema_revision = 0;
+    last_schema = timeline.lane_query_schema(schema_revision);
+    graph_input_lanes.set_realtime_lane_ref_factory(
+        [&timeline](LaneId lane) {
+            return RealtimeLaneRef(timeline, lane);
+        });
 }
 
-void unbind_graph_input_lanes_timeline_bridge(Timeline const &timeline)
+void unbind_graph_input_lanes_timeline_bridge(
+    GraphInputLanes const &graph_input_lanes,
+    Timeline const &timeline)
 {
+    if (bound_graph_input_lanes == &graph_input_lanes) {
+        bound_graph_input_lanes->set_realtime_lane_ref_factory({});
+        bound_graph_input_lanes = nullptr;
+    }
     if (bound_timeline == &timeline) {
         bound_timeline = nullptr;
     }

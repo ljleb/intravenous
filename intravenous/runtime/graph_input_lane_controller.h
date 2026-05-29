@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -24,6 +25,18 @@ namespace iv {
     };
 
     class GraphInputLaneController {
+        static constexpr char const* metadata_graph_input = "graph_input";
+        static constexpr char const* metadata_knob = "knob";
+        static constexpr char const* metadata_logical = "logical";
+        static constexpr char const* metadata_concrete = "concrete";
+        static constexpr char const* metadata_sample = "sample";
+        static constexpr char const* metadata_event = "event";
+        static constexpr char const* metadata_identity_hash = "identity_hash";
+        static constexpr char const* metadata_node_hash = "node_hash";
+        static constexpr char const* metadata_port_kind = "port_kind";
+        static constexpr char const* metadata_port_ordinal = "port_ordinal";
+        static constexpr char const* metadata_member_ordinal = "member_ordinal";
+
         static std::string port_identity(GraphInputPortDescriptor const& port)
         {
             return port.logical_node_id
@@ -51,11 +64,91 @@ namespace iv {
             return "graph-input:concrete-knob:" + port_descriptor_identity(port);
         }
 
-        static LaneId find_knob_lane(LaneGraph const& graph, std::string const& semantic_identity)
+        static int hash_string(std::string const& value)
+        {
+            return static_cast<int>(std::hash<std::string>{}(value));
+        }
+
+        static bool has_unit_metadata(LaneMetadata const& metadata, std::string_view key)
+        {
+            return metadata.has_unit(key);
+        }
+
+        static std::optional<int> int_metadata(LaneMetadata const& metadata, std::string_view key)
+        {
+            return metadata.int_value(key);
+        }
+
+        static LaneMetadata graph_input_metadata(
+            GraphInputPortDescriptor const& port,
+            bool knob,
+            bool logical,
+            bool concrete,
+            bool sample,
+            bool event,
+            std::optional<int> identity_hash = std::nullopt)
+        {
+            LaneMetadata metadata;
+            metadata.set_unit(metadata_graph_input);
+            if (knob) {
+                metadata.set_unit(metadata_knob);
+            }
+            if (logical) {
+                metadata.set_unit(metadata_logical);
+            }
+            if (concrete) {
+                metadata.set_unit(metadata_concrete);
+            }
+            if (sample) {
+                metadata.set_unit(metadata_sample);
+            }
+            if (event) {
+                metadata.set_unit(metadata_event);
+            }
+            metadata.set_int(metadata_node_hash, hash_string(port.logical_node_id));
+            metadata.set_int(metadata_port_kind, static_cast<int>(port.port_kind == PortKind::event));
+            metadata.set_int(metadata_port_ordinal, static_cast<int>(port.port_ordinal));
+            if (port.concrete_member_ordinal.has_value()) {
+                metadata.set_int(
+                    metadata_member_ordinal,
+                    static_cast<int>(*port.concrete_member_ordinal));
+            }
+            if (identity_hash.has_value()) {
+                metadata.set_int(metadata_identity_hash, *identity_hash);
+            }
+            return metadata;
+        }
+
+        static bool metadata_matches_port(LaneMetadata const& metadata, GraphInputPortDescriptor const& port)
+        {
+            auto const node_hash = int_metadata(metadata, metadata_node_hash);
+            auto const port_kind = int_metadata(metadata, metadata_port_kind);
+            auto const port_ordinal = int_metadata(metadata, metadata_port_ordinal);
+            if (!node_hash.has_value() || !port_kind.has_value() || !port_ordinal.has_value()) {
+                return false;
+            }
+            if (*node_hash != hash_string(port.logical_node_id)) {
+                return false;
+            }
+            if (*port_kind != static_cast<int>(port.port_kind == PortKind::event)) {
+                return false;
+            }
+            if (*port_ordinal != static_cast<int>(port.port_ordinal)) {
+                return false;
+            }
+            auto const member_ordinal = int_metadata(metadata, metadata_member_ordinal);
+            if (port.concrete_member_ordinal.has_value()) {
+                return member_ordinal.has_value() &&
+                    *member_ordinal == static_cast<int>(*port.concrete_member_ordinal);
+            }
+            return !member_ordinal.has_value();
+        }
+
+        static LaneId find_knob_lane(LaneGraph const& graph, int identity_hash)
         {
             LaneId found {};
             graph.for_each_lane([&](LaneRecord const& lane) {
-                if (lane.metadata.semantic_identity == semantic_identity) {
+                if (int_metadata(lane.metadata, metadata_identity_hash) == identity_hash) {
                     found = lane.id;
                 }
             });
@@ -70,8 +163,9 @@ namespace iv {
             LaneId found {};
             graph.for_each_lane([&](LaneRecord const& lane) {
                 if (
-                    lane.metadata.graph_input_port.has_value()
-                    && *lane.metadata.graph_input_port == port
+                    has_unit_metadata(lane.metadata, metadata_graph_input)
+                    && has_unit_metadata(lane.metadata, metadata_sample)
+                    && metadata_matches_port(lane.metadata, port)
                     && lane.node.try_as<GraphSampleInputLaneNode>()
                 ) {
                     found = lane.id;
@@ -88,8 +182,9 @@ namespace iv {
             LaneId found {};
             graph.for_each_lane([&](LaneRecord const& lane) {
                 if (
-                    lane.metadata.graph_input_port.has_value()
-                    && *lane.metadata.graph_input_port == port
+                    has_unit_metadata(lane.metadata, metadata_graph_input)
+                    && has_unit_metadata(lane.metadata, metadata_event)
+                    && metadata_matches_port(lane.metadata, port)
                     && lane.node.try_as<GraphEventInputLaneNode>()
                 ) {
                     found = lane.id;
@@ -134,15 +229,19 @@ namespace iv {
                 }
 
                 auto const identity = logical_knob_identity(port);
-                LaneId logical_knob = find_knob_lane(graph, identity);
+                auto const identity_hash = hash_string(identity);
+                LaneId logical_knob = find_knob_lane(graph, identity_hash);
                 if (!logical_knob) {
                     logical_knob = graph.add_lane(
                         KnobLaneNode {},
-                        LaneMetadata {
-                            .semantic_identity = identity,
-                            .tags = { "graph-input", "knob", "logical" },
-                            .graph_input_port = port,
-                        }
+                        graph_input_metadata(
+                            port,
+                            true,
+                            true,
+                            false,
+                            false,
+                            false,
+                            identity_hash)
                     );
                 }
                 logical_sample_knobs.emplace(port_identity(port), logical_knob);
@@ -169,16 +268,20 @@ namespace iv {
                 }
 
                 auto const identity = concrete_knob_identity(port);
-                LaneId concrete_knob = find_knob_lane(graph, identity);
+                auto const identity_hash = hash_string(identity);
+                LaneId concrete_knob = find_knob_lane(graph, identity_hash);
                 bool const concrete_knob_existed = static_cast<bool>(concrete_knob);
                 if (!concrete_knob) {
                     concrete_knob = graph.add_lane(
                         KnobLaneNode {},
-                        LaneMetadata {
-                            .semantic_identity = identity,
-                            .tags = { "graph-input", "knob", "concrete" },
-                            .graph_input_port = port,
-                        }
+                        graph_input_metadata(
+                            port,
+                            true,
+                            false,
+                            true,
+                            false,
+                            false,
+                            identity_hash)
                     );
                 }
 
@@ -187,10 +290,13 @@ namespace iv {
                 if (!graph_input) {
                     graph_input = graph.add_lane(
                         GraphSampleInputLaneNode {},
-                        LaneMetadata {
-                            .tags = { "graph-input", "sample" },
-                            .graph_input_port = port,
-                        }
+                        graph_input_metadata(
+                            port,
+                            false,
+                            false,
+                            false,
+                            true,
+                            false)
                     );
                 }
 
@@ -229,10 +335,13 @@ namespace iv {
                 if (!graph_input) {
                     graph_input = graph.add_lane(
                         GraphEventInputLaneNode {},
-                        LaneMetadata {
-                            .tags = { "graph-input", "event" },
-                            .graph_input_port = port,
-                        }
+                        graph_input_metadata(
+                            port,
+                            false,
+                            false,
+                            false,
+                            false,
+                            true)
                     );
                 }
                 result.event_inputs.push_back(GraphInputLaneBinding {
@@ -253,9 +362,10 @@ namespace iv {
             auto const identity = port.concrete_member_ordinal.has_value()
                 ? concrete_knob_identity(port)
                 : logical_knob_identity(port);
+            auto const identity_hash = hash_string(identity);
             graph.for_each_lane([&](LaneRecord& lane) {
                 auto* knob = lane.node.try_as<KnobLaneNode>();
-                if (!knob || lane.metadata.semantic_identity != identity) {
+                if (!knob || int_metadata(lane.metadata, metadata_identity_hash) != identity_hash) {
                     return;
                 }
                 knob->value = value;
@@ -282,14 +392,16 @@ namespace iv {
             LaneId concrete_knob;
             auto const logical_identity = logical_knob_identity(logical_port);
             auto const concrete_identity = concrete_knob_identity(port);
+            auto const logical_hash = hash_string(logical_identity);
+            auto const concrete_hash = hash_string(concrete_identity);
             graph.for_each_lane([&](LaneRecord const& lane) {
                 auto const* knob = lane.node.try_as<KnobLaneNode>();
                 if (!knob) {
                     return;
                 }
-                if (lane.metadata.semantic_identity == logical_identity) {
+                if (int_metadata(lane.metadata, metadata_identity_hash) == logical_hash) {
                     logical_knob = lane.id;
-                } else if (lane.metadata.semantic_identity == concrete_identity) {
+                } else if (int_metadata(lane.metadata, metadata_identity_hash) == concrete_hash) {
                     concrete_knob = lane.id;
                 }
             });

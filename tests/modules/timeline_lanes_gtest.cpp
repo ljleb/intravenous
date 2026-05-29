@@ -662,34 +662,6 @@ TEST(Lanes, GraphInputLaneBindingReconciliationReusesSemanticKnobLaneIdentities)
     EXPECT_EQ(first.sample_inputs[0].graph_input_lane, second.sample_inputs[0].graph_input_lane);
 }
 
-TEST(Lanes, TimelineOwnsPersistentGraphInputLaneBindings)
-{
-    iv::Timeline timeline;
-    std::array ports {
-        iv::GraphInputPortDescriptor {
-            .logical_node_id = "osc",
-            .port_kind = iv::PortKind::sample,
-            .port_ordinal = 1,
-            .port_name = "frequency",
-        },
-        iv::GraphInputPortDescriptor {
-            .logical_node_id = "osc",
-            .concrete_member_ordinal = 0u,
-            .port_kind = iv::PortKind::sample,
-            .port_ordinal = 1,
-            .port_name = "frequency",
-        },
-    };
-
-    auto const first = timeline.reconcile_graph_input_lane_bindings(ports);
-    auto const second = timeline.reconcile_graph_input_lane_bindings(ports);
-
-    ASSERT_EQ(first.sample_inputs.size(), 1u);
-    ASSERT_EQ(second.sample_inputs.size(), 1u);
-    EXPECT_EQ(first.sample_inputs[0].knob_lane, second.sample_inputs[0].knob_lane);
-    EXPECT_TRUE(timeline.contains_lane(first.sample_inputs[0].knob_lane));
-}
-
 TEST(Lanes, LaneGraphDirtyCascadeQueuesCompiledOutputs)
 {
     iv::LaneGraph graph;

@@ -9,27 +9,19 @@
 
 #include <filesystem>
 #include <optional>
-#include <stdexcept>
 #include <vector>
 
 namespace {
 struct GraphInputLanesWitness {
-    std::vector<iv::GraphInputPortDescriptor> last_ports {};
+    std::vector<iv::TimelineLaneBatchUpdate> timeline_batches {};
 };
 
 GraphInputLanesWitness *g_graph_input_lanes_witness = nullptr;
 
-std::vector<iv::GraphInputPortDescriptor> const &recorded_ports()
+iv::IvModuleInstanceBuilder make_instance_builder_with_ports()
 {
-    if (g_graph_input_lanes_witness == nullptr) {
-        throw std::runtime_error("graph input lanes witness not installed");
-    }
-    return g_graph_input_lanes_witness->last_ports;
-}
-
-iv::IvModuleInstance make_instance_with_ports()
-{
-    iv::IvModuleInstance instance {};
+    iv::IvModuleInstanceBuilder instance_builder {};
+    auto &instance = instance_builder.instance;
     instance.instance_id = "instance:1";
     instance.definition_id = "definition:1";
     instance.module_root = std::filesystem::path("/tmp/module");
@@ -53,59 +45,18 @@ iv::IvModuleInstance make_instance_with_ports()
     });
 
     instance.introspection.logical_nodes.push_back(std::move(node));
-    return instance;
+    return instance_builder;
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::GraphInputLanesPortsChangedEvent,
-    iv_runtime_graph_input_lanes_ports_changed_event,
-    +[](iv::GraphInputLanesPortsChangedRequest const &request,
+    iv::GraphInputLanesTimelineBatchRequestedEvent,
+    iv_runtime_graph_input_lanes_timeline_batch_requested_event,
+    +[](iv::TimelineLaneBatchUpdate const &batch,
         iv::GraphInputLanesAckBuilder &builder) {
         if (g_graph_input_lanes_witness != nullptr) {
-            g_graph_input_lanes_witness->last_ports = request.ports;
+            g_graph_input_lanes_witness->timeline_batches.push_back(batch);
         }
         builder.succeed();
-    });
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    iv::GraphInputLanesLaneBindingsRequestedEvent,
-    iv_runtime_graph_input_lanes_lane_bindings_requested_event,
-    +[](iv::GraphInputLanesPortsChangedRequest const &,
-        iv::GraphInputLanesLaneBindingsBuilder &builder) {
-        auto const &ports = recorded_ports();
-
-        iv::GraphInputLaneBindings bindings {};
-        uint64_t next_lane_id = 10;
-        for (auto const &port : ports) {
-            if (port.port_kind == iv::PortKind::sample) {
-                bindings.logical_sample_knobs.push_back(iv::GraphInputLaneBinding {
-                    .port = port,
-                    .knob_lane = iv::LaneId {next_lane_id++},
-                });
-                bindings.sample_inputs.push_back(iv::GraphInputLaneBinding {
-                    .port = port,
-                    .knob_lane = iv::LaneId {next_lane_id++},
-                    .graph_input_lane = iv::LaneId {next_lane_id++},
-                    .logical_knob_lane = iv::LaneId {next_lane_id - 3},
-                });
-                continue;
-            }
-
-            bindings.event_inputs.push_back(iv::GraphInputLaneBinding {
-                .port = port,
-                .graph_input_lane = iv::LaneId {next_lane_id++},
-            });
-        }
-
-        builder.succeed(std::move(bindings));
-    });
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    iv::GraphInputLanesLaneOutputsRequestedEvent,
-    iv_runtime_graph_input_lanes_lane_outputs_requested_event,
-    +[](std::vector<iv::LaneId> const &,
-        iv::GraphInputLanesLaneOutputsBuilder &builder) {
-        builder.succeed({});
     });
 
 class GraphInputLanesTest : public ::testing::Test {
@@ -124,33 +75,65 @@ protected:
 };
 } // namespace
 
-TEST_F(GraphInputLanesTest, QueryLanesReturnsGraphInputSubset)
+TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
 {
     iv::GraphInputLanes lanes;
 
-    lanes.handle_iv_module_instances_changed(iv::IvModuleInstancesChanged {
-        .created = {make_instance_with_ports()},
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {make_instance_builder_with_ports()},
     });
 
-    auto const result = lanes.query_lanes(iv::LaneQueryFilter {.kind = "graphInputs"});
-
-    ASSERT_EQ(witness.last_ports.size(), 2u);
-    EXPECT_EQ(result.total_lane_count, 3u);
-    ASSERT_EQ(result.lanes.size(), 3u);
-    for (auto const &lane : result.lanes) {
-        EXPECT_FALSE(lane.graph_input_port.logical_node_id.empty());
-    }
+    ASSERT_EQ(witness.timeline_batches.size(), 1u);
+    EXPECT_GE(witness.timeline_batches.front().upserts.size(), 1u);
+    EXPECT_TRUE(witness.timeline_batches.front().removals.empty());
 }
 
-TEST_F(GraphInputLanesTest, QueryLanesRejectsUnsupportedFilter)
+TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)
 {
     iv::GraphInputLanes lanes;
 
-    lanes.handle_iv_module_instances_changed(iv::IvModuleInstancesChanged {
-        .created = {make_instance_with_ports()},
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {make_instance_builder_with_ports()},
+    });
+    auto const created_count = witness.timeline_batches.front().upserts.size();
+    witness.timeline_batches.clear();
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .deleted_instance_ids = {"instance:1"},
     });
 
-    EXPECT_THROW(
-        (void)lanes.query_lanes(iv::LaneQueryFilter {.kind = "notGraphInputs"}),
-        std::runtime_error);
+    ASSERT_EQ(witness.timeline_batches.size(), 1u);
+    EXPECT_EQ(witness.timeline_batches.front().removals.size(), created_count);
+}
+
+TEST_F(GraphInputLanesTest, UpdatedInstancePublishesTimelineBatch)
+{
+    iv::GraphInputLanes lanes;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .updated = {make_instance_builder_with_ports()},
+    });
+
+    ASSERT_EQ(witness.timeline_batches.size(), 1u);
+    EXPECT_GE(witness.timeline_batches.front().upserts.size(), 1u);
+}
+
+TEST_F(GraphInputLanesTest, SampleInputMutationsPublishTimelineBatch)
+{
+    iv::GraphInputLanes lanes;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {make_instance_builder_with_ports()},
+    });
+    witness.timeline_batches.clear();
+
+    lanes.set_sample_input_value(iv::ProjectSetSampleInputValueRequest{
+        .node_id = "node-1",
+        .member_ordinal = std::nullopt,
+        .input_ordinal = 0,
+        .value = iv::Sample{0.5f},
+    });
+
+    ASSERT_EQ(witness.timeline_batches.size(), 1u);
+    EXPECT_EQ(witness.timeline_batches.front().upserts.size(), 1u);
 }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <stdexcept>
 #include <system_error>
 
 namespace iv {
@@ -34,6 +35,19 @@ IvModuleInstance make_instance_from_definition(
     instance.module_id = definition.module_id;
     instance.introspection = definition.introspection;
     return instance;
+}
+
+IvModuleInstanceBuilder make_instance_builder_from_definition(
+    IvModuleDefinition const &definition,
+    std::string const &instance_id)
+{
+    auto instance = make_instance_from_definition(definition, instance_id);
+    return IvModuleInstanceBuilder{
+        .instance = std::move(instance),
+        .builder = definition.canonical_builder != nullptr
+            ? *definition.canonical_builder
+            : GraphBuilder{},
+    };
 }
 } // namespace
 
@@ -160,6 +174,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
     IvModuleDefinitionsChanged const &diff)
 {
     IvModuleInstancesChanged instance_diff{};
+    IvModuleInstanceBuildersChanged builders_diff{};
     bool list_changed = false;
 
     {
@@ -172,6 +187,10 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 auto instance = make_instance_from_definition(definition, entry.second.instance_id);
                 realized_instances_by_id[entry.second.instance_id] = instance;
                 instance_diff.created.push_back(std::move(instance));
+                builders_diff.created.push_back(
+                    make_instance_builder_from_definition(
+                        definition,
+                        entry.second.instance_id));
                 list_changed = true;
             }
         }
@@ -183,6 +202,10 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 auto instance = make_instance_from_definition(definition, entry.second.instance_id);
                 realized_instances_by_id[entry.second.instance_id] = instance;
                 instance_diff.updated.push_back(std::move(instance));
+                builders_diff.updated.push_back(
+                    make_instance_builder_from_definition(
+                        definition,
+                        entry.second.instance_id));
                 list_changed = true;
             }
         }
@@ -191,6 +214,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                  it != realized_instances_by_id.end();) {
                 if (it->second.definition_id == definition_id) {
                     instance_diff.deleted_instance_ids.push_back(it->second.instance_id);
+                    builders_diff.deleted_instance_ids.push_back(it->second.instance_id);
                     it = realized_instances_by_id.erase(it);
                     list_changed = true;
                 } else {
@@ -203,6 +227,9 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_iv_module_instances_changed_event,
         instance_diff);
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_instance_builders_changed_event,
+        builders_diff);
     if (list_changed) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_instances_list_changed_event,

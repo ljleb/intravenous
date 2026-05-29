@@ -6,14 +6,14 @@
 #include <gtest/gtest.h>
 
 namespace {
-using iv::test_support::fresh_test_workspace;
+using iv::test_support::fresh_module_fixture_workspace;
 using iv::test_support::make_loaded_definition;
 }
 
 TEST(IvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
 {
     auto const workspace =
-        fresh_test_workspace("iv_module_definitions_seed_loaded_definition");
+        fresh_module_fixture_workspace("iv_module_definitions_seed_loaded_definition");
 
     iv::IvModuleDefinitions definitions;
     auto const loaded = make_loaded_definition(workspace);
@@ -31,7 +31,7 @@ TEST(IvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
 TEST(IvModuleDefinitions, RemoveDefinitionClearsLoadedSnapshot)
 {
     auto const workspace =
-        fresh_test_workspace("iv_module_definitions_remove_definition");
+        fresh_module_fixture_workspace("iv_module_definitions_remove_definition");
 
     iv::IvModuleDefinitions definitions;
     auto const loaded = make_loaded_definition(workspace);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "runtime/lane_graph.h"
+#include "lane_node/graph.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -15,7 +15,7 @@ namespace iv {
     struct LaneInfo {
         uint64_t lane_id = 0;
         LaneDomain domain = LaneDomain::realtime;
-        GraphInputPortDescriptor graph_input_port {};
+        LaneMetadata metadata {};
     };
 
     struct LaneConnectionInfo {
@@ -26,7 +26,7 @@ namespace iv {
     };
 
     struct LaneQueryFilter {
-        std::string kind {};
+        std::string source {};
     };
 
     struct LaneQuery {
@@ -37,6 +37,7 @@ namespace iv {
         size_t start_index = 0;
         size_t visible_lane_count = 0;
         size_t total_lane_count = 0;
+        std::optional<std::string> error_message {};
         std::vector<LaneInfo> lanes {};
         std::vector<LaneConnectionInfo> connections {};
     };

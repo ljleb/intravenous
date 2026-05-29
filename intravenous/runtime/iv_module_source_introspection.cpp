@@ -1,8 +1,8 @@
-#include "runtime/project_introspection.h"
+#include "runtime/iv_module_source_introspection.h"
 
 #include "compat.h"
 #include "filesystem_paths.h"
-#include "runtime/project_introspection_events.h"
+#include "runtime/iv_module_source_introspection_events.h"
 
 #include <algorithm>
 #include <fstream>
@@ -139,7 +139,7 @@ GraphInputPortDescriptor sample_graph_input_port_for(
 } // namespace
 
 SourceTextLineMap const &
-ProjectIntrospection::source_text_for(std::string const &normalized_path) const
+IvModuleSourceIntrospection::source_text_for(std::string const &normalized_path) const
 {
     auto it = source_text_cache.find(normalized_path);
     if (it == source_text_cache.end()) {
@@ -149,12 +149,12 @@ ProjectIntrospection::source_text_for(std::string const &normalized_path) const
     return it->second;
 }
 
-void ProjectIntrospection::invalidate_source_text(std::string const &normalized_path)
+void IvModuleSourceIntrospection::invalidate_source_text(std::string const &normalized_path)
 {
     source_text_cache.erase(normalized_path);
 }
 
-void ProjectIntrospection::invalidate_source_texts(
+void IvModuleSourceIntrospection::invalidate_source_texts(
     std::span<ModuleDependency const> dependencies)
 {
     for (auto const &dependency : dependencies) {
@@ -165,7 +165,7 @@ void ProjectIntrospection::invalidate_source_texts(
     }
 }
 
-std::pair<uint32_t, uint32_t> ProjectIntrospection::byte_range_for(
+std::pair<uint32_t, uint32_t> IvModuleSourceIntrospection::byte_range_for(
     std::string const &normalized_path,
     SourceRange const &range) const
 {
@@ -176,7 +176,7 @@ std::pair<uint32_t, uint32_t> ProjectIntrospection::byte_range_for(
     };
 }
 
-LiveSourceSpan ProjectIntrospection::to_live_span(SourceSpan const &span) const
+LiveSourceSpan IvModuleSourceIntrospection::to_live_span(SourceSpan const &span) const
 {
     SourceTextLineMap const &index = source_text_for(span.file_path);
     return LiveSourceSpan{
@@ -188,10 +188,10 @@ LiveSourceSpan ProjectIntrospection::to_live_span(SourceSpan const &span) const
     };
 }
 
-LogicalNodeInfo ProjectIntrospection::to_logical_node(
+LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
     IntrospectionLogicalNode const &node) const
 {
-    std::vector<ProjectIntrospectionLiveInputSnapshotRequest> snapshot_requests;
+    std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> snapshot_requests;
     snapshot_requests.reserve(
         node.sample_inputs.size() +
         std::accumulate(
@@ -202,7 +202,7 @@ LogicalNodeInfo ProjectIntrospection::to_logical_node(
                 return sum + member.sample_inputs.size();
             }));
     for (auto const &port : node.sample_inputs) {
-        snapshot_requests.push_back(ProjectIntrospectionLiveInputSnapshotRequest{
+        snapshot_requests.push_back(IvModuleSourceIntrospectionLiveInputSnapshotRequest{
             .logical_node_id = node.id,
             .member_ordinal = std::nullopt,
             .input_ordinal = port.ordinal,
@@ -211,7 +211,7 @@ LogicalNodeInfo ProjectIntrospection::to_logical_node(
     }
     for (auto const &member : node.members) {
         for (auto const &port : member.sample_inputs) {
-            snapshot_requests.push_back(ProjectIntrospectionLiveInputSnapshotRequest{
+            snapshot_requests.push_back(IvModuleSourceIntrospectionLiveInputSnapshotRequest{
                 .logical_node_id = node.id,
                 .member_ordinal = member.ordinal,
                 .input_ordinal = port.ordinal,
@@ -220,14 +220,14 @@ LogicalNodeInfo ProjectIntrospection::to_logical_node(
         }
     }
 
-    ProjectIntrospectionLiveInputSnapshotsBuilder snapshot_builder;
+    IvModuleSourceIntrospectionLiveInputSnapshotsBuilder snapshot_builder;
     IV_INVOKE_LINKER_EVENT(
-        iv_runtime_project_introspection_live_input_snapshots_requested_event,
+        iv_runtime_iv_module_source_introspection_live_input_snapshots_requested_event,
         snapshot_requests,
         snapshot_builder);
     auto const snapshots = snapshot_builder.build();
 
-    std::unordered_map<std::string, ProjectIntrospectionLiveInputSnapshot> snapshots_by_key;
+    std::unordered_map<std::string, IvModuleSourceIntrospectionLiveInputSnapshot> snapshots_by_key;
     snapshots_by_key.reserve(snapshots.size());
     for (auto const &snapshot : snapshots) {
         snapshots_by_key.emplace(
@@ -285,7 +285,7 @@ LogicalNodeInfo ProjectIntrospection::to_logical_node(
     return live;
 }
 
-ProjectInitializeResult ProjectIntrospection::initialize() const
+ProjectInitializeResult IvModuleSourceIntrospection::initialize() const
 {
     std::scoped_lock lock(mutex);
     if (!graph_index.has_value()) {
@@ -299,7 +299,7 @@ ProjectInitializeResult ProjectIntrospection::initialize() const
     };
 }
 
-void ProjectIntrospection::handle_iv_module_definitions_changed(
+void IvModuleSourceIntrospection::handle_iv_module_definitions_changed(
     IvModuleDefinitionsChanged const &diff)
 {
     auto const changed_count = diff.created.size() + diff.updated.size();
@@ -323,7 +323,7 @@ void ProjectIntrospection::handle_iv_module_definitions_changed(
         definition.module_id);
 }
 
-ProjectQueryResult ProjectIntrospection::query_by_spans(
+ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
     std::filesystem::path const &file_path,
     std::vector<SourceRange> const &ranges,
     SourceRangeMatchMode match_mode) const
@@ -455,7 +455,7 @@ ProjectQueryResult ProjectIntrospection::query_by_spans(
     return result;
 }
 
-ProjectRegionQueryResult ProjectIntrospection::query_active_regions(
+ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
     std::filesystem::path const &file_path) const
 {
     std::scoped_lock lock(mutex);
@@ -487,7 +487,7 @@ ProjectRegionQueryResult ProjectIntrospection::query_active_regions(
     return result;
 }
 
-LogicalNodeInfo ProjectIntrospection::get_logical_node(std::string const &node_id) const
+LogicalNodeInfo IvModuleSourceIntrospection::get_logical_node(std::string const &node_id) const
 {
     std::scoped_lock lock(mutex);
     if (!graph_index.has_value()) {
@@ -501,7 +501,7 @@ LogicalNodeInfo ProjectIntrospection::get_logical_node(std::string const &node_i
     return to_logical_node(graph_index->logical_nodes[it->second]);
 }
 
-std::vector<LogicalNodeInfo> ProjectIntrospection::get_logical_nodes(
+std::vector<LogicalNodeInfo> IvModuleSourceIntrospection::get_logical_nodes(
     std::vector<std::string> const &node_ids) const
 {
     std::scoped_lock lock(mutex);
@@ -521,7 +521,7 @@ std::vector<LogicalNodeInfo> ProjectIntrospection::get_logical_nodes(
     return nodes;
 }
 
-GraphInputPortDescriptor ProjectIntrospection::sample_graph_input_port_for_node(
+GraphInputPortDescriptor IvModuleSourceIntrospection::sample_graph_input_port_for_node(
     std::string const &node_id,
     std::optional<size_t> concrete_member_ordinal,
     size_t input_ordinal) const

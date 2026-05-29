@@ -5,7 +5,6 @@
 #include "basic_nodes/midi.h"
 #include "compiler.h"
 #include "node.h"
-#include "runtime/iv_module_instances_events.h"
 
 #include <algorithm>
 #include <array>
@@ -1853,7 +1852,30 @@ namespace iv {
             GraphIntrospectionMetadata introspection;
         };
 
-        GraphBuilder& augment();
+        struct VacantSampleInput {
+            PortId target {};
+            std::string logical_node_id {};
+            size_t member_ordinal = 0;
+            InputConfig config {};
+        };
+
+        struct VacantEventInput {
+            PortId target {};
+            std::string logical_node_id {};
+            size_t member_ordinal = 0;
+            EventInputConfig config {};
+        };
+
+        struct VacantInputs {
+            std::vector<VacantSampleInput> sample {};
+            std::vector<VacantEventInput> event {};
+        };
+
+        VacantInputs vacant_inputs() const;
+        void connect_sample_input(PortId target, SamplePortRef source);
+        void connect_event_input(PortId target, EventPortRef source);
+        void mark_runtime_filled_sample_input(PortId target);
+        void mark_runtime_filled_event_input(PortId target);
         BuildResult build_with_metadata(size_t detach_id_offset = 0) const;
         Graph build(size_t detach_id_offset = 0) const;
 
@@ -2032,9 +2054,9 @@ namespace iv {
 
     };
 
-    inline GraphBuilder& GraphBuilder::augment()
+    inline GraphBuilder::VacantInputs GraphBuilder::vacant_inputs() const
     {
-        std::unordered_map<std::string, size_t> control_node_indices;
+        VacantInputs result;
         size_t const original_node_count = _nodes.size();
         std::unordered_map<std::string, std::unordered_set<std::string>> types_by_logical_id;
         for (size_t node_i = 0; node_i < original_node_count; ++node_i) {
@@ -2068,30 +2090,12 @@ namespace iv {
                 if (_placed_input_ports.contains(target_port)) {
                     continue;
                 }
-                IvModuleSampleInputResolutionBuilder resolution_builder;
-                IV_INVOKE_LINKER_EVENT(
-                    iv_runtime_iv_module_sample_input_resolution_requested_event,
-                    IvModuleSampleInputResolutionRequest{
-                        .logical_node_id = final_logical_node_id,
-                        .member_ordinal = member_ordinal,
-                        .input_ordinal = input_i,
-                        .input_name = input_configs[input_i].name,
-                        .default_value = input_configs[input_i].default_value,
-                    },
-                    resolution_builder);
-                auto const lane_ref = resolution_builder.build();
-                auto const identity = LaneInputValue::nominal_identity(lane_ref);
-                SamplePortRef source;
-                if (auto const existing = control_node_indices.find(identity);
-                    existing != control_node_indices.end()) {
-                    source = SamplePortRef(*this, existing->second, 0);
-                } else {
-                    source = node<LaneInputValue>(lane_ref);
-                    control_node_indices.emplace(identity, source.node_index);
-                }
-                _placed_input_ports.insert(target_port);
-                _timeline_filled_input_ports.insert(target_port);
-                _edges.emplace(GraphEdge{ source, target_port });
+                result.sample.push_back(VacantSampleInput {
+                    .target = target_port,
+                    .logical_node_id = final_logical_node_id,
+                    .member_ordinal = member_ordinal,
+                    .config = input_configs[input_i],
+                });
             }
 
             for (size_t input_i = 0; input_i < event_input_configs.size(); ++input_i) {
@@ -2099,22 +2103,68 @@ namespace iv {
                 if (_placed_event_input_ports.contains(target_port)) {
                     continue;
                 }
-                EventPortRef source =
-                    node<EventConcatenation>(0, event_input_configs[input_i].type)
-                        .event_port(0);
-                auto const source_type = (source.node_index == GRAPH_ID)
-                    ? _public_event_inputs[source.output_port].type
-                    : _nodes[source.node_index].event_output_configs[source.output_port].type;
-                _placed_event_input_ports.insert(target_port);
-                _timeline_filled_event_input_ports.insert(target_port);
-                _event_edges.emplace(GraphEventEdge{
-                    PortId{ source.node_index, source.output_port },
-                    target_port,
-                    EventConversionRegistry::instance().plan(source_type, event_input_configs[input_i].type)
+                result.event.push_back(VacantEventInput {
+                    .target = target_port,
+                    .logical_node_id = final_logical_node_id,
+                    .member_ordinal = member_ordinal,
+                    .config = event_input_configs[input_i],
                 });
             }
         }
-        return *this;
+        return result;
+    }
+
+    inline void GraphBuilder::connect_sample_input(PortId target, SamplePortRef source)
+    {
+        if (source.graph_builder != this) {
+            details::error(
+                source.to_string() + " belongs to another builder"
+            );
+        }
+        if (target.node >= _nodes.size() || target.port >= _nodes[target.node].input_configs.size()) {
+            details::error("sample input target is out of bounds in builder " + _builder_id.value);
+        }
+        if (_placed_input_ports.contains(target)) {
+            details::error("sample input was already placed in builder " + _builder_id.value);
+        }
+        _placed_input_ports.insert(target);
+        _edges.emplace(GraphEdge{ source, target });
+    }
+
+    inline void GraphBuilder::connect_event_input(PortId target, EventPortRef source)
+    {
+        if (source.graph_builder != this) {
+            details::error(
+                source.to_string() + " belongs to another builder"
+            );
+        }
+        if (target.node >= _nodes.size() || target.port >= _nodes[target.node].event_input_configs.size()) {
+            details::error("event input target is out of bounds in builder " + _builder_id.value);
+        }
+        if (_placed_event_input_ports.contains(target)) {
+            details::error("event input was already placed in builder " + _builder_id.value);
+        }
+        auto const source_type = (source.node_index == GRAPH_ID)
+            ? _public_event_inputs[source.output_port].type
+            : _nodes[source.node_index].event_output_configs[source.output_port].type;
+        auto const target_type = _nodes[target.node].event_input_configs[target.port].type;
+
+        _placed_event_input_ports.insert(target);
+        _event_edges.emplace(GraphEventEdge{
+            PortId{ source.node_index, source.output_port },
+            target,
+            EventConversionRegistry::instance().plan(source_type, target_type)
+        });
+    }
+
+    inline void GraphBuilder::mark_runtime_filled_sample_input(PortId target)
+    {
+        _timeline_filled_input_ports.insert(target);
+    }
+
+    inline void GraphBuilder::mark_runtime_filled_event_input(PortId target)
+    {
+        _timeline_filled_event_input_ports.insert(target);
     }
 
     inline GraphBuilder::BuildResult GraphBuilder::build_with_metadata(size_t detach_id_offset) const

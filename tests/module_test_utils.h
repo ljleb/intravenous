@@ -167,7 +167,7 @@ namespace iv::test {
         return out.str();
     }
 
-    inline std::filesystem::path fresh_test_workspace(
+    inline std::filesystem::path fresh_module_fixture_workspace(
         std::string_view base_name,
         std::source_location location = std::source_location::current()
     )
@@ -301,12 +301,12 @@ namespace iv::test {
         ScopedFileLock& operator=(ScopedFileLock const&) = delete;
     };
 
-    inline std::filesystem::path copy_fixture_workspace(
+    inline std::filesystem::path mutable_module_fixture_workspace(
         std::string_view test_name,
         std::string const& fixture_name,
         std::source_location location = std::source_location::current())
     {
-        auto const workspace = fresh_test_workspace(test_name, location);
+        auto const workspace = fresh_module_fixture_workspace(test_name, location);
         copy_directory(test_modules_root() / fixture_name, workspace);
         return workspace;
     }
@@ -321,7 +321,7 @@ namespace iv::test {
         return workspace;
     }
 
-    inline std::filesystem::path shared_project_fixture_workspace(std::string const& fixture_name)
+    inline std::filesystem::path read_only_module_fixture_workspace(std::string const& fixture_name)
     {
         auto const workspace = shared_fixture_workspace(fixture_name);
         auto const lock = ScopedFileLock(
@@ -336,7 +336,7 @@ namespace iv::test {
         std::string const& module_text,
         std::source_location location = std::source_location::current())
     {
-        auto const workspace = fresh_test_workspace(test_name, location);
+        auto const workspace = fresh_module_fixture_workspace(test_name, location);
         std::filesystem::create_directories(workspace);
         write_text(workspace / ".intravenous", "");
         write_text(workspace / "module.cpp", module_text);
@@ -716,16 +716,15 @@ namespace iv::test {
 namespace iv::test_support {
     using iv::test::configured_program_or_find;
     using iv::test::copy_directory;
-    using iv::test::copy_fixture_workspace;
     using iv::test::find_program;
-    using iv::test::fresh_test_workspace;
+    using iv::test::fresh_module_fixture_workspace;
     using iv::test::load_runtime_iv_module_definition;
     using iv::test::make_loaded_definition;
     using iv::test::make_inline_module_workspace;
+    using iv::test::mutable_module_fixture_workspace;
     using iv::test::read_text;
+    using iv::test::read_only_module_fixture_workspace;
     using iv::test::ScopedEnvVar;
-    using iv::test::shared_fixture_workspace;
-    using iv::test::shared_project_fixture_workspace;
     using iv::test::shared_inline_module_workspace;
     using iv::test::test_modules_root;
     using iv::test::write_text;
@@ -734,6 +733,6 @@ namespace iv::test_support {
         std::string_view name,
         std::source_location location = std::source_location::current())
     {
-        return iv::test::fresh_test_workspace(name, location);
+        return iv::test::fresh_module_fixture_workspace(name, location);
     }
 }
