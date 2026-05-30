@@ -1145,7 +1145,7 @@ namespace iv {
             });
         }
 
-        LoadedGraph load_root(
+        LoadedDefinition load_root_definition(
             std::filesystem::path const& module_path,
             ModuleExecutorTarget render_config,
             Sample* sample_period
@@ -1180,28 +1180,27 @@ namespace iv {
             );
             TypeErasedModule root_module = session.load_module(root.id);
             GraphBuilder root_builder;
-            GraphBuilder::BuildResult built_root = [&]() -> GraphBuilder::BuildResult {
+            GraphIntrospectionMetadata introspection = [&]() {
                 try {
                     root_builder = root_module.builder(context);
-                    return root_builder.build_with_metadata();
+                    return root_builder.build_metadata();
                 } catch (std::exception const& e) {
                     throw std::runtime_error(wrap_exception(
-                        "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "'",
+                        "failed to build root module definition '" + root.id + "' from '" + root.request_path.string() + "'",
                         e
                     ));
                 } catch (...) {
                     throw std::runtime_error(
-                        "failed to build root module '" + root.id + "' from '" + root.request_path.string() + "'"
+                        "failed to build root module definition '" + root.id + "' from '" + root.request_path.string() + "'"
                     );
                 }
             }();
             session.ensure_loaded_binary_dependencies();
 
-            return LoadedGraph(
-                std::move(built_root.graph),
+            return LoadedDefinition(
                 std::move(session.module_refs),
                 std::make_unique<GraphBuilder>(std::move(root_builder)),
-                std::move(built_root.introspection),
+                std::move(introspection),
                 root.request_path,
                 root.id,
                 std::move(session.dependencies),
@@ -1215,6 +1214,7 @@ namespace iv {
         std::vector<ModuleRef> module_refs_,
         std::unique_ptr<GraphBuilder> canonical_builder_,
         GraphIntrospectionMetadata introspection_,
+        GraphBuildMetadata graph_build_metadata_,
         std::filesystem::path module_path_,
         std::string module_id_,
         std::vector<ModuleDependency> dependencies_,
@@ -1222,6 +1222,25 @@ namespace iv {
     ) :
         module_refs(std::move(module_refs_)),
         root(std::move(root_)),
+        canonical_builder(std::move(canonical_builder_)),
+        introspection(std::move(introspection_)),
+        graph_build_metadata(std::move(graph_build_metadata_)),
+        module_path(std::move(module_path_)),
+        module_id(std::move(module_id_)),
+        dependencies(std::move(dependencies_)),
+        sink_count(sink_count_)
+    {}
+
+    ModuleLoader::LoadedDefinition::LoadedDefinition(
+        std::vector<ModuleRef> module_refs_,
+        std::unique_ptr<GraphBuilder> canonical_builder_,
+        GraphIntrospectionMetadata introspection_,
+        std::filesystem::path module_path_,
+        std::string module_id_,
+        std::vector<ModuleDependency> dependencies_,
+        size_t sink_count_
+    ) :
+        module_refs(std::move(module_refs_)),
         canonical_builder(std::move(canonical_builder_)),
         introspection(std::move(introspection_)),
         module_path(std::move(module_path_)),
@@ -1248,13 +1267,13 @@ namespace iv {
     ModuleLoader::ModuleLoader(ModuleLoader&&) noexcept = default;
     ModuleLoader& ModuleLoader::operator=(ModuleLoader&&) noexcept = default;
 
-    ModuleLoader::LoadedGraph ModuleLoader::load_root(
+    ModuleLoader::LoadedDefinition ModuleLoader::load_root_definition(
         std::filesystem::path const& module_path,
         ModuleExecutorTarget render_config,
         Sample* sample_period
     ) const
     {
-        return _impl->load_root(module_path, render_config, sample_period);
+        return _impl->load_root_definition(module_path, render_config, sample_period);
     }
 
     std::vector<std::filesystem::path> const& ModuleLoader::extra_search_roots() const

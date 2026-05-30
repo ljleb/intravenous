@@ -31,7 +31,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::ModuleLoader loader(iv::test::repo_root(), { runtime_root });
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             project_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
@@ -59,7 +59,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             project_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
@@ -81,7 +81,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     auto const voice_cache_mid = iv::test::write_time(voice_cache);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             project_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
@@ -93,7 +93,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     EXPECT_EQ(iv::test::write_time(voice_cache), voice_cache_mid);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             local_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
@@ -110,7 +110,7 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             local_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()

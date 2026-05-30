@@ -10,6 +10,7 @@
 #include "runtime/iv_module_instances_iv_module_definitions_bridge.h"
 #include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
 #include "runtime/iv_module_reload.h"
+#include "runtime/iv_module_reload_events.h"
 #include "runtime/iv_module_reload_iv_module_definitions_bridge.h"
 #include "runtime/lane_filters.h"
 #include "runtime/lane_filters_lane_views_bridge.h"
@@ -22,9 +23,23 @@
 #include <gtest/gtest.h>
 
 namespace {
-using iv::test_support::mutable_module_fixture_workspace;
 using iv::test_support::read_only_module_fixture_workspace;
 using iv::test_support::shared_inline_module_workspace;
+
+struct IntegrationReloadWitness {
+    std::optional<iv::IvModuleReloadResults> results {};
+};
+
+IntegrationReloadWitness *g_integration_reload_witness = nullptr;
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv::IvModuleReloadResultsEvent,
+    iv_runtime_iv_module_reload_results_event,
+    +[](iv::IvModuleReloadResults const &results) {
+        if (g_integration_reload_witness != nullptr) {
+            g_integration_reload_witness->results = results;
+        }
+    });
 }
 
 TEST(Integration, StartupConfigDefinitionsAndIvModuleSourceIntrospectionInitializeAndShutdown)
@@ -56,6 +71,7 @@ TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutd
         "runtime_integration_graph_input_lanes_initialize",
         R"(#include "dsl.h"
 #include "basic_nodes/buffers.h"
+#include "basic_nodes/shaping.h"
 
 namespace {
     void graph_input_module(iv::ModuleContext const& context)
@@ -64,7 +80,16 @@ namespace {
         auto& g = context.builder();
         auto const dt = g.node<ValueSource>(&context.sample_period());
         auto const sink = context.target_factory().sink(g, 0);
-        sink(("amplitude"_P << dt) * 0.0f);
+        auto const voices = iv::polyphonic<2>(g, [&](auto m) {
+            auto const saw = g.node<SawOscillator>();
+            saw(
+                "phase_offset"_P = 0.0,
+                "frequency"_P = 440.0,
+                "dt"_P = dt
+            );
+            return saw * ("amplitude"_P << m);
+        });
+        sink(voices);
         g.outputs();
     }
 }
@@ -91,7 +116,14 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
     iv::bind_iv_module_reload_iv_module_definitions_bridge(definitions);
     iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
 
+    IntegrationReloadWitness reload_witness;
+    g_integration_reload_witness = &reload_witness;
     (void)instances.create_instance(std::filesystem::weakly_canonical(workspace));
+    g_integration_reload_witness = nullptr;
+
+    ASSERT_TRUE(reload_witness.results.has_value());
+    ASSERT_TRUE(reload_witness.results->failed.empty())
+        << reload_witness.results->failed.front().message;
 
     auto const loaded_definitions = definitions.loaded_definitions();
     ASSERT_EQ(loaded_definitions.size(), 1u);

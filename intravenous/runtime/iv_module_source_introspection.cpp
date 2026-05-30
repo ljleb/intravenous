@@ -65,6 +65,28 @@ SourcePosition SourceTextLineMap::position_for(size_t offset) const
 }
 
 namespace {
+LogicalPortInfo to_live_port(IntrospectionPortInfo const &port)
+{
+    return LogicalPortInfo{
+        .name = port.name,
+        .type = port.type,
+        .connectivity = port.connectivity,
+        .ordinal = port.ordinal,
+        .default_value = port.default_value,
+        .current_value = port.default_value,
+    };
+}
+
+std::vector<LogicalPortInfo> to_live_ports(std::span<IntrospectionPortInfo const> ports)
+{
+    std::vector<LogicalPortInfo> live_ports;
+    live_ports.reserve(ports.size());
+    for (auto const &port : ports) {
+        live_ports.push_back(to_live_port(port));
+    }
+    return live_ports;
+}
+
 void sort_and_deduplicate_spans(std::vector<SourceSpan> &spans)
 {
     std::sort(spans.begin(), spans.end(), [](auto const &a, auto const &b) {
@@ -121,7 +143,7 @@ GraphInputPortDescriptor sample_graph_input_port_for(
     auto const &ports = concrete_member_ordinal.has_value()
         ? node.members[*concrete_member_ordinal].sample_inputs
         : node.sample_inputs;
-    auto const port_it = std::ranges::find_if(ports, [&](LogicalPortInfo const &port) {
+    auto const port_it = std::ranges::find_if(ports, [&](IntrospectionPortInfo const &port) {
         return port.ordinal == input_ordinal;
     });
     if (port_it == ports.end()) {
@@ -243,7 +265,7 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
     live.kind = node.kind;
     live.source_identity = node.source_identity;
     live.type_identity = node.type_identity;
-    live.sample_inputs = node.sample_inputs;
+    live.sample_inputs = to_live_ports(node.sample_inputs);
     for (auto &port : live.sample_inputs) {
         auto const snapshot_it = snapshots_by_key.find(
             live_input_snapshot_key(node.id, std::nullopt, port.ordinal));
@@ -252,9 +274,9 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
         }
         port.current_value = snapshot_it->second.current_value;
     }
-    live.sample_outputs = node.sample_outputs;
-    live.event_inputs = node.event_inputs;
-    live.event_outputs = node.event_outputs;
+    live.sample_outputs = to_live_ports(node.sample_outputs);
+    live.event_inputs = to_live_ports(node.event_inputs);
+    live.event_outputs = to_live_ports(node.event_outputs);
     live.member_count = node.backing_node_ids.size();
     live.members.reserve(node.members.size());
     for (auto const &member : node.members) {
@@ -263,7 +285,7 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
         live_member.backing_node_id = member.backing_node_id;
         live_member.kind = member.kind;
         live_member.type_identity = member.type_identity;
-        live_member.sample_inputs = member.sample_inputs;
+        live_member.sample_inputs = to_live_ports(member.sample_inputs);
         for (auto &port : live_member.sample_inputs) {
             auto const snapshot_it = snapshots_by_key.find(
                 live_input_snapshot_key(node.id, member.ordinal, port.ordinal));
@@ -273,9 +295,9 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
             port.current_value = snapshot_it->second.current_value;
             port.has_concrete_override = snapshot_it->second.has_concrete_override;
         }
-        live_member.sample_outputs = member.sample_outputs;
-        live_member.event_inputs = member.event_inputs;
-        live_member.event_outputs = member.event_outputs;
+        live_member.sample_outputs = to_live_ports(member.sample_outputs);
+        live_member.event_inputs = to_live_ports(member.event_inputs);
+        live_member.event_outputs = to_live_ports(member.event_outputs);
         live.members.push_back(std::move(live_member));
     }
     live.source_spans.reserve(node.source_spans.size());

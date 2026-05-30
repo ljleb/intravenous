@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug integration gtest: graph input lanes",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/tests/intravenous_runtime_integration_tests",
+      "args": [
+        "--gtest_filter=Integration.InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutdown",
+        "--gtest_break_on_failure"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "GTEST_COLOR": "1"
+      }
+    }
+  ]
+}

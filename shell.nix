@@ -9,6 +9,7 @@ pkgs.mkShell {
     clang-tools
     llvmPackages_latest.libllvm.dev
     llvmPackages_latest.clang-unwrapped.dev
+    vscode-extensions.vadimcn.vscode-lldb
     python3
     nodejs
     vsce

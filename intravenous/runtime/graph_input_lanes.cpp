@@ -39,7 +39,7 @@ void append_graph_input_port_descriptors(
     std::string const &logical_node_id,
     std::optional<size_t> concrete_member_ordinal,
     PortKind port_kind,
-    std::span<LogicalPortInfo const> logical_ports)
+    std::span<IntrospectionPortInfo const> logical_ports)
 {
     ports.reserve(ports.size() + logical_ports.size());
     for (auto const &port : logical_ports) {

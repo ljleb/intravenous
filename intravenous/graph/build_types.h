@@ -18,6 +18,18 @@ namespace iv {
         mixed,
     };
 
+    struct IntrospectionPortInfo {
+        std::string name {};
+        std::string type {};
+        LogicalPortConnectivity connectivity = LogicalPortConnectivity::disconnected;
+        size_t ordinal = 0;
+        Sample default_value = 0.0f;
+        size_t history = 0;
+        size_t latency = 0;
+
+        bool operator==(IntrospectionPortInfo const&) const = default;
+    };
+
     struct LogicalPortInfo {
         std::string name {};
         std::string type {};
@@ -36,10 +48,10 @@ namespace iv {
             std::string backing_node_id {};
             std::string kind {};
             std::string type_identity {};
-            std::vector<LogicalPortInfo> sample_inputs {};
-            std::vector<LogicalPortInfo> sample_outputs {};
-            std::vector<LogicalPortInfo> event_inputs {};
-            std::vector<LogicalPortInfo> event_outputs {};
+            std::vector<IntrospectionPortInfo> sample_inputs {};
+            std::vector<IntrospectionPortInfo> sample_outputs {};
+            std::vector<IntrospectionPortInfo> event_inputs {};
+            std::vector<IntrospectionPortInfo> event_outputs {};
         };
 
         std::string id {};
@@ -47,18 +59,21 @@ namespace iv {
         std::string source_identity {};
         std::string type_identity {};
         std::vector<SourceSpan> source_spans {};
-        std::vector<LogicalPortInfo> sample_inputs {};
-        std::vector<LogicalPortInfo> sample_outputs {};
-        std::vector<LogicalPortInfo> event_inputs {};
-        std::vector<LogicalPortInfo> event_outputs {};
+        std::vector<IntrospectionPortInfo> sample_inputs {};
+        std::vector<IntrospectionPortInfo> sample_outputs {};
+        std::vector<IntrospectionPortInfo> event_inputs {};
+        std::vector<IntrospectionPortInfo> event_outputs {};
         std::vector<std::string> backing_node_ids {};
         std::vector<Member> members {};
     };
 
     struct GraphIntrospectionMetadata {
+        std::vector<IntrospectionLogicalNode> logical_nodes;
+    };
+
+    struct GraphBuildMetadata {
         std::vector<LoweredSubgraph> lowered_subgraphs;
         std::vector<std::vector<SourceInfo>> node_source_infos;
-        std::vector<IntrospectionLogicalNode> logical_nodes;
         std::unordered_map<std::string, std::vector<std::string>> logical_node_ids_by_backing_node_id;
     };
 

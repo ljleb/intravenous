@@ -35,6 +35,7 @@ namespace iv {
             TypeErasedNode root;
             std::unique_ptr<GraphBuilder> canonical_builder;
             GraphIntrospectionMetadata introspection;
+            GraphBuildMetadata graph_build_metadata;
             std::filesystem::path module_path;
             std::string module_id;
             std::vector<ModuleDependency> dependencies;
@@ -42,6 +43,27 @@ namespace iv {
 
             LoadedGraph(
                 TypeErasedNode root_,
+                std::vector<ModuleRef> module_refs_,
+                std::unique_ptr<GraphBuilder> canonical_builder_,
+                GraphIntrospectionMetadata introspection_,
+                GraphBuildMetadata graph_build_metadata_,
+                std::filesystem::path module_path_,
+                std::string module_id_,
+                std::vector<ModuleDependency> dependencies_,
+                size_t sink_count_
+            );
+        };
+
+        struct LoadedDefinition {
+            std::vector<ModuleRef> module_refs;
+            std::unique_ptr<GraphBuilder> canonical_builder;
+            GraphIntrospectionMetadata introspection;
+            std::filesystem::path module_path;
+            std::string module_id;
+            std::vector<ModuleDependency> dependencies;
+            size_t sink_count = 0;
+
+            LoadedDefinition(
                 std::vector<ModuleRef> module_refs_,
                 std::unique_ptr<GraphBuilder> canonical_builder_,
                 GraphIntrospectionMetadata introspection_,
@@ -65,7 +87,7 @@ namespace iv {
         ModuleLoader(ModuleLoader const&) = delete;
         ModuleLoader& operator=(ModuleLoader const&) = delete;
 
-        LoadedGraph load_root(
+        LoadedDefinition load_root_definition(
             std::filesystem::path const& module_path,
             ModuleExecutorTarget render_config = {},
             Sample* sample_period = nullptr

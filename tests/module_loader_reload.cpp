@@ -18,10 +18,9 @@ int main()
     iv::test::copy_directory(voice_src, voice_dst);
 
     iv::test::FakeAudioDevice audio_device;
-    iv::Timeline timeline;
-    iv::ModuleLoader loader(timeline, repo, { runtime_root });
+    iv::ModuleLoader loader(repo, { runtime_root });
 
-    auto graph_a = loader.load_root(
+    auto graph_a = loader.load_root_definition(
         reload_dst,
         iv::ModuleExecutorTarget{
             .sample_rate = audio_device.config().sample_rate,
@@ -30,10 +29,12 @@ int main()
         },
         &audio_device.sample_period()
     );
+    auto root_a = graph_a.canonical_builder->build_root_node().graph;
+    graph_a.canonical_builder.reset();
     iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
     auto processor_a = std::make_unique<iv::NodeExecutor>(
         iv::NodeExecutor::create(
-            std::move(graph_a.root),
+            std::move(root_a),
             iv::test::make_resource_context(audio_device),
             std::move(execution_targets).to_builder(),
             std::move(graph_a.module_refs)
@@ -50,7 +51,7 @@ int main()
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text(module_cpp, source);
 
-    auto graph_b = loader.load_root(
+    auto graph_b = loader.load_root_definition(
         reload_dst,
         iv::ModuleExecutorTarget{
             .sample_rate = audio_device.config().sample_rate,
@@ -59,11 +60,13 @@ int main()
         },
         &audio_device.sample_period()
     );
+    auto root_b = graph_b.canonical_builder->build_root_node().graph;
+    graph_b.canonical_builder.reset();
     auto dependency_count = graph_b.dependencies.size();
     iv::ExecutionTargetRegistry execution_targets_b(iv::test::make_audio_device_provider(audio_device));
     auto processor_b = std::make_unique<iv::NodeExecutor>(
         iv::NodeExecutor::create(
-            std::move(graph_b.root),
+            std::move(root_b),
             iv::test::make_resource_context(audio_device),
             std::move(execution_targets_b).to_builder(),
             std::move(graph_b.module_refs)

@@ -28,11 +28,10 @@ int main()
     std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.local_cmake", local_dst));
 
     iv::test::FakeAudioDevice audio_device;
-    iv::Timeline timeline;
-    iv::ModuleLoader loader(timeline, iv::test::repo_root(), { runtime_root });
+    iv::ModuleLoader loader(iv::test::repo_root(), { runtime_root });
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             project_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
@@ -63,7 +62,7 @@ int main()
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             project_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
@@ -85,7 +84,7 @@ int main()
     auto const voice_cache_mid = iv::test::write_time(voice_cache);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             project_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
@@ -97,7 +96,7 @@ int main()
     iv::test::require(iv::test::write_time(voice_cache) == voice_cache_mid, "nested source edit should not reconfigure dependency module");
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             local_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
@@ -114,7 +113,7 @@ int main()
     iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             local_dst,
             iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()

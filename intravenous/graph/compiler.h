@@ -58,6 +58,8 @@ namespace iv::details {
         std::vector<std::vector<std::string>> node_logical_ids;
         std::vector<std::vector<SourceInfo>> node_source_infos;
         std::vector<size_t> node_construction_order;
+        std::vector<std::string> node_kinds;
+        std::vector<std::string> node_type_identities;
         std::unordered_set<GraphEdge> edges;
         std::unordered_set<GraphEventEdge> event_edges;
         std::unordered_set<PortId> timeline_filled_input_ports;

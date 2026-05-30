@@ -30,14 +30,14 @@ iv::IvModuleInstanceBuilder make_instance_builder_with_ports()
     iv::IntrospectionLogicalNode node {};
     node.id = "node-1";
     node.kind = "TestNode";
-    node.sample_inputs.push_back(iv::LogicalPortInfo {
+    node.sample_inputs.push_back(iv::IntrospectionPortInfo {
         .name = "frequency",
         .type = "sample",
         .connectivity = iv::LogicalPortConnectivity::disconnected,
         .ordinal = 0,
         .default_value = 440.0f,
     });
-    node.event_inputs.push_back(iv::LogicalPortInfo {
+    node.event_inputs.push_back(iv::IntrospectionPortInfo {
         .name = "trigger",
         .type = "event",
         .connectivity = iv::LogicalPortConnectivity::disconnected,

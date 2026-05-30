@@ -423,7 +423,7 @@ namespace iv::test {
             config.toolchain);
         iv::RenderConfig const render_config{};
         iv::Sample device_sample_period = iv::sample_period(render_config);
-        auto loaded_graph = loader.load_root(
+        auto loaded_graph = loader.load_root_definition(
             module_root,
             {
                 .sample_rate = render_config.sample_rate,
@@ -596,15 +596,16 @@ namespace iv::test {
         std::filesystem::path const& module_path
     )
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             module_path,
             module_executor_target(audio_device),
             &audio_device.sample_period()
         );
+        auto root = graph.canonical_builder->build_root_node().graph;
 
         auto resources = make_resource_context(audio_device);
         auto executor = iv::NodeExecutor::create(
-            std::move(graph.root),
+            std::move(root),
             std::move(resources),
             std::move(device_orchestrator).to_builder(),
             std::move(graph.module_refs)

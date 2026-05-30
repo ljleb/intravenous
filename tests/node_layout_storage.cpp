@@ -681,7 +681,7 @@ int main()
         sink_b(src_b);
         g.outputs();
 
-        iv::TypeErasedNode root = iv::TypeErasedNode(g.build());
+        iv::TypeErasedNode root = iv::TypeErasedNode(g.build_root_node().graph);
         iv::NodeLayoutBuilder builder(8);
         iv::do_declare(root, builder);
         iv::NodeLayout layout = std::move(builder).build();

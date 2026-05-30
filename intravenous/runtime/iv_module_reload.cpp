@@ -69,7 +69,7 @@ void IvModuleReload::reload_declarations(
 
     for (auto const &declaration : declarations) {
         try {
-            auto loaded_graph = loader.load_root(
+            auto loaded_definition = loader.load_root_definition(
                 declaration.module_root,
                 module_executor_target(render_config),
                 &device_sample_period);
@@ -77,11 +77,11 @@ void IvModuleReload::reload_declarations(
             IvModuleReloadedDefinition loaded{
                 .definition_id = declaration.definition_id,
                 .module_root = declaration.module_root,
-                .module_id = loaded_graph.module_id,
-                .introspection = loaded_graph.introspection,
-                .dependencies = loaded_graph.dependencies,
-                .module_refs = loaded_graph.module_refs,
-                .canonical_builder = *loaded_graph.canonical_builder,
+                .module_id = loaded_definition.module_id,
+                .introspection = loaded_definition.introspection,
+                .dependencies = loaded_definition.dependencies,
+                .module_refs = loaded_definition.module_refs,
+                .canonical_builder = *loaded_definition.canonical_builder,
             };
             {
                 std::scoped_lock lock(mutex);

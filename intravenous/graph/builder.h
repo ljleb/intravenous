@@ -275,6 +275,37 @@ namespace iv {
             std::vector<LogicalConcretePortInfo> event_outputs;
         };
 
+        struct MetadataGraphNode {
+            std::vector<InputConfig> input_configs;
+            std::vector<OutputConfig> output_configs;
+            std::vector<EventInputConfig> event_input_configs;
+            std::vector<EventOutputConfig> event_output_configs;
+
+            std::vector<InputConfig> const& inputs() const
+            {
+                return input_configs;
+            }
+
+            std::vector<OutputConfig> const& outputs() const
+            {
+                return output_configs;
+            }
+
+            std::vector<EventInputConfig> const& event_inputs() const
+            {
+                return event_input_configs;
+            }
+
+            std::vector<EventOutputConfig> const& event_outputs() const
+            {
+                return event_output_configs;
+            }
+
+            void tick(TickSampleContext<MetadataGraphNode> const&) const
+            {
+            }
+        };
+
         inline std::string demangle_type_name(char const* name)
         {
             if (name == nullptr || *name == '\0') {
@@ -355,7 +386,7 @@ namespace iv {
             return spans;
         }
 
-        inline std::vector<LogicalPortInfo> aggregate_ports(
+        inline std::vector<IntrospectionPortInfo> aggregate_ports(
             std::span<LogicalConcreteNode const* const> nodes,
             auto LogicalConcreteNode::* member
         )
@@ -365,7 +396,7 @@ namespace iv {
             }
 
             auto const& first_ports = nodes.front()->*member;
-            std::vector<LogicalPortInfo> logical_ports;
+            std::vector<IntrospectionPortInfo> logical_ports;
             logical_ports.reserve(first_ports.size());
             for (size_t i = 0; i < first_ports.size(); ++i) {
                 std::vector<LogicalConcretePortInfo> concrete_ports;
@@ -374,13 +405,14 @@ namespace iv {
                     concrete_ports.push_back((node->*member)[i]);
                 }
 
-                logical_ports.push_back(LogicalPortInfo {
+                logical_ports.push_back(IntrospectionPortInfo {
                     .name = first_ports[i].name,
                     .type = first_ports[i].type,
                     .connectivity = aggregate_connectivity(concrete_ports),
                     .ordinal = i,
                     .default_value = first_ports[i].default_value,
-                    .current_value = first_ports[i].default_value,
+                    .history = first_ports[i].history,
+                    .latency = first_ports[i].latency,
                 });
             }
             return logical_ports;
@@ -436,13 +468,17 @@ namespace iv {
             for (size_t node_i = 0; node_i < g.nodes.size(); ++node_i) {
                 LogicalConcreteNode concrete;
                 concrete.id = g.node_ids[node_i];
-                concrete.kind = demangle_type_name(g.nodes[node_i].type_name());
+                concrete.kind = node_i < g.node_kinds.size()
+                    ? g.node_kinds[node_i]
+                    : demangle_type_name(g.nodes[node_i].type_name());
                 concrete.construction_order = node_i < g.node_construction_order.size()
                     ? g.node_construction_order[node_i]
                     : node_i;
                 // Temporary approximation: this is only a display-derived stand-in until the
                 // rewriter threads through a real concrete C++ type identity such as a Clang USR.
-                concrete.type_identity = concrete.kind;
+                concrete.type_identity = node_i < g.node_type_identities.size()
+                    ? g.node_type_identities[node_i]
+                    : concrete.kind;
                 if (node_i < g.node_source_infos.size()) {
                     concrete.source_infos = g.node_source_infos[node_i];
                 }
@@ -1847,11 +1883,6 @@ namespace iv {
             outputs(std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
         }
 
-        struct BuildResult {
-            Graph graph;
-            GraphIntrospectionMetadata introspection;
-        };
-
         struct VacantSampleInput {
             PortId target {};
             std::string logical_node_id {};
@@ -1866,6 +1897,11 @@ namespace iv {
             EventInputConfig config {};
         };
 
+        struct RootNodeBuildResult {
+            Graph graph;
+            GraphBuildMetadata metadata;
+        };
+
         struct VacantInputs {
             std::vector<VacantSampleInput> sample {};
             std::vector<VacantEventInput> event {};
@@ -1876,8 +1912,8 @@ namespace iv {
         void connect_event_input(PortId target, EventPortRef source);
         void mark_runtime_filled_sample_input(PortId target);
         void mark_runtime_filled_event_input(PortId target);
-        BuildResult build_with_metadata(size_t detach_id_offset = 0) const;
-        Graph build(size_t detach_id_offset = 0) const;
+        GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
+        RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
 
     private:
         void _add_node_logical_id(size_t node_index, std::string_view logical_node_id)
@@ -2167,7 +2203,220 @@ namespace iv {
         _timeline_filled_event_input_ports.insert(target);
     }
 
-    inline GraphBuilder::BuildResult GraphBuilder::build_with_metadata(size_t detach_id_offset) const
+    inline GraphIntrospectionMetadata GraphBuilder::build_metadata(size_t detach_id_offset) const
+    {
+        (void)detach_id_offset;
+        details::PreparedGraph g{
+            .nodes = {},
+            .explicit_ttl_samples = {},
+            .node_ids = {},
+            .node_logical_ids = {},
+            .node_source_infos = {},
+            .node_construction_order = {},
+            .node_kinds = {},
+            .node_type_identities = {},
+            .edges = {},
+            .event_edges = {},
+            .timeline_filled_input_ports = {},
+            .timeline_filled_event_input_ports = {},
+            .detached_info_by_source = {},
+            .detached_reader_outputs = {},
+        };
+        std::vector<size_t> runtime_node_indices(_nodes.size(), GRAPH_ID);
+        std::unordered_map<PortId, PortId> source_of;
+        std::unordered_map<PortId, GraphEventEdge> event_source_of;
+        for (GraphEdge const& edge : _edges) {
+            source_of[edge.target] = edge.source;
+        }
+        for (GraphEventEdge const& edge : _event_edges) {
+            event_source_of[edge.target] = edge;
+        }
+
+        for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
+            if (!_nodes[node_i].materialize) {
+                continue;
+            }
+            runtime_node_indices[node_i] = g.nodes.size();
+            g.nodes.push_back(TypeErasedNode(details::MetadataGraphNode{
+                .input_configs = _nodes[node_i].input_configs,
+                .output_configs = _nodes[node_i].output_configs,
+                .event_input_configs = _nodes[node_i].event_input_configs,
+                .event_output_configs = _nodes[node_i].event_output_configs,
+            }));
+            g.explicit_ttl_samples.push_back(_nodes[node_i].ttl_samples);
+            g.node_ids.push_back(node_id(node_i));
+            g.node_logical_ids.push_back(_nodes[node_i].logical_node_ids);
+            g.node_source_infos.push_back(_nodes[node_i].source_infos);
+            g.node_construction_order.push_back(node_i);
+            g.node_kinds.push_back(_nodes[node_i].type_identity);
+            g.node_type_identities.push_back(_nodes[node_i].type_identity);
+        }
+
+        auto resolve_source = [&](auto const& self, PortId source) -> PortId {
+            if (source.node == GRAPH_ID) {
+                return source;
+            }
+            if (_nodes[source.node].materialize) {
+                return PortId{ runtime_node_indices[source.node], source.port };
+            }
+            PortId const passthrough_source = _nodes[source.node].subgraph_output_sources[source.port];
+            if (passthrough_source.node == source.node) {
+                return self(self, source_of.at(passthrough_source));
+            }
+            return self(self, passthrough_source);
+        };
+
+        auto resolve_event_source = [&](auto const& self, PortId source) -> PortId {
+            if (source.node == GRAPH_ID) {
+                return source;
+            }
+            if (_nodes[source.node].materialize) {
+                return PortId{ runtime_node_indices[source.node], source.port };
+            }
+            PortId const passthrough_source = _nodes[source.node].subgraph_event_output_sources[source.port];
+            if (passthrough_source.node == source.node) {
+                return self(self, event_source_of.at(passthrough_source).source);
+            }
+            return self(self, passthrough_source);
+        };
+
+        auto add_target_edges = [&](auto const& self, PortId source, PortId target) -> void {
+            if (target.node == GRAPH_ID) {
+                g.edges.emplace(GraphEdge{ source, target });
+                return;
+            }
+            if (_nodes[target.node].materialize) {
+                g.edges.emplace(GraphEdge{ source, { runtime_node_indices[target.node], target.port } });
+                return;
+            }
+            for (PortId const child_target : _nodes[target.node].subgraph_input_targets[target.port]) {
+                self(self, source, child_target);
+            }
+        };
+
+        auto add_event_target_edges = [&](auto const& self, GraphEventEdge edge, PortId target) -> void {
+            if (target.node == GRAPH_ID) {
+                g.event_edges.emplace(GraphEventEdge{ edge.source, target, std::move(edge.conversion) });
+                return;
+            }
+            if (_nodes[target.node].materialize) {
+                g.event_edges.emplace(GraphEventEdge{
+                    edge.source,
+                    { runtime_node_indices[target.node], target.port },
+                    std::move(edge.conversion)
+                });
+                return;
+            }
+            for (PortId const child_target : _nodes[target.node].subgraph_event_input_targets[target.port]) {
+                self(self, GraphEventEdge{ edge.source, child_target, edge.conversion }, child_target);
+            }
+        };
+
+        for (GraphEdge const& edge : _edges) {
+            add_target_edges(add_target_edges, resolve_source(resolve_source, edge.source), edge.target);
+        }
+        for (GraphEventEdge const& edge : _event_edges) {
+            GraphEventEdge resolved = edge;
+            resolved.source = resolve_event_source(resolve_event_source, edge.source);
+            add_event_target_edges(add_event_target_edges, std::move(resolved), edge.target);
+        }
+
+        auto lowered_scopes = [&] {
+            auto make_scope_port_ref = [&](PortId port) {
+                return iv::LoweredSubgraphSpec::PortRef {
+                    .node_id = port.node == GRAPH_ID ? std::string{} : node_id(port.node),
+                    .port = port.port,
+                    .is_graph_port = port.node == GRAPH_ID,
+                };
+            };
+            auto collect_scope_targets = [&](auto const& self, PortId target, std::vector<iv::LoweredSubgraphSpec::PortRef>& out) -> void {
+                if (target.node == GRAPH_ID || _nodes[target.node].materialize) {
+                    out.push_back(make_scope_port_ref(target));
+                    return;
+                }
+                for (PortId const child_target : _nodes[target.node].subgraph_input_targets[target.port]) {
+                    self(self, child_target, out);
+                }
+            };
+            auto collect_scope_event_targets = [&](auto const& self, PortId target, std::vector<iv::LoweredSubgraphSpec::PortRef>& out) -> void {
+                if (target.node == GRAPH_ID || _nodes[target.node].materialize) {
+                    out.push_back(make_scope_port_ref(target));
+                    return;
+                }
+                for (PortId const child_target : _nodes[target.node].subgraph_event_input_targets[target.port]) {
+                    self(self, child_target, out);
+                }
+            };
+
+            std::vector<iv::LoweredSubgraphSpec> scopes;
+            for (size_t placeholder_i = 0; placeholder_i < _nodes.size(); ++placeholder_i) {
+                if (_nodes[placeholder_i].materialize) {
+                    continue;
+                }
+                auto const& placeholder = _nodes[placeholder_i];
+                iv::LoweredSubgraphSpec scope;
+                scope.kind = placeholder.subgraph_kind;
+                scope.backing_node_id = node_id(placeholder_i);
+                scope.source_infos = placeholder.source_infos;
+                for (auto const& info : placeholder.source_infos) {
+                    if (info.span.file_path.empty() || info.span.begin > info.span.end) {
+                        continue;
+                    }
+                    if (std::find(scope.source_spans.begin(), scope.source_spans.end(), info.span) == scope.source_spans.end()) {
+                        scope.source_spans.push_back(info.span);
+                    }
+                }
+                scope.sample_inputs = placeholder.input_configs;
+                scope.sample_outputs = placeholder.output_configs;
+                scope.event_inputs = placeholder.event_input_configs;
+                scope.event_outputs = placeholder.event_output_configs;
+                scope.ttl_samples = placeholder.ttl_samples;
+
+                size_t const begin = placeholder.lowered_subgraph_begin;
+                size_t const end = begin + placeholder.lowered_subgraph_count;
+                for (size_t node_i = begin; node_i < end; ++node_i) {
+                    if (!_nodes[node_i].materialize) {
+                        continue;
+                    }
+                    scope.member_node_ids.push_back(node_id(node_i));
+                }
+
+                for (auto const& targets : placeholder.subgraph_input_targets) {
+                    std::vector<iv::LoweredSubgraphSpec::PortRef> flattened_targets;
+                    for (PortId const target : targets) {
+                        collect_scope_targets(collect_scope_targets, target, flattened_targets);
+                    }
+                    scope.sample_input_targets.push_back(std::move(flattened_targets));
+                }
+                for (PortId const source : placeholder.subgraph_output_sources) {
+                    scope.sample_output_sources.push_back(make_scope_port_ref(resolve_source(resolve_source, source)));
+                }
+                for (auto const& targets : placeholder.subgraph_event_input_targets) {
+                    std::vector<iv::LoweredSubgraphSpec::PortRef> flattened_targets;
+                    for (PortId const target : targets) {
+                        collect_scope_event_targets(collect_scope_event_targets, target, flattened_targets);
+                    }
+                    scope.event_input_targets.push_back(std::move(flattened_targets));
+                }
+                for (PortId const source : placeholder.subgraph_event_output_sources) {
+                    scope.event_output_sources.push_back(make_scope_port_ref(resolve_event_source(resolve_event_source, source)));
+                }
+
+                if (!scope.member_node_ids.empty()) {
+                    scopes.push_back(std::move(scope));
+                }
+            }
+            return scopes;
+        }();
+
+        auto [logical_nodes, _] = details::build_logical_metadata(g, lowered_scopes);
+
+        return GraphIntrospectionMetadata {
+            .logical_nodes = std::move(logical_nodes),
+        };
+    }
+
+    inline GraphBuilder::RootNodeBuildResult GraphBuilder::build_root_node(size_t detach_id_offset) const
     {
         if (!_outputs_defined) {
             details::error("builder " + _builder_id.value + ": g.outputs(...) must be called before build()");
@@ -2180,6 +2429,8 @@ namespace iv {
             .node_logical_ids = {},
             .node_source_infos = {},
             .node_construction_order = {},
+            .node_kinds = {},
+            .node_type_identities = {},
             .edges = {},
             .event_edges = {},
             .timeline_filled_input_ports = {},
@@ -2506,6 +2757,8 @@ namespace iv {
         }();
 
         auto lowered_subgraphs = details::compile_lowered_subgraphs(g, lowered_scopes);
+        auto [_, logical_node_ids_by_backing_node_id] =
+            details::build_logical_metadata(g, lowered_scopes);
 
         auto detached = [&] {
             std::vector<DetachedInfo> detached_info;
@@ -2516,22 +2769,15 @@ namespace iv {
             return detached_info;
         }();
         auto execution_plan = details::build_execution_plan(g.nodes, g.edges, g.event_edges, detached);
-        auto [logical_nodes, logical_node_ids_by_backing_node_id] = details::build_logical_metadata(g, lowered_scopes);
-
-        GraphIntrospectionMetadata introspection {
-            .lowered_subgraphs = std::move(lowered_subgraphs),
-            .node_source_infos = std::move(g.node_source_infos),
-            .logical_nodes = std::move(logical_nodes),
-            .logical_node_ids_by_backing_node_id = std::move(logical_node_ids_by_backing_node_id),
-        };
         auto dormancy_groups = details::compile_dormancy_groups(
             g,
-            introspection.lowered_subgraphs,
+            lowered_subgraphs,
             _builder_id.value,
             execution_plan
         );
 
-        return GraphBuilder::BuildResult {
+        auto node_source_infos = std::move(g.node_source_infos);
+        return RootNodeBuildResult{
             .graph = Graph(details::build_graph_artifact(
                 _builder_id.value,
                 std::move(g.nodes),
@@ -2547,13 +2793,12 @@ namespace iv {
                 _public_event_outputs,
                 std::move(dormancy_groups)
             )),
-            .introspection = std::move(introspection),
+            .metadata = GraphBuildMetadata{
+                .lowered_subgraphs = std::move(lowered_subgraphs),
+                .node_source_infos = std::move(node_source_infos),
+                .logical_node_ids_by_backing_node_id = std::move(logical_node_ids_by_backing_node_id),
+            },
         };
-    }
-
-    inline Graph GraphBuilder::build(size_t detach_id_offset) const
-    {
-        return build_with_metadata(detach_id_offset).graph;
     }
 
     inline SamplePortRef::SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :
