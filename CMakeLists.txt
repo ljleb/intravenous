@@ -30,17 +30,17 @@ else()
     find_package(JUCE CONFIG QUIET)
 endif()
 
-add_subdirectory(intravenous)
+add_subdirectory(src/intravenous)
 add_subdirectory(tests)
 add_subdirectory(benchmark)
 
 if(IV_BUILD_CLANG_SOURCE_SPAN_TOOL)
     add_subdirectory(tools)
-    target_compile_definitions(intravenous_module_runtime PUBLIC
+    target_compile_definitions(intravenous_module_loader PRIVATE
         IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER="$<TARGET_FILE:iv_clang_source_span_rewriter>"
     )
 else()
-    target_compile_definitions(intravenous_module_runtime PUBLIC
+    target_compile_definitions(intravenous_module_loader PRIVATE
         IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER=""
     )
 endif()

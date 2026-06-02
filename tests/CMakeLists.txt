@@ -17,7 +17,7 @@ function(add_iv_gtest target source)
 
     add_executable(${target}
         ${source}
-        ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
+        ${PROJECT_SOURCE_DIR}/src/intravenous/third_party/miniaudio/miniaudio.c
     )
 
     target_compile_features(${target} PRIVATE cxx_std_23)
@@ -28,11 +28,12 @@ function(add_iv_gtest target source)
     )
 
     target_include_directories(${target} PRIVATE
-        ${PROJECT_SOURCE_DIR}/intravenous
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src/intravenous
     )
 
     target_include_directories(${target} SYSTEM PRIVATE
-        ${PROJECT_SOURCE_DIR}/intravenous/third_party
+        ${PROJECT_SOURCE_DIR}/src/intravenous/third_party
     )
 
     if(MSVC)
@@ -43,11 +44,8 @@ function(add_iv_gtest target source)
 
     target_link_libraries(${target} PRIVATE
         GTest::gtest_main
-        intravenous_module_runtime
-        intravenous_json_rpc_server
-        intravenous_tooling_runtime
-        nlohmann_json::nlohmann_json
     )
+    iv_add_host_runtime_objects(${target})
 
     gtest_add_tests(TARGET ${target} TEST_LIST discovered_tests)
 
@@ -130,7 +128,7 @@ add_iv_gtest(
     bridges/socket_rpc_notification_bridge_gtest.cpp)
 add_executable(intravenous_node_layout_storage
     node_layout_storage.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party/miniaudio/miniaudio.c
 )
 
 target_compile_features(intravenous_node_layout_storage PRIVATE cxx_std_23)
@@ -141,11 +139,12 @@ set_target_properties(intravenous_node_layout_storage PROPERTIES
 )
 
 target_include_directories(intravenous_node_layout_storage PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/intravenous
 )
 
 target_include_directories(intravenous_node_layout_storage SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party
 )
 
 if(MSVC)
@@ -154,10 +153,7 @@ else()
     target_compile_options(intravenous_node_layout_storage PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-target_link_libraries(intravenous_node_layout_storage PRIVATE
-    intravenous_module_runtime
-    intravenous_tooling_runtime
-)
+iv_add_host_runtime_objects(intravenous_node_layout_storage)
 
 add_test(NAME intravenous_node_layout_storage COMMAND intravenous_node_layout_storage)
 set_tests_properties(intravenous_node_layout_storage PROPERTIES LABELS "light")

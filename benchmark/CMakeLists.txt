@@ -1,6 +1,6 @@
 add_executable(intravenous_render_benchmark
     render_benchmark.cpp
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party/miniaudio/miniaudio.c
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party/miniaudio/miniaudio.c
 )
 
 target_compile_features(intravenous_render_benchmark PRIVATE cxx_std_23)
@@ -12,11 +12,12 @@ set_target_properties(intravenous_render_benchmark PROPERTIES
 
 target_include_directories(intravenous_render_benchmark PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/intravenous
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/intravenous
 )
 
 target_include_directories(intravenous_render_benchmark SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/intravenous/third_party
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party
 )
 
 if(MSVC)
@@ -25,4 +26,4 @@ else()
     target_compile_options(intravenous_render_benchmark PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-target_link_libraries(intravenous_render_benchmark PRIVATE intravenous_module_runtime)
+iv_add_host_runtime_objects(intravenous_render_benchmark)
