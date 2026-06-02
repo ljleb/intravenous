@@ -1,8 +1,8 @@
 #pragma once
 
-#include "lane_node/graph.h"
-#include "runtime/lane_graph.h"
-#include "runtime/timeline_fwd.h"
+#include <intravenous/lane_node/graph.h>
+#include <intravenous/runtime/lane_graph.h>
+#include <intravenous/runtime/timeline_fwd.h>
 
 #include <string>
 

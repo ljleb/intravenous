@@ -1,11 +1,11 @@
 #pragma once
 
-#include "basic_nodes/type_erased.h"
-#include "compat.h"
-#include "orchestrator/device_orchestrator.h"
-#include "orchestrator/orchestrator_builder.h"
+#include <intravenous/basic_nodes/type_erased.h>
+#include <intravenous/compat.h>
+#include <intravenous/orchestrator/device_orchestrator.h>
+#include <intravenous/orchestrator/orchestrator_builder.h>
 #include "lifecycle.h"
-#include "module/loader.h"
+#include <intravenous/module/loader.h>
 
 #include <algorithm>
 #include <bit>

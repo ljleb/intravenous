@@ -1,6 +1,6 @@
 #pragma once
 
-#include "devices/audio_device.h"
+#include <intravenous/devices/audio_device.h>
 
 #include <algorithm>
 #include <chrono>

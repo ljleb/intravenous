@@ -1,8 +1,8 @@
 #pragma once
 
-#include "query/lane_query_ast.h"
-#include "query/lane_query_schema.h"
-#include "query/lane_query_types.h"
+#include <intravenous/query/lane_query_ast.h>
+#include <intravenous/query/lane_query_schema.h>
+#include <intravenous/query/lane_query_types.h>
 
 #include <cstdint>
 #include <memory>

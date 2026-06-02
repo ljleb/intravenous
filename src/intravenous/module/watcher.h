@@ -1,6 +1,6 @@
 #pragma once
 
-#include "module/dependency.h"
+#include <intravenous/module/dependency.h>
 
 #include <filesystem>
 #include <vector>

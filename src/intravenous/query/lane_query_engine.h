@@ -1,7 +1,7 @@
 #pragma once
 
-#include "query/lane_query_dataset.h"
-#include "query/lane_query_program.h"
+#include <intravenous/query/lane_query_dataset.h>
+#include <intravenous/query/lane_query_program.h>
 
 #include <cstddef>
 #include <vector>

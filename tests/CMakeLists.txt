@@ -29,7 +29,6 @@ function(add_iv_gtest target source)
 
     target_include_directories(${target} PRIVATE
         ${PROJECT_SOURCE_DIR}/src
-        ${PROJECT_SOURCE_DIR}/src/intravenous
     )
 
     target_include_directories(${target} SYSTEM PRIVATE
@@ -140,7 +139,6 @@ set_target_properties(intravenous_node_layout_storage PROPERTIES
 
 target_include_directories(intravenous_node_layout_storage PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/intravenous
 )
 
 target_include_directories(intravenous_node_layout_storage SYSTEM PRIVATE

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "audio_device.h"
-#include "third_party/miniaudio/miniaudio.h"
+#include <intravenous/devices/audio_device.h>
+#include <intravenous/third_party/miniaudio/miniaudio.h>
 
 #include <condition_variable>
 #include <mutex>

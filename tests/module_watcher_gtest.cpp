@@ -1,5 +1,5 @@
 #include "module_test_utils.h"
-#include "module/watcher.h"
+#include <intravenous/module/watcher.h>
 
 #include <gtest/gtest.h>
 

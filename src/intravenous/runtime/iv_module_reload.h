@@ -1,12 +1,12 @@
 #pragma once
 
-#include "graph/build_types.h"
-#include "graph/builder.h"
-#include "module/dependency.h"
-#include "module/loader.h"
-#include "module/watcher.h"
-#include "runtime/iv_module_definitions.h"
-#include "runtime/startup_config.h"
+#include <intravenous/graph/build_types.h>
+#include <intravenous/graph/builder.h>
+#include <intravenous/module/dependency.h>
+#include <intravenous/module/loader.h>
+#include <intravenous/module/watcher.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/startup_config.h>
 
 #include <mutex>
 #include <string>

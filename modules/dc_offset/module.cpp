@@ -1,10 +1,10 @@
-#include "dsl.h"
-#include "basic_nodes/noise.h"
-#include "basic_nodes/filters.h"
-#include "basic_nodes/shaping.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/midi.h"
-#include "juce/vst_wrapper.h"
+#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/noise.h>
+#include <intravenous/basic_nodes/filters.h>
+#include <intravenous/basic_nodes/shaping.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/midi.h>
+#include <intravenous/juce/vst_wrapper.h>
 
 #include <array>
 #include <iostream>

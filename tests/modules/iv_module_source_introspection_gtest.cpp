@@ -1,14 +1,14 @@
 #include "../module_test_utils.h"
 
-#include "runtime/graph_input_lanes.h"
-#include "runtime/graph_input_lanes_timeline_bridge.h"
-#include "runtime/iv_module_definitions_iv_module_source_introspection_bridge.h"
-#include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
-#include "runtime/lane_filters.h"
-#include "runtime/timeline_lane_filters_bridge.h"
-#include "runtime/iv_module_source_introspection.h"
-#include "runtime/iv_module_source_introspection_graph_input_lanes_bridge.h"
-#include "runtime/timeline.h"
+#include <intravenous/runtime/graph_input_lanes.h>
+#include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
+#include <intravenous/runtime/lane_filters.h>
+#include <intravenous/runtime/timeline_lane_filters_bridge.h>
+#include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
+#include <intravenous/runtime/timeline.h>
 
 #include <gtest/gtest.h>
 
@@ -172,8 +172,8 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_merged_logical",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     template<int I>
@@ -222,8 +222,8 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedLogicalNodeIdStableA
 {
     auto const workspace = make_inline_module_workspace(
         "iv_module_source_introspection_stable_annotated_id",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     void annotated_symbol_module(iv::ModuleContext const& context)
@@ -282,8 +282,8 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedLogicalNode)
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_annotated_symbol",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     void annotated_symbol_module(iv::ModuleContext const& context)
@@ -323,8 +323,8 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBa
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_single_assigned_ref",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     void assigned_ref_module(iv::ModuleContext const& context)
@@ -361,8 +361,8 @@ TEST(IvModuleSourceIntrospection, InitializationFailsWhenDeclarationBackedRefIsA
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_double_assignment_fails",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     void assigned_twice_module(iv::ModuleContext const& context)
@@ -398,9 +398,9 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_schema_mismatch",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/arithmetic.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/arithmetic.h>
 
 namespace {
     template<size_t Inputs>
@@ -446,9 +446,9 @@ TEST(IvModuleSourceIntrospection, QueryBySpansAggregatesMixedConnectivity)
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_mixed_connectivity",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/arithmetic.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/arithmetic.h>
 
 namespace {
     template<int I>
@@ -611,9 +611,9 @@ TEST(IvModuleSourceIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExa
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_polyphonic_exact_spans",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/shaping.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/shaping.h>
 
 void polyphonic_module(iv::ModuleContext const& context)
 {
@@ -714,9 +714,9 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonic
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_polyphonic_interior_span",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/shaping.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/shaping.h>
 
 void polyphonic_module(iv::ModuleContext const& context)
 {
@@ -763,9 +763,9 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsPolyphonicOuterLogicalIdent
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_polyphonic_outer_identity",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/shaping.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/shaping.h>
 
 void polyphonic_module(iv::ModuleContext const& context)
 {

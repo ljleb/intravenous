@@ -1,6 +1,6 @@
 #pragma once
 
-#include "module/loader.h"
+#include <intravenous/module/loader.h>
 
 #include <filesystem>
 

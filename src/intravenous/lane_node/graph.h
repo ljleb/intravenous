@@ -1,8 +1,8 @@
 #pragma once
 
-#include "basic_lane_nodes/type_erased.h"
-#include "query/lane_query_schema.h"
-#include "runtime/lane_graph.h"
+#include <intravenous/basic_lane_nodes/type_erased.h>
+#include <intravenous/query/lane_query_schema.h>
+#include <intravenous/runtime/lane_graph.h>
 
 #include <algorithm>
 #include <functional>

@@ -1,4 +1,4 @@
-#include "dsl.h"
+#include <intravenous/dsl.h>
 
 namespace {
     void build_failure(iv::ModuleContext const& context)

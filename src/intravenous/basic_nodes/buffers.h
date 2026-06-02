@@ -1,7 +1,7 @@
 #pragma once
 
-#include "runtime/lane_ref.h"
-#include "node/lifecycle.h"
+#include <intravenous/runtime/lane_ref.h>
+#include <intravenous/node/lifecycle.h>
 
 #include <array>
 #include <cassert>

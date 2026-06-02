@@ -1,7 +1,7 @@
 #pragma once
 
 #include "wiring.h"
-#include "node/lifecycle.h"
+#include <intravenous/node/lifecycle.h>
 
 #include <algorithm>
 #include <span>

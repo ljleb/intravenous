@@ -1,8 +1,8 @@
 #pragma once
 
-#include "module/dependency.h"
-#include "runtime/iv_module_definitions.h"
-#include "runtime/runtime_project_api_types.h"
+#include <intravenous/module/dependency.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/runtime_project_api_types.h>
 
 #include <filesystem>
 #include <mutex>

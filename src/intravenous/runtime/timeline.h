@@ -1,9 +1,9 @@
 #pragma once
 
-#include "runtime/timeline_events.h"
-#include "runtime/lane_graph.h"
-#include "runtime/timeline_fwd.h"
-#include "sample.h"
+#include <intravenous/runtime/timeline_events.h>
+#include <intravenous/runtime/lane_graph.h>
+#include <intravenous/runtime/timeline_fwd.h>
+#include <intravenous/sample.h>
 
 #include <algorithm>
 #include <array>

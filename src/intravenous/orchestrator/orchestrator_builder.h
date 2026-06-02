@@ -1,7 +1,7 @@
 #pragma once
 
 #include "device_orchestrator.h"
-#include "devices/wav_file_device.h"
+#include <intravenous/devices/wav_file_device.h>
 
 #include <algorithm>
 #include <filesystem>

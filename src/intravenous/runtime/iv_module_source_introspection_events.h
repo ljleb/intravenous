@@ -1,7 +1,7 @@
 #pragma once
 
-#include "linker_event.h"
-#include "runtime/runtime_project_api_types.h"
+#include <intravenous/linker_event.h>
+#include <intravenous/runtime/runtime_project_api_types.h>
 
 #include <optional>
 #include <string>

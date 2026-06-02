@@ -1,11 +1,11 @@
 #include "../module_test_utils.h"
 
-#include "runtime/iv_module_definitions.h"
-#include "runtime/iv_module_definitions_iv_module_instances_bridge.h"
-#include "runtime/iv_module_definitions_iv_module_source_introspection_bridge.h"
-#include "runtime/iv_module_instances.h"
-#include "runtime/iv_module_instances_iv_module_definitions_bridge.h"
-#include "runtime/iv_module_source_introspection.h"
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
+#include <intravenous/runtime/iv_module_source_introspection.h>
 #include <gtest/gtest.h>
 
 namespace {

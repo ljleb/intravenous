@@ -1,8 +1,8 @@
 #pragma once
 
-#include "linker_event.h"
-#include "runtime/timeline_events.h"
-#include "query/lane_query_schema.h"
+#include <intravenous/linker_event.h>
+#include <intravenous/runtime/timeline_events.h>
+#include <intravenous/query/lane_query_schema.h>
 
 #include <functional>
 #include <variant>

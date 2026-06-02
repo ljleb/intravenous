@@ -1,6 +1,6 @@
 #pragma once
 
-#include "lane_node/graph.h"
+#include <intravenous/lane_node/graph.h>
 
 #include <cstddef>
 #include <cstdint>

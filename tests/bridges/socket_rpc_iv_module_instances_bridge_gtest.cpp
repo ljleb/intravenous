@@ -1,6 +1,6 @@
-#include "runtime/iv_module_instances.h"
-#include "runtime/socket_rpc_iv_module_instances_bridge.h"
-#include "runtime/socket_rpc_server.h"
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
+#include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

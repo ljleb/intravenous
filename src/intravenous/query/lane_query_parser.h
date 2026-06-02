@@ -1,6 +1,6 @@
 #pragma once
 
-#include "query/lane_query_ast.h"
+#include <intravenous/query/lane_query_ast.h>
 
 #include <string_view>
 

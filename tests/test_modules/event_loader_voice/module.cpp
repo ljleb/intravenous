@@ -1,4 +1,4 @@
-#include "dsl.h"
+#include <intravenous/dsl.h>
 
 inline void event_loader_voice(iv::ModuleContext const& context)
 {

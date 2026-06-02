@@ -1,7 +1,7 @@
 #pragma once
 
-#include "lane_node/generate.h"
-#include "runtime/lane_graph.h"
+#include <intravenous/lane_node/generate.h>
+#include <intravenous/runtime/lane_graph.h>
 
 #include <array>
 

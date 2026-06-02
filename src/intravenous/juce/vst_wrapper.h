@@ -1,8 +1,8 @@
 #pragma once
 
-#include "graph/builder.h"
-#include "juce/midi_input.h"
-#include "node/lifecycle.h"
+#include <intravenous/graph/builder.h>
+#include <intravenous/juce/midi_input.h>
+#include <intravenous/node/lifecycle.h>
 
 #include <cstdint>
 #include <filesystem>

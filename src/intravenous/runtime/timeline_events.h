@@ -1,10 +1,10 @@
 #pragma once
 
-#include "basic_lane_nodes/type_erased.h"
-#include "lane_node/graph.h"
-#include "linker_event.h"
-#include "query/lane_query_dataset.h"
-#include "query/lane_query_schema.h"
+#include <intravenous/basic_lane_nodes/type_erased.h>
+#include <intravenous/lane_node/graph.h>
+#include <intravenous/linker_event.h>
+#include <intravenous/query/lane_query_dataset.h>
+#include <intravenous/query/lane_query_schema.h>
 
 #include <functional>
 #include <memory>

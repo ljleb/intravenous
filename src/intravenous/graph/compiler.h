@@ -1,8 +1,8 @@
 #pragma once
 
-#include "basic_nodes/routing.h"
-#include "basic_nodes/arithmetic.h"
-#include "basic_nodes/type_erased.h"
+#include <intravenous/basic_nodes/routing.h>
+#include <intravenous/basic_nodes/arithmetic.h>
+#include <intravenous/basic_nodes/type_erased.h>
 #include "build_types.h"
 #include "types.h"
 #include "wiring.h"

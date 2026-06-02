@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node/lifecycle.h"
+#include <intravenous/node/lifecycle.h>
 #include <array>
 
 namespace iv {

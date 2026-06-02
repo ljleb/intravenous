@@ -1,7 +1,7 @@
 #pragma once
 
-#include "graph/build_types.h"
-#include "runtime/lane_view_service.h"
+#include <intravenous/graph/build_types.h>
+#include <intravenous/runtime/lane_view_service.h>
 
 #include <cstddef>
 #include <cstdint>

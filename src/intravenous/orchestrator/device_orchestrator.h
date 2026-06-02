@@ -1,7 +1,7 @@
 #pragma once
 
-#include "block_rate_buffer.h"
-#include "devices/audio_device.h"
+#include <intravenous/block_rate_buffer.h>
+#include <intravenous/devices/audio_device.h>
 
 #include <algorithm>
 #include <functional>

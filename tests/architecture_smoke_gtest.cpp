@@ -1,11 +1,11 @@
-#include "devices/channel_buffer_sink.h"
-#include "devices/miniaudio_device.h"
-#include "block_rate_buffer.h"
-#include "basic_nodes/buffers.h"
-#include "dsl.h"
-#include "graph/node.h"
+#include <intravenous/devices/channel_buffer_sink.h>
+#include <intravenous/devices/miniaudio_device.h>
+#include <intravenous/block_rate_buffer.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/dsl.h>
+#include <intravenous/graph/node.h>
 #include "module_test_utils.h"
-#include "node/layout.h"
+#include <intravenous/node/layout.h>
 
 #include <gtest/gtest.h>
 

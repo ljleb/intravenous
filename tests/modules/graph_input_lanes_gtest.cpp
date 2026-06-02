@@ -1,9 +1,9 @@
-#include "runtime/graph_input_lanes.h"
+#include <intravenous/runtime/graph_input_lanes.h>
 
-#include "graph/build_types.h"
-#include "linker_event.h"
-#include "runtime/graph_input_lanes_events.h"
-#include "runtime/iv_module_instances.h"
+#include <intravenous/graph/build_types.h>
+#include <intravenous/linker_event.h>
+#include <intravenous/runtime/graph_input_lanes_events.h>
+#include <intravenous/runtime/iv_module_instances.h>
 
 #include <gtest/gtest.h>
 

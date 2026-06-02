@@ -1,8 +1,8 @@
 #pragma once
 
-#include "runtime/lane_view_service.h"
-#include "runtime/iv_module_instances.h"
-#include "runtime/runtime_project_api_types.h"
+#include <intravenous/runtime/lane_view_service.h>
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/runtime_project_api_types.h>
 
 #include <optional>
 #include <string>

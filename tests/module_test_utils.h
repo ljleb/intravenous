@@ -1,15 +1,15 @@
 #pragma once
 
-#include "devices/audio_device.h"
+#include <intravenous/devices/audio_device.h>
 #include "fake_audio_device.h"
-#include "module/loader.h"
-#include "node/executor.h"
-#include "runtime/handlers.h"
-#include "runtime/iv_module_definitions.h"
-#include "runtime/iv_module_reload.h"
-#include "runtime/startup_config.h"
-#include "runtime/timeline.h"
-#include "juce/vst_runtime.h"
+#include <intravenous/module/loader.h>
+#include <intravenous/node/executor.h>
+#include <intravenous/runtime/handlers.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/startup_config.h>
+#include <intravenous/runtime/timeline.h>
+#include <intravenous/juce/vst_runtime.h>
 
 #include <chrono>
 #include <cstdlib>

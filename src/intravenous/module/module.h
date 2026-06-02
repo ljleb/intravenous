@@ -1,6 +1,6 @@
 #pragma once
 
-#include "graph/builder.h"
+#include <intravenous/graph/builder.h>
 
 #include <cstdint>
 #include <cstring>

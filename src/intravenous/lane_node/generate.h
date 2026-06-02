@@ -1,6 +1,6 @@
 #pragma once
 
-#include "lane_node/traits.h"
+#include <intravenous/lane_node/traits.h>
 
 #include <algorithm>
 #include <cstddef>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "linker_event.h"
-#include "runtime/iv_module_reload.h"
+#include <intravenous/linker_event.h>
+#include <intravenous/runtime/iv_module_reload.h>
 
 namespace iv {
 using IvModuleReloadResultsEvent =

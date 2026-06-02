@@ -1,7 +1,7 @@
 #pragma once
 
-#include "basic_lane_nodes/controls.h"
-#include "lane_node/graph.h"
+#include <intravenous/basic_lane_nodes/controls.h>
+#include <intravenous/lane_node/graph.h>
 
 #include <optional>
 #include <span>

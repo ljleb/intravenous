@@ -1,5 +1,5 @@
-#include "dsl.h"
-#include "basic_nodes/shaping.h"
+#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/shaping.h>
 
 inline void reload_voice(iv::ModuleContext const& context)
 {

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "graph/build_types.h"
-#include "module/dependency.h"
-#include "module/module.h"
+#include <intravenous/graph/build_types.h>
+#include <intravenous/module/dependency.h>
+#include <intravenous/module/module.h>
 #include <filesystem>
 #include <memory>
 #include <optional>

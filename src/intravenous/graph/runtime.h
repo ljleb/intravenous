@@ -1,7 +1,7 @@
 #pragma once
 
-#include "basic_nodes/type_erased.h"
-#include "node/tick.h"
+#include <intravenous/basic_nodes/type_erased.h>
+#include <intravenous/node/tick.h>
 
 namespace iv {
     template<typename OuterNode>

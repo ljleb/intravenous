@@ -1,12 +1,12 @@
 #include "../module_test_utils.h"
 
-#include "runtime/graph_input_lanes.h"
-#include "runtime/iv_module_definitions.h"
-#include "runtime/iv_module_source_introspection.h"
-#include "runtime/iv_module_source_introspection_events.h"
-#include "runtime/socket_rpc_iv_module_source_introspection_bridge.h"
-#include "runtime/socket_rpc_server.h"
-#include "runtime/startup_config.h"
+#include <intravenous/runtime/graph_input_lanes.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/iv_module_source_introspection_events.h>
+#include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/runtime/startup_config.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

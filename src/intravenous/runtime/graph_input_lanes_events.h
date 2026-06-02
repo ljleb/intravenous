@@ -1,7 +1,7 @@
 #pragma once
 
-#include "linker_event.h"
-#include "runtime/timeline_events.h"
+#include <intravenous/linker_event.h>
+#include <intravenous/runtime/timeline_events.h>
 
 #include <optional>
 #include <string>

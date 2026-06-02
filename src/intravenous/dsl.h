@@ -4,8 +4,8 @@
 #error "dsl.h is reserved for user-authored DSL code; include graph/builder.h or module/module.h from internal code."
 #endif
 
-#include "basic_nodes/midi.h"
-#include "module/module.h"
+#include <intravenous/basic_nodes/midi.h>
+#include <intravenous/module/module.h>
 
 namespace iv {
     template<class Ref>

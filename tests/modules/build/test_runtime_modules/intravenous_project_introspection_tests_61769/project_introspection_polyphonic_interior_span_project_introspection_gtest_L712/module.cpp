@@ -1,6 +1,6 @@
-#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/shaping.h"
+#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/shaping.h>
 
 void polyphonic_module(iv::ModuleContext const& context)
 {

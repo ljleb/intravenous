@@ -1,8 +1,8 @@
 #pragma once
 
-#include "node/lifecycle.h"
+#include <intravenous/node/lifecycle.h>
 
-#include "math/erfinv.h"
+#include <intravenous/math/erfinv.h>
 #include "random123/aes.h"
 #include "random123/philox.h"
 #include "random123/uniform.hpp"

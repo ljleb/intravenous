@@ -1,6 +1,6 @@
 #include "module_test_utils.h"
 
-#include "runtime/socket_rpc_server.h"
+#include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
 

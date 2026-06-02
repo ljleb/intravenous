@@ -1,13 +1,13 @@
 #pragma once
 
-#include "graph/build_types.h"
-#include "linker_event.h"
-#include "runtime/lane_view_service.h"
-#include "runtime/iv_module_instances.h"
-#include "runtime/runtime_project_api_types.h"
-#include "runtime/socket_rpc_requests.h"
-#include "runtime/socket_rpc_response_builders.h"
-#include "sample.h"
+#include <intravenous/graph/build_types.h>
+#include <intravenous/linker_event.h>
+#include <intravenous/runtime/lane_view_service.h>
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/runtime_project_api_types.h>
+#include <intravenous/runtime/socket_rpc_requests.h>
+#include <intravenous/runtime/socket_rpc_response_builders.h>
+#include <intravenous/sample.h>
 
 #include <chrono>
 #include <condition_variable>

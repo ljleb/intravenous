@@ -1,6 +1,6 @@
 #pragma once
 
-#include "query/lane_query_schema.h"
+#include <intravenous/query/lane_query_schema.h>
 
 #include <cstddef>
 #include <cstdint>

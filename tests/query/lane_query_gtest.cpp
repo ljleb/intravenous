@@ -1,7 +1,7 @@
-#include "query/lane_query_engine.h"
-#include "query/lane_query_parser.h"
-#include "query/lane_query_program.h"
-#include "query/lane_query_schema.h"
+#include <intravenous/query/lane_query_engine.h>
+#include <intravenous/query/lane_query_parser.h>
+#include <intravenous/query/lane_query_program.h>
+#include <intravenous/query/lane_query_schema.h>
 
 #include <gtest/gtest.h>
 

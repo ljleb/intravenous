@@ -1,6 +1,6 @@
 #pragma once
 
-#include "sample.h"
+#include <intravenous/sample.h>
 
 #include <algorithm>
 #include <cstdint>

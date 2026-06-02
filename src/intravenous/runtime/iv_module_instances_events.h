@@ -1,7 +1,7 @@
 #pragma once
 
-#include "runtime/iv_module_instance_types.h"
-#include "linker_event.h"
+#include <intravenous/runtime/iv_module_instance_types.h>
+#include <intravenous/linker_event.h>
 
 #include <filesystem>
 #include <string>

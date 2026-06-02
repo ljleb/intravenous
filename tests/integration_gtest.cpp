@@ -1,24 +1,24 @@
 #include "runtime_test_harness.h"
 
-#include "runtime/graph_input_lanes.h"
-#include "runtime/graph_input_lanes_timeline_bridge.h"
-#include "runtime/iv_module_definitions.h"
-#include "runtime/iv_module_definitions_iv_module_instances_bridge.h"
-#include "runtime/iv_module_definitions_iv_module_reload_bridge.h"
-#include "runtime/iv_module_definitions_iv_module_source_introspection_bridge.h"
-#include "runtime/iv_module_instances.h"
-#include "runtime/iv_module_instances_iv_module_definitions_bridge.h"
-#include "runtime/iv_module_instances_graph_input_lanes_bridge.h"
-#include "runtime/iv_module_reload.h"
-#include "runtime/iv_module_reload_events.h"
-#include "runtime/iv_module_reload_iv_module_definitions_bridge.h"
-#include "runtime/lane_filters.h"
-#include "runtime/lane_filters_lane_views_bridge.h"
-#include "runtime/lane_views.h"
-#include "runtime/iv_module_source_introspection.h"
-#include "runtime/startup_config.h"
-#include "runtime/timeline.h"
-#include "runtime/timeline_lane_filters_bridge.h"
+#include <intravenous/runtime/graph_input_lanes.h>
+#include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
+#include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
+#include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/iv_module_reload_events.h>
+#include <intravenous/runtime/iv_module_reload_iv_module_definitions_bridge.h>
+#include <intravenous/runtime/lane_filters.h>
+#include <intravenous/runtime/lane_filters_lane_views_bridge.h>
+#include <intravenous/runtime/lane_views.h>
+#include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/startup_config.h>
+#include <intravenous/runtime/timeline.h>
+#include <intravenous/runtime/timeline_lane_filters_bridge.h>
 
 #include <gtest/gtest.h>
 
@@ -69,9 +69,9 @@ TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutd
 {
     auto const workspace = shared_inline_module_workspace(
         "runtime_integration_graph_input_lanes_initialize",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/shaping.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/shaping.h>
 
 namespace {
     void graph_input_module(iv::ModuleContext const& context)
@@ -151,9 +151,9 @@ TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
 {
     auto const workspace = shared_inline_module_workspace(
         "runtime_integration_live_input_snapshots",
-        R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/shaping.h"
+        R"(#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/shaping.h>
 
 void polyphonic_module(iv::ModuleContext const& context)
 {

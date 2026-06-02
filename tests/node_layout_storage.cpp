@@ -1,11 +1,11 @@
-#include "node/lifecycle.h"
+#include <intravenous/node/lifecycle.h>
 #include "module_test_utils.h"
-#include "basic_nodes/type_erased.h"
-#include "dsl.h"
-#include "graph/node.h"
-#include "graph/node_wrapper.h"
-#include "devices/channel_buffer_sink.h"
-#include "basic_nodes/buffers.h"
+#include <intravenous/basic_nodes/type_erased.h>
+#include <intravenous/dsl.h>
+#include <intravenous/graph/node.h>
+#include <intravenous/graph/node_wrapper.h>
+#include <intravenous/devices/channel_buffer_sink.h>
+#include <intravenous/basic_nodes/buffers.h>
 
 #include <array>
 #include <cstdint>

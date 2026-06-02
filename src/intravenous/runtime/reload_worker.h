@@ -1,9 +1,9 @@
 #pragma once
 
-#include "compat.h"
-#include "module/dependency.h"
-#include "module/loader.h"
-#include "module/watcher.h"
+#include <intravenous/compat.h>
+#include <intravenous/module/dependency.h>
+#include <intravenous/module/loader.h>
+#include <intravenous/module/watcher.h>
 
 #include <chrono>
 #include <exception>

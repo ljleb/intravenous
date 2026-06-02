@@ -1,8 +1,8 @@
 #pragma once
 
-#include "graph/build_types.h"
-#include "runtime/iv_module_instance_types.h"
-#include "runtime/iv_module_definitions.h"
+#include <intravenous/graph/build_types.h>
+#include <intravenous/runtime/iv_module_instance_types.h>
+#include <intravenous/runtime/iv_module_definitions.h>
 
 #include <filesystem>
 #include <mutex>

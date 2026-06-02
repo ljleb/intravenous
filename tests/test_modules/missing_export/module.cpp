@@ -1,4 +1,4 @@
-#include "dsl.h"
+#include <intravenous/dsl.h>
 
 namespace {
     iv::TypeErasedNode missing_export_module(iv::ModuleContext const& context)

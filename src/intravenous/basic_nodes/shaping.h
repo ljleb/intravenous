@@ -1,7 +1,7 @@
 #pragma once
 
-#include "node/lifecycle.h"
-#include "math/polyblep.h"
+#include <intravenous/node/lifecycle.h>
+#include <intravenous/math/polyblep.h>
 #include <algorithm>
 #include <array>
 #include <cmath>

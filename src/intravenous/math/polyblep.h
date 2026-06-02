@@ -1,6 +1,6 @@
 #pragma once
 #include "../sample.h"
-#include "compat.h"
+#include <intravenous/compat.h>
 #include <cmath>
 
 

@@ -1,7 +1,7 @@
-#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/filters.h"
-#include "basic_nodes/shaping.h"
+#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/filters.h>
+#include <intravenous/basic_nodes/shaping.h>
 
 inline void benchmark_constant_filtered(iv::ModuleContext const& context)
 {

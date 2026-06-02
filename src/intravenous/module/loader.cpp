@@ -1003,7 +1003,6 @@ namespace iv {
                 << " -DCMAKE_BUILD_TYPE=" << active_build_config()
                 << " -DCMAKE_C_COMPILER=" << quote(c_compiler)
                 << " -DCMAKE_CXX_COMPILER=" << quote(cxx_compiler)
-                << " -DCMAKE_CXX_FLAGS=" << quote(std::string("-I") + (iv_source_dir / "intravenous").generic_string())
                 << " -DCMAKE_PROJECT_INCLUDE=" << quote(repo_root / "src" / "intravenous" / "module" / "template" / "ModuleProjectInit.cmake")
                 << " -DIV_MODULE_ENTRY_FILE=" << quote(resolved.entry_file)
                 << " -DIV_MODULE_SOURCE_DIR=" << quote(resolved.module_dir)

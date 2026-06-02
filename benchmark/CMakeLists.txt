@@ -13,7 +13,6 @@ set_target_properties(intravenous_render_benchmark PROPERTIES
 target_include_directories(intravenous_render_benchmark PRIVATE
     ${PROJECT_SOURCE_DIR}
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/intravenous
 )
 
 target_include_directories(intravenous_render_benchmark SYSTEM PRIVATE

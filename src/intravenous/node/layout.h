@@ -1,9 +1,9 @@
 #pragma once
 
-#include "compat.h"
+#include <intravenous/compat.h>
 #include "traits.h"
 #include "resources.h"
-#include "orchestrator/orchestrator_builder.h"
+#include <intravenous/orchestrator/orchestrator_builder.h>
 
 #include <algorithm>
 #include <cstddef>

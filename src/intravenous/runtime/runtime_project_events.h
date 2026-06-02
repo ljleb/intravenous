@@ -1,8 +1,8 @@
 #pragma once
 
-#include "linker_event.h"
-#include "runtime/graph_input_lane_controller.h"
-#include "runtime/runtime_project_api_types.h"
+#include <intravenous/linker_event.h>
+#include <intravenous/runtime/graph_input_lane_controller.h>
+#include <intravenous/runtime/runtime_project_api_types.h>
 
 #include <optional>
 #include <string>

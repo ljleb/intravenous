@@ -1,7 +1,7 @@
 #pragma once
 
-#include "graph/builder.h"
-#include "node/lifecycle.h"
+#include <intravenous/graph/builder.h>
+#include <intravenous/node/lifecycle.h>
 
 #include <array>
 #include <memory>
@@ -12,7 +12,7 @@
 #endif
 
 #if IV_ENABLE_JUCE_VST
-#include "local_gamma_time_aligner.h"
+#include <intravenous/local_gamma_time_aligner.h>
 
 #include <optional>
 #endif

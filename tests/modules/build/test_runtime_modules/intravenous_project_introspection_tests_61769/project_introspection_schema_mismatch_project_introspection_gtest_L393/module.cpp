@@ -1,6 +1,6 @@
-#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/arithmetic.h"
+#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/arithmetic.h>
 
 namespace {
     template<size_t Inputs>

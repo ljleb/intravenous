@@ -1,7 +1,7 @@
 #pragma once
 
-#include "compat.h"
-#include "sample.h"
+#include <intravenous/compat.h>
+#include <intravenous/sample.h>
 
 #include <algorithm>
 #include <cassert>

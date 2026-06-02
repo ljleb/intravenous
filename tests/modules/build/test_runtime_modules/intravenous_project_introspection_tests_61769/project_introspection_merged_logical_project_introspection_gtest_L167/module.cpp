@@ -1,5 +1,5 @@
-#include "dsl.h"
-#include "basic_nodes/buffers.h"
+#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     template<int I>

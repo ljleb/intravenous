@@ -1,6 +1,6 @@
 #pragma once
 
-#include "audio_device.h"
+#include <intravenous/devices/audio_device.h>
 #include "../compat.h"
 #include "../wav.h"
 

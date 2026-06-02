@@ -1,12 +1,12 @@
 #pragma once
 
-#include "runtime/iv_module_instances.h"
-#include "runtime/iv_module_instances_events.h"
-#include "runtime/graph_input_lanes_events.h"
-#include "runtime/iv_module_source_introspection_events.h"
-#include "runtime/lane_ref.h"
-#include "runtime/runtime_project_events.h"
-#include "runtime/lane_graph.h"
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/graph_input_lanes_events.h>
+#include <intravenous/runtime/iv_module_source_introspection_events.h>
+#include <intravenous/runtime/lane_ref.h>
+#include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/lane_graph.h>
 
 #include <functional>
 #include <mutex>

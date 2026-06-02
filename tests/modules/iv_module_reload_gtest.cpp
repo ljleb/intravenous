@@ -1,9 +1,9 @@
 #include "../module_test_utils.h"
 
-#include "linker_event.h"
-#include "runtime/iv_module_reload.h"
-#include "runtime/iv_module_reload_events.h"
-#include "runtime/startup_config.h"
+#include <intravenous/linker_event.h>
+#include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/iv_module_reload_events.h>
+#include <intravenous/runtime/startup_config.h>
 
 #include <gtest/gtest.h>
 

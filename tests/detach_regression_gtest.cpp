@@ -1,7 +1,7 @@
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/shaping.h"
-#include "dsl.h"
-#include "graph/node.h"
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/shaping.h>
+#include <intravenous/dsl.h>
+#include <intravenous/graph/node.h>
 #include "module_test_utils.h"
 
 #include <gtest/gtest.h>

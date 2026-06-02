@@ -1,11 +1,11 @@
 #pragma once
 
-#include "query/lane_query_engine.h"
-#include "query/lane_query_parser.h"
-#include "query/lane_query_program.h"
-#include "runtime/lane_filters_events.h"
-#include "runtime/lane_view_service.h"
-#include "runtime/timeline_events.h"
+#include <intravenous/query/lane_query_engine.h>
+#include <intravenous/query/lane_query_parser.h>
+#include <intravenous/query/lane_query_program.h>
+#include <intravenous/runtime/lane_filters_events.h>
+#include <intravenous/runtime/lane_view_service.h>
+#include <intravenous/runtime/timeline_events.h>
 
 #include <cstdint>
 #include <functional>

@@ -1,7 +1,7 @@
 #include "../module_test_utils.h"
 
-#include "runtime/iv_module_definitions.h"
-#include "runtime/startup_config.h"
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/startup_config.h>
 
 #include <gtest/gtest.h>
 

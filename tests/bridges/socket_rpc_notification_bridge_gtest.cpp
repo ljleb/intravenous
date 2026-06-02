@@ -1,10 +1,10 @@
 #include "../module_test_utils.h"
 
-#include "runtime/iv_module_instances.h"
-#include "runtime/iv_module_instances_events.h"
-#include "runtime/runtime_project_events.h"
-#include "runtime/socket_rpc_notification_bridge.h"
-#include "runtime/socket_rpc_server.h"
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/socket_rpc_notification_bridge.h>
+#include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

@@ -1,8 +1,8 @@
 #include "../module_test_utils.h"
 
-#include "linker_event.h"
-#include "runtime/iv_module_instances.h"
-#include "runtime/iv_module_instances_events.h"
+#include <intravenous/linker_event.h>
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_events.h>
 
 #include <gtest/gtest.h>
 

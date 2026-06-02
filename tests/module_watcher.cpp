@@ -1,6 +1,6 @@
 #include "module_test_utils.h"
 
-#include "module/watcher.h"
+#include <intravenous/module/watcher.h>
 
 int main()
 {
