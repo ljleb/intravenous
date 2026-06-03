@@ -1,8 +1,8 @@
 #pragma once
 
-#include "port_refs.h"
-#include "syntax.h"
-#include "shape_traits.h"
+#include <intravenous/graph/builder/port_refs.h>
+#include <intravenous/graph/builder/syntax.h>
+#include <intravenous/graph/builder/shape_traits.h>
 
 #include <concepts>
 #include <type_traits>

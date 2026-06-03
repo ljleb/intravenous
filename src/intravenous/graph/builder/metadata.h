@@ -1,6 +1,6 @@
 #pragma once
 
-#include "names.h"
+#include <intravenous/graph/builder/names.h>
 
 #include <algorithm>
 #include <ranges>

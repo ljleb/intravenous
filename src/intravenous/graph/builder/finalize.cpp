@@ -1,10 +1,10 @@
-#include "finalize.h"
+#include <intravenous/graph/builder/finalize.h>
 
-#include "connections.h"
-#include "detach.h"
-#include "metadata.h"
-#include "public_ports.h"
-#include "topology.h"
+#include <intravenous/graph/builder/connections.h>
+#include <intravenous/graph/builder/detach.h>
+#include <intravenous/graph/builder/metadata.h>
+#include <intravenous/graph/builder/public_ports.h>
+#include <intravenous/graph/builder/topology.h>
 
 #include <limits>
 

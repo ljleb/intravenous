@@ -1,7 +1,7 @@
 #pragma once
 
-#include "traits.h"
-#include "resources.h"
+#include <intravenous/node/traits.h>
+#include <intravenous/node/resources.h>
 
 #include <sstream>
 #include <memory>

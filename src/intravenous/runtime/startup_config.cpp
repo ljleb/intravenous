@@ -1,7 +1,7 @@
-#include "runtime/startup_config.h"
+#include <intravenous/runtime/startup_config.h>
 
-#include "module/search_paths.h"
-#include "runtime/config.h"
+#include <intravenous/module/search_paths.h>
+#include <intravenous/runtime/config.h>
 
 namespace iv {
 StartupConfig::StartupConfig(

@@ -1,8 +1,8 @@
-#include "runtime/socket_rpc_iv_module_source_introspection_bridge.h"
+#include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 
-#include "runtime/graph_input_lanes.h"
-#include "runtime/iv_module_source_introspection.h"
-#include "runtime/socket_rpc_server.h"
+#include <intravenous/runtime/graph_input_lanes.h>
+#include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/socket_rpc_server.h>
 
 namespace iv {
 namespace {

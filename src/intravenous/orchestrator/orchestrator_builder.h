@@ -1,6 +1,6 @@
 #pragma once
 
-#include "device_orchestrator.h"
+#include <intravenous/orchestrator/device_orchestrator.h>
 #include <intravenous/devices/wav_file_device.h>
 
 #include <algorithm>

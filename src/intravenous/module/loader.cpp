@@ -1,10 +1,10 @@
 #define IV_INTERNAL_TRANSLATION_UNIT
 
-#include "module/loader.h"
-#include "compat.h"
+#include <intravenous/module/loader.h>
+#include <intravenous/compat.h>
 
-#include "devices/channel_buffer_sink.h"
-#include "graph/builder.h"
+#include <intravenous/devices/channel_buffer_sink.h>
+#include <intravenous/graph/builder.h>
 
 #include <algorithm>
 #include <chrono>

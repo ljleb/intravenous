@@ -1,10 +1,10 @@
-#include "embedder.h"
+#include <intravenous/graph/builder/embedder.h>
 
-#include "../compiler.h"
-#include "connections.h"
-#include "detach.h"
-#include "public_ports.h"
-#include "topology.h"
+#include <intravenous/graph/compiler.h>
+#include <intravenous/graph/builder/connections.h>
+#include <intravenous/graph/builder/detach.h>
+#include <intravenous/graph/builder/public_ports.h>
+#include <intravenous/graph/builder/topology.h>
 
 namespace iv {
 size_t GraphBuilderChildEmbedder::embed(

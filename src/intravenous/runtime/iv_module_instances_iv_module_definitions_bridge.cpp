@@ -1,7 +1,7 @@
-#include "runtime/iv_module_instances_iv_module_definitions_bridge.h"
+#include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
 
-#include "runtime/iv_module_definitions.h"
-#include "runtime/iv_module_instances_events.h"
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_instances_events.h>
 
 namespace iv {
 namespace {

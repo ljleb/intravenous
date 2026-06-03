@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../fast_bitset.h"
+#include <intravenous/fast_bitset.h>
 #include <intravenous/node/lifecycle.h>
-#include "../note_number_lookup_table.h"
+#include <intravenous/note_number_lookup_table.h>
 
 #include <algorithm>
 #include <array>

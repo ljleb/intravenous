@@ -1,4 +1,4 @@
-#include "topology.h"
+#include <intravenous/graph/builder/topology.h>
 
 namespace iv {
 size_t GraphBuilderTopology::node_count() const

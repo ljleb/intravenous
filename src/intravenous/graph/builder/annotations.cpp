@@ -1,6 +1,6 @@
-#include "annotations.h"
+#include <intravenous/graph/builder/annotations.h>
 
-#include "topology.h"
+#include <intravenous/graph/builder/topology.h>
 
 namespace iv {
 void GraphBuilderAnnotations::add_logical_id(

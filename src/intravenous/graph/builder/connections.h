@@ -1,7 +1,7 @@
 #pragma once
 
-#include "identity.h"
-#include "port_refs.h"
+#include <intravenous/graph/builder/identity.h>
+#include <intravenous/graph/builder/port_refs.h>
 
 #include <span>
 #include <string>

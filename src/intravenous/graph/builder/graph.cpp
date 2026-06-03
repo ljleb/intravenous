@@ -1,5 +1,5 @@
-#include "../builder.h"
-#include "embedder.h"
+#include <intravenous/graph/builder.h>
+#include <intravenous/graph/builder/embedder.h>
 
 namespace iv {
 SamplePortRef::SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port) :

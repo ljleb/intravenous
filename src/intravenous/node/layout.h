@@ -1,8 +1,8 @@
 #pragma once
 
 #include <intravenous/compat.h>
-#include "traits.h"
-#include "resources.h"
+#include <intravenous/node/traits.h>
+#include <intravenous/node/resources.h>
 #include <intravenous/orchestrator/orchestrator_builder.h>
 
 #include <algorithm>

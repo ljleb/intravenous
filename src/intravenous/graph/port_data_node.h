@@ -1,6 +1,6 @@
 #pragma once
 
-#include "wiring.h"
+#include <intravenous/graph/wiring.h>
 #include <intravenous/node/lifecycle.h>
 
 #include <algorithm>

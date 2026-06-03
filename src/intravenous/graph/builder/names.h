@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../compiler.h"
+#include <intravenous/graph/compiler.h>
 
 #include <string>
 #include <string_view>

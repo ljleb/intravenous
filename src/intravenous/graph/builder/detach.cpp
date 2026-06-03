@@ -1,4 +1,4 @@
-#include "detach.h"
+#include <intravenous/graph/builder/detach.h>
 
 namespace iv {
 size_t GraphBuilderDetach::reserve_child_offset(GraphBuilderDetach const& child)

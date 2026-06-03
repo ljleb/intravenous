@@ -1,4 +1,4 @@
-#include "metadata.h"
+#include <intravenous/graph/builder/metadata.h>
 
 namespace iv::details {
 

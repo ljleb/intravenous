@@ -1,4 +1,4 @@
-#include "runtime/socket_rpc_server.h"
+#include <intravenous/runtime/socket_rpc_server.h>
 
 namespace iv {
 IV_DEFINE_LINKER_EVENT(SocketRpcGraphQueryBySpansEvent, iv_socket_rpc_graph_query_by_spans_event)

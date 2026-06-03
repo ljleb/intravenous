@@ -1,6 +1,6 @@
 #define IV_INTERNAL_TRANSLATION_UNIT
 
-#include "module/watcher.h"
+#include <intravenous/module/watcher.h>
 
 #include <algorithm>
 #include <array>

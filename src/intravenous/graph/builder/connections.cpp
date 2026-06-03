@@ -1,6 +1,6 @@
-#include "connections.h"
+#include <intravenous/graph/builder/connections.h>
 
-#include "topology.h"
+#include <intravenous/graph/builder/topology.h>
 
 namespace iv {
 bool GraphBuilderConnections::sample_input_is_connected(PortId target) const

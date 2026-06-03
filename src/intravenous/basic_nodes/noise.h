@@ -3,9 +3,9 @@
 #include <intravenous/node/lifecycle.h>
 
 #include <intravenous/math/erfinv.h>
-#include "random123/aes.h"
-#include "random123/philox.h"
-#include "random123/uniform.hpp"
+#include <intravenous/third_party/random123/aes.h>
+#include <intravenous/third_party/random123/philox.h>
+#include <intravenous/third_party/random123/uniform.hpp>
 
 #include <algorithm>
 #include <array>

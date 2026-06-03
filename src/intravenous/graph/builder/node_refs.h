@@ -1,9 +1,9 @@
 #pragma once
 
-#include "stored_node.h"
-#include "node_call.h"
-#include "output_refs.h"
-#include "../compiler.h"
+#include <intravenous/graph/builder/stored_node.h>
+#include <intravenous/graph/builder/node_call.h>
+#include <intravenous/graph/builder/output_refs.h>
+#include <intravenous/graph/compiler.h>
 
 #include <concepts>
 #include <cstdint>

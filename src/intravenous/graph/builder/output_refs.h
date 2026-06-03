@@ -1,6 +1,6 @@
 #pragma once
 
-#include "port_refs.h"
+#include <intravenous/graph/builder/port_refs.h>
 
 #include <string_view>
 #include <variant>

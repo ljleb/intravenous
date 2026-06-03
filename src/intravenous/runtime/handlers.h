@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../compat.h"
+#include <intravenous/compat.h>
 
 #include <cstdlib>
 #include <exception>

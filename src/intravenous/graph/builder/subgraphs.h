@@ -1,8 +1,8 @@
 #pragma once
 
-#include "identity.h"
-#include "node_refs.h"
-#include "topology.h"
+#include <intravenous/graph/builder/identity.h>
+#include <intravenous/graph/builder/node_refs.h>
+#include <intravenous/graph/builder/topology.h>
 
 #include <concepts>
 #include <span>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../build_types.h"
-#include "../node.h"
+#include <intravenous/graph/build_types.h>
+#include <intravenous/graph/node.h>
 
 namespace iv {
     struct GraphBuilderIdentity;

@@ -1,6 +1,6 @@
-#include "public_ports.h"
+#include <intravenous/graph/builder/public_ports.h>
 
-#include "topology.h"
+#include <intravenous/graph/builder/topology.h>
 
 namespace iv {
 SamplePortRef GraphBuilderPublicPorts::add_sample_input(GraphBuilder& builder, std::string_view name, Sample default_value)

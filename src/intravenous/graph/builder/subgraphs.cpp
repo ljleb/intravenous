@@ -1,4 +1,4 @@
-#include "subgraphs.h"
+#include <intravenous/graph/builder/subgraphs.h>
 
 namespace iv {
 bool SubgraphScopeManager::active() const

@@ -1,4 +1,4 @@
-#include "stored_node.h"
+#include <intravenous/graph/builder/stored_node.h>
 
 namespace iv {
 std::vector<InputConfig> const& NodePorts::inputs() const

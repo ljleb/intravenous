@@ -3,9 +3,9 @@
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/basic_nodes/type_erased.h>
-#include "build_types.h"
-#include "types.h"
-#include "wiring.h"
+#include <intravenous/graph/build_types.h>
+#include <intravenous/graph/types.h>
+#include <intravenous/graph/wiring.h>
 
 #include <algorithm>
 #include <bit>

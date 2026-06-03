@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../compiler.h"
-#include "identity.h"
-#include "node_call.h"
-#include "output_refs.h"
+#include <intravenous/graph/compiler.h>
+#include <intravenous/graph/builder/identity.h>
+#include <intravenous/graph/builder/node_call.h>
+#include <intravenous/graph/builder/output_refs.h>
 
 #include <span>
 #include <string_view>

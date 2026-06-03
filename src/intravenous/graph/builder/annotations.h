@@ -1,7 +1,7 @@
 #pragma once
 
-#include "identity.h"
-#include "node_refs.h"
+#include <intravenous/graph/builder/identity.h>
+#include <intravenous/graph/builder/node_refs.h>
 
 #include <cstdint>
 #include <string_view>

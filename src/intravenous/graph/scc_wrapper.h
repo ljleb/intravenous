@@ -1,6 +1,6 @@
 #pragma once
 
-#include "node_wrapper.h"
+#include <intravenous/graph/node_wrapper.h>
 
 #include <algorithm>
 #include <cstdint>

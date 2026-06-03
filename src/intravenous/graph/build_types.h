@@ -1,8 +1,8 @@
 #pragma once
 
-#include "scc_wrapper.h"
-#include "types.h"
-#include "wiring.h"
+#include <intravenous/graph/scc_wrapper.h>
+#include <intravenous/graph/types.h>
+#include <intravenous/graph/wiring.h>
 
 #include <cstddef>
 #include <cstdint>

@@ -1,4 +1,4 @@
-#include "query/lane_query_program.h"
+#include <intravenous/query/lane_query_program.h>
 
 #include <cmath>
 #include <ranges>

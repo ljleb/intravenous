@@ -1,6 +1,6 @@
-#include "runtime/config.h"
+#include <intravenous/runtime/config.h>
 
-#include "compat.h"
+#include <intravenous/compat.h>
 
 #include <cctype>
 #include <cstdlib>

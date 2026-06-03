@@ -1,9 +1,9 @@
-#include "runtime/iv_module_definitions.h"
+#include <intravenous/runtime/iv_module_definitions.h>
 
-#include "graph/builder.h"
-#include "runtime/iv_module_definitions_events.h"
-#include "runtime/iv_module_instances.h"
-#include "runtime/iv_module_reload.h"
+#include <intravenous/graph/builder.h>
+#include <intravenous/runtime/iv_module_definitions_events.h>
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_reload.h>
 
 #include <system_error>
 

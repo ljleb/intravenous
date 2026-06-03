@@ -1,8 +1,8 @@
-#include "runtime/graph_input_lanes.h"
+#include <intravenous/runtime/graph_input_lanes.h>
 
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/routing.h"
-#include "basic_lane_nodes/controls.h"
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/routing.h>
+#include <intravenous/basic_lane_nodes/controls.h>
 
 #include <array>
 #include <charconv>

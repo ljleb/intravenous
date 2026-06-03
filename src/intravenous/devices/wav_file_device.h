@@ -1,8 +1,8 @@
 #pragma once
 
 #include <intravenous/devices/audio_device.h>
-#include "../compat.h"
-#include "../wav.h"
+#include <intravenous/compat.h>
+#include <intravenous/wav.h>
 
 #include <algorithm>
 #include <filesystem>

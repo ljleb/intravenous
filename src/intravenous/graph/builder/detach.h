@@ -1,7 +1,7 @@
 #pragma once
 
-#include "port_refs.h"
-#include "../types.h"
+#include <intravenous/graph/builder/port_refs.h>
+#include <intravenous/graph/types.h>
 
 #include <unordered_map>
 #include <unordered_set>

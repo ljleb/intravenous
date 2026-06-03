@@ -1,8 +1,8 @@
-#include "runtime/iv_module_source_introspection.h"
+#include <intravenous/runtime/iv_module_source_introspection.h>
 
-#include "compat.h"
-#include "filesystem_paths.h"
-#include "runtime/iv_module_source_introspection_events.h"
+#include <intravenous/compat.h>
+#include <intravenous/filesystem_paths.h>
+#include <intravenous/runtime/iv_module_source_introspection_events.h>
 
 #include <algorithm>
 #include <fstream>

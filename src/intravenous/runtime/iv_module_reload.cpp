@@ -1,8 +1,8 @@
-#include "runtime/iv_module_reload.h"
+#include <intravenous/runtime/iv_module_reload.h>
 
-#include "graph/builder.h"
-#include "juce/vst_runtime.h"
-#include "runtime/iv_module_reload_events.h"
+#include <intravenous/graph/builder.h>
+#include <intravenous/juce/vst_runtime.h>
+#include <intravenous/runtime/iv_module_reload_events.h>
 
 #include <exception>
 

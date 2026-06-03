@@ -1,14 +1,14 @@
 #pragma once
-#include "builder/identity.h"
-#include "builder/node_refs.h"
-#include "builder/topology.h"
-#include "builder/public_ports.h"
-#include "builder/subgraphs.h"
-#include "builder/connections.h"
-#include "builder/detach.h"
-#include "builder/annotations.h"
-#include "builder/finalize.h"
-#include "../basic_nodes/arithmetic.h"
+#include <intravenous/graph/builder/identity.h>
+#include <intravenous/graph/builder/node_refs.h>
+#include <intravenous/graph/builder/topology.h>
+#include <intravenous/graph/builder/public_ports.h>
+#include <intravenous/graph/builder/subgraphs.h>
+#include <intravenous/graph/builder/connections.h>
+#include <intravenous/graph/builder/detach.h>
+#include <intravenous/graph/builder/annotations.h>
+#include <intravenous/graph/builder/finalize.h>
+#include <intravenous/basic_nodes/arithmetic.h>
 
 #include <algorithm>
 #include <array>

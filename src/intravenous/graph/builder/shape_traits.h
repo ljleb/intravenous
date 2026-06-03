@@ -1,7 +1,7 @@
 #pragma once
 
-#include "syntax.h"
-#include "../node.h"
+#include <intravenous/graph/builder/syntax.h>
+#include <intravenous/graph/node.h>
 
 #include <array>
 #include <concepts>

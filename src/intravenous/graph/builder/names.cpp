@@ -1,4 +1,4 @@
-#include "names.h"
+#include <intravenous/graph/builder/names.h>
 
 #include <cstdint>
 #include <cstdlib>

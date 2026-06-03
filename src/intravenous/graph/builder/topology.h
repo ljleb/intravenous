@@ -1,8 +1,8 @@
 #pragma once
 
-#include "names.h"
-#include "node_refs.h"
-#include "../../basic_nodes/routing.h"
+#include <intravenous/graph/builder/names.h>
+#include <intravenous/graph/builder/node_refs.h>
+#include <intravenous/basic_nodes/routing.h>
 
 #include <span>
 #include <type_traits>

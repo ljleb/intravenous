@@ -1,11 +1,11 @@
 #pragma once
 
-#include "../basic_nodes/type_erased.h"
-#include "event_port_data_node.h"
-#include "port_data_node.h"
-#include "runtime.h"
-#include "types.h"
-#include "wiring.h"
+#include <intravenous/basic_nodes/type_erased.h>
+#include <intravenous/graph/event_port_data_node.h>
+#include <intravenous/graph/port_data_node.h>
+#include <intravenous/graph/runtime.h>
+#include <intravenous/graph/types.h>
+#include <intravenous/graph/wiring.h>
 
 #include <algorithm>
 #include <optional>

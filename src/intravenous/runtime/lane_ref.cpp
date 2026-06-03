@@ -1,6 +1,6 @@
-#include "runtime/lane_ref.h"
+#include <intravenous/runtime/lane_ref.h>
 
-#include "runtime/timeline.h"
+#include <intravenous/runtime/timeline.h>
 
 namespace iv {
 RealtimeLaneRef::RealtimeLaneRef(Timeline& timeline, LaneId lane) :

@@ -4,7 +4,7 @@
 #include <intravenous/compat.h>
 #include <intravenous/orchestrator/device_orchestrator.h>
 #include <intravenous/orchestrator/orchestrator_builder.h>
-#include "lifecycle.h"
+#include <intravenous/node/lifecycle.h>
 #include <intravenous/module/loader.h>
 
 #include <algorithm>
