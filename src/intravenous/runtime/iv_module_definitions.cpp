@@ -36,6 +36,7 @@ std::unique_ptr<IvModuleDefinitions::DefinitionState> make_definition_state(
         .module_id = loaded.module_id,
         .introspection = loaded.introspection,
         .dependencies = loaded.dependencies,
+        .module_refs = state->module_refs,
         .canonical_builder = &state->canonical_builder,
     };
     return state;

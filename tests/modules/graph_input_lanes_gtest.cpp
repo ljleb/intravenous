@@ -18,10 +18,9 @@ struct GraphInputLanesWitness {
 
 GraphInputLanesWitness *g_graph_input_lanes_witness = nullptr;
 
-iv::IvModuleInstanceBuilder make_instance_builder_with_ports()
+iv::IvModuleInstance make_instance_with_ports()
 {
-    iv::IvModuleInstanceBuilder instance_builder {};
-    auto &instance = instance_builder.instance;
+    iv::IvModuleInstance instance {};
     instance.instance_id = "instance:1";
     instance.definition_id = "definition:1";
     instance.module_root = std::filesystem::path("/tmp/module");
@@ -45,7 +44,7 @@ iv::IvModuleInstanceBuilder make_instance_builder_with_ports()
     });
 
     instance.introspection.logical_nodes.push_back(std::move(node));
-    return instance_builder;
+    return instance;
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
@@ -78,9 +77,11 @@ protected:
 TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
 {
     iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
-        .created = {make_instance_builder_with_ports()},
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
@@ -91,9 +92,11 @@ TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
 TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)
 {
     iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
-        .created = {make_instance_builder_with_ports()},
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
     auto const created_count = witness.timeline_batches.front().upserts.size();
     witness.timeline_batches.clear();
@@ -109,9 +112,11 @@ TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)
 TEST_F(GraphInputLanesTest, UpdatedInstancePublishesTimelineBatch)
 {
     iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
-        .updated = {make_instance_builder_with_ports()},
+        .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
@@ -121,9 +126,11 @@ TEST_F(GraphInputLanesTest, UpdatedInstancePublishesTimelineBatch)
 TEST_F(GraphInputLanesTest, SampleInputMutationsPublishTimelineBatch)
 {
     iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
-        .created = {make_instance_builder_with_ports()},
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
     witness.timeline_batches.clear();
 

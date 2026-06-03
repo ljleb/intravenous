@@ -36,14 +36,14 @@ struct IvModuleInstancesChanged {
     std::vector<std::string> deleted_instance_ids{};
 };
 
-struct IvModuleInstanceBuilder {
-    IvModuleInstance instance {};
-    GraphBuilder builder {};
+struct IvModuleInstanceBuilderRef {
+    IvModuleInstance const *instance = nullptr;
+    GraphBuilder *builder = nullptr;
 };
 
 struct IvModuleInstanceBuildersChanged {
-    std::vector<IvModuleInstanceBuilder> created {};
-    std::vector<IvModuleInstanceBuilder> updated {};
+    std::vector<IvModuleInstanceBuilderRef> created {};
+    std::vector<IvModuleInstanceBuilderRef> updated {};
     std::vector<std::string> deleted_instance_ids {};
 };
 
@@ -58,6 +58,8 @@ class IvModuleInstances {
     std::unordered_map<std::string, DesiredInstance> desired_instances_by_id;
     std::unordered_map<std::string, IvModuleRequiredDefinition> required_definitions_by_id;
     std::unordered_map<std::string, IvModuleInstance> realized_instances_by_id;
+    std::unordered_map<std::string, std::vector<ModuleRef>> realized_module_refs_by_id;
+    std::unordered_map<std::string, GraphBuilder> realized_builders_by_id;
     size_t next_instance_id = 1;
 
 public:

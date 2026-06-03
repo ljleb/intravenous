@@ -37,18 +37,6 @@ IvModuleInstance make_instance_from_definition(
     return instance;
 }
 
-IvModuleInstanceBuilder make_instance_builder_from_definition(
-    IvModuleDefinition const &definition,
-    std::string const &instance_id)
-{
-    auto instance = make_instance_from_definition(definition, instance_id);
-    return IvModuleInstanceBuilder{
-        .instance = std::move(instance),
-        .builder = definition.canonical_builder != nullptr
-            ? *definition.canonical_builder
-            : GraphBuilder{},
-    };
-}
 } // namespace
 
 std::string IvModuleInstances::create_instance(std::filesystem::path module_root)
@@ -112,6 +100,8 @@ void IvModuleInstances::remove_instance(std::string const &instance_id)
         if (realized_instances_by_id.erase(instance_id) > 0) {
             instance_diff.deleted_instance_ids.push_back(instance_id);
         }
+        realized_module_refs_by_id.erase(instance_id);
+        realized_builders_by_id.erase(instance_id);
 
         bool still_required = false;
         for (auto const &entry : desired_instances_by_id) {
@@ -185,12 +175,18 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                     continue;
                 }
                 auto instance = make_instance_from_definition(definition, entry.second.instance_id);
-                realized_instances_by_id[entry.second.instance_id] = instance;
+                auto &stored_instance = realized_instances_by_id[entry.second.instance_id];
+                stored_instance = instance;
+                realized_module_refs_by_id[entry.second.instance_id] = definition.module_refs;
+                auto &stored_builder = realized_builders_by_id[entry.second.instance_id];
+                stored_builder = definition.canonical_builder != nullptr
+                    ? *definition.canonical_builder
+                    : GraphBuilder{};
                 instance_diff.created.push_back(std::move(instance));
-                builders_diff.created.push_back(
-                    make_instance_builder_from_definition(
-                        definition,
-                        entry.second.instance_id));
+                builders_diff.created.push_back(IvModuleInstanceBuilderRef{
+                    .instance = &stored_instance,
+                    .builder = &stored_builder,
+                });
                 list_changed = true;
             }
         }
@@ -200,12 +196,18 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                     continue;
                 }
                 auto instance = make_instance_from_definition(definition, entry.second.instance_id);
-                realized_instances_by_id[entry.second.instance_id] = instance;
+                auto &stored_instance = realized_instances_by_id[entry.second.instance_id];
+                stored_instance = instance;
+                realized_module_refs_by_id[entry.second.instance_id] = definition.module_refs;
+                auto &stored_builder = realized_builders_by_id[entry.second.instance_id];
+                stored_builder = definition.canonical_builder != nullptr
+                    ? *definition.canonical_builder
+                    : GraphBuilder{};
                 instance_diff.updated.push_back(std::move(instance));
-                builders_diff.updated.push_back(
-                    make_instance_builder_from_definition(
-                        definition,
-                        entry.second.instance_id));
+                builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
+                    .instance = &stored_instance,
+                    .builder = &stored_builder,
+                });
                 list_changed = true;
             }
         }
@@ -215,6 +217,8 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 if (it->second.definition_id == definition_id) {
                     instance_diff.deleted_instance_ids.push_back(it->second.instance_id);
                     builders_diff.deleted_instance_ids.push_back(it->second.instance_id);
+                    realized_module_refs_by_id.erase(it->second.instance_id);
+                    realized_builders_by_id.erase(it->second.instance_id);
                     it = realized_instances_by_id.erase(it);
                     list_changed = true;
                 } else {

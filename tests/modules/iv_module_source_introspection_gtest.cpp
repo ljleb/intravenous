@@ -67,19 +67,20 @@ struct SeededIvModuleSourceIntrospectionApp {
         auto loaded = iv::test::load_runtime_iv_module_definition(
             config,
             module_root);
+        auto instance = iv::IvModuleInstance{
+            .instance_id = "instance:1",
+            .definition_id = loaded.definition_id,
+            .module_root = loaded.module_root,
+            .module_id = loaded.module_id,
+            .introspection = loaded.introspection,
+        };
 
         graph_input_lanes.handle_iv_module_instance_builders_changed(
             iv::IvModuleInstanceBuildersChanged{
                 .created = {
-                    iv::IvModuleInstanceBuilder{
-                        .instance = iv::IvModuleInstance{
-                            .instance_id = "instance:1",
-                            .definition_id = loaded.definition_id,
-                            .module_root = loaded.module_root,
-                            .module_id = loaded.module_id,
-                            .introspection = loaded.introspection,
-                        },
-                        .builder = loaded.canonical_builder,
+                    iv::IvModuleInstanceBuilderRef{
+                        .instance = &instance,
+                        .builder = &loaded.canonical_builder,
                     },
                 },
             });

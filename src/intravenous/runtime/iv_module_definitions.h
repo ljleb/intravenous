@@ -32,6 +32,7 @@ struct IvModuleDefinition {
     std::string module_id{};
     GraphIntrospectionMetadata introspection{};
     std::vector<ModuleDependency> dependencies{};
+    std::vector<ModuleRef> module_refs{};
     GraphBuilder const *canonical_builder = nullptr;
 };
 

@@ -50,7 +50,7 @@ public:
 private:
     mutable std::mutex mutex;
     LaneIdAllocator lane_ids;
-    std::unordered_map<std::string, IvModuleInstanceBuilder> builders_by_instance_id;
+    std::unordered_map<std::string, std::vector<DesiredGraphInputPort>> desired_ports_by_instance_id;
     std::vector<DesiredGraphInputPort> desired_ports;
     std::vector<ExistingTrackedLane> tracked_lanes;
     std::function<RealtimeLaneRef(LaneId)> realtime_lane_ref_for_lane;
@@ -60,7 +60,7 @@ private:
     std::unordered_set<std::string> concrete_live_input_overrides;
 
     static std::vector<DesiredGraphInputPort> graph_input_port_descriptors_for(
-        IvModuleInstanceBuilder const &instance_builder);
+        IvModuleInstance const &instance);
     static int module_instance_numeric_id(std::string_view instance_id);
     static int hash_string(std::string const &value);
     static std::string concrete_key(std::string_view logical_node_id, size_t member_ordinal);

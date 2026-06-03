@@ -204,14 +204,14 @@ GraphInputPortDescriptor event_port_descriptor(
 
 std::vector<GraphInputLanes::DesiredGraphInputPort>
 GraphInputLanes::graph_input_port_descriptors_for(
-    IvModuleInstanceBuilder const &instance_builder)
+    IvModuleInstance const &instance)
 {
     std::vector<DesiredGraphInputPort> ports;
-    auto const module_instance_id = module_instance_numeric_id(instance_builder.instance.instance_id);
-    for (auto const &node : instance_builder.instance.introspection.logical_nodes) {
+    auto const module_instance_id = module_instance_numeric_id(instance.instance_id);
+    for (auto const &node : instance.introspection.logical_nodes) {
         append_graph_input_port_descriptors(
             ports,
-            instance_builder.instance.instance_id,
+            instance.instance_id,
             module_instance_id,
             node.id,
             std::nullopt,
@@ -219,7 +219,7 @@ GraphInputLanes::graph_input_port_descriptors_for(
             node.sample_inputs);
         append_graph_input_port_descriptors(
             ports,
-            instance_builder.instance.instance_id,
+            instance.instance_id,
             module_instance_id,
             node.id,
             std::nullopt,
@@ -228,7 +228,7 @@ GraphInputLanes::graph_input_port_descriptors_for(
         for (auto const &member : node.members) {
             append_graph_input_port_descriptors(
                 ports,
-                instance_builder.instance.instance_id,
+                instance.instance_id,
                 module_instance_id,
                 node.id,
                 member.ordinal,
@@ -236,7 +236,7 @@ GraphInputLanes::graph_input_port_descriptors_for(
                 member.sample_inputs);
             append_graph_input_port_descriptors(
                 ports,
-                instance_builder.instance.instance_id,
+                instance.instance_id,
                 module_instance_id,
                 node.id,
                 member.ordinal,
@@ -499,12 +499,11 @@ Sample GraphInputLanes::live_input_value_or_locked(
 void GraphInputLanes::refresh_desired_ports_locked()
 {
     desired_ports.clear();
-    for (auto const &[_, instance_builder] : builders_by_instance_id) {
-        auto ports = graph_input_port_descriptors_for(instance_builder);
+    for (auto const &[_, ports] : desired_ports_by_instance_id) {
         desired_ports.insert(
             desired_ports.end(),
-            std::make_move_iterator(ports.begin()),
-            std::make_move_iterator(ports.end()));
+            ports.begin(),
+            ports.end());
     }
 }
 
@@ -855,13 +854,21 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
     {
         std::scoped_lock lock(mutex);
         for (auto const &created : diff.created) {
-            builders_by_instance_id[created.instance.instance_id] = created;
+            if (created.instance == nullptr) {
+                continue;
+            }
+            desired_ports_by_instance_id[created.instance->instance_id] =
+                graph_input_port_descriptors_for(*created.instance);
         }
         for (auto const &updated : diff.updated) {
-            builders_by_instance_id[updated.instance.instance_id] = updated;
+            if (updated.instance == nullptr) {
+                continue;
+            }
+            desired_ports_by_instance_id[updated.instance->instance_id] =
+                graph_input_port_descriptors_for(*updated.instance);
         }
         for (auto const &deleted_instance_id : diff.deleted_instance_ids) {
-            builders_by_instance_id.erase(deleted_instance_id);
+            desired_ports_by_instance_id.erase(deleted_instance_id);
         }
         refresh_desired_ports_locked();
         (void)reconcile_ports_locked(&batch);
@@ -871,15 +878,17 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
         apply_timeline_batch(batch);
     }
 
-    for (auto created : diff.created) {
-        (void)complete_builder(created.instance.instance_id, created.builder);
-        std::scoped_lock lock(mutex);
-        builders_by_instance_id[created.instance.instance_id] = std::move(created);
+    for (auto const &created : diff.created) {
+        if (created.instance == nullptr || created.builder == nullptr) {
+            continue;
+        }
+        (void)complete_builder(created.instance->instance_id, *created.builder);
     }
-    for (auto updated : diff.updated) {
-        (void)complete_builder(updated.instance.instance_id, updated.builder);
-        std::scoped_lock lock(mutex);
-        builders_by_instance_id[updated.instance.instance_id] = std::move(updated);
+    for (auto const &updated : diff.updated) {
+        if (updated.instance == nullptr || updated.builder == nullptr) {
+            continue;
+        }
+        (void)complete_builder(updated.instance->instance_id, *updated.builder);
     }
 }
 
