@@ -1,5 +1,11 @@
 # Execution Model Direction
 
+This note is partially superseded by
+[task_runner_execution_direction.md](./task_runner_execution_direction.md) for
+task ordering, task graph updates, and execution-plan compilation. This
+document remains relevant for broader runtime ownership between `Timeline`,
+`IvModuleInstances`, and devices.
+
 This note captures the current intended direction for runtime execution while
 the application is being split into isolated app modules.
 

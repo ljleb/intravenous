@@ -300,6 +300,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_response_builders.cpp
     runtime/socket_rpc_server.cpp
     runtime/startup_config.cpp
+    runtime/task_runner.cpp
     runtime/timeline_lane_filters_bridge.cpp
     query/lane_query_engine.cpp
     query/lane_query_parser.cpp

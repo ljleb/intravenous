@@ -6,6 +6,9 @@ lanes. It is intentionally a design checkpoint, not a final specification.
 For current runtime execution ownership and playback-direction decisions, also
 see [execution_model_direction.md](./execution_model_direction.md).
 
+For current task-runner, task-graph update, and execution-plan decisions, see
+[task_runner_execution_direction.md](./task_runner_execution_direction.md).
+
 Some older execution wording in this document is superseded by that newer note.
 This document should remain the primary place for lane kinds, lane semantics,
 and lane-model structure.
