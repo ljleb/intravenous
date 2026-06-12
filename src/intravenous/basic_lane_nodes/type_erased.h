@@ -24,8 +24,12 @@ namespace iv {
         void* (*_ptr_fn)(void*) = +[](void*) -> void* { return nullptr; };
         void (*_tick_block_compiled_fn)(void*, CompiledLaneTickContext<TypeErasedLaneNode>&) = nullptr;
         void (*_tick_block_realtime_fn)(void*, RealtimeLaneTickContext<TypeErasedLaneNode>&) = nullptr;
+        std::vector<CompiledSupportRange> (*_compiled_support_ranges_fn)(void*, CompiledSupportContext<TypeErasedLaneNode>&) = nullptr;
+        void (*_on_inputs_changed_fn)(void*, InputsChangedContext<TypeErasedLaneNode>&) = nullptr;
         bool _supports_tick_block_compiled = false;
         bool _supports_tick_block_realtime = false;
+        bool _supports_compiled_support_ranges = false;
+        bool _has_on_inputs_changed = false;
 
     public:
         TypeErasedLaneNode() = default;
@@ -55,6 +59,9 @@ namespace iv {
             _const_ptr_fn = +[](void const* ptr) -> void const* { return ptr; };
             _ptr_fn = +[](void* ptr) -> void* { return ptr; };
             if constexpr (lane_node_details::has_tick_block_compiled<LaneNode>) {
+                static_assert(
+                    lane_node_details::has_compiled_support_ranges<LaneNode>,
+                    "compiled-capable lane nodes must define compiled_support_ranges(ctx)");
                 _tick_block_compiled_fn = +[](void* node_ptr, CompiledLaneTickContext<TypeErasedLaneNode>& erased_ctx) {
                     CompiledLaneTickContext<LaneNode> ctx(erased_ctx.untyped());
                     do_tick_block_compiled(*static_cast<LaneNode*>(node_ptr), ctx);
@@ -68,6 +75,20 @@ namespace iv {
                 };
                 _supports_tick_block_realtime = true;
             }
+            if constexpr (lane_node_details::has_compiled_support_ranges<LaneNode>) {
+                _compiled_support_ranges_fn = +[](void* node_ptr, CompiledSupportContext<TypeErasedLaneNode>& erased_ctx) {
+                    CompiledSupportContext<LaneNode> ctx(erased_ctx.untyped());
+                    return get_compiled_support_ranges(*static_cast<LaneNode*>(node_ptr), ctx);
+                };
+                _supports_compiled_support_ranges = true;
+            }
+            if constexpr (lane_node_details::has_on_inputs_changed<LaneNode>) {
+                _on_inputs_changed_fn = +[](void* node_ptr, InputsChangedContext<TypeErasedLaneNode>& erased_ctx) {
+                    InputsChangedContext<LaneNode> ctx(erased_ctx.untyped());
+                    do_on_inputs_changed(*static_cast<LaneNode*>(node_ptr), ctx);
+                };
+                _has_on_inputs_changed = true;
+            }
         }
 
         std::vector<CompiledSampleLaneInputConfig> const& compiled_sample_inputs() const { return _compiled_sample_inputs; }
@@ -78,6 +99,8 @@ namespace iv {
         char const* type_name() const { return _type_name; }
         bool supports_tick_block_compiled() const { return _supports_tick_block_compiled; }
         bool supports_tick_block_realtime() const { return _supports_tick_block_realtime; }
+        bool supports_compiled_support_ranges() const { return _supports_compiled_support_ranges; }
+        bool has_on_inputs_changed() const { return _has_on_inputs_changed; }
 
         template<typename LaneNode>
         LaneNode const* try_as() const
@@ -108,6 +131,22 @@ namespace iv {
         {
             if (_tick_block_realtime_fn) {
                 _tick_block_realtime_fn(_node.get(), ctx);
+            }
+        }
+
+        std::vector<CompiledSupportRange> compiled_support_ranges(
+            CompiledSupportContext<TypeErasedLaneNode>& ctx) const
+        {
+            if (_compiled_support_ranges_fn) {
+                return _compiled_support_ranges_fn(_node.get(), ctx);
+            }
+            return {};
+        }
+
+        void on_inputs_changed(InputsChangedContext<TypeErasedLaneNode>& ctx) const
+        {
+            if (_on_inputs_changed_fn) {
+                _on_inputs_changed_fn(_node.get(), ctx);
             }
         }
     };

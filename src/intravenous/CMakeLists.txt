@@ -307,6 +307,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_lane_views_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_iv_module_instances_bridge.cpp
+    runtime/socket_rpc_timeline_execution_bridge.cpp
     runtime/socket_rpc_notification_bridge.cpp
     runtime/socket_rpc_requests.cpp
     runtime/socket_rpc_response_builders.cpp
@@ -407,4 +408,5 @@ make_program=${CMAKE_MAKE_PROGRAM}
 juce_dir=${JUCE_DIR}
 sample_rate=48000
 block_size=256
+compiled_sample_cache_chunk_size_multiplier=16
 ")

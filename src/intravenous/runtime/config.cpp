@@ -7,8 +7,10 @@
 #include <fstream>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace iv {
     namespace {
@@ -76,6 +78,7 @@ namespace iv {
         struct ParsedExecutionConfig {
             std::optional<size_t> sample_rate;
             std::optional<size_t> block_size;
+            std::optional<size_t> compiled_sample_cache_chunk_size_multiplier;
         };
 
         struct ParsedConfig {
@@ -135,6 +138,8 @@ namespace iv {
                     assign_size(parsed.execution.sample_rate);
                 } else if (key == "block_size") {
                     assign_size(parsed.execution.block_size);
+                } else if (key == "compiled_sample_cache_chunk_size_multiplier") {
+                    assign_size(parsed.execution.compiled_sample_cache_chunk_size_multiplier);
                 } else {
                     throw std::runtime_error("unknown config key in " + path.string() + ": " + key);
                 }
@@ -178,6 +183,54 @@ namespace iv {
             if (overlay.block_size) {
                 base.block_size = *overlay.block_size;
             }
+            if (overlay.compiled_sample_cache_chunk_size_multiplier) {
+                base.compiled_sample_cache_chunk_size_multiplier = *overlay.compiled_sample_cache_chunk_size_multiplier;
+            }
+        }
+
+        void rewrite_config_key(
+            std::filesystem::path const& path,
+            std::string const& key,
+            std::string const& value)
+        {
+            std::ifstream in(path);
+            if (!in) {
+                throw std::runtime_error("failed to open " + path.string());
+            }
+
+            std::vector<std::string> lines;
+            bool replaced = false;
+            for (std::string line; std::getline(in, line);) {
+                auto const trimmed = trim(line);
+                if (!trimmed.empty() && !trimmed.starts_with('#')) {
+                    auto const equals = trimmed.find('=');
+                    if (equals != std::string::npos) {
+                        auto const existing_key = trim(trimmed.substr(0, equals));
+                        if (existing_key == key) {
+                            lines.push_back(key + "=" + value);
+                            replaced = true;
+                            continue;
+                        }
+                    }
+                }
+                lines.push_back(std::move(line));
+            }
+            in.close();
+
+            if (!replaced) {
+                lines.push_back(key + "=" + value);
+            }
+
+            std::ofstream out(path, std::ios::trunc);
+            if (!out) {
+                throw std::runtime_error("failed to write " + path.string());
+            }
+            for (size_t i = 0; i < lines.size(); ++i) {
+                out << lines[i];
+                if (i + 1 < lines.size()) {
+                    out << '\n';
+                }
+            }
         }
     }
 
@@ -213,5 +266,20 @@ namespace iv {
         overlay_execution(config.execution, project_config.execution);
 
         return config;
+    }
+
+    void set_runtime_project_compiled_sample_cache_chunk_size_multiplier(
+        std::filesystem::path const& workspace_root,
+        size_t compiled_sample_cache_chunk_size_multiplier)
+    {
+        auto const normalized_workspace = normalize_path(workspace_root);
+        auto const marker_path = normalized_workspace / ".intravenous";
+        if (!std::filesystem::exists(marker_path)) {
+            throw std::runtime_error("missing .intravenous marker at " + marker_path.string());
+        }
+        rewrite_config_key(
+            marker_path,
+            "compiled_sample_cache_chunk_size_multiplier",
+            std::to_string(compiled_sample_cache_chunk_size_multiplier));
     }
 }

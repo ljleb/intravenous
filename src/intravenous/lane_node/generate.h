@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <variant>
@@ -312,6 +313,34 @@ namespace iv {
         size_t sample_count = 0;
     };
 
+    struct CompiledSupportRange {
+        size_t start_index = 0;
+        size_t end_index = 0;
+
+        bool operator==(CompiledSupportRange const&) const = default;
+    };
+
+    struct CompiledSupportLaneInput {
+        std::vector<std::span<CompiledSupportRange const>> sources {};
+    };
+
+    struct UntypedCompiledSupportContext {
+        std::span<CompiledSupportLaneInput> compiled_sample_inputs {};
+        std::span<CompiledSupportLaneInput> compiled_event_inputs {};
+    };
+
+    struct LaneInputConnectivityDescription {
+        std::uint64_t source_lane_value = 0;
+        LanePortDomain source_output_domain = LanePortDomain::realtime;
+        PortKind kind = PortKind::sample;
+        size_t input_ordinal = 0;
+        std::span<CompiledSupportRange const> compiled_support_ranges {};
+    };
+
+    struct UntypedInputsChangedContext {
+        std::span<LaneInputConnectivityDescription const> inputs {};
+    };
+
     struct UntypedCompiledLaneTickContext {
         CompiledLaneTickRequest request {};
         std::span<CompiledSampleLaneInput> compiled_sample_inputs {};
@@ -371,6 +400,35 @@ namespace iv {
     };
 
     template<typename LaneNode>
+    class CompiledSupportContext {
+        UntypedCompiledSupportContext& _untyped;
+
+    public:
+        explicit CompiledSupportContext(UntypedCompiledSupportContext& untyped) :
+            _untyped(untyped)
+        {}
+
+        std::span<CompiledSupportLaneInput> compiled_sample_inputs() const { return _untyped.compiled_sample_inputs; }
+        std::span<CompiledSupportLaneInput> compiled_event_inputs() const { return _untyped.compiled_event_inputs; }
+        CompiledSupportLaneInput& compiled_sample_input(size_t index) const { return _untyped.compiled_sample_inputs[index]; }
+        CompiledSupportLaneInput& compiled_event_input(size_t index) const { return _untyped.compiled_event_inputs[index]; }
+        UntypedCompiledSupportContext& untyped() const { return _untyped; }
+    };
+
+    template<typename LaneNode>
+    class InputsChangedContext {
+        UntypedInputsChangedContext& _untyped;
+
+    public:
+        explicit InputsChangedContext(UntypedInputsChangedContext& untyped) :
+            _untyped(untyped)
+        {}
+
+        std::span<LaneInputConnectivityDescription const> inputs() const { return _untyped.inputs; }
+        UntypedInputsChangedContext& untyped() const { return _untyped; }
+    };
+
+    template<typename LaneNode>
     class RealtimeLaneTickContext {
         UntypedRealtimeLaneTickContext& _untyped;
 
@@ -423,6 +481,16 @@ namespace iv {
         template<typename LaneNode>
         concept has_tick_block_realtime = requires(LaneNode& node, RealtimeLaneTickContext<LaneNode>& ctx) {
             node.tick_block_realtime(ctx);
+        };
+
+        template<typename LaneNode>
+        concept has_compiled_support_ranges = requires(LaneNode& node, CompiledSupportContext<LaneNode>& ctx) {
+            node.compiled_support_ranges(ctx);
+        };
+
+        template<typename LaneNode>
+        concept has_on_inputs_changed = requires(LaneNode& node, InputsChangedContext<LaneNode>& ctx) {
+            node.on_inputs_changed(ctx);
         };
     } // namespace lane_node_details
 
@@ -506,6 +574,48 @@ namespace iv {
             return node.supports_tick_block_realtime();
         } else {
             return supports_tick_block_realtime<LaneNode>();
+        }
+    }
+
+    template<typename LaneNode>
+    constexpr bool has_compiled_support_ranges()
+    {
+        return lane_node_details::has_compiled_support_ranges<LaneNode>;
+    }
+
+    template<typename LaneNode>
+    bool supports_compiled_support_ranges(LaneNode const& node)
+    {
+        if constexpr (requires(LaneNode const& node) { node.supports_compiled_support_ranges(); }) {
+            return node.supports_compiled_support_ranges();
+        } else {
+            return has_compiled_support_ranges<LaneNode>();
+        }
+    }
+
+    template<typename LaneNode>
+    constexpr bool has_on_inputs_changed()
+    {
+        return lane_node_details::has_on_inputs_changed<LaneNode>;
+    }
+
+    template<typename LaneNode>
+    auto get_compiled_support_ranges(LaneNode& node, CompiledSupportContext<LaneNode>& ctx)
+    {
+        if constexpr (lane_node_details::has_compiled_support_ranges<LaneNode>) {
+            return node.compiled_support_ranges(ctx);
+        } else {
+            static_assert(
+                lane_node_details::has_compiled_support_ranges<LaneNode>,
+                "compiled-capable lane node must define compiled_support_ranges()");
+        }
+    }
+
+    template<typename LaneNode>
+    void do_on_inputs_changed(LaneNode& node, InputsChangedContext<LaneNode>& ctx)
+    {
+        if constexpr (lane_node_details::has_on_inputs_changed<LaneNode>) {
+            node.on_inputs_changed(ctx);
         }
     }
 

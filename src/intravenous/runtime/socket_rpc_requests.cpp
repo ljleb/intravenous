@@ -300,6 +300,17 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
+    if (method == "timeline.setCompiledSampleCacheChunkSizeMultiplier") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest{
+                .compiled_sample_cache_chunk_size_multiplier =
+                    static_cast<size_t>(parse_uint64_param(
+                        params,
+                        "compiledSampleCacheChunkSizeMultiplier")),
+            },
+        };
+    }
     if (method == "timeline.openLaneView" || method == "timeline.updateLaneView") {
         auto const request_payload = parse_lane_view_request(params);
         if (method == "timeline.openLaneView") {

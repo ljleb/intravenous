@@ -33,6 +33,12 @@ namespace {
             };
         }
 
+        std::vector<iv::CompiledSupportRange> compiled_support_ranges(
+            iv::CompiledSupportContext<TestCompiledEventLaneNode>&) const
+        {
+            return { iv::CompiledSupportRange { .start_index = 0, .end_index = 4096 } };
+        }
+
         void tick_block_compiled(iv::CompiledLaneTickContext<TestCompiledEventLaneNode>& ctx)
         {
             static_assert(std::same_as<
@@ -73,6 +79,12 @@ namespace {
             };
         }
 
+        std::vector<iv::CompiledSupportRange> compiled_support_ranges(
+            iv::CompiledSupportContext<TestCompiledSampleSourceLaneNode>&) const
+        {
+            return { iv::CompiledSupportRange { .start_index = 0, .end_index = 4096 } };
+        }
+
         void tick_block_compiled(iv::CompiledLaneTickContext<TestCompiledSampleSourceLaneNode>& ctx)
         {
             std::array<iv::Sample, 4> samples {};
@@ -99,6 +111,16 @@ namespace {
             return {
                 .name = "doubled",
             };
+        }
+
+        std::vector<iv::CompiledSupportRange> compiled_support_ranges(
+            iv::CompiledSupportContext<TestCompiledSampleConsumerLaneNode>& ctx) const
+        {
+            std::vector<iv::CompiledSupportRange> ranges;
+            for (auto const source_ranges : ctx.compiled_sample_input(0).sources) {
+                ranges.insert(ranges.end(), source_ranges.begin(), source_ranges.end());
+            }
+            return ranges;
         }
 
         void tick_block_compiled(iv::CompiledLaneTickContext<TestCompiledSampleConsumerLaneNode>& ctx)

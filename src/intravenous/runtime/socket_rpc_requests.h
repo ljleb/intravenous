@@ -43,6 +43,10 @@ namespace iv {
         size_t default_silence_ttl_samples = 0;
     };
 
+    struct SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest {
+        size_t compiled_sample_cache_chunk_size_multiplier = 0;
+    };
+
     struct OpenLaneViewRpcRequest {
         LaneViewRequest request{};
     };
@@ -74,6 +78,7 @@ namespace iv {
         CreateIvModuleInstanceRequest,
         DeleteIvModuleInstanceRequest,
         SetIvModuleInstanceDefaultSilenceTtlSamplesRequest,
+        SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest,
         OpenLaneViewRpcRequest,
         UpdateLaneViewRpcRequest,
         SetSampleInputValueRequest,

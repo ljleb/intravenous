@@ -24,6 +24,7 @@ TEST(StartupConfig, EmptyIntravenousMarkerUsesWorkspaceRoot)
     EXPECT_EQ(initialized.workspace_root, std::filesystem::weakly_canonical(workspace));
     EXPECT_EQ(initialized.execution.block_size, 256u);
     EXPECT_EQ(initialized.execution.sample_rate, 48000u);
+    EXPECT_EQ(initialized.execution.compiled_sample_cache_chunk_size_multiplier, 16u);
 }
 
 TEST(StartupConfig, RootModulePathIsRejected)
@@ -99,11 +100,13 @@ TEST(StartupConfig, ProjectConfigOverridesExecutionConfig)
     iv::test_support::write_text(
         workspace / ".intravenous",
         "block_size=512\n"
-        "sample_rate=44100\n");
+        "sample_rate=44100\n"
+        "compiled_sample_cache_chunk_size_multiplier=8\n");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const initialized = startup_config.initialize();
 
     EXPECT_EQ(initialized.execution.block_size, 512u);
     EXPECT_EQ(initialized.execution.sample_rate, 44100u);
+    EXPECT_EQ(initialized.execution.compiled_sample_cache_chunk_size_multiplier, 8u);
 }

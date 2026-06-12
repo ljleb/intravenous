@@ -129,6 +129,9 @@ add_iv_gtest(
     intravenous_socket_rpc_iv_module_instances_bridge_tests
     bridges/socket_rpc_iv_module_instances_bridge_gtest.cpp)
 add_iv_gtest(
+    intravenous_socket_rpc_timeline_execution_bridge_tests
+    bridges/socket_rpc_timeline_execution_bridge_gtest.cpp)
+add_iv_gtest(
     intravenous_socket_rpc_notification_bridge_tests
     bridges/socket_rpc_notification_bridge_gtest.cpp)
 add_executable(intravenous_node_layout_storage

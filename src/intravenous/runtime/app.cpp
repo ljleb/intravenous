@@ -26,6 +26,7 @@
 #include <intravenous/runtime/socket_rpc_lane_views_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_notification_bridge.h>
+#include <intravenous/runtime/socket_rpc_timeline_execution_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/startup_config.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -64,7 +65,9 @@ namespace iv {
             IvModuleReload iv_module_reload(startup);
             GraphInputLanes graph_input_lanes;
             TaskRunner task_runner;
-            TimelineExecution timeline_execution(startup.execution.block_size);
+            TimelineExecution timeline_execution(
+                startup.execution.block_size,
+                startup.execution.compiled_sample_cache_chunk_size_multiplier);
             IvModuleInstancesExecution iv_module_instances_execution(startup.execution.block_size);
             LaneFilters lane_filters;
             LaneViews lane_views;
@@ -92,6 +95,9 @@ namespace iv {
             install_shutdown_handlers(request_shutdown);
             bind_socket_rpc_lane_views_bridge(lane_views);
             bind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
+            bind_socket_rpc_timeline_execution_bridge(
+                timeline_execution,
+                startup.workspace_root);
             bind_socket_rpc_iv_module_source_introspection_bridge(
                 introspection,
                 graph_input_lanes,
@@ -104,6 +110,7 @@ namespace iv {
             unbind_socket_rpc_notification_bridge(server);
             unbind_socket_rpc_lane_views_bridge(lane_views);
             unbind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
+            unbind_socket_rpc_timeline_execution_bridge(timeline_execution);
             unbind_socket_rpc_iv_module_source_introspection_bridge(
                 introspection,
                 graph_input_lanes);

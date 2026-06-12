@@ -99,6 +99,12 @@ namespace {
             };
         }
 
+        std::vector<iv::CompiledSupportRange> compiled_support_ranges(
+            iv::CompiledSupportContext<TestCompiledSampleSourceLaneNode>&) const
+        {
+            return { iv::CompiledSupportRange { .start_index = 0, .end_index = 4096 } };
+        }
+
         void tick_block_compiled(iv::CompiledLaneTickContext<TestCompiledSampleSourceLaneNode>& ctx)
         {
             if (tick_count) {
@@ -121,12 +127,73 @@ namespace {
             };
         }
 
+        std::vector<iv::CompiledSupportRange> compiled_support_ranges(
+            iv::CompiledSupportContext<TestCompiledEventSourceLaneNode>&) const
+        {
+            return { iv::CompiledSupportRange { .start_index = 0, .end_index = 4096 } };
+        }
+
         void tick_block_compiled(iv::CompiledLaneTickContext<TestCompiledEventSourceLaneNode>& ctx)
         {
             ctx.out().push(iv::TimedEvent {
                 .time = ctx.start_index(),
                 .value = iv::TriggerEvent {},
             });
+        }
+    };
+
+    struct TestSparseCompiledSampleLaneNode {
+        int* tick_count = nullptr;
+
+        iv::CompiledSampleLaneOutputConfig output() const
+        {
+            return {
+                .name = "samples",
+            };
+        }
+
+        std::vector<iv::CompiledSupportRange> compiled_support_ranges(
+            iv::CompiledSupportContext<TestSparseCompiledSampleLaneNode>&) const
+        {
+            return { iv::CompiledSupportRange { .start_index = 8, .end_index = 12 } };
+        }
+
+        void tick_block_compiled(iv::CompiledLaneTickContext<TestSparseCompiledSampleLaneNode>& ctx)
+        {
+            if (tick_count) {
+                *tick_count += 1;
+            }
+            std::vector<iv::Sample> samples(ctx.sample_count(), 7.0f);
+            ctx.out().write(ctx.start_index(), samples);
+        }
+    };
+
+    struct TestChunkedCompiledSampleLaneNode {
+        int* tick_count = nullptr;
+
+        iv::CompiledSampleLaneOutputConfig output() const
+        {
+            return {
+                .name = "samples",
+            };
+        }
+
+        std::vector<iv::CompiledSupportRange> compiled_support_ranges(
+            iv::CompiledSupportContext<TestChunkedCompiledSampleLaneNode>&) const
+        {
+            return { iv::CompiledSupportRange { .start_index = 8, .end_index = 24 } };
+        }
+
+        void tick_block_compiled(iv::CompiledLaneTickContext<TestChunkedCompiledSampleLaneNode>& ctx)
+        {
+            if (tick_count) {
+                *tick_count += 1;
+            }
+            std::vector<iv::Sample> samples(ctx.sample_count());
+            for (size_t i = 0; i < samples.size(); ++i) {
+                samples[i] = static_cast<iv::Sample>(ctx.start_index() + i);
+            }
+            ctx.out().write(ctx.start_index(), samples);
         }
     };
 }
@@ -328,4 +395,80 @@ TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
     auto const second_block = execution.compiled_sample_block(compiled_source, 20);
     ASSERT_EQ(second_block.size(), 4u);
     EXPECT_EQ(second_block[0], 20.0f);
+}
+
+TEST(TimelineExecution, CompiledSupportSkipsExecutionOutsideSupport)
+{
+    iv::Timeline timeline;
+    int compiled_ticks = 0;
+    auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
+        return graph.add_lane(iv::TypeErasedLaneNode(TestSparseCompiledSampleLaneNode {
+            .tick_count = &compiled_ticks,
+        }));
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    auto const outside_support = execution.compiled_sample_block(compiled_source, 0);
+    ASSERT_EQ(outside_support.size(), 4u);
+    EXPECT_EQ(
+        outside_support,
+        (std::vector<iv::Sample> { 0.0f, 0.0f, 0.0f, 0.0f }));
+    EXPECT_EQ(compiled_ticks, 0);
+
+    auto const inside_support = execution.compiled_sample_block(compiled_source, 8);
+    ASSERT_EQ(inside_support.size(), 4u);
+    EXPECT_EQ(
+        inside_support,
+        (std::vector<iv::Sample> { 7.0f, 7.0f, 7.0f, 7.0f }));
+    EXPECT_EQ(compiled_ticks, 1);
+}
+
+TEST(TimelineExecution, ReusesCompiledSampleChunksWithinChunkBoundaries)
+{
+    iv::Timeline timeline;
+    int compiled_ticks = 0;
+    auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
+        return graph.add_lane(iv::TypeErasedLaneNode(TestChunkedCompiledSampleLaneNode {
+            .tick_count = &compiled_ticks,
+        }));
+    });
+
+    iv::TimelineExecution execution(4, 2);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    auto const first_block = execution.compiled_sample_block(compiled_source, 8);
+    ASSERT_EQ(first_block.size(), 4u);
+    EXPECT_EQ(
+        first_block,
+        (std::vector<iv::Sample> { 8.0f, 9.0f, 10.0f, 11.0f }));
+    EXPECT_EQ(compiled_ticks, 1);
+
+    auto const same_chunk_block = execution.compiled_sample_block(compiled_source, 12);
+    ASSERT_EQ(same_chunk_block.size(), 4u);
+    EXPECT_EQ(
+        same_chunk_block,
+        (std::vector<iv::Sample> { 12.0f, 13.0f, 14.0f, 15.0f }));
+    EXPECT_EQ(compiled_ticks, 1);
+
+    auto const next_chunk_block = execution.compiled_sample_block(compiled_source, 16);
+    ASSERT_EQ(next_chunk_block.size(), 4u);
+    EXPECT_EQ(
+        next_chunk_block,
+        (std::vector<iv::Sample> { 16.0f, 17.0f, 18.0f, 19.0f }));
+    EXPECT_EQ(compiled_ticks, 2);
+}
+
+TEST(TimelineExecution, RejectsZeroChunkSizeMultiplier)
+{
+    EXPECT_THROW(
+        (void)iv::TimelineExecution(8, 0),
+        std::runtime_error);
 }
