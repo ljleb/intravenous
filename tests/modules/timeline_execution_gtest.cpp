@@ -397,7 +397,7 @@ TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
     EXPECT_EQ(second_block[0], 20.0f);
 }
 
-TEST(TimelineExecution, CompiledSupportSkipsExecutionOutsideSupport)
+TEST(TimelineExecution, CompiledSupportReturnsDefaultsOutsideSupport)
 {
     iv::Timeline timeline;
     int compiled_ticks = 0;
@@ -418,13 +418,37 @@ TEST(TimelineExecution, CompiledSupportSkipsExecutionOutsideSupport)
     EXPECT_EQ(
         outside_support,
         (std::vector<iv::Sample> { 0.0f, 0.0f, 0.0f, 0.0f }));
-    EXPECT_EQ(compiled_ticks, 0);
+    EXPECT_EQ(compiled_ticks, 1);
 
     auto const inside_support = execution.compiled_sample_block(compiled_source, 8);
     ASSERT_EQ(inside_support.size(), 4u);
     EXPECT_EQ(
         inside_support,
         (std::vector<iv::Sample> { 7.0f, 7.0f, 7.0f, 7.0f }));
+    EXPECT_EQ(compiled_ticks, 1);
+}
+
+TEST(TimelineExecution, CompiledSupportFillsUnsupportedRemainderWithDefaults)
+{
+    iv::Timeline timeline;
+    int compiled_ticks = 0;
+    auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
+        return graph.add_lane(iv::TypeErasedLaneNode(TestSparseCompiledSampleLaneNode {
+            .tick_count = &compiled_ticks,
+        }));
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    auto const partially_supported = execution.compiled_sample_block(compiled_source, 6);
+    ASSERT_EQ(partially_supported.size(), 4u);
+    EXPECT_EQ(
+        partially_supported,
+        (std::vector<iv::Sample> { 0.0f, 0.0f, 7.0f, 7.0f }));
     EXPECT_EQ(compiled_ticks, 1);
 }
 

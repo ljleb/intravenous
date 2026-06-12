@@ -50,6 +50,35 @@ void sort_and_merge_ranges(std::vector<CompiledSupportRange>& ranges)
     ranges.swap(merged);
 }
 
+void sort_and_merge_chunk_ranges(
+    std::vector<CompiledSupportChunkRange>& ranges)
+{
+    std::ranges::sort(
+        ranges,
+        [](CompiledSupportChunkRange const& lhs,
+           CompiledSupportChunkRange const& rhs) {
+            if (lhs.start_chunk_index != rhs.start_chunk_index) {
+                return lhs.start_chunk_index < rhs.start_chunk_index;
+            }
+            return lhs.end_chunk_index < rhs.end_chunk_index;
+        });
+
+    std::vector<CompiledSupportChunkRange> merged;
+    merged.reserve(ranges.size());
+    for (auto const& range : ranges) {
+        if (range.end_chunk_index <= range.start_chunk_index) {
+            continue;
+        }
+        if (merged.empty() || range.start_chunk_index > merged.back().end_chunk_index) {
+            merged.push_back(range);
+        } else {
+            merged.back().end_chunk_index =
+                std::max(merged.back().end_chunk_index, range.end_chunk_index);
+        }
+    }
+    ranges.swap(merged);
+}
+
 bool ranges_intersect(
     std::span<CompiledSupportRange const> ranges,
     size_t start_index,
@@ -75,6 +104,29 @@ size_t chunk_start_index(size_t chunk_index, size_t chunk_size)
 size_t chunk_index_for_sample(size_t sample_index, size_t chunk_size)
 {
     return sample_index / chunk_size;
+}
+
+std::vector<CompiledSupportChunkRange> derive_chunk_ranges(
+    std::span<CompiledSupportRange const> sample_ranges,
+    size_t chunk_size)
+{
+    std::vector<CompiledSupportChunkRange> chunk_ranges;
+    chunk_ranges.reserve(sample_ranges.size());
+    for (auto const& range : sample_ranges) {
+        if (range.end_index <= range.start_index) {
+            continue;
+        }
+        auto const start_chunk_index =
+            chunk_index_for_sample(range.start_index, chunk_size);
+        auto const end_chunk_index =
+            chunk_index_for_sample(range.end_index - 1, chunk_size) + 1;
+        chunk_ranges.push_back(CompiledSupportChunkRange {
+            .start_chunk_index = start_chunk_index,
+            .end_chunk_index = end_chunk_index,
+        });
+    }
+    sort_and_merge_chunk_ranges(chunk_ranges);
+    return chunk_ranges;
 }
 }
 
@@ -340,8 +392,12 @@ void TimelineExecution::rebuild_compiled_support_and_notify_locked()
             CompiledSupportContext<TypeErasedLaneNode> support_ctx(untyped_support);
             auto ranges = tracked.node->compiled_support_ranges(support_ctx);
             sort_and_merge_ranges(ranges);
+            auto chunk_ranges = derive_chunk_ranges(
+                ranges,
+                compiled_sample_cache_chunk_size_locked());
             compiled_support_by_lane_[lane] = CompiledSupportState {
-                .ranges = std::move(ranges),
+                .sample_ranges = std::move(ranges),
+                .chunk_ranges = std::move(chunk_ranges),
             };
         }
 
@@ -609,7 +665,17 @@ std::span<CompiledSupportRange const> TimelineExecution::compiled_support_ranges
     if (it == compiled_support_by_lane_.end()) {
         return {};
     }
-    return it->second.ranges;
+    return it->second.sample_ranges;
+}
+
+std::span<CompiledSupportChunkRange const>
+TimelineExecution::compiled_support_chunk_ranges_locked(LaneId lane) const
+{
+    auto const it = compiled_support_by_lane_.find(lane);
+    if (it == compiled_support_by_lane_.end()) {
+        return {};
+    }
+    return it->second.chunk_ranges;
 }
 
 bool TimelineExecution::compiled_support_intersects_request_locked(
@@ -726,44 +792,34 @@ void TimelineExecution::execute_compiled_sample_chunk_locked(LaneId lane, size_t
 std::vector<Sample> TimelineExecution::read_compiled_sample_block_locked(LaneId lane, size_t start_index)
 {
     std::vector<Sample> result(block_size_, 0.0f);
-    auto const ranges = compiled_support_ranges_locked(lane);
-    if (ranges.empty()) {
+    auto const sample_ranges = compiled_support_ranges_locked(lane);
+    auto const chunk_ranges = compiled_support_chunk_ranges_locked(lane);
+    if (sample_ranges.empty() || chunk_ranges.empty()) {
         return result;
     }
 
     auto& cache = compiled_sample_cache_[lane];
     size_t const request_start = start_index;
     size_t const request_end = start_index + block_size_;
+    auto const chunk_size = compiled_sample_cache_chunk_size_locked();
+    auto const request_start_chunk_index =
+        chunk_index_for_sample(request_start, chunk_size);
+    auto const request_end_chunk_index =
+        chunk_index_for_sample(request_end - 1, chunk_size) + 1;
 
-    for (auto const& range : ranges) {
-        if (range.end_index <= request_start) {
+    for (auto const& chunk_range : chunk_ranges) {
+        if (chunk_range.end_chunk_index <= request_start_chunk_index) {
             continue;
         }
-        if (range.start_index >= request_end) {
+        if (chunk_range.start_chunk_index >= request_end_chunk_index) {
             break;
         }
 
-        auto const overlap_start = std::max(range.start_index, request_start);
-        auto const overlap_end = std::min(range.end_index, request_end);
-        if (overlap_end <= overlap_start) {
-            continue;
-        }
-
-        auto const chunk_size = compiled_sample_cache_chunk_size_locked();
-        auto chunk_index = chunk_index_for_sample(overlap_start, chunk_size);
+        auto chunk_index =
+            std::max(chunk_range.start_chunk_index, request_start_chunk_index);
         auto const last_chunk_index =
-            chunk_index_for_sample(overlap_end - 1, chunk_size);
-        for (; chunk_index <= last_chunk_index; ++chunk_index) {
-            auto const chunk_start = chunk_start_index(
-                chunk_index,
-                chunk_size);
-            auto const chunk_end = chunk_start + chunk_size;
-            auto const copy_start = std::max(overlap_start, chunk_start);
-            auto const copy_end = std::min(overlap_end, chunk_end);
-            if (copy_end <= copy_start) {
-                continue;
-            }
-
+            std::min(chunk_range.end_chunk_index, request_end_chunk_index);
+        for (; chunk_index < last_chunk_index; ++chunk_index) {
             if (!cache.chunks.contains(chunk_index)) {
                 execute_compiled_sample_chunk_locked(lane, chunk_index);
             }
@@ -772,12 +828,36 @@ std::vector<Sample> TimelineExecution::read_compiled_sample_block_locked(LaneId 
                 continue;
             }
 
-            auto const source_offset = copy_start - chunk_start;
-            auto const dest_offset = copy_start - request_start;
-            auto const count = copy_end - copy_start;
-            std::ranges::copy(
-                std::span<Sample const>(chunk_it->second).subspan(source_offset, count),
-                result.begin() + static_cast<std::ptrdiff_t>(dest_offset));
+            auto const chunk_start = chunk_start_index(chunk_index, chunk_size);
+            auto const chunk_end = chunk_start + chunk_size;
+            auto const copy_start = std::max(request_start, chunk_start);
+            auto const copy_end = std::min(request_end, chunk_end);
+            if (copy_end <= copy_start) {
+                continue;
+            }
+            for (auto const& sample_range : sample_ranges) {
+                if (sample_range.end_index <= copy_start) {
+                    continue;
+                }
+                if (sample_range.start_index >= copy_end) {
+                    break;
+                }
+
+                auto const supported_copy_start =
+                    std::max(copy_start, sample_range.start_index);
+                auto const supported_copy_end =
+                    std::min(copy_end, sample_range.end_index);
+                if (supported_copy_end <= supported_copy_start) {
+                    continue;
+                }
+
+                auto const source_offset = supported_copy_start - chunk_start;
+                auto const dest_offset = supported_copy_start - request_start;
+                auto const count = supported_copy_end - supported_copy_start;
+                std::ranges::copy(
+                    std::span<Sample const>(chunk_it->second).subspan(source_offset, count),
+                    result.begin() + static_cast<std::ptrdiff_t>(dest_offset));
+            }
         }
     }
     return result;

@@ -12,6 +12,11 @@
 #include <vector>
 
 namespace iv {
+struct CompiledSupportChunkRange {
+    size_t start_chunk_index = 0;
+    size_t end_chunk_index = 0;
+};
+
 class TimelineExecution {
 public:
     explicit TimelineExecution(
@@ -55,7 +60,8 @@ private:
     };
 
     struct CompiledSupportState {
-        std::vector<CompiledSupportRange> ranges {};
+        std::vector<CompiledSupportRange> sample_ranges {};
+        std::vector<CompiledSupportChunkRange> chunk_ranges {};
     };
 
     struct RealtimeSamplePortDescriptor {
@@ -86,6 +92,7 @@ private:
     std::span<Sample> realtime_sample_block_mutable_locked(LaneId lane);
     std::span<Sample const> realtime_sample_block_locked(LaneId lane) const;
     std::span<CompiledSupportRange const> compiled_support_ranges_locked(LaneId lane) const;
+    std::span<CompiledSupportChunkRange const> compiled_support_chunk_ranges_locked(LaneId lane) const;
     bool compiled_support_intersects_request_locked(LaneId lane, size_t start_index, size_t sample_count) const;
     size_t compiled_sample_cache_chunk_size_locked() const;
     void execute_compiled_sample_chunk_locked(LaneId lane, size_t chunk_index);
