@@ -3,6 +3,7 @@
 #include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_lane_nodes/controls.h>
+#include <intravenous/runtime/graph_input_lanes_execution_edges_events.h>
 
 #include <array>
 #include <charconv>
@@ -840,15 +841,9 @@ void GraphInputLanes::apply_timeline_batch(TimelineLaneBatchUpdate const &batch)
     apply_tracked_batch_locked(batch);
 }
 
-void GraphInputLanes::set_realtime_lane_ref_factory(
-    std::function<RealtimeLaneRef(LaneId)> factory)
-{
-    std::scoped_lock lock(mutex);
-    realtime_lane_ref_for_lane = std::move(factory);
-}
-
 void GraphInputLanes::handle_iv_module_instance_builders_changed(
-    IvModuleInstanceBuildersChanged const &diff)
+    IvModuleInstanceBuildersChanged const &diff,
+    IvModuleInstanceBuildersAckBuilder *ack_builder)
 {
     TimelineLaneBatchUpdate batch;
     {
@@ -878,17 +873,44 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
         apply_timeline_batch(batch);
     }
 
+    GraphInputLanesDspTaskDependenciesChanged dsp_dependencies;
+    dsp_dependencies.deleted_instance_ids = diff.deleted_instance_ids;
+
     for (auto const &created : diff.created) {
         if (created.instance == nullptr || created.builder == nullptr) {
             continue;
         }
-        (void)complete_builder(created.instance->instance_id, *created.builder);
+        auto completion = complete_builder(created.instance->instance_id, *created.builder);
+        if (ack_builder != nullptr) {
+            ack_builder->set_prerequisite_lanes(
+                created.instance->instance_id,
+                completion.prerequisite_lanes);
+        }
+        dsp_dependencies.created_or_updated.push_back(GraphInputLanesDspTaskDependencies {
+            .instance_id = created.instance->instance_id,
+            .prerequisite_lanes = std::move(completion.prerequisite_lanes),
+        });
     }
     for (auto const &updated : diff.updated) {
         if (updated.instance == nullptr || updated.builder == nullptr) {
             continue;
         }
-        (void)complete_builder(updated.instance->instance_id, *updated.builder);
+        auto completion = complete_builder(updated.instance->instance_id, *updated.builder);
+        if (ack_builder != nullptr) {
+            ack_builder->set_prerequisite_lanes(
+                updated.instance->instance_id,
+                completion.prerequisite_lanes);
+        }
+        dsp_dependencies.created_or_updated.push_back(GraphInputLanesDspTaskDependencies {
+            .instance_id = updated.instance->instance_id,
+            .prerequisite_lanes = std::move(completion.prerequisite_lanes),
+        });
+    }
+
+    if (!dsp_dependencies.created_or_updated.empty() || !dsp_dependencies.deleted_instance_ids.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_graph_input_lanes_dsp_task_dependencies_changed_event,
+            dsp_dependencies);
     }
 }
 
@@ -1174,7 +1196,6 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         return diff;
     }
     auto const module_instance_id = module_instance_numeric_id(instance_id);
-    std::function<RealtimeLaneRef(LaneId)> ref_factory;
 
     {
         std::scoped_lock lock(mutex);
@@ -1212,15 +1233,10 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         }
 
         (void)reconcile_ports_locked(&diff.timeline_batch);
-        ref_factory = realtime_lane_ref_for_lane;
     }
 
     if (batch_has_changes(diff.timeline_batch)) {
         apply_timeline_batch(diff.timeline_batch);
-    }
-
-    if (!vacant.sample.empty() && !ref_factory) {
-        throw std::runtime_error("graph input lanes realtime lane ref factory was not bound");
     }
 
     std::unordered_map<std::string, size_t> sample_control_node_indices;
@@ -1233,14 +1249,13 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             throw std::runtime_error("graph input lane completion could not resolve sample input lane");
         }
         auto const lane = bindings.sample_inputs.front().graph_input_lane;
-        auto const lane_ref = ref_factory(lane);
-        auto const identity = LaneInputValue::nominal_identity(lane_ref);
+        auto const identity = LaneInputValue::nominal_identity(lane);
         SamplePortRef source;
         if (auto const existing = sample_control_node_indices.find(identity);
             existing != sample_control_node_indices.end()) {
             source = SamplePortRef(builder, existing->second, 0);
         } else {
-            source = builder.node<LaneInputValue>(lane_ref);
+            source = builder.node<LaneInputValue>(lane);
             sample_control_node_indices.emplace(identity, source.node_index);
         }
         builder.connect_sample_input(input.target, source);
@@ -1249,6 +1264,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             .input = input,
             .lane = lane,
         });
+        diff.prerequisite_lanes.push_back(lane);
     }
 
     for (auto const &input : vacant.event) {
@@ -1265,7 +1281,13 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             .input = input,
             .lane = bindings.event_inputs.front().graph_input_lane,
         });
+        diff.prerequisite_lanes.push_back(bindings.event_inputs.front().graph_input_lane);
     }
+
+    std::ranges::sort(diff.prerequisite_lanes, {}, &LaneId::value);
+    diff.prerequisite_lanes.erase(
+        std::unique(diff.prerequisite_lanes.begin(), diff.prerequisite_lanes.end()),
+        diff.prerequisite_lanes.end());
 
     return diff;
 }

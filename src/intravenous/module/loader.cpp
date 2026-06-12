@@ -913,7 +913,7 @@ namespace iv {
         {
             if (toolchain.c_compiler.has_value() || toolchain.cxx_compiler.has_value()) {
                 if (!toolchain.c_compiler.has_value() || !toolchain.cxx_compiler.has_value()) {
-                    throw std::runtime_error("runtime module toolchain override requires both cCompiler and cxxCompiler");
+                    throw std::runtime_error("runtime module toolchain override requires both c_compiler and cxx_compiler");
                 }
                 if (!std::filesystem::exists(*toolchain.c_compiler)) {
                     throw std::runtime_error("configured C compiler does not exist: " + toolchain.c_compiler->string());

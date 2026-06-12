@@ -26,7 +26,8 @@ std::string definition_id_for(std::filesystem::path const &module_root)
 
 IvModuleInstance make_instance_from_definition(
     IvModuleDefinition const &definition,
-    std::string const &instance_id)
+    std::string const &instance_id,
+    std::optional<size_t> default_silence_ttl_samples)
 {
     IvModuleInstance instance{};
     instance.instance_id = instance_id;
@@ -34,6 +35,7 @@ IvModuleInstance make_instance_from_definition(
     instance.module_root = definition.module_root;
     instance.module_id = definition.module_id;
     instance.introspection = definition.introspection;
+    instance.default_silence_ttl_samples = default_silence_ttl_samples;
     return instance;
 }
 
@@ -134,6 +136,42 @@ void IvModuleInstances::remove_instance(std::string const &instance_id)
     }
 }
 
+void IvModuleInstances::set_default_silence_ttl_samples(
+    std::string const &instance_id,
+    size_t default_silence_ttl_samples)
+{
+    IvModuleInstanceBuildersChanged builders_diff{};
+
+    {
+        std::scoped_lock lock(mutex);
+        auto desired = desired_instances_by_id.find(instance_id);
+        if (desired == desired_instances_by_id.end()) {
+            throw std::runtime_error("unknown iv module instance id: " + instance_id);
+        }
+
+        desired->second.default_silence_ttl_samples = default_silence_ttl_samples;
+
+        if (auto realized = realized_instances_by_id.find(instance_id);
+            realized != realized_instances_by_id.end()) {
+            realized->second.default_silence_ttl_samples = default_silence_ttl_samples;
+            auto builder_it = realized_builders_by_id.find(instance_id);
+            if (builder_it != realized_builders_by_id.end()) {
+                builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
+                    .instance = &realized->second,
+                    .builder = &builder_it->second,
+                    .default_silence_ttl_samples = default_silence_ttl_samples,
+                });
+            }
+        }
+    }
+
+    if (!builders_diff.updated.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instance_builders_completed_event,
+            builders_diff);
+    }
+}
+
 std::vector<IvModuleInstanceInfo> IvModuleInstances::list_instances() const
 {
     std::vector<IvModuleInstanceInfo> instances;
@@ -145,6 +183,7 @@ std::vector<IvModuleInstanceInfo> IvModuleInstances::list_instances() const
             .instance_id = entry.second.instance_id,
             .definition_id = entry.second.definition_id,
             .module_root = entry.second.module_root,
+            .default_silence_ttl_samples = entry.second.default_silence_ttl_samples,
         };
         if (auto realized = realized_instances_by_id.find(entry.second.instance_id);
             realized != realized_instances_by_id.end()) {
@@ -174,7 +213,10 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 if (entry.second.definition_id != definition.definition_id) {
                     continue;
                 }
-                auto instance = make_instance_from_definition(definition, entry.second.instance_id);
+                auto instance = make_instance_from_definition(
+                    definition,
+                    entry.second.instance_id,
+                    entry.second.default_silence_ttl_samples);
                 auto &stored_instance = realized_instances_by_id[entry.second.instance_id];
                 stored_instance = instance;
                 realized_module_refs_by_id[entry.second.instance_id] = definition.module_refs;
@@ -186,6 +228,8 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 builders_diff.created.push_back(IvModuleInstanceBuilderRef{
                     .instance = &stored_instance,
                     .builder = &stored_builder,
+                    .default_silence_ttl_samples =
+                        entry.second.default_silence_ttl_samples,
                 });
                 list_changed = true;
             }
@@ -195,7 +239,10 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 if (entry.second.definition_id != definition.definition_id) {
                     continue;
                 }
-                auto instance = make_instance_from_definition(definition, entry.second.instance_id);
+                auto instance = make_instance_from_definition(
+                    definition,
+                    entry.second.instance_id,
+                    entry.second.default_silence_ttl_samples);
                 auto &stored_instance = realized_instances_by_id[entry.second.instance_id];
                 stored_instance = instance;
                 realized_module_refs_by_id[entry.second.instance_id] = definition.module_refs;
@@ -207,6 +254,8 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
                     .instance = &stored_instance,
                     .builder = &stored_builder,
+                    .default_silence_ttl_samples =
+                        entry.second.default_silence_ttl_samples,
                 });
                 list_changed = true;
             }
@@ -231,8 +280,29 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_iv_module_instances_changed_event,
         instance_diff);
+    IvModuleInstanceBuildersAckBuilder builders_ack;
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_iv_module_instance_builders_changed_event,
+        builders_diff,
+        builders_ack);
+    for (auto &created : builders_diff.created) {
+        if (!created.instance) {
+            continue;
+        }
+        created.prerequisite_lanes =
+            builders_ack.prerequisite_lanes_for(created.instance->instance_id)
+                .value_or(std::vector<LaneId>{});
+    }
+    for (auto &updated : builders_diff.updated) {
+        if (!updated.instance) {
+            continue;
+        }
+        updated.prerequisite_lanes =
+            builders_ack.prerequisite_lanes_for(updated.instance->instance_id)
+                .value_or(std::vector<LaneId>{});
+    }
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_instance_builders_completed_event,
         builders_diff);
     if (list_changed) {
         IV_INVOKE_LINKER_EVENT(

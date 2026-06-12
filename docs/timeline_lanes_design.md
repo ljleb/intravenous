@@ -185,6 +185,19 @@ isolating bridges, rather than being coupled directly to DSP-specific lane
 management modules. This keeps lane ownership, lane mutation, and lane-view
 projection separate.
 
+The same separation should apply to execution:
+
+- `Timeline` owns lane structure and emits lane-change notifications
+- `TimelineExecution` derives timeline lane execution state and lane tasks from
+  those notifications
+- `IvModuleInstancesExecution` derives DSP graph execution tasks from
+  iv-module-instance notifications
+- `GraphInputLanes` owns the input-side cross-domain dependency edges between
+  timeline lane tasks and DSP graph tasks
+
+This keeps lane structure, lane execution, and DSP execution as separate
+app-module concerns connected through bridges.
+
 ## Outputs
 
 Each lane has exactly one output.
@@ -343,11 +356,13 @@ view and sends notifications when lane graph or lane metadata changes affect
 the displayed lanes.
 
 The transport layer should only deliver view snapshots/updates. It should not
-own filter semantics or lane graph inspection. The lane view service sits
-between the lane graph/processor and the socket server:
+own filter semantics or lane graph inspection. The lane-view service sits
+between the structural timeline graph, the execution-side derived state, and
+the socket server:
 
 - `LaneGraph` owns lanes and connections.
-- `LaneProcessor` owns execution, caches, and regeneration.
+- `TimelineExecution` owns execution, caches, regeneration, and task-runner
+  integration as a derived view of `Timeline`.
 - `LaneViewService` owns active view projections and dirty view tracking.
 - `SocketRpcServer` sends view updates as JSON-RPC notifications.
 - The VS Code client owns physical presentation and reports viewport state.
@@ -406,9 +421,10 @@ Lane identity is separate from DSP logical node identity.
 Runtime lane IDs can be generated cheaply with an atomic or generational counter.
 Later project persistence can assign stable saved IDs.
 
-`Timeline` owns the persistent lane graph/lane executor. Reconciliation after a
-DSP graph reload must reuse existing lane nodes by semantic identity instead of
-rebuilding the lane graph from scratch.
+`Timeline` owns the persistent lane graph. A separate execution app module,
+tentatively `TimelineExecution`, owns the executable view derived from that
+graph. Reconciliation after a DSP graph reload must reuse existing lane nodes
+by semantic identity instead of rebuilding the lane graph from scratch.
 
 Connections to DSP graph inputs store rich target descriptors so they can
 reconnect after reload:

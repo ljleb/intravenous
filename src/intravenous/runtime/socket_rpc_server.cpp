@@ -273,6 +273,13 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_delete_iv_module_instance_event, event_request, builder);
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, SetIvModuleInstanceDefaultSilenceTtlSamplesRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event,
+                            event_request,
+                            builder);
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, OpenLaneViewRpcRequest>) {
                         SocketRpcLaneViewResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_open_lane_view_event, event_request.request, builder);

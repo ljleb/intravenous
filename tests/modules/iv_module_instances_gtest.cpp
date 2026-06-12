@@ -15,12 +15,14 @@ namespace {
 struct IvModuleInstancesWitness {
     std::optional<iv::IvModuleRequiredDefinitionsChanged> required_diff {};
     std::optional<iv::IvModuleInstancesChanged> instances_diff {};
+    std::optional<iv::IvModuleInstanceBuildersChanged> builders_completed {};
     std::optional<std::vector<iv::IvModuleInstanceInfo>> listed_instances {};
 
     void reset()
     {
         required_diff.reset();
         instances_diff.reset();
+        builders_completed.reset();
         listed_instances.reset();
     }
 };
@@ -61,6 +63,15 @@ IV_SUBSCRIBE_LINKER_EVENT(
     +[](std::vector<iv::IvModuleInstanceInfo> const &instances) {
         if (g_iv_module_instances_witness != nullptr) {
             g_iv_module_instances_witness->listed_instances = instances;
+        }
+    });
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv::IvModuleInstanceBuildersCompletedEvent,
+    iv_runtime_iv_module_instance_builders_completed_event,
+    +[](iv::IvModuleInstanceBuildersChanged const &changed) {
+        if (g_iv_module_instances_witness != nullptr) {
+            g_iv_module_instances_witness->builders_completed = changed;
         }
     });
 
@@ -144,6 +155,41 @@ TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPubl
     ASSERT_EQ(witness.listed_instances->size(), 1u);
     EXPECT_TRUE(witness.listed_instances->front().realized);
     EXPECT_EQ(witness.listed_instances->front().module_id, "iv.test.module");
+    EXPECT_FALSE(
+        witness.listed_instances->front().default_silence_ttl_samples.has_value());
+}
+
+TEST_F(IvModuleInstancesTest, SettingPerInstanceDefaultSilenceTtlRepublishesRealizedBuilder)
+{
+    auto const workspace =
+        iv::test_support::fresh_module_fixture_workspace("iv_module_instances_set_ttl");
+    auto const module_root = std::filesystem::weakly_canonical(workspace);
+    iv::IvModuleInstances instances;
+
+    auto const instance_id = instances.create_instance(module_root);
+    instances.handle_iv_module_definitions_changed(iv::IvModuleDefinitionsChanged{
+        .created = {make_definition(module_root)},
+    });
+    witness.reset();
+
+    instances.set_default_silence_ttl_samples(instance_id, 8192);
+
+    ASSERT_TRUE(witness.builders_completed.has_value());
+    ASSERT_EQ(witness.builders_completed->updated.size(), 1u);
+    ASSERT_NE(witness.builders_completed->updated.front().instance, nullptr);
+    EXPECT_EQ(
+        witness.builders_completed->updated.front().instance->instance_id,
+        instance_id);
+    ASSERT_TRUE(
+        witness.builders_completed->updated.front().default_silence_ttl_samples.has_value());
+    EXPECT_EQ(
+        *witness.builders_completed->updated.front().default_silence_ttl_samples,
+        8192u);
+
+    auto const listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    ASSERT_TRUE(listed.front().default_silence_ttl_samples.has_value());
+    EXPECT_EQ(*listed.front().default_silence_ttl_samples, 8192u);
 }
 
 TEST_F(IvModuleInstancesTest, RemoveLastRealizedInstancePublishesDeleteAndDropsRequirement)

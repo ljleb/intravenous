@@ -3,9 +3,11 @@
 #include <intravenous/graph/build_types.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/lane_graph.h>
 
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,6 +30,7 @@ struct IvModuleInstance {
     std::filesystem::path module_root{};
     std::string module_id{};
     GraphIntrospectionMetadata introspection{};
+    std::optional<size_t> default_silence_ttl_samples{};
 };
 
 struct IvModuleInstancesChanged {
@@ -39,6 +42,8 @@ struct IvModuleInstancesChanged {
 struct IvModuleInstanceBuilderRef {
     IvModuleInstance const *instance = nullptr;
     GraphBuilder *builder = nullptr;
+    std::vector<LaneId> prerequisite_lanes {};
+    std::optional<size_t> default_silence_ttl_samples {};
 };
 
 struct IvModuleInstanceBuildersChanged {
@@ -52,6 +57,7 @@ class IvModuleInstances {
         std::string instance_id{};
         std::string definition_id{};
         std::filesystem::path module_root{};
+        std::optional<size_t> default_silence_ttl_samples{};
     };
 
     mutable std::mutex mutex;
@@ -67,6 +73,9 @@ public:
 
     std::string create_instance(std::filesystem::path module_root);
     void remove_instance(std::string const &instance_id);
+    void set_default_silence_ttl_samples(
+        std::string const &instance_id,
+        size_t default_silence_ttl_samples);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
 
     void handle_iv_module_definitions_changed(

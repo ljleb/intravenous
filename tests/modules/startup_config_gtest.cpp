@@ -22,6 +22,8 @@ TEST(StartupConfig, EmptyIntravenousMarkerUsesWorkspaceRoot)
     auto const initialized = startup_config.initialize();
 
     EXPECT_EQ(initialized.workspace_root, std::filesystem::weakly_canonical(workspace));
+    EXPECT_EQ(initialized.execution.block_size, 256u);
+    EXPECT_EQ(initialized.execution.sample_rate, 48000u);
 }
 
 TEST(StartupConfig, RootModulePathIsRejected)
@@ -71,8 +73,8 @@ TEST(StartupConfig, ProjectConfigOverridesIntravenousDefaultsToolchain)
 
     iv::test_support::write_text(
         install_dir / ".intravenous_defaults",
-        "cCompiler=/definitely/missing-clang\n"
-        "cxxCompiler=/definitely/missing-clangxx\n");
+        "c_compiler=/definitely/missing-clang\n"
+        "cxx_compiler=/definitely/missing-clangxx\n");
 
     auto const c_compiler = configured_program_or_find("clang", IV_CONFIGURED_C_COMPILER);
     auto const cxx_compiler = configured_program_or_find("clang++", IV_CONFIGURED_CXX_COMPILER);
@@ -81,12 +83,27 @@ TEST(StartupConfig, ProjectConfigOverridesIntravenousDefaultsToolchain)
 
     iv::test_support::write_text(
         workspace / ".intravenous",
-        "cCompiler=" + c_compiler + "\n"
-        "cxxCompiler=" + cxx_compiler + "\n");
+        "c_compiler=" + c_compiler + "\n"
+        "cxx_compiler=" + cxx_compiler + "\n");
 
     ScopedEnvVar env("INTRAVENOUS_DIR", install_dir.string());
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const initialized = startup_config.initialize();
 
     EXPECT_EQ(initialized.workspace_root, std::filesystem::weakly_canonical(workspace));
+}
+
+TEST(StartupConfig, ProjectConfigOverridesExecutionConfig)
+{
+    auto const workspace = mutable_module_fixture_workspace("startup_config_execution_override", "local_cmake");
+    iv::test_support::write_text(
+        workspace / ".intravenous",
+        "block_size=512\n"
+        "sample_rate=44100\n");
+
+    iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
+    auto const initialized = startup_config.initialize();
+
+    EXPECT_EQ(initialized.execution.block_size, 512u);
+    EXPECT_EQ(initialized.execution.sample_rate, 44100u);
 }

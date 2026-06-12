@@ -299,10 +299,14 @@ Consumes:
 Owns:
 
 - lane graph
-- lane bindings
 - lane connections
 - lane change notifications
 - generic timeline/lane substrate behavior
+
+`Timeline` should remain the structural lane-graph owner. It should not
+directly own execution bindings, execution caches, or task-runner
+registrations. Those belong in a separate execution-side app module derived
+from `Timeline`, tentatively `TimelineExecution`.
 
 Publishes:
 
@@ -351,8 +355,8 @@ The intended app flow is now:
 5. `IvModuleDefinitions` emits declaration diffs to `IvModuleReload`
 6. `IvModuleReload` emits `loaded[]` / `failed[]` results
 7. `IvModuleDefinitions` applies those results and emits public definition diffs
-8. downstream modules (`IvModuleSourceIntrospection`, `GraphInputLanes`, later
-   execution owners) react
+8. downstream modules (`IvModuleSourceIntrospection`, `GraphInputLanes`,
+   `TimelineExecution`, and other later execution owners) react
 
 The important asymmetry is:
 

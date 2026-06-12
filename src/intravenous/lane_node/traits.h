@@ -2,6 +2,7 @@
 
 #include <intravenous/ports.h>
 
+#include <array>
 #include <concepts>
 #include <cstdint>
 #include <span>
@@ -64,45 +65,62 @@ namespace iv {
 
     namespace lane_node_details {
         template<typename LaneNode>
-        concept has_compiled_sample_inputs = requires(LaneNode const& node)
-        {
-            std::begin(node.compiled_sample_inputs());
-            std::end(node.compiled_sample_inputs());
+        concept has_static_compiled_sample_inputs = requires {
+            LaneNode::compiled_sample_inputs();
         };
 
         template<typename LaneNode>
-        concept has_compiled_event_inputs = requires(LaneNode const& node)
-        {
-            std::begin(node.compiled_event_inputs());
-            std::end(node.compiled_event_inputs());
+        concept has_member_compiled_sample_inputs = requires(LaneNode const& node) {
+            node.compiled_sample_inputs();
         };
 
         template<typename LaneNode>
-        concept has_realtime_sample_inputs = requires(LaneNode const& node)
-        {
-            std::begin(node.realtime_sample_inputs());
-            std::end(node.realtime_sample_inputs());
+        concept has_static_compiled_event_inputs = requires {
+            LaneNode::compiled_event_inputs();
         };
 
         template<typename LaneNode>
-        concept has_realtime_event_inputs = requires(LaneNode const& node)
-        {
-            std::begin(node.realtime_event_inputs());
-            std::end(node.realtime_event_inputs());
+        concept has_member_compiled_event_inputs = requires(LaneNode const& node) {
+            node.compiled_event_inputs();
         };
 
         template<typename LaneNode>
-        concept has_output = requires(LaneNode const& node)
-        {
+        concept has_static_realtime_sample_inputs = requires {
+            LaneNode::realtime_sample_inputs();
+        };
+
+        template<typename LaneNode>
+        concept has_member_realtime_sample_inputs = requires(LaneNode const& node) {
+            node.realtime_sample_inputs();
+        };
+
+        template<typename LaneNode>
+        concept has_static_realtime_event_inputs = requires {
+            LaneNode::realtime_event_inputs();
+        };
+
+        template<typename LaneNode>
+        concept has_member_realtime_event_inputs = requires(LaneNode const& node) {
+            node.realtime_event_inputs();
+        };
+
+        template<typename LaneNode>
+        concept has_static_output = requires {
+            LaneNode::output();
+        };
+
+        template<typename LaneNode>
+        concept has_member_output = requires(LaneNode const& node) {
             node.output();
         };
-
-    }
+    } // namespace lane_node_details
 
     template<typename LaneNode>
     auto get_compiled_sample_lane_inputs(LaneNode const& node)
     {
-        if constexpr (lane_node_details::has_compiled_sample_inputs<LaneNode>) {
+        if constexpr (lane_node_details::has_static_compiled_sample_inputs<LaneNode>) {
+            return LaneNode::compiled_sample_inputs();
+        } else if constexpr (lane_node_details::has_member_compiled_sample_inputs<LaneNode>) {
             return node.compiled_sample_inputs();
         } else {
             return std::span<CompiledSampleLaneInputConfig const, 0> {};
@@ -112,7 +130,9 @@ namespace iv {
     template<typename LaneNode>
     auto get_compiled_event_lane_inputs(LaneNode const& node)
     {
-        if constexpr (lane_node_details::has_compiled_event_inputs<LaneNode>) {
+        if constexpr (lane_node_details::has_static_compiled_event_inputs<LaneNode>) {
+            return LaneNode::compiled_event_inputs();
+        } else if constexpr (lane_node_details::has_member_compiled_event_inputs<LaneNode>) {
             return node.compiled_event_inputs();
         } else {
             return std::span<CompiledEventLaneInputConfig const, 0> {};
@@ -122,7 +142,9 @@ namespace iv {
     template<typename LaneNode>
     auto get_realtime_sample_lane_inputs(LaneNode const& node)
     {
-        if constexpr (lane_node_details::has_realtime_sample_inputs<LaneNode>) {
+        if constexpr (lane_node_details::has_static_realtime_sample_inputs<LaneNode>) {
+            return LaneNode::realtime_sample_inputs();
+        } else if constexpr (lane_node_details::has_member_realtime_sample_inputs<LaneNode>) {
             return node.realtime_sample_inputs();
         } else {
             return std::span<RealtimeSampleLaneInputConfig const, 0> {};
@@ -132,7 +154,9 @@ namespace iv {
     template<typename LaneNode>
     auto get_realtime_event_lane_inputs(LaneNode const& node)
     {
-        if constexpr (lane_node_details::has_realtime_event_inputs<LaneNode>) {
+        if constexpr (lane_node_details::has_static_realtime_event_inputs<LaneNode>) {
+            return LaneNode::realtime_event_inputs();
+        } else if constexpr (lane_node_details::has_member_realtime_event_inputs<LaneNode>) {
             return node.realtime_event_inputs();
         } else {
             return std::span<RealtimeEventLaneInputConfig const, 0> {};
@@ -142,10 +166,15 @@ namespace iv {
     template<typename LaneNode>
     auto get_lane_output(LaneNode const& node)
     {
-        if constexpr (lane_node_details::has_output<LaneNode>) {
+        if constexpr (lane_node_details::has_static_output<LaneNode>) {
+            return LaneNode::output();
+        } else if constexpr (lane_node_details::has_member_output<LaneNode>) {
             return node.output();
         } else {
-            static_assert(lane_node_details::has_output<LaneNode>, "lane node must define output()");
+            static_assert(
+                lane_node_details::has_static_output<LaneNode>
+                    || lane_node_details::has_member_output<LaneNode>,
+                "lane node must define output()");
         }
     }
 
@@ -157,6 +186,27 @@ namespace iv {
         } else {
             return LaneOutputConfig { std::move(output) };
         }
+    }
+
+    inline LanePortDomain lane_output_domain(LaneOutputConfig const& output)
+    {
+        return std::visit([](auto const& config) -> LanePortDomain {
+            using Config = std::remove_cvref_t<decltype(config)>;
+            if constexpr (
+                std::same_as<Config, CompiledSampleLaneOutputConfig>
+                || std::same_as<Config, CompiledEventLaneOutputConfig>
+            ) {
+                return LanePortDomain::compiled;
+            } else {
+                return LanePortDomain::realtime;
+            }
+        }, output);
+    }
+
+    template<typename LaneNode>
+    LanePortDomain get_lane_output_domain(LaneNode const& node)
+    {
+        return lane_output_domain(normalize_lane_output(get_lane_output(node)));
     }
 
     template<typename LaneNode>

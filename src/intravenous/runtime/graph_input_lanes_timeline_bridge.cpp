@@ -118,6 +118,14 @@ void emit_lane_change(
             .outputs_for_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes) {
                 return outputs_for_lanes(*timeline, lanes);
             },
+            .visit_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes, TimelineLaneVisitFn const &visit) {
+                timeline->with_graph([&](LaneGraph const& graph) {
+                    for (auto const lane : lanes) {
+                        auto const& record = graph.lane(lane);
+                        visit(lane, record.node, record.output, graph.inputs_for(lane));
+                    }
+                });
+            },
             .created_lanes = std::move(created_lanes),
             .removed_lanes = std::move(removed_lanes),
             .changed_lanes = std::move(changed_lanes),
@@ -154,10 +162,6 @@ void bind_graph_input_lanes_timeline_bridge(GraphInputLanes &graph_input_lanes, 
     bound_timeline = &timeline;
     schema_revision = 0;
     last_schema = timeline.lane_query_schema(schema_revision);
-    graph_input_lanes.set_realtime_lane_ref_factory(
-        [&timeline](LaneId lane) {
-            return RealtimeLaneRef(timeline, lane);
-        });
 }
 
 void unbind_graph_input_lanes_timeline_bridge(
@@ -165,7 +169,6 @@ void unbind_graph_input_lanes_timeline_bridge(
     Timeline const &timeline)
 {
     if (bound_graph_input_lanes == &graph_input_lanes) {
-        bound_graph_input_lanes->set_realtime_lane_ref_factory({});
         bound_graph_input_lanes = nullptr;
     }
     if (bound_timeline == &timeline) {

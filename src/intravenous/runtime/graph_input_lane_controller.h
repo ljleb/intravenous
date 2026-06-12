@@ -369,7 +369,6 @@ namespace iv {
                     return;
                 }
                 knob->value = value;
-                graph.clear_realtime_sample_caches();
                 if (port.concrete_member_ordinal.has_value()) {
                     graph.disconnect_input(lane.id, realtime_sample_input());
                 }

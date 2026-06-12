@@ -22,7 +22,10 @@ namespace iv {
         std::type_info const* _type_info = &typeid(void);
         void const* (*_const_ptr_fn)(void const*) = +[](void const*) -> void const* { return nullptr; };
         void* (*_ptr_fn)(void*) = +[](void*) -> void* { return nullptr; };
-        void (*_generate_fn)(void*, TimelineGenerateContext<TypeErasedLaneNode>&) = nullptr;
+        void (*_tick_block_compiled_fn)(void*, CompiledLaneTickContext<TypeErasedLaneNode>&) = nullptr;
+        void (*_tick_block_realtime_fn)(void*, RealtimeLaneTickContext<TypeErasedLaneNode>&) = nullptr;
+        bool _supports_tick_block_compiled = false;
+        bool _supports_tick_block_realtime = false;
 
     public:
         TypeErasedLaneNode() = default;
@@ -51,41 +54,30 @@ namespace iv {
             );
             _const_ptr_fn = +[](void const* ptr) -> void const* { return ptr; };
             _ptr_fn = +[](void* ptr) -> void* { return ptr; };
-            _generate_fn = [](void* node_ptr, TimelineGenerateContext<TypeErasedLaneNode>& erased_ctx) {
-                TimelineGenerateContext<LaneNode> ctx(erased_ctx);
-                do_timeline_generate(*static_cast<LaneNode*>(node_ptr), ctx);
-            };
+            if constexpr (lane_node_details::has_tick_block_compiled<LaneNode>) {
+                _tick_block_compiled_fn = +[](void* node_ptr, CompiledLaneTickContext<TypeErasedLaneNode>& erased_ctx) {
+                    CompiledLaneTickContext<LaneNode> ctx(erased_ctx.untyped());
+                    do_tick_block_compiled(*static_cast<LaneNode*>(node_ptr), ctx);
+                };
+                _supports_tick_block_compiled = true;
+            }
+            if constexpr (lane_node_details::has_tick_block_realtime<LaneNode> || lane_node_details::has_tick_block_compiled<LaneNode>) {
+                _tick_block_realtime_fn = +[](void* node_ptr, RealtimeLaneTickContext<TypeErasedLaneNode>& erased_ctx) {
+                    RealtimeLaneTickContext<LaneNode> ctx(erased_ctx.untyped());
+                    do_tick_block_realtime(*static_cast<LaneNode*>(node_ptr), ctx);
+                };
+                _supports_tick_block_realtime = true;
+            }
         }
 
-        std::vector<CompiledSampleLaneInputConfig> const& compiled_sample_inputs() const
-        {
-            return _compiled_sample_inputs;
-        }
-
-        std::vector<CompiledEventLaneInputConfig> const& compiled_event_inputs() const
-        {
-            return _compiled_event_inputs;
-        }
-
-        std::vector<RealtimeSampleLaneInputConfig> const& realtime_sample_inputs() const
-        {
-            return _realtime_sample_inputs;
-        }
-
-        std::vector<RealtimeEventLaneInputConfig> const& realtime_event_inputs() const
-        {
-            return _realtime_event_inputs;
-        }
-
-        LaneOutputConfig const& output() const
-        {
-            return _output;
-        }
-
-        char const* type_name() const
-        {
-            return _type_name;
-        }
+        std::vector<CompiledSampleLaneInputConfig> const& compiled_sample_inputs() const { return _compiled_sample_inputs; }
+        std::vector<CompiledEventLaneInputConfig> const& compiled_event_inputs() const { return _compiled_event_inputs; }
+        std::vector<RealtimeSampleLaneInputConfig> const& realtime_sample_inputs() const { return _realtime_sample_inputs; }
+        std::vector<RealtimeEventLaneInputConfig> const& realtime_event_inputs() const { return _realtime_event_inputs; }
+        LaneOutputConfig const& output() const { return _output; }
+        char const* type_name() const { return _type_name; }
+        bool supports_tick_block_compiled() const { return _supports_tick_block_compiled; }
+        bool supports_tick_block_realtime() const { return _supports_tick_block_realtime; }
 
         template<typename LaneNode>
         LaneNode const* try_as() const
@@ -105,9 +97,18 @@ namespace iv {
             return static_cast<LaneNode*>(_ptr_fn(_node.get()));
         }
 
-        void generate(TimelineGenerateContext<TypeErasedLaneNode>& ctx)
+        void tick_block_compiled(CompiledLaneTickContext<TypeErasedLaneNode>& ctx) const
         {
-            _generate_fn(_node.get(), ctx);
+            if (_tick_block_compiled_fn) {
+                _tick_block_compiled_fn(_node.get(), ctx);
+            }
+        }
+
+        void tick_block_realtime(RealtimeLaneTickContext<TypeErasedLaneNode>& ctx) const
+        {
+            if (_tick_block_realtime_fn) {
+                _tick_block_realtime_fn(_node.get(), ctx);
+            }
         }
     };
 }

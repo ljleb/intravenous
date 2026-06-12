@@ -288,6 +288,18 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
+    if (method == "ivModuleInstances.setDefaultSilenceTtlSamples") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = SetIvModuleInstanceDefaultSilenceTtlSamplesRequest{
+                .instance_id = parse_string_param(params, "instanceId"),
+                .default_silence_ttl_samples =
+                    static_cast<size_t>(parse_uint64_param(
+                        params,
+                        "defaultSilenceTtlSamples")),
+            },
+        };
+    }
     if (method == "timeline.openLaneView" || method == "timeline.updateLaneView") {
         auto const request_payload = parse_lane_view_request(params);
         if (method == "timeline.openLaneView") {

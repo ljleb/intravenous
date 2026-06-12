@@ -89,7 +89,9 @@ add_iv_gtest(
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)
+add_iv_gtest(intravenous_block_node_executor_tests node_block_executor_gtest.cpp)
 add_iv_gtest(intravenous_timeline_lanes_tests modules/timeline_lanes_gtest.cpp)
+add_iv_gtest(intravenous_timeline_execution_tests modules/timeline_execution_gtest.cpp)
 add_iv_gtest(intravenous_lane_filters_tests modules/lane_filters_gtest.cpp)
 add_iv_gtest(intravenous_lane_views_tests modules/lane_views_gtest.cpp)
 add_iv_gtest(intravenous_lane_query_tests query/lane_query_gtest.cpp)
@@ -97,6 +99,9 @@ add_iv_gtest(intravenous_local_gamma_time_aligner_tests local_gamma_time_aligner
 add_iv_gtest(intravenous_startup_config_tests modules/startup_config_gtest.cpp)
 add_iv_gtest(intravenous_iv_module_definitions_tests modules/iv_module_definitions_gtest.cpp)
 add_iv_gtest(intravenous_iv_module_instances_tests modules/iv_module_instances_gtest.cpp)
+add_iv_gtest(
+    intravenous_iv_module_instances_execution_tests
+    modules/iv_module_instances_execution_gtest.cpp)
 add_iv_gtest(
     intravenous_iv_module_reload_tests
     modules/iv_module_reload_gtest.cpp

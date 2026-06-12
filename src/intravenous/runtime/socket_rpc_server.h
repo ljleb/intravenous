@@ -38,6 +38,8 @@ namespace iv {
         void (*)(CreateIvModuleInstanceRequest const &, SocketRpcCreateIvModuleInstanceResultBuilder &);
     using SocketRpcDeleteIvModuleInstanceEvent =
         void (*)(DeleteIvModuleInstanceRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcSetIvModuleInstanceDefaultSilenceTtlSamplesEvent =
+        void (*)(SetIvModuleInstanceDefaultSilenceTtlSamplesRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcOpenLaneViewEvent =
         void (*)(LaneViewRequest const &, SocketRpcLaneViewResultBuilder &);
     using SocketRpcUpdateLaneViewEvent =
@@ -57,6 +59,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetLogicalNodesEvent, iv_socket_rpc_get_logical_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteIvModuleInstanceEvent, iv_socket_rpc_delete_iv_module_instance_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetIvModuleInstanceDefaultSilenceTtlSamplesEvent, iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcOpenLaneViewEvent, iv_socket_rpc_open_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateLaneViewEvent, iv_socket_rpc_update_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCloseLaneViewEvent, iv_socket_rpc_close_lane_view_event);

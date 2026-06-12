@@ -10,7 +10,10 @@
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_execution.h>
+#include <intravenous/runtime/iv_module_instances_execution_task_runner_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_instances_execution_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
 #include <intravenous/runtime/iv_module_reload_iv_module_definitions_bridge.h>
@@ -26,8 +29,12 @@
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/startup_config.h>
 #include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/runtime/task_runner.h>
 #include <intravenous/runtime/timeline.h>
+#include <intravenous/runtime/timeline_execution.h>
+#include <intravenous/runtime/timeline_execution_task_runner_bridge.h>
 #include <intravenous/runtime/timeline_lane_filters_bridge.h>
+#include <intravenous/runtime/timeline_timeline_execution_bridge.h>
 
 #include <filesystem>
 #include <functional>
@@ -56,11 +63,18 @@ namespace iv {
             IvModuleDefinitions iv_module_definitions;
             IvModuleReload iv_module_reload(startup);
             GraphInputLanes graph_input_lanes;
+            TaskRunner task_runner;
+            TimelineExecution timeline_execution(startup.execution.block_size);
+            IvModuleInstancesExecution iv_module_instances_execution(startup.execution.block_size);
             LaneFilters lane_filters;
             LaneViews lane_views;
             IvModuleSourceIntrospection introspection;
             bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
+            bind_timeline_execution_task_runner_bridge(timeline_execution, task_runner);
+            bind_timeline_timeline_execution_bridge(timeline, timeline_execution);
             bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
+            bind_iv_module_instances_execution_task_runner_bridge(iv_module_instances_execution, task_runner);
+            bind_iv_module_instances_iv_module_instances_execution_bridge(iv_module_instances_execution);
             bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
             bind_iv_module_definitions_iv_module_reload_bridge(iv_module_reload);
             bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
@@ -97,11 +111,15 @@ namespace iv {
             unbind_timeline_lane_filters_bridge(lane_filters);
             unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
             unbind_iv_module_reload_iv_module_definitions_bridge(iv_module_definitions);
+            unbind_iv_module_instances_execution_task_runner_bridge(iv_module_instances_execution, task_runner);
             unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
             unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
             unbind_iv_module_definitions_iv_module_reload_bridge(iv_module_reload);
             unbind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
+            unbind_iv_module_instances_iv_module_instances_execution_bridge(iv_module_instances_execution);
             unbind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
+            unbind_timeline_execution_task_runner_bridge(timeline_execution, task_runner);
+            unbind_timeline_timeline_execution_bridge(timeline, timeline_execution);
             unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
             shutdown_callback = nullptr;
             return 0;

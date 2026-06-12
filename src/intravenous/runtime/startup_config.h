@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/runtime/config.h>
 #include <intravenous/module/loader.h>
 
 #include <filesystem>
@@ -11,6 +12,7 @@ struct StartupConfigState {
     std::filesystem::path discovery_start{};
     std::vector<std::filesystem::path> search_roots{};
     ModuleLoader::ToolchainConfig toolchain{};
+    RuntimeExecutionConfig execution{};
 };
 
 class StartupConfig {

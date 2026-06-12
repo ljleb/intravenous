@@ -4,7 +4,6 @@
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
-#include <intravenous/runtime/lane_ref.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/lane_graph.h>
 
@@ -45,6 +44,7 @@ public:
         TimelineLaneBatchUpdate timeline_batch {};
         std::vector<CompletedSampleInput> sample_inputs {};
         std::vector<CompletedEventInput> event_inputs {};
+        std::vector<LaneId> prerequisite_lanes {};
     };
 
 private:
@@ -53,7 +53,6 @@ private:
     std::unordered_map<std::string, std::vector<DesiredGraphInputPort>> desired_ports_by_instance_id;
     std::vector<DesiredGraphInputPort> desired_ports;
     std::vector<ExistingTrackedLane> tracked_lanes;
-    std::function<RealtimeLaneRef(LaneId)> realtime_lane_ref_for_lane;
     std::unordered_map<std::string, std::vector<std::vector<Sample*>>> live_inputs;
     std::unordered_map<std::string, std::vector<Sample>> live_input_values;
     std::unordered_map<std::string, Sample> sample_input_default_values;
@@ -114,10 +113,9 @@ private:
 public:
     GraphInputLanes() = default;
 
-    void set_realtime_lane_ref_factory(
-        std::function<RealtimeLaneRef(LaneId)> factory);
     void handle_iv_module_instance_builders_changed(
-        IvModuleInstanceBuildersChanged const &diff);
+        IvModuleInstanceBuildersChanged const &diff,
+        IvModuleInstanceBuildersAckBuilder *ack_builder = nullptr);
     std::vector<IvModuleSourceIntrospectionLiveInputSnapshot> collect_live_input_snapshots(
         std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &requests);
     void set_sample_input_value(

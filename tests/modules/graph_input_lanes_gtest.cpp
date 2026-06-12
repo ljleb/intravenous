@@ -1,10 +1,11 @@
 #include <intravenous/runtime/graph_input_lanes.h>
+#include <intravenous/runtime/graph_input_lanes_execution_edges_events.h>
 
+#include <intravenous/dsl.h>
 #include <intravenous/graph/build_types.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/iv_module_instances.h>
-
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -14,6 +15,7 @@
 namespace {
 struct GraphInputLanesWitness {
     std::vector<iv::TimelineLaneBatchUpdate> timeline_batches {};
+    std::vector<iv::GraphInputLanesDspTaskDependenciesChanged> dsp_dependencies {};
 };
 
 GraphInputLanesWitness *g_graph_input_lanes_witness = nullptr;
@@ -56,6 +58,15 @@ IV_SUBSCRIBE_LINKER_EVENT(
             g_graph_input_lanes_witness->timeline_batches.push_back(batch);
         }
         builder.succeed();
+    });
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv::GraphInputLanesDspTaskDependenciesChangedEvent,
+    iv_runtime_graph_input_lanes_dsp_task_dependencies_changed_event,
+    +[](iv::GraphInputLanesDspTaskDependenciesChanged const &changed) {
+        if (g_graph_input_lanes_witness != nullptr) {
+            g_graph_input_lanes_witness->dsp_dependencies.push_back(changed);
+        }
     });
 
 class GraphInputLanesTest : public ::testing::Test {
@@ -143,4 +154,29 @@ TEST_F(GraphInputLanesTest, SampleInputMutationsPublishTimelineBatch)
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
     EXPECT_EQ(witness.timeline_batches.front().upserts.size(), 1u);
+}
+
+TEST_F(GraphInputLanesTest, VacantSampleInputsPublishDspTaskDependencies)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
+
+    auto node = iv::_annotate_node_source_info(
+        builder.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+
+    ASSERT_EQ(witness.dsp_dependencies.size(), 1u);
+    ASSERT_EQ(witness.dsp_dependencies.front().created_or_updated.size(), 1u);
+    EXPECT_TRUE(witness.dsp_dependencies.front().deleted_instance_ids.empty());
+
+    auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
+    EXPECT_EQ(dependencies.instance_id, "instance:1");
+    ASSERT_EQ(dependencies.prerequisite_lanes.size(), 1u);
+    EXPECT_TRUE(static_cast<bool>(dependencies.prerequisite_lanes.front()));
 }

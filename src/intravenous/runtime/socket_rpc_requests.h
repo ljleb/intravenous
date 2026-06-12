@@ -38,6 +38,11 @@ namespace iv {
         std::string instance_id{};
     };
 
+    struct SetIvModuleInstanceDefaultSilenceTtlSamplesRequest {
+        std::string instance_id{};
+        size_t default_silence_ttl_samples = 0;
+    };
+
     struct OpenLaneViewRpcRequest {
         LaneViewRequest request{};
     };
@@ -68,6 +73,7 @@ namespace iv {
         GetLogicalNodesRequest,
         CreateIvModuleInstanceRequest,
         DeleteIvModuleInstanceRequest,
+        SetIvModuleInstanceDefaultSilenceTtlSamplesRequest,
         OpenLaneViewRpcRequest,
         UpdateLaneViewRpcRequest,
         SetSampleInputValueRequest,

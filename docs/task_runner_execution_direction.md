@@ -12,7 +12,11 @@ runner, task graph updates, and execution planning.
 
 ## Scope
 
-The task runner is mainly for `Timeline` and `IvModuleInstances`.
+The task runner is mainly for the execution-side runtime modules derived from
+editable structure, especially:
+
+- `TimelineExecution`, derived from `Timeline`
+- `IvModuleInstances`, or a future execution-side sibling derived from it
 
 It is not intended to become a generic one-shot job system for every async
 operation in the repo. Existing module-owned threads such as JSON-RPC handling
@@ -20,6 +24,16 @@ or iv-module reload watching can continue to do their own event work directly.
 
 The task runner exists to maintain and execute a persistent DAG of runtime tasks
 that need explicit ordering.
+
+The important structural distinction is:
+
+- `Timeline` should stay focused on editable lane-graph structure
+- a separate `TimelineExecution` app module should derive task registrations,
+  execution bindings, and runtime port memory from that structure
+- a separate `IvModuleInstancesExecution` app module should own DSP-graph task
+  registrations derived from iv-module-instance structure
+- `TaskRunner` should serve that execution module, not force `Timeline` itself
+  to become an execution-heavy god object
 
 ## Core execution model
 
@@ -30,6 +44,8 @@ that need explicit ordering.
 - Play/pause state does not live inside task nodes.
 - `Timeline` owns play/pause separately by controlling the current index being
   sampled.
+- Execution state derived from `Timeline` should live in `TimelineExecution`
+  rather than directly inside `Timeline` where possible.
 
 ## Task graph updates
 
@@ -190,12 +206,19 @@ reference it.
 
 Cross-module task ordering is expected and allowed.
 
-For example, `GraphInputLanes` may need to declare dependencies between its own
-lane-related tasks and other timeline or iv-module-instance tasks even when it
-did not create all of those tasks itself.
+For example, `GraphInputLanes` may need to declare dependencies between
+timeline-lane tasks and iv-module-instance DSP tasks even when it did not
+create all of those tasks itself.
 
 This is important for implicit ordering relationships that are not visible from
 ordinary lane connectivity alone.
+
+For the current input-side wiring direction:
+
+- `TimelineExecution` owns the timeline lane tasks
+- `IvModuleInstancesExecution` owns the DSP graph execution tasks
+- `GraphInputLanes` owns the cross-domain dependency edges between them for
+  vacant graph inputs
 
 One future example is DSP graph output lanes:
 

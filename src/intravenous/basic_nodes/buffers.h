@@ -1,7 +1,7 @@
 #pragma once
 
-#include <intravenous/runtime/lane_ref.h>
 #include <intravenous/node/lifecycle.h>
+#include <intravenous/runtime/timeline_execution_events.h>
 
 #include <array>
 #include <cassert>
@@ -64,21 +64,19 @@ namespace iv {
     };
 
     class LaneInputValue {
-        RealtimeLaneRef _lane;
+        LaneId _lane {};
         std::string _identity;
 
     public:
-        static std::string nominal_identity(
-            RealtimeLaneRef const& lane
-        )
+        static std::string nominal_identity(LaneId lane)
         {
-            return lane.nominal_identity();
+            return "timeline-input-lane:" + std::to_string(lane.value);
         }
 
         explicit LaneInputValue(
-            RealtimeLaneRef lane
+            LaneId lane
         ) :
-            _lane(std::move(lane)),
+            _lane(lane),
             _identity(nominal_identity(lane))
         {}
 
@@ -94,8 +92,15 @@ namespace iv {
 
         void tick_block(TickBlockContext<LaneInputValue> const& ctx) const
         {
-            auto block = _lane.pull_sample_block(ctx.index, ctx.block_size);
-            ctx.outputs[0].push_block(block.samples());
+            TimelineExecutionRealtimeSampleBlockBuilder builder;
+            IV_INVOKE_SINGLETON_EVENT(
+                iv_runtime_timeline_execution_realtime_sample_block_requested_event,
+                _lane,
+                builder);
+            auto const block = builder.build();
+            for (size_t i = 0; i < ctx.block_size; ++i) {
+                ctx.outputs[0].push(i < block.size() ? block[i] : Sample{0.0f});
+            }
         }
     };
 }

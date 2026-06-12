@@ -60,3 +60,38 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
 
     iv::unbind_socket_rpc_iv_module_instances_bridge(instances);
 }
+
+TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
+{
+    iv::IvModuleInstances instances;
+    iv::bind_socket_rpc_iv_module_instances_bridge(instances);
+
+    iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_socket_rpc_create_iv_module_instance_event,
+        iv::CreateIvModuleInstanceRequest{
+            .module_root = std::filesystem::path("/tmp/module-a"),
+        },
+        create_builder);
+    auto const create_response = parse_json_line(create_builder.build(2));
+    auto const created_instance_id =
+        create_response["result"]["instanceId"].get<std::string>();
+
+    iv::SocketRpcAckResponseBuilder ttl_builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event,
+        iv::SetIvModuleInstanceDefaultSilenceTtlSamplesRequest{
+            .instance_id = created_instance_id,
+            .default_silence_ttl_samples = 1234,
+        },
+        ttl_builder);
+    auto const ttl_response = parse_json_line(ttl_builder.build(4));
+    EXPECT_EQ(ttl_response["result"]["ok"], true);
+
+    auto const listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    ASSERT_TRUE(listed.front().default_silence_ttl_samples.has_value());
+    EXPECT_EQ(*listed.front().default_silence_ttl_samples, 1234u);
+
+    iv::unbind_socket_rpc_iv_module_instances_bridge(instances);
+}

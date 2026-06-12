@@ -22,49 +22,28 @@
 #include <vector>
 
 namespace iv {
-    struct TimelineGraphRuntime {
-        LaneGraph lane_graph;
-    };
-
     class Timeline {
-        std::mutex _graphs_mutex;
-        std::unordered_map<std::string, TimelineGraphRuntime> _graphs;
-        std::string _default_graph_id = "module";
-
-        TimelineGraphRuntime& default_graph_locked()
-        {
-            return _graphs[_default_graph_id];
-        }
+        std::mutex _graph_mutex;
+        LaneGraph _graph;
 
     public:
         template<typename Fn>
-        decltype(auto) with_default_graph(Fn&& fn)
+        decltype(auto) with_graph(Fn&& fn)
         {
-            std::scoped_lock lock(_graphs_mutex);
-            return std::forward<Fn>(fn)(default_graph_locked().lane_graph);
-        }
-
-        RealtimeSampleBlockLease pull_realtime_lane_sample_block(
-            LaneId lane,
-            size_t start_index,
-            size_t count
-        )
-        {
-            return with_default_graph([&](LaneGraph& graph) {
-                return graph.pull_realtime_sample_block(lane, start_index, count);
-            });
+            std::scoped_lock lock(_graph_mutex);
+            return std::forward<Fn>(fn)(_graph);
         }
 
         bool contains_lane(LaneId lane)
         {
-            return with_default_graph([&](LaneGraph& graph) {
+            return with_graph([&](LaneGraph& graph) {
                 return graph.contains(lane);
             });
         }
 
         std::vector<LaneOutputConnection> lane_outputs_for(LaneId lane)
         {
-            return with_default_graph([&](LaneGraph& graph) {
+            return with_graph([&](LaneGraph& graph) {
                 auto const& outputs = graph.outputs_for(lane);
                 return std::vector<LaneOutputConnection>{ outputs.begin(), outputs.end() };
             });
@@ -72,7 +51,7 @@ namespace iv {
 
         std::vector<LaneId> lane_ids()
         {
-            return with_default_graph([&](LaneGraph& graph) {
+            return with_graph([&](LaneGraph& graph) {
                 std::vector<LaneId> ids;
                 graph.for_each_lane([&](LaneRecord const& lane) {
                     ids.push_back(lane.id);
@@ -83,14 +62,14 @@ namespace iv {
 
         LaneMetadata lane_metadata(LaneId lane)
         {
-            return with_default_graph([&](LaneGraph& graph) {
+            return with_graph([&](LaneGraph& graph) {
                 return graph.lane(lane).metadata;
             });
         }
 
         query::LaneQuerySchema lane_query_schema(std::uint64_t revision = 0)
         {
-            return with_default_graph([&](LaneGraph& graph) {
+            return with_graph([&](LaneGraph& graph) {
                 std::vector<std::pair<std::string, query::LaneQueryValueType>> entries;
                 std::unordered_map<std::string, query::LaneQueryValueType> type_by_key;
                 graph.for_each_lane([&](LaneRecord const& lane) {
@@ -111,28 +90,28 @@ namespace iv {
 
         bool lane_has_unit_metadata(LaneId lane, std::string_view key)
         {
-            return with_default_graph([&](LaneGraph& graph) {
+            return with_graph([&](LaneGraph& graph) {
                 return graph.lane(lane).metadata.has_unit(key);
             });
         }
 
         std::optional<int> lane_int_metadata(LaneId lane, std::string_view key)
         {
-            return with_default_graph([&](LaneGraph& graph) {
+            return with_graph([&](LaneGraph& graph) {
                 return graph.lane(lane).metadata.int_value(key);
             });
         }
 
         std::optional<float> lane_float_metadata(LaneId lane, std::string_view key)
         {
-            return with_default_graph([&](LaneGraph& graph) {
+            return with_graph([&](LaneGraph& graph) {
                 return graph.lane(lane).metadata.float_value(key);
             });
         }
 
         void apply_lane_batch(TimelineLaneBatchUpdate const &batch)
         {
-            with_default_graph([&](LaneGraph& graph) {
+            with_graph([&](LaneGraph& graph) {
                 for (auto const &child : batch.hierarchy_removals) {
                     graph.remove_child(child.parent, child.child);
                 }
@@ -159,7 +138,7 @@ namespace iv {
 
         void remove_lane(LaneId lane)
         {
-            with_default_graph([&](LaneGraph& graph) {
+            with_graph([&](LaneGraph& graph) {
                 graph.remove_lane(lane);
             });
         }

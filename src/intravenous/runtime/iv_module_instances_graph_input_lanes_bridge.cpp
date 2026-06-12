@@ -12,12 +12,14 @@ void handle_instances_changed(IvModuleInstancesChanged const &diff)
     (void)diff;
 }
 
-void handle_instance_builders_changed(IvModuleInstanceBuildersChanged const &diff)
+void handle_instance_builders_changed(
+    IvModuleInstanceBuildersChanged const &diff,
+    IvModuleInstanceBuildersAckBuilder &builder)
 {
     if (bound_lanes == nullptr) {
         return;
     }
-    bound_lanes->handle_iv_module_instance_builders_changed(diff);
+    bound_lanes->handle_iv_module_instance_builders_changed(diff, &builder);
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(

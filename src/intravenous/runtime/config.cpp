@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -50,8 +51,36 @@ namespace iv {
             return normalize_path(path);
         }
 
+        std::optional<size_t> parse_size_t(std::string const& value)
+        {
+            if (value.empty()) {
+                return std::nullopt;
+            }
+            size_t parsed = 0;
+            try {
+                std::size_t consumed = 0;
+                auto const wide = std::stoull(value, &consumed, 10);
+                if (consumed != value.size()) {
+                    return std::nullopt;
+                }
+                if (wide > std::numeric_limits<size_t>::max()) {
+                    return std::nullopt;
+                }
+                parsed = static_cast<size_t>(wide);
+            } catch (...) {
+                return std::nullopt;
+            }
+            return parsed;
+        }
+
+        struct ParsedExecutionConfig {
+            std::optional<size_t> sample_rate;
+            std::optional<size_t> block_size;
+        };
+
         struct ParsedConfig {
             ModuleLoader::ToolchainConfig toolchain;
+            ParsedExecutionConfig execution;
         };
 
         ParsedConfig parse_config_file(
@@ -82,19 +111,30 @@ namespace iv {
                 auto assign_path = [&](std::optional<std::filesystem::path>& target) {
                     target = path_value(value, base_dir);
                 };
+                auto assign_size = [&](std::optional<size_t>& target) {
+                    auto parsed = parse_size_t(value);
+                    if (!parsed) {
+                        throw std::runtime_error("invalid numeric config value in " + path.string() + ": " + key + "=" + value);
+                    }
+                    target = parsed;
+                };
 
-                if (key == "cCompiler") {
+                if (key == "c_compiler") {
                     assign_path(parsed.toolchain.c_compiler);
-                } else if (key == "cxxCompiler") {
+                } else if (key == "cxx_compiler") {
                     assign_path(parsed.toolchain.cxx_compiler);
-                } else if (key == "cmakeProgram") {
+                } else if (key == "cmake_program") {
                     assign_path(parsed.toolchain.cmake_program);
-                } else if (key == "cmakeGenerator") {
+                } else if (key == "cmake_generator") {
                     parsed.toolchain.cmake_generator = value.empty() ? std::nullopt : std::optional(value);
-                } else if (key == "makeProgram") {
+                } else if (key == "make_program") {
                     assign_path(parsed.toolchain.make_program);
-                } else if (key == "juceDir") {
+                } else if (key == "juce_dir") {
                     assign_path(parsed.toolchain.juce_dir);
+                } else if (key == "sample_rate") {
+                    assign_size(parsed.execution.sample_rate);
+                } else if (key == "block_size") {
+                    assign_size(parsed.execution.block_size);
                 } else {
                     throw std::runtime_error("unknown config key in " + path.string() + ": " + key);
                 }
@@ -127,6 +167,18 @@ namespace iv {
                 base.juce_dir = overlay.juce_dir;
             }
         }
+
+        void overlay_execution(
+            RuntimeExecutionConfig& base,
+            ParsedExecutionConfig const& overlay)
+        {
+            if (overlay.sample_rate) {
+                base.sample_rate = *overlay.sample_rate;
+            }
+            if (overlay.block_size) {
+                base.block_size = *overlay.block_size;
+            }
+        }
     }
 
     ProjectConfig load_runtime_project_config(std::filesystem::path const& workspace_root)
@@ -152,11 +204,13 @@ namespace iv {
                 auto const parsed_defaults =
                     parse_config_file(defaults_path, defaults_path.parent_path());
                 overlay_toolchain(config.toolchain, parsed_defaults.toolchain);
+                overlay_execution(config.execution, parsed_defaults.execution);
             }
         }
 
         auto const project_config = parse_config_file(marker_path, normalized_workspace);
         overlay_toolchain(config.toolchain, project_config.toolchain);
+        overlay_execution(config.execution, project_config.execution);
 
         return config;
     }

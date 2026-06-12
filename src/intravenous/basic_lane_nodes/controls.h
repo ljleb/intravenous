@@ -25,16 +25,16 @@ namespace iv {
             };
         }
 
-        void generate(TimelineGenerateContext<KnobLaneNode>& ctx)
+        void tick_block_realtime(RealtimeLaneTickContext<KnobLaneNode>& ctx)
         {
             if (!ctx.realtime_sample_inputs().empty() && ctx.realtime_sample_input(0).connected()) {
                 auto const block = ctx.realtime_sample_input(0).get_block();
-                for (size_t i = 0; i < ctx.count(); ++i) {
+                for (size_t i = 0; i < ctx.sample_count(); ++i) {
                     ctx.out().push(i < block.size() ? block[i] : Sample {});
                 }
                 return;
             }
-            for (size_t i = 0; i < ctx.count(); ++i) {
+            for (size_t i = 0; i < ctx.sample_count(); ++i) {
                 ctx.out().push(value);
             }
         }
@@ -60,16 +60,16 @@ namespace iv {
             };
         }
 
-        void generate(TimelineGenerateContext<GraphSampleInputLaneNode>& ctx)
+        void tick_block_realtime(RealtimeLaneTickContext<GraphSampleInputLaneNode>& ctx)
         {
             if (!ctx.realtime_sample_inputs().empty() && ctx.realtime_sample_input(0).connected()) {
                 auto const block = ctx.realtime_sample_input(0).get_block();
-                for (size_t i = 0; i < ctx.count(); ++i) {
+                for (size_t i = 0; i < ctx.sample_count(); ++i) {
                     ctx.out().push(i < block.size() ? block[i] : default_value);
                 }
                 return;
             }
-            for (size_t i = 0; i < ctx.count(); ++i) {
+            for (size_t i = 0; i < ctx.sample_count(); ++i) {
                 ctx.out().push(default_value);
             }
         }
@@ -92,7 +92,7 @@ namespace iv {
             };
         }
 
-        void generate(TimelineGenerateContext<GraphEventInputLaneNode>& ctx)
+        void tick_block_realtime(RealtimeLaneTickContext<GraphEventInputLaneNode>& ctx)
         {
             if (ctx.realtime_event_inputs().empty()) {
                 return;

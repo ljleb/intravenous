@@ -28,6 +28,7 @@ StartupConfigState StartupConfig::initialize() const
         .discovery_start = discovery_start,
         .search_roots = std::move(search_roots),
         .toolchain = std::move(project_config.toolchain),
+        .execution = project_config.execution,
     };
 }
 } // namespace iv

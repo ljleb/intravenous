@@ -11,6 +11,12 @@
 #include <vector>
 
 namespace iv {
+    using TimelineLaneVisitFn = std::function<void(
+        LaneId,
+        TypeErasedLaneNode const&,
+        LaneOutputConfig const&,
+        std::vector<LaneInputConnection> const&)>;
+
     struct TimelineLaneUpsert {
         LaneId lane {};
         std::function<TypeErasedLaneNode()> make_node {};
@@ -42,6 +48,7 @@ namespace iv {
         query::LaneQuerySchemaChange schema_change {};
         std::function<LaneMetadata(LaneId)> metadata_for_lane {};
         std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes {};
+        std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> visit_lanes {};
         std::vector<LaneId> created_lanes {};
         std::vector<LaneId> removed_lanes {};
         std::vector<LaneId> changed_lanes {};

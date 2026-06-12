@@ -19,6 +19,16 @@
 #define IV_DECLARE_LINKER_EVENT(event_type, event_name) \
     std::span<event_type const> event_name##_subscribers()
 
+#define IV_DECLARE_SINGLETON_EVENT(event_type, event_name) \
+    extern "C" event_type event_name; \
+    inline event_type event_name##_subscriber() { return event_name; }
+
+#define IV_DEFINE_SINGLETON_EVENT(event_type, event_name, default_value) \
+    extern "C" IV_LINKER_EVENT_WEAK event_type event_name = (default_value)
+
+#define IV_SUBSCRIBE_SINGLETON_EVENT(event_type, event_name, value) \
+    extern "C" event_type event_name = (value)
+
 #define IV_DEFINE_LINKER_EVENT(event_type, event_name) \
     extern "C" { \
     extern event_type const IV_LINKER_EVENT_CONCAT(__start_, event_name)[] \
@@ -47,4 +57,9 @@
         for (auto const subscriber : event_name##_subscribers()) { \
             subscriber(__VA_ARGS__); \
         } \
+    } while (false)
+
+#define IV_INVOKE_SINGLETON_EVENT(event_name, ...) \
+    do { \
+        event_name##_subscriber()(__VA_ARGS__); \
     } while (false)

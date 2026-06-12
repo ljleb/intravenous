@@ -3,7 +3,9 @@
 #include <intravenous/lane_node/traits.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <variant>
 #include <vector>
@@ -48,9 +50,9 @@ namespace iv {
 
     struct CompiledEventLaneInput {
         std::vector<std::span<TimedEvent const>> sources {};
-        std::vector<TimedEvent> merged {};
+        mutable std::vector<TimedEvent> merged {};
 
-        std::span<TimedEvent const> events(size_t start_index, size_t count)
+        std::span<TimedEvent const> events(size_t start_index, size_t count) const
         {
             merged.clear();
             size_t const end_index = start_index + count;
@@ -75,6 +77,7 @@ namespace iv {
         size_t active_start_index = 0;
         size_t active_count = 0;
         bool has_source = false;
+        std::span<Sample const> block_override {};
 
         bool connected() const
         {
@@ -83,12 +86,21 @@ namespace iv {
 
         Sample get(size_t index) const
         {
-            auto const block = get_block(index, 1);
-            return block.empty() ? default_value : block[0];
+            auto const block = get_block(active_start_index, active_count);
+            if (index >= block.size()) {
+                return default_value;
+            }
+            return block[index];
         }
 
         std::span<Sample const> get_block(size_t start_index, size_t count) const
         {
+            if (!block_override.empty()) {
+                if (start_index != active_start_index) {
+                    return {};
+                }
+                return block_override.first(std::min(count, block_override.size()));
+            }
             if (!get_block_fn) {
                 return {};
             }
@@ -108,9 +120,16 @@ namespace iv {
         GetEventsFn get_events_fn = nullptr;
         size_t active_start_index = 0;
         size_t active_count = 0;
+        std::span<TimedEvent const> block_override {};
 
         std::span<TimedEvent const> get_block(size_t start_index, size_t count) const
         {
+            if (!block_override.empty()) {
+                if (start_index != active_start_index) {
+                    return {};
+                }
+                return block_override.first(std::min(count, block_override.size()));
+            }
             if (!get_events_fn) {
                 return {};
             }
@@ -125,16 +144,40 @@ namespace iv {
 
     struct CompiledSampleLaneOutput {
         std::vector<Sample>* samples = nullptr;
+        size_t window_start_index = 0;
+        bool clamp_to_window = false;
 
         void write(size_t start_index, std::span<Sample const> values)
         {
             if (!samples) {
                 return;
             }
-            if (samples->size() < start_index + values.size()) {
+            size_t write_start = start_index;
+            if (clamp_to_window) {
+                if (start_index < window_start_index) {
+                    size_t const delta = window_start_index - start_index;
+                    if (delta >= values.size()) {
+                        return;
+                    }
+                    values = values.subspan(delta);
+                    write_start = 0;
+                } else {
+                    write_start = start_index - window_start_index;
+                }
+                if (write_start >= samples->size()) {
+                    return;
+                }
+                values = values.first(std::min(values.size(), samples->size() - write_start));
+            } else if (samples->size() < start_index + values.size()) {
                 samples->resize(start_index + values.size());
             }
-            std::ranges::copy(values, samples->begin() + static_cast<std::ptrdiff_t>(start_index));
+            std::ranges::copy(values, samples->begin() + static_cast<std::ptrdiff_t>(write_start));
+        }
+
+        template<size_t N>
+        void write(size_t start_index, std::array<Sample, N> const& values)
+        {
+            write(start_index, std::span<Sample const>(values));
         }
     };
 
@@ -258,85 +301,59 @@ namespace iv {
         bool operator==(TimelineOutputRequest const&) const = default;
     };
 
-    struct UntypedTimelineGenerateContext {
-        TimelineOutputRequest output_request {};
+    struct CompiledLaneTickRequest {
+        size_t start_index = 0;
+        size_t end_index = 0;
+        size_t sample_count = 0;
+    };
+
+    struct RealtimeLaneTickRequest {
+        size_t start_index = 0;
+        size_t sample_count = 0;
+    };
+
+    struct UntypedCompiledLaneTickContext {
+        CompiledLaneTickRequest request {};
+        std::span<CompiledSampleLaneInput> compiled_sample_inputs {};
+        std::span<CompiledEventLaneInput> compiled_event_inputs {};
+        LaneOutputView output { CompiledSampleLaneOutput {} };
+    };
+
+    struct UntypedRealtimeLaneTickContext {
+        RealtimeLaneTickRequest request {};
+        std::optional<CompiledLaneTickRequest> compiled_fallback_tick_window {};
         std::span<CompiledSampleLaneInput> compiled_sample_inputs {};
         std::span<CompiledEventLaneInput> compiled_event_inputs {};
         std::span<RealtimeSampleLaneInput> realtime_sample_inputs {};
         std::span<RealtimeEventLaneInput> realtime_event_inputs {};
-        LaneOutputView output { CompiledSampleLaneOutput {} };
+        LaneOutputView output { RealtimeSampleLaneOutput {} };
     };
 
     template<typename LaneNode>
-    class TimelineGenerateContext {
-        UntypedTimelineGenerateContext& _untyped;
+    class CompiledLaneTickContext {
+        UntypedCompiledLaneTickContext& _untyped;
 
         template<typename>
-        friend class TimelineGenerateContext;
+        friend class CompiledLaneTickContext;
+        template<typename>
+        friend class RealtimeLaneTickContext;
 
     public:
         using OutputView = typename LaneOutputViewFor<
             std::remove_cvref_t<LaneOutputDeclaration<LaneNode>>
         >::Type;
 
-        explicit TimelineGenerateContext(UntypedTimelineGenerateContext& untyped) :
+        explicit CompiledLaneTickContext(UntypedCompiledLaneTickContext& untyped) :
             _untyped(untyped)
         {}
 
-        template<typename OtherLaneNode>
-        explicit TimelineGenerateContext(TimelineGenerateContext<OtherLaneNode>& other) :
-            _untyped(other._untyped)
-        {}
-
-        size_t start_index() const
-        {
-            return _untyped.output_request.start_index;
-        }
-
-        size_t count() const
-        {
-            return _untyped.output_request.count;
-        }
-
-        std::span<CompiledSampleLaneInput> compiled_sample_inputs() const
-        {
-            return _untyped.compiled_sample_inputs;
-        }
-
-        std::span<CompiledEventLaneInput> compiled_event_inputs() const
-        {
-            return _untyped.compiled_event_inputs;
-        }
-
-        std::span<RealtimeSampleLaneInput> realtime_sample_inputs() const
-        {
-            return _untyped.realtime_sample_inputs;
-        }
-
-        std::span<RealtimeEventLaneInput> realtime_event_inputs() const
-        {
-            return _untyped.realtime_event_inputs;
-        }
-
-        CompiledSampleLaneInput& compiled_sample_input(size_t index) const
-        {
-            return _untyped.compiled_sample_inputs[index];
-        }
-
-        CompiledEventLaneInput& compiled_event_input(size_t index) const
-        {
-            return _untyped.compiled_event_inputs[index];
-        }
-
-        RealtimeSampleLaneInput& realtime_sample_input(size_t index) const
-        {
-            return _untyped.realtime_sample_inputs[index];
-        }
-
-        RealtimeEventLaneInput& realtime_event_input(size_t index) const
-        {
-            return _untyped.realtime_event_inputs[index];
-        }
+        size_t start_index() const { return _untyped.request.start_index; }
+        size_t end_index() const { return _untyped.request.end_index; }
+        size_t sample_count() const { return _untyped.request.sample_count; }
+        std::span<CompiledSampleLaneInput> compiled_sample_inputs() const { return _untyped.compiled_sample_inputs; }
+        std::span<CompiledEventLaneInput> compiled_event_inputs() const { return _untyped.compiled_event_inputs; }
+        CompiledSampleLaneInput& compiled_sample_input(size_t index) const { return _untyped.compiled_sample_inputs[index]; }
+        CompiledEventLaneInput& compiled_event_input(size_t index) const { return _untyped.compiled_event_inputs[index]; }
 
         OutputView& out() const
         {
@@ -346,23 +363,181 @@ namespace iv {
                 return std::get<OutputView>(_untyped.output);
             }
         }
+
+        UntypedCompiledLaneTickContext& untyped() const
+        {
+            return _untyped;
+        }
+    };
+
+    template<typename LaneNode>
+    class RealtimeLaneTickContext {
+        UntypedRealtimeLaneTickContext& _untyped;
+
+        template<typename>
+        friend class CompiledLaneTickContext;
+        template<typename>
+        friend class RealtimeLaneTickContext;
+
+    public:
+        using OutputView = typename LaneOutputViewFor<
+            std::remove_cvref_t<LaneOutputDeclaration<LaneNode>>
+        >::Type;
+
+        explicit RealtimeLaneTickContext(UntypedRealtimeLaneTickContext& untyped) :
+            _untyped(untyped)
+        {}
+
+        size_t start_index() const { return _untyped.request.start_index; }
+        size_t sample_count() const { return _untyped.request.sample_count; }
+        std::span<CompiledSampleLaneInput> compiled_sample_inputs() const { return _untyped.compiled_sample_inputs; }
+        std::span<CompiledEventLaneInput> compiled_event_inputs() const { return _untyped.compiled_event_inputs; }
+        std::span<RealtimeSampleLaneInput> realtime_sample_inputs() const { return _untyped.realtime_sample_inputs; }
+        std::span<RealtimeEventLaneInput> realtime_event_inputs() const { return _untyped.realtime_event_inputs; }
+        CompiledSampleLaneInput& compiled_sample_input(size_t index) const { return _untyped.compiled_sample_inputs[index]; }
+        CompiledEventLaneInput& compiled_event_input(size_t index) const { return _untyped.compiled_event_inputs[index]; }
+        RealtimeSampleLaneInput& realtime_sample_input(size_t index) const { return _untyped.realtime_sample_inputs[index]; }
+        RealtimeEventLaneInput& realtime_event_input(size_t index) const { return _untyped.realtime_event_inputs[index]; }
+
+        OutputView& out() const
+        {
+            if constexpr (std::same_as<OutputView, LaneOutputView>) {
+                return _untyped.output;
+            } else {
+                return std::get<OutputView>(_untyped.output);
+            }
+        }
+
+        UntypedRealtimeLaneTickContext& untyped() const
+        {
+            return _untyped;
+        }
     };
 
     namespace lane_node_details {
         template<typename LaneNode>
-        concept has_generate = requires(LaneNode& node, TimelineGenerateContext<LaneNode>& ctx)
-        {
-            node.generate(ctx);
+        concept has_tick_block_compiled = requires(LaneNode& node, CompiledLaneTickContext<LaneNode>& ctx) {
+            node.tick_block_compiled(ctx);
         };
+
+        template<typename LaneNode>
+        concept has_tick_block_realtime = requires(LaneNode& node, RealtimeLaneTickContext<LaneNode>& ctx) {
+            node.tick_block_realtime(ctx);
+        };
+    } // namespace lane_node_details
+
+    namespace lane_tick_details {
+        template<typename LaneNode>
+        void invoke_compiled_from_realtime(LaneNode& node, RealtimeLaneTickContext<LaneNode>& ctx)
+        {
+            auto const compiled_sample_decls = get_compiled_sample_lane_inputs(node);
+            auto const compiled_event_decls = get_compiled_event_lane_inputs(node);
+            std::vector<CompiledSampleLaneInput> compiled_sample_inputs_storage;
+            compiled_sample_inputs_storage.resize(compiled_sample_decls.size());
+            for (size_t i = 0; i < compiled_sample_decls.size(); ++i) {
+                compiled_sample_inputs_storage[i].default_value = compiled_sample_decls[i].default_value;
+            }
+            for (size_t i = 0; i < std::min(ctx.realtime_sample_inputs().size(), compiled_sample_inputs_storage.size()); ++i) {
+                auto const& input = ctx.realtime_sample_inputs()[i];
+                if (input.connected()) {
+                    compiled_sample_inputs_storage[i].sources.push_back(input.get_block());
+                }
+                compiled_sample_inputs_storage[i].default_value = input.default_value;
+            }
+            for (size_t i = 0; i < std::min(ctx.compiled_sample_inputs().size(), compiled_sample_inputs_storage.size()); ++i) {
+                compiled_sample_inputs_storage[i] = ctx.compiled_sample_inputs()[i];
+            }
+
+            std::vector<CompiledEventLaneInput> compiled_event_inputs_storage;
+            compiled_event_inputs_storage.resize(compiled_event_decls.size());
+            for (size_t i = 0; i < std::min(ctx.realtime_event_inputs().size(), compiled_event_inputs_storage.size()); ++i) {
+                auto const& input = ctx.realtime_event_inputs()[i];
+                auto const block = input.get_block();
+                if (!block.empty()) {
+                    compiled_event_inputs_storage[i].sources.push_back(block);
+                }
+            }
+            for (size_t i = 0; i < std::min(ctx.compiled_event_inputs().size(), compiled_event_inputs_storage.size()); ++i) {
+                compiled_event_inputs_storage[i] = ctx.compiled_event_inputs()[i];
+            }
+
+            UntypedCompiledLaneTickContext untyped_compiled {
+                .request = ctx.untyped().compiled_fallback_tick_window.value_or(CompiledLaneTickRequest {
+                    .start_index = ctx.start_index(),
+                    .end_index = ctx.start_index() + ctx.sample_count(),
+                    .sample_count = ctx.sample_count(),
+                }),
+                .compiled_sample_inputs = compiled_sample_inputs_storage,
+                .compiled_event_inputs = compiled_event_inputs_storage,
+                .output = ctx.out(),
+            };
+            CompiledLaneTickContext<LaneNode> compiled_ctx(untyped_compiled);
+            node.tick_block_compiled(compiled_ctx);
+        }
     }
 
     template<typename LaneNode>
-    void do_timeline_generate(LaneNode& node, TimelineGenerateContext<LaneNode>& ctx)
+    constexpr bool supports_tick_block_compiled()
     {
-        if constexpr (lane_node_details::has_generate<LaneNode>) {
-            node.generate(ctx);
+        return lane_node_details::has_tick_block_compiled<LaneNode>;
+    }
+
+    template<typename LaneNode>
+    constexpr bool supports_tick_block_realtime()
+    {
+        return lane_node_details::has_tick_block_realtime<LaneNode>
+            || lane_node_details::has_tick_block_compiled<LaneNode>;
+    }
+
+    template<typename LaneNode>
+    bool supports_tick_block_compiled(LaneNode const& node)
+    {
+        if constexpr (requires(LaneNode const& node) { node.supports_tick_block_compiled(); }) {
+            return node.supports_tick_block_compiled();
         } else {
-            static_assert(lane_node_details::has_generate<LaneNode>, "lane node must define generate()");
+            return supports_tick_block_compiled<LaneNode>();
         }
     }
+
+    template<typename LaneNode>
+    bool supports_tick_block_realtime(LaneNode const& node)
+    {
+        if constexpr (requires(LaneNode const& node) { node.supports_tick_block_realtime(); }) {
+            return node.supports_tick_block_realtime();
+        } else {
+            return supports_tick_block_realtime<LaneNode>();
+        }
+    }
+
+    template<typename LaneNode>
+    void do_tick_block_compiled(LaneNode& node, CompiledLaneTickContext<LaneNode>& ctx)
+    {
+        if constexpr (lane_node_details::has_tick_block_compiled<LaneNode>) {
+            node.tick_block_compiled(ctx);
+        } else {
+            static_assert(lane_node_details::has_tick_block_compiled<LaneNode>, "lane node must define tick_block_compiled()");
+        }
+    }
+
+    template<typename LaneNode>
+    void do_tick_block_realtime(LaneNode& node, RealtimeLaneTickContext<LaneNode>& ctx)
+    {
+        if constexpr (lane_node_details::has_tick_block_realtime<LaneNode> && !lane_node_details::has_tick_block_compiled<LaneNode>) {
+            node.tick_block_realtime(ctx);
+        } else if constexpr (!lane_node_details::has_tick_block_realtime<LaneNode> && lane_node_details::has_tick_block_compiled<LaneNode>) {
+            lane_tick_details::invoke_compiled_from_realtime(node, ctx);
+        } else if constexpr (lane_node_details::has_tick_block_realtime<LaneNode> && lane_node_details::has_tick_block_compiled<LaneNode>) {
+            if (get_lane_output_domain(node) == LanePortDomain::compiled) {
+                lane_tick_details::invoke_compiled_from_realtime(node, ctx);
+            } else {
+                node.tick_block_realtime(ctx);
+            }
+        } else {
+            static_assert(
+                lane_node_details::has_tick_block_realtime<LaneNode>
+                    || lane_node_details::has_tick_block_compiled<LaneNode>,
+                "lane node must define tick_block_realtime() or tick_block_compiled()");
+        }
+    }
+
 }

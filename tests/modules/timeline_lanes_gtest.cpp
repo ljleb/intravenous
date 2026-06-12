@@ -33,10 +33,10 @@ namespace {
             };
         }
 
-        void generate(iv::TimelineGenerateContext<TestCompiledEventLaneNode>& ctx)
+        void tick_block_compiled(iv::CompiledLaneTickContext<TestCompiledEventLaneNode>& ctx)
         {
             static_assert(std::same_as<
-                typename iv::TimelineGenerateContext<TestCompiledEventLaneNode>::OutputView,
+                typename iv::CompiledLaneTickContext<TestCompiledEventLaneNode>::OutputView,
                 iv::CompiledEventLaneOutput
             >);
             EXPECT_EQ(ctx.compiled_event_inputs().size(), 1u);
@@ -55,10 +55,10 @@ namespace {
             };
         }
 
-        void generate(iv::TimelineGenerateContext<TestDynamicOutputLaneNode>& ctx)
+        void tick_block_realtime(iv::RealtimeLaneTickContext<TestDynamicOutputLaneNode>& ctx)
         {
             static_assert(std::same_as<
-                typename iv::TimelineGenerateContext<TestDynamicOutputLaneNode>::OutputView,
+                typename iv::RealtimeLaneTickContext<TestDynamicOutputLaneNode>::OutputView,
                 iv::LaneOutputView
             >);
             EXPECT_TRUE(std::holds_alternative<iv::RealtimeSampleLaneOutput>(ctx.out()));
@@ -73,7 +73,7 @@ namespace {
             };
         }
 
-        void generate(iv::TimelineGenerateContext<TestCompiledSampleSourceLaneNode>& ctx)
+        void tick_block_compiled(iv::CompiledLaneTickContext<TestCompiledSampleSourceLaneNode>& ctx)
         {
             std::array<iv::Sample, 4> samples {};
             for (size_t i = 0; i < samples.size(); ++i) {
@@ -101,7 +101,7 @@ namespace {
             };
         }
 
-        void generate(iv::TimelineGenerateContext<TestCompiledSampleConsumerLaneNode>& ctx)
+        void tick_block_compiled(iv::CompiledLaneTickContext<TestCompiledSampleConsumerLaneNode>& ctx)
         {
             std::array<iv::Sample, 4> samples {};
             ctx.compiled_sample_input(0).read(ctx.start_index(), samples);
@@ -112,23 +112,32 @@ namespace {
         }
     };
 
-    struct TestRealtimeEventSourceLaneNode {
-        iv::RealtimeEventLaneOutputConfig output() const
+    struct TestStaticRealtimeLaneNode {
+        static auto realtime_sample_inputs()
         {
-            return {
-                .name = "events",
-                .event_type = iv::EventTypeId::trigger,
+            return std::array {
+                iv::RealtimeSampleLaneInputConfig {
+                    .name = "signal",
+                    .default_value = 3.0f,
+                },
             };
         }
 
-        void generate(iv::TimelineGenerateContext<TestRealtimeEventSourceLaneNode>& ctx)
+        static auto output()
         {
-            ctx.out().push(iv::TimedEvent {
-                .time = ctx.start_index() + 3,
-                .value = iv::TriggerEvent {},
-            });
+            return iv::RealtimeSampleLaneOutputConfig {
+                .name = "out",
+            };
+        }
+
+        void tick_block_realtime(iv::RealtimeLaneTickContext<TestStaticRealtimeLaneNode>& ctx)
+        {
+            for (size_t i = 0; i < ctx.sample_count(); ++i) {
+                ctx.out().push(ctx.realtime_sample_input(0).get(i));
+            }
         }
     };
+
 }
 
 TEST(Lanes, LaneIdsStartValidAndIncrease)
@@ -246,6 +255,10 @@ TEST(Lanes, TypeErasedLaneNodeIntrospectsKnobLane)
 
     EXPECT_TRUE(node.compiled_sample_inputs().empty());
     EXPECT_TRUE(node.compiled_event_inputs().empty());
+    EXPECT_FALSE(node.supports_tick_block_compiled());
+    EXPECT_TRUE(node.supports_tick_block_realtime());
+    EXPECT_FALSE(iv::supports_tick_block_compiled(node));
+    EXPECT_TRUE(iv::supports_tick_block_realtime(node));
     ASSERT_EQ(node.realtime_sample_inputs().size(), 1u);
     EXPECT_EQ(node.realtime_sample_inputs()[0].name, "value");
     EXPECT_TRUE(node.realtime_event_inputs().empty());
@@ -257,18 +270,18 @@ TEST(Lanes, TypeErasedLaneNodeIntrospectsKnobLane)
     knob->value = 0.75f;
     EXPECT_FLOAT_EQ(node.try_as<iv::KnobLaneNode>()->value, 0.75f);
 
-    iv::UntypedTimelineGenerateContext untyped_ctx {
-        .output_request = iv::TimelineOutputRequest {
+    iv::UntypedRealtimeLaneTickContext untyped_ctx {
+        .request = iv::RealtimeLaneTickRequest {
             .start_index = 12,
-            .count = 64,
+            .sample_count = 64,
         },
         .output = iv::RealtimeSampleLaneOutput {},
     };
-    iv::TimelineGenerateContext<iv::TypeErasedLaneNode> ctx(untyped_ctx);
+    iv::RealtimeLaneTickContext<iv::TypeErasedLaneNode> ctx(untyped_ctx);
     EXPECT_EQ(ctx.start_index(), 12u);
-    EXPECT_EQ(ctx.count(), 64u);
+    EXPECT_EQ(ctx.sample_count(), 64u);
     EXPECT_TRUE(std::holds_alternative<iv::RealtimeSampleLaneOutput>(ctx.out()));
-    node.generate(ctx);
+    node.tick_block_realtime(ctx);
 }
 
 TEST(Lanes, TypeErasedLaneNodeIntrospectsGraphSampleInputLane)
@@ -297,6 +310,10 @@ TEST(Lanes, TypeErasedLaneNodeIntrospectsGraphEventInputLane)
 
     EXPECT_TRUE(node.compiled_sample_inputs().empty());
     EXPECT_TRUE(node.compiled_event_inputs().empty());
+    EXPECT_FALSE(node.supports_tick_block_compiled());
+    EXPECT_TRUE(node.supports_tick_block_realtime());
+    EXPECT_FALSE(iv::supports_tick_block_compiled(node));
+    EXPECT_TRUE(iv::supports_tick_block_realtime(node));
     EXPECT_TRUE(node.realtime_sample_inputs().empty());
     ASSERT_EQ(node.realtime_event_inputs().size(), 1u);
     EXPECT_EQ(node.realtime_event_inputs()[0].name, "events");
@@ -307,36 +324,84 @@ TEST(Lanes, TypeErasedLaneNodeIntrospectsGraphEventInputLane)
     ASSERT_NE(graph_input, nullptr);
 }
 
+TEST(Lanes, TypeErasedLaneNodeCarriesCompiledCapabilitiesThroughTraits)
+{
+    iv::TypeErasedLaneNode node = TestCompiledEventLaneNode {};
+
+    EXPECT_TRUE(node.supports_tick_block_compiled());
+    EXPECT_TRUE(node.supports_tick_block_realtime());
+    EXPECT_TRUE(iv::supports_tick_block_compiled(node));
+    EXPECT_TRUE(iv::supports_tick_block_realtime(node));
+}
+
 TEST(Lanes, ContextOutputTypeFollowsConcreteOutputConfig)
 {
     TestCompiledEventLaneNode node;
     std::array<iv::CompiledEventLaneInput, 1> compiled_event_inputs {};
-    iv::UntypedTimelineGenerateContext untyped_ctx {
-        .output_request = iv::TimelineOutputRequest {
+    iv::UntypedCompiledLaneTickContext untyped_ctx {
+        .request = iv::CompiledLaneTickRequest {
             .start_index = 32,
-            .count = 8,
+            .end_index = 40,
+            .sample_count = 8,
         },
         .compiled_event_inputs = compiled_event_inputs,
         .output = iv::CompiledEventLaneOutput {},
     };
-    iv::TimelineGenerateContext<TestCompiledEventLaneNode> ctx(untyped_ctx);
+    iv::CompiledLaneTickContext<TestCompiledEventLaneNode> ctx(untyped_ctx);
 
-    node.generate(ctx);
+    node.tick_block_compiled(ctx);
 }
 
 TEST(Lanes, ContextOutputTypeIsVariantForDynamicOutputConfig)
 {
     TestDynamicOutputLaneNode node;
-    iv::UntypedTimelineGenerateContext untyped_ctx {
-        .output_request = iv::TimelineOutputRequest {
+    iv::UntypedRealtimeLaneTickContext untyped_ctx {
+        .request = iv::RealtimeLaneTickRequest {
             .start_index = 0,
-            .count = 16,
+            .sample_count = 16,
         },
         .output = iv::RealtimeSampleLaneOutput {},
     };
-    iv::TimelineGenerateContext<TestDynamicOutputLaneNode> ctx(untyped_ctx);
+    iv::RealtimeLaneTickContext<TestDynamicOutputLaneNode> ctx(untyped_ctx);
 
-    node.generate(ctx);
+    node.tick_block_realtime(ctx);
+}
+
+TEST(Lanes, StaticLaneDeclarationsAreDetectedWithoutInstanceDispatch)
+{
+    TestStaticRealtimeLaneNode node;
+
+    auto const sample_inputs = iv::get_realtime_sample_lane_inputs(node);
+    ASSERT_EQ(sample_inputs.size(), 1u);
+    EXPECT_EQ(sample_inputs[0].name, "signal");
+    EXPECT_FLOAT_EQ(sample_inputs[0].default_value, 3.0f);
+
+    auto const output = iv::get_lane_output(node);
+    ASSERT_TRUE(std::holds_alternative<iv::RealtimeSampleLaneOutputConfig>(
+        iv::normalize_lane_output(output)));
+    EXPECT_EQ(output.name, "out");
+}
+
+TEST(Lanes, CompiledLaneNodesCanBeTickedThroughRealtimeDispatch)
+{
+    TestCompiledEventLaneNode node;
+    std::vector<iv::TimedEvent> events;
+    iv::UntypedRealtimeLaneTickContext untyped_ctx {
+        .request = iv::RealtimeLaneTickRequest {
+            .start_index = 48,
+            .sample_count = 8,
+        },
+        .output = iv::CompiledEventLaneOutput {
+            .events = &events,
+        },
+    };
+    iv::RealtimeLaneTickContext<TestCompiledEventLaneNode> ctx(untyped_ctx);
+
+    iv::do_tick_block_realtime(node, ctx);
+
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].time, 48u);
+    EXPECT_TRUE(std::holds_alternative<iv::TriggerEvent>(events[0].value));
 }
 
 TEST(Lanes, LaneGraphStoresNodesByStableLaneId)
@@ -524,113 +589,6 @@ TEST(Lanes, ConcreteKnobOwnershipIsJustDisconnectingTheOverrideInput)
     EXPECT_EQ(graph.inputs_for(graph_input)[0].source, concrete_knob);
 }
 
-TEST(Lanes, LaneGraphPullsRealtimeSampleKnobChains)
-{
-    iv::LaneGraph graph;
-    auto const logical = graph.add_lane(iv::TypeErasedLaneNode(iv::KnobLaneNode {
-        .value = 440.0f,
-    }));
-    auto const concrete = graph.add_lane(iv::TypeErasedLaneNode(iv::KnobLaneNode {
-        .value = 220.0f,
-    }));
-
-    std::array<iv::Sample, 4> values {};
-    graph.connect(logical, concrete, iv::realtime_sample_input());
-    graph.pull_realtime_samples(concrete, 0, values);
-    EXPECT_EQ(values, (std::array<iv::Sample, 4> { 440.0f, 440.0f, 440.0f, 440.0f }));
-
-    graph.disconnect_input(concrete, iv::realtime_sample_input());
-    graph.pull_realtime_samples(concrete, 0, values);
-    EXPECT_EQ(values, (std::array<iv::Sample, 4> { 220.0f, 220.0f, 220.0f, 220.0f }));
-}
-
-TEST(Lanes, LaneGraphPullsRealtimeEventInputChains)
-{
-    iv::LaneGraph graph;
-    auto const source = graph.add_lane(iv::TypeErasedLaneNode(TestRealtimeEventSourceLaneNode {}));
-    auto const target = graph.add_lane(iv::TypeErasedLaneNode(iv::GraphEventInputLaneNode {}));
-
-    graph.connect(source, target, iv::realtime_event_input());
-    auto const events = graph.pull_realtime_events(target, 64, 16);
-
-    ASSERT_EQ(events.size(), 1u);
-    EXPECT_EQ(events[0].time, 67u);
-    EXPECT_TRUE(std::holds_alternative<iv::TriggerEvent>(events[0].value));
-}
-
-TEST(Lanes, LaneGraphRealtimeSampleCacheUsesStableNonOverlappingBlocks)
-{
-    iv::LaneGraph graph;
-    auto const first = graph.add_lane(iv::TypeErasedLaneNode(iv::KnobLaneNode {
-        .value = 1.0f,
-    }));
-    auto const second = graph.add_lane(iv::TypeErasedLaneNode(iv::KnobLaneNode {
-        .value = 2.0f,
-    }));
-
-    auto first_block = graph.pull_realtime_sample_block(first, 64, 8);
-    auto first_again = graph.pull_realtime_sample_block(first, 64, 8);
-    auto second_block = graph.pull_realtime_sample_block(second, 64, 8);
-
-    EXPECT_EQ(first_block.samples().data(), first_again.samples().data());
-    EXPECT_EQ(first_block.samples().size(), 8u);
-    EXPECT_EQ(second_block.samples().size(), 8u);
-    EXPECT_NE(first_block.samples().data(), second_block.samples().data());
-    auto const first_begin = reinterpret_cast<std::uintptr_t>(first_block.samples().data());
-    auto const first_end = first_begin + first_block.samples().size() * sizeof(iv::Sample);
-    auto const second_begin = reinterpret_cast<std::uintptr_t>(second_block.samples().data());
-    auto const second_end = second_begin + second_block.samples().size() * sizeof(iv::Sample);
-    EXPECT_TRUE(first_end <= second_begin || second_end <= first_begin);
-    EXPECT_EQ(first_block.samples()[0], 1.0f);
-    EXPECT_EQ(second_block.samples()[0], 2.0f);
-}
-
-TEST(Lanes, LaneGraphRegeneratesCompiledEventOutputStorage)
-{
-    iv::LaneGraph graph;
-    auto const lane = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
-
-    graph.mark_dirty_cascade(lane, iv::TimelineOutputRequest {
-        .start_index = 32,
-        .count = 8,
-    });
-
-    ASSERT_EQ(graph.compiled_regeneration_queue().size(), 1u);
-    EXPECT_EQ(graph.regenerate_pending_compiled_outputs(), 1u);
-    EXPECT_TRUE(graph.compiled_regeneration_queue().empty());
-    EXPECT_FALSE(graph.lane(lane).dirty);
-    ASSERT_EQ(graph.compiled_lane(lane).storage.events.size(), 1u);
-    EXPECT_EQ(graph.compiled_lane(lane).storage.events[0].time, 32u);
-    EXPECT_TRUE(graph.compiled_lane(lane).storage.invalid_spans.empty());
-}
-
-TEST(Lanes, LaneGraphCompiledInputsReadStoredSourceOutputs)
-{
-    iv::LaneGraph graph;
-    auto const source = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledSampleSourceLaneNode {}));
-    auto const consumer = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledSampleConsumerLaneNode {}));
-
-    graph.connect(source, consumer, iv::LanePortId {
-        .domain = iv::LanePortDomain::compiled,
-        .kind = iv::PortKind::sample,
-        .ordinal = 0,
-    });
-
-    iv::TimelineOutputRequest const span {
-        .start_index = 8,
-        .count = 4,
-    };
-    graph.regenerate_compiled_output(source, span);
-    graph.regenerate_compiled_output(consumer, span);
-
-    auto const& samples = graph.compiled_lane(consumer).storage.samples;
-    ASSERT_GE(samples.size(), 12u);
-    EXPECT_EQ(samples[8], 16.0f);
-    EXPECT_EQ(samples[9], 18.0f);
-    EXPECT_EQ(samples[10], 20.0f);
-    EXPECT_EQ(samples[11], 22.0f);
-}
-
 TEST(Lanes, GraphInputLaneBindingReconciliationReusesSemanticKnobLaneIdentities)
 {
     iv::LaneGraph graph;
@@ -662,51 +620,6 @@ TEST(Lanes, GraphInputLaneBindingReconciliationReusesSemanticKnobLaneIdentities)
     EXPECT_EQ(first.sample_inputs[0].graph_input_lane, second.sample_inputs[0].graph_input_lane);
 }
 
-TEST(Lanes, LaneGraphDirtyCascadeQueuesCompiledOutputs)
-{
-    iv::LaneGraph graph;
-    auto const source = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
-    auto const compiled = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
-    auto const dependent = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
-
-    graph.connect(source, compiled, iv::LanePortId {
-        .domain = iv::LanePortDomain::compiled,
-        .kind = iv::PortKind::event,
-        .ordinal = 0,
-    });
-    graph.connect(compiled, dependent, iv::LanePortId {
-        .domain = iv::LanePortDomain::compiled,
-        .kind = iv::PortKind::event,
-        .ordinal = 0,
-    });
-
-    iv::TimelineOutputRequest const span {
-        .start_index = 128,
-        .count = 32,
-    };
-    graph.mark_dirty_cascade(source, span);
-
-    EXPECT_TRUE(graph.lane(source).dirty);
-    EXPECT_TRUE(graph.lane(compiled).dirty);
-    EXPECT_TRUE(graph.lane(dependent).dirty);
-    ASSERT_EQ(graph.compiled_regeneration_queue().size(), 3u);
-    EXPECT_EQ(graph.compiled_regeneration_queue()[0].lane, source);
-    EXPECT_EQ(graph.compiled_regeneration_queue()[0].span, span);
-    EXPECT_EQ(graph.compiled_regeneration_queue()[1].lane, compiled);
-    EXPECT_EQ(graph.compiled_regeneration_queue()[1].span, span);
-    EXPECT_EQ(graph.compiled_regeneration_queue()[2].lane, dependent);
-    EXPECT_EQ(graph.compiled_regeneration_queue()[2].span, span);
-
-    auto const first_generation = graph.lane(compiled).invalidation_generation;
-    graph.clear_compiled_regeneration_queue();
-    graph.mark_dirty_cascade(compiled);
-    ASSERT_EQ(graph.compiled_regeneration_queue().size(), 2u);
-    EXPECT_EQ(graph.compiled_regeneration_queue()[0].lane, compiled);
-    EXPECT_EQ(graph.compiled_regeneration_queue()[1].lane, dependent);
-    EXPECT_GT(graph.lane(compiled).invalidation_generation, first_generation);
-    EXPECT_GT(graph.lane(dependent).invalidation_generation, first_generation);
-}
-
 TEST(Lanes, LaneGraphRejectsInvalidConnections)
 {
     iv::LaneGraph graph;
@@ -723,14 +636,6 @@ TEST(Lanes, LaneGraphRejectsInvalidConnections)
         std::runtime_error
     );
     EXPECT_THROW(
-        graph.connect(event_source, realtime_target, iv::LanePortId {
-            .domain = iv::LanePortDomain::compiled,
-            .kind = iv::PortKind::event,
-            .ordinal = 0,
-        }),
-        std::runtime_error
-    );
-    EXPECT_THROW(
         graph.connect(event_source, compiled_target, iv::LanePortId {
             .domain = iv::LanePortDomain::compiled,
             .kind = iv::PortKind::event,
@@ -740,7 +645,22 @@ TEST(Lanes, LaneGraphRejectsInvalidConnections)
     );
 }
 
-TEST(Lanes, LaneGraphRemoveLaneRecordsDanglingConnections)
+TEST(Lanes, LaneGraphAllowsCompiledOutputsToFeedRealtimeInputs)
+{
+    iv::LaneGraph graph;
+    auto const event_source = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
+    auto const realtime_target = graph.add_lane(iv::TypeErasedLaneNode(iv::GraphEventInputLaneNode {}));
+
+    EXPECT_NO_THROW(
+        graph.connect(event_source, realtime_target, iv::LanePortId {
+            .domain = iv::LanePortDomain::realtime,
+            .kind = iv::PortKind::event,
+            .ordinal = 0,
+        })
+    );
+}
+
+TEST(Lanes, LaneGraphRemoveLaneDisconnectsDanglingConnections)
 {
     iv::LaneGraph graph;
     auto const source = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
@@ -754,7 +674,6 @@ TEST(Lanes, LaneGraphRemoveLaneRecordsDanglingConnections)
 
     graph.connect(source, middle, compiled_event_input);
     graph.connect(middle, target, compiled_event_input);
-    graph.mark_dirty_cascade(middle);
     graph.remove_lane(middle);
 
     EXPECT_FALSE(graph.contains(middle));
@@ -762,13 +681,4 @@ TEST(Lanes, LaneGraphRemoveLaneRecordsDanglingConnections)
     EXPECT_TRUE(graph.outputs_for(middle).empty());
     EXPECT_TRUE(graph.outputs_for(source).empty());
     EXPECT_TRUE(graph.inputs_for(target).empty());
-    ASSERT_EQ(graph.removed_connections().size(), 2u);
-    EXPECT_EQ(graph.removed_connections()[0].connection.source, middle);
-    EXPECT_EQ(graph.removed_connections()[0].connection.target, target);
-    EXPECT_TRUE(graph.removed_connections()[0].source_removed);
-    EXPECT_EQ(graph.removed_connections()[1].connection.source, source);
-    EXPECT_EQ(graph.removed_connections()[1].connection.target, middle);
-    EXPECT_TRUE(graph.removed_connections()[1].target_removed);
-    ASSERT_EQ(graph.compiled_regeneration_queue().size(), 1u);
-    EXPECT_EQ(graph.compiled_regeneration_queue()[0].lane, target);
 }
