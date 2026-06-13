@@ -246,17 +246,3 @@ The lane graph should stay easy to edit.
 
 By contrast, DSP graph execution may remain more execution-optimized and more
 expensive to rebuild on source changes.
-
-## Immediate follow-up
-
-The next major task is still lane execution itself:
-
-- keep `Timeline` focused on lane-graph structure
-- introduce `TimelineExecution` as the derived executable view of that graph
-- make lanes independently executable in the context of that execution module
-- keep lane graph topology updates local
-- separate execution from sampling
-- then return to visualization on top of that substrate
-
-This visualization direction note is meant to preserve the current decisions
-until the execution refactor is ready.

@@ -91,6 +91,16 @@ input and output port domains differ.
 - Real-time to compiled covers recording.
 - Compiled to real-time covers playback feeds and prepared resources.
 
+The current lane-connection rules are:
+
+- `realtime -> realtime`: supported
+- `compiled -> realtime`: supported
+- `compiled -> compiled`: supported
+- `realtime -> compiled`: not supported directly
+
+The intended bridge for `realtime -> compiled` is an explicit recording lane
+node, rather than implicit domain conversion at ordinary connections.
+
 Examples:
 
 - A panel knob lane can be recorded into a compiled automation lane.
@@ -111,7 +121,9 @@ A lane type declares:
 - One output.
 - Optional owned data.
 - Optional custom UI.
-- A generation callback.
+- One execution entrypoint, either:
+  - `tick_block_compiled(ctx)`
+  - `tick_block_realtime(ctx)`
 
 Sparse buffers always reuse the existing event typing system. There is no
 separate vertex type fallback. A sparse sample curve is a sparse event buffer
@@ -131,25 +143,34 @@ struct SmoothSampleLane {
     auto realtime_event_inputs() const;
     static auto output();
 
-    void generate(TimelineGenerateContext<SmoothSampleLane>& ctx) const;
+    void tick_block_compiled(CompiledLaneTickContext<SmoothSampleLane>& ctx) const;
 };
 ```
 
-`TimelineGenerateContext<T>` should be typed by lane type, like
-`TickBlockContext<T>`. Internally, it may be a typed view over an untyped context.
-The context owns the requested output span information; a separate request set
-argument should not be necessary. The context exposes:
+The current intended asymmetric fallback rule is:
+
+- nodes may implement only `tick_block_realtime(ctx)`
+- or only `tick_block_compiled(ctx)`
+- if a node implements `tick_block_compiled(ctx)`, realtime execution may fall
+  back to it through the trait/dispatch layer
+- nodes are not expected to implement both
+
+Compiled execution contexts should be typed by lane type, like DSP
+`TickBlockContext<T>`. Internally, they may be typed views over an untyped
+context. The compiled context owns the requested output window information. It
+exposes:
 
 - `start_index()`.
-- `count()`.
+- `end_index()`.
+- `sample_count()`.
 - Four input view spans matching the four declared input buckets.
 - `out()`, whose type follows the node's output declaration when statically
   known, or is a variant when the node declares dynamic output.
 
 Any block view returned by a context accessor is call-scoped. Lane nodes must not
-store these views across `generate()` calls. Persisting generated data,
+store these views across tick calls. Persisting generated data,
 intermediate storage, scratch buffers, and published spans is the job of the lane
-processor/executor wrapper.
+execution wrapper.
 
 ## Inputs And Contributors
 

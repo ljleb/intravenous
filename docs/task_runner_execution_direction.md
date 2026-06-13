@@ -47,6 +47,15 @@ The important structural distinction is:
 - Execution state derived from `Timeline` should live in `TimelineExecution`
   rather than directly inside `Timeline` where possible.
 
+In the current code, the runner owns task ordering and repeated execution, but
+execution-side modules still own pass-local state such as:
+
+- the current timeline realtime start index in `TimelineExecution`
+- per-instance DSP graph block indices in `IvModuleInstancesExecution`
+
+The runner should continue to treat that state as module-owned callback context,
+not as runner-owned global playback state.
+
 ## Task graph updates
 
 Task registration is persistent across passes.
