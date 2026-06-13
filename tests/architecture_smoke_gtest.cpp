@@ -1317,6 +1317,70 @@ TEST(ArchitectureSmoke, EventConcatenationMergesInputsInTimeOrder)
     EXPECT_EQ(event_times, (std::vector<size_t>{ 2, 5 }));
 }
 
+TEST(ArchitectureSmoke, RepeatedSampleConnectionsIntoOneInputAreSummed)
+{
+    iv::test::FakeAudioDevice audio_device(
+        iv::RenderConfig{
+            .sample_rate = 48000,
+            .num_channels = 1,
+            .max_block_frames = 8,
+        }
+    );
+
+    iv::Sample a = 0.25f;
+    iv::Sample b = 0.5f;
+
+    iv::GraphBuilder g;
+    auto const src_a = g.node<iv::ValueSource>(&a);
+    auto const src_b = g.node<iv::ValueSource>(&b);
+    auto const passthrough = g.node<UnaryPassthrough>();
+    auto const sink = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
+        .device_id = 0,
+        .channel = 0,
+    });
+
+    passthrough.connect_input(0, src_a);
+    passthrough.connect_input(0, src_b);
+    sink(passthrough);
+    g.outputs();
+
+    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    iv::NodeExecutor executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build_root_node().graph),
+        {},
+        std::move(execution_target_registry).to_builder()
+    );
+
+    execute_requested_block(audio_device, executor, 0, 8, [&] {
+        expect_constant_block(audio_device.output_block(), 0.75f);
+    });
+}
+
+TEST(ArchitectureSmoke, RepeatedEventConnectionsIntoOneInputAreConcatenated)
+{
+    std::vector<size_t> event_times;
+    iv::test::FakeAudioDevice audio_device({ .num_channels = 1, .max_block_frames = 8 });
+
+    iv::GraphBuilder g;
+    auto const late = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 5 });
+    auto const early = g.node<OffsetTriggerSource>(OffsetTriggerSource{ .sample_offset = 2 });
+    auto const sink = g.node<TriggerOrderRecorder>(TriggerOrderRecorder{ .event_times = &event_times });
+
+    sink.connect_event_input("trigger", late.event_port());
+    sink.connect_event_input("trigger", early.event_port());
+    g.outputs();
+
+    iv::ExecutionTargetRegistry execution_target_registry(iv::test::make_audio_device_provider(audio_device));
+    auto executor = iv::NodeExecutor::create(
+        iv::TypeErasedNode(g.build_root_node().graph),
+        {},
+        std::move(execution_target_registry).to_builder()
+    );
+
+    tick_executor_direct(executor, 0, 8);
+    EXPECT_EQ(event_times, (std::vector<size_t>{ 2, 5 }));
+}
+
 TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
 {
     std::vector<size_t> event_times;

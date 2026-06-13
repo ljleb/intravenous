@@ -26,9 +26,6 @@ void GraphBuilderConnections::connect_sample_input(
     if (target.node >= topology.node_count() || target.port >= topology.node(target.node).inputs().size()) {
         details::error("sample input target is out of bounds in builder " + identity.value);
     }
-    if (_placed_sample_inputs.contains(target)) {
-        details::error("sample input was already placed in builder " + identity.value);
-    }
     _placed_sample_inputs.insert(target);
     topology.add_sample_edge(GraphEdge{ source, target });
 }
@@ -46,9 +43,6 @@ void GraphBuilderConnections::connect_event_input(
     }
     if (target.node >= topology.node_count() || target.port >= topology.node(target.node).event_inputs().size()) {
         details::error("event input target is out of bounds in builder " + identity.value);
-    }
-    if (_placed_event_inputs.contains(target)) {
-        details::error("event input was already placed in builder " + identity.value);
     }
     auto const source_type = (source.node_index == GRAPH_ID)
         ? graph_event_inputs[source.output_port].type
