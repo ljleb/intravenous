@@ -1,19 +1,19 @@
-# Graph Input Repatching Direction
+# Graph I/O Repatching Direction
 
 ## Goal
 
 `GraphInputLanes` should not think only in terms of vacant DSP graph inputs.
 
-Instead, it should own authored desired state for logical knobs and concrete DSP
-input ports, and it should re-complete realized DSP instance graphs when that
-desired state changes.
+Instead, it should own authored desired state for logical DSP-facing inputs and
+outputs, plus their timeline-lane exposure policy, and it should re-complete
+realized DSP instance graphs when that desired state changes.
 
 ## Builder ownership
 
 - `IvModuleDefinitions` owns the source-derived canonical `GraphBuilder`.
 - `IvModuleInstances` can request a fresh builder for a definition whenever an
   instance needs to be re-completed.
-- Timeline or UI input-state changes should therefore rebuild from the
+- Timeline or UI I/O-state changes should therefore rebuild from the
   remembered default builder, not from stale already-patched graph state.
 
 ## Synchronization boundary
@@ -78,6 +78,54 @@ Defaults:
 
 For event inputs there is no `overridden` state yet.
 
+## Output-state model
+
+Outputs default to `disconnected`.
+
+Unlike inputs, outputs do not need a separate `default` state because
+`disconnected` already expresses the intended initial behavior: nothing is
+exposed to the timeline unless the user explicitly asks for it.
+
+There are again two authored state layers.
+
+### Logical DSP output port state
+
+For both sample and event outputs:
+
+- `disconnected`
+- `timeline_lane`
+
+If a logical output is `timeline_lane`, a timeline-facing logical output lane
+exists for that port. If it is `disconnected`, no such lane exists.
+
+### Concrete DSP output port state
+
+For both sample and event outputs:
+
+- `disconnected`
+- `logical`
+- `timeline_lane`
+
+Meaning:
+
+- `disconnected`
+  - the concrete DSP output contributes nowhere
+- `logical`
+  - the concrete DSP output contributes to the logical output aggregation for
+    its logical port
+- `timeline_lane`
+  - the concrete DSP output gets its own dedicated timeline-facing lane
+
+For logical output aggregation:
+
+- sample outputs should rely on ordinary graph fan-in so the builder/compiler
+  lowers multi-contributor aggregation through the existing `Sum<N>` path
+- event outputs should rely on ordinary event fan-in / concatenation already
+  used elsewhere by the graph builder and compiler
+
+No special aggregate node needs to be introduced beyond the existing graph
+lowering behavior.
+
 ## Completion strategy
 
 The graph builder should be allowed to accumulate multiple contributors into the
@@ -93,9 +141,23 @@ Therefore `GraphInputLanes` can complete a builder by connecting:
 
 and let graph build lowering combine them.
 
+The same applies on the output side.
+
+`GraphInputLanes` should be able to complete a builder so that:
+
+- concrete outputs in `logical` feed the logical output aggregation surface
+- concrete outputs in `timeline_lane` feed their own dedicated timeline-facing
+  output lane
+- concrete outputs in `disconnected` feed neither
+
+For logical outputs in `timeline_lane`, the aggregation surface exists only if
+the authored logical state asks for it. `GraphInputLanes` does not need to keep
+an aggregate node alive across rebuilds; rebuilding from the canonical builder
+and letting normal lowering recreate the fan-in is sufficient.
+
 ## Rebuild policy
 
-When desired input state changes:
+When desired I/O state changes:
 
 1. `GraphInputLanes` updates its authored desired-state structures immediately.
 2. If the change requires structural repatching, it marks the affected instance
@@ -114,14 +176,27 @@ Timeline lane structural changes should follow the same boundary. Lane batches
 may be prepared eagerly inside `GraphInputLanes`, but they should only be
 applied to `Timeline` and `TimelineExecution` between two `TaskRunner` passes.
 
+For outputs, practically every authored state transition is structural:
+
+- logical output `disconnected <-> timeline_lane`
+- concrete output `disconnected <-> logical`
+- concrete output `disconnected <-> timeline_lane`
+- concrete output `logical <-> timeline_lane`
+
+Those transitions should therefore rebuild on the pass-finished boundary too.
+
 ## Current code direction
 
 The useful remaining direction from this note is:
 
 - keep builder completion derived from fresh canonical builders
-- keep authored graph-input state in `GraphInputLanes`
+- keep authored graph I/O state in `GraphInputLanes`
 - keep value-only updates out of the rebuild path
 - keep both DSP repatching and timeline lane structural updates on the
   pass-finished boundary
+- keep graph-output exposure opt-in, with outputs defaulting to
+  `disconnected`
+- keep logical output aggregation expressed through ordinary graph connectivity
+  so existing `Sum<N>` / event fan-in lowering handles it
 
 UI shape is intentionally left out of scope here.
