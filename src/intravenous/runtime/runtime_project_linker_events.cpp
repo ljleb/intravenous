@@ -19,7 +19,4 @@ IV_DEFINE_LINKER_EVENT(
 IV_DEFINE_LINKER_EVENT(
     ProjectSetSampleInputValueRequestedEvent,
     iv_runtime_project_set_sample_input_value_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectClearSampleInputValueOverrideRequestedEvent,
-    iv_runtime_project_clear_sample_input_value_override_requested_event)
 } // namespace iv

@@ -345,16 +345,34 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
                 .member_ordinal = member_ordinal.has_value()
                     ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
                     : std::nullopt,
+                },
+        };
+    }
+    if (method == "graph.setSampleInputState") {
+        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = SetSampleInputStateRequest{
+                .node_id = parse_string_param(params, "nodeId"),
+                .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
+                .member_ordinal = member_ordinal.has_value()
+                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
+                    : std::nullopt,
+                .state = parse_string_param(params, "state"),
             },
         };
     }
-    if (method == "graph.clearSampleInputValueOverride") {
+    if (method == "graph.setEventInputState") {
+        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
         return ParsedSocketRpcRequest{
             .request_id = request_id,
-            .payload = ClearSampleInputValueOverrideRequest{
+            .payload = SetEventInputStateRequest{
                 .node_id = parse_string_param(params, "nodeId"),
-                .member_ordinal = static_cast<size_t>(parse_uint64_param(params, "memberOrdinal")),
                 .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
+                .member_ordinal = member_ordinal.has_value()
+                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
+                    : std::nullopt,
+                .state = parse_string_param(params, "state"),
             },
         };
     }

@@ -78,10 +78,33 @@ namespace iv {
         Sample value = Sample {0.0f};
     };
 
-    struct ProjectClearSampleInputValueOverrideRequest {
+    enum class ProjectSampleInputState {
+        default_,
+        overridden,
+        logical_follow,
+        timeline_lane,
+        disconnected,
+    };
+
+    struct ProjectSetSampleInputStateRequest {
         std::string node_id;
-        size_t member_ordinal = 0;
+        std::optional<size_t> member_ordinal;
         size_t input_ordinal = 0;
+        ProjectSampleInputState state = ProjectSampleInputState::default_;
+    };
+
+    enum class ProjectEventInputState {
+        default_,
+        logical_follow,
+        timeline_lane,
+        disconnected,
+    };
+
+    struct ProjectSetEventInputStateRequest {
+        std::string node_id;
+        std::optional<size_t> member_ordinal;
+        size_t input_ordinal = 0;
+        ProjectEventInputState state = ProjectEventInputState::default_;
     };
 
     using ProjectNotificationEvent =
@@ -96,9 +119,6 @@ namespace iv {
         void (*)(ProjectLaneOutputsRequest const &, ProjectLaneOutputsBuilder &);
     using ProjectSetSampleInputValueRequestedEvent =
         void (*)(ProjectSetSampleInputValueRequest const &, ProjectAckBuilder &);
-    using ProjectClearSampleInputValueOverrideRequestedEvent =
-        void (*)(ProjectClearSampleInputValueOverrideRequest const &, ProjectAckBuilder &);
-
     IV_DECLARE_LINKER_EVENT(
         ProjectNotificationEvent,
         iv_runtime_project_notification_event);
@@ -117,7 +137,4 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(
         ProjectSetSampleInputValueRequestedEvent,
         iv_runtime_project_set_sample_input_value_requested_event);
-    IV_DECLARE_LINKER_EVENT(
-        ProjectClearSampleInputValueOverrideRequestedEvent,
-        iv_runtime_project_clear_sample_input_value_override_requested_event);
 } // namespace iv

@@ -10,6 +10,43 @@ IvModuleSourceIntrospection *bound_introspection = nullptr;
 GraphInputLanes *bound_graph_input_lanes = nullptr;
 std::function<void()> *bound_shutdown = nullptr;
 
+ProjectSampleInputState parse_project_sample_input_state(std::string const &state)
+{
+    if (state == "default") {
+        return ProjectSampleInputState::default_;
+    }
+    if (state == "overridden") {
+        return ProjectSampleInputState::overridden;
+    }
+    if (state == "logicalFollow") {
+        return ProjectSampleInputState::logical_follow;
+    }
+    if (state == "timelineLane") {
+        return ProjectSampleInputState::timeline_lane;
+    }
+    if (state == "disconnected") {
+        return ProjectSampleInputState::disconnected;
+    }
+    throw std::runtime_error("unknown sample input state: " + state);
+}
+
+ProjectEventInputState parse_project_event_input_state(std::string const &state)
+{
+    if (state == "default") {
+        return ProjectEventInputState::default_;
+    }
+    if (state == "logicalFollow") {
+        return ProjectEventInputState::logical_follow;
+    }
+    if (state == "timelineLane") {
+        return ProjectEventInputState::timeline_lane;
+    }
+    if (state == "disconnected") {
+        return ProjectEventInputState::disconnected;
+    }
+    throw std::runtime_error("unknown event input state: " + state);
+}
+
 void handle_graph_query_by_spans(
     GraphQueryBySpansRequest const &request,
     SocketRpcGraphQueryResultBuilder &builder)
@@ -69,18 +106,35 @@ void handle_set_sample_input_value(
         });
 }
 
-void handle_clear_sample_input_value_override(
-    ClearSampleInputValueOverrideRequest const &request,
+void handle_set_sample_input_state(
+    SetSampleInputStateRequest const &request,
     SocketRpcAckResponseBuilder &)
 {
     if (bound_graph_input_lanes == nullptr) {
         return;
     }
-    bound_graph_input_lanes->clear_sample_input_value_override(
-        ProjectClearSampleInputValueOverrideRequest{
+    bound_graph_input_lanes->set_sample_input_state(
+        ProjectSetSampleInputStateRequest{
             .node_id = request.node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
+            .state = parse_project_sample_input_state(request.state),
+        });
+}
+
+void handle_set_event_input_state(
+    SetEventInputStateRequest const &request,
+    SocketRpcAckResponseBuilder &)
+{
+    if (bound_graph_input_lanes == nullptr) {
+        return;
+    }
+    bound_graph_input_lanes->set_event_input_state(
+        ProjectSetEventInputStateRequest{
+            .node_id = request.node_id,
+            .member_ordinal = request.member_ordinal,
+            .input_ordinal = request.input_ordinal,
+            .state = parse_project_event_input_state(request.state),
         });
 }
 
@@ -114,9 +168,13 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_socket_rpc_set_sample_input_value_event,
     handle_set_sample_input_value);
 IV_SUBSCRIBE_LINKER_EVENT(
-    SocketRpcClearSampleInputValueOverrideEvent,
-    iv_socket_rpc_clear_sample_input_value_override_event,
-    handle_clear_sample_input_value_override);
+    SocketRpcSetSampleInputStateEvent,
+    iv_socket_rpc_set_sample_input_state_event,
+    handle_set_sample_input_state);
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcSetEventInputStateEvent,
+    iv_socket_rpc_set_event_input_state_event,
+    handle_set_event_input_state);
 IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcServerShutdownEvent,
     iv_socket_rpc_server_shutdown_event,

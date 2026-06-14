@@ -136,16 +136,18 @@ struct BoundIvModuleSourceIntrospection {
             });
     }
 
-    void clear_sample_input_value_override(
+    void set_sample_input_state(
         std::string const &node_id,
-        size_t member_ordinal,
-        size_t input_ordinal)
+        size_t input_ordinal,
+        iv::ProjectSampleInputState state,
+        std::optional<size_t> member_ordinal = std::nullopt)
     {
-        graph_input_lanes.clear_sample_input_value_override(
-            iv::ProjectClearSampleInputValueOverrideRequest{
+        graph_input_lanes.set_sample_input_state(
+            iv::ProjectSetSampleInputStateRequest{
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,
+                .state = state,
             });
     }
 };

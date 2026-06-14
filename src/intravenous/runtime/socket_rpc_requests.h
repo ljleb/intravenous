@@ -62,10 +62,18 @@ namespace iv {
         std::optional<size_t> member_ordinal{};
     };
 
-    struct ClearSampleInputValueOverrideRequest {
+    struct SetSampleInputStateRequest {
         std::string node_id{};
-        size_t member_ordinal = 0;
         size_t input_ordinal = 0;
+        std::optional<size_t> member_ordinal{};
+        std::string state{};
+    };
+
+    struct SetEventInputStateRequest {
+        std::string node_id{};
+        size_t input_ordinal = 0;
+        std::optional<size_t> member_ordinal{};
+        std::string state{};
     };
 
     struct ServerShutdownRequest {};
@@ -82,7 +90,8 @@ namespace iv {
         OpenLaneViewRpcRequest,
         UpdateLaneViewRpcRequest,
         SetSampleInputValueRequest,
-        ClearSampleInputValueOverrideRequest,
+        SetSampleInputStateRequest,
+        SetEventInputStateRequest,
         ServerShutdownRequest,
         std::string>;
 

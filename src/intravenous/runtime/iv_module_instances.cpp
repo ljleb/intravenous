@@ -1,5 +1,7 @@
 #include <intravenous/runtime/iv_module_instances.h>
 
+#include <intravenous/runtime/graph_input_lanes_events.h>
+#include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 
 #include <algorithm>
@@ -309,5 +311,67 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
             iv_runtime_iv_module_instances_list_changed_event,
             list_instances());
     }
+}
+
+void IvModuleInstances::handle_graph_input_lanes_rebuild_requested(
+    GraphInputLanesRebuildRequested const &request)
+{
+    IvModuleInstanceBuildersChanged builders_diff{};
+
+    {
+        std::scoped_lock lock(mutex);
+        for (auto const &instance_id : request.instance_ids) {
+            auto desired = desired_instances_by_id.find(instance_id);
+            if (desired == desired_instances_by_id.end()) {
+                continue;
+            }
+            auto realized = realized_instances_by_id.find(instance_id);
+            if (realized == realized_instances_by_id.end()) {
+                continue;
+            }
+
+            IvModuleDefinitionBuilderBuilder builder_query;
+            IV_INVOKE_SINGLETON_EVENT(
+                iv_runtime_iv_module_definition_builder_requested_event,
+                IvModuleDefinitionBuilderRequest{
+                    .definition_id = desired->second.definition_id,
+                },
+                builder_query);
+            auto const *builder = builder_query.build();
+            if (builder == nullptr) {
+                continue;
+            }
+
+            auto &stored_builder = realized_builders_by_id[instance_id];
+            stored_builder = *builder;
+            builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
+                .instance = &realized->second,
+                .builder = &stored_builder,
+                .default_silence_ttl_samples =
+                    desired->second.default_silence_ttl_samples,
+            });
+        }
+    }
+
+    if (builders_diff.updated.empty()) {
+        return;
+    }
+
+    IvModuleInstanceBuildersAckBuilder builders_ack;
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_instance_builders_changed_event,
+        builders_diff,
+        builders_ack);
+    for (auto &updated : builders_diff.updated) {
+        if (!updated.instance) {
+            continue;
+        }
+        updated.prerequisite_lanes =
+            builders_ack.prerequisite_lanes_for(updated.instance->instance_id)
+                .value_or(std::vector<LaneId>{});
+    }
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_instance_builders_completed_event,
+        builders_diff);
 }
 } // namespace iv

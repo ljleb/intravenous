@@ -127,16 +127,18 @@ struct SeededIvModuleSourceIntrospectionApp {
             });
     }
 
-    void clear_sample_input_value_override(
+    void set_sample_input_state(
         std::string const &node_id,
-        size_t member_ordinal,
-        size_t input_ordinal)
+        size_t input_ordinal,
+        iv::ProjectSampleInputState state,
+        std::optional<size_t> member_ordinal = std::nullopt)
     {
-        graph_input_lanes.clear_sample_input_value_override(
-            iv::ProjectClearSampleInputValueOverrideRequest {
+        graph_input_lanes.set_sample_input_state(
+            iv::ProjectSetSampleInputStateRequest {
                 .node_id = node_id,
                 .member_ordinal = member_ordinal,
                 .input_ordinal = input_ordinal,
+                .state = state,
             });
     }
 };
@@ -695,7 +697,11 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_FALSE(concrete_override.members[0].sample_inputs[1].has_concrete_override);
     EXPECT_TRUE(concrete_override.members[1].sample_inputs[1].has_concrete_override);
 
-    app.clear_sample_input_value_override(logical.id, 1u, 1);
+    app.set_sample_input_state(
+        logical.id,
+        1,
+        iv::ProjectSampleInputState::logical_follow,
+        1u);
     auto const cleared_override = app.get_logical_node(logical.id);
     ASSERT_EQ(cleared_override.members.size(), 2u);
     EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.sample_inputs[1].current_value), 0.25f);

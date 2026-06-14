@@ -1,4 +1,5 @@
 #include <intravenous/runtime/task_runner.h>
+#include <intravenous/runtime/task_runner_events.h>
 
 #include <algorithm>
 #include <condition_variable>
@@ -495,6 +496,17 @@ void TaskRunner::coordinator_loop()
         if (workers_should_exit_) {
             return;
         }
+        if (current_pass_ != pass) {
+            continue;
+        }
+        auto const finished_revision = pass->graph->revision;
+        lock.unlock();
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_task_runner_pass_finished_event,
+            TaskRunnerPassFinished{
+                .graph_revision = finished_revision,
+            });
+        lock.lock();
         if (current_pass_ != pass) {
             continue;
         }

@@ -303,9 +303,13 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_input_value_event, event_request, builder);
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, ClearSampleInputValueOverrideRequest>) {
+                    } else if constexpr (std::same_as<Request, SetSampleInputStateRequest>) {
                         SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_clear_sample_input_value_override_event, event_request, builder);
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_input_state_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, SetEventInputStateRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_event_input_state_event, event_request, builder);
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, ServerShutdownRequest>) {
                         SocketRpcAckResponseBuilder builder;

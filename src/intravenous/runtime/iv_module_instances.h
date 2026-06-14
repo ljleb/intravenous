@@ -24,6 +24,8 @@ struct IvModuleRequiredDefinitionsChanged {
     std::vector<std::string> deleted_definition_ids{};
 };
 
+struct GraphInputLanesRebuildRequested;
+
 struct IvModuleInstance {
     std::string instance_id{};
     std::string definition_id{};
@@ -80,5 +82,7 @@ public:
 
     void handle_iv_module_definitions_changed(
         IvModuleDefinitionsChanged const &diff);
+    void handle_graph_input_lanes_rebuild_requested(
+        GraphInputLanesRebuildRequested const &request);
 };
 } // namespace iv

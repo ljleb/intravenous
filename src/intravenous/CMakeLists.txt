@@ -154,6 +154,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_runtime_lane_views_events
         intravenous_runtime_runtime_project_events
         intravenous_runtime_socket_rpc_events
+        intravenous_runtime_task_runner_events
         intravenous_runtime_timeline_events
         intravenous_runtime_timeline_execution_events
         intravenous_runtime_iv_module_instances_execution_events
@@ -262,6 +263,10 @@ iv_add_linker_event_object(
     runtime/socket_rpc_linker_events.cpp
 )
 iv_add_linker_event_object(
+    intravenous_runtime_task_runner_events
+    runtime/task_runner_events.cpp
+)
+iv_add_linker_event_object(
     intravenous_runtime_timeline_events
     runtime/timeline_events.cpp
 )
@@ -282,9 +287,11 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/config.cpp
     runtime/graph_input_lanes.cpp
     runtime/graph_input_lanes_events.cpp
+    runtime/graph_input_lanes_iv_module_instances_bridge.cpp
     runtime/graph_input_lanes_iv_module_instances_execution_bridge.cpp
     runtime/graph_input_lanes_timeline_bridge.cpp
     runtime/iv_module_definitions.cpp
+    runtime/iv_module_definitions_builder_bridge.cpp
     runtime/iv_module_definitions_iv_module_instances_bridge.cpp
     runtime/iv_module_definitions_iv_module_reload_bridge.cpp
     runtime/iv_module_definitions_iv_module_source_introspection_bridge.cpp
@@ -314,6 +321,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_server.cpp
     runtime/startup_config.cpp
     runtime/task_runner.cpp
+    runtime/task_runner_graph_input_lanes_bridge.cpp
     runtime/timeline_execution.cpp
     runtime/timeline_execution_task_runner_bridge.cpp
     runtime/timeline_lane_filters_bridge.cpp

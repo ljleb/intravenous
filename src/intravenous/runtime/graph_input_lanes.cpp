@@ -55,6 +55,7 @@ void append_graph_input_port_descriptors(
                 .port_name = port.name,
                 .port_type = port.type,
             },
+            .default_connected = port.connectivity != LogicalPortConnectivity::disconnected,
         });
     }
 }
@@ -87,18 +88,15 @@ std::string logical_knob_key(GraphInputLanes::DesiredGraphInputPort const &port)
         + "\x1f" + "ordinal:" + std::to_string(port.port.port_ordinal);
 }
 
-std::string concrete_knob_key(GraphInputLanes::DesiredGraphInputPort const &port)
+std::string logical_event_input_key(GraphInputLanes::DesiredGraphInputPort const &port)
 {
     auto const logical_node_id = local_hash_string(port.port.logical_node_id);
     auto const concrete_node_id = local_hash_string(
         port.port.logical_node_id
         + "\x1f"
-        + "member:"
-        + (port.port.concrete_member_ordinal.has_value()
-            ? std::to_string(*port.port.concrete_member_ordinal)
-            : std::string("logical")));
+        + "member:logical");
 
-    return "concrete-knob:instance:" + std::to_string(port.module_instance_id)
+    return "logical-event-input:instance:" + std::to_string(port.module_instance_id)
         + "\x1f" + "logical:" + std::to_string(logical_node_id)
         + "\x1f" + "concrete:" + std::to_string(concrete_node_id)
         + "\x1f" + "kind:" + std::to_string(static_cast<int>(port.port.port_kind == PortKind::event))
@@ -174,7 +172,7 @@ TypeErasedLaneNode make_sample_input_node(Sample default_value)
 }
 
 GraphInputPortDescriptor sample_port_descriptor(
-    GraphBuilder::VacantSampleInput const &input,
+    GraphBuilder::LogicalSampleInput const &input,
     std::optional<size_t> member_ordinal)
 {
     return GraphInputPortDescriptor{
@@ -188,7 +186,7 @@ GraphInputPortDescriptor sample_port_descriptor(
 }
 
 GraphInputPortDescriptor event_port_descriptor(
-    GraphBuilder::VacantEventInput const &input,
+    GraphBuilder::LogicalEventInput const &input,
     std::optional<size_t> member_ordinal)
 {
     return GraphInputPortDescriptor{
@@ -326,6 +324,14 @@ std::string GraphInputLanes::sample_default_value_key(
     return std::string(instance_id) + "\x1f" + graph_input_port_key(port);
 }
 
+std::string GraphInputLanes::instance_port_state_key(
+    std::string_view instance_id,
+    GraphInputPortDescriptor const &port)
+{
+    (void)instance_id;
+    return graph_input_port_key(port);
+}
+
 GraphInputPortDescriptor GraphInputLanes::sample_input_descriptor(
     std::string const &node_id,
     std::optional<size_t> member_ordinal,
@@ -457,7 +463,7 @@ std::vector<Sample*>& GraphInputLanes::ensure_live_input_slots_locked(
     return slots[input_ordinal];
 }
 
-Sample& GraphInputLanes::ensure_live_input_value_locked(
+std::atomic<Sample::storage>& GraphInputLanes::ensure_live_input_value_locked(
     std::string_view key,
     size_t input_ordinal)
 {
@@ -465,7 +471,27 @@ Sample& GraphInputLanes::ensure_live_input_value_locked(
     if (values.size() <= input_ordinal) {
         values.resize(input_ordinal + 1);
     }
-    return values[input_ordinal];
+    if (!values[input_ordinal]) {
+        values[input_ordinal] =
+            std::make_unique<std::atomic<Sample::storage>>(Sample{0.0f}.value);
+    }
+    return *values[input_ordinal];
+}
+
+std::atomic<Sample::storage>& GraphInputLanes::ensure_live_input_value_initialized_locked(
+    std::string_view key,
+    size_t input_ordinal,
+    Sample initial_value)
+{
+    auto &values = live_input_values[std::string(key)];
+    if (values.size() <= input_ordinal) {
+        values.resize(input_ordinal + 1);
+    }
+    if (!values[input_ordinal]) {
+        values[input_ordinal] =
+            std::make_unique<std::atomic<Sample::storage>>(initial_value.value);
+    }
+    return *values[input_ordinal];
 }
 
 Sample GraphInputLanes::live_input_value_or_locked(
@@ -477,7 +503,10 @@ Sample GraphInputLanes::live_input_value_or_locked(
     if (it == live_input_values.end() || it->second.size() <= input_ordinal) {
         return fallback;
     }
-    return it->second[input_ordinal];
+    if (!it->second[input_ordinal]) {
+        return fallback;
+    }
+    return Sample{it->second[input_ordinal]->load(std::memory_order_relaxed)};
 }
 
 Sample GraphInputLanes::live_input_value_or_locked(
@@ -490,11 +519,70 @@ Sample GraphInputLanes::live_input_value_or_locked(
     auto const key = concrete_key(logical_node_id, member_ordinal);
     if (concrete_live_input_overrides.contains(override)) {
         auto it = live_input_values.find(key);
-        if (it != live_input_values.end() && it->second.size() > input_ordinal) {
-            return it->second[input_ordinal];
+        if (it != live_input_values.end()
+            && it->second.size() > input_ordinal
+            && it->second[input_ordinal]) {
+            return Sample{it->second[input_ordinal]->load(std::memory_order_relaxed)};
         }
     }
     return live_input_value_or_locked(logical_node_id, input_ordinal, fallback);
+}
+
+std::atomic<Sample::storage> const* GraphInputLanes::live_input_value_ptr_or_locked(
+    std::string_view key,
+    size_t input_ordinal)
+{
+    return &ensure_live_input_value_locked(key, input_ordinal);
+}
+
+void GraphInputLanes::mark_instances_requiring_rebuild_locked(
+    std::string_view logical_node_id,
+    std::optional<size_t> member_ordinal,
+    size_t input_ordinal)
+{
+    for (auto const &port : desired_ports) {
+        if (port.port.port_kind != PortKind::sample) {
+            continue;
+        }
+        if (port.port.logical_node_id != logical_node_id) {
+            continue;
+        }
+        if (port.port.port_ordinal != input_ordinal) {
+            continue;
+        }
+        if (member_ordinal.has_value()) {
+            if (port.port.concrete_member_ordinal != member_ordinal) {
+                continue;
+            }
+        }
+        pending_rebuild_instance_ids.insert(port.instance_id);
+    }
+}
+
+void GraphInputLanes::mark_instances_requiring_rebuild_for_logical_sample_input_locked(
+    std::string_view logical_node_id,
+    size_t input_ordinal)
+{
+    mark_instances_requiring_rebuild_locked(
+        logical_node_id,
+        std::nullopt,
+        input_ordinal);
+}
+
+std::optional<GraphInputLanes::DesiredGraphInputPort> GraphInputLanes::find_desired_port_locked(
+    std::string const &instance_id,
+    GraphInputPortDescriptor const &port) const
+{
+    auto const it = desired_ports_by_instance_id.find(instance_id);
+    if (it == desired_ports_by_instance_id.end()) {
+        return std::nullopt;
+    }
+    for (auto const &desired : it->second) {
+        if (desired.port == port) {
+            return desired;
+        }
+    }
+    return std::nullopt;
 }
 
 void GraphInputLanes::refresh_desired_ports_locked()
@@ -512,7 +600,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
 {
     GraphInputLaneBindings result;
     std::unordered_map<std::string, ExistingTrackedLane> logical_sample_knobs_by_key;
-    std::unordered_map<std::string, ExistingTrackedLane> concrete_sample_knobs_by_key;
+    std::unordered_map<std::string, ExistingTrackedLane> logical_event_inputs_by_key;
     std::unordered_map<std::string, ExistingTrackedLane> sample_inputs_by_key;
     std::unordered_map<std::string, ExistingTrackedLane> event_inputs_by_key;
     std::unordered_set<std::uint64_t> used_lane_ids;
@@ -528,11 +616,11 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             logical_sample_knobs_by_key.emplace(
                 existing_identity_key(tracked.metadata, "logical-knob"),
                 tracked);
-        } else if (tracked.metadata.has_unit(metadata_knob)
-            && tracked.metadata.has_unit(metadata_concrete)
-            && tracked.metadata.has_unit(metadata_sample)) {
-            concrete_sample_knobs_by_key.emplace(
-                existing_identity_key(tracked.metadata, "concrete-knob"),
+        } else if (tracked.metadata.has_unit(metadata_input)
+            && tracked.metadata.has_unit(metadata_logical)
+            && tracked.metadata.has_unit(metadata_event)) {
+            logical_event_inputs_by_key.emplace(
+                existing_identity_key(tracked.metadata, "logical-event-input"),
                 tracked);
         } else if (tracked.metadata.has_unit(metadata_input)
             && tracked.metadata.has_unit(metadata_sample)) {
@@ -550,6 +638,12 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
     std::unordered_map<std::string, LaneId> logical_sample_knob_lanes;
     for (auto const &port : desired_ports) {
         if (port.port.port_kind != PortKind::sample || port.port.concrete_member_ordinal.has_value()) {
+            continue;
+        }
+        auto const state_key = graph_input_port_key(port.port);
+        auto const state = logical_sample_knob_states_by_key.find(state_key);
+        if (state == logical_sample_knob_states_by_key.end()
+            || state->second != LogicalSampleKnobState::timeline_lane) {
             continue;
         }
 
@@ -614,57 +708,29 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             logical_knob = it->second;
         }
 
-        auto const concrete_key = concrete_knob_key(port);
-        LaneId concrete_knob {};
-        bool concrete_knob_created = false;
-        if (auto const it = concrete_sample_knobs_by_key.find(concrete_key);
-            it != concrete_sample_knobs_by_key.end()) {
-            concrete_knob = it->second.lane;
-        } else {
-            concrete_knob = lane_ids.next();
-            concrete_knob_created = true;
-            if (batch != nullptr) {
-                auto metadata = graph_input_metadata(
-                    port,
-                    true,
-                    false,
-                    true,
-                    true,
-                    false);
-                auto const current_value =
-                    port.port.concrete_member_ordinal.has_value()
-                        ? live_input_value_or_locked(
-                            port.port.logical_node_id,
-                            *port.port.concrete_member_ordinal,
-                            port.port.port_ordinal,
-                            live_input_value_or_locked(
-                                port.port.logical_node_id,
-                                port.port.port_ordinal,
-                                Sample{0.0f}))
-                        : live_input_value_or_locked(
-                            port.port.logical_node_id,
-                            port.port.port_ordinal,
-                            Sample{0.0f});
-                batch->upserts.push_back(TimelineLaneUpsert{
-                    .lane = concrete_knob,
-                    .make_node = [current_value] {
-                        return TypeErasedLaneNode(KnobLaneNode{ .value = current_value });
-                    },
-                    .metadata = std::move(metadata),
-                });
-            }
+        ConcreteSampleInputState state =
+            logical_knob.has_value()
+                ? ConcreteSampleInputState::logical_follow
+                : ConcreteSampleInputState::disconnected;
+        if (!port.port.concrete_member_ordinal.has_value()) {
+            state = ConcreteSampleInputState::logical_follow;
         }
-        used_lane_ids.insert(concrete_knob.value);
+        if (auto const it =
+                concrete_sample_input_states_by_key.find(graph_input_port_key(port.port));
+            it != concrete_sample_input_states_by_key.end()) {
+            state = it->second;
+        }
+        if (state != ConcreteSampleInputState::timeline_lane) {
+            continue;
+        }
 
         auto const sample_key = sample_input_key(port);
         LaneId graph_input_lane {};
-        bool graph_input_created = false;
         if (auto const it = sample_inputs_by_key.find(sample_key);
             it != sample_inputs_by_key.end()) {
             graph_input_lane = it->second.lane;
         } else {
             graph_input_lane = lane_ids.next();
-            graph_input_created = true;
             if (batch != nullptr) {
                 auto metadata = graph_input_metadata(
                     port,
@@ -689,34 +755,55 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
         }
         used_lane_ids.insert(graph_input_lane.value);
 
-        if (batch != nullptr) {
-            if (logical_knob.has_value() && *logical_knob != concrete_knob) {
-                batch->connections_to_add.push_back(LaneGraphConnection{
-                    .source = *logical_knob,
-                    .target = concrete_knob,
-                    .input = realtime_sample_input(),
-                });
-            }
-            batch->connections_to_add.push_back(LaneGraphConnection{
-                .source = concrete_knob,
-                .target = graph_input_lane,
-                .input = realtime_sample_input(),
-            });
-            batch->hierarchy_additions.push_back(TimelineLaneHierarchyUpdate{
-                .parent = concrete_knob,
-                .child = graph_input_lane,
-            });
-            (void)concrete_knob_created;
-            (void)graph_input_created;
-        }
-
         result.sample_inputs.push_back(GraphInputLaneBinding{
             .port = port.port,
-            .knob_lane = concrete_knob,
             .graph_input_lane = graph_input_lane,
             .logical_knob_lane = logical_knob,
         });
     }
+
+    auto ensure_logical_event_lane = [&](DesiredGraphInputPort const &port) {
+        auto logical_port = port;
+        logical_port.port.concrete_member_ordinal = std::nullopt;
+        auto const key = logical_event_input_key(logical_port);
+        if (auto const it = logical_event_inputs_by_key.find(key);
+            it != logical_event_inputs_by_key.end()) {
+            used_lane_ids.insert(it->second.lane.value);
+            return it->second.lane;
+        }
+
+        auto const lane = lane_ids.next();
+        if (batch != nullptr) {
+            auto metadata = graph_input_metadata(
+                logical_port,
+                false,
+                true,
+                false,
+                false,
+                true);
+            batch->upserts.push_back(TimelineLaneUpsert{
+                .lane = lane,
+                .make_node = [] {
+                    return TypeErasedLaneNode(GraphEventInputLaneNode{});
+                },
+                .metadata = std::move(metadata),
+            });
+        }
+        logical_event_inputs_by_key.emplace(
+            key,
+            ExistingTrackedLane{
+                .lane = lane,
+                .metadata = graph_input_metadata(
+                    logical_port,
+                    false,
+                    true,
+                    false,
+                    false,
+                    true),
+            });
+        used_lane_ids.insert(lane.value);
+        return lane;
+    };
 
     for (auto const &port : desired_ports) {
         if (port.port.port_kind != PortKind::event) {
@@ -727,31 +814,48 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             continue;
         }
 
-        auto const key = event_input_key(port);
-        LaneId graph_input_lane {};
-        if (auto const it = event_inputs_by_key.find(key);
-            it != event_inputs_by_key.end()) {
-            graph_input_lane = it->second.lane;
-        } else {
-            graph_input_lane = lane_ids.next();
-            if (batch != nullptr) {
-                auto metadata = graph_input_metadata(
-                    port,
-                    false,
-                    false,
-                    true,
-                    false,
-                    true);
-                batch->upserts.push_back(TimelineLaneUpsert{
-                    .lane = graph_input_lane,
-                    .make_node = [] {
-                        return TypeErasedLaneNode(GraphEventInputLaneNode{});
-                    },
-                    .metadata = std::move(metadata),
-                });
-            }
+        ConcreteEventInputState state =
+            port.default_connected
+                ? ConcreteEventInputState::disconnected
+                : ConcreteEventInputState::logical_follow;
+        if (auto const it =
+                concrete_event_input_states_by_key.find(graph_input_port_key(port.port));
+            it != concrete_event_input_states_by_key.end()) {
+            state = it->second;
         }
-        used_lane_ids.insert(graph_input_lane.value);
+
+        LaneId graph_input_lane {};
+        if (state == ConcreteEventInputState::logical_follow) {
+            graph_input_lane = ensure_logical_event_lane(port);
+        } else if (state == ConcreteEventInputState::timeline_lane) {
+            auto const key = event_input_key(port);
+            if (auto const it = event_inputs_by_key.find(key);
+                it != event_inputs_by_key.end()) {
+                graph_input_lane = it->second.lane;
+            } else {
+                graph_input_lane = lane_ids.next();
+                if (batch != nullptr) {
+                    auto metadata = graph_input_metadata(
+                        port,
+                        false,
+                        false,
+                        true,
+                        false,
+                        true);
+                    batch->upserts.push_back(TimelineLaneUpsert{
+                        .lane = graph_input_lane,
+                        .make_node = [] {
+                            return TypeErasedLaneNode(GraphEventInputLaneNode{});
+                        },
+                        .metadata = std::move(metadata),
+                    });
+                }
+            }
+            used_lane_ids.insert(graph_input_lane.value);
+        } else {
+            continue;
+        }
+
         result.event_inputs.push_back(GraphInputLaneBinding{
             .port = port.port,
             .graph_input_lane = graph_input_lane,
@@ -828,6 +932,20 @@ void GraphInputLanes::apply_tracked_batch_locked(TimelineLaneBatchUpdate const &
     }
 }
 
+void GraphInputLanes::queue_timeline_batch_locked(TimelineLaneBatchUpdate const &batch)
+{
+    if (!batch_has_changes(batch)) {
+        return;
+    }
+    apply_tracked_batch_locked(batch);
+    pending_timeline_batches.push_back(batch);
+}
+
+std::vector<TimelineLaneBatchUpdate> GraphInputLanes::take_pending_timeline_batches_locked()
+{
+    return std::exchange(pending_timeline_batches, {});
+}
+
 void GraphInputLanes::apply_timeline_batch(TimelineLaneBatchUpdate const &batch)
 {
     GraphInputLanesAckBuilder builder;
@@ -836,9 +954,6 @@ void GraphInputLanes::apply_timeline_batch(TimelineLaneBatchUpdate const &batch)
         batch,
         builder);
     builder.build();
-
-    std::scoped_lock lock(mutex);
-    apply_tracked_batch_locked(batch);
 }
 
 void GraphInputLanes::handle_iv_module_instance_builders_changed(
@@ -867,10 +982,7 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
         }
         refresh_desired_ports_locked();
         (void)reconcile_ports_locked(&batch);
-    }
-
-    if (batch_has_changes(batch)) {
-        apply_timeline_batch(batch);
+        queue_timeline_batch_locked(batch);
     }
 
     GraphInputLanesDspTaskDependenciesChanged dsp_dependencies;
@@ -1052,27 +1164,21 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
 void GraphInputLanes::set_sample_input_value(
     ProjectSetSampleInputValueRequest const &request)
 {
-    auto const bindings = sample_input_bindings(
-        request.node_id,
-        request.member_ordinal,
-        request.input_ordinal);
-    auto const knob_lane =
-        request.member_ordinal.has_value()
-            ? (!bindings.sample_inputs.empty() ? bindings.sample_inputs.front().knob_lane : LaneId{})
-            : (!bindings.logical_sample_knobs.empty() ? bindings.logical_sample_knobs.front().knob_lane : LaneId{});
-    auto const inherited_lane =
-        request.member_ordinal.has_value() && !bindings.logical_sample_knobs.empty()
-            ? bindings.logical_sample_knobs.front().knob_lane
-            : LaneId{};
-
-    std::optional<LaneMetadata> knob_metadata;
+    TimelineLaneBatchUpdate batch;
     {
         std::scoped_lock lock(mutex);
         if (request.member_ordinal.has_value()) {
             auto const key = concrete_key(request.node_id, *request.member_ordinal);
+            auto const port_key = graph_input_port_key(sample_input_descriptor(
+                request.node_id,
+                request.member_ordinal,
+                request.input_ordinal));
             concrete_live_input_overrides.insert(
                 concrete_override_key(request.node_id, *request.member_ordinal, request.input_ordinal));
-            ensure_live_input_value_locked(key, request.input_ordinal) = request.value;
+            concrete_sample_input_states_by_key[port_key] =
+                ConcreteSampleInputState::overridden;
+            ensure_live_input_value_locked(key, request.input_ordinal)
+                .store(request.value.value, std::memory_order_relaxed);
             auto &slots = ensure_live_input_slots_locked(key, request.input_ordinal);
             for (auto *slot : slots) {
                 if (slot) {
@@ -1080,7 +1186,14 @@ void GraphInputLanes::set_sample_input_value(
                 }
             }
         } else {
-            ensure_live_input_value_locked(request.node_id, request.input_ordinal) = request.value;
+            auto const port_key = graph_input_port_key(sample_input_descriptor(
+                request.node_id,
+                std::nullopt,
+                request.input_ordinal));
+            logical_sample_knob_states_by_key[port_key] =
+                LogicalSampleKnobState::overridden;
+            ensure_live_input_value_locked(request.node_id, request.input_ordinal)
+                .store(request.value.value, std::memory_order_relaxed);
             if (auto it = live_inputs.find(std::string(request.node_id));
                 it != live_inputs.end() && it->second.size() > request.input_ordinal) {
                 for (auto *slot : it->second[request.input_ordinal]) {
@@ -1103,87 +1216,162 @@ void GraphInputLanes::set_sample_input_value(
                         *slot = request.value;
                     }
                 }
-                ensure_live_input_value_locked(key, request.input_ordinal) = request.value;
+                ensure_live_input_value_locked(key, request.input_ordinal)
+                    .store(request.value.value, std::memory_order_relaxed);
             }
         }
-        if (knob_lane) {
-            knob_metadata = tracked_lane_metadata_locked(knob_lane);
-        }
-    }
-    TimelineLaneBatchUpdate batch;
-    if (knob_lane && knob_metadata.has_value()) {
-        batch.upserts.push_back(TimelineLaneUpsert{
-            .lane = knob_lane,
-            .make_node = [value = request.value] {
-                return TypeErasedLaneNode(KnobLaneNode{ .value = value });
-            },
-            .metadata = *knob_metadata,
-        });
-    }
-    if (inherited_lane && knob_lane) {
-        batch.connections_to_remove.push_back(LaneGraphConnection{
-            .source = inherited_lane,
-            .target = knob_lane,
-            .input = realtime_sample_input(),
-        });
-    }
-    if (batch_has_changes(batch)) {
-        apply_timeline_batch(batch);
+        (void)reconcile_ports_locked(&batch);
+        queue_timeline_batch_locked(batch);
     }
 }
 
-void GraphInputLanes::clear_sample_input_value_override(
-    ProjectClearSampleInputValueOverrideRequest const &request)
+void GraphInputLanes::set_sample_input_state(
+    ProjectSetSampleInputStateRequest const &request)
 {
-    auto const bindings = sample_input_bindings(
-        request.node_id,
-        request.member_ordinal,
-        request.input_ordinal);
-    auto const knob_lane =
-        !bindings.sample_inputs.empty() ? bindings.sample_inputs.front().knob_lane : LaneId{};
-    auto const inherited_lane =
-        !bindings.logical_sample_knobs.empty() ? bindings.logical_sample_knobs.front().knob_lane : LaneId{};
-
-    Sample logical_value = Sample{0.0f};
-    std::optional<LaneMetadata> knob_metadata;
+    TimelineLaneBatchUpdate batch;
     {
         std::scoped_lock lock(mutex);
-        concrete_live_input_overrides.erase(
-            concrete_override_key(request.node_id, request.member_ordinal, request.input_ordinal));
+        if (request.member_ordinal.has_value()) {
+            auto const port_key = graph_input_port_key(sample_input_descriptor(
+                request.node_id,
+                request.member_ordinal,
+                request.input_ordinal));
+            auto const override_key = concrete_override_key(
+                request.node_id,
+                *request.member_ordinal,
+                request.input_ordinal);
 
-        auto const key = concrete_key(request.node_id, request.member_ordinal);
-        logical_value = live_input_value_or_locked(request.node_id, request.input_ordinal, Sample{0.0f});
-        ensure_live_input_value_locked(key, request.input_ordinal) = logical_value;
-        auto &slots = ensure_live_input_slots_locked(key, request.input_ordinal);
-        for (auto *slot : slots) {
-            if (slot) {
-                *slot = logical_value;
+            switch (request.state) {
+            case ProjectSampleInputState::default_:
+                concrete_live_input_overrides.erase(override_key);
+                concrete_sample_input_states_by_key.erase(port_key);
+                break;
+            case ProjectSampleInputState::overridden:
+                concrete_live_input_overrides.insert(override_key);
+                concrete_sample_input_states_by_key[port_key] =
+                    ConcreteSampleInputState::overridden;
+                break;
+            case ProjectSampleInputState::logical_follow:
+                concrete_live_input_overrides.erase(override_key);
+                concrete_sample_input_states_by_key[port_key] =
+                    ConcreteSampleInputState::logical_follow;
+                break;
+            case ProjectSampleInputState::timeline_lane:
+                concrete_live_input_overrides.erase(override_key);
+                concrete_sample_input_states_by_key[port_key] =
+                    ConcreteSampleInputState::timeline_lane;
+                break;
+            case ProjectSampleInputState::disconnected:
+                concrete_live_input_overrides.erase(override_key);
+                concrete_sample_input_states_by_key[port_key] =
+                    ConcreteSampleInputState::disconnected;
+                break;
             }
+
+            mark_instances_requiring_rebuild_locked(
+                request.node_id,
+                request.member_ordinal,
+                request.input_ordinal);
+        } else {
+            auto const port_key = graph_input_port_key(sample_input_descriptor(
+                request.node_id,
+                std::nullopt,
+                request.input_ordinal));
+            switch (request.state) {
+            case ProjectSampleInputState::default_:
+            case ProjectSampleInputState::overridden:
+                logical_sample_knob_states_by_key[port_key] =
+                    LogicalSampleKnobState::overridden;
+                break;
+            case ProjectSampleInputState::timeline_lane:
+                logical_sample_knob_states_by_key[port_key] =
+                    LogicalSampleKnobState::timeline_lane;
+                break;
+            case ProjectSampleInputState::logical_follow:
+            case ProjectSampleInputState::disconnected:
+                throw std::runtime_error(
+                    "logical sample input state only supports overridden or timeline_lane");
+            }
+            mark_instances_requiring_rebuild_for_logical_sample_input_locked(
+                request.node_id,
+                request.input_ordinal);
         }
-        if (knob_lane) {
-            knob_metadata = tracked_lane_metadata_locked(knob_lane);
-        }
+        (void)reconcile_ports_locked(&batch);
+        queue_timeline_batch_locked(batch);
     }
+}
+
+void GraphInputLanes::set_event_input_state(
+    ProjectSetEventInputStateRequest const &request)
+{
     TimelineLaneBatchUpdate batch;
-    if (knob_lane && knob_metadata.has_value()) {
-        batch.upserts.push_back(TimelineLaneUpsert{
-            .lane = knob_lane,
-            .make_node = [logical_value] {
-                return TypeErasedLaneNode(KnobLaneNode{ .value = logical_value });
-            },
-            .metadata = *knob_metadata,
+    {
+        std::scoped_lock lock(mutex);
+        auto const port_key = graph_input_port_key(GraphInputPortDescriptor{
+            .logical_node_id = request.node_id,
+            .concrete_member_ordinal = request.member_ordinal,
+            .port_kind = PortKind::event,
+            .port_ordinal = request.input_ordinal,
         });
+
+        switch (request.state) {
+        case ProjectEventInputState::default_:
+            concrete_event_input_states_by_key.erase(port_key);
+            break;
+        case ProjectEventInputState::logical_follow:
+            concrete_event_input_states_by_key[port_key] =
+                ConcreteEventInputState::logical_follow;
+            break;
+        case ProjectEventInputState::timeline_lane:
+            concrete_event_input_states_by_key[port_key] =
+                ConcreteEventInputState::timeline_lane;
+            break;
+        case ProjectEventInputState::disconnected:
+            concrete_event_input_states_by_key[port_key] =
+                ConcreteEventInputState::disconnected;
+            break;
+        }
+
+        mark_instances_requiring_rebuild_locked(
+            request.node_id,
+            request.member_ordinal,
+            request.input_ordinal);
+        (void)reconcile_ports_locked(&batch);
+        queue_timeline_batch_locked(batch);
     }
-    if (inherited_lane && knob_lane) {
-        batch.connections_to_add.push_back(LaneGraphConnection{
-            .source = inherited_lane,
-            .target = knob_lane,
-            .input = realtime_sample_input(),
-        });
+}
+
+GraphInputLaneBindings GraphInputLanes::graph_input_lane_bindings(
+    ProjectGraphInputLaneBindingsRequest const &request)
+{
+    return query_graph_input_lane_bindings(request);
+}
+
+void GraphInputLanes::handle_task_runner_pass_finished(
+    TaskRunnerPassFinished const &)
+{
+    std::vector<std::string> instance_ids;
+    std::vector<TimelineLaneBatchUpdate> timeline_batches;
+    {
+        std::scoped_lock lock(mutex);
+        instance_ids.assign(
+            pending_rebuild_instance_ids.begin(),
+            pending_rebuild_instance_ids.end());
+        pending_rebuild_instance_ids.clear();
+        timeline_batches = take_pending_timeline_batches_locked();
     }
-    if (batch_has_changes(batch)) {
+    for (auto const &batch : timeline_batches) {
         apply_timeline_batch(batch);
     }
+    if (instance_ids.empty()) {
+        return;
+    }
+    std::ranges::sort(instance_ids);
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_graph_input_lanes_rebuild_requested_event,
+        GraphInputLanesRebuildRequested{
+            .instance_ids = std::move(instance_ids),
+        });
 }
 
 GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
@@ -1191,8 +1379,8 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
     GraphBuilder &builder)
 {
     BuilderCompletionDiff diff;
-    auto const vacant = builder.vacant_inputs();
-    if (vacant.sample.empty() && vacant.event.empty()) {
+    auto const logical_inputs = builder.logical_inputs();
+    if (logical_inputs.sample.empty() && logical_inputs.event.empty()) {
         return diff;
     }
     auto const module_instance_id = module_instance_numeric_id(instance_id);
@@ -1217,7 +1405,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             desired_ports.push_back(std::move(desired));
         };
 
-        for (auto const &input : vacant.sample) {
+        for (auto const &input : logical_inputs.sample) {
             auto logical = sample_port_descriptor(input, std::nullopt);
             auto concrete = sample_port_descriptor(input, input.member_ordinal);
             sample_input_default_values[sample_default_value_key(instance_id, logical)] =
@@ -1227,49 +1415,154 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             append_port(std::move(logical));
             append_port(std::move(concrete));
         }
-        for (auto const &input : vacant.event) {
+        for (auto const &input : logical_inputs.event) {
             append_port(event_port_descriptor(input, std::nullopt));
             append_port(event_port_descriptor(input, input.member_ordinal));
         }
 
         (void)reconcile_ports_locked(&diff.timeline_batch);
-    }
-
-    if (batch_has_changes(diff.timeline_batch)) {
-        apply_timeline_batch(diff.timeline_batch);
+        queue_timeline_batch_locked(diff.timeline_batch);
     }
 
     std::unordered_map<std::string, size_t> sample_control_node_indices;
-    for (auto const &input : vacant.sample) {
-        auto const bindings = sample_input_bindings(
+    for (auto const &input : logical_inputs.sample) {
+        auto const concrete_port = sample_port_descriptor(input, input.member_ordinal);
+        auto const state_key = instance_port_state_key("", concrete_port);
+        auto const logical_default_value = live_input_value_or_locked(
             input.logical_node_id,
-            input.member_ordinal,
-            input.target.port);
-        if (bindings.sample_inputs.empty()) {
-            throw std::runtime_error("graph input lane completion could not resolve sample input lane");
+            input.target.port,
+            input.config.default_value);
+        (void)ensure_live_input_value_initialized_locked(
+            input.logical_node_id,
+            input.target.port,
+            input.config.default_value);
+        (void)ensure_live_input_value_initialized_locked(
+            concrete_key(input.logical_node_id, input.member_ordinal),
+            input.target.port,
+            logical_default_value);
+
+        ConcreteSampleInputState state =
+            input.has_existing_connection
+                ? ConcreteSampleInputState::disconnected
+                : ConcreteSampleInputState::logical_follow;
+        if (auto const it = concrete_sample_input_states_by_key.find(state_key);
+            it != concrete_sample_input_states_by_key.end()) {
+            state = it->second;
         }
-        auto const lane = bindings.sample_inputs.front().graph_input_lane;
-        auto const identity = LaneInputValue::nominal_identity(lane);
+
         SamplePortRef source;
-        if (auto const existing = sample_control_node_indices.find(identity);
-            existing != sample_control_node_indices.end()) {
-            source = SamplePortRef(builder, existing->second, 0);
-        } else {
-            source = builder.node<LaneInputValue>(lane);
-            sample_control_node_indices.emplace(identity, source.node_index);
+        bool have_source = false;
+        LaneId prerequisite_lane {};
+
+        if (state == ConcreteSampleInputState::timeline_lane) {
+            auto const bindings = sample_input_bindings(
+                input.logical_node_id,
+                input.member_ordinal,
+                input.target.port);
+            if (bindings.sample_inputs.empty()) {
+                throw std::runtime_error("graph input lane completion could not resolve sample input lane");
+            }
+            prerequisite_lane = bindings.sample_inputs.front().graph_input_lane;
+            auto const identity = LaneInputValue::nominal_identity(prerequisite_lane);
+            if (auto const existing = sample_control_node_indices.find(identity);
+                existing != sample_control_node_indices.end()) {
+                source = SamplePortRef(builder, existing->second, 0);
+            } else {
+                source = builder.node<LaneInputValue>(prerequisite_lane);
+                sample_control_node_indices.emplace(identity, source.node_index);
+            }
+            have_source = true;
+            builder.mark_runtime_filled_sample_input(input.target);
+        } else if (state == ConcreteSampleInputState::overridden) {
+            auto const key = concrete_key(input.logical_node_id, input.member_ordinal);
+            source = builder.node<ValueSource>(
+                live_input_value_ptr_or_locked(key, input.target.port));
+            have_source = true;
+        } else if (state == ConcreteSampleInputState::logical_follow) {
+            auto const logical_state_key = graph_input_port_key(
+                sample_port_descriptor(input, std::nullopt));
+            auto const logical_state_it =
+                logical_sample_knob_states_by_key.find(logical_state_key);
+            auto const logical_state =
+                logical_state_it != logical_sample_knob_states_by_key.end()
+                    ? logical_state_it->second
+                    : LogicalSampleKnobState::overridden;
+
+            if (logical_state == LogicalSampleKnobState::timeline_lane) {
+                auto const bindings = sample_input_bindings(
+                    input.logical_node_id,
+                    std::nullopt,
+                    input.target.port);
+                if (bindings.logical_sample_knobs.empty()) {
+                    throw std::runtime_error(
+                        "logical sample knob timeline lane could not be resolved");
+                }
+                prerequisite_lane = bindings.logical_sample_knobs.front().knob_lane;
+                auto const identity = LaneInputValue::nominal_identity(prerequisite_lane);
+                if (auto const existing = sample_control_node_indices.find(identity);
+                    existing != sample_control_node_indices.end()) {
+                    source = SamplePortRef(builder, existing->second, 0);
+                } else {
+                    source = builder.node<LaneInputValue>(prerequisite_lane);
+                    sample_control_node_indices.emplace(identity, source.node_index);
+                }
+            } else {
+                source = builder.node<ValueSource>(
+                    live_input_value_ptr_or_locked(input.logical_node_id, input.target.port));
+            }
+            have_source = true;
+        } else if (!input.has_existing_connection) {
+            source = builder.node<Constant>(input.config.default_value);
+            have_source = true;
         }
-        builder.connect_sample_input(input.target, source);
-        builder.mark_runtime_filled_sample_input(input.target);
+
+        if (have_source) {
+            builder.connect_sample_input(input.target, source);
+        }
+
         diff.sample_inputs.push_back(CompletedSampleInput{
-            .input = input,
-            .lane = lane,
+            .input = GraphBuilder::VacantSampleInput{
+                .target = input.target,
+                .logical_node_id = input.logical_node_id,
+                .member_ordinal = input.member_ordinal,
+                .config = input.config,
+            },
+            .lane = prerequisite_lane,
         });
-        diff.prerequisite_lanes.push_back(lane);
+        if (prerequisite_lane) {
+            diff.prerequisite_lanes.push_back(prerequisite_lane);
+        }
     }
 
-    for (auto const &input : vacant.event) {
+    for (auto const &input : logical_inputs.event) {
+        auto const concrete_port = event_port_descriptor(input, input.member_ordinal);
+        auto const state_key = instance_port_state_key("", concrete_port);
+        ConcreteEventInputState state =
+            input.has_existing_connection
+                ? ConcreteEventInputState::disconnected
+                : ConcreteEventInputState::logical_follow;
+        if (auto const it = concrete_event_input_states_by_key.find(state_key);
+            it != concrete_event_input_states_by_key.end()) {
+            state = it->second;
+        }
+
+        if (state == ConcreteEventInputState::default_) {
+            state =
+                input.has_existing_connection
+                    ? ConcreteEventInputState::disconnected
+                    : ConcreteEventInputState::logical_follow;
+        }
+
+        if (state == ConcreteEventInputState::disconnected) {
+            continue;
+        }
+
+        auto requested_port =
+            state == ConcreteEventInputState::timeline_lane
+                ? event_port_descriptor(input, input.member_ordinal)
+                : event_port_descriptor(input, std::nullopt);
         auto const bindings = query_graph_input_lane_bindings(ProjectGraphInputLaneBindingsRequest{
-            .ports = { event_port_descriptor(input, input.member_ordinal) },
+            .ports = { requested_port },
         });
         if (bindings.event_inputs.empty()) {
             throw std::runtime_error("graph input lane completion could not resolve event input lane");
@@ -1278,7 +1571,12 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         builder.connect_event_input(input.target, source);
         builder.mark_runtime_filled_event_input(input.target);
         diff.event_inputs.push_back(CompletedEventInput{
-            .input = input,
+            .input = GraphBuilder::VacantEventInput{
+                .target = input.target,
+                .logical_node_id = input.logical_node_id,
+                .member_ordinal = input.member_ordinal,
+                .config = input.config,
+            },
             .lane = bindings.event_inputs.front().graph_input_lane,
         });
         diff.prerequisite_lanes.push_back(bindings.event_inputs.front().graph_input_lane);

@@ -30,6 +30,29 @@ namespace iv {
         std::vector<GraphBuilderVacantEventInput> event {};
     };
 
+    struct GraphBuilderLogicalSampleInput {
+        PortId target {};
+        std::string logical_node_id {};
+        size_t member_ordinal = 0;
+        InputConfig config {};
+        bool has_existing_connection = false;
+        bool runtime_filled = false;
+    };
+
+    struct GraphBuilderLogicalEventInput {
+        PortId target {};
+        std::string logical_node_id {};
+        size_t member_ordinal = 0;
+        EventInputConfig config {};
+        bool has_existing_connection = false;
+        bool runtime_filled = false;
+    };
+
+    struct GraphBuilderLogicalInputs {
+        std::vector<GraphBuilderLogicalSampleInput> sample {};
+        std::vector<GraphBuilderLogicalEventInput> event {};
+    };
+
     class GraphBuilderConnections {
     public:
         bool sample_input_is_connected(PortId target) const;
@@ -50,6 +73,7 @@ namespace iv {
         void mark_runtime_filled_sample_input(PortId target);
         void mark_runtime_filled_event_input(PortId target);
         GraphBuilderVacantInputs collect_vacant_inputs(GraphBuilderTopology const&) const;
+        GraphBuilderLogicalInputs collect_logical_inputs(GraphBuilderTopology const&) const;
         void import_child(GraphBuilderConnections const& child, size_t child_node_offset);
         template<class Fn>
         void for_each_runtime_filled_sample_input(Fn&& fn) const

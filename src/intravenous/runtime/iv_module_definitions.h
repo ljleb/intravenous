@@ -101,5 +101,7 @@ public:
     void seed_loaded_definition(IvModuleReloadedDefinition loaded_definition);
 
     [[nodiscard]] std::vector<IvModuleDefinition> loaded_definitions() const;
+    [[nodiscard]] GraphBuilder const *builder_for_definition(
+        std::string const &definition_id) const;
 };
 } // namespace iv

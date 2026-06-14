@@ -4,6 +4,7 @@
 #include <intravenous/runtime/timeline_execution_events.h>
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <optional>
 #include <span>
@@ -12,12 +13,19 @@
 
 namespace iv {
     struct ValueSource {
-        Sample const* _value;
+        Sample const* _value = nullptr;
+        std::atomic<Sample::storage> const* _atomic_value = nullptr;
 
         explicit ValueSource(Sample const* value) :
             _value(value)
         {
             IV_ASSERT(_value, "ValueSource requires a non-null value pointer");
+        }
+
+        explicit ValueSource(std::atomic<Sample::storage> const* value) :
+            _atomic_value(value)
+        {
+            IV_ASSERT(_atomic_value, "ValueSource requires a non-null atomic value pointer");
         }
 
         constexpr auto outputs() const
@@ -27,7 +35,11 @@ namespace iv {
 
         void tick(auto const& ctx) const
         {
-            ctx.outputs[0].push(*_value);
+            if (_atomic_value != nullptr) {
+                ctx.outputs[0].push(Sample{_atomic_value->load(std::memory_order_relaxed)});
+            } else {
+                ctx.outputs[0].push(*_value);
+            }
         }
     };
 

@@ -202,7 +202,11 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_FLOAT_EQ(
         static_cast<float>(concrete_override.members[1].sample_inputs[1].current_value), 0.75f);
 
-    app.clear_sample_input_value_override(logical_id, 1u, 1);
+    app.set_sample_input_state(
+        logical_id,
+        1,
+        iv::ProjectSampleInputState::logical_follow,
+        1u);
     auto const cleared_override = app.get_logical_node(logical_id);
     EXPECT_FALSE(cleared_override.members[1].sample_inputs[1].has_concrete_override);
     EXPECT_FLOAT_EQ(

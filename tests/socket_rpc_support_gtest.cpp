@@ -112,6 +112,47 @@ TEST(SocketRpcRequestParser, ParsesSetSampleInputValueRequest)
     EXPECT_FLOAT_EQ(request->value, 0.75f);
 }
 
+TEST(SocketRpcRequestParser, ParsesSetSampleInputStateRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":24,"method":"graph.setSampleInputState","params":{"nodeId":"node-1","memberOrdinal":2,"inputOrdinal":5,"state":"timelineLane"}})");
+
+    EXPECT_EQ(parsed.request_id, 24);
+    auto const* request = std::get_if<iv::SetSampleInputStateRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->node_id, "node-1");
+    ASSERT_TRUE(request->member_ordinal.has_value());
+    EXPECT_EQ(*request->member_ordinal, 2u);
+    EXPECT_EQ(request->input_ordinal, 5u);
+    EXPECT_EQ(request->state, "timelineLane");
+}
+
+TEST(SocketRpcRequestParser, ParsesDefaultSampleInputStateRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":25,"method":"graph.setSampleInputState","params":{"nodeId":"node-1","memberOrdinal":2,"inputOrdinal":5,"state":"default"}})");
+
+    EXPECT_EQ(parsed.request_id, 25);
+    auto const* request = std::get_if<iv::SetSampleInputStateRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->state, "default");
+}
+
+TEST(SocketRpcRequestParser, ParsesSetEventInputStateRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":26,"method":"graph.setEventInputState","params":{"nodeId":"node-1","memberOrdinal":2,"inputOrdinal":5,"state":"logicalFollow"}})");
+
+    EXPECT_EQ(parsed.request_id, 26);
+    auto const* request = std::get_if<iv::SetEventInputStateRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->node_id, "node-1");
+    ASSERT_TRUE(request->member_ordinal.has_value());
+    EXPECT_EQ(*request->member_ordinal, 2u);
+    EXPECT_EQ(request->input_ordinal, 5u);
+    EXPECT_EQ(request->state, "logicalFollow");
+}
+
 TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(

@@ -105,8 +105,12 @@ namespace iv {
         using VacantEventInput = GraphBuilderVacantEventInput;
         using RootNodeBuildResult = GraphBuilderRootNodeBuildResult;
         using VacantInputs = GraphBuilderVacantInputs;
+        using LogicalSampleInput = GraphBuilderLogicalSampleInput;
+        using LogicalEventInput = GraphBuilderLogicalEventInput;
+        using LogicalInputs = GraphBuilderLogicalInputs;
 
         VacantInputs vacant_inputs() const;
+        LogicalInputs logical_inputs() const;
         void connect_sample_input(PortId target, SamplePortRef source);
         void connect_event_input(PortId target, EventPortRef source);
         void mark_runtime_filled_sample_input(PortId target);

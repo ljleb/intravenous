@@ -122,6 +122,62 @@ GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(GraphBui
     return result;
 }
 
+GraphBuilderLogicalInputs GraphBuilderConnections::collect_logical_inputs(
+    GraphBuilderTopology const& topology) const
+{
+    GraphBuilderLogicalInputs result;
+    size_t const original_node_count = topology.node_count();
+    std::unordered_map<std::string, std::unordered_set<std::string>> types_by_logical_id;
+    for (size_t node_i = 0; node_i < original_node_count; ++node_i) {
+        auto const& node = topology.node(node_i);
+        if (node.materialization.is_placeholder() || node.vacant_input_ownership.logical_node_id.empty()) {
+            continue;
+        }
+        types_by_logical_id[node.vacant_input_ownership.logical_node_id].insert(node.type_identity.value);
+    }
+
+    std::unordered_map<std::string, size_t> next_member_ordinal_by_logical_id;
+    for (size_t node_i = 0; node_i < original_node_count; ++node_i) {
+        auto const& node = topology.node(node_i);
+        if (node.materialization.is_placeholder()) {
+            continue;
+        }
+        std::string const logical_node_id = node.vacant_input_ownership.logical_node_id;
+        if (logical_node_id.empty()) {
+            continue;
+        }
+        std::string final_logical_node_id = logical_node_id;
+        if (auto it = types_by_logical_id.find(logical_node_id);
+            it != types_by_logical_id.end() && it->second.size() > 1) {
+            final_logical_node_id += "#type:" + details::stable_identity_suffix(node.type_identity.value);
+        }
+        size_t const member_ordinal = next_member_ordinal_by_logical_id[final_logical_node_id]++;
+        for (size_t input_i = 0; input_i < node.inputs().size(); ++input_i) {
+            PortId const target_port{ node_i, input_i };
+            result.sample.push_back(GraphBuilderLogicalSampleInput{
+                .target = target_port,
+                .logical_node_id = final_logical_node_id,
+                .member_ordinal = member_ordinal,
+                .config = node.inputs()[input_i],
+                .has_existing_connection = _placed_sample_inputs.contains(target_port),
+                .runtime_filled = _runtime_filled_sample_inputs.contains(target_port),
+            });
+        }
+        for (size_t input_i = 0; input_i < node.event_inputs().size(); ++input_i) {
+            PortId const target_port{ node_i, input_i };
+            result.event.push_back(GraphBuilderLogicalEventInput{
+                .target = target_port,
+                .logical_node_id = final_logical_node_id,
+                .member_ordinal = member_ordinal,
+                .config = node.event_inputs()[input_i],
+                .has_existing_connection = _placed_event_inputs.contains(target_port),
+                .runtime_filled = _runtime_filled_event_inputs.contains(target_port),
+            });
+        }
+    }
+    return result;
+}
+
 void GraphBuilderConnections::import_child(GraphBuilderConnections const& child, size_t child_node_offset)
 {
     for (PortId const port : child._placed_sample_inputs) {

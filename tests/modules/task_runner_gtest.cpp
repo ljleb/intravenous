@@ -1,4 +1,5 @@
 #include <intravenous/runtime/task_runner.h>
+#include <intravenous/runtime/task_runner_events.h>
 
 #include <gtest/gtest.h>
 
@@ -127,6 +128,34 @@ namespace {
         LogState *log = nullptr;
         std::atomic<int> invocations = 0;
     };
+
+    struct PassFinishedWitness {
+        mutable std::mutex mutex;
+        std::vector<std::uint64_t> revisions;
+
+        void push(std::uint64_t revision)
+        {
+            std::scoped_lock lock(mutex);
+            revisions.push_back(revision);
+        }
+
+        std::vector<std::uint64_t> snapshot() const
+        {
+            std::scoped_lock lock(mutex);
+            return revisions;
+        }
+    };
+
+    PassFinishedWitness *g_pass_finished_witness = nullptr;
+
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::TaskRunnerPassFinishedEvent,
+        iv_runtime_task_runner_pass_finished_event,
+        +[](iv::TaskRunnerPassFinished const &finished) {
+            if (g_pass_finished_witness != nullptr) {
+                g_pass_finished_witness->push(finished.graph_revision);
+            }
+        });
 
     class TaskRunnerTest : public ::testing::Test {
     protected:
@@ -651,6 +680,27 @@ namespace {
         ctx->cv.notify_all();
 
         EXPECT_EQ(destroy_future.wait_for(2s), std::future_status::ready);
+    }
+
+    TEST_F(TaskRunnerTest, EmitsPassFinishedAfterCompletedPass)
+    {
+        LogState log;
+        RecordingContext ctx{ .name = "a", .log = &log };
+        PassFinishedWitness witness;
+        g_pass_finished_witness = &witness;
+
+        {
+            iv::TaskRunner runner(1);
+            runner.update_tasks(iv::TaskGraphUpdate{
+                .to_create = { task("a", {}, &record_callback, &ctx) },
+            });
+
+            ASSERT_TRUE(wait_until([&] { return ctx.invocations.load() >= 1; }));
+            ASSERT_TRUE(wait_until([&] { return !witness.snapshot().empty(); }));
+            EXPECT_EQ(witness.snapshot().front(), runner.active_graph_revision());
+        }
+
+        g_pass_finished_witness = nullptr;
     }
 
 } // namespace

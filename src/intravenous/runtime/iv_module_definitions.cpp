@@ -264,4 +264,15 @@ std::vector<IvModuleDefinition> IvModuleDefinitions::loaded_definitions() const
     }
     return definitions;
 }
+
+GraphBuilder const *IvModuleDefinitions::builder_for_definition(
+    std::string const &definition_id) const
+{
+    std::scoped_lock lock(mutex);
+    auto const it = loaded_definitions_by_id.find(definition_id);
+    if (it == loaded_definitions_by_id.end()) {
+        return nullptr;
+    }
+    return &it->second->canonical_builder;
+}
 } // namespace iv

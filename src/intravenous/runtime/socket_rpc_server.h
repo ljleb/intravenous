@@ -50,8 +50,10 @@ namespace iv {
         void (*)(std::string const &, SocketRpcAckResponseBuilder &);
     using SocketRpcSetSampleInputValueEvent =
         void (*)(SetSampleInputValueRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcClearSampleInputValueOverrideEvent =
-        void (*)(ClearSampleInputValueOverrideRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcSetSampleInputStateEvent =
+        void (*)(SetSampleInputStateRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcSetEventInputStateEvent =
+        void (*)(SetEventInputStateRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcServerShutdownEvent =
         void (*)(ServerShutdownRequest const &, SocketRpcAckResponseBuilder &);
 
@@ -67,7 +69,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateLaneViewEvent, iv_socket_rpc_update_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCloseLaneViewEvent, iv_socket_rpc_close_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleInputValueEvent, iv_socket_rpc_set_sample_input_value_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcClearSampleInputValueOverrideEvent, iv_socket_rpc_clear_sample_input_value_override_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleInputStateEvent, iv_socket_rpc_set_sample_input_state_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetEventInputStateEvent, iv_socket_rpc_set_event_input_state_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcServerShutdownEvent, iv_socket_rpc_server_shutdown_event);
 
     class SocketRpcServer {

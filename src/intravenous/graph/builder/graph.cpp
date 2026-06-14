@@ -347,6 +347,11 @@ GraphBuilder::VacantInputs GraphBuilder::vacant_inputs() const
     return _connections.collect_vacant_inputs(_topology);
 }
 
+GraphBuilder::LogicalInputs GraphBuilder::logical_inputs() const
+{
+    return _connections.collect_logical_inputs(_topology);
+}
+
 void GraphBuilder::connect_sample_input(PortId target, SamplePortRef source)
 {
     _connections.connect_sample_input(_topology, _identity, target, source);
