@@ -158,6 +158,7 @@ namespace iv {
         TypeErasedLaneNode node {};
         LaneOutputConfig output {};
         LaneMetadata metadata {};
+        std::vector<std::string> external_task_dependencies {};
     };
 
     struct CompiledLaneRecord {
@@ -322,7 +323,11 @@ namespace iv {
             return id;
         }
 
-        void upsert_lane(LaneId id, TypeErasedLaneNode node, LaneMetadata metadata = {})
+        void upsert_lane(
+            LaneId id,
+            TypeErasedLaneNode node,
+            LaneMetadata metadata = {},
+            std::vector<std::string> external_task_dependencies = {})
         {
             LaneOutputConfig output = node.output();
             LanePortDomain const domain = lane_output_domain(output);
@@ -335,6 +340,7 @@ namespace iv {
                 record.node = std::move(node);
                 record.output = std::move(output);
                 record.metadata = std::move(metadata);
+                record.external_task_dependencies = std::move(external_task_dependencies);
                 return;
             }
 
@@ -344,6 +350,7 @@ namespace iv {
                 .node = std::move(node),
                 .output = std::move(output),
                 .metadata = std::move(metadata),
+                .external_task_dependencies = std::move(external_task_dependencies),
             };
             if (domain == LanePortDomain::compiled) {
                 _lanes.indices.emplace(id, LaneLocation {

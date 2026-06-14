@@ -76,6 +76,20 @@ namespace iv {
         std::string state{};
     };
 
+    struct SetSampleOutputStateRequest {
+        std::string node_id{};
+        size_t output_ordinal = 0;
+        std::optional<size_t> member_ordinal{};
+        std::string state{};
+    };
+
+    struct SetEventOutputStateRequest {
+        std::string node_id{};
+        size_t output_ordinal = 0;
+        std::optional<size_t> member_ordinal{};
+        std::string state{};
+    };
+
     struct ServerShutdownRequest {};
 
     using SocketRpcRequestPayload = std::variant<
@@ -92,6 +106,8 @@ namespace iv {
         SetSampleInputValueRequest,
         SetSampleInputStateRequest,
         SetEventInputStateRequest,
+        SetSampleOutputStateRequest,
+        SetEventOutputStateRequest,
         ServerShutdownRequest,
         std::string>;
 

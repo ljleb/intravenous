@@ -112,6 +112,8 @@ add_iv_gtest(
     modules/iv_module_source_introspection_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(intravenous_graph_input_lanes_tests modules/graph_input_lanes_gtest.cpp)
+add_iv_gtest(intravenous_graph_output_blocks_tests modules/graph_output_blocks_gtest.cpp)
+add_iv_gtest(intravenous_graph_logical_outputs_tests graph_logical_outputs_gtest.cpp)
 add_iv_gtest(intravenous_task_runner_tests modules/task_runner_gtest.cpp)
 add_iv_gtest(intravenous_lane_filters_bridges_tests bridges/lane_filters_bridges_gtest.cpp)
 add_iv_gtest(intravenous_runtime_module_bridges_tests bridges/runtime_module_bridges_gtest.cpp)

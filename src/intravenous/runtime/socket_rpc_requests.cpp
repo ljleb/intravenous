@@ -376,6 +376,34 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
+    if (method == "graph.setSampleOutputState") {
+        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = SetSampleOutputStateRequest{
+                .node_id = parse_string_param(params, "nodeId"),
+                .output_ordinal = static_cast<size_t>(parse_uint64_param(params, "outputOrdinal")),
+                .member_ordinal = member_ordinal.has_value()
+                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
+                    : std::nullopt,
+                .state = parse_string_param(params, "state"),
+            },
+        };
+    }
+    if (method == "graph.setEventOutputState") {
+        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = SetEventOutputStateRequest{
+                .node_id = parse_string_param(params, "nodeId"),
+                .output_ordinal = static_cast<size_t>(parse_uint64_param(params, "outputOrdinal")),
+                .member_ordinal = member_ordinal.has_value()
+                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
+                    : std::nullopt,
+                .state = parse_string_param(params, "state"),
+            },
+        };
+    }
     if (method == "server.shutdown") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,

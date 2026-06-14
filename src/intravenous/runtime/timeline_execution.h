@@ -43,6 +43,7 @@ private:
         TypeErasedLaneNode const *node = nullptr;
         LaneOutputConfig output {};
         std::vector<LaneInputConnection> inputs {};
+        std::vector<std::string> external_task_dependencies {};
         TaskCallback callback {};
     };
 

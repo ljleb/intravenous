@@ -125,7 +125,11 @@ namespace iv {
                     if (!upsert.make_node) {
                         throw std::runtime_error("timeline lane upsert is missing node factory");
                     }
-                    graph.upsert_lane(upsert.lane, upsert.make_node(), upsert.metadata);
+                    graph.upsert_lane(
+                        upsert.lane,
+                        upsert.make_node(),
+                        upsert.metadata,
+                        upsert.external_task_dependencies);
                 }
                 for (auto const &child : batch.hierarchy_additions) {
                     graph.add_child(child.parent, child.child);

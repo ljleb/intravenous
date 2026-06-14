@@ -158,6 +158,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_runtime_task_runner_events
         intravenous_runtime_timeline_events
         intravenous_runtime_timeline_execution_events
+        intravenous_runtime_graph_output_blocks_events
         intravenous_runtime_iv_module_instances_execution_events
         intravenous_tooling_runtime_objects
         nlohmann_json::nlohmann_json
@@ -284,12 +285,18 @@ iv_add_linker_event_object(
     runtime/timeline_execution_events.cpp
 )
 iv_add_linker_event_object(
+    intravenous_runtime_graph_output_blocks_events
+    runtime/graph_output_blocks_events.cpp
+)
+iv_add_linker_event_object(
     intravenous_runtime_iv_module_instances_execution_events
     runtime/iv_module_instances_execution_events.cpp
 )
 
 add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/config.cpp
+    runtime/graph_output_blocks.cpp
+    runtime/graph_output_blocks_bridge.cpp
     runtime/graph_input_lanes.cpp
     runtime/graph_input_lanes_events.cpp
     runtime/graph_input_lanes_iv_module_instances_bridge.cpp

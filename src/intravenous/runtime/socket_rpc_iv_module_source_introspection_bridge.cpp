@@ -47,6 +47,34 @@ ProjectEventInputState parse_project_event_input_state(std::string const &state)
     throw std::runtime_error("unknown event input state: " + state);
 }
 
+ProjectSampleOutputState parse_project_sample_output_state(std::string const &state)
+{
+    if (state == "disconnected") {
+        return ProjectSampleOutputState::disconnected;
+    }
+    if (state == "logical") {
+        return ProjectSampleOutputState::logical;
+    }
+    if (state == "timelineLane") {
+        return ProjectSampleOutputState::timeline_lane;
+    }
+    throw std::runtime_error("unknown sample output state: " + state);
+}
+
+ProjectEventOutputState parse_project_event_output_state(std::string const &state)
+{
+    if (state == "disconnected") {
+        return ProjectEventOutputState::disconnected;
+    }
+    if (state == "logical") {
+        return ProjectEventOutputState::logical;
+    }
+    if (state == "timelineLane") {
+        return ProjectEventOutputState::timeline_lane;
+    }
+    throw std::runtime_error("unknown event output state: " + state);
+}
+
 void handle_graph_query_by_spans(
     GraphQueryBySpansRequest const &request,
     SocketRpcGraphQueryResultBuilder &builder)
@@ -138,6 +166,38 @@ void handle_set_event_input_state(
         });
 }
 
+void handle_set_sample_output_state(
+    SetSampleOutputStateRequest const &request,
+    SocketRpcAckResponseBuilder &)
+{
+    if (bound_graph_input_lanes == nullptr) {
+        return;
+    }
+    bound_graph_input_lanes->set_sample_output_state(
+        ProjectSetSampleOutputStateRequest{
+            .node_id = request.node_id,
+            .member_ordinal = request.member_ordinal,
+            .output_ordinal = request.output_ordinal,
+            .state = parse_project_sample_output_state(request.state),
+        });
+}
+
+void handle_set_event_output_state(
+    SetEventOutputStateRequest const &request,
+    SocketRpcAckResponseBuilder &)
+{
+    if (bound_graph_input_lanes == nullptr) {
+        return;
+    }
+    bound_graph_input_lanes->set_event_output_state(
+        ProjectSetEventOutputStateRequest{
+            .node_id = request.node_id,
+            .member_ordinal = request.member_ordinal,
+            .output_ordinal = request.output_ordinal,
+            .state = parse_project_event_output_state(request.state),
+        });
+}
+
 void handle_server_shutdown(
     ServerShutdownRequest const &,
     SocketRpcAckResponseBuilder &)
@@ -175,6 +235,14 @@ IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcSetEventInputStateEvent,
     iv_socket_rpc_set_event_input_state_event,
     handle_set_event_input_state);
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcSetSampleOutputStateEvent,
+    iv_socket_rpc_set_sample_output_state_event,
+    handle_set_sample_output_state);
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcSetEventOutputStateEvent,
+    iv_socket_rpc_set_event_output_state_event,
+    handle_set_event_output_state);
 IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcServerShutdownEvent,
     iv_socket_rpc_server_shutdown_event,

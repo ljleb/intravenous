@@ -352,6 +352,11 @@ GraphBuilder::LogicalInputs GraphBuilder::logical_inputs() const
     return _connections.collect_logical_inputs(_topology);
 }
 
+GraphBuilder::LogicalOutputs GraphBuilder::logical_outputs() const
+{
+    return _connections.collect_logical_outputs(_topology);
+}
+
 void GraphBuilder::connect_sample_input(PortId target, SamplePortRef source)
 {
     _connections.connect_sample_input(_topology, _identity, target, source);

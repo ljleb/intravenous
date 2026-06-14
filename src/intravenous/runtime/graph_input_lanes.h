@@ -41,6 +41,18 @@ public:
         disconnected,
     };
 
+    // Output-state model (mirror of inputs, inverted). Disconnected is the default and is
+    // represented by the *absence* of an entry in the state maps (never stored). A
+    // disconnected output is left genuinely unconnected: no sink, no lane, nothing.
+    enum class LogicalOutputState {
+        timeline_lane,
+    };
+
+    enum class ConcreteOutputState {
+        logical,
+        timeline_lane,
+    };
+
     struct DesiredGraphInputPort {
         std::string instance_id {};
         int module_instance_id = 0;
@@ -75,6 +87,10 @@ private:
     LaneIdAllocator lane_ids;
     std::unordered_map<std::string, std::vector<DesiredGraphInputPort>> desired_ports_by_instance_id;
     std::vector<DesiredGraphInputPort> desired_ports;
+    std::unordered_map<std::string, std::vector<DesiredGraphInputPort>> desired_output_ports_by_instance_id;
+    std::vector<DesiredGraphInputPort> desired_output_ports;
+    std::unordered_map<std::string, LogicalOutputState> logical_output_states_by_key;
+    std::unordered_map<std::string, ConcreteOutputState> concrete_output_states_by_key;
     std::vector<ExistingTrackedLane> tracked_lanes;
     std::unordered_map<std::string, std::vector<std::vector<Sample*>>> live_inputs;
     std::unordered_map<std::string, std::vector<std::unique_ptr<std::atomic<Sample::storage>>>> live_input_values;
@@ -87,6 +103,8 @@ private:
     std::vector<TimelineLaneBatchUpdate> pending_timeline_batches;
 
     static std::vector<DesiredGraphInputPort> graph_input_port_descriptors_for(
+        IvModuleInstance const &instance);
+    static std::vector<DesiredGraphInputPort> graph_output_port_descriptors_for(
         IvModuleInstance const &instance);
     static int module_instance_numeric_id(std::string_view instance_id);
     static int hash_string(std::string const &value);
@@ -111,6 +129,12 @@ private:
     static LaneMetadata graph_input_metadata(
         DesiredGraphInputPort const &port,
         bool knob,
+        bool logical,
+        bool concrete,
+        bool sample,
+        bool event);
+    static LaneMetadata graph_output_metadata(
+        DesiredGraphInputPort const &port,
         bool logical,
         bool concrete,
         bool sample,
@@ -145,7 +169,19 @@ private:
         std::string const &instance_id,
         GraphInputPortDescriptor const &port) const;
     GraphInputLaneBindings reconcile_ports_locked(TimelineLaneBatchUpdate *batch = nullptr);
+    void reconcile_output_ports_locked(TimelineLaneBatchUpdate *batch = nullptr);
+    std::optional<ConcreteOutputState> effective_concrete_output_state_locked(
+        DesiredGraphInputPort const &port) const;
+    LaneId graph_output_lane_for(
+        GraphInputPortDescriptor const &port,
+        bool logical_aggregation);
+    void mark_instances_requiring_output_rebuild_locked(
+        std::string_view logical_node_id,
+        std::optional<size_t> member_ordinal,
+        size_t output_ordinal,
+        PortKind port_kind);
     void refresh_desired_ports_locked();
+    void refresh_desired_output_ports_locked();
     GraphInputLaneBindings sample_input_bindings(
         std::string const &node_id,
         std::optional<size_t> member_ordinal,
@@ -172,6 +208,10 @@ public:
         ProjectSetSampleInputStateRequest const &request);
     void set_event_input_state(
         ProjectSetEventInputStateRequest const &request);
+    void set_sample_output_state(
+        ProjectSetSampleOutputStateRequest const &request);
+    void set_event_output_state(
+        ProjectSetEventOutputStateRequest const &request);
     [[nodiscard]] GraphInputLaneBindings graph_input_lane_bindings(
         ProjectGraphInputLaneBindingsRequest const &request);
     void handle_task_runner_pass_finished(TaskRunnerPassFinished const &finished);

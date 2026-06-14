@@ -68,7 +68,12 @@ void emit_lane_change(
                             continue;
                         }
                         auto const& record = graph.lane(lane);
-                        visit(lane, record.node, record.output, graph.inputs_for(lane));
+                        visit(
+                            lane,
+                            record.node,
+                            record.output,
+                            graph.inputs_for(lane),
+                            record.external_task_dependencies);
                     }
                 });
             },

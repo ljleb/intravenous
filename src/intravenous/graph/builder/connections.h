@@ -53,6 +53,27 @@ namespace iv {
         std::vector<GraphBuilderLogicalEventInput> event {};
     };
 
+    struct GraphBuilderLogicalSampleOutput {
+        PortId source {};
+        std::string logical_node_id {};
+        size_t member_ordinal = 0;
+        OutputConfig config {};
+        bool has_existing_downstream_connection = false;
+    };
+
+    struct GraphBuilderLogicalEventOutput {
+        PortId source {};
+        std::string logical_node_id {};
+        size_t member_ordinal = 0;
+        EventOutputConfig config {};
+        bool has_existing_downstream_connection = false;
+    };
+
+    struct GraphBuilderLogicalOutputs {
+        std::vector<GraphBuilderLogicalSampleOutput> sample {};
+        std::vector<GraphBuilderLogicalEventOutput> event {};
+    };
+
     class GraphBuilderConnections {
     public:
         bool sample_input_is_connected(PortId target) const;
@@ -74,6 +95,7 @@ namespace iv {
         void mark_runtime_filled_event_input(PortId target);
         GraphBuilderVacantInputs collect_vacant_inputs(GraphBuilderTopology const&) const;
         GraphBuilderLogicalInputs collect_logical_inputs(GraphBuilderTopology const&) const;
+        GraphBuilderLogicalOutputs collect_logical_outputs(GraphBuilderTopology const&) const;
         void import_child(GraphBuilderConnections const& child, size_t child_node_offset);
         template<class Fn>
         void for_each_runtime_filled_sample_input(Fn&& fn) const

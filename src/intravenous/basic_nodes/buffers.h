@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/node/lifecycle.h>
+#include <intravenous/runtime/graph_output_blocks_events.h>
 #include <intravenous/runtime/timeline_execution_events.h>
 
 #include <array>
@@ -10,6 +11,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace iv {
     struct ValueSource {
@@ -113,6 +115,91 @@ namespace iv {
             for (size_t i = 0; i < ctx.block_size; ++i) {
                 ctx.outputs[0].push(i < block.size() ? block[i] : Sample{0.0f});
             }
+        }
+    };
+
+    // DSP-side sink that taps a concrete sample output port and publishes the block to
+    // GraphOutputBlocks, where a timeline output-lane node reads it back. One input, no
+    // output (sinks are retained and executed like any registered node). Fan-in into the
+    // single input (multiple concrete outputs of one logical port) is lowered to Sum<N>.
+    class GraphSampleOutputSink {
+        LaneId _lane {};
+        std::string _identity;
+
+    public:
+        static std::string nominal_identity(LaneId lane)
+        {
+            return "graph-output-sample-sink:" + std::to_string(lane.value);
+        }
+
+        explicit GraphSampleOutputSink(LaneId lane) :
+            _lane(lane),
+            _identity(nominal_identity(lane))
+        {}
+
+        auto inputs() const
+        {
+            return std::array<InputConfig, 1>{};
+        }
+
+        std::string identity() const
+        {
+            return _identity;
+        }
+
+        void tick_block(TickBlockContext<GraphSampleOutputSink> const& ctx) const
+        {
+            auto const block = ctx.inputs[0].get_block(ctx.block_size);
+            std::vector<Sample> samples(ctx.block_size);
+            for (size_t i = 0; i < ctx.block_size; ++i) {
+                samples[i] = i < block.size() ? block[i] : Sample{0.0f};
+            }
+            IV_INVOKE_SINGLETON_EVENT(
+                iv_runtime_graph_output_blocks_sample_published_event,
+                _lane,
+                std::span<Sample const>(samples));
+        }
+    };
+
+    // Event counterpart of GraphSampleOutputSink. One event input (typed to match the
+    // tapped output port), no output. Fan-in is lowered to EventConcatenation.
+    class GraphEventOutputSink {
+        LaneId _lane {};
+        EventTypeId _type {};
+        std::string _identity;
+
+    public:
+        static std::string nominal_identity(LaneId lane)
+        {
+            return "graph-output-event-sink:" + std::to_string(lane.value);
+        }
+
+        explicit GraphEventOutputSink(LaneId lane, EventTypeId type) :
+            _lane(lane),
+            _type(type),
+            _identity(nominal_identity(lane))
+        {}
+
+        auto event_inputs() const
+        {
+            return std::array<EventInputConfig, 1>{{
+                { .type = _type },
+            }};
+        }
+
+        std::string identity() const
+        {
+            return _identity;
+        }
+
+        void tick_block(TickBlockContext<GraphEventOutputSink> const& ctx) const
+        {
+            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            std::vector<TimedEvent> stored(events.begin(), events.end());
+            IV_INVOKE_SINGLETON_EVENT(
+                iv_runtime_graph_output_blocks_event_published_event,
+                _lane,
+                std::span<TimedEvent const>(stored));
         }
     };
 }

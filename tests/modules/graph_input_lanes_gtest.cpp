@@ -5,12 +5,15 @@
 #include <intravenous/graph/build_types.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
+#include <intravenous/runtime/task_ids.h>
 #include <intravenous/runtime/task_runner_events.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -87,6 +90,44 @@ iv::IvModuleInstance make_instance_with_member_ports()
     member.event_inputs.push_back(iv::IntrospectionPortInfo {
         .name = "trigger",
         .type = "event",
+        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .ordinal = 0,
+    });
+    instance.introspection.logical_nodes.front().members.push_back(std::move(member));
+    return instance;
+}
+
+iv::IvModuleInstance make_instance_with_output_ports()
+{
+    iv::IvModuleInstance instance {};
+    instance.instance_id = "instance:1";
+    instance.definition_id = "definition:1";
+    instance.module_root = std::filesystem::path("/tmp/module");
+    instance.module_id = "iv.test.module";
+
+    iv::IntrospectionLogicalNode node {};
+    node.id = "node-1";
+    node.kind = "TestNode";
+    node.sample_outputs.push_back(iv::IntrospectionPortInfo {
+        .name = "out",
+        .type = "sample",
+        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .ordinal = 0,
+    });
+    instance.introspection.logical_nodes.push_back(std::move(node));
+    return instance;
+}
+
+iv::IvModuleInstance make_instance_with_member_output_ports()
+{
+    auto instance = make_instance_with_output_ports();
+    iv::IntrospectionLogicalNode::Member member {};
+    member.ordinal = 0;
+    member.backing_node_id = "node-1";
+    member.kind = "TestNode";
+    member.sample_outputs.push_back(iv::IntrospectionPortInfo {
+        .name = "out",
+        .type = "sample",
         .connectivity = iv::LogicalPortConnectivity::disconnected,
         .ordinal = 0,
     });
@@ -575,4 +616,189 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputDefaultClearsExplicitTimelineState
     auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
     ASSERT_EQ(dependencies.prerequisite_lanes.size(), 1u);
     EXPECT_TRUE(static_cast<bool>(dependencies.prerequisite_lanes.front()));
+}
+
+namespace {
+bool batch_has_output_lane(
+    iv::TimelineLaneBatchUpdate const &batch,
+    std::string_view extra_unit,
+    iv::TimelineLaneUpsert const **out = nullptr)
+{
+    for (auto const &upsert : batch.upserts) {
+        if (upsert.metadata.has_unit("dsp_graph.output")
+            && upsert.metadata.has_unit(extra_unit)) {
+            if (out != nullptr) {
+                *out = &upsert;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+TEST_F(GraphInputLanesTest, DisconnectedOutputsCreateNoOutputLanes)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_output_ports();
+    iv::GraphBuilder builder;
+    auto node = iv::_annotate_node_source_info(
+        builder.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
+
+    for (auto const &batch : witness.timeline_batches) {
+        EXPECT_FALSE(batch_has_output_lane(batch, "dsp_graph.sample"));
+    }
+}
+
+TEST_F(GraphInputLanesTest, LogicalSampleOutputTimelineStateCreatesAggregationLaneWithDspDependency)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_output_ports();
+    iv::GraphBuilder builder;
+    auto node = iv::_annotate_node_source_info(
+        builder.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
+    witness.timeline_batches.clear();
+
+    lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
+        .node_id = "node-1",
+        .member_ordinal = std::nullopt,
+        .output_ordinal = 0,
+        .state = iv::ProjectSampleOutputState::timeline_lane,
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
+
+    ASSERT_EQ(witness.timeline_batches.size(), 1u);
+    iv::TimelineLaneUpsert const *upsert = nullptr;
+    ASSERT_TRUE(batch_has_output_lane(
+        witness.timeline_batches.front(),
+        "dsp_graph.logical",
+        &upsert));
+    ASSERT_NE(upsert, nullptr);
+    ASSERT_EQ(upsert->external_task_dependencies.size(), 1u);
+    EXPECT_EQ(
+        upsert->external_task_dependencies.front(),
+        iv::iv_module_instance_dsp_task_id("instance:1"));
+}
+
+TEST_F(GraphInputLanesTest, SettingSampleOutputStateMarksInstanceRebuild)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_output_ports();
+    iv::GraphBuilder builder;
+    auto node = iv::_annotate_node_source_info(
+        builder.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
+    witness.rebuild_requests.clear();
+
+    lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
+        .node_id = "node-1",
+        .member_ordinal = std::nullopt,
+        .output_ordinal = 0,
+        .state = iv::ProjectSampleOutputState::timeline_lane,
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
+
+    ASSERT_EQ(witness.rebuild_requests.size(), 1u);
+    ASSERT_EQ(witness.rebuild_requests.front().size(), 1u);
+    EXPECT_EQ(witness.rebuild_requests.front().front(), "instance:1");
+}
+
+TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLane)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_member_output_ports();
+    iv::GraphBuilder builder;
+    auto node = iv::_annotate_node_source_info(
+        builder.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
+    witness.timeline_batches.clear();
+
+    lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
+        .node_id = "node-1",
+        .member_ordinal = 0u,
+        .output_ordinal = 0,
+        .state = iv::ProjectSampleOutputState::timeline_lane,
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
+
+    ASSERT_EQ(witness.timeline_batches.size(), 1u);
+    iv::TimelineLaneUpsert const *upsert = nullptr;
+    ASSERT_TRUE(batch_has_output_lane(
+        witness.timeline_batches.front(),
+        "dsp_graph.concrete",
+        &upsert));
+    ASSERT_NE(upsert, nullptr);
+    ASSERT_EQ(upsert->external_task_dependencies.size(), 1u);
+    EXPECT_EQ(
+        upsert->external_task_dependencies.front(),
+        iv::iv_module_instance_dsp_task_id("instance:1"));
+}
+
+TEST_F(GraphInputLanesTest, TogglingSampleOutputBackToDisconnectedRemovesLane)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_output_ports();
+    iv::GraphBuilder builder;
+    auto node = iv::_annotate_node_source_info(
+        builder.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
+
+    lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
+        .node_id = "node-1",
+        .member_ordinal = std::nullopt,
+        .output_ordinal = 0,
+        .state = iv::ProjectSampleOutputState::timeline_lane,
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
+    iv::TimelineLaneUpsert const *created = nullptr;
+    ASSERT_TRUE(batch_has_output_lane(
+        witness.timeline_batches.back(),
+        "dsp_graph.logical",
+        &created));
+    auto const created_lane = created->lane;
+    witness.timeline_batches.clear();
+
+    lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
+        .node_id = "node-1",
+        .member_ordinal = std::nullopt,
+        .output_ordinal = 0,
+        .state = iv::ProjectSampleOutputState::disconnected,
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 2});
+
+    ASSERT_EQ(witness.timeline_batches.size(), 1u);
+    auto const &removals = witness.timeline_batches.front().removals;
+    EXPECT_NE(std::find(removals.begin(), removals.end(), created_lane), removals.end());
 }

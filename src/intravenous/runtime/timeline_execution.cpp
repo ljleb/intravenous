@@ -161,6 +161,7 @@ TaskGraphUpdate TimelineExecution::synchronize_from_graph(LaneGraph const &graph
             .node = &record.node,
             .output = record.output,
             .inputs = graph.inputs_for(record.id),
+            .external_task_dependencies = record.external_task_dependencies,
         });
     });
 
@@ -189,13 +190,14 @@ TaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(TimelineLanesCh
     if (change.visit_lanes) {
         std::vector<LaneId> visited = change.created_lanes;
         visited.insert(visited.end(), change.changed_lanes.begin(), change.changed_lanes.end());
-        change.visit_lanes(visited, [&](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output, std::vector<LaneInputConnection> const &inputs) {
+        change.visit_lanes(visited, [&](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output, std::vector<LaneInputConnection> const &inputs, std::vector<std::string> const &external_task_dependencies) {
             auto &tracked = tracked_lanes_[lane];
             bool const existed = tracked.id == lane && tracked.node != nullptr;
             tracked.id = lane;
             tracked.node = &node;
             tracked.output = output;
             tracked.inputs = inputs;
+            tracked.external_task_dependencies = external_task_dependencies;
 
             auto &callback = callback_contexts_[lane];
             if (!callback) {
@@ -211,30 +213,28 @@ TaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(TimelineLanesCh
             compiled_sample_cache_.erase(lane);
             compiled_event_cache_.erase(lane);
 
+            auto build_depends_on = [&] {
+                std::vector<std::string> depends_on;
+                depends_on.reserve(inputs.size() + external_task_dependencies.size());
+                for (auto const &input : inputs) {
+                    depends_on.push_back(timeline_lane_task_id(input.source));
+                }
+                for (auto const &dependency : external_task_dependencies) {
+                    depends_on.push_back(dependency);
+                }
+                return depends_on;
+            };
+
             if (existed) {
                 update.to_update.push_back(TaskUpdateRecord {
                     .id = timeline_lane_task_id(lane),
-                    .depends_on = [&] {
-                        std::vector<std::string> depends_on;
-                        depends_on.reserve(inputs.size());
-                        for (auto const &input : inputs) {
-                            depends_on.push_back(timeline_lane_task_id(input.source));
-                        }
-                        return std::optional<std::vector<std::string>>(std::move(depends_on));
-                    }(),
+                    .depends_on = std::optional<std::vector<std::string>>(build_depends_on()),
                     .callback = tracked.callback,
                 });
             } else {
                 update.to_create.push_back(TaskRecord {
                     .id = timeline_lane_task_id(lane),
-                    .depends_on = [&] {
-                        std::vector<std::string> depends_on;
-                        depends_on.reserve(inputs.size());
-                        for (auto const &input : inputs) {
-                            depends_on.push_back(timeline_lane_task_id(input.source));
-                        }
-                        return depends_on;
-                    }(),
+                    .depends_on = build_depends_on(),
                     .callback = tracked.callback,
                 });
             }
@@ -521,9 +521,12 @@ TaskGraphUpdate TimelineExecution::replace_all_lanes_locked(std::vector<TrackedL
         };
 
         std::vector<std::string> depends_on;
-        depends_on.reserve(stored.inputs.size());
+        depends_on.reserve(stored.inputs.size() + stored.external_task_dependencies.size());
         for (auto const &input : stored.inputs) {
             depends_on.push_back(timeline_lane_task_id(input.source));
+        }
+        for (auto const &dependency : stored.external_task_dependencies) {
+            depends_on.push_back(dependency);
         }
         update.to_create.push_back(TaskRecord {
             .id = timeline_lane_task_id(stored.id),

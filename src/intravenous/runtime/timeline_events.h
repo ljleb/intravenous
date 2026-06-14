@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace iv {
@@ -15,12 +16,18 @@ namespace iv {
         LaneId,
         TypeErasedLaneNode const&,
         LaneOutputConfig const&,
-        std::vector<LaneInputConnection> const&)>;
+        std::vector<LaneInputConnection> const&,
+        std::vector<std::string> const&)>;
 
     struct TimelineLaneUpsert {
         LaneId lane {};
         std::function<TypeErasedLaneNode()> make_node {};
         LaneMetadata metadata {};
+        // Extra task-graph dependencies for this lane's task beyond its lane inputs.
+        // Used by output lanes to depend_on the producing DSP task (the inverse of the
+        // input path), carried on the lane definition so TimelineExecution learns it
+        // through the single lane-creation path (no separate dependency event).
+        std::vector<std::string> external_task_dependencies {};
     };
 
     struct TimelineLaneHierarchyUpdate {

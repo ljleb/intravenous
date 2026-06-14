@@ -55,6 +55,10 @@ namespace iv {
         void (*)(SetSampleInputStateRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcSetEventInputStateEvent =
         void (*)(SetEventInputStateRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcSetSampleOutputStateEvent =
+        void (*)(SetSampleOutputStateRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcSetEventOutputStateEvent =
+        void (*)(SetEventOutputStateRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcServerShutdownEvent =
         void (*)(ServerShutdownRequest const &, SocketRpcAckResponseBuilder &);
 
@@ -72,6 +76,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleInputValueEvent, iv_socket_rpc_set_sample_input_value_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleInputStateEvent, iv_socket_rpc_set_sample_input_state_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetEventInputStateEvent, iv_socket_rpc_set_event_input_state_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleOutputStateEvent, iv_socket_rpc_set_sample_output_state_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetEventOutputStateEvent, iv_socket_rpc_set_event_output_state_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcServerShutdownEvent, iv_socket_rpc_server_shutdown_event);
 
     class SocketRpcServer {

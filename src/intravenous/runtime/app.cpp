@@ -5,6 +5,8 @@
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_iv_module_instances_bridge.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
+#include <intravenous/runtime/graph_output_blocks.h>
+#include <intravenous/runtime/graph_output_blocks_bridge.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_builder_bridge.h>
@@ -72,6 +74,7 @@ namespace iv {
             IvModuleDefinitions iv_module_definitions;
             IvModuleReload iv_module_reload(startup);
             GraphInputLanes graph_input_lanes;
+            GraphOutputBlocks graph_output_blocks;
             TaskRunner task_runner;
             TimelineExecution timeline_execution(
                 startup.execution.block_size,
@@ -85,6 +88,7 @@ namespace iv {
                 startup.execution.block_size);
             IvModuleSourceIntrospection introspection;
             bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
+            bind_graph_output_blocks_bridge(graph_output_blocks);
             bind_task_runner_graph_input_lanes_bridge(graph_input_lanes);
             bind_timeline_execution_task_runner_bridge(timeline_execution, task_runner);
             bind_timeline_timeline_execution_bridge(timeline, timeline_execution);
@@ -153,6 +157,7 @@ namespace iv {
             unbind_timeline_execution_task_runner_bridge(timeline_execution, task_runner);
             unbind_timeline_timeline_execution_bridge(timeline, timeline_execution);
             unbind_task_runner_graph_input_lanes_bridge(graph_input_lanes);
+            unbind_graph_output_blocks_bridge(graph_output_blocks);
             unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
             shutdown_callback = nullptr;
             return 0;

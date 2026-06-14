@@ -107,6 +107,35 @@ namespace iv {
         ProjectEventInputState state = ProjectEventInputState::default_;
     };
 
+    // Output-state requests. `disconnected` is the default and maps to *erasing* the
+    // internal entry (mirror of input `default_` -> erase). Logical outputs only
+    // support `disconnected` or `timeline_lane`.
+    enum class ProjectSampleOutputState {
+        disconnected,
+        logical,
+        timeline_lane,
+    };
+
+    struct ProjectSetSampleOutputStateRequest {
+        std::string node_id;
+        std::optional<size_t> member_ordinal;
+        size_t output_ordinal = 0;
+        ProjectSampleOutputState state = ProjectSampleOutputState::disconnected;
+    };
+
+    enum class ProjectEventOutputState {
+        disconnected,
+        logical,
+        timeline_lane,
+    };
+
+    struct ProjectSetEventOutputStateRequest {
+        std::string node_id;
+        std::optional<size_t> member_ordinal;
+        size_t output_ordinal = 0;
+        ProjectEventOutputState state = ProjectEventOutputState::disconnected;
+    };
+
     using ProjectNotificationEvent =
         void (*)(ProjectNotification const &);
     using ProjectLiveInputSnapshotsRequestedEvent =

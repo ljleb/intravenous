@@ -382,7 +382,12 @@ TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
             timeline.with_graph([&](iv::LaneGraph const& graph) {
                 for (auto const lane : lanes) {
                     auto const& record = graph.lane(lane);
-                    visit(lane, record.node, record.output, graph.inputs_for(lane));
+                    visit(
+                        lane,
+                        record.node,
+                        record.output,
+                        graph.inputs_for(lane),
+                        record.external_task_dependencies);
                 }
             });
         },

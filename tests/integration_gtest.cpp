@@ -219,7 +219,12 @@ void apply_timeline_batch_to_execution_and_runner(
                             continue;
                         }
                         auto const &record = graph.lane(lane);
-                        visit(lane, record.node, record.output, graph.inputs_for(lane));
+                        visit(
+                            lane,
+                            record.node,
+                            record.output,
+                            graph.inputs_for(lane),
+                            record.external_task_dependencies);
                     }
                 });
             },
