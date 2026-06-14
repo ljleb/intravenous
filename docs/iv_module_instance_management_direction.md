@@ -1,26 +1,28 @@
 # Iv-Module Instance Management Direction
 
-This note captures the next intended direction for iv-module instance
-management. It is a forward-looking checkpoint, not an implementation claim.
+This note captures the remaining intended direction for iv-module instance
+management beyond the lifecycle and rebuild work already present in code.
 
 If context gets compacted later, this is a useful companion to
 [iv_module_instances_graph_input_direction.md](./iv_module_instances_graph_input_direction.md).
 
-## Goal
+## Current state
 
-`IvModuleInstances` should eventually become the owner of user-managed iv-module
-instances, not just a passive consumer of definition reloads.
+`IvModuleInstances` already owns user-managed iv-module instances in the core
+sense:
 
-That means the module should later support explicit requests to:
-
-- create an instance from a definition
+- create an instance from a definition/module root
 - delete an existing instance
-- rebuild affected instances when a definition changes
+- rebuild affected instances when definitions or graph-input repatching require it
+- remember one realized builder per instance
+
+The remaining work is around persistence, richer per-instance authored state,
+and broader UI affordances.
 
 ## UI Direction
 
-The VS Code UI should eventually gain a webview for managing iv-module
-instances.
+The VS Code UI will likely grow a richer instance-management surface later, but
+the ownership model should not depend on that UI shape.
 
 The intended control flow is:
 
@@ -42,17 +44,18 @@ definition-level diffs.
 - which instances currently exist
 - which definition each instance is associated with
 - copying canonical builders for each affected instance
-- building augmented instance graphs after instance events finish firing
+- publishing per-instance builders for augmentation
+- remembering per-instance rebuilt builders for execution
 
 Multiple instances may share the same definition. Downstream consumers should
 not need duplicated definition-level diff computation for each one.
 
 ## Relationship To Lanes
 
-Lanes should eventually be filterable by iv-module instance so the UI can show
-only the lanes related to one chosen instance.
+Lanes will likely need filtering by iv-module instance so the UI can show only
+the lanes related to one chosen instance.
 
-This means the lane-related modules will later need enough metadata to answer
+This means the lane-related modules will need enough metadata to answer
 questions like:
 
 - which lanes belong to this instance
@@ -69,7 +72,7 @@ The filter semantics can grow later without changing the basic ownership model:
 
 ## Testing Direction
 
-Tests written now should be easy to migrate toward this future.
+Tests should stay easy to migrate as the richer UI and persistence layers land.
 
 That means:
 
@@ -79,6 +82,14 @@ That means:
 - integration tests should verify that instance changes propagate across the
   application
 
-The current test rewrite should preserve behavioral intent while avoiding
-hard-coding the temporary one-instance-per-definition shape more deeply than
-necessary.
+The current test suite should preserve behavioral intent while avoiding
+hard-coding the current UI shape or a temporary one-instance-per-definition
+mental model more deeply than necessary.
+
+## Remaining next steps
+
+The most useful remaining work in this area is:
+
+- persisting iv-module instances and their authored per-instance settings
+- exposing richer instance-management UI controls
+- connecting instance lifecycle to the future persistent-state app module

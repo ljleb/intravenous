@@ -10,8 +10,10 @@ If context gets compacted later, this is one of the first notes to re-read.
 - `IvModuleDefinitions` owns one canonical `GraphBuilder` per iv-module on disk.
 - A definition rebuild produces one new canonical builder for each changed
   iv-module definition.
-- Consumers receive those builders as `const` references during event dispatch.
-- Consumers must copy a builder before mutating it.
+- Consumers see those builders as `const` pointers/references during event
+  dispatch and rebuild queries.
+- `IvModuleInstances` performs the single per-instance copy it needs before
+  mutation or completion.
 
 `IvModuleDefinitions` should also compute the definition-level public interface
 diff for each changed definition.
@@ -24,7 +26,7 @@ Created/updated definition entries should contain:
 
 - definition identity
 - module root
-- canonical `GraphBuilder const&`
+- canonical `GraphBuilder const*` or equivalent non-owning access
 - definition-level public interface diff
 
 Deleted definition entries should contain only the identity needed for cleanup.
@@ -38,28 +40,28 @@ The diff is per-definition, not per-instance.
 Its job is to:
 
 - copy canonical builders for the affected instances
-- produce instance-ready refs for augmentation
-- emit its own batched instance event
-- after the instance event finishes firing, build the augmented builders
-- store the built results in memory for execution
+- emit its own batched builder-change event
+- let downstream modules complete those per-instance builders
+- publish the completed per-instance builders to execution-side modules
+- remember one realized builder per instance for later rebuilds and execution
+- request a fresh canonical builder again when an instance needs structural
+  repatching
 
 ## Instance events
 
 `IvModuleInstances` should publish batched instance events.
 
-These events should still contain:
+Created/updated entries should contain:
 
-- created / updated / deleted entries
+- instance identity
 - associated definition identity
-- pre-fetched node refs
-- pre-fetched input/output refs
-- stable input identifiers
 - `GraphBuilder&` for augmentation of created/updated entries
+- per-instance execution parameters that affect graph materialization
 
-The point of this event is to make it easy for subscribers to connect new things
-to disconnected exposed inputs/outputs.
+Deleted entries should contain only the identity needed for cleanup.
 
-Private physical nodes that have no associated logical id should remain private.
+The point of this event is to let augmentation modules complete per-instance
+builders without making `IvModuleInstances` own their policy.
 
 ## Graph-input-lanes role
 
@@ -67,14 +69,23 @@ Private physical nodes that have no associated logical id should remain private.
 
 It should own:
 
-- the DSP-produced lane subset we care about on iv-module instance reload
-- logical knob state
-- concrete override state
-- parent/child knob inheritance behavior
+- logical sample knob state
+- concrete sample input state
+- concrete event input state
 - graph-input-lane-related lane queries and mutations
+- deferred timeline lane structural batches for graph inputs
+- deferred rebuild requests for affected iv-module instances
 
-It should consume the instance event and use the provided refs plus
-`GraphBuilder&` to augment graphs as needed.
+It should consume the instance builder-change event, inspect the logical graph
+inputs exposed by the builder, and complete the builder according to its owned
+desired state.
+
+That includes:
+
+- direct logical-follow sample control through shared live values
+- timeline-lane completion for sample and event inputs when explicitly requested
+- default behavior derived from the fresh canonical builder shape
+- cross-domain prerequisite publication for timeline-involved inputs
 
 ## Timeline role
 

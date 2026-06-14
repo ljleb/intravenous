@@ -222,17 +222,17 @@ create all of those tasks itself.
 This is important for implicit ordering relationships that are not visible from
 ordinary lane connectivity alone.
 
-For the current input-side wiring direction:
+For the current graph-input wiring direction:
 
 - `TimelineExecution` owns the timeline lane tasks
 - `IvModuleInstancesExecution` owns the DSP graph execution tasks
 - `GraphInputLanes` owns the cross-domain dependency edges between them for
-  vacant graph inputs
+  timeline-involved DSP graph inputs
 
-One future example is DSP graph output lanes:
+One likely next example is DSP graph output lanes:
 
-- a DSP graph may eventually expose timeline-facing input lanes
-- it may also expose timeline-facing output lanes
+- a DSP graph may expose timeline-facing input lanes on demand
+- it may also expose timeline-facing output lanes on demand
 - the input and output lane tasks may require explicit ordering even when the
   timeline graph does not show a direct edge between them
 

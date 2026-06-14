@@ -2,7 +2,7 @@
 
 ## Goal
 
-`GraphInputLanes` should stop thinking only in terms of vacant DSP graph inputs.
+`GraphInputLanes` should not think only in terms of vacant DSP graph inputs.
 
 Instead, it should own authored desired state for logical knobs and concrete DSP
 input ports, and it should re-complete realized DSP instance graphs when that
@@ -43,6 +43,7 @@ reinitialized from defaults when needed.
 
 ### Concrete DSP sample input port state
 
+- `default`
 - `overridden`
 - `logical_follow`
 - `timeline_lane`
@@ -50,14 +51,32 @@ reinitialized from defaults when needed.
 
 Defaults:
 
-- vacant controllable input port -> `logical_follow`
-- already-connected DSP input port -> `disconnected`
+- `default` means:
+  - vacant controllable input port -> `logical_follow`
+  - already-connected DSP input port -> `disconnected`
+- concrete sample inputs are initialized in `default` unless explicit state is
+  authored later
 
 `disconnected` is still meaningful for vacant inputs:
 
 - vacant input + disconnected -> feed `Constant{default_value}`
 - connected input + disconnected -> inject nothing extra and keep the existing
   DSP contributor
+
+### Concrete DSP event input port state
+
+- `default`
+- `logical_follow`
+- `timeline_lane`
+- `disconnected`
+
+Defaults:
+
+- `default` means:
+  - vacant controllable event input port -> `logical_follow`
+  - already-connected DSP event input port -> `disconnected`
+
+For event inputs there is no `overridden` state yet.
 
 ## Completion strategy
 
@@ -87,16 +106,22 @@ When desired input state changes:
    re-emits builder completion events, and the normal completion flow runs
    again.
 
-Value-only changes should update the shared values immediately. Structural
-changes should rebuild at the safe pass boundary.
+Value-only changes should update the shared values immediately through
+thread-safe shared state. Structural changes should rebuild at the safe pass
+boundary.
 
-## Scope of the current implementation pass
+Timeline lane structural changes should follow the same boundary. Lane batches
+may be prepared eagerly inside `GraphInputLanes`, but they should only be
+applied to `Timeline` and `TimelineExecution` between two `TaskRunner` passes.
 
-The first implementation pass does not need to redesign the VS Code UI.
+## Current code direction
 
-It only needs to:
+The useful remaining direction from this note is:
 
-- add the pass-finished synchronization point
-- expose builder logical inputs rather than only vacant inputs
-- teach `GraphInputLanes` to own desired sample-input states
-- rebuild realized instance graphs from remembered builders when required
+- keep builder completion derived from fresh canonical builders
+- keep authored graph-input state in `GraphInputLanes`
+- keep value-only updates out of the rebuild path
+- keep both DSP repatching and timeline lane structural updates on the
+  pass-finished boundary
+
+UI shape is intentionally left out of scope here.
