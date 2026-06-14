@@ -201,7 +201,7 @@ class LiveGraphViewProvider {
             if (!message || !this.controlHandler) {
                 return;
             }
-            if (message.type === "setSampleInputValue" || message.type === "clearSampleInputValueOverride") {
+            if (message.type === "setSampleInputValue" || message.type === "setSampleInputState") {
                 await this.controlHandler(message);
             }
         });
@@ -708,10 +708,11 @@ class LiveGraphViewProvider {
             }
             clearPendingUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.inputOrdinal);
             vscode.postMessage({
-                type: "clearSampleInputValueOverride",
+                type: "setSampleInputState",
                 nodeId: portRef.nodeId,
                 memberOrdinal: portRef.memberOrdinal,
                 inputOrdinal: portRef.inputOrdinal,
+                state: "default",
             });
             hideContextMenu();
         }

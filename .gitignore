@@ -2,6 +2,7 @@
 *.wav
 /.cache
 /.codex
+/.claude
 /intravenious
 /scripts/benchmark.txt*
 node_modules

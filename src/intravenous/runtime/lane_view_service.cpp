@@ -55,11 +55,17 @@ namespace iv {
             .filter = request.query.filter,
             .start_index = request.start_index,
             .visible_lane_count = request.visible_lane_count,
+            .first_sample_index = request.first_sample_index,
+            .last_sample_index = request.last_sample_index,
+            .display_sample_count = request.display_sample_count,
             .visible_lane_ids = visible_lane_ids(lanes),
         };
         return LaneViewResult {
             .view_id = std::move(request.view_id),
             .lanes = std::move(lanes),
+            .first_sample_index = request.first_sample_index,
+            .last_sample_index = request.last_sample_index,
+            .display_sample_count = request.display_sample_count,
         };
     }
 
@@ -78,11 +84,17 @@ namespace iv {
             .filter = request.query.filter,
             .start_index = request.start_index,
             .visible_lane_count = request.visible_lane_count,
+            .first_sample_index = request.first_sample_index,
+            .last_sample_index = request.last_sample_index,
+            .display_sample_count = request.display_sample_count,
             .visible_lane_ids = visible_lane_ids(lanes),
         };
         return LaneViewResult {
             .view_id = std::move(request.view_id),
             .lanes = std::move(lanes),
+            .first_sample_index = request.first_sample_index,
+            .last_sample_index = request.last_sample_index,
+            .display_sample_count = request.display_sample_count,
         };
     }
 
@@ -130,6 +142,9 @@ namespace iv {
                 _update_sink(LaneViewResult {
                     .view_id = view_id,
                     .lanes = std::move(lanes),
+                    .first_sample_index = view.first_sample_index,
+                    .last_sample_index = view.last_sample_index,
+                    .display_sample_count = view.display_sample_count,
                 });
             }
         } catch (...) {

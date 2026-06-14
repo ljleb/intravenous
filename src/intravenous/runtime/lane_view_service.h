@@ -47,11 +47,17 @@ namespace iv {
         LaneQuery query {};
         size_t start_index = 0;
         size_t visible_lane_count = 0;
+        size_t first_sample_index = 0;
+        size_t last_sample_index = 0;
+        size_t display_sample_count = 0;
     };
 
     struct LaneViewResult {
         std::string view_id {};
         LaneQueryResult lanes {};
+        size_t first_sample_index = 0;
+        size_t last_sample_index = 0;
+        size_t display_sample_count = 0;
     };
 
     using LaneViewQueryProvider = std::function<LaneQueryResult(
@@ -66,6 +72,9 @@ namespace iv {
             LaneQueryFilter filter {};
             size_t start_index = 0;
             size_t visible_lane_count = 0;
+            size_t first_sample_index = 0;
+            size_t last_sample_index = 0;
+            size_t display_sample_count = 0;
             std::unordered_set<uint64_t> visible_lane_ids {};
         };
 

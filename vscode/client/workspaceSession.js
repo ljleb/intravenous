@@ -192,12 +192,23 @@ class WorkspaceSession {
         if (!(await this.ensureReady())) {
             return;
         }
-        await this.client.request("graph.clearSampleInputValueOverride", {
-            nodeId,
-            memberOrdinal,
-            inputOrdinal,
-        });
+        await this.setSampleInputState(nodeId, inputOrdinal, "default", memberOrdinal);
         this.provider.clearSampleInputValueOverride(nodeId, memberOrdinal, inputOrdinal);
+    }
+
+    async setSampleInputState(nodeId, inputOrdinal, state, memberOrdinal = null) {
+        if (!(await this.ensureReady())) {
+            return;
+        }
+        const params = {
+            nodeId,
+            inputOrdinal,
+            state,
+        };
+        if (memberOrdinal != null) {
+            params.memberOrdinal = memberOrdinal;
+        }
+        await this.client.request("graph.setSampleInputState", params);
     }
 
     laneViewRequestParams() {

@@ -2,6 +2,7 @@
 
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/lanes_visualization_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -238,6 +239,37 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
     EXPECT_EQ(json["params"]["instances"][0]["instanceId"], "instance:1");
     EXPECT_EQ(json["params"]["instances"][0]["moduleId"], "module.a");
     EXPECT_EQ(json["params"]["instances"][1]["realized"], false);
+
+    unbind_socket_rpc_notification_bridge(harness.server);
+}
+
+TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
+{
+    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_lane_view_content_notification_server"));
+    bind_socket_rpc_notification_bridge(harness.server);
+
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_runtime_lane_view_content_updated_event,
+        iv::LaneViewContentUpdate{
+            .view_id = "view-1",
+            .lanes = {
+                iv::LaneVisualizationSeries{
+                    .lane_id = 42,
+                    .adapter_type = "samples",
+                    .samples = {1.0f, 2.0f, 3.0f},
+                },
+            },
+        });
+
+    auto const line = harness.read_line();
+    ASSERT_FALSE(line.empty());
+    auto const json = parse_json_line(line);
+    EXPECT_EQ(json["method"], "timeline.laneViewContentUpdated");
+    EXPECT_EQ(json["params"]["viewId"], "view-1");
+    ASSERT_EQ(json["params"]["lanes"].size(), 1u);
+    EXPECT_EQ(json["params"]["lanes"][0]["laneId"], 42);
+    EXPECT_EQ(json["params"]["lanes"][0]["adapterType"], "samples");
+    EXPECT_EQ(json["params"]["lanes"][0]["samples"][0], 1.0);
 
     unbind_socket_rpc_notification_bridge(harness.server);
 }

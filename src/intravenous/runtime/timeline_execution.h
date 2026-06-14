@@ -34,6 +34,8 @@ public:
     std::span<TimedEvent const> realtime_event_block(LaneId lane) const;
     std::vector<Sample> compiled_sample_block(LaneId lane, size_t start_index);
     std::vector<TimedEvent> compiled_event_block(LaneId lane, size_t start_index);
+    std::vector<Sample> sparse_compiled_sample_window(LaneId lane, size_t first, size_t last, size_t count);
+    std::vector<TimedEvent> compiled_events_in_range(LaneId lane, size_t first, size_t last);
 
 private:
     struct TrackedLane {

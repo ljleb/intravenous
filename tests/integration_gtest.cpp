@@ -17,20 +17,40 @@
 #include <intravenous/runtime/lane_views.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/startup_config.h>
+#include <intravenous/runtime/task_runner.h>
 #include <intravenous/runtime/timeline.h>
+#include <intravenous/runtime/timeline_execution.h>
+#include <intravenous/runtime/timeline_execution_task_runner_bridge.h>
 #include <intravenous/runtime/timeline_lane_filters_bridge.h>
+#include <intravenous/runtime/timeline_timeline_execution_bridge.h>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <functional>
 #include <gtest/gtest.h>
+#include <mutex>
+#include <numbers>
+#include <thread>
 
 namespace {
 using iv::test_support::read_only_module_fixture_workspace;
 using iv::test_support::shared_inline_module_workspace;
+using namespace std::chrono_literals;
 
 struct IntegrationReloadWitness {
     std::optional<iv::IvModuleReloadResults> results {};
 };
 
 IntegrationReloadWitness *g_integration_reload_witness = nullptr;
+struct IntegrationPassFinishedAction {
+    std::mutex mutex;
+    std::function<void(iv::TaskRunnerPassFinished const &)> fn {};
+};
+
+IntegrationPassFinishedAction *g_integration_pass_finished_action = nullptr;
 
 IV_SUBSCRIBE_LINKER_EVENT(
     iv::IvModuleReloadResultsEvent,
@@ -40,6 +60,174 @@ IV_SUBSCRIBE_LINKER_EVENT(
             g_integration_reload_witness->results = results;
         }
     });
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv::TaskRunnerPassFinishedEvent,
+    iv_runtime_task_runner_pass_finished_event,
+    +[](iv::TaskRunnerPassFinished const &finished) {
+        if (g_integration_pass_finished_action == nullptr) {
+            return;
+        }
+        std::function<void(iv::TaskRunnerPassFinished const &)> fn;
+        {
+            std::scoped_lock lock(g_integration_pass_finished_action->mutex);
+            fn = std::move(g_integration_pass_finished_action->fn);
+        }
+        if (fn) {
+            fn(finished);
+        }
+    });
+
+bool wait_until(std::function<bool()> const &predicate, std::chrono::milliseconds timeout = 2s)
+{
+    auto const deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    return predicate();
+}
+
+struct AudioBufferCaptureState {
+    mutable std::mutex mutex;
+    std::vector<iv::Sample::storage> latest {};
+    std::atomic<size_t> captures {0};
+
+    void store(std::vector<iv::Sample::storage> values)
+    {
+        {
+            std::scoped_lock lock(mutex);
+            latest = std::move(values);
+        }
+        captures.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    std::vector<iv::Sample::storage> snapshot() const
+    {
+        std::scoped_lock lock(mutex);
+        return latest;
+    }
+};
+
+struct TestRealtimeSineLaneState {
+    double phase = 0.0;
+};
+
+struct TestRealtimeSineLaneNode {
+    std::shared_ptr<TestRealtimeSineLaneState> state {};
+    double frequency_hz = 440.0;
+    double sample_rate_hz = 48000.0;
+
+    iv::RealtimeSampleLaneOutputConfig output() const
+    {
+        return {.name = "samples"};
+    }
+
+    void tick_block_realtime(iv::RealtimeLaneTickContext<TestRealtimeSineLaneNode> &ctx)
+    {
+        auto &shared = *state;
+        auto const phase_step = std::numbers::pi * 2.0 * frequency_hz / sample_rate_hz;
+        for (size_t i = 0; i < ctx.sample_count(); ++i) {
+            ctx.out().push(static_cast<iv::Sample>(std::sin(shared.phase)));
+            shared.phase += phase_step;
+            if (shared.phase >= std::numbers::pi * 2.0) {
+                shared.phase -= std::numbers::pi * 2.0;
+            }
+        }
+    }
+};
+
+struct TestAudioBufferSinkLaneNode {
+    std::shared_ptr<AudioBufferCaptureState> capture {};
+
+    std::array<iv::RealtimeSampleLaneInputConfig, 1> realtime_sample_inputs() const
+    {
+        return {iv::RealtimeSampleLaneInputConfig{.name = "source"}};
+    }
+
+    iv::RealtimeSampleLaneOutputConfig output() const
+    {
+        return {.name = "samples"};
+    }
+
+    void tick_block_realtime(iv::RealtimeLaneTickContext<TestAudioBufferSinkLaneNode> &ctx)
+    {
+        std::vector<iv::Sample::storage> latest;
+        latest.reserve(ctx.sample_count());
+        auto const connected = !ctx.realtime_sample_inputs().empty() && ctx.realtime_sample_input(0).connected();
+        auto const block = connected
+            ? ctx.realtime_sample_input(0).get_block()
+            : std::span<iv::Sample const>{};
+
+        for (size_t i = 0; i < ctx.sample_count(); ++i) {
+            auto const sample = i < block.size() ? block[i] : iv::Sample{};
+            ctx.out().push(sample);
+            latest.push_back(sample.value);
+        }
+        capture->store(std::move(latest));
+    }
+};
+
+void apply_timeline_batch_to_execution_and_runner(
+    iv::Timeline &timeline,
+    iv::TimelineExecution &execution,
+    iv::TaskRunner &runner,
+    iv::TimelineLaneBatchUpdate const &batch)
+{
+    std::vector<iv::LaneId> created_lanes;
+    std::vector<iv::LaneId> changed_lanes;
+    std::vector<iv::LaneId> removed_lanes = batch.removals;
+
+    for (auto const &upsert : batch.upserts) {
+        if (timeline.contains_lane(upsert.lane)) {
+            changed_lanes.push_back(upsert.lane);
+        } else {
+            created_lanes.push_back(upsert.lane);
+        }
+    }
+    for (auto const &connection : batch.connections_to_add) {
+        changed_lanes.push_back(connection.target);
+    }
+    for (auto const &connection : batch.connections_to_remove) {
+        changed_lanes.push_back(connection.target);
+    }
+
+    std::ranges::sort(changed_lanes, [](auto lhs, auto rhs) {
+        return lhs.value < rhs.value;
+    });
+    changed_lanes.erase(
+        std::unique(changed_lanes.begin(), changed_lanes.end()),
+        changed_lanes.end());
+    changed_lanes.erase(
+        std::remove_if(
+            changed_lanes.begin(),
+            changed_lanes.end(),
+            [&](iv::LaneId lane) {
+                return std::ranges::find(created_lanes, lane) != created_lanes.end();
+            }),
+        changed_lanes.end());
+
+    timeline.apply_lane_batch(batch);
+    runner.update_tasks(execution.handle_timeline_lanes_changed(
+        iv::TimelineLanesChanged{
+            .visit_lanes = [&](std::vector<iv::LaneId> const &lanes, iv::TimelineLaneVisitFn const &visit) {
+                timeline.with_graph([&](iv::LaneGraph const &graph) {
+                    for (auto const lane : lanes) {
+                        if (!graph.contains(lane)) {
+                            continue;
+                        }
+                        auto const &record = graph.lane(lane);
+                        visit(lane, record.node, record.output, graph.inputs_for(lane));
+                    }
+                });
+            },
+            .created_lanes = std::move(created_lanes),
+            .removed_lanes = std::move(removed_lanes),
+            .changed_lanes = std::move(changed_lanes),
+        }));
+}
 }
 
 TEST(Integration, StartupConfigDefinitionsAndIvModuleSourceIntrospectionInitializeAndShutdown)
@@ -129,6 +317,22 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
     ASSERT_EQ(loaded_definitions.size(), 1u);
     EXPECT_FALSE(loaded_definitions.front().introspection.logical_nodes.empty());
 
+    auto const logical_node_it = std::find_if(
+        loaded_definitions.front().introspection.logical_nodes.begin(),
+        loaded_definitions.front().introspection.logical_nodes.end(),
+        [](auto const &node) {
+            return !node.sample_inputs.empty();
+        });
+    ASSERT_NE(logical_node_it, loaded_definitions.front().introspection.logical_nodes.end());
+
+    graph_input_lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
+        .node_id = logical_node_it->id,
+        .member_ordinal = std::nullopt,
+        .input_ordinal = 0,
+        .state = iv::ProjectSampleInputState::timeline_lane,
+    });
+    graph_input_lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
+
     auto const view = lane_views.open_view(iv::LaneViewRequest{
         .view_id = "view",
         .query = iv::LaneQuery{
@@ -211,4 +415,145 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_FALSE(cleared_override.members[1].sample_inputs[1].has_concrete_override);
     EXPECT_FLOAT_EQ(
         static_cast<float>(cleared_override.members[1].sample_inputs[1].current_value), 0.25f);
+}
+
+TEST(Integration, TimelineRealtimeSinewaveReachesAudioBuffer)
+{
+    auto sine_state = std::make_shared<TestRealtimeSineLaneState>();
+    auto capture_state = std::make_shared<AudioBufferCaptureState>();
+
+    iv::Timeline timeline;
+    iv::TimelineExecution execution(64);
+    iv::TaskRunner runner(1);
+    iv::LaneIdAllocator lane_ids;
+
+    auto const source_lane = lane_ids.next();
+    auto const sink_lane = lane_ids.next();
+    apply_timeline_batch_to_execution_and_runner(timeline, execution, runner, iv::TimelineLaneBatchUpdate{
+        .upserts = {
+            iv::TimelineLaneUpsert{
+                .lane = source_lane,
+                .make_node = [sine_state] {
+                    return iv::TypeErasedLaneNode(TestRealtimeSineLaneNode{
+                        .state = sine_state,
+                        .frequency_hz = 440.0,
+                        .sample_rate_hz = 48000.0,
+                    });
+                },
+            },
+            iv::TimelineLaneUpsert{
+                .lane = sink_lane,
+                .make_node = [capture_state] {
+                    return iv::TypeErasedLaneNode(TestAudioBufferSinkLaneNode{
+                        .capture = capture_state,
+                    });
+                },
+            },
+        },
+        .connections_to_add = {
+            iv::LaneGraphConnection{
+                .source = source_lane,
+                .target = sink_lane,
+                .input = iv::realtime_sample_input(0),
+            },
+        },
+    });
+
+    ASSERT_TRUE(wait_until([&] {
+        return capture_state->captures.load(std::memory_order_relaxed) >= 2;
+    })) << "expected audio buffer sink to receive realtime blocks";
+
+    auto const latest = capture_state->snapshot();
+    ASSERT_EQ(latest.size(), 64u);
+    EXPECT_TRUE(std::any_of(latest.begin(), latest.end(), [](auto sample) {
+        return std::abs(sample) > 0.0001f;
+    }));
+    EXPECT_TRUE(std::adjacent_find(latest.begin(), latest.end(), std::not_equal_to<>{}) != latest.end());
+    auto const max_it = std::max_element(latest.begin(), latest.end(), [](auto a, auto b) {
+        return std::abs(a) < std::abs(b);
+    });
+    ASSERT_NE(max_it, latest.end());
+    EXPECT_LE(std::abs(*max_it), 1.0f);
+}
+
+TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
+{
+    auto sine_state = std::make_shared<TestRealtimeSineLaneState>();
+    auto capture_state = std::make_shared<AudioBufferCaptureState>();
+
+    iv::Timeline timeline;
+    iv::TimelineExecution execution(64);
+    iv::TaskRunner runner(1);
+    iv::LaneIdAllocator lane_ids;
+
+    auto const source_lane = lane_ids.next();
+    auto const sink_lane = lane_ids.next();
+    auto const connection = iv::LaneGraphConnection{
+        .source = source_lane,
+        .target = sink_lane,
+        .input = iv::realtime_sample_input(0),
+    };
+    apply_timeline_batch_to_execution_and_runner(timeline, execution, runner, iv::TimelineLaneBatchUpdate{
+        .upserts = {
+            iv::TimelineLaneUpsert{
+                .lane = source_lane,
+                .make_node = [sine_state] {
+                    return iv::TypeErasedLaneNode(TestRealtimeSineLaneNode{
+                        .state = sine_state,
+                        .frequency_hz = 440.0,
+                        .sample_rate_hz = 48000.0,
+                    });
+                },
+            },
+            iv::TimelineLaneUpsert{
+                .lane = sink_lane,
+                .make_node = [capture_state] {
+                    return iv::TypeErasedLaneNode(TestAudioBufferSinkLaneNode{
+                        .capture = capture_state,
+                    });
+                },
+            },
+        },
+        .connections_to_add = {connection},
+    });
+
+    ASSERT_TRUE(wait_until([&] {
+        return capture_state->captures.load(std::memory_order_relaxed) >= 2;
+    }));
+
+    auto const captures_before_disconnect =
+        capture_state->captures.load(std::memory_order_relaxed);
+    std::atomic<bool> disconnect_applied {false};
+    IntegrationPassFinishedAction pass_finished_action;
+    g_integration_pass_finished_action = &pass_finished_action;
+    {
+        std::scoped_lock lock(pass_finished_action.mutex);
+        pass_finished_action.fn =
+            [&](iv::TaskRunnerPassFinished const &) {
+                apply_timeline_batch_to_execution_and_runner(
+                    timeline,
+                    execution,
+                    runner,
+                    iv::TimelineLaneBatchUpdate{
+                    .connections_to_remove = {connection},
+                });
+                disconnect_applied.store(true, std::memory_order_relaxed);
+            };
+    }
+
+    ASSERT_TRUE(wait_until([&] {
+        return disconnect_applied.load(std::memory_order_relaxed);
+    })) << "expected disconnect to be applied on a pass boundary";
+
+    ASSERT_TRUE(wait_until([&] {
+        return capture_state->captures.load(std::memory_order_relaxed) > captures_before_disconnect;
+    })) << "expected sink to receive a block after disconnect";
+
+    auto const latest = capture_state->snapshot();
+    ASSERT_EQ(latest.size(), 64u);
+    EXPECT_TRUE(std::all_of(latest.begin(), latest.end(), [](auto sample) {
+        return std::abs(sample) < 0.000001f;
+    }));
+
+    g_integration_pass_finished_action = nullptr;
 }

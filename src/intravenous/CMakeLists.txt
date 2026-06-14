@@ -152,6 +152,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_runtime_graph_input_lanes_execution_edges_events
         intravenous_runtime_lane_filters_events
         intravenous_runtime_lane_views_events
+        intravenous_runtime_lanes_visualization_events
         intravenous_runtime_runtime_project_events
         intravenous_runtime_socket_rpc_events
         intravenous_runtime_task_runner_events
@@ -255,6 +256,10 @@ iv_add_linker_event_object(
     runtime/lane_views_events.cpp
 )
 iv_add_linker_event_object(
+    intravenous_runtime_lanes_visualization_events
+    runtime/lanes_visualization_events.cpp
+)
+iv_add_linker_event_object(
     intravenous_runtime_runtime_project_events
     runtime/runtime_project_linker_events.cpp
 )
@@ -305,7 +310,11 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_reload_iv_module_definitions_bridge.cpp
     runtime/lane_filters.cpp
     runtime/lane_filters_lane_views_bridge.cpp
+    runtime/lane_views_lanes_visualization_bridge.cpp
     runtime/lane_views.cpp
+    runtime/lanes_visualization.cpp
+    runtime/lanes_visualization_timeline_bridge.cpp
+    runtime/task_runner_lanes_visualization_bridge.cpp
     runtime/lane_view_service.cpp
     runtime/iv_module_source_introspection.cpp
     runtime/iv_module_source_introspection_events.cpp
@@ -323,6 +332,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/task_runner.cpp
     runtime/task_runner_graph_input_lanes_bridge.cpp
     runtime/timeline_execution.cpp
+    runtime/timeline_execution_lanes_visualization_bridge.cpp
     runtime/timeline_execution_task_runner_bridge.cpp
     runtime/timeline_lane_filters_bridge.cpp
     runtime/timeline_timeline_execution_bridge.cpp

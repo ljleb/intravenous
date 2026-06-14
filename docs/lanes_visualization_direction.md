@@ -92,6 +92,12 @@ The visualization lane node type should be specifically designed to:
 
 Scrolling or resizing a view should reconfigure these visualization lanes.
 
+For the first implementation pass, it is acceptable to support only one
+visualization adapter type. The important thing is that `LanesVisualization`
+owns the adapter choice and can later replace or reconfigure those
+system-managed visualization lanes without changing the surrounding ownership
+model.
+
 ## Sampling intent
 
 Lanes need to support two different kinds of read behavior:
@@ -163,6 +169,12 @@ Realtime lanes should usually contribute fresh data continuously as execution
 runs.
 
 Most UI visualization ticks will therefore mostly reflect realtime lane updates.
+
+Later, some realtime visualization parameters may themselves be worth exposing
+as lane-driven inputs. One example is waveform-window width or period: an
+appropriate event input could drive the displayed window width so the UI can
+follow a meaningful frequency or period rather than showing a chaotic rolling
+waveform. That should remain a later extension, not a first-pass requirement.
 
 ### Compiled lanes
 

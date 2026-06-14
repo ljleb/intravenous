@@ -1,6 +1,7 @@
 #include <intravenous/runtime/timeline_execution.h>
 
 #include <algorithm>
+#include <cmath>
 #include <queue>
 #include <stdexcept>
 
@@ -309,6 +310,63 @@ std::vector<TimedEvent> TimelineExecution::compiled_event_block(LaneId lane, siz
 {
     std::scoped_lock lock(mutex_);
     return ensure_compiled_event_block_locked(lane, start_index);
+}
+
+std::vector<Sample> TimelineExecution::sparse_compiled_sample_window(
+    LaneId lane,
+    size_t first,
+    size_t last,
+    size_t count)
+{
+    if (count == 0 || last < first || block_size_ == 0) {
+        return {};
+    }
+    std::scoped_lock lock(mutex_);
+    std::vector<Sample> result;
+    result.reserve(count);
+    auto const range = last - first;
+    for (size_t i = 0; i < count; ++i) {
+        size_t const source_index = (count == 1)
+            ? first
+            : first + static_cast<size_t>(std::llround(
+                static_cast<double>(i) * static_cast<double>(range)
+                / static_cast<double>(count - 1)));
+        size_t const block_start = (source_index / block_size_) * block_size_;
+        size_t const offset = source_index - block_start;
+        auto const block = read_compiled_sample_block_locked(lane, block_start);
+        result.push_back(offset < block.size() ? block[offset] : Sample{});
+    }
+    return result;
+}
+
+std::vector<TimedEvent> TimelineExecution::compiled_events_in_range(
+    LaneId lane,
+    size_t first,
+    size_t last)
+{
+    if (last < first || block_size_ == 0) {
+        return {};
+    }
+    std::scoped_lock lock(mutex_);
+    if (!tracked_lanes_.contains(lane)) {
+        return {};
+    }
+    std::vector<TimedEvent> result;
+    size_t block_start = (first / block_size_) * block_size_;
+    size_t const last_block_start = (last / block_size_) * block_size_;
+    while (block_start <= last_block_start) {
+        auto const& block = ensure_compiled_event_block_locked(lane, block_start);
+        for (auto const& event : block) {
+            if (event.time >= first && event.time <= last) {
+                result.push_back(event);
+            }
+        }
+        if (block_start == last_block_start) {
+            break;
+        }
+        block_start += block_size_;
+    }
+    return result;
 }
 
 void TimelineExecution::execute_lane_task(LaneId lane)

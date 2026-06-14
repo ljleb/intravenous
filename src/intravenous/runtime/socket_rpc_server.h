@@ -4,6 +4,7 @@
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/lanes_visualization_api_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
 #include <intravenous/runtime/socket_rpc_response_builders.h>
@@ -115,6 +116,7 @@ namespace iv {
         void send_server_message(SocketRpcServerMessage const &notification);
         void send_server_status(SocketRpcServerStatus const &notification);
         void send_lane_view_updated(LaneViewResult const &notification);
+        void send_lane_view_content_updated(LaneViewContentUpdate const &notification);
         void send_iv_module_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
     };

@@ -22,6 +22,10 @@
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/lane_filters_lane_views_bridge.h>
 #include <intravenous/runtime/lane_views.h>
+#include <intravenous/runtime/lane_views_lanes_visualization_bridge.h>
+#include <intravenous/runtime/lanes_visualization.h>
+#include <intravenous/runtime/lanes_visualization_timeline_bridge.h>
+#include <intravenous/runtime/task_runner_lanes_visualization_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/server_options.h>
@@ -36,6 +40,7 @@
 #include <intravenous/runtime/task_runner_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
+#include <intravenous/runtime/timeline_execution_lanes_visualization_bridge.h>
 #include <intravenous/runtime/timeline_execution_task_runner_bridge.h>
 #include <intravenous/runtime/timeline_lane_filters_bridge.h>
 #include <intravenous/runtime/timeline_timeline_execution_bridge.h>
@@ -74,6 +79,10 @@ namespace iv {
             IvModuleInstancesExecution iv_module_instances_execution(startup.execution.block_size);
             LaneFilters lane_filters;
             LaneViews lane_views;
+            LanesVisualization lanes_visualization(
+                std::chrono::milliseconds(33),
+                16,
+                startup.execution.block_size);
             IvModuleSourceIntrospection introspection;
             bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
             bind_task_runner_graph_input_lanes_bridge(graph_input_lanes);
@@ -92,6 +101,10 @@ namespace iv {
             bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
             bind_timeline_lane_filters_bridge(lane_filters);
             bind_lane_filters_lane_views_bridge(lane_filters, lane_views);
+            bind_lane_views_lanes_visualization_bridge(lanes_visualization);
+            bind_lanes_visualization_timeline_bridge(lanes_visualization, timeline);
+            bind_task_runner_lanes_visualization_bridge(lanes_visualization);
+            bind_timeline_execution_lanes_visualization_bridge(timeline_execution);
 
             SocketRpcServer server(options.workspace_root, options.rpc_fd);
             std::function<void()> shutdown = [&]() {
@@ -120,6 +133,10 @@ namespace iv {
             unbind_socket_rpc_iv_module_source_introspection_bridge(
                 introspection,
                 graph_input_lanes);
+            unbind_timeline_execution_lanes_visualization_bridge(timeline_execution);
+            unbind_task_runner_lanes_visualization_bridge(lanes_visualization);
+            unbind_lanes_visualization_timeline_bridge(lanes_visualization, timeline);
+            unbind_lane_views_lanes_visualization_bridge(lanes_visualization);
             unbind_lane_filters_lane_views_bridge(lane_filters, lane_views);
             unbind_timeline_lane_filters_bridge(lane_filters);
             unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);

@@ -56,11 +56,17 @@ async function activate(context) {
     }));
     provider.setControlHandler(async (message) => {
         const memberOrdinal = message.memberOrdinal == null ? null : Number(message.memberOrdinal);
-        if (message.type === "clearSampleInputValueOverride") {
+        if (message.type === "setSampleInputState") {
             if (memberOrdinal == null) {
                 return;
             }
-            await session.clearSampleInputValueOverride(message.nodeId, memberOrdinal, Number(message.inputOrdinal));
+            await session.setSampleInputState(
+                message.nodeId,
+                Number(message.inputOrdinal),
+                String(message.state || "default"),
+                memberOrdinal
+            );
+            session.provider.clearSampleInputValueOverride(message.nodeId, memberOrdinal, Number(message.inputOrdinal));
             return;
         }
         await session.setSampleInputValue(

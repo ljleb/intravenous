@@ -120,6 +120,58 @@ Json lane_view_result_json(LaneViewResult const &result) {
     return json;
 }
 
+Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
+    Json json_lanes = Json::array();
+    for (auto const &lane : update.lanes) {
+        Json json_samples = Json::array();
+        for (auto const sample : lane.samples) {
+            json_samples.push_back(sample);
+        }
+        Json json_events = Json::array();
+        for (auto const &event : lane.events) {
+            Json json_event{
+                {"time", event.time},
+            };
+            std::visit(
+                [&]<typename T>(T const &value) {
+                    using Event = std::remove_cvref_t<T>;
+                    if constexpr (std::same_as<Event, TriggerEvent>) {
+                        json_event["value"] = Json{{"type", "trigger"}};
+                    } else if constexpr (std::same_as<Event, MidiEvent>) {
+                        Json bytes = Json::array();
+                        for (size_t i = 0; i < value.size; ++i) {
+                            bytes.push_back(value.bytes[i]);
+                        }
+                        json_event["value"] = Json{
+                            {"type", "midi"},
+                            {"bytes", std::move(bytes)},
+                        };
+                    } else if constexpr (std::same_as<Event, BoundaryEvent>) {
+                        json_event["value"] = Json{
+                            {"type", "boundary"},
+                            {"isBegin", value.is_begin},
+                        };
+                    } else if constexpr (std::same_as<Event, EmptyEvent>) {
+                        json_event["value"] = Json{{"type", "empty"}};
+                    }
+                },
+                event.value);
+            json_events.push_back(std::move(json_event));
+        }
+        json_lanes.push_back({
+            {"laneId", lane.lane_id},
+            {"adapterType", lane.adapter_type},
+            {"samples", std::move(json_samples)},
+            {"events", std::move(json_events)},
+        });
+    }
+
+    return Json{
+        {"viewId", update.view_id},
+        {"lanes", std::move(json_lanes)},
+    };
+}
+
 Json iv_module_instance_json(IvModuleInstanceInfo const &instance) {
     Json json{
         {"instanceId", instance.instance_id},
@@ -451,6 +503,38 @@ void SocketRpcServer::send_lane_view_updated(LaneViewResult const &notification)
 
     auto const message =
         jsonrpc_notification("timeline.laneViewUpdated", lane_view_result_json(notification));
+    {
+        std::scoped_lock deferred_lock(deferred_notification_mutex);
+        if (defer_current_request_notifications &&
+            deferred_notification_thread == std::this_thread::get_id()) {
+            deferred_notifications.push_back(message);
+            return;
+        }
+    }
+
+    if (!send_message(fd, message)) {
+        std::scoped_lock client_lock(client_mutex);
+        if (client_fd == fd) {
+            client_fd = -1;
+        }
+    }
+}
+
+void SocketRpcServer::send_lane_view_content_updated(
+    LaneViewContentUpdate const &notification) {
+    int fd = -1;
+    {
+        std::scoped_lock client_lock(client_mutex);
+        fd = client_fd;
+    }
+    if (fd < 0) {
+        return;
+    }
+
+    auto const message =
+        jsonrpc_notification(
+            "timeline.laneViewContentUpdated",
+            lane_view_content_update_json(notification));
     {
         std::scoped_lock deferred_lock(deferred_notification_mutex);
         if (defer_current_request_notifications &&

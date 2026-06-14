@@ -5,6 +5,7 @@
 #include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/lane_views_events.h>
+#include <intravenous/runtime/lanes_visualization_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -81,6 +82,15 @@ namespace {
         bound_server->send_lane_view_updated(lane_view);
     }
 
+    void forward_runtime_lane_view_content_updated(
+        LaneViewContentUpdate const &update)
+    {
+        if (bound_server == nullptr) {
+            return;
+        }
+        bound_server->send_lane_view_content_updated(update);
+    }
+
     void forward_runtime_iv_module_instances_list_changed(
         std::vector<IvModuleInstanceInfo> const &instances)
     {
@@ -102,6 +112,10 @@ namespace {
         LaneViewsUpdatedEvent,
         iv_runtime_lane_views_updated_event,
         forward_runtime_lane_views_updated);
+    IV_SUBSCRIBE_LINKER_EVENT(
+        LaneViewContentUpdatedEvent,
+        iv_runtime_lane_view_content_updated_event,
+        forward_runtime_lane_view_content_updated);
     IV_SUBSCRIBE_LINKER_EVENT(
         IvModuleInstancesListChangedEvent,
         iv_runtime_iv_module_instances_list_changed_event,

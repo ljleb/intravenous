@@ -151,6 +151,9 @@ namespace iv {
             iv_runtime_lane_filter_removed_event,
             filter_name);
         lane_views.close_view(view_id);
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_lane_view_closed_event,
+            view_id);
     }
 
     void LaneViews::handle_lane_filters_changed(
