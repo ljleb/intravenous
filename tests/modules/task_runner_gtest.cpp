@@ -174,6 +174,16 @@ namespace {
                 },
             };
         }
+
+        static iv::VersionedTaskGraphUpdate versioned(
+            std::uint64_t version_index,
+            iv::TaskGraphUpdate update)
+        {
+            return iv::VersionedTaskGraphUpdate{
+                .version_index = version_index,
+                .update = std::move(update),
+            };
+        }
     };
 
     TEST_F(TaskRunnerTest, UpdateRejectsDuplicateTaskIdsAcrossCreateUpdateDelete)
@@ -228,16 +238,19 @@ namespace {
             std::runtime_error);
     }
 
-    TEST_F(TaskRunnerTest, UnresolvedDependencyThrows)
+    TEST_F(TaskRunnerTest, UnresolvedDependencyOpensIncompletePendingGraph)
     {
         LogState log;
         RecordingContext ctx{ .name = "a", .log = &log };
         iv::TaskRunner runner(1);
-        EXPECT_THROW(
-            runner.update_tasks(iv::TaskGraphUpdate{
+        runner.update_tasks(versioned(1, iv::TaskGraphUpdate{
                 .to_create = { task("a", { "missing" }, &record_callback, &ctx) },
-            }),
-            std::runtime_error);
+            }));
+        EXPECT_EQ(runner.active_graph_revision(), 0u);
+        ASSERT_TRUE(runner.pending_graph_revision().has_value());
+        EXPECT_EQ(*runner.pending_graph_revision(), 1u);
+        std::this_thread::sleep_for(20ms);
+        EXPECT_EQ(ctx.invocations.load(), 0);
     }
 
     TEST_F(TaskRunnerTest, CycleThrows)
@@ -253,6 +266,45 @@ namespace {
                     task("b", { "a" }, &record_callback, &b),
                 },
             }),
+            std::runtime_error);
+    }
+
+    TEST_F(TaskRunnerTest, MatchingVersionCompletesIncompletePendingGraph)
+    {
+        LogState log;
+        RecordingContext a{ .name = "a", .log = &log };
+        RecordingContext b{ .name = "b", .log = &log };
+        iv::TaskRunner runner(1);
+
+        runner.update_tasks(versioned(1, iv::TaskGraphUpdate{
+            .to_create = { task("a", { "b" }, &record_callback, &a) },
+        }));
+        runner.update_tasks(versioned(1, iv::TaskGraphUpdate{
+            .to_create = { task("b", {}, &record_callback, &b) },
+        }));
+
+        ASSERT_TRUE(wait_until([&] {
+            return runner.active_graph_revision() == 2
+                && a.invocations.load() > 0
+                && b.invocations.load() > 0;
+        }));
+    }
+
+    TEST_F(TaskRunnerTest, DifferentVersionWhilePendingIncompleteThrows)
+    {
+        LogState log;
+        RecordingContext a{ .name = "a", .log = &log };
+        RecordingContext b{ .name = "b", .log = &log };
+        iv::TaskRunner runner(1);
+
+        runner.update_tasks(versioned(1, iv::TaskGraphUpdate{
+            .to_create = { task("a", { "b" }, &record_callback, &a) },
+        }));
+
+        EXPECT_THROW(
+            runner.update_tasks(versioned(2, iv::TaskGraphUpdate{
+                .to_create = { task("b", {}, &record_callback, &b) },
+            })),
             std::runtime_error);
     }
 

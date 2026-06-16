@@ -8,9 +8,11 @@ namespace iv {
 namespace {
 IvModuleInstancesExecution *bound_execution = nullptr;
 
-void maybe_publish(TaskGraphUpdate const &update)
+void maybe_publish(VersionedTaskGraphUpdate const &update)
 {
-    if (update.to_create.empty() && update.to_update.empty() && update.to_delete.empty()) {
+    if (update.update.to_create.empty()
+        && update.update.to_update.empty()
+        && update.update.to_delete.empty()) {
         return;
     }
     IV_INVOKE_LINKER_EVENT(iv_runtime_iv_module_instances_execution_tasks_changed_event, update);

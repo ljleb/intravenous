@@ -35,6 +35,11 @@ struct TaskGraphUpdate {
     std::vector<TaskUpdateRecord> to_update {};
 };
 
+struct VersionedTaskGraphUpdate {
+    std::uint64_t version_index = 0;
+    TaskGraphUpdate update {};
+};
+
 class TaskRunner {
 public:
     struct DeclaredTask;
@@ -51,6 +56,8 @@ private:
     std::shared_ptr<GraphVersion> active_graph_;
     std::shared_ptr<GraphVersion> pending_graph_;
     std::shared_ptr<PassState> current_pass_;
+    std::optional<std::uint64_t> pending_update_version_index_;
+    bool pending_graph_is_complete_ = true;
     std::uint64_t next_revision_ = 1;
     bool shutdown_requested_ = false;
     bool workers_should_exit_ = false;
@@ -74,6 +81,7 @@ public:
     TaskRunner &operator=(TaskRunner &&) = delete;
 
     void update_tasks(TaskGraphUpdate const &update);
+    void update_tasks(VersionedTaskGraphUpdate const &update);
 
     std::uint64_t active_graph_revision() const;
     std::optional<std::uint64_t> pending_graph_revision() const;

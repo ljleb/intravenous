@@ -9,7 +9,7 @@ namespace {
 TimelineExecution *bound_execution = nullptr;
 TaskRunner *bound_runner = nullptr;
 
-void handle_timeline_execution_tasks_changed(TaskGraphUpdate const &update)
+void handle_timeline_execution_tasks_changed(VersionedTaskGraphUpdate const &update)
 {
     if (!bound_execution || !bound_runner) {
         return;

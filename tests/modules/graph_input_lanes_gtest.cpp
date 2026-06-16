@@ -1,6 +1,4 @@
 #include <intravenous/runtime/graph_input_lanes.h>
-#include <intravenous/runtime/graph_input_lanes_execution_edges_events.h>
-
 #include <intravenous/dsl.h>
 #include <intravenous/graph/build_types.h>
 #include <intravenous/linker_event.h>
@@ -38,7 +36,6 @@ struct TestEventSink {
 
 struct GraphInputLanesWitness {
     std::vector<iv::TimelineLaneBatchUpdate> timeline_batches {};
-    std::vector<iv::GraphInputLanesDspTaskDependenciesChanged> dsp_dependencies {};
     std::vector<std::vector<std::string>> rebuild_requests {};
 };
 
@@ -147,15 +144,6 @@ IV_SUBSCRIBE_LINKER_EVENT(
     });
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::GraphInputLanesDspTaskDependenciesChangedEvent,
-    iv_runtime_graph_input_lanes_dsp_task_dependencies_changed_event,
-    +[](iv::GraphInputLanesDspTaskDependenciesChanged const &changed) {
-        if (g_graph_input_lanes_witness != nullptr) {
-            g_graph_input_lanes_witness->dsp_dependencies.push_back(changed);
-        }
-    });
-
-IV_SUBSCRIBE_LINKER_EVENT(
     iv::GraphInputLanesRebuildRequestedEvent,
     iv_runtime_graph_input_lanes_rebuild_requested_event,
     +[](iv::GraphInputLanesRebuildRequested const &request) {
@@ -178,6 +166,7 @@ protected:
         g_graph_input_lanes_witness = nullptr;
     }
 };
+
 } // namespace
 
 TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
@@ -191,9 +180,15 @@ TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
     });
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
 
-    ASSERT_EQ(witness.timeline_batches.size(), 1u);
-    EXPECT_GE(witness.timeline_batches.front().upserts.size(), 1u);
-    EXPECT_TRUE(witness.timeline_batches.front().removals.empty());
+    ASSERT_GE(witness.timeline_batches.size(), 1u);
+    size_t upsert_count = 0;
+    size_t removal_count = 0;
+    for (auto const &batch : witness.timeline_batches) {
+        upsert_count += batch.upserts.size();
+        removal_count += batch.removals.size();
+    }
+    EXPECT_GE(upsert_count, 1u);
+    EXPECT_EQ(removal_count, 0u);
 }
 
 TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)
@@ -206,7 +201,10 @@ TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
-    auto const created_count = witness.timeline_batches.front().upserts.size();
+    size_t created_count = 0;
+    for (auto const &batch : witness.timeline_batches) {
+        created_count += batch.upserts.size();
+    }
     witness.timeline_batches.clear();
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
@@ -214,8 +212,12 @@ TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)
     });
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 2});
 
-    ASSERT_EQ(witness.timeline_batches.size(), 1u);
-    EXPECT_EQ(witness.timeline_batches.front().removals.size(), created_count);
+    ASSERT_GE(witness.timeline_batches.size(), 1u);
+    size_t removal_count = 0;
+    for (auto const &batch : witness.timeline_batches) {
+        removal_count += batch.removals.size();
+    }
+    EXPECT_EQ(removal_count, created_count);
 }
 
 TEST_F(GraphInputLanesTest, UpdatedInstancePublishesTimelineBatch)
@@ -229,8 +231,12 @@ TEST_F(GraphInputLanesTest, UpdatedInstancePublishesTimelineBatch)
     });
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
 
-    ASSERT_EQ(witness.timeline_batches.size(), 1u);
-    EXPECT_GE(witness.timeline_batches.front().upserts.size(), 1u);
+    ASSERT_GE(witness.timeline_batches.size(), 1u);
+    size_t upsert_count = 0;
+    for (auto const &batch : witness.timeline_batches) {
+        upsert_count += batch.upserts.size();
+    }
+    EXPECT_GE(upsert_count, 1u);
 }
 
 TEST_F(GraphInputLanesTest, LogicalSampleInputOverrideDoesNotPublishTimelineBatchByDefault)
@@ -292,17 +298,13 @@ TEST_F(GraphInputLanesTest, VacantSampleInputsDefaultToLogicalFollowWithoutTimel
         "node-1");
     (void)node;
 
+    iv::IvModuleInstanceBuildersAckBuilder ack;
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
-    });
-
-    ASSERT_EQ(witness.dsp_dependencies.size(), 1u);
-    ASSERT_EQ(witness.dsp_dependencies.front().created_or_updated.size(), 1u);
-    EXPECT_TRUE(witness.dsp_dependencies.front().deleted_instance_ids.empty());
-
-    auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
-    EXPECT_EQ(dependencies.instance_id, "instance:1");
-    EXPECT_TRUE(dependencies.prerequisite_lanes.empty());
+    }, &ack);
+    EXPECT_EQ(
+        ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
+        0u);
 }
 
 TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDependency)
@@ -322,7 +324,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDepe
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
 
     witness.timeline_batches.clear();
-    witness.dsp_dependencies.clear();
+    witness.rebuild_requests.clear();
 
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
         .node_id = "node-1",
@@ -340,16 +342,13 @@ TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDepe
         "node-1");
     (void)rebuilt_node;
 
+    iv::IvModuleInstanceBuildersAckBuilder ack;
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
-    });
-
-    ASSERT_EQ(witness.dsp_dependencies.size(), 1u);
-    ASSERT_EQ(witness.dsp_dependencies.front().created_or_updated.size(), 1u);
-    auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
-    EXPECT_EQ(dependencies.instance_id, "instance:1");
-    ASSERT_EQ(dependencies.prerequisite_lanes.size(), 1u);
-    EXPECT_TRUE(static_cast<bool>(dependencies.prerequisite_lanes.front()));
+    }, &ack);
+    ASSERT_EQ(
+        ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
+        1u);
 }
 
 TEST_F(GraphInputLanesTest, ConcreteSampleInputOverrideDoesNotPublishTimelineBatchByDefault)
@@ -395,7 +394,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputTimelineStatePublishesTimelineDep
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
 
     witness.timeline_batches.clear();
-    witness.dsp_dependencies.clear();
+    witness.rebuild_requests.clear();
 
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
         .node_id = "node-1",
@@ -413,16 +412,13 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputTimelineStatePublishesTimelineDep
         "node-1");
     (void)rebuilt_node;
 
+    iv::IvModuleInstanceBuildersAckBuilder ack;
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
-    });
-
-    ASSERT_EQ(witness.dsp_dependencies.size(), 1u);
-    ASSERT_EQ(witness.dsp_dependencies.front().created_or_updated.size(), 1u);
-    auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
-    EXPECT_EQ(dependencies.instance_id, "instance:1");
-    ASSERT_EQ(dependencies.prerequisite_lanes.size(), 1u);
-    EXPECT_TRUE(static_cast<bool>(dependencies.prerequisite_lanes.front()));
+    }, &ack);
+    ASSERT_EQ(
+        ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
+        1u);
 }
 
 TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineState)
@@ -450,7 +446,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
 
     witness.timeline_batches.clear();
-    witness.dsp_dependencies.clear();
+    witness.rebuild_requests.clear();
 
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
         .node_id = "node-1",
@@ -468,13 +464,13 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
         "node-1");
     (void)rebuilt_node;
 
+    iv::IvModuleInstanceBuildersAckBuilder ack;
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
-    });
-
-    ASSERT_EQ(witness.dsp_dependencies.size(), 1u);
-    auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
-    EXPECT_TRUE(dependencies.prerequisite_lanes.empty());
+    }, &ack);
+    EXPECT_EQ(
+        ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
+        0u);
 }
 
 TEST_F(GraphInputLanesTest, VacantEventInputsDefaultToLogicalFollowWithTimelineDependency)
@@ -488,15 +484,14 @@ TEST_F(GraphInputLanesTest, VacantEventInputsDefaultToLogicalFollowWithTimelineD
         "node-1");
     (void)node;
 
+    iv::IvModuleInstanceBuildersAckBuilder ack;
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
-    });
+    }, &ack);
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
-
-    ASSERT_EQ(witness.dsp_dependencies.size(), 1u);
-    auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
-    ASSERT_EQ(dependencies.prerequisite_lanes.size(), 1u);
-    EXPECT_TRUE(static_cast<bool>(dependencies.prerequisite_lanes.front()));
+    ASSERT_EQ(
+        ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
+        1u);
 }
 
 TEST_F(GraphInputLanesTest, ConnectedEventInputsDefaultToDisconnectedWithoutTimelineDependency)
@@ -511,14 +506,14 @@ TEST_F(GraphInputLanesTest, ConnectedEventInputsDefaultToDisconnectedWithoutTime
         "node-1");
     (void)node;
 
+    iv::IvModuleInstanceBuildersAckBuilder ack;
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
-    });
+    }, &ack);
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
-
-    ASSERT_EQ(witness.dsp_dependencies.size(), 1u);
-    auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
-    EXPECT_TRUE(dependencies.prerequisite_lanes.empty());
+    EXPECT_EQ(
+        ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
+        0u);
 }
 
 TEST_F(GraphInputLanesTest, ConcreteEventInputTimelineStatePublishesTimelineDependency)
@@ -537,7 +532,7 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputTimelineStatePublishesTimelineDepe
     });
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
     witness.timeline_batches.clear();
-    witness.dsp_dependencies.clear();
+    witness.rebuild_requests.clear();
 
     lanes.set_event_input_state(iv::ProjectSetEventInputStateRequest{
         .node_id = "node-1",
@@ -555,14 +550,13 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputTimelineStatePublishesTimelineDepe
         "node-1");
     (void)rebuilt_node;
 
+    iv::IvModuleInstanceBuildersAckBuilder ack;
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
-    });
-
-    ASSERT_EQ(witness.dsp_dependencies.size(), 1u);
-    auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
-    ASSERT_EQ(dependencies.prerequisite_lanes.size(), 1u);
-    EXPECT_TRUE(static_cast<bool>(dependencies.prerequisite_lanes.front()));
+    }, &ack);
+    ASSERT_EQ(
+        ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
+        1u);
 }
 
 TEST_F(GraphInputLanesTest, ConcreteEventInputDefaultClearsExplicitTimelineState)
@@ -590,7 +584,7 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputDefaultClearsExplicitTimelineState
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
 
     witness.timeline_batches.clear();
-    witness.dsp_dependencies.clear();
+    witness.rebuild_requests.clear();
 
     lanes.set_event_input_state(iv::ProjectSetEventInputStateRequest{
         .node_id = "node-1",
@@ -608,14 +602,13 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputDefaultClearsExplicitTimelineState
         "node-1");
     (void)rebuilt_node;
 
+    iv::IvModuleInstanceBuildersAckBuilder ack;
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
-    });
-
-    ASSERT_EQ(witness.dsp_dependencies.size(), 1u);
-    auto const &dependencies = witness.dsp_dependencies.front().created_or_updated.front();
-    ASSERT_EQ(dependencies.prerequisite_lanes.size(), 1u);
-    EXPECT_TRUE(static_cast<bool>(dependencies.prerequisite_lanes.front()));
+    }, &ack);
+    ASSERT_EQ(
+        ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
+        1u);
 }
 
 namespace {
@@ -672,7 +665,6 @@ TEST_F(GraphInputLanesTest, LogicalSampleOutputTimelineStateCreatesAggregationLa
     });
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
     witness.timeline_batches.clear();
-
     lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
         .node_id = "node-1",
         .member_ordinal = std::nullopt,
@@ -688,6 +680,17 @@ TEST_F(GraphInputLanesTest, LogicalSampleOutputTimelineStateCreatesAggregationLa
         "dsp_graph.logical",
         &upsert));
     ASSERT_NE(upsert, nullptr);
+
+    iv::GraphBuilder rebuilt;
+    auto rebuilt_node = iv::_annotate_node_source_info(
+        rebuilt.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)rebuilt_node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
+    });
+
     ASSERT_EQ(upsert->external_task_dependencies.size(), 1u);
     EXPECT_EQ(
         upsert->external_task_dependencies.front(),
@@ -738,7 +741,6 @@ TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLan
     });
     lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
     witness.timeline_batches.clear();
-
     lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
         .node_id = "node-1",
         .member_ordinal = 0u,
@@ -754,6 +756,17 @@ TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLan
         "dsp_graph.concrete",
         &upsert));
     ASSERT_NE(upsert, nullptr);
+
+    iv::GraphBuilder rebuilt;
+    auto rebuilt_node = iv::_annotate_node_source_info(
+        rebuilt.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)rebuilt_node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
+    });
+
     ASSERT_EQ(upsert->external_task_dependencies.size(), 1u);
     EXPECT_EQ(
         upsert->external_task_dependencies.front(),
@@ -801,4 +814,61 @@ TEST_F(GraphInputLanesTest, TogglingSampleOutputBackToDisconnectedRemovesLane)
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
     auto const &removals = witness.timeline_batches.front().removals;
     EXPECT_NE(std::find(removals.begin(), removals.end(), created_lane), removals.end());
+}
+
+TEST_F(GraphInputLanesTest, SampleOutputBlockRoundTripsThroughGraphInputLanesStorage)
+{
+    iv::GraphInputLanes lanes;
+    auto const lane = iv::LaneId{42};
+    auto const block = std::array<iv::Sample, 3>{0.25f, -0.5f, 1.0f};
+
+    lanes.handle_sample_block_published(lane, std::span<iv::Sample const>(block));
+
+    EXPECT_EQ(
+        lanes.handle_sample_block_requested(lane),
+        (std::vector<iv::Sample>{0.25f, -0.5f, 1.0f}));
+}
+
+TEST_F(GraphInputLanesTest, EventOutputBlockRoundTripsThroughGraphInputLanesStorage)
+{
+    iv::GraphInputLanes lanes;
+    auto const lane = iv::LaneId{43};
+    std::vector<iv::TimedEvent> events{
+        iv::TimedEvent{.time = 1, .value = iv::TriggerEvent{}},
+        iv::TimedEvent{.time = 4, .value = iv::BoundaryEvent{.is_begin = true}},
+    };
+
+    lanes.handle_event_block_published(lane, std::span<iv::TimedEvent const>(events));
+
+    auto const stored = lanes.handle_event_block_requested(lane);
+    ASSERT_EQ(stored.size(), events.size());
+    EXPECT_EQ(stored[0].time, events[0].time);
+    EXPECT_TRUE(std::holds_alternative<iv::TriggerEvent>(stored[0].value));
+    EXPECT_EQ(stored[1].time, events[1].time);
+    auto const *boundary = std::get_if<iv::BoundaryEvent>(&stored[1].value);
+    ASSERT_NE(boundary, nullptr);
+    EXPECT_TRUE(boundary->is_begin);
+}
+
+TEST_F(GraphInputLanesTest, UnknownOutputBlockRequestsReturnEmpty)
+{
+    iv::GraphInputLanes lanes;
+
+    EXPECT_TRUE(lanes.handle_sample_block_requested(iv::LaneId{77}).empty());
+    EXPECT_TRUE(lanes.handle_event_block_requested(iv::LaneId{78}).empty());
+}
+
+TEST_F(GraphInputLanesTest, RepublishedSampleOutputBlockReplacesPreviousBlock)
+{
+    iv::GraphInputLanes lanes;
+    auto const lane = iv::LaneId{44};
+    auto const first = std::array<iv::Sample, 2>{1.0f, 2.0f};
+    auto const second = std::array<iv::Sample, 1>{-3.0f};
+
+    lanes.handle_sample_block_published(lane, std::span<iv::Sample const>(first));
+    lanes.handle_sample_block_published(lane, std::span<iv::Sample const>(second));
+
+    EXPECT_EQ(
+        lanes.handle_sample_block_requested(lane),
+        (std::vector<iv::Sample>{-3.0f}));
 }

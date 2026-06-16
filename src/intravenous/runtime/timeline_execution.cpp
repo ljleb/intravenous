@@ -152,7 +152,7 @@ void TimelineExecution::invoke_lane_task(void *context)
     callback->execution->execute_lane_task(callback->lane);
 }
 
-TaskGraphUpdate TimelineExecution::synchronize_from_graph(LaneGraph const &graph)
+VersionedTaskGraphUpdate TimelineExecution::synchronize_from_graph(LaneGraph const &graph)
 {
     std::vector<TrackedLane> lanes;
     graph.for_each_lane([&](LaneRecord const &record) {
@@ -169,7 +169,7 @@ TaskGraphUpdate TimelineExecution::synchronize_from_graph(LaneGraph const &graph
     return replace_all_lanes_locked(std::move(lanes));
 }
 
-TaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(TimelineLanesChanged const &change)
+VersionedTaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(TimelineLanesChanged const &change)
 {
     std::scoped_lock lock(mutex_);
     TaskGraphUpdate update;
@@ -243,7 +243,10 @@ TaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(TimelineLanesCh
 
     rebuild_runtime_storage_locked();
     rebuild_compiled_support_and_notify_locked();
-    return update;
+    return VersionedTaskGraphUpdate{
+        .version_index = change.version_index,
+        .update = std::move(update),
+    };
 }
 
 std::vector<LaneId> TimelineExecution::realtime_sample_output_lanes() const
@@ -489,7 +492,7 @@ void TimelineExecution::rebuild_compiled_support_and_notify_locked()
     }
 }
 
-TaskGraphUpdate TimelineExecution::replace_all_lanes_locked(std::vector<TrackedLane> lanes)
+VersionedTaskGraphUpdate TimelineExecution::replace_all_lanes_locked(std::vector<TrackedLane> lanes)
 {
     TaskGraphUpdate update;
     for (auto const &[lane, _] : tracked_lanes_) {
@@ -537,7 +540,10 @@ TaskGraphUpdate TimelineExecution::replace_all_lanes_locked(std::vector<TrackedL
 
     rebuild_runtime_storage_locked();
     rebuild_compiled_support_and_notify_locked();
-    return update;
+    return VersionedTaskGraphUpdate{
+        .version_index = 0,
+        .update = std::move(update),
+    };
 }
 
 std::vector<LaneId> TimelineExecution::topological_order_locked() const

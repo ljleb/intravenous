@@ -1,10 +1,10 @@
 #pragma once
 
 #include <intravenous/node/block_executor.h>
-#include <intravenous/runtime/graph_input_lanes_execution_edges_events.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/task_ids.h>
 #include <intravenous/runtime/task_runner.h>
+#include <intravenous/runtime/timeline_events.h>
 
 #include <memory>
 #include <mutex>
@@ -43,9 +43,8 @@ public:
       : block_size_(block_size)
     {}
 
-    TaskGraphUpdate handle_instance_builders_changed(
+    VersionedTaskGraphUpdate handle_instance_builders_changed(
         IvModuleInstanceBuildersChanged const &diff);
-    TaskGraphUpdate handle_graph_input_lanes_dsp_task_dependencies_changed(
-        GraphInputLanesDspTaskDependenciesChanged const &changed);
+    VersionedTaskGraphUpdate handle_timeline_batch(TimelineLaneBatchUpdate const &batch);
 };
 }

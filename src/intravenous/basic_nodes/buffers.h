@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/node/lifecycle.h>
-#include <intravenous/runtime/graph_output_blocks_events.h>
+#include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/timeline_execution_events.h>
 
 #include <array>
@@ -118,10 +118,6 @@ namespace iv {
         }
     };
 
-    // DSP-side sink that taps a concrete sample output port and publishes the block to
-    // GraphOutputBlocks, where a timeline output-lane node reads it back. One input, no
-    // output (sinks are retained and executed like any registered node). Fan-in into the
-    // single input (multiple concrete outputs of one logical port) is lowered to Sum<N>.
     class GraphSampleOutputSink {
         LaneId _lane {};
         std::string _identity;
@@ -155,14 +151,12 @@ namespace iv {
                 samples[i] = i < block.size() ? block[i] : Sample{0.0f};
             }
             IV_INVOKE_SINGLETON_EVENT(
-                iv_runtime_graph_output_blocks_sample_published_event,
+                iv_runtime_graph_input_lanes_sample_block_published_event,
                 _lane,
                 std::span<Sample const>(samples));
         }
     };
 
-    // Event counterpart of GraphSampleOutputSink. One event input (typed to match the
-    // tapped output port), no output. Fan-in is lowered to EventConcatenation.
     class GraphEventOutputSink {
         LaneId _lane {};
         EventTypeId _type {};
@@ -197,7 +191,7 @@ namespace iv {
             auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
             std::vector<TimedEvent> stored(events.begin(), events.end());
             IV_INVOKE_SINGLETON_EVENT(
-                iv_runtime_graph_output_blocks_event_published_event,
+                iv_runtime_graph_input_lanes_event_block_published_event,
                 _lane,
                 std::span<TimedEvent const>(stored));
         }

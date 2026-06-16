@@ -4,6 +4,24 @@
 #include <utility>
 
 namespace iv {
+namespace {
+void default_sample_block_published(LaneId, std::span<Sample const>)
+{
+}
+
+void default_event_block_published(LaneId, std::span<TimedEvent const>)
+{
+}
+
+void default_sample_block_requested(LaneId, GraphInputLanesSampleBlockBuilder &)
+{
+}
+
+void default_event_block_requested(LaneId, GraphInputLanesEventBlockBuilder &)
+{
+}
+}
+
 void GraphInputLanesAckBuilder::succeed()
 {
     handled = true;
@@ -25,5 +43,22 @@ void GraphInputLanesAckBuilder::build() const
         throw std::runtime_error("runtime graph input lanes event was not handled");
     }
 }
+
+IV_DEFINE_SINGLETON_EVENT(
+    GraphInputLanesSampleBlockPublishedEvent,
+    iv_runtime_graph_input_lanes_sample_block_published_event,
+    default_sample_block_published);
+IV_DEFINE_SINGLETON_EVENT(
+    GraphInputLanesEventBlockPublishedEvent,
+    iv_runtime_graph_input_lanes_event_block_published_event,
+    default_event_block_published);
+IV_DEFINE_SINGLETON_EVENT(
+    GraphInputLanesSampleBlockRequestedEvent,
+    iv_runtime_graph_input_lanes_sample_block_requested_event,
+    default_sample_block_requested);
+IV_DEFINE_SINGLETON_EVENT(
+    GraphInputLanesEventBlockRequestedEvent,
+    iv_runtime_graph_input_lanes_event_block_requested_event,
+    default_event_block_requested);
 
 } // namespace iv

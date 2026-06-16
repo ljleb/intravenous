@@ -41,10 +41,10 @@ TEST(IvModuleInstancesExecution, CreatesOneTaskPerBuilderInstance)
             },
         });
 
-    ASSERT_EQ(update.to_create.size(), 1u);
-    EXPECT_EQ(update.to_create[0].id, "iv_module_instance:dsp:instance:1");
-    EXPECT_TRUE(update.to_create[0].depends_on.empty());
-    EXPECT_TRUE(update.to_delete.empty());
+    ASSERT_EQ(update.update.to_create.size(), 1u);
+    EXPECT_EQ(update.update.to_create[0].id, "iv_module_instance:dsp:instance:1");
+    EXPECT_TRUE(update.update.to_create[0].depends_on.empty());
+    EXPECT_TRUE(update.update.to_delete.empty());
 }
 
 TEST(IvModuleInstancesExecution, GraphInputLaneDependenciesUpdateTaskPrerequisites)
@@ -64,21 +64,24 @@ TEST(IvModuleInstancesExecution, GraphInputLaneDependenciesUpdateTaskPrerequisit
             },
         });
 
-    auto update = execution.handle_graph_input_lanes_dsp_task_dependencies_changed(
-        iv::GraphInputLanesDspTaskDependenciesChanged {
-            .created_or_updated = {
-                iv::GraphInputLanesDspTaskDependencies {
-                    .instance_id = "instance:1",
-                    .prerequisite_lanes = { iv::LaneId { 4 }, iv::LaneId { 8 } },
+    auto update = execution.handle_timeline_batch(
+        iv::TimelineLaneBatchUpdate {
+            .task_dependencies_created_or_updated = {
+                iv::TimelineTaskDependenciesUpdate {
+                    .task_id = "iv_module_instance:dsp:instance:1",
+                    .depends_on = {
+                        "timeline:lane:4",
+                        "timeline:lane:8",
+                    },
                 },
             },
         });
 
-    ASSERT_EQ(update.to_update.size(), 1u);
-    EXPECT_EQ(update.to_update[0].id, "iv_module_instance:dsp:instance:1");
-    ASSERT_TRUE(update.to_update[0].depends_on.has_value());
+    ASSERT_EQ(update.update.to_update.size(), 1u);
+    EXPECT_EQ(update.update.to_update[0].id, "iv_module_instance:dsp:instance:1");
+    ASSERT_TRUE(update.update.to_update[0].depends_on.has_value());
     EXPECT_EQ(
-        *update.to_update[0].depends_on,
+        *update.update.to_update[0].depends_on,
         (std::vector<std::string> {
             "timeline:lane:4",
             "timeline:lane:8",
@@ -107,8 +110,8 @@ TEST(IvModuleInstancesExecution, DeletingInstanceDeletesTask)
             .deleted_instance_ids = { "instance:1" },
         });
 
-    ASSERT_EQ(update.to_delete.size(), 1u);
-    EXPECT_EQ(update.to_delete[0], "iv_module_instance:dsp:instance:1");
+    ASSERT_EQ(update.update.to_delete.size(), 1u);
+    EXPECT_EQ(update.update.to_delete[0], "iv_module_instance:dsp:instance:1");
 }
 
 TEST(IvModuleInstancesExecution, TaskCallbackTicksTheBuiltGraph)
@@ -130,8 +133,8 @@ TEST(IvModuleInstancesExecution, TaskCallbackTicksTheBuiltGraph)
             },
         });
 
-    ASSERT_EQ(update.to_create.size(), 1u);
-    auto const callback = update.to_create[0].callback;
+    ASSERT_EQ(update.update.to_create.size(), 1u);
+    auto const callback = update.update.to_create[0].callback;
     ASSERT_NE(callback.invoke, nullptr);
     callback.invoke(callback.context);
     callback.invoke(callback.context);

@@ -84,6 +84,7 @@ public:
 
 private:
     mutable std::mutex mutex;
+    mutable std::mutex output_blocks_mutex_;
     LaneIdAllocator lane_ids;
     std::unordered_map<std::string, std::vector<DesiredGraphInputPort>> desired_ports_by_instance_id;
     std::vector<DesiredGraphInputPort> desired_ports;
@@ -101,6 +102,9 @@ private:
     std::unordered_map<std::string, ConcreteEventInputState> concrete_event_input_states_by_key;
     std::unordered_set<std::string> pending_rebuild_instance_ids;
     std::vector<TimelineLaneBatchUpdate> pending_timeline_batches;
+    std::uint64_t current_update_version_index_ = 1;
+    std::unordered_map<LaneId, std::vector<Sample>, LaneIdHash> sample_output_blocks_;
+    std::unordered_map<LaneId, std::vector<TimedEvent>, LaneIdHash> event_output_blocks_;
 
     static std::vector<DesiredGraphInputPort> graph_input_port_descriptors_for(
         IvModuleInstance const &instance);
@@ -193,6 +197,10 @@ private:
     void queue_timeline_batch_locked(TimelineLaneBatchUpdate const &batch);
     std::vector<TimelineLaneBatchUpdate> take_pending_timeline_batches_locked();
     void apply_timeline_batch(TimelineLaneBatchUpdate const &batch);
+    void publish_sample_output_block(LaneId lane, std::span<Sample const> block);
+    void publish_event_output_block(LaneId lane, std::span<TimedEvent const> events);
+    std::vector<Sample> sample_output_block(LaneId lane) const;
+    std::vector<TimedEvent> event_output_block(LaneId lane) const;
 
 public:
     GraphInputLanes() = default;
@@ -218,5 +226,9 @@ public:
     BuilderCompletionDiff complete_builder(
         std::string const &instance_id,
         GraphBuilder &builder);
+    void handle_sample_block_published(LaneId lane, std::span<Sample const> block);
+    void handle_event_block_published(LaneId lane, std::span<TimedEvent const> events);
+    std::vector<Sample> handle_sample_block_requested(LaneId lane) const;
+    std::vector<TimedEvent> handle_event_block_requested(LaneId lane) const;
 };
 } // namespace iv

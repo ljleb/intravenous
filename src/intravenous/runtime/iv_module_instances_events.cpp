@@ -20,6 +20,16 @@ IvModuleInstanceBuildersAckBuilder::prerequisite_lanes_for(
     return it->second;
 }
 
+void IvModuleInstanceBuildersAckBuilder::set_version_index(std::uint64_t version_index)
+{
+    version_index_ = version_index;
+}
+
+std::optional<std::uint64_t> IvModuleInstanceBuildersAckBuilder::version_index() const
+{
+    return version_index_;
+}
+
 IV_DEFINE_LINKER_EVENT(
     IvModuleRequiredDefinitionsChangedEvent,
     iv_runtime_iv_module_required_definitions_changed_event);

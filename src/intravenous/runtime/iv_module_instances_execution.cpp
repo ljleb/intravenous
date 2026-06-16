@@ -34,7 +34,7 @@ void IvModuleInstancesExecution::invoke_instance_task(void *raw_context)
     state.next_block_index += context->execution->block_size_;
 }
 
-TaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_changed(
+VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_changed(
     IvModuleInstanceBuildersChanged const &diff)
 {
     std::scoped_lock lock(mutex_);
@@ -126,43 +126,49 @@ TaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_changed(
         update.to_delete.push_back(iv_module_instance_dsp_task_id(deleted));
     }
 
-    return update;
+    return VersionedTaskGraphUpdate{
+        .version_index = diff.version_index,
+        .update = std::move(update),
+    };
 }
 
-TaskGraphUpdate IvModuleInstancesExecution::handle_graph_input_lanes_dsp_task_dependencies_changed(
-    GraphInputLanesDspTaskDependenciesChanged const &changed)
+VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_timeline_batch(
+    TimelineLaneBatchUpdate const &batch)
 {
     std::scoped_lock lock(mutex_);
     TaskGraphUpdate update;
 
-    for (auto const &deleted : changed.deleted_instance_ids) {
-        if (!instances_by_id_.contains(deleted)) {
+    for (auto const &deleted_task_id : batch.task_dependencies_deleted) {
+        auto const instance_id = task_id_to_iv_module_instance_id(deleted_task_id);
+        if (!instance_id.has_value() || !instances_by_id_.contains(*instance_id)) {
             continue;
         }
-        instances_by_id_[deleted].prerequisite_lanes.clear();
+        instances_by_id_[*instance_id].prerequisite_lanes.clear();
         update.to_update.push_back(TaskUpdateRecord {
-            .id = iv_module_instance_dsp_task_id(deleted),
+            .id = deleted_task_id,
             .depends_on = std::vector<std::string> {},
         });
     }
 
-    for (auto const &entry : changed.created_or_updated) {
-        auto it = instances_by_id_.find(entry.instance_id);
+    for (auto const &entry : batch.task_dependencies_created_or_updated) {
+        auto const instance_id = task_id_to_iv_module_instance_id(entry.task_id);
+        if (!instance_id.has_value()) {
+            continue;
+        }
+        auto it = instances_by_id_.find(*instance_id);
         if (it == instances_by_id_.end()) {
             continue;
         }
-        it->second.prerequisite_lanes = entry.prerequisite_lanes;
-        std::vector<std::string> depends_on;
-        depends_on.reserve(entry.prerequisite_lanes.size());
-        for (auto const lane : entry.prerequisite_lanes) {
-            depends_on.push_back(timeline_lane_task_id(lane));
-        }
+        it->second.prerequisite_lanes.clear();
         update.to_update.push_back(TaskUpdateRecord {
-            .id = iv_module_instance_dsp_task_id(entry.instance_id),
-            .depends_on = std::move(depends_on),
+            .id = entry.task_id,
+            .depends_on = entry.depends_on,
         });
     }
 
-    return update;
+    return VersionedTaskGraphUpdate{
+        .version_index = batch.version_index,
+        .update = std::move(update),
+    };
 }
 }

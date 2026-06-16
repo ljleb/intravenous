@@ -18,9 +18,6 @@
 #include <unordered_set>
 #include <vector>
 
-// actually this class is INSANELY HUGE
-// this needs to be split into smaller parts and then composed together
-// again, here we need each class to be self-contained and encapsulated. think hard, don't half-ass the separation because it will come back in your face (yuck)
 namespace iv {
     struct LanePortId {
         LanePortDomain domain = LanePortDomain::compiled;
@@ -281,10 +278,6 @@ namespace iv {
             }
         }
 
-        // I don't know what is going on here but it's just insane how complex this class is
-        // and how many responsibilities it was forced to do
-        // it is in pain, crying, it wants to stop living
-        // give it a SINGLE JOB not 40
     public:
         LaneGraph() = default;
         LaneGraph(LaneGraph const&) = delete;

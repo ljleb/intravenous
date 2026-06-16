@@ -287,6 +287,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
         iv_runtime_iv_module_instance_builders_changed_event,
         builders_diff,
         builders_ack);
+    builders_diff.version_index = builders_ack.version_index().value_or(builders_diff.version_index);
     for (auto &created : builders_diff.created) {
         if (!created.instance) {
             continue;
@@ -317,6 +318,7 @@ void IvModuleInstances::handle_graph_input_lanes_rebuild_requested(
     GraphInputLanesRebuildRequested const &request)
 {
     IvModuleInstanceBuildersChanged builders_diff{};
+    builders_diff.version_index = request.version_index;
 
     {
         std::scoped_lock lock(mutex);

@@ -22,18 +22,18 @@ namespace {
         std::unordered_map<std::string, TaskState> tasks_ {};
 
     public:
-        void apply(iv::TaskGraphUpdate const& update)
+        void apply(iv::VersionedTaskGraphUpdate const& update)
         {
-            for (auto const& id : update.to_delete) {
+            for (auto const& id : update.update.to_delete) {
                 tasks_.erase(id);
             }
-            for (auto const& task : update.to_create) {
+            for (auto const& task : update.update.to_create) {
                 tasks_[task.id] = TaskState {
                     .depends_on = task.depends_on,
                     .callback = task.callback,
                 };
             }
-            for (auto const& task : update.to_update) {
+            for (auto const& task : update.update.to_update) {
                 auto& stored = tasks_[task.id];
                 if (task.depends_on) {
                     stored.depends_on = *task.depends_on;

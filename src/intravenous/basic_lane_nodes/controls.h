@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/lane_node/generate.h>
-#include <intravenous/runtime/graph_output_blocks_events.h>
+#include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/lane_graph.h>
 
 #include <array>
@@ -105,10 +105,6 @@ namespace iv {
         }
     };
 
-    // Timeline-facing output lane: pulls the block a DSP output sink published into
-    // GraphOutputBlocks and emits it as this lane's output. Mirror of the input-lane
-    // nodes, inverted: this lane's task depends_on the DSP task (carried via the lane
-    // upsert's external_task_dependencies), so the block is always published first.
     struct GraphSampleOutputLaneNode {
         LaneId lane {};
 
@@ -121,9 +117,9 @@ namespace iv {
 
         void tick_block_realtime(RealtimeLaneTickContext<GraphSampleOutputLaneNode>& ctx)
         {
-            GraphOutputBlocksSampleBlockBuilder builder;
+            GraphInputLanesSampleBlockBuilder builder;
             IV_INVOKE_SINGLETON_EVENT(
-                iv_runtime_graph_output_blocks_sample_requested_event,
+                iv_runtime_graph_input_lanes_sample_block_requested_event,
                 lane,
                 builder);
             auto const block = builder.build();
@@ -145,9 +141,9 @@ namespace iv {
 
         void tick_block_realtime(RealtimeLaneTickContext<GraphEventOutputLaneNode>& ctx)
         {
-            GraphOutputBlocksEventBlockBuilder builder;
+            GraphInputLanesEventBlockBuilder builder;
             IV_INVOKE_SINGLETON_EVENT(
-                iv_runtime_graph_output_blocks_event_requested_event,
+                iv_runtime_graph_input_lanes_event_block_requested_event,
                 lane,
                 builder);
             auto const events = builder.build();

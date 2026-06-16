@@ -44,6 +44,7 @@ struct TaskRunner::CompiledPlan {
 
 struct TaskRunner::GraphVersion {
     std::uint64_t revision = 0;
+    bool is_complete = true;
     std::unordered_map<std::string, DeclaredTask> tasks {};
     std::vector<std::string> sorted_task_ids {};
     CompiledPlan compiled_plan {};
@@ -194,6 +195,7 @@ namespace {
     }
 
     struct DeclaredGraphAnalysis {
+        bool is_complete = true;
         std::unordered_map<std::string, std::vector<std::string>> users_by_task {};
         std::vector<std::string> topological_order {};
     };
@@ -213,8 +215,8 @@ namespace {
         for (auto const &[task_id, task] : tasks) {
             for (auto const &dependency : task.depends_on) {
                 if (!tasks.contains(dependency)) {
-                    throw std::runtime_error(
-                        "task '" + task_id + "' depends on missing task '" + dependency + "'");
+                    analysis.is_complete = false;
+                    continue;
                 }
                 analysis.users_by_task.at(dependency).push_back(task_id);
                 indegree.at(task_id) += 1;
@@ -361,13 +363,16 @@ std::shared_ptr<TaskRunner::GraphVersion> TaskRunner::build_graph_version(
 {
     auto tasks = apply_update(base, update);
     auto ids = sorted_task_ids(tasks);
-    auto compiled_plan = compile_execution_plan(tasks, ids);
+    auto const analysis = analyze_declared_graph(tasks, ids);
 
     auto graph = std::make_shared<GraphVersion>();
     graph->revision = revision;
+    graph->is_complete = analysis.is_complete;
     graph->tasks = std::move(tasks);
     graph->sorted_task_ids = std::move(ids);
-    graph->compiled_plan = std::move(compiled_plan);
+    if (graph->is_complete) {
+        graph->compiled_plan = compile_execution_plan(graph->tasks, graph->sorted_task_ids);
+    }
     return graph;
 }
 
@@ -408,6 +413,14 @@ TaskRunner::~TaskRunner()
 
 void TaskRunner::update_tasks(TaskGraphUpdate const &update)
 {
+    update_tasks(VersionedTaskGraphUpdate{
+        .version_index = 0,
+        .update = update,
+    });
+}
+
+void TaskRunner::update_tasks(VersionedTaskGraphUpdate const &update)
+{
     std::scoped_lock update_lock(update_mutex_);
 
     std::shared_ptr<GraphVersion const> base;
@@ -417,16 +430,33 @@ void TaskRunner::update_tasks(TaskGraphUpdate const &update)
         if (shutdown_requested_) {
             throw std::runtime_error("cannot update tasks after shutdown");
         }
+        if (pending_graph_ && !pending_graph_is_complete_) {
+            if (!pending_update_version_index_.has_value()) {
+                pending_update_version_index_ = update.version_index;
+            } else if (*pending_update_version_index_ != update.version_index) {
+                throw std::runtime_error("cannot mix task graph update version indices while pending graph has unmet dependencies");
+            }
+        }
         base = pending_graph_ ? std::const_pointer_cast<GraphVersion const>(pending_graph_)
                               : std::const_pointer_cast<GraphVersion const>(active_graph_);
         revision = next_revision_;
         next_revision_ += 1;
     }
 
-    auto next_graph = build_graph_version(base, update, revision);
+    auto next_graph = build_graph_version(base, update.update, revision);
     {
         std::scoped_lock state_lock(state_mutex_);
         pending_graph_ = std::move(next_graph);
+        pending_graph_is_complete_ = pending_graph_->is_complete;
+        if (!pending_graph_is_complete_) {
+            if (!pending_update_version_index_.has_value()) {
+                pending_update_version_index_ = update.version_index;
+            } else if (*pending_update_version_index_ != update.version_index) {
+                throw std::runtime_error("cannot mix task graph update version indices while pending graph has unmet dependencies");
+            }
+        } else {
+            pending_update_version_index_.reset();
+        }
     }
     state_cv_.notify_all();
 }
@@ -463,7 +493,7 @@ void TaskRunner::coordinator_loop()
     std::unique_lock lock(state_mutex_);
     while (true) {
         if (!current_pass_) {
-            if (pending_graph_) {
+            if (pending_graph_ && pending_graph_is_complete_) {
                 active_graph_ = std::move(pending_graph_);
             }
             if (shutdown_requested_ && active_graph_->compiled_plan.groups.empty()) {
@@ -474,7 +504,7 @@ void TaskRunner::coordinator_loop()
             if (active_graph_->compiled_plan.groups.empty()) {
                 state_cv_.wait(lock, [&] {
                     return workers_should_exit_
-                        || pending_graph_ != nullptr
+                        || (pending_graph_ != nullptr && pending_graph_is_complete_)
                         || (shutdown_requested_ && active_graph_->compiled_plan.groups.empty());
                 });
                 continue;

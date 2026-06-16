@@ -82,6 +82,7 @@ std::vector<TimelineLaneOutputs> outputs_for_lanes(
 }
 
 void emit_lane_change(
+    std::uint64_t version_index,
     bool lane_set_changed,
     std::vector<LaneId> created_lanes = {},
     std::vector<LaneId> removed_lanes = {},
@@ -109,6 +110,7 @@ void emit_lane_change(
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_timeline_lanes_changed_event,
         TimelineLanesChanged{
+            .version_index = version_index,
             .lane_set_changed = lane_set_changed,
             .dataset = std::move(dataset),
             .schema_change = schema_change,
@@ -151,14 +153,66 @@ void handle_timeline_batch_requested(
     for (auto const &upsert : batch.upserts) {
         upserted_lanes.push_back(upsert.lane);
     }
-    emit_lane_change(true, std::move(upserted_lanes), batch.removals);
+    emit_lane_change(batch.version_index, true, std::move(upserted_lanes), batch.removals);
     builder.succeed();
+}
+
+void handle_sample_block_published(LaneId lane, std::span<Sample const> block)
+{
+    if (bound_graph_input_lanes == nullptr) {
+        return;
+    }
+    bound_graph_input_lanes->handle_sample_block_published(lane, block);
+}
+
+void handle_event_block_published(LaneId lane, std::span<TimedEvent const> events)
+{
+    if (bound_graph_input_lanes == nullptr) {
+        return;
+    }
+    bound_graph_input_lanes->handle_event_block_published(lane, events);
+}
+
+void handle_sample_block_requested(
+    LaneId lane,
+    GraphInputLanesSampleBlockBuilder &builder)
+{
+    if (bound_graph_input_lanes == nullptr) {
+        return;
+    }
+    builder.succeed(bound_graph_input_lanes->handle_sample_block_requested(lane));
+}
+
+void handle_event_block_requested(
+    LaneId lane,
+    GraphInputLanesEventBlockBuilder &builder)
+{
+    if (bound_graph_input_lanes == nullptr) {
+        return;
+    }
+    builder.succeed(bound_graph_input_lanes->handle_event_block_requested(lane));
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
     GraphInputLanesTimelineBatchRequestedEvent,
     iv_runtime_graph_input_lanes_timeline_batch_requested_event,
     handle_timeline_batch_requested);
+IV_SUBSCRIBE_SINGLETON_EVENT(
+    GraphInputLanesSampleBlockPublishedEvent,
+    iv_runtime_graph_input_lanes_sample_block_published_event,
+    handle_sample_block_published);
+IV_SUBSCRIBE_SINGLETON_EVENT(
+    GraphInputLanesEventBlockPublishedEvent,
+    iv_runtime_graph_input_lanes_event_block_published_event,
+    handle_event_block_published);
+IV_SUBSCRIBE_SINGLETON_EVENT(
+    GraphInputLanesSampleBlockRequestedEvent,
+    iv_runtime_graph_input_lanes_sample_block_requested_event,
+    handle_sample_block_requested);
+IV_SUBSCRIBE_SINGLETON_EVENT(
+    GraphInputLanesEventBlockRequestedEvent,
+    iv_runtime_graph_input_lanes_event_block_requested_event,
+    handle_event_block_requested);
 } // namespace
 
 void bind_graph_input_lanes_timeline_bridge(GraphInputLanes &graph_input_lanes, Timeline &timeline)

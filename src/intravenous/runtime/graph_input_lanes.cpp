@@ -3,7 +3,6 @@
 #include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_lane_nodes/controls.h>
-#include <intravenous/runtime/graph_input_lanes_execution_edges_events.h>
 #include <intravenous/runtime/task_ids.h>
 
 #include <array>
@@ -67,6 +66,8 @@ bool batch_has_changes(TimelineLaneBatchUpdate const &batch)
 {
     return !batch.upserts.empty()
         || !batch.removals.empty()
+        || !batch.task_dependencies_created_or_updated.empty()
+        || !batch.task_dependencies_deleted.empty()
         || !batch.connections_to_remove.empty()
         || !batch.connections_to_add.empty()
         || !batch.hierarchy_removals.empty()
@@ -795,11 +796,6 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
         }
     }
 
-    auto dsp_dependency_for = [](DesiredGraphInputPort const &port) {
-        return std::vector<std::string>{ iv_module_instance_dsp_task_id(port.instance_id) };
-    };
-
-    // Logical aggregation lanes: one per logical output port in timeline_lane state.
     for (auto const &port : desired_output_ports) {
         if (port.port.concrete_member_ordinal.has_value()) {
             continue;
@@ -828,7 +824,9 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
                         return TypeErasedLaneNode(GraphSampleOutputLaneNode{ .lane = lane });
                     },
                     .metadata = std::move(metadata),
-                    .external_task_dependencies = dsp_dependency_for(port),
+                    .external_task_dependencies = {
+                        iv_module_instance_dsp_task_id(port.instance_id),
+                    },
                 });
             }
         }
@@ -863,7 +861,9 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
                         return TypeErasedLaneNode(GraphSampleOutputLaneNode{ .lane = lane });
                     },
                     .metadata = std::move(metadata),
-                    .external_task_dependencies = dsp_dependency_for(port),
+                    .external_task_dependencies = {
+                        iv_module_instance_dsp_task_id(port.instance_id),
+                    },
                 });
             }
         }
@@ -1282,8 +1282,10 @@ void GraphInputLanes::queue_timeline_batch_locked(TimelineLaneBatchUpdate const 
     if (!batch_has_changes(batch)) {
         return;
     }
-    apply_tracked_batch_locked(batch);
-    pending_timeline_batches.push_back(batch);
+    auto versioned_batch = batch;
+    versioned_batch.version_index = current_update_version_index_;
+    apply_tracked_batch_locked(versioned_batch);
+    pending_timeline_batches.push_back(std::move(versioned_batch));
 }
 
 std::vector<TimelineLaneBatchUpdate> GraphInputLanes::take_pending_timeline_batches_locked()
@@ -1299,6 +1301,44 @@ void GraphInputLanes::apply_timeline_batch(TimelineLaneBatchUpdate const &batch)
         batch,
         builder);
     builder.build();
+}
+
+void GraphInputLanes::publish_sample_output_block(
+    LaneId lane,
+    std::span<Sample const> block)
+{
+    std::scoped_lock lock(output_blocks_mutex_);
+    auto &stored = sample_output_blocks_[lane];
+    stored.assign(block.begin(), block.end());
+}
+
+void GraphInputLanes::publish_event_output_block(
+    LaneId lane,
+    std::span<TimedEvent const> events)
+{
+    std::scoped_lock lock(output_blocks_mutex_);
+    auto &stored = event_output_blocks_[lane];
+    stored.assign(events.begin(), events.end());
+}
+
+std::vector<Sample> GraphInputLanes::sample_output_block(LaneId lane) const
+{
+    std::scoped_lock lock(output_blocks_mutex_);
+    auto const it = sample_output_blocks_.find(lane);
+    if (it == sample_output_blocks_.end()) {
+        return {};
+    }
+    return it->second;
+}
+
+std::vector<TimedEvent> GraphInputLanes::event_output_block(LaneId lane) const
+{
+    std::scoped_lock lock(output_blocks_mutex_);
+    auto const it = event_output_blocks_.find(lane);
+    if (it == event_output_blocks_.end()) {
+        return {};
+    }
+    return it->second;
 }
 
 void GraphInputLanes::handle_iv_module_instance_builders_changed(
@@ -1335,10 +1375,10 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
         (void)reconcile_ports_locked(&batch);
         reconcile_output_ports_locked(&batch);
         queue_timeline_batch_locked(batch);
+        if (ack_builder != nullptr) {
+            ack_builder->set_version_index(current_update_version_index_);
+        }
     }
-
-    GraphInputLanesDspTaskDependenciesChanged dsp_dependencies;
-    dsp_dependencies.deleted_instance_ids = diff.deleted_instance_ids;
 
     for (auto const &created : diff.created) {
         if (created.instance == nullptr || created.builder == nullptr) {
@@ -1350,10 +1390,6 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
                 created.instance->instance_id,
                 completion.prerequisite_lanes);
         }
-        dsp_dependencies.created_or_updated.push_back(GraphInputLanesDspTaskDependencies {
-            .instance_id = created.instance->instance_id,
-            .prerequisite_lanes = std::move(completion.prerequisite_lanes),
-        });
     }
     for (auto const &updated : diff.updated) {
         if (updated.instance == nullptr || updated.builder == nullptr) {
@@ -1365,16 +1401,6 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
                 updated.instance->instance_id,
                 completion.prerequisite_lanes);
         }
-        dsp_dependencies.created_or_updated.push_back(GraphInputLanesDspTaskDependencies {
-            .instance_id = updated.instance->instance_id,
-            .prerequisite_lanes = std::move(completion.prerequisite_lanes),
-        });
-    }
-
-    if (!dsp_dependencies.created_or_updated.empty() || !dsp_dependencies.deleted_instance_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_graph_input_lanes_dsp_task_dependencies_changed_event,
-            dsp_dependencies);
     }
 }
 
@@ -1798,12 +1824,13 @@ GraphInputLaneBindings GraphInputLanes::graph_input_lane_bindings(
 }
 
 void GraphInputLanes::handle_task_runner_pass_finished(
-    TaskRunnerPassFinished const &)
+    TaskRunnerPassFinished const &finished)
 {
     std::vector<std::string> instance_ids;
     std::vector<TimelineLaneBatchUpdate> timeline_batches;
     {
         std::scoped_lock lock(mutex);
+        current_update_version_index_ = finished.graph_revision + 1;
         instance_ids.assign(
             pending_rebuild_instance_ids.begin(),
             pending_rebuild_instance_ids.end());
@@ -1820,6 +1847,7 @@ void GraphInputLanes::handle_task_runner_pass_finished(
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_graph_input_lanes_rebuild_requested_event,
         GraphInputLanesRebuildRequested{
+            .version_index = finished.graph_revision + 1,
             .instance_ids = std::move(instance_ids),
         });
 }
@@ -2060,10 +2088,6 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         diff.prerequisite_lanes.push_back(bindings.event_inputs.front().graph_input_lane);
     }
 
-    // Output sinks: tap each concrete output port per its authored state and publish it
-    // into GraphOutputBlocks via a DSP sink. `logical` outputs feed the shared logical
-    // aggregation lane's sink (fan-in -> Sum<N> / EventConcatenation); `timeline_lane`
-    // outputs feed their own dedicated lane's sink. Disconnected outputs do nothing.
     std::unordered_map<std::uint64_t, NodeRef> sample_sink_by_lane;
     std::unordered_map<std::uint64_t, NodeRef> event_sink_by_lane;
 
@@ -2090,7 +2114,6 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         if (!lane) {
             continue;
         }
-
         auto it = sample_sink_by_lane.find(lane.value);
         if (it == sample_sink_by_lane.end()) {
             it = sample_sink_by_lane.emplace(
@@ -2123,7 +2146,6 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         if (!lane) {
             continue;
         }
-
         auto it = event_sink_by_lane.find(lane.value);
         if (it == event_sink_by_lane.end()) {
             it = event_sink_by_lane.emplace(
@@ -2139,7 +2161,30 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
     diff.prerequisite_lanes.erase(
         std::unique(diff.prerequisite_lanes.begin(), diff.prerequisite_lanes.end()),
         diff.prerequisite_lanes.end());
-
     return diff;
+}
+
+void GraphInputLanes::handle_sample_block_published(
+    LaneId lane,
+    std::span<Sample const> block)
+{
+    publish_sample_output_block(lane, block);
+}
+
+void GraphInputLanes::handle_event_block_published(
+    LaneId lane,
+    std::span<TimedEvent const> events)
+{
+    publish_event_output_block(lane, events);
+}
+
+std::vector<Sample> GraphInputLanes::handle_sample_block_requested(LaneId lane) const
+{
+    return sample_output_block(lane);
+}
+
+std::vector<TimedEvent> GraphInputLanes::handle_event_block_requested(LaneId lane) const
+{
+    return event_output_block(lane);
 }
 } // namespace iv

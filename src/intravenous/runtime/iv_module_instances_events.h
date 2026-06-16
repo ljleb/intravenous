@@ -5,6 +5,7 @@
 #include <intravenous/linker_event.h>
 
 #include <filesystem>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -28,13 +29,16 @@ using IvModuleInstancesListChangedEvent =
 
 class IvModuleInstanceBuildersAckBuilder {
     std::unordered_map<std::string, std::vector<LaneId>> prerequisite_lanes_by_instance_id_;
+    std::optional<std::uint64_t> version_index_;
 
 public:
     void set_prerequisite_lanes(
         std::string instance_id,
         std::vector<LaneId> prerequisite_lanes);
+    void set_version_index(std::uint64_t version_index);
     [[nodiscard]] std::optional<std::vector<LaneId>> prerequisite_lanes_for(
         std::string const &instance_id) const;
+    [[nodiscard]] std::optional<std::uint64_t> version_index() const;
 };
 
 IV_DECLARE_LINKER_EVENT(

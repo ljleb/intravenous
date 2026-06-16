@@ -23,8 +23,8 @@ public:
         size_t block_size,
         size_t compiled_sample_cache_chunk_size_multiplier = 16);
 
-    TaskGraphUpdate synchronize_from_graph(LaneGraph const &graph);
-    TaskGraphUpdate handle_timeline_lanes_changed(TimelineLanesChanged const &change);
+    VersionedTaskGraphUpdate synchronize_from_graph(LaneGraph const &graph);
+    VersionedTaskGraphUpdate handle_timeline_lanes_changed(TimelineLanesChanged const &change);
 
     std::vector<LaneId> realtime_sample_output_lanes() const;
     void set_realtime_start_index(size_t start_index);
@@ -89,7 +89,7 @@ private:
     void execute_lane_task(LaneId lane);
     void rebuild_runtime_storage_locked();
     void rebuild_compiled_support_and_notify_locked();
-    TaskGraphUpdate replace_all_lanes_locked(std::vector<TrackedLane> lanes);
+    VersionedTaskGraphUpdate replace_all_lanes_locked(std::vector<TrackedLane> lanes);
     std::vector<LaneId> topological_order_locked() const;
     void execute_lane_locked(LaneId lane, size_t start_index);
     std::span<Sample> realtime_sample_block_mutable_locked(LaneId lane);

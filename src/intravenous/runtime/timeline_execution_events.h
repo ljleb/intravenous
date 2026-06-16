@@ -8,7 +8,7 @@
 
 namespace iv {
 using TimelineExecutionTasksChangedEvent =
-    void (*)(TaskGraphUpdate const &);
+    void (*)(VersionedTaskGraphUpdate const &);
 
 class TimelineExecutionRealtimeSampleBlockBuilder {
     std::span<Sample const> block_ {};

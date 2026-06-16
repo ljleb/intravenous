@@ -6,6 +6,7 @@
 #include <intravenous/query/lane_query_dataset.h>
 #include <intravenous/query/lane_query_schema.h>
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -19,14 +20,15 @@ namespace iv {
         std::vector<LaneInputConnection> const&,
         std::vector<std::string> const&)>;
 
+    struct TimelineTaskDependenciesUpdate {
+        std::string task_id {};
+        std::vector<std::string> depends_on {};
+    };
+
     struct TimelineLaneUpsert {
         LaneId lane {};
         std::function<TypeErasedLaneNode()> make_node {};
         LaneMetadata metadata {};
-        // Extra task-graph dependencies for this lane's task beyond its lane inputs.
-        // Used by output lanes to depend_on the producing DSP task (the inverse of the
-        // input path), carried on the lane definition so TimelineExecution learns it
-        // through the single lane-creation path (no separate dependency event).
         std::vector<std::string> external_task_dependencies {};
     };
 
@@ -41,8 +43,11 @@ namespace iv {
     };
 
     struct TimelineLaneBatchUpdate {
+        std::uint64_t version_index = 0;
         std::vector<TimelineLaneUpsert> upserts {};
         std::vector<LaneId> removals {};
+        std::vector<TimelineTaskDependenciesUpdate> task_dependencies_created_or_updated {};
+        std::vector<std::string> task_dependencies_deleted {};
         std::vector<LaneGraphConnection> connections_to_remove {};
         std::vector<LaneGraphConnection> connections_to_add {};
         std::vector<TimelineLaneHierarchyUpdate> hierarchy_removals {};
@@ -50,6 +55,7 @@ namespace iv {
     };
 
     struct TimelineLanesChanged {
+        std::uint64_t version_index = 0;
         bool lane_set_changed = false;
         query::LaneQueryDatasetPtr dataset {};
         query::LaneQuerySchemaChange schema_change {};

@@ -153,6 +153,35 @@ TEST(SocketRpcRequestParser, ParsesSetEventInputStateRequest)
     EXPECT_EQ(request->state, "logicalFollow");
 }
 
+TEST(SocketRpcRequestParser, ParsesSetSampleOutputStateRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":27,"method":"graph.setSampleOutputState","params":{"nodeId":"node-1","memberOrdinal":2,"outputOrdinal":5,"state":"logical"}})");
+
+    EXPECT_EQ(parsed.request_id, 27);
+    auto const* request = std::get_if<iv::SetSampleOutputStateRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->node_id, "node-1");
+    ASSERT_TRUE(request->member_ordinal.has_value());
+    EXPECT_EQ(*request->member_ordinal, 2u);
+    EXPECT_EQ(request->output_ordinal, 5u);
+    EXPECT_EQ(request->state, "logical");
+}
+
+TEST(SocketRpcRequestParser, ParsesSetEventOutputStateRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":28,"method":"graph.setEventOutputState","params":{"nodeId":"node-1","outputOrdinal":3,"state":"timelineLane"}})");
+
+    EXPECT_EQ(parsed.request_id, 28);
+    auto const* request = std::get_if<iv::SetEventOutputStateRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->node_id, "node-1");
+    EXPECT_FALSE(request->member_ordinal.has_value());
+    EXPECT_EQ(request->output_ordinal, 3u);
+    EXPECT_EQ(request->state, "timelineLane");
+}
+
 TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(

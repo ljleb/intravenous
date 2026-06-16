@@ -5,7 +5,7 @@
 
 namespace iv {
 using IvModuleInstancesExecutionTasksChangedEvent =
-    void (*)(TaskGraphUpdate const &);
+    void (*)(VersionedTaskGraphUpdate const &);
 
 IV_DECLARE_LINKER_EVENT(
     IvModuleInstancesExecutionTasksChangedEvent,

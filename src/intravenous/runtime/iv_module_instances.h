@@ -6,6 +6,7 @@
 #include <intravenous/runtime/lane_graph.h>
 
 #include <filesystem>
+#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -49,6 +50,7 @@ struct IvModuleInstanceBuilderRef {
 };
 
 struct IvModuleInstanceBuildersChanged {
+    std::uint64_t version_index = 0;
     std::vector<IvModuleInstanceBuilderRef> created {};
     std::vector<IvModuleInstanceBuilderRef> updated {};
     std::vector<std::string> deleted_instance_ids {};
