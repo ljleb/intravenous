@@ -47,41 +47,31 @@ TEST(IvModuleInstancesExecution, CreatesOneTaskPerBuilderInstance)
     EXPECT_TRUE(update.update.to_delete.empty());
 }
 
-TEST(IvModuleInstancesExecution, GraphInputLaneDependenciesUpdateTaskPrerequisites)
+TEST(IvModuleInstancesExecution, BuilderPrerequisiteLanesBecomeTaskDependencies)
 {
     iv::IvModuleInstancesExecution execution;
     auto instance = make_instance("instance:1");
     iv::GraphBuilder builder;
     builder.outputs();
 
-    (void)execution.handle_instance_builders_changed(
+    auto update = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged {
             .created = {
                 iv::IvModuleInstanceBuilderRef {
                     .instance = &instance,
                     .builder = &builder,
-                },
-            },
-        });
-
-    auto update = execution.handle_timeline_batch(
-        iv::TimelineLaneBatchUpdate {
-            .task_dependencies_created_or_updated = {
-                iv::TimelineTaskDependenciesUpdate {
-                    .task_id = "iv_module_instance:dsp:instance:1",
-                    .depends_on = {
-                        "timeline:lane:4",
-                        "timeline:lane:8",
+                    .prerequisite_lanes = {
+                        iv::LaneId {4},
+                        iv::LaneId {8},
                     },
                 },
             },
         });
 
-    ASSERT_EQ(update.update.to_update.size(), 1u);
-    EXPECT_EQ(update.update.to_update[0].id, "iv_module_instance:dsp:instance:1");
-    ASSERT_TRUE(update.update.to_update[0].depends_on.has_value());
+    ASSERT_EQ(update.update.to_create.size(), 1u);
+    EXPECT_EQ(update.update.to_create[0].id, "iv_module_instance:dsp:instance:1");
     EXPECT_EQ(
-        *update.update.to_update[0].depends_on,
+        update.update.to_create[0].depends_on,
         (std::vector<std::string> {
             "timeline:lane:4",
             "timeline:lane:8",

@@ -4,7 +4,6 @@
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_iv_module_instances_bridge.h>
-#include <intravenous/runtime/graph_input_lanes_iv_module_instances_execution_bridge.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/iv_module_definitions.h>
@@ -93,7 +92,6 @@ namespace iv {
             bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
             bind_iv_module_instances_execution_task_runner_bridge(iv_module_instances_execution, task_runner);
             bind_iv_module_instances_iv_module_instances_execution_bridge(iv_module_instances_execution);
-            bind_graph_input_lanes_iv_module_instances_execution_bridge(iv_module_instances_execution);
             bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
             bind_iv_module_definitions_iv_module_reload_bridge(iv_module_reload);
             bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
@@ -143,7 +141,6 @@ namespace iv {
             unbind_timeline_lane_filters_bridge(lane_filters);
             unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
             unbind_iv_module_reload_iv_module_definitions_bridge(iv_module_definitions);
-            unbind_graph_input_lanes_iv_module_instances_execution_bridge(iv_module_instances_execution);
             unbind_graph_input_lanes_iv_module_instances_bridge(iv_module_instances);
             unbind_iv_module_instances_execution_task_runner_bridge(iv_module_instances_execution, task_runner);
             unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);

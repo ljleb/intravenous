@@ -288,7 +288,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/graph_input_lanes.cpp
     runtime/graph_input_lanes_events.cpp
     runtime/graph_input_lanes_iv_module_instances_bridge.cpp
-    runtime/graph_input_lanes_iv_module_instances_execution_bridge.cpp
     runtime/graph_input_lanes_timeline_bridge.cpp
     runtime/iv_module_definitions.cpp
     runtime/iv_module_definitions_builder_bridge.cpp

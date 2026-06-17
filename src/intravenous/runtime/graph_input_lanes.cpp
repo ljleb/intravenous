@@ -66,8 +66,6 @@ bool batch_has_changes(TimelineLaneBatchUpdate const &batch)
 {
     return !batch.upserts.empty()
         || !batch.removals.empty()
-        || !batch.task_dependencies_created_or_updated.empty()
-        || !batch.task_dependencies_deleted.empty()
         || !batch.connections_to_remove.empty()
         || !batch.connections_to_add.empty()
         || !batch.hierarchy_removals.empty()

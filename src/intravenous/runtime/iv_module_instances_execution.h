@@ -4,7 +4,6 @@
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/task_ids.h>
 #include <intravenous/runtime/task_runner.h>
-#include <intravenous/runtime/timeline_events.h>
 
 #include <memory>
 #include <mutex>
@@ -16,7 +15,6 @@ class IvModuleInstancesExecution {
     struct InstanceTaskState {
         IvModuleInstance const *instance = nullptr;
         GraphBuilder *builder = nullptr;
-        std::vector<LaneId> prerequisite_lanes {};
         std::optional<size_t> default_silence_ttl_samples {};
         std::unique_ptr<BlockNodeExecutor> executor {};
         size_t next_block_index = 0;
@@ -45,6 +43,5 @@ public:
 
     VersionedTaskGraphUpdate handle_instance_builders_changed(
         IvModuleInstanceBuildersChanged const &diff);
-    VersionedTaskGraphUpdate handle_timeline_batch(TimelineLaneBatchUpdate const &batch);
 };
 }

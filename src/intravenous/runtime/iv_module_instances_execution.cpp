@@ -47,7 +47,6 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
         auto &state = instances_by_id_[created.instance->instance_id];
         state.instance = created.instance;
         state.builder = created.builder;
-        state.prerequisite_lanes = created.prerequisite_lanes;
         state.default_silence_ttl_samples = created.default_silence_ttl_samples;
         state.executor = make_executor(
             *created.builder,
@@ -62,8 +61,8 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
         callback->instance_id = created.instance->instance_id;
 
         std::vector<std::string> depends_on;
-        depends_on.reserve(state.prerequisite_lanes.size());
-        for (auto const lane : state.prerequisite_lanes) {
+        depends_on.reserve(created.prerequisite_lanes.size());
+        for (auto const lane : created.prerequisite_lanes) {
             depends_on.push_back(timeline_lane_task_id(lane));
         }
 
@@ -84,7 +83,6 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
         auto &state = instances_by_id_[changed.instance->instance_id];
         state.instance = changed.instance;
         state.builder = changed.builder;
-        state.prerequisite_lanes = changed.prerequisite_lanes;
         auto const ttl_changed =
             state.default_silence_ttl_samples != changed.default_silence_ttl_samples;
         state.default_silence_ttl_samples = changed.default_silence_ttl_samples;
@@ -105,8 +103,8 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
         callback->instance_id = changed.instance->instance_id;
 
         std::vector<std::string> depends_on;
-        depends_on.reserve(state.prerequisite_lanes.size());
-        for (auto const lane : state.prerequisite_lanes) {
+        depends_on.reserve(changed.prerequisite_lanes.size());
+        for (auto const lane : changed.prerequisite_lanes) {
             depends_on.push_back(timeline_lane_task_id(lane));
         }
 
@@ -128,46 +126,6 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
 
     return VersionedTaskGraphUpdate{
         .version_index = diff.version_index,
-        .update = std::move(update),
-    };
-}
-
-VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_timeline_batch(
-    TimelineLaneBatchUpdate const &batch)
-{
-    std::scoped_lock lock(mutex_);
-    TaskGraphUpdate update;
-
-    for (auto const &deleted_task_id : batch.task_dependencies_deleted) {
-        auto const instance_id = task_id_to_iv_module_instance_id(deleted_task_id);
-        if (!instance_id.has_value() || !instances_by_id_.contains(*instance_id)) {
-            continue;
-        }
-        instances_by_id_[*instance_id].prerequisite_lanes.clear();
-        update.to_update.push_back(TaskUpdateRecord {
-            .id = deleted_task_id,
-            .depends_on = std::vector<std::string> {},
-        });
-    }
-
-    for (auto const &entry : batch.task_dependencies_created_or_updated) {
-        auto const instance_id = task_id_to_iv_module_instance_id(entry.task_id);
-        if (!instance_id.has_value()) {
-            continue;
-        }
-        auto it = instances_by_id_.find(*instance_id);
-        if (it == instances_by_id_.end()) {
-            continue;
-        }
-        it->second.prerequisite_lanes.clear();
-        update.to_update.push_back(TaskUpdateRecord {
-            .id = entry.task_id,
-            .depends_on = entry.depends_on,
-        });
-    }
-
-    return VersionedTaskGraphUpdate{
-        .version_index = batch.version_index,
         .update = std::move(update),
     };
 }

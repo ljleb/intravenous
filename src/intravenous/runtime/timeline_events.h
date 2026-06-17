@@ -20,11 +20,6 @@ namespace iv {
         std::vector<LaneInputConnection> const&,
         std::vector<std::string> const&)>;
 
-    struct TimelineTaskDependenciesUpdate {
-        std::string task_id {};
-        std::vector<std::string> depends_on {};
-    };
-
     struct TimelineLaneUpsert {
         LaneId lane {};
         std::function<TypeErasedLaneNode()> make_node {};
@@ -46,8 +41,6 @@ namespace iv {
         std::uint64_t version_index = 0;
         std::vector<TimelineLaneUpsert> upserts {};
         std::vector<LaneId> removals {};
-        std::vector<TimelineTaskDependenciesUpdate> task_dependencies_created_or_updated {};
-        std::vector<std::string> task_dependencies_deleted {};
         std::vector<LaneGraphConnection> connections_to_remove {};
         std::vector<LaneGraphConnection> connections_to_add {};
         std::vector<TimelineLaneHierarchyUpdate> hierarchy_removals {};
