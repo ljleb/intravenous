@@ -257,7 +257,7 @@ namespace iv {
             return *it;
         }
 
-        static OutputDeviceMixer make_audio_mixer(size_t device_id, LogicalAudioDevice device)
+        static OutputDeviceMixer make_audio_mixer(size_t device_id, AudioOutputDevice device)
         {
             return OutputDeviceMixer(
                 std::move(device),
@@ -267,7 +267,7 @@ namespace iv {
             );
         }
 
-        static OutputDeviceMixer make_file_mixer(std::filesystem::path path, LogicalAudioDevice device)
+        static OutputDeviceMixer make_file_mixer(std::filesystem::path path, AudioOutputDevice device)
         {
             return OutputDeviceMixer(
                 std::move(device),
@@ -371,7 +371,7 @@ namespace iv {
             return ensure_file(path);
         }
 
-        void add_audio_device(size_t device_id, LogicalAudioDevice device)
+        void add_audio_device(size_t device_id, AudioOutputDevice device)
         {
             insert_audio_mixer(device_id, make_audio_mixer(device_id, std::move(device)));
         }
@@ -381,7 +381,7 @@ namespace iv {
             insert_audio_mixer(device_id, std::move(mixer));
         }
 
-        void add_file_device(std::filesystem::path path, LogicalAudioDevice device)
+        void add_file_device(std::filesystem::path path, AudioOutputDevice device)
         {
             insert_file_mixer(path, make_file_mixer(std::move(path), std::move(device)));
         }

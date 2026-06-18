@@ -113,8 +113,8 @@ namespace iv {
         }
     };
 
-    inline LogicalAudioDevice make_wav_file_device(std::filesystem::path path, RenderConfig config = {})
+    inline AudioOutputDevice make_wav_file_device(std::filesystem::path path, RenderConfig config = {})
     {
-        return LogicalAudioDevice(std::in_place_type<WavFileLogicalDevice>, std::move(path), std::move(config));
+        return AudioOutputDevice(std::in_place_type<WavFileLogicalDevice>, std::move(path), std::move(config));
     }
 }

@@ -65,7 +65,7 @@ namespace iv {
             }
         };
 
-        LogicalAudioDevice _device;
+        AudioOutputDevice _device;
         RenderConfig _config;
         std::vector<OutputChannelSinks> _channels;
         BlockRateBuffer<Sample> _rate_buffer;
@@ -120,7 +120,7 @@ namespace iv {
         OutputDeviceMixer() = default;
 
         OutputDeviceMixer(
-            LogicalAudioDevice device,
+            AudioOutputDevice device,
             std::function<void(OrchestratorBuilder&, OutputDeviceMixer&&)> move_to_builder
         )
         : _device(std::move(device))

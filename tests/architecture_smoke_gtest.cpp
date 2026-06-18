@@ -1506,9 +1506,9 @@ TEST(ArchitectureSmoke, RegistryReadyCheckDoesNotBlockWithoutAudioTargets)
 
 TEST(ArchitectureSmoke, MiniaudioDestructorUnblocksPendingCallback)
 {
-    std::unique_ptr<iv::MiniaudioLogicalDevice> device;
+    std::unique_ptr<iv::MiniaudioOutputDevice> device;
     try {
-        device = std::make_unique<iv::MiniaudioLogicalDevice>(iv::RenderConfig{
+        device = std::make_unique<iv::MiniaudioOutputDevice>(iv::RenderConfig{
             .sample_rate = 48000,
             .num_channels = 2,
             .max_block_frames = 256,
@@ -1617,7 +1617,7 @@ TEST(ArchitectureSmoke, OrchestratorBuilderReplaysRegistrationsAcrossBuildAndRet
     iv::OrchestratorBuilder builder;
     builder.audio_device(0, 0).register_sink(0, a);
     builder.audio_device(0, 0).register_sink(0, b);
-    builder.add_audio_device(0, iv::LogicalAudioDevice(FakeAudioDeviceBackend{ &audio_device }));
+    builder.add_audio_device(0, iv::AudioOutputDevice(FakeAudioDeviceBackend{ &audio_device }));
 
     auto orchestrator = std::move(builder).build();
     audio_device.begin_requested_block(0, 8);

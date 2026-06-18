@@ -554,7 +554,7 @@ namespace iv::test {
 
         std::vector<iv::OutputDeviceMixer> mixers;
         mixers.emplace_back(
-            iv::LogicalAudioDevice(RefBackend{ &audio_device }),
+            iv::AudioOutputDevice(RefBackend{ &audio_device }),
             [](iv::OrchestratorBuilder& builder, iv::OutputDeviceMixer&& mixer) {
                 builder.add_audio_mixer(0, std::move(mixer));
             }

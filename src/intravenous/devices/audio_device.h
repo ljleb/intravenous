@@ -3,6 +3,7 @@
 #include <intravenous/ports.h>
 
 #include <concepts>
+#include <cstddef>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
@@ -28,21 +29,27 @@ namespace iv {
         return static_cast<Sample>(1) / static_cast<Sample>(config.sample_rate);
     }
 
+    struct AudioInputBlock {
+        std::span<Sample const> samples {};
+        double capture_timestamp_seconds = 0.0;
+        bool discontinuous = false;
+    };
+
     template<typename Device>
-    concept LogicalAudioDeviceBackend = requires(Device& device, Device const& const_device) {
+    concept AudioOutputDeviceBackend = requires(Device& device, Device const& const_device) {
         { const_device.config() } -> std::same_as<RenderConfig const&>;
         { device.wait_for_block_request() } -> std::same_as<std::span<Sample>>;
         { device.submit_response() } -> std::same_as<void>;
     };
 
-    class LogicalAudioDevice {
+    class AudioOutputDevice {
         void* _state;
         void (*_destroy)(void*) noexcept;
         RenderConfig const& (*_config)(void const*) noexcept;
         std::span<Sample> (*_wait_for_block_request)(void*);
         void (*_submit_response)(void*);
 
-        template<LogicalAudioDeviceBackend Device>
+        template<AudioOutputDeviceBackend Device>
         void bind_device() noexcept
         {
             _destroy = +[](void* self) noexcept {
@@ -60,32 +67,32 @@ namespace iv {
         }
 
     public:
-        LogicalAudioDevice() = default;
+        AudioOutputDevice() = default;
 
-        template<LogicalAudioDeviceBackend Device>
-            requires (!std::same_as<std::remove_cvref_t<Device>, LogicalAudioDevice> &&
+        template<AudioOutputDeviceBackend Device>
+            requires (!std::same_as<std::remove_cvref_t<Device>, AudioOutputDevice> &&
                       std::move_constructible<std::remove_cvref_t<Device>>)
-        explicit LogicalAudioDevice(Device&& device)
+        explicit AudioOutputDevice(Device&& device)
         : _state(new std::remove_cvref_t<Device>(std::forward<Device>(device)))
         {
             bind_device<std::remove_cvref_t<Device>>();
         }
 
-        template<LogicalAudioDeviceBackend Device, typename... Args>
-        explicit LogicalAudioDevice(std::in_place_type_t<Device>, Args&&... args)
+        template<AudioOutputDeviceBackend Device, typename... Args>
+        explicit AudioOutputDevice(std::in_place_type_t<Device>, Args&&... args)
         : _state(new Device(std::forward<Args>(args)...))
         {
             bind_device<Device>();
         }
 
-        ~LogicalAudioDevice()
+        ~AudioOutputDevice()
         {
             if (_state && _destroy) {
                 _destroy(_state);
             }
         }
 
-        LogicalAudioDevice(LogicalAudioDevice&& other) noexcept
+        AudioOutputDevice(AudioOutputDevice&& other) noexcept
         : _state(other._state)
         , _destroy(other._destroy)
         , _config(other._config)
@@ -99,7 +106,7 @@ namespace iv {
             other._submit_response = nullptr;
         }
 
-        LogicalAudioDevice& operator=(LogicalAudioDevice&& other) noexcept
+        AudioOutputDevice& operator=(AudioOutputDevice&& other) noexcept
         {
             if (this == &other) {
                 return *this;
@@ -121,8 +128,8 @@ namespace iv {
             return *this;
         }
 
-        LogicalAudioDevice(LogicalAudioDevice const&) = delete;
-        LogicalAudioDevice& operator=(LogicalAudioDevice const&) = delete;
+        AudioOutputDevice(AudioOutputDevice const&) = delete;
+        AudioOutputDevice& operator=(AudioOutputDevice const&) = delete;
 
         explicit operator bool() const noexcept
         {
@@ -131,13 +138,13 @@ namespace iv {
 
         RenderConfig const& config() const
         {
-            if (!operator bool()) throw std::logic_error("LogicalAudioDevice is empty");
+            if (!operator bool()) throw std::logic_error("AudioOutputDevice is empty");
             return _config(_state);
         }
 
         std::span<Sample> wait_for_block_request()
         {
-            if (!operator bool()) throw std::logic_error("LogicalAudioDevice is empty");
+            if (!operator bool()) throw std::logic_error("AudioOutputDevice is empty");
             return _wait_for_block_request(_state);
         }
 
@@ -145,6 +152,126 @@ namespace iv {
         {
             if (!operator bool()) return;
             _submit_response(_state);
+        }
+    };
+
+    template<typename Device>
+    concept AudioInputDeviceBackend = requires(Device& device, Device const& const_device) {
+        { const_device.config() } -> std::same_as<RenderConfig const&>;
+        { device.wait_for_captured_block() } -> std::same_as<AudioInputBlock>;
+        { device.release_captured_block() } -> std::same_as<void>;
+    };
+
+    class AudioInputDevice {
+        void* _state = nullptr;
+        void (*_destroy)(void*) noexcept = nullptr;
+        RenderConfig const& (*_config)(void const*) noexcept = nullptr;
+        AudioInputBlock (*_wait_for_captured_block)(void*) = nullptr;
+        void (*_release_captured_block)(void*) = nullptr;
+
+        template<AudioInputDeviceBackend Device>
+        void bind_device() noexcept
+        {
+            _destroy = +[](void* self) noexcept {
+                delete static_cast<Device*>(self);
+            };
+            _config = +[](void const* self) noexcept -> RenderConfig const& {
+                return static_cast<Device const*>(self)->config();
+            };
+            _wait_for_captured_block = +[](void* self) -> AudioInputBlock {
+                return static_cast<Device*>(self)->wait_for_captured_block();
+            };
+            _release_captured_block = +[](void* self) {
+                static_cast<Device*>(self)->release_captured_block();
+            };
+        }
+
+    public:
+        AudioInputDevice() = default;
+
+        template<AudioInputDeviceBackend Device>
+            requires (!std::same_as<std::remove_cvref_t<Device>, AudioInputDevice> &&
+                      std::move_constructible<std::remove_cvref_t<Device>>)
+        explicit AudioInputDevice(Device&& device)
+        : _state(new std::remove_cvref_t<Device>(std::forward<Device>(device)))
+        {
+            bind_device<std::remove_cvref_t<Device>>();
+        }
+
+        template<AudioInputDeviceBackend Device, typename... Args>
+        explicit AudioInputDevice(std::in_place_type_t<Device>, Args&&... args)
+        : _state(new Device(std::forward<Args>(args)...))
+        {
+            bind_device<Device>();
+        }
+
+        ~AudioInputDevice()
+        {
+            if (_state && _destroy) {
+                _destroy(_state);
+            }
+        }
+
+        AudioInputDevice(AudioInputDevice&& other) noexcept
+        : _state(other._state)
+        , _destroy(other._destroy)
+        , _config(other._config)
+        , _wait_for_captured_block(other._wait_for_captured_block)
+        , _release_captured_block(other._release_captured_block)
+        {
+            other._state = nullptr;
+            other._destroy = nullptr;
+            other._config = nullptr;
+            other._wait_for_captured_block = nullptr;
+            other._release_captured_block = nullptr;
+        }
+
+        AudioInputDevice& operator=(AudioInputDevice&& other) noexcept
+        {
+            if (this == &other) {
+                return *this;
+            }
+
+            if (_state && _destroy) {
+                _destroy(_state);
+            }
+            _state = other._state;
+            _destroy = other._destroy;
+            _config = other._config;
+            _wait_for_captured_block = other._wait_for_captured_block;
+            _release_captured_block = other._release_captured_block;
+            other._state = nullptr;
+            other._destroy = nullptr;
+            other._config = nullptr;
+            other._wait_for_captured_block = nullptr;
+            other._release_captured_block = nullptr;
+            return *this;
+        }
+
+        AudioInputDevice(AudioInputDevice const&) = delete;
+        AudioInputDevice& operator=(AudioInputDevice const&) = delete;
+
+        explicit operator bool() const noexcept
+        {
+            return _state != nullptr;
+        }
+
+        RenderConfig const& config() const
+        {
+            if (!operator bool()) throw std::logic_error("AudioInputDevice is empty");
+            return _config(_state);
+        }
+
+        AudioInputBlock wait_for_captured_block()
+        {
+            if (!operator bool()) throw std::logic_error("AudioInputDevice is empty");
+            return _wait_for_captured_block(_state);
+        }
+
+        void release_captured_block()
+        {
+            if (!operator bool()) return;
+            _release_captured_block(_state);
         }
     };
 }
