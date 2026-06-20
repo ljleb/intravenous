@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <csignal>
 #include <sys/socket.h>
 #include <type_traits>
 #include <unistd.h>
@@ -20,6 +21,30 @@ using Json = nlohmann::ordered_json;
 
 std::string serialize_json_line(Json const &value) {
     return value.dump() + "\n";
+}
+
+std::string_view channel_type_json(ChannelTypeId type) {
+    switch (type) {
+    case ChannelTypeId::mono:
+        return "mono";
+    case ChannelTypeId::stereo:
+        return "stereo";
+    case ChannelTypeId::count:
+        break;
+    }
+    return "mono";
+}
+
+std::string_view sample_layout_json(SampleStreamLayout layout) {
+    switch (layout) {
+    case SampleStreamLayout::planar:
+        return "planar";
+    case SampleStreamLayout::interleaved:
+        return "interleaved";
+    case SampleStreamLayout::count:
+        break;
+    }
+    return "planar";
 }
 
 std::string jsonrpc_error(int id, int code, std::string const &message) {
@@ -161,6 +186,11 @@ Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
         json_lanes.push_back({
             {"laneId", lane.lane_id},
             {"adapterType", lane.adapter_type},
+            {"sampleChannelType", lane.sample_channel_type.has_value()
+                ? Json(channel_type_json(*lane.sample_channel_type))
+                : Json(nullptr)},
+            {"sampleLayout", std::string(sample_layout_json(lane.sample_layout))},
+            {"sampleFrameCount", lane.sample_frame_count},
             {"samples", std::move(json_samples)},
             {"events", std::move(json_events)},
         });
@@ -235,7 +265,7 @@ bool SocketRpcServer::send_message(int fd, std::string const &message) {
     std::scoped_lock write_lock(write_mutex);
     size_t written = 0;
     while (written < message.size()) {
-        ssize_t count = ::send(fd, message.data() + written, message.size() - written, MSG_NOSIGNAL);
+        ssize_t count = ::write(fd, message.data() + written, message.size() - written);
         if (count < 0) {
             if (errno == EINTR) {
                 continue;
@@ -339,6 +369,13 @@ void SocketRpcServer::handle_client(int fd) {
                             event_request,
                             builder);
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, SetTimelineLaneSampleChannelTypeRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_set_timeline_lane_sample_channel_type_event,
+                            event_request,
+                            builder);
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, OpenLaneViewRpcRequest>) {
                         SocketRpcLaneViewResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_open_lane_view_event, event_request.request, builder);
@@ -411,13 +448,27 @@ void SocketRpcServer::start() {
         client_fd = rpc_fd_value;
     }
 
-    {
-        std::scoped_lock lock(mutex);
-        ready = true;
-    }
-    ready_cv.notify_all();
-
     worker_thread.emplace([this](std::stop_token) {
+        sigset_t blocked_signals;
+        sigemptyset(&blocked_signals);
+        sigaddset(&blocked_signals, SIGPIPE);
+        int const mask_result = ::pthread_sigmask(SIG_BLOCK, &blocked_signals, nullptr);
+        if (mask_result != 0) {
+            {
+                std::scoped_lock lock(mutex);
+                stopped = true;
+            }
+            ready_cv.notify_all();
+            stopped_cv.notify_all();
+            return;
+        }
+
+        {
+            std::scoped_lock lock(mutex);
+            ready = true;
+        }
+        ready_cv.notify_all();
+
         int fd = -1;
         {
             std::scoped_lock client_lock(client_mutex);
@@ -455,7 +506,7 @@ void SocketRpcServer::request_shutdown() {
 
 bool SocketRpcServer::wait_until_ready(std::chrono::milliseconds timeout) const {
     std::unique_lock lock(mutex);
-    return ready_cv.wait_for(lock, timeout, [&] { return ready; });
+    return ready_cv.wait_for(lock, timeout, [&] { return ready || stopped; }) && ready;
 }
 
 void SocketRpcServer::wait() {

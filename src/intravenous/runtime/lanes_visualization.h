@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/lane_view_service.h>
+#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/visualization_lane_nodes.h>
 
 #include <chrono>
@@ -19,18 +20,23 @@ struct TaskRunnerPassFinished;
 
 class LanesVisualization {
     struct SampleHistory {
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
         std::vector<Sample::storage> storage {};
-        size_t next_index = 0;
-        size_t size = 0;
+        size_t next_frame = 0;
+        size_t size_frames = 0;
 
-        void append(std::span<Sample const> block, size_t history_block_count);
-        [[nodiscard]] std::vector<Sample::storage> snapshot() const;
+        void append(SampleStorageBlock const& block, size_t history_block_count);
+        [[nodiscard]] SampleStorageBlock snapshot() const;
     };
 
     struct TrackedRealtimeSampleLane {
         LaneId source_lane {};
         LaneId vis_lane {};
         std::shared_ptr<RealtimeSampleBlockQueue> queue {};
+        ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
         SampleHistory history {};
         bool registered_in_timeline = false;
     };
@@ -52,7 +58,7 @@ class LanesVisualization {
         size_t first_sample_index = 0;
         size_t last_sample_index = 0;
         size_t display_sample_count = 0;
-        std::unordered_map<uint64_t, std::vector<Sample::storage>> compiled_sample_data {};
+        std::unordered_map<uint64_t, SampleStorageBlock> compiled_sample_data {};
         std::unordered_map<uint64_t, std::vector<TimedEvent>> compiled_event_data {};
     };
 

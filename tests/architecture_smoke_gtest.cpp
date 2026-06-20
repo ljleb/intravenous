@@ -1,9 +1,11 @@
 #include <intravenous/devices/channel_buffer_sink.h>
 #include <intravenous/devices/miniaudio_device.h>
 #include <intravenous/block_rate_buffer.h>
+#include <intravenous/basic_lane_nodes/controls.h>
 #include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/node.h>
+#include <intravenous/runtime/timeline.h>
 #include "module_test_utils.h"
 #include <intravenous/node/layout.h>
 
@@ -1381,6 +1383,36 @@ TEST(ArchitectureSmoke, RepeatedEventConnectionsIntoOneInputAreConcatenated)
     EXPECT_EQ(event_times, (std::vector<size_t>{ 2, 5 }));
 }
 
+TEST(ArchitectureSmoke, SampleLanesDefaultToStereoChannelType)
+{
+    LaneGraph graph;
+    auto const sample_lane = graph.add_lane(TypeErasedLaneNode(KnobLaneNode{}));
+    auto const event_lane = graph.add_lane(TypeErasedLaneNode(GraphEventInputLaneNode{}));
+
+    ASSERT_TRUE(graph.lane(sample_lane).sample_channel_type.has_value());
+    EXPECT_EQ(*graph.lane(sample_lane).sample_channel_type, ChannelTypeId::stereo);
+    EXPECT_EQ(graph.lane(event_lane).sample_channel_type, std::nullopt);
+}
+
+TEST(ArchitectureSmoke, TimelineBatchCanOverrideSampleLaneChannelType)
+{
+    Timeline timeline;
+    LaneId const lane{42};
+    timeline.apply_lane_batch(TimelineLaneBatchUpdate{
+        .upserts = {
+            TimelineLaneUpsert{
+                .lane = lane,
+                .make_node = [] {
+                    return TypeErasedLaneNode(KnobLaneNode{});
+                },
+                .sample_channel_type = ChannelTypeId::mono,
+            },
+        },
+    });
+
+    EXPECT_EQ(timeline.lane_sample_channel_type(lane), ChannelTypeId::mono);
+}
+
 TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
 {
     std::vector<size_t> event_times;
@@ -1506,9 +1538,9 @@ TEST(ArchitectureSmoke, RegistryReadyCheckDoesNotBlockWithoutAudioTargets)
 
 TEST(ArchitectureSmoke, MiniaudioDestructorUnblocksPendingCallback)
 {
-    std::unique_ptr<iv::MiniaudioOutputDevice> device;
+    std::unique_ptr<iv::MiniaudioAudioOutputDevice> device;
     try {
-        device = std::make_unique<iv::MiniaudioOutputDevice>(iv::RenderConfig{
+        device = std::make_unique<iv::MiniaudioAudioOutputDevice>(iv::RenderConfig{
             .sample_rate = 48000,
             .num_channels = 2,
             .max_block_frames = 256,
@@ -1525,7 +1557,7 @@ TEST(ArchitectureSmoke, MiniaudioDestructorUnblocksPendingCallback)
         device.reset();
     });
     ASSERT_EQ(destroy.wait_for(std::chrono::seconds(2)), std::future_status::ready)
-        << "MiniaudioLogicalDevice destructor blocked with a pending callback response";
+        << "MiniaudioAudioOutputDevice destructor blocked with a pending callback response";
     destroy.get();
 }
 

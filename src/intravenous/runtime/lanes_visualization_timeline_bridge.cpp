@@ -72,6 +72,7 @@ void emit_lane_change(
                             lane,
                             record.node,
                             record.output,
+                            record.sample_channel_type,
                             graph.inputs_for(lane),
                             record.external_task_dependencies);
                     }
@@ -104,16 +105,19 @@ void handle_lane_output_query(
         return;
     }
     bool found = false;
-    LaneOutputConfig config;
+    LaneVisualizationOutputDescriptor descriptor;
     bound_timeline->with_graph([&](LaneGraph const& graph) {
         if (!graph.contains(lane)) {
             return;
         }
-        config = graph.lane(lane).output;
+        descriptor = LaneVisualizationOutputDescriptor{
+            .config = graph.lane(lane).output,
+            .sample_channel_type = graph.lane(lane).sample_channel_type,
+        };
         found = true;
     });
     if (found) {
-        builder.succeed(std::move(config));
+        builder.succeed(std::move(descriptor));
     }
 }
 

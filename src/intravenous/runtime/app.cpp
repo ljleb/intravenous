@@ -115,6 +115,7 @@ namespace iv {
             bind_socket_rpc_lane_views_bridge(lane_views);
             bind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
             bind_socket_rpc_timeline_execution_bridge(
+                timeline,
                 timeline_execution,
                 startup.workspace_root);
             bind_socket_rpc_iv_module_source_introspection_bridge(

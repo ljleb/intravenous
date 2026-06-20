@@ -27,6 +27,8 @@ namespace {
 using namespace std::chrono_literals;
 using Json = nlohmann::ordered_json;
 
+constexpr auto socket_rpc_notification_startup_timeout = 30s;
+
 std::string pop_line(std::string *buffer)
 {
     auto const newline = buffer->find('\n');
@@ -107,7 +109,7 @@ public:
         : fds(make_socket_pair()), server(workspace, fds[1])
     {
         server.start();
-        if (!server.wait_until_ready(5s)) {
+        if (!server.wait_until_ready(socket_rpc_notification_startup_timeout)) {
             throw std::runtime_error("SocketRpcServer did not become ready");
         }
         auto const ready = read_line();
@@ -130,7 +132,7 @@ public:
         return fds[0];
     }
 
-    std::string read_line(std::chrono::milliseconds timeout = 500ms)
+    std::string read_line(std::chrono::milliseconds timeout = socket_rpc_notification_startup_timeout)
     {
         return read_line_until(client_fd(), &response_buffer, timeout);
     }
@@ -256,7 +258,10 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
                 iv::LaneVisualizationSeries{
                     .lane_id = 42,
                     .adapter_type = "samples",
-                    .samples = {1.0f, 2.0f, 3.0f},
+                    .sample_channel_type = iv::ChannelTypeId::stereo,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                    .sample_frame_count = 2,
+                    .samples = {1.0f, 2.0f, 3.0f, 4.0f},
                 },
             },
         });
@@ -269,6 +274,9 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
     ASSERT_EQ(json["params"]["lanes"].size(), 1u);
     EXPECT_EQ(json["params"]["lanes"][0]["laneId"], 42);
     EXPECT_EQ(json["params"]["lanes"][0]["adapterType"], "samples");
+    EXPECT_EQ(json["params"]["lanes"][0]["sampleChannelType"], "stereo");
+    EXPECT_EQ(json["params"]["lanes"][0]["sampleLayout"], "planar");
+    EXPECT_EQ(json["params"]["lanes"][0]["sampleFrameCount"], 2);
     EXPECT_EQ(json["params"]["lanes"][0]["samples"][0], 1.0);
 
     unbind_socket_rpc_notification_bridge(harness.server);

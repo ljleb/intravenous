@@ -32,47 +32,82 @@ TrackedLaneKind output_lane_kind(LaneOutputConfig const &output)
 } // namespace
 
 void LanesVisualization::SampleHistory::append(
-    std::span<Sample const> block,
+    SampleStorageBlock const& block,
     size_t history_block_count)
 {
-    if (block.empty()) {
+    if (block.samples.empty() || block.frame_count == 0) {
         return;
     }
-    auto const desired_capacity = block.size() * history_block_count;
-    if (desired_capacity == 0) {
+    auto const channels = channel_count(block.channel_layout);
+    auto const desired_frame_capacity = block.frame_count * history_block_count;
+    auto const desired_sample_capacity = desired_frame_capacity * channels;
+    if (desired_sample_capacity == 0) {
         return;
     }
-    if (storage.size() != desired_capacity) {
-        storage.assign(desired_capacity, static_cast<Sample::storage>(0));
-        next_index = 0;
-        size = 0;
+    if (storage.size() != desired_sample_capacity || channel_layout != block.channel_layout) {
+        channel_layout = block.channel_layout;
+        storage.assign(desired_sample_capacity, static_cast<Sample::storage>(0));
+        next_frame = 0;
+        size_frames = 0;
     }
-    for (auto const sample : block) {
-        storage[next_index] = sample.value;
-        next_index = (next_index + 1) % storage.size();
-        if (size < storage.size()) {
-            size += 1;
+    for (size_t frame = 0; frame < block.frame_count; ++frame) {
+        for (size_t channel = 0; channel < channels; ++channel) {
+            auto const source =
+                block.channel_layout.sample_layout == SampleStreamLayout::planar
+                    ? block.samples[frame + channel * block.frame_count]
+                    : block.samples[frame * channels + channel];
+            storage[next_frame + channel * desired_frame_capacity] = source;
+        }
+        next_frame = (next_frame + 1) % desired_frame_capacity;
+        if (size_frames < desired_frame_capacity) {
+            size_frames += 1;
         }
     }
 }
 
-std::vector<Sample::storage> LanesVisualization::SampleHistory::snapshot() const
+SampleStorageBlock LanesVisualization::SampleHistory::snapshot() const
 {
+    auto const channels = channel_count(channel_layout);
     std::vector<Sample::storage> result;
-    result.reserve(size);
-    if (size == 0 || storage.empty()) {
-        return result;
+    result.reserve(size_frames * channels);
+    if (size_frames == 0 || storage.empty()) {
+        return SampleStorageBlock{
+            .samples = {},
+            .channel_layout = channel_layout,
+            .frame_count = 0,
+        };
     }
-    if (size < storage.size()) {
-        result.insert(result.end(), storage.begin(),
-            storage.begin() + static_cast<std::ptrdiff_t>(size));
-        return result;
+    auto const frame_capacity = storage.size() / channels;
+    if (size_frames < frame_capacity) {
+        for (size_t channel = 0; channel < channels; ++channel) {
+            auto const channel_begin = storage.begin() + static_cast<std::ptrdiff_t>(channel * frame_capacity);
+            result.insert(
+                result.end(),
+                channel_begin,
+                channel_begin + static_cast<std::ptrdiff_t>(size_frames));
+        }
+        return SampleStorageBlock{
+            .samples = std::move(result),
+            .channel_layout = channel_layout,
+            .frame_count = size_frames,
+        };
     }
-    result.insert(result.end(),
-        storage.begin() + static_cast<std::ptrdiff_t>(next_index), storage.end());
-    result.insert(result.end(), storage.begin(),
-        storage.begin() + static_cast<std::ptrdiff_t>(next_index));
-    return result;
+    for (size_t channel = 0; channel < channels; ++channel) {
+        auto const channel_begin = storage.begin() + static_cast<std::ptrdiff_t>(channel * frame_capacity);
+        result.insert(
+            result.end(),
+            channel_begin + static_cast<std::ptrdiff_t>(next_frame),
+            channel_begin + static_cast<std::ptrdiff_t>(frame_capacity));
+        result.insert(
+            result.end(),
+            channel_begin,
+            channel_begin + static_cast<std::ptrdiff_t>(next_frame));
+    }
+    return SampleStorageBlock{
+        .samples = std::move(result),
+        .channel_layout = channel_layout,
+        .frame_count = size_frames,
+    };
 }
 
 LanesVisualization::LanesVisualization(
@@ -116,38 +151,45 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
     }
 
     // Query output configs (no lock — fires linker events)
-    std::unordered_map<uint64_t, LaneOutputConfig> output_configs;
+    std::unordered_map<uint64_t, LaneVisualizationOutputDescriptor> output_descriptors;
     for (auto const lane : lanes_to_classify) {
         LanesVisualizationLaneOutputQueryBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_lanes_visualization_lane_output_query_event,
             lane,
             builder);
-        if (auto config = builder.build()) {
-            output_configs[lane.value] = std::move(*config);
+        if (auto descriptor = builder.build()) {
+            output_descriptors[lane.value] = std::move(*descriptor);
         }
     }
 
     // Allocate queues for new realtime lanes; query compiled data
     std::unordered_map<uint64_t, TrackedRealtimeSampleLane> new_sample_lanes;
     std::unordered_map<uint64_t, TrackedRealtimeEventLane> new_event_lanes;
-    std::unordered_map<uint64_t, std::vector<Sample::storage>> compiled_samples;
+    std::unordered_map<uint64_t, SampleStorageBlock> compiled_samples;
     std::unordered_map<uint64_t, std::vector<TimedEvent>> compiled_events;
 
     for (auto const lane : lanes_to_classify) {
-        auto const it = output_configs.find(lane.value);
-        if (it == output_configs.end()) {
+        auto const it = output_descriptors.find(lane.value);
+        if (it == output_descriptors.end()) {
             continue;
         }
-        auto const &output = it->second;
-        auto const desired_kind = output_lane_kind(output);
+        auto const &descriptor = it->second;
+        auto const desired_kind = output_lane_kind(descriptor.config);
         if (desired_kind == TrackedLaneKind::realtime_sample) {
+            auto const channel_layout =
+                sample_channel_layout_for(descriptor.config, descriptor.sample_channel_type)
+                    .value_or(ChannelLayout{
+                        .channel_type = descriptor.sample_channel_type.value_or(ChannelTypeId::stereo),
+                        .sample_layout = SampleStreamLayout::planar,
+                    });
             auto vis_lane = lane_id_allocator_.next();
-            auto queue = std::make_shared<RealtimeSampleBlockQueue>(block_size_);
+            auto queue = std::make_shared<RealtimeSampleBlockQueue>(channel_layout, block_size_);
             new_sample_lanes.emplace(lane.value, TrackedRealtimeSampleLane{
                 .source_lane = lane,
                 .vis_lane = vis_lane,
                 .queue = std::move(queue),
+                .sample_channel_type = descriptor.sample_channel_type.value_or(ChannelTypeId::stereo),
             });
         } else if (desired_kind == TrackedLaneKind::realtime_event) {
             auto vis_lane = lane_id_allocator_.next();
@@ -167,13 +209,8 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
                     update.last_sample_index,
                     update.display_sample_count,
                     builder);
-                auto raw_samples = builder.build();
-                std::vector<Sample::storage> storage;
-                storage.reserve(raw_samples.size());
-                for (auto const s : raw_samples) {
-                    storage.push_back(s.value);
-                }
-                compiled_samples[lane.value] = std::move(storage);
+                compiled_samples[lane.value] =
+                    copy_sample_storage_block_planar(builder.build().view());
             }
         } else if (desired_kind == TrackedLaneKind::compiled_event) {
             LanesVisualizationCompiledEventWindowBuilder builder;
@@ -191,10 +228,10 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
     {
         std::scoped_lock lock(mutex_);
 
-        for (auto const &[lane_value, output] : output_configs) {
+        for (auto const &[lane_value, descriptor] : output_descriptors) {
             auto const lane = LaneId { lane_value };
             auto const current_kind = tracked_kind_for(lane);
-            auto const desired_kind = output_lane_kind(output);
+            auto const desired_kind = output_lane_kind(descriptor.config);
 
             if (current_kind == TrackedLaneKind::realtime_sample
                 && desired_kind != TrackedLaneKind::realtime_sample) {
@@ -215,6 +252,40 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
                     tracked_event_lanes_.erase(it);
                 }
             }
+        }
+
+        for (auto const &[lane_value, descriptor] : output_descriptors) {
+            auto const lane = LaneId { lane_value };
+            if (output_lane_kind(descriptor.config) != TrackedLaneKind::realtime_sample) {
+                continue;
+            }
+            auto const tracked_it = tracked_sample_lanes_.find(lane);
+            if (tracked_it == tracked_sample_lanes_.end()) {
+                continue;
+            }
+            auto const desired_channel_type =
+                descriptor.sample_channel_type.value_or(ChannelTypeId::stereo);
+            if (tracked_it->second.sample_channel_type == desired_channel_type) {
+                continue;
+            }
+            if (tracked_it->second.registered_in_timeline) {
+                pending_timeline_lane_removals_.push_back(tracked_it->second.vis_lane);
+                draining_sample_queues_.push_back(tracked_it->second.queue);
+            }
+            tracked_sample_lanes_.erase(tracked_it);
+            auto const channel_layout =
+                sample_channel_layout_for(descriptor.config, descriptor.sample_channel_type)
+                    .value_or(ChannelLayout{
+                        .channel_type = desired_channel_type,
+                        .sample_layout = SampleStreamLayout::planar,
+                    });
+            auto queue = std::make_shared<RealtimeSampleBlockQueue>(channel_layout, block_size_);
+            tracked_sample_lanes_.emplace(lane, TrackedRealtimeSampleLane{
+                .source_lane = lane,
+                .vis_lane = lane_id_allocator_.next(),
+                .queue = std::move(queue),
+                .sample_channel_type = desired_channel_type,
+            });
         }
 
         for (auto &[lane_value, tracked] : new_sample_lanes) {
@@ -238,15 +309,17 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
 
         for (auto const &info : new_lane_infos) {
             auto const lane = LaneId { info.lane_id };
-            auto const cfg_it = output_configs.find(lane.value);
+            auto const cfg_it = output_descriptors.find(lane.value);
             auto const desired_kind =
-                cfg_it != output_configs.end() ? output_lane_kind(cfg_it->second) : tracked_kind_for(lane);
+                cfg_it != output_descriptors.end()
+                    ? output_lane_kind(cfg_it->second.config)
+                    : tracked_kind_for(lane);
             if (desired_kind == TrackedLaneKind::realtime_sample && tracked_sample_lanes_.contains(lane)) {
                 view.realtime_sample_lanes.push_back(lane);
             } else if (desired_kind == TrackedLaneKind::realtime_event && tracked_event_lanes_.contains(lane)) {
                 view.realtime_event_lanes.push_back(lane);
             } else {
-                if (cfg_it == output_configs.end()) {
+                if (cfg_it == output_descriptors.end()) {
                     continue;
                 }
                 if (desired_kind == TrackedLaneKind::compiled_sample) {
@@ -286,6 +359,7 @@ void LanesVisualization::handle_task_runner_pass_finished(
         LaneId source_lane {};
         LaneId vis_lane {};
         RealtimeSampleBlockQueue *queue_ptr = nullptr;
+        ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
     };
     struct EventAddInfo {
         LaneId source_lane {};
@@ -323,6 +397,7 @@ void LanesVisualization::handle_task_runner_pass_finished(
                     .source_lane = source_lane,
                     .vis_lane = tracked.vis_lane,
                     .queue_ptr = tracked.queue.get(),
+                    .sample_channel_type = tracked.sample_channel_type,
                 });
                 tracked.registered_in_timeline = true;
             } else if (tracked.registered_in_timeline && !in_use) {
@@ -376,6 +451,7 @@ void LanesVisualization::handle_task_runner_pass_finished(
             .make_node = [queue_ptr] {
                 return TypeErasedLaneNode(VisualizationRealtimeSampleLane{ .queue = queue_ptr });
             },
+            .sample_channel_type = add.sample_channel_type,
         });
         batch.connections_to_add.push_back(LaneGraphConnection{
             .source = source_lane,
@@ -439,13 +515,13 @@ void LanesVisualization::publish_now()
     }
 
     // Drain queues lock-free (SPSC safe)
-    std::unordered_map<uint64_t, std::vector<Sample>> drained_samples;
+    std::unordered_map<uint64_t, std::vector<SampleStorageBlock>> drained_samples;
     std::unordered_map<uint64_t, std::vector<TimedEvent>> drained_events;
 
     for (auto &snap : sample_snapshots) {
         auto &buf = drained_samples[snap.source_lane.value];
-        snap.queue->drain([&](std::span<Sample const> block) {
-            buf.insert(buf.end(), block.begin(), block.end());
+        snap.queue->drain([&](OwnedSampleBlock const& block) {
+            buf.push_back(copy_sample_storage_block_planar(block.view()));
         });
     }
     for (auto &snap : event_snapshots) {
@@ -456,7 +532,7 @@ void LanesVisualization::publish_now()
     }
     // Final drain of removed queues (discard data)
     for (auto &q : draining_sample) {
-        q->drain([](std::span<Sample const>) {});
+        q->drain([](OwnedSampleBlock const&) {});
     }
     for (auto &q : draining_event) {
         q->drain([](std::span<TimedEvent const>) {});
@@ -467,12 +543,14 @@ void LanesVisualization::publish_now()
     std::vector<LaneViewContentUpdate> updates;
     {
         std::scoped_lock lock(mutex_);
-        for (auto &[lane_value, samples] : drained_samples) {
+        for (auto &[lane_value, blocks] : drained_samples) {
             auto const it = tracked_sample_lanes_.find(LaneId { lane_value });
             if (it == tracked_sample_lanes_.end()) {
                 continue;
             }
-            it->second.history.append(samples, history_block_count_);
+            for (auto const& block : blocks) {
+                it->second.history.append(block, history_block_count_);
+            }
         }
         for (auto &[lane_value, events] : drained_events) {
             auto const it = tracked_event_lanes_.find(LaneId { lane_value });
@@ -493,13 +571,16 @@ void LanesVisualization::publish_now()
                     continue;
                 }
                 auto samples = it->second.history.snapshot();
-                if (samples.empty()) {
+                if (samples.samples.empty()) {
                     continue;
                 }
                 content.lanes.push_back(LaneVisualizationSeries{
                     .lane_id = lane.value,
                     .adapter_type = "samples",
-                    .samples = std::move(samples),
+                    .sample_channel_type = samples.channel_layout.channel_type,
+                    .sample_layout = samples.channel_layout.sample_layout,
+                    .sample_frame_count = samples.frame_count,
+                    .samples = std::move(samples.samples),
                 });
             }
 
@@ -521,13 +602,16 @@ void LanesVisualization::publish_now()
 
             for (auto const lane : view.compiled_sample_lanes) {
                 auto const dit = view.compiled_sample_data.find(lane.value);
-                if (dit == view.compiled_sample_data.end() || dit->second.empty()) {
+                if (dit == view.compiled_sample_data.end() || dit->second.samples.empty()) {
                     continue;
                 }
                 content.lanes.push_back(LaneVisualizationSeries{
                     .lane_id = lane.value,
                     .adapter_type = "samples",
-                    .samples = dit->second,
+                    .sample_channel_type = dit->second.channel_layout.channel_type,
+                    .sample_layout = dit->second.channel_layout.sample_layout,
+                    .sample_frame_count = dit->second.frame_count,
+                    .samples = dit->second.samples,
                 });
             }
 

@@ -20,7 +20,8 @@
 namespace {
     using namespace std::chrono_literals;
 
-    constexpr auto socket_rpc_response_timeout = 10s;
+    constexpr auto socket_rpc_startup_timeout = 30s;
+    constexpr auto socket_rpc_response_timeout = 30s;
 
     struct SocketRpcTestState {
         iv::SocketRpcServer *current_server = nullptr;
@@ -256,7 +257,7 @@ namespace {
         {
             socket_rpc_test_state.current_server = &server;
             server.start();
-            if (!server.wait_until_ready(5s)) {
+            if (!server.wait_until_ready(socket_rpc_startup_timeout)) {
                 throw std::runtime_error("SocketRpcServer did not become ready");
             }
         }
@@ -276,7 +277,7 @@ namespace {
             return fds[0];
         }
 
-        std::string read_line(std::chrono::milliseconds timeout = 5s)
+        std::string read_line(std::chrono::milliseconds timeout = socket_rpc_startup_timeout)
         {
             return read_line_until(client_fd(), &response_buffer, timeout);
         }

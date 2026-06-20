@@ -182,6 +182,18 @@ TEST(SocketRpcRequestParser, ParsesSetEventOutputStateRequest)
     EXPECT_EQ(request->state, "timelineLane");
 }
 
+TEST(SocketRpcRequestParser, ParsesSetTimelineLaneSampleChannelTypeRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":29,"method":"timeline.setLaneSampleChannelType","params":{"laneId":42,"sampleChannelType":"mono"}})");
+
+    EXPECT_EQ(parsed.request_id, 29);
+    auto const* request = std::get_if<iv::SetTimelineLaneSampleChannelTypeRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->lane_id, 42u);
+    EXPECT_EQ(request->sample_channel_type, iv::ChannelTypeId::mono);
+}
+
 TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(

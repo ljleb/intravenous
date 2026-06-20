@@ -129,8 +129,9 @@ struct TestRealtimeSineLaneNode {
     {
         auto &shared = *state;
         auto const phase_step = std::numbers::pi * 2.0 * frequency_hz / sample_rate_hz;
+        auto out = ctx.out().block_view();
         for (size_t i = 0; i < ctx.sample_count(); ++i) {
-            ctx.out().push(static_cast<iv::Sample>(std::sin(shared.phase)));
+            out.set(i, 0, static_cast<iv::Sample>(std::sin(shared.phase)));
             shared.phase += phase_step;
             if (shared.phase >= std::numbers::pi * 2.0) {
                 shared.phase -= std::numbers::pi * 2.0;
@@ -158,12 +159,13 @@ struct TestAudioBufferSinkLaneNode {
         latest.reserve(ctx.sample_count());
         auto const connected = !ctx.realtime_sample_inputs().empty() && ctx.realtime_sample_input(0).connected();
         auto const block = connected
-            ? ctx.realtime_sample_input(0).get_block()
-            : std::span<iv::Sample const>{};
+            ? ctx.realtime_sample_input(0).block_view()
+            : iv::SampleBlockView<iv::Sample const>{};
+        auto out = ctx.out().block_view();
 
         for (size_t i = 0; i < ctx.sample_count(); ++i) {
-            auto const sample = i < block.size() ? block[i] : iv::Sample{};
-            ctx.out().push(sample);
+            auto const sample = i < block.frames() ? block.get(i, 0) : iv::Sample{};
+            out.set(i, 0, sample);
             latest.push_back(sample.value);
         }
         capture->store(std::move(latest));
@@ -223,6 +225,7 @@ void apply_timeline_batch_to_execution_and_runner(
                             lane,
                             record.node,
                             record.output,
+                            record.sample_channel_type,
                             graph.inputs_for(lane),
                             record.external_task_dependencies);
                     }

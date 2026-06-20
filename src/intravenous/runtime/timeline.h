@@ -67,6 +67,13 @@ namespace iv {
             });
         }
 
+        std::optional<ChannelTypeId> lane_sample_channel_type(LaneId lane)
+        {
+            return with_graph([&](LaneGraph& graph) {
+                return graph.lane(lane).sample_channel_type;
+            });
+        }
+
         query::LaneQuerySchema lane_query_schema(std::uint64_t revision = 0)
         {
             return with_graph([&](LaneGraph& graph) {
@@ -129,7 +136,8 @@ namespace iv {
                         upsert.lane,
                         upsert.make_node(),
                         upsert.metadata,
-                        upsert.external_task_dependencies);
+                        upsert.external_task_dependencies,
+                        upsert.sample_channel_type);
                 }
                 for (auto const &child : batch.hierarchy_additions) {
                     graph.add_child(child.parent, child.child);

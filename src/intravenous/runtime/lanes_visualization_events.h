@@ -3,6 +3,7 @@
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/lane_graph.h>
 #include <intravenous/runtime/lanes_visualization_api_types.h>
+#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/timeline_events.h>
 
 #include <optional>
@@ -10,18 +11,23 @@
 
 namespace iv {
 
+struct LaneVisualizationOutputDescriptor {
+    LaneOutputConfig config {};
+    std::optional<ChannelTypeId> sample_channel_type {};
+};
+
 // ---- Lane output config query ----
 
 class LanesVisualizationLaneOutputQueryBuilder {
-    std::optional<LaneOutputConfig> result_ {};
+    std::optional<LaneVisualizationOutputDescriptor> result_ {};
 
 public:
-    void succeed(LaneOutputConfig config)
+    void succeed(LaneVisualizationOutputDescriptor descriptor)
     {
-        result_ = std::move(config);
+        result_ = std::move(descriptor);
     }
 
-    [[nodiscard]] std::optional<LaneOutputConfig> build()
+    [[nodiscard]] std::optional<LaneVisualizationOutputDescriptor> build()
     {
         return std::move(result_);
     }
@@ -33,15 +39,15 @@ using LanesVisualizationLaneOutputQueryEvent =
 // ---- Compiled sample window query ----
 
 class LanesVisualizationCompiledSampleWindowBuilder {
-    std::vector<Sample> samples_ {};
+    OwnedSampleBlock samples_ {};
 
 public:
-    void succeed(std::vector<Sample> samples)
+    void succeed(OwnedSampleBlock samples)
     {
         samples_ = std::move(samples);
     }
 
-    [[nodiscard]] std::vector<Sample> build()
+    [[nodiscard]] OwnedSampleBlock build()
     {
         return std::move(samples_);
     }

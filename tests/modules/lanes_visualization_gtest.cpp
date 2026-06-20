@@ -10,8 +10,8 @@
 
 namespace {
 struct VisualizationTestState {
-    std::unordered_map<std::uint64_t, iv::LaneOutputConfig> output_configs {};
-    std::unordered_map<std::uint64_t, std::vector<iv::Sample>> compiled_samples {};
+    std::unordered_map<std::uint64_t, iv::LaneVisualizationOutputDescriptor> output_descriptors {};
+    std::unordered_map<std::uint64_t, iv::OwnedSampleBlock> compiled_samples {};
     std::unordered_map<std::uint64_t, std::vector<iv::TimedEvent>> compiled_events {};
     std::vector<iv::LaneViewContentUpdate> updates {};
     iv::TimelineLaneBatchUpdate last_batch {};
@@ -26,8 +26,8 @@ IV_SUBSCRIBE_LINKER_EVENT(
         if (g_state == nullptr) {
             return;
         }
-        auto const it = g_state->output_configs.find(lane.value);
-        if (it == g_state->output_configs.end()) {
+        auto const it = g_state->output_descriptors.find(lane.value);
+        if (it == g_state->output_descriptors.end()) {
             return;
         }
         builder.succeed(it->second);
@@ -96,8 +96,18 @@ TEST(LanesVisualizationTest, PublishesCompiledSampleDataForVisibleLanes)
     VisualizationTestState state;
     g_state = &state;
 
-    state.output_configs[42] = CompiledSampleLaneOutputConfig{ .name = "test" };
-    state.compiled_samples[42] = { Sample{ 1.0f }, Sample{ 2.0f }, Sample{ 3.0f } };
+    state.output_descriptors[42] = LaneVisualizationOutputDescriptor{
+        .config = CompiledSampleLaneOutputConfig{ .name = "test", .sample_layout = SampleStreamLayout::interleaved },
+        .sample_channel_type = ChannelTypeId::stereo,
+    };
+    state.compiled_samples[42] = OwnedSampleBlock{
+        .samples = { Sample{ 1.0f }, Sample{ 10.0f }, Sample{ 2.0f }, Sample{ 20.0f } },
+        .channel_layout = ChannelLayout{
+            .channel_type = ChannelTypeId::stereo,
+            .sample_layout = SampleStreamLayout::interleaved,
+        },
+        .frame_count = 2,
+    };
 
     LanesVisualization visualization(std::nullopt, 2, 512);
     visualization.handle_lane_views_updated(LaneViewResult{
@@ -117,9 +127,13 @@ TEST(LanesVisualizationTest, PublishesCompiledSampleDataForVisibleLanes)
     ASSERT_EQ(state.updates.front().lanes.size(), 1u);
     EXPECT_EQ(state.updates.front().lanes.front().lane_id, 42u);
     EXPECT_EQ(state.updates.front().lanes.front().adapter_type, "samples");
+    ASSERT_TRUE(state.updates.front().lanes.front().sample_channel_type.has_value());
+    EXPECT_EQ(*state.updates.front().lanes.front().sample_channel_type, ChannelTypeId::stereo);
+    EXPECT_EQ(state.updates.front().lanes.front().sample_layout, SampleStreamLayout::planar);
+    EXPECT_EQ(state.updates.front().lanes.front().sample_frame_count, 2u);
     EXPECT_EQ(
         state.updates.front().lanes.front().samples,
-        (std::vector<Sample::storage>{ 1.0f, 2.0f, 3.0f }));
+        (std::vector<Sample::storage>{ 1.0f, 2.0f, 10.0f, 20.0f }));
 
     g_state = nullptr;
 }
@@ -129,7 +143,9 @@ TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
     VisualizationTestState state;
     g_state = &state;
 
-    state.output_configs[7] = CompiledEventLaneOutputConfig{ .name = "test" };
+    state.output_descriptors[7] = LaneVisualizationOutputDescriptor{
+        .config = CompiledEventLaneOutputConfig{ .name = "test" },
+    };
     state.compiled_events[7] = {
         TimedEvent{ .time = 10, .value = TriggerEvent{} },
         TimedEvent{ .time = 20, .value = TriggerEvent{} },
@@ -162,8 +178,18 @@ TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
     VisualizationTestState state;
     g_state = &state;
 
-    state.output_configs[42] = CompiledSampleLaneOutputConfig{ .name = "test" };
-    state.compiled_samples[42] = { Sample{ 1.0f } };
+    state.output_descriptors[42] = LaneVisualizationOutputDescriptor{
+        .config = CompiledSampleLaneOutputConfig{ .name = "test" },
+        .sample_channel_type = ChannelTypeId::mono,
+    };
+    state.compiled_samples[42] = OwnedSampleBlock{
+        .samples = { Sample{ 1.0f } },
+        .channel_layout = ChannelLayout{
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        },
+        .frame_count = 1,
+    };
 
     LanesVisualization visualization(std::nullopt, 2, 512);
     visualization.handle_lane_views_updated(LaneViewResult{
@@ -191,7 +217,10 @@ TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished
     VisualizationTestState state;
     g_state = &state;
 
-    state.output_configs[10] = RealtimeSampleLaneOutputConfig{ .name = "test" };
+    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
+        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
+        .sample_channel_type = ChannelTypeId::mono,
+    };
 
     LanesVisualization visualization(std::nullopt, 2, 8);
     visualization.handle_lane_views_updated(LaneViewResult{
@@ -216,7 +245,10 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
     VisualizationTestState state;
     g_state = &state;
 
-    state.output_configs[10] = RealtimeSampleLaneOutputConfig{ .name = "test" };
+    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
+        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
+        .sample_channel_type = ChannelTypeId::mono,
+    };
 
     LanesVisualization visualization(std::nullopt, 2, 8);
     visualization.handle_lane_views_updated(LaneViewResult{
@@ -245,7 +277,10 @@ TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateT
     VisualizationTestState state;
     g_state = &state;
 
-    state.output_configs[10] = RealtimeSampleLaneOutputConfig{ .name = "test" };
+    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
+        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
+        .sample_channel_type = ChannelTypeId::mono,
+    };
 
     LanesVisualization visualization(std::nullopt, 2, 8);
     LaneViewResult view{
@@ -272,7 +307,10 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
     VisualizationTestState state;
     g_state = &state;
 
-    state.output_configs[10] = RealtimeSampleLaneOutputConfig{ .name = "test" };
+    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
+        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
+        .sample_channel_type = ChannelTypeId::mono,
+    };
 
     LanesVisualization visualization(std::nullopt, 2, 8);
     LaneViewResult view{
@@ -287,7 +325,9 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
     auto const old_vis_lane = state.last_batch.upserts.front().lane;
     EXPECT_EQ(state.last_batch.connections_to_add.front().input.kind, PortKind::sample);
 
-    state.output_configs[10] = RealtimeEventLaneOutputConfig{ .name = "test" };
+    state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
+        .config = RealtimeEventLaneOutputConfig{ .name = "test" },
+    };
     state.last_batch = {};
     visualization.handle_lane_views_updated(view);
     visualization.handle_task_runner_pass_finished(TaskRunnerPassFinished{});

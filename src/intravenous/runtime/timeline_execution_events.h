@@ -2,24 +2,23 @@
 
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/lane_graph.h>
+#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/task_runner.h>
-
-#include <span>
 
 namespace iv {
 using TimelineExecutionTasksChangedEvent =
     void (*)(VersionedTaskGraphUpdate const &);
 
 class TimelineExecutionRealtimeSampleBlockBuilder {
-    std::span<Sample const> block_ {};
+    BorrowedSampleBlock block_ {};
 
 public:
-    void succeed(std::span<Sample const> block)
+    void succeed(BorrowedSampleBlock block)
     {
-        block_ = block;
+        block_ = std::move(block);
     }
 
-    [[nodiscard]] std::span<Sample const> build() const
+    [[nodiscard]] BorrowedSampleBlock build() const
     {
         return block_;
     }

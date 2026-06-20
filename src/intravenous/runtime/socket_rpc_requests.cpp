@@ -118,6 +118,17 @@ double parse_number_param(Json const &params, std::string const &key) {
     return value_it->get<double>();
 }
 
+ChannelTypeId parse_channel_type_param(Json const& params, std::string const& key) {
+    auto const value = parse_string_param(params, key);
+    if (value == "mono") {
+        return ChannelTypeId::mono;
+    }
+    if (value == "stereo") {
+        return ChannelTypeId::stereo;
+    }
+    throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'mono' or 'stereo'");
+}
+
 uint32_t parse_uint32_value(Json const &value, std::string const &context) {
     if (!value.is_number_integer()) {
         throw std::runtime_error(context);
@@ -308,6 +319,15 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
                     static_cast<size_t>(parse_uint64_param(
                         params,
                         "compiledSampleCacheChunkSizeMultiplier")),
+            },
+        };
+    }
+    if (method == "timeline.setLaneSampleChannelType") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = SetTimelineLaneSampleChannelTypeRequest{
+                .lane_id = parse_uint64_param(params, "laneId"),
+                .sample_channel_type = parse_channel_type_param(params, "sampleChannelType"),
             },
         };
     }

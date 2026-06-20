@@ -29,14 +29,14 @@ namespace iv {
         void tick_block_realtime(RealtimeLaneTickContext<KnobLaneNode>& ctx)
         {
             if (!ctx.realtime_sample_inputs().empty() && ctx.realtime_sample_input(0).connected()) {
-                auto const block = ctx.realtime_sample_input(0).get_block();
-                for (size_t i = 0; i < ctx.sample_count(); ++i) {
-                    ctx.out().push(i < block.size() ? block[i] : Sample {});
-                }
+                ctx.out().write_block(ctx.realtime_sample_input(0).block_view());
                 return;
             }
-            for (size_t i = 0; i < ctx.sample_count(); ++i) {
-                ctx.out().push(value);
+            auto const out = ctx.out().block_view();
+            for (size_t frame = 0; frame < out.frames(); ++frame) {
+                for (size_t channel = 0; channel < out.channels(); ++channel) {
+                    out.set(frame, channel, value);
+                }
             }
         }
     };
@@ -64,14 +64,24 @@ namespace iv {
         void tick_block_realtime(RealtimeLaneTickContext<GraphSampleInputLaneNode>& ctx)
         {
             if (!ctx.realtime_sample_inputs().empty() && ctx.realtime_sample_input(0).connected()) {
-                auto const block = ctx.realtime_sample_input(0).get_block();
-                for (size_t i = 0; i < ctx.sample_count(); ++i) {
-                    ctx.out().push(i < block.size() ? block[i] : default_value);
+                auto const input = ctx.realtime_sample_input(0).block_view();
+                auto const out = ctx.out().block_view();
+                for (size_t frame = 0; frame < out.frames(); ++frame) {
+                    for (size_t channel = 0; channel < out.channels(); ++channel) {
+                        if (channel < input.channels()) {
+                            out.set(frame, channel, input.get(frame, channel));
+                        } else {
+                            out.set(frame, channel, default_value);
+                        }
+                    }
                 }
                 return;
             }
-            for (size_t i = 0; i < ctx.sample_count(); ++i) {
-                ctx.out().push(default_value);
+            auto const out = ctx.out().block_view();
+            for (size_t frame = 0; frame < out.frames(); ++frame) {
+                for (size_t channel = 0; channel < out.channels(); ++channel) {
+                    out.set(frame, channel, default_value);
+                }
             }
         }
     };
@@ -123,8 +133,15 @@ namespace iv {
                 lane,
                 builder);
             auto const block = builder.build();
-            for (size_t i = 0; i < ctx.sample_count(); ++i) {
-                ctx.out().push(i < block.size() ? block[i] : Sample {});
+            auto const out = ctx.out().block_view();
+            if (!block.empty()) {
+                ctx.out().write_block(block.view());
+                return;
+            }
+            for (size_t frame = 0; frame < out.frames(); ++frame) {
+                for (size_t channel = 0; channel < out.channels(); ++channel) {
+                    out.set(frame, channel, Sample {});
+                }
             }
         }
     };

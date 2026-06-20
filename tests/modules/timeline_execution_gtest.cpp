@@ -89,6 +89,32 @@ namespace {
         }
     };
 
+    std::vector<iv::Sample> sample_values(iv::BorrowedSampleBlock const& block)
+    {
+        auto const view = block.view();
+        std::vector<iv::Sample> values;
+        values.reserve(view.frames() * view.channels());
+        for (size_t channel = 0; channel < view.channels(); ++channel) {
+            for (size_t frame = 0; frame < view.frames(); ++frame) {
+                values.push_back(view.get(frame, channel));
+            }
+        }
+        return values;
+    }
+
+    std::vector<iv::Sample> sample_values(iv::OwnedSampleBlock const& block)
+    {
+        auto const view = block.view();
+        std::vector<iv::Sample> values;
+        values.reserve(view.frames() * view.channels());
+        for (size_t channel = 0; channel < view.channels(); ++channel) {
+            for (size_t frame = 0; frame < view.frames(); ++frame) {
+                values.push_back(view.get(frame, channel));
+            }
+        }
+        return values;
+    }
+
     struct TestCompiledSampleSourceLaneNode {
         int* tick_count = nullptr;
 
@@ -114,7 +140,9 @@ namespace {
             for (size_t i = 0; i < samples.size(); ++i) {
                 samples[i] = static_cast<iv::Sample>(ctx.start_index() + i);
             }
-            ctx.out().write(ctx.start_index(), samples);
+            ctx.out().write_block(
+                ctx.start_index(),
+                iv::SampleBlockView<iv::Sample const>(samples, ctx.out().channel_layout, samples.size()));
         }
     };
 
@@ -164,7 +192,9 @@ namespace {
                 *tick_count += 1;
             }
             std::vector<iv::Sample> samples(ctx.sample_count(), 7.0f);
-            ctx.out().write(ctx.start_index(), samples);
+            ctx.out().write_block(
+                ctx.start_index(),
+                iv::SampleBlockView<iv::Sample const>(samples, ctx.out().channel_layout, samples.size()));
         }
     };
 
@@ -193,7 +223,9 @@ namespace {
             for (size_t i = 0; i < samples.size(); ++i) {
                 samples[i] = static_cast<iv::Sample>(ctx.start_index() + i);
             }
-            ctx.out().write(ctx.start_index(), samples);
+            ctx.out().write_block(
+                ctx.start_index(),
+                iv::SampleBlockView<iv::Sample const>(samples, ctx.out().channel_layout, samples.size()));
         }
     };
 }
@@ -204,12 +236,12 @@ TEST(TimelineExecution, SynchronizeTracksRealtimeSampleOutputLanes)
     auto const source = timeline.with_graph([&](iv::LaneGraph& graph) {
         return graph.add_lane(iv::TypeErasedLaneNode(iv::KnobLaneNode {
             .value = 440.0f,
-        }));
+        }), {}, iv::ChannelTypeId::mono);
     });
     auto const target = timeline.with_graph([&](iv::LaneGraph& graph) {
         return graph.add_lane(iv::TypeErasedLaneNode(iv::GraphSampleInputLaneNode {
             .default_value = 0.0f,
-        }));
+        }), {}, iv::ChannelTypeId::mono);
     });
     timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate {
         .connections_to_add = {
@@ -242,12 +274,12 @@ TEST(TimelineExecution, ExecutesRealtimeSampleKnobChainForward)
     auto const logical = timeline.with_graph([&](iv::LaneGraph& graph) {
         return graph.add_lane(iv::TypeErasedLaneNode(iv::KnobLaneNode {
             .value = 440.0f,
-        }));
+        }), {}, iv::ChannelTypeId::mono);
     });
     auto const concrete = timeline.with_graph([&](iv::LaneGraph& graph) {
         return graph.add_lane(iv::TypeErasedLaneNode(iv::KnobLaneNode {
             .value = 220.0f,
-        }));
+        }), {}, iv::ChannelTypeId::mono);
     });
     timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate {
         .connections_to_add = {
@@ -269,11 +301,11 @@ TEST(TimelineExecution, ExecutesRealtimeSampleKnobChainForward)
 
     auto const logical_block = execution.realtime_sample_block(logical);
     auto const concrete_block = execution.realtime_sample_block(concrete);
-    ASSERT_EQ(logical_block.size(), 4u);
-    ASSERT_EQ(concrete_block.size(), 4u);
-    EXPECT_EQ(std::vector<iv::Sample>(logical_block.begin(), logical_block.end()),
+    ASSERT_EQ(logical_block.frame_count, 4u);
+    ASSERT_EQ(concrete_block.frame_count, 4u);
+    EXPECT_EQ(sample_values(logical_block),
         (std::vector<iv::Sample> { 440.0f, 440.0f, 440.0f, 440.0f }));
-    EXPECT_EQ(std::vector<iv::Sample>(concrete_block.begin(), concrete_block.end()),
+    EXPECT_EQ(sample_values(concrete_block),
         (std::vector<iv::Sample> { 440.0f, 440.0f, 440.0f, 440.0f }));
 }
 
@@ -286,10 +318,10 @@ TEST(TimelineExecution, ReadsCompiledSampleStorageIntoRealtimeSampleInputs)
     timeline.with_graph([&](iv::LaneGraph& graph) {
         compiled_source = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledSampleSourceLaneNode {
             .tick_count = &compiled_ticks,
-        }));
+        }), {}, iv::ChannelTypeId::mono);
         realtime_target = graph.add_lane(iv::TypeErasedLaneNode(iv::GraphSampleInputLaneNode {
             .default_value = -1.0f,
-        }));
+        }), {}, iv::ChannelTypeId::mono);
         graph.connect(compiled_source, realtime_target, iv::realtime_sample_input());
     });
 
@@ -302,13 +334,13 @@ TEST(TimelineExecution, ReadsCompiledSampleStorageIntoRealtimeSampleInputs)
     harness.run_once();
 
     auto const target_block = execution.realtime_sample_block(realtime_target);
-    ASSERT_EQ(target_block.size(), 4u);
-    EXPECT_EQ(std::vector<iv::Sample>(target_block.begin(), target_block.end()),
+    ASSERT_EQ(target_block.frame_count, 4u);
+    EXPECT_EQ(sample_values(target_block),
         (std::vector<iv::Sample> { 8.0f, 9.0f, 10.0f, 11.0f }));
 
     auto const compiled_block = execution.compiled_sample_block(compiled_source, 8);
-    ASSERT_EQ(compiled_block.size(), 4u);
-    EXPECT_EQ(compiled_block,
+    ASSERT_EQ(compiled_block.frame_count, 4u);
+    EXPECT_EQ(sample_values(compiled_block),
         (std::vector<iv::Sample> { 8.0f, 9.0f, 10.0f, 11.0f }));
     EXPECT_EQ(compiled_ticks, 1);
 
@@ -350,7 +382,10 @@ TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
 {
     iv::Timeline timeline;
     auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
-        return graph.add_lane(iv::TypeErasedLaneNode(TestCompiledSampleSourceLaneNode {}));
+        return graph.add_lane(
+            iv::TypeErasedLaneNode(TestCompiledSampleSourceLaneNode {}),
+            {},
+            iv::ChannelTypeId::mono);
     });
 
     iv::TimelineExecution execution(4);
@@ -362,8 +397,8 @@ TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
     execution.set_realtime_start_index(16);
     harness.run_once();
     auto const first_block = execution.compiled_sample_block(compiled_source, 16);
-    ASSERT_EQ(first_block.size(), 4u);
-    EXPECT_EQ(first_block[0], 16.0f);
+    ASSERT_EQ(first_block.frame_count, 4u);
+    EXPECT_EQ(sample_values(first_block)[0], 16.0f);
 
     timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate {
         .upserts = {
@@ -372,6 +407,7 @@ TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
                 .make_node = [] {
                     return iv::TypeErasedLaneNode(TestCompiledSampleSourceLaneNode {});
                 },
+                .sample_channel_type = iv::ChannelTypeId::mono,
             },
         },
     });
@@ -386,6 +422,7 @@ TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
                         lane,
                         record.node,
                         record.output,
+                        record.sample_channel_type,
                         graph.inputs_for(lane),
                         record.external_task_dependencies);
                 }
@@ -398,8 +435,8 @@ TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
     execution.set_realtime_start_index(20);
     harness.run_once();
     auto const second_block = execution.compiled_sample_block(compiled_source, 20);
-    ASSERT_EQ(second_block.size(), 4u);
-    EXPECT_EQ(second_block[0], 20.0f);
+    ASSERT_EQ(second_block.frame_count, 4u);
+    EXPECT_EQ(sample_values(second_block)[0], 20.0f);
 }
 
 TEST(TimelineExecution, CompiledSupportReturnsDefaultsOutsideSupport)
@@ -409,7 +446,7 @@ TEST(TimelineExecution, CompiledSupportReturnsDefaultsOutsideSupport)
     auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
         return graph.add_lane(iv::TypeErasedLaneNode(TestSparseCompiledSampleLaneNode {
             .tick_count = &compiled_ticks,
-        }));
+        }), {}, iv::ChannelTypeId::mono);
     });
 
     iv::TimelineExecution execution(4);
@@ -419,16 +456,16 @@ TEST(TimelineExecution, CompiledSupportReturnsDefaultsOutsideSupport)
     });
 
     auto const outside_support = execution.compiled_sample_block(compiled_source, 0);
-    ASSERT_EQ(outside_support.size(), 4u);
+    ASSERT_EQ(outside_support.frame_count, 4u);
     EXPECT_EQ(
-        outside_support,
+        sample_values(outside_support),
         (std::vector<iv::Sample> { 0.0f, 0.0f, 0.0f, 0.0f }));
     EXPECT_EQ(compiled_ticks, 1);
 
     auto const inside_support = execution.compiled_sample_block(compiled_source, 8);
-    ASSERT_EQ(inside_support.size(), 4u);
+    ASSERT_EQ(inside_support.frame_count, 4u);
     EXPECT_EQ(
-        inside_support,
+        sample_values(inside_support),
         (std::vector<iv::Sample> { 7.0f, 7.0f, 7.0f, 7.0f }));
     EXPECT_EQ(compiled_ticks, 1);
 }
@@ -440,7 +477,7 @@ TEST(TimelineExecution, CompiledSupportFillsUnsupportedRemainderWithDefaults)
     auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
         return graph.add_lane(iv::TypeErasedLaneNode(TestSparseCompiledSampleLaneNode {
             .tick_count = &compiled_ticks,
-        }));
+        }), {}, iv::ChannelTypeId::mono);
     });
 
     iv::TimelineExecution execution(4);
@@ -450,9 +487,9 @@ TEST(TimelineExecution, CompiledSupportFillsUnsupportedRemainderWithDefaults)
     });
 
     auto const partially_supported = execution.compiled_sample_block(compiled_source, 6);
-    ASSERT_EQ(partially_supported.size(), 4u);
+    ASSERT_EQ(partially_supported.frame_count, 4u);
     EXPECT_EQ(
-        partially_supported,
+        sample_values(partially_supported),
         (std::vector<iv::Sample> { 0.0f, 0.0f, 7.0f, 7.0f }));
     EXPECT_EQ(compiled_ticks, 1);
 }
@@ -464,7 +501,7 @@ TEST(TimelineExecution, ReusesCompiledSampleChunksWithinChunkBoundaries)
     auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
         return graph.add_lane(iv::TypeErasedLaneNode(TestChunkedCompiledSampleLaneNode {
             .tick_count = &compiled_ticks,
-        }));
+        }), {}, iv::ChannelTypeId::mono);
     });
 
     iv::TimelineExecution execution(4, 2);
@@ -474,23 +511,23 @@ TEST(TimelineExecution, ReusesCompiledSampleChunksWithinChunkBoundaries)
     });
 
     auto const first_block = execution.compiled_sample_block(compiled_source, 8);
-    ASSERT_EQ(first_block.size(), 4u);
+    ASSERT_EQ(first_block.frame_count, 4u);
     EXPECT_EQ(
-        first_block,
+        sample_values(first_block),
         (std::vector<iv::Sample> { 8.0f, 9.0f, 10.0f, 11.0f }));
     EXPECT_EQ(compiled_ticks, 1);
 
     auto const same_chunk_block = execution.compiled_sample_block(compiled_source, 12);
-    ASSERT_EQ(same_chunk_block.size(), 4u);
+    ASSERT_EQ(same_chunk_block.frame_count, 4u);
     EXPECT_EQ(
-        same_chunk_block,
+        sample_values(same_chunk_block),
         (std::vector<iv::Sample> { 12.0f, 13.0f, 14.0f, 15.0f }));
     EXPECT_EQ(compiled_ticks, 1);
 
     auto const next_chunk_block = execution.compiled_sample_block(compiled_source, 16);
-    ASSERT_EQ(next_chunk_block.size(), 4u);
+    ASSERT_EQ(next_chunk_block.frame_count, 4u);
     EXPECT_EQ(
-        next_chunk_block,
+        sample_values(next_chunk_block),
         (std::vector<iv::Sample> { 16.0f, 17.0f, 18.0f, 19.0f }));
     EXPECT_EQ(compiled_ticks, 2);
 }

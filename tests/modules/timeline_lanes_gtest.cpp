@@ -91,7 +91,9 @@ namespace {
             for (size_t i = 0; i < samples.size(); ++i) {
                 samples[i] = static_cast<iv::Sample>(ctx.start_index() + i);
             }
-            ctx.out().write(ctx.start_index(), samples);
+            ctx.out().write_block(
+                ctx.start_index(),
+                iv::SampleBlockView<iv::Sample const>(samples, ctx.out().channel_layout, samples.size()));
         }
     };
 
@@ -125,12 +127,14 @@ namespace {
 
         void tick_block_compiled(iv::CompiledLaneTickContext<TestCompiledSampleConsumerLaneNode>& ctx)
         {
-            std::array<iv::Sample, 4> samples {};
-            ctx.compiled_sample_input(0).read(ctx.start_index(), samples);
-            for (auto& sample : samples) {
-                sample *= 2.0f;
+            auto const input = ctx.compiled_sample_input(0).block_view();
+            std::vector<iv::Sample> samples(input.frames());
+            for (size_t frame = 0; frame < input.frames(); ++frame) {
+                samples[frame] = input.get(frame, 0) * 2.0f;
             }
-            ctx.out().write(ctx.start_index(), samples);
+            ctx.out().write_block(
+                ctx.start_index(),
+                iv::SampleBlockView<iv::Sample const>(samples, ctx.out().channel_layout, samples.size()));
         }
     };
 
@@ -154,8 +158,10 @@ namespace {
 
         void tick_block_realtime(iv::RealtimeLaneTickContext<TestStaticRealtimeLaneNode>& ctx)
         {
+            auto const input = ctx.realtime_sample_input(0).block_view();
+            auto out = ctx.out().block_view();
             for (size_t i = 0; i < ctx.sample_count(); ++i) {
-                ctx.out().push(ctx.realtime_sample_input(0).get(i));
+                out.set(i, 0, input.get(i, 0));
             }
         }
     };

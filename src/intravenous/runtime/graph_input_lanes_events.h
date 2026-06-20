@@ -2,6 +2,7 @@
 
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/lane_graph.h>
+#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/timeline_events.h>
 
 #include <cstdint>
@@ -22,15 +23,15 @@ public:
 };
 
 class GraphInputLanesSampleBlockBuilder {
-    std::vector<Sample> block_ {};
+    OwnedSampleBlock block_ {};
 
 public:
-    void succeed(std::vector<Sample> block)
+    void succeed(OwnedSampleBlock block)
     {
         block_ = std::move(block);
     }
 
-    [[nodiscard]] std::vector<Sample> build() const
+    [[nodiscard]] OwnedSampleBlock build() const
     {
         return block_;
     }
@@ -62,7 +63,7 @@ struct GraphInputLanesRebuildRequested {
 using GraphInputLanesRebuildRequestedEvent =
     void (*)(GraphInputLanesRebuildRequested const &);
 using GraphInputLanesSampleBlockPublishedEvent =
-    void (*)(LaneId, std::span<Sample const>);
+    void (*)(LaneId, BorrowedSampleBlock const &);
 using GraphInputLanesEventBlockPublishedEvent =
     void (*)(LaneId, std::span<TimedEvent const>);
 using GraphInputLanesSampleBlockRequestedEvent =

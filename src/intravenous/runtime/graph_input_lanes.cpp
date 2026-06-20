@@ -821,6 +821,9 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
                         }
                         return TypeErasedLaneNode(GraphSampleOutputLaneNode{ .lane = lane });
                     },
+                    .sample_channel_type = is_event
+                        ? std::nullopt
+                        : std::optional<ChannelTypeId>(ChannelTypeId::mono),
                     .metadata = std::move(metadata),
                     .external_task_dependencies = {
                         iv_module_instance_dsp_task_id(port.instance_id),
@@ -858,6 +861,9 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
                         }
                         return TypeErasedLaneNode(GraphSampleOutputLaneNode{ .lane = lane });
                     },
+                    .sample_channel_type = is_event
+                        ? std::nullopt
+                        : std::optional<ChannelTypeId>(ChannelTypeId::mono),
                     .metadata = std::move(metadata),
                     .external_task_dependencies = {
                         iv_module_instance_dsp_task_id(port.instance_id),
@@ -1012,6 +1018,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                     .make_node = [current_value] {
                         return TypeErasedLaneNode(KnobLaneNode{ .value = current_value });
                     },
+                    .sample_channel_type = ChannelTypeId::mono,
                     .metadata = std::move(metadata),
                 });
             }
@@ -1092,6 +1099,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                     .make_node = [default_value] {
                         return make_sample_input_node(default_value);
                     },
+                    .sample_channel_type = ChannelTypeId::mono,
                     .metadata = std::move(metadata),
                 });
             }
@@ -1303,11 +1311,10 @@ void GraphInputLanes::apply_timeline_batch(TimelineLaneBatchUpdate const &batch)
 
 void GraphInputLanes::publish_sample_output_block(
     LaneId lane,
-    std::span<Sample const> block)
+    BorrowedSampleBlock const &block)
 {
     std::scoped_lock lock(output_blocks_mutex_);
-    auto &stored = sample_output_blocks_[lane];
-    stored.assign(block.begin(), block.end());
+    sample_output_blocks_[lane] = copy_sample_block(block.view());
 }
 
 void GraphInputLanes::publish_event_output_block(
@@ -1319,7 +1326,7 @@ void GraphInputLanes::publish_event_output_block(
     stored.assign(events.begin(), events.end());
 }
 
-std::vector<Sample> GraphInputLanes::sample_output_block(LaneId lane) const
+OwnedSampleBlock GraphInputLanes::sample_output_block(LaneId lane) const
 {
     std::scoped_lock lock(output_blocks_mutex_);
     auto const it = sample_output_blocks_.find(lane);
@@ -2164,7 +2171,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
 
 void GraphInputLanes::handle_sample_block_published(
     LaneId lane,
-    std::span<Sample const> block)
+    BorrowedSampleBlock const &block)
 {
     publish_sample_output_block(lane, block);
 }
@@ -2176,7 +2183,7 @@ void GraphInputLanes::handle_event_block_published(
     publish_event_output_block(lane, events);
 }
 
-std::vector<Sample> GraphInputLanes::handle_sample_block_requested(LaneId lane) const
+OwnedSampleBlock GraphInputLanes::handle_sample_block_requested(LaneId lane) const
 {
     return sample_output_block(lane);
 }

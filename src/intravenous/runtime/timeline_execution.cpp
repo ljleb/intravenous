@@ -27,6 +27,45 @@ bool is_compiled_event_output(LaneOutputConfig const &output)
     return std::holds_alternative<CompiledEventLaneOutputConfig>(output);
 }
 
+SampleStreamLayout sample_output_layout(LaneOutputConfig const& output)
+{
+    return std::visit([](auto const& config) -> SampleStreamLayout {
+        using Config = std::remove_cvref_t<decltype(config)>;
+        if constexpr (std::same_as<Config, RealtimeSampleLaneOutputConfig>
+            || std::same_as<Config, CompiledSampleLaneOutputConfig>) {
+            return config.sample_layout;
+        } else {
+            return SampleStreamLayout::planar;
+        }
+    }, output);
+}
+
+ChannelTypeId sample_channel_type_for(std::optional<ChannelTypeId> channel_type)
+{
+    return channel_type.value_or(ChannelTypeId::stereo);
+}
+
+ChannelLayout sample_output_channel_layout(
+    LaneOutputConfig const& output,
+    std::optional<ChannelTypeId> channel_type)
+{
+    return ChannelLayout {
+        .channel_type = sample_channel_type_for(channel_type),
+        .sample_layout = sample_output_layout(output),
+    };
+}
+
+std::vector<Sample> convert_sample_block(
+    SampleBlockView<Sample const> source,
+    ChannelLayout target_layout)
+{
+    auto const target_samples = sample_storage_size(target_layout, source.frames());
+    std::vector<Sample> converted(target_samples, Sample {});
+    auto const plan = ChannelConversionRegistry::plan(source.channel_layout(), target_layout);
+    plan.convert(source.samples().data(), converted.data(), source.frames());
+    return converted;
+}
+
 void sort_and_merge_ranges(std::vector<CompiledSupportRange>& ranges)
 {
     std::ranges::sort(ranges, [](CompiledSupportRange const& lhs, CompiledSupportRange const& rhs) {
@@ -160,6 +199,7 @@ VersionedTaskGraphUpdate TimelineExecution::synchronize_from_graph(LaneGraph con
             .id = record.id,
             .node = &record.node,
             .output = record.output,
+            .sample_channel_type = record.sample_channel_type,
             .inputs = graph.inputs_for(record.id),
             .external_task_dependencies = record.external_task_dependencies,
         });
@@ -190,12 +230,13 @@ VersionedTaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(Timeli
     if (change.visit_lanes) {
         std::vector<LaneId> visited = change.created_lanes;
         visited.insert(visited.end(), change.changed_lanes.begin(), change.changed_lanes.end());
-        change.visit_lanes(visited, [&](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output, std::vector<LaneInputConnection> const &inputs, std::vector<std::string> const &external_task_dependencies) {
+        change.visit_lanes(visited, [&](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output, std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &inputs, std::vector<std::string> const &external_task_dependencies) {
             auto &tracked = tracked_lanes_[lane];
             bool const existed = tracked.id == lane && tracked.node != nullptr;
             tracked.id = lane;
             tracked.node = &node;
             tracked.output = output;
+            tracked.sample_channel_type = sample_channel_type;
             tracked.inputs = inputs;
             tracked.external_task_dependencies = external_task_dependencies;
 
@@ -287,10 +328,15 @@ size_t TimelineExecution::compiled_sample_cache_chunk_size_multiplier() const
     return compiled_sample_cache_chunk_size_multiplier_;
 }
 
-std::span<Sample const> TimelineExecution::realtime_sample_block(LaneId lane) const
+BorrowedSampleBlock TimelineExecution::realtime_sample_block(LaneId lane) const
 {
     std::scoped_lock lock(mutex_);
-    return realtime_sample_block_locked(lane);
+    auto const view = realtime_sample_block_locked(lane);
+    return BorrowedSampleBlock{
+        .samples = view.samples(),
+        .channel_layout = view.channel_layout(),
+        .frame_count = view.frames(),
+    };
 }
 
 std::span<TimedEvent const> TimelineExecution::realtime_event_block(LaneId lane) const
@@ -303,7 +349,7 @@ std::span<TimedEvent const> TimelineExecution::realtime_event_block(LaneId lane)
     return it->second;
 }
 
-std::vector<Sample> TimelineExecution::compiled_sample_block(LaneId lane, size_t start_index)
+OwnedSampleBlock TimelineExecution::compiled_sample_block(LaneId lane, size_t start_index)
 {
     std::scoped_lock lock(mutex_);
     return read_compiled_sample_block_locked(lane, start_index);
@@ -315,7 +361,7 @@ std::vector<TimedEvent> TimelineExecution::compiled_event_block(LaneId lane, siz
     return ensure_compiled_event_block_locked(lane, start_index);
 }
 
-std::vector<Sample> TimelineExecution::sparse_compiled_sample_window(
+OwnedSampleBlock TimelineExecution::sparse_compiled_sample_window(
     LaneId lane,
     size_t first,
     size_t last,
@@ -325,8 +371,14 @@ std::vector<Sample> TimelineExecution::sparse_compiled_sample_window(
         return {};
     }
     std::scoped_lock lock(mutex_);
-    std::vector<Sample> result;
-    result.reserve(count);
+    auto const tracked_it = tracked_lanes_.find(lane);
+    if (tracked_it == tracked_lanes_.end()) {
+        return {};
+    }
+    auto const output_layout =
+        sample_output_channel_layout(tracked_it->second.output, tracked_it->second.sample_channel_type);
+    std::vector<Sample> result(sample_storage_size(output_layout, count), Sample {});
+    auto result_view = SampleBlockView<Sample>(result, output_layout, count);
     auto const range = last - first;
     for (size_t i = 0; i < count; ++i) {
         size_t const source_index = (count == 1)
@@ -337,9 +389,19 @@ std::vector<Sample> TimelineExecution::sparse_compiled_sample_window(
         size_t const block_start = (source_index / block_size_) * block_size_;
         size_t const offset = source_index - block_start;
         auto const block = read_compiled_sample_block_locked(lane, block_start);
-        result.push_back(offset < block.size() ? block[offset] : Sample{});
+        auto const block_view = block.view();
+        for (size_t channel = 0; channel < result_view.channels(); ++channel) {
+            result_view.set(
+                i,
+                channel,
+                offset < block_view.frames() ? block_view.get(offset, channel) : Sample {});
+        }
     }
-    return result;
+    return OwnedSampleBlock{
+        .samples = std::move(result),
+        .channel_layout = output_layout,
+        .frame_count = count,
+    };
 }
 
 std::vector<TimedEvent> TimelineExecution::compiled_events_in_range(
@@ -385,20 +447,27 @@ void TimelineExecution::rebuild_runtime_storage_locked()
 {
     realtime_sample_descriptors_.clear();
     realtime_sample_slot_by_lane_.clear();
+    size_t next_sample_offset = 0;
     auto const order = topological_order_locked();
     for (auto const lane : order) {
         auto const &tracked = tracked_lanes_.at(lane);
         if (!is_realtime_sample_output(tracked.output)) {
             continue;
         }
-        realtime_sample_slot_by_lane_[lane] = realtime_sample_descriptors_.size();
-        realtime_sample_descriptors_.push_back(RealtimeSamplePortDescriptor {
+        auto const channel_layout =
+            sample_output_channel_layout(tracked.output, tracked.sample_channel_type);
+        auto const sample_count = sample_storage_size(channel_layout, block_size_);
+        RealtimeSamplePortDescriptor descriptor {
             .lane = lane,
-        });
+            .sample_offset = next_sample_offset,
+            .sample_count = sample_count,
+            .channel_layout = channel_layout,
+        };
+        realtime_sample_slot_by_lane_[lane] = descriptor;
+        realtime_sample_descriptors_.push_back(descriptor);
+        next_sample_offset += sample_count;
     }
-    realtime_sample_storage_.assign(
-        realtime_sample_descriptors_.size() * block_size_,
-        0.0f);
+    realtime_sample_storage_.assign(next_sample_offset, 0.0f);
 
     for (auto const &[lane, tracked] : tracked_lanes_) {
         if (is_realtime_event_output(tracked.output)) {
@@ -621,31 +690,80 @@ void TimelineExecution::execute_lane_locked(LaneId lane, size_t start_index)
     realtime_sample_inputs.resize(tracked.node->realtime_sample_inputs().size());
     realtime_event_inputs.resize(tracked.node->realtime_event_inputs().size());
 
+    auto input_layout_for = [&](LanePortId input) {
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
+        if (input.domain == LanePortDomain::compiled) {
+            sample_layout = tracked.node->compiled_sample_inputs()[input.ordinal].sample_layout;
+        } else {
+            sample_layout = tracked.node->realtime_sample_inputs()[input.ordinal].sample_layout;
+        }
+        return ChannelLayout {
+            .channel_type = sample_channel_type_for(tracked.sample_channel_type),
+            .sample_layout = sample_layout,
+        };
+    };
+
     for (auto const &connection : tracked.inputs) {
         if (!tracked_lanes_.contains(connection.source)) {
             continue;
         }
         auto const &source = tracked_lanes_.at(connection.source);
         if (connection.input.kind == PortKind::sample) {
+            auto const target_layout = input_layout_for(connection.input);
             if (connection.input.domain == LanePortDomain::compiled) {
-                compiled_sample_input_blocks.push_back(
-                    read_compiled_sample_block_locked(connection.source, start_index));
-                compiled_sample_inputs[connection.input.ordinal].sources.push_back(
-                    std::span<Sample const>(compiled_sample_input_blocks.back()));
+                auto source_block = read_compiled_sample_block_locked(connection.source, start_index);
+                auto source_view = source_block.view();
+                if (source_view.channel_layout() != target_layout) {
+                    compiled_sample_input_blocks.push_back(convert_sample_block(source_view, target_layout));
+                    compiled_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            block_size_));
+                } else {
+                    compiled_sample_input_blocks.push_back(std::move(source_block.samples));
+                    compiled_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            block_size_));
+                }
+                compiled_sample_inputs[connection.input.ordinal].channel_layout = target_layout;
+                compiled_sample_inputs[connection.input.ordinal].frame_count = block_size_;
             } else if (is_compiled_sample_output(source.output)) {
-                compiled_sample_input_blocks.push_back(
-                    read_compiled_sample_block_locked(connection.source, start_index));
-                realtime_sample_inputs[connection.input.ordinal].block_override =
-                    std::span<Sample const>(compiled_sample_input_blocks.back());
-                realtime_sample_inputs[connection.input.ordinal].active_start_index = start_index;
-                realtime_sample_inputs[connection.input.ordinal].active_count = block_size_;
-                realtime_sample_inputs[connection.input.ordinal].has_source = true;
+                auto source_block = read_compiled_sample_block_locked(connection.source, start_index);
+                auto source_view = source_block.view();
+                if (source_view.channel_layout() != target_layout) {
+                    compiled_sample_input_blocks.push_back(convert_sample_block(source_view, target_layout));
+                    realtime_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            block_size_));
+                } else {
+                    compiled_sample_input_blocks.push_back(std::move(source_block.samples));
+                    realtime_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            block_size_));
+                }
+                realtime_sample_inputs[connection.input.ordinal].channel_layout = target_layout;
+                realtime_sample_inputs[connection.input.ordinal].frame_count = block_size_;
             } else {
-                auto const values = realtime_sample_block_locked(connection.source);
-                realtime_sample_inputs[connection.input.ordinal].block_override = values;
-                realtime_sample_inputs[connection.input.ordinal].active_start_index = start_index;
-                realtime_sample_inputs[connection.input.ordinal].active_count = block_size_;
-                realtime_sample_inputs[connection.input.ordinal].has_source = true;
+                auto const source_view = realtime_sample_block_locked(connection.source);
+                if (source_view.channel_layout() != target_layout) {
+                    compiled_sample_input_blocks.push_back(convert_sample_block(source_view, target_layout));
+                    realtime_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            block_size_));
+                } else {
+                    realtime_sample_inputs[connection.input.ordinal].sources.push_back(source_view);
+                }
+                realtime_sample_inputs[connection.input.ordinal].channel_layout = target_layout;
+                realtime_sample_inputs[connection.input.ordinal].frame_count = block_size_;
             }
         } else {
             if (connection.input.domain == LanePortDomain::compiled) {
@@ -668,10 +786,8 @@ void TimelineExecution::execute_lane_locked(LaneId lane, size_t start_index)
     LaneOutputView output;
     if (is_realtime_sample_output(tracked.output)) {
         auto samples = realtime_sample_block_mutable_locked(lane);
-        std::ranges::fill(samples, 0.0f);
-        output = RealtimeSampleLaneOutput(BlockView<Sample> {
-            .first = samples,
-        });
+        std::ranges::fill(samples.samples(), 0.0f);
+        output = RealtimeSampleLaneOutput(samples);
     } else if (is_realtime_event_output(tracked.output)) {
         auto &events = realtime_event_blocks_[lane];
         events.clear();
@@ -706,24 +822,34 @@ void TimelineExecution::execute_lane_locked(LaneId lane, size_t start_index)
     tracked.node->tick_block_realtime(ctx);
 }
 
-std::span<Sample> TimelineExecution::realtime_sample_block_mutable_locked(LaneId lane)
+SampleBlockView<Sample> TimelineExecution::realtime_sample_block_mutable_locked(LaneId lane)
 {
     auto const it = realtime_sample_slot_by_lane_.find(lane);
     if (it == realtime_sample_slot_by_lane_.end()) {
         return {};
     }
-    auto const offset = it->second * block_size_;
-    return std::span<Sample>(realtime_sample_storage_).subspan(offset, block_size_);
+    auto const& descriptor = it->second;
+    return SampleBlockView<Sample>(
+        std::span<Sample>(realtime_sample_storage_).subspan(
+            descriptor.sample_offset,
+            descriptor.sample_count),
+        descriptor.channel_layout,
+        block_size_);
 }
 
-std::span<Sample const> TimelineExecution::realtime_sample_block_locked(LaneId lane) const
+SampleBlockView<Sample const> TimelineExecution::realtime_sample_block_locked(LaneId lane) const
 {
     auto const it = realtime_sample_slot_by_lane_.find(lane);
     if (it == realtime_sample_slot_by_lane_.end()) {
         return {};
     }
-    auto const offset = it->second * block_size_;
-    return std::span<Sample const>(realtime_sample_storage_).subspan(offset, block_size_);
+    auto const& descriptor = it->second;
+    return SampleBlockView<Sample const>(
+        std::span<Sample const>(realtime_sample_storage_).subspan(
+            descriptor.sample_offset,
+            descriptor.sample_count),
+        descriptor.channel_layout,
+        block_size_);
 }
 
 std::span<CompiledSupportRange const> TimelineExecution::compiled_support_ranges_locked(LaneId lane) const
@@ -784,31 +910,80 @@ void TimelineExecution::execute_compiled_sample_chunk_locked(LaneId lane, size_t
     auto const chunk_size = compiled_sample_cache_chunk_size_locked();
     auto const chunk_start = chunk_start_index(chunk_index, chunk_size);
 
+    auto input_layout_for = [&](LanePortId input) {
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
+        if (input.domain == LanePortDomain::compiled) {
+            sample_layout = tracked.node->compiled_sample_inputs()[input.ordinal].sample_layout;
+        } else {
+            sample_layout = tracked.node->realtime_sample_inputs()[input.ordinal].sample_layout;
+        }
+        return ChannelLayout {
+            .channel_type = sample_channel_type_for(tracked.sample_channel_type),
+            .sample_layout = sample_layout,
+        };
+    };
+
     for (auto const& connection : tracked.inputs) {
         if (!tracked_lanes_.contains(connection.source)) {
             continue;
         }
         auto const& source = tracked_lanes_.at(connection.source);
         if (connection.input.kind == PortKind::sample) {
+            auto const target_layout = input_layout_for(connection.input);
             if (connection.input.domain == LanePortDomain::compiled) {
-                compiled_sample_input_blocks.push_back(
-                    read_compiled_sample_block_locked(connection.source, chunk_start));
-                compiled_sample_inputs[connection.input.ordinal].sources.push_back(
-                    std::span<Sample const>(compiled_sample_input_blocks.back()));
+                auto source_block = read_compiled_sample_block_locked(connection.source, chunk_start);
+                auto source_view = source_block.view();
+                if (source_view.channel_layout() != target_layout) {
+                    compiled_sample_input_blocks.push_back(convert_sample_block(source_view, target_layout));
+                    compiled_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            chunk_size));
+                } else {
+                    compiled_sample_input_blocks.push_back(std::move(source_block.samples));
+                    compiled_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            chunk_size));
+                }
+                compiled_sample_inputs[connection.input.ordinal].channel_layout = target_layout;
+                compiled_sample_inputs[connection.input.ordinal].frame_count = chunk_size;
             } else if (is_compiled_sample_output(source.output)) {
-                compiled_sample_input_blocks.push_back(
-                    read_compiled_sample_block_locked(connection.source, chunk_start));
-                realtime_sample_inputs[connection.input.ordinal].block_override =
-                    std::span<Sample const>(compiled_sample_input_blocks.back());
-                realtime_sample_inputs[connection.input.ordinal].active_start_index = chunk_start;
-                realtime_sample_inputs[connection.input.ordinal].active_count = chunk_size;
-                realtime_sample_inputs[connection.input.ordinal].has_source = true;
+                auto source_block = read_compiled_sample_block_locked(connection.source, chunk_start);
+                auto source_view = source_block.view();
+                if (source_view.channel_layout() != target_layout) {
+                    compiled_sample_input_blocks.push_back(convert_sample_block(source_view, target_layout));
+                    realtime_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            chunk_size));
+                } else {
+                    compiled_sample_input_blocks.push_back(std::move(source_block.samples));
+                    realtime_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            chunk_size));
+                }
+                realtime_sample_inputs[connection.input.ordinal].channel_layout = target_layout;
+                realtime_sample_inputs[connection.input.ordinal].frame_count = chunk_size;
             } else {
-                auto const values = realtime_sample_block_locked(connection.source);
-                realtime_sample_inputs[connection.input.ordinal].block_override = values;
-                realtime_sample_inputs[connection.input.ordinal].active_start_index = chunk_start;
-                realtime_sample_inputs[connection.input.ordinal].active_count = chunk_size;
-                realtime_sample_inputs[connection.input.ordinal].has_source = true;
+                auto const source_view = realtime_sample_block_locked(connection.source);
+                if (source_view.channel_layout() != target_layout) {
+                    compiled_sample_input_blocks.push_back(convert_sample_block(source_view, target_layout));
+                    realtime_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(),
+                            target_layout,
+                            chunk_size));
+                } else {
+                    realtime_sample_inputs[connection.input.ordinal].sources.push_back(source_view);
+                }
+                realtime_sample_inputs[connection.input.ordinal].channel_layout = target_layout;
+                realtime_sample_inputs[connection.input.ordinal].frame_count = chunk_size;
             }
         } else {
             if (connection.input.domain == LanePortDomain::compiled) {
@@ -829,11 +1004,14 @@ void TimelineExecution::execute_compiled_sample_chunk_locked(LaneId lane, size_t
     }
 
     auto& chunk = compiled_sample_cache_[lane].chunks[chunk_index];
-    chunk.assign(chunk_size, 0.0f);
+    auto const output_layout =
+        sample_output_channel_layout(tracked.output, tracked.sample_channel_type);
+    chunk.assign(sample_storage_size(output_layout, chunk_size), 0.0f);
     LaneOutputView output = CompiledSampleLaneOutput {
         .samples = &chunk,
         .window_start_index = chunk_start,
         .clamp_to_window = true,
+        .channel_layout = output_layout,
     };
 
     UntypedRealtimeLaneTickContext untyped {
@@ -856,13 +1034,24 @@ void TimelineExecution::execute_compiled_sample_chunk_locked(LaneId lane, size_t
     tracked.node->tick_block_realtime(ctx);
 }
 
-std::vector<Sample> TimelineExecution::read_compiled_sample_block_locked(LaneId lane, size_t start_index)
+OwnedSampleBlock TimelineExecution::read_compiled_sample_block_locked(LaneId lane, size_t start_index)
 {
-    std::vector<Sample> result(block_size_, 0.0f);
+    auto const tracked_it = tracked_lanes_.find(lane);
+    if (tracked_it == tracked_lanes_.end()) {
+        return {};
+    }
+    auto const output_layout =
+        sample_output_channel_layout(tracked_it->second.output, tracked_it->second.sample_channel_type);
+    auto const channels = channel_count(output_layout);
+    std::vector<Sample> result(sample_storage_size(output_layout, block_size_), 0.0f);
     auto const sample_ranges = compiled_support_ranges_locked(lane);
     auto const chunk_ranges = compiled_support_chunk_ranges_locked(lane);
     if (sample_ranges.empty() || chunk_ranges.empty()) {
-        return result;
+        return OwnedSampleBlock{
+            .samples = std::move(result),
+            .channel_layout = output_layout,
+            .frame_count = block_size_,
+        };
     }
 
     auto& cache = compiled_sample_cache_[lane];
@@ -918,16 +1107,20 @@ std::vector<Sample> TimelineExecution::read_compiled_sample_block_locked(LaneId 
                     continue;
                 }
 
-                auto const source_offset = supported_copy_start - chunk_start;
-                auto const dest_offset = supported_copy_start - request_start;
-                auto const count = supported_copy_end - supported_copy_start;
+                auto const source_offset = (supported_copy_start - chunk_start) * channels;
+                auto const dest_offset = (supported_copy_start - request_start) * channels;
+                auto const count = (supported_copy_end - supported_copy_start) * channels;
                 std::ranges::copy(
                     std::span<Sample const>(chunk_it->second).subspan(source_offset, count),
                     result.begin() + static_cast<std::ptrdiff_t>(dest_offset));
             }
         }
     }
-    return result;
+    return OwnedSampleBlock{
+        .samples = std::move(result),
+        .channel_layout = output_layout,
+        .frame_count = block_size_,
+    };
 }
 
 std::vector<TimedEvent> const& TimelineExecution::ensure_compiled_event_block_locked(LaneId lane, size_t start_index)

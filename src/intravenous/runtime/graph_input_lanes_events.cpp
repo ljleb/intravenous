@@ -5,7 +5,7 @@
 
 namespace iv {
 namespace {
-void default_sample_block_published(LaneId, std::span<Sample const>)
+void default_sample_block_published(LaneId, BorrowedSampleBlock const &)
 {
 }
 

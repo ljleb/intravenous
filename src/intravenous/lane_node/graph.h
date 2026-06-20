@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/basic_lane_nodes/type_erased.h>
+#include <intravenous/lane_node/channels.h>
 #include <intravenous/query/lane_query_schema.h>
 #include <intravenous/runtime/lane_graph.h>
 
@@ -148,12 +149,20 @@ namespace iv {
         }, output);
     }
 
+    inline std::optional<ChannelTypeId> default_sample_channel_type(LaneOutputConfig const& output)
+    {
+        return lane_output_kind(output) == PortKind::sample
+            ? std::optional<ChannelTypeId>(ChannelTypeId::stereo)
+            : std::nullopt;
+    }
+
     class LaneGraph;
 
     struct LaneRecord {
         LaneId id {};
         TypeErasedLaneNode node {};
         LaneOutputConfig output {};
+        std::optional<ChannelTypeId> sample_channel_type {};
         LaneMetadata metadata {};
         std::vector<std::string> external_task_dependencies {};
     };
@@ -285,7 +294,10 @@ namespace iv {
         LaneGraph(LaneGraph&&) = delete;
         LaneGraph& operator=(LaneGraph&&) = delete;
 
-        LaneId add_lane(TypeErasedLaneNode node, LaneMetadata metadata = {})
+        LaneId add_lane(
+            TypeErasedLaneNode node,
+            LaneMetadata metadata = {},
+            std::optional<ChannelTypeId> sample_channel_type = std::nullopt)
         {
             LaneId const id = _lanes.ids.next();
             LaneOutputConfig output = node.output();
@@ -293,6 +305,9 @@ namespace iv {
                 .id = id,
                 .node = std::move(node),
                 .output = std::move(output),
+                .sample_channel_type = sample_channel_type.has_value()
+                    ? sample_channel_type
+                    : default_sample_channel_type(output),
                 .metadata = std::move(metadata),
             };
             LanePortDomain const domain = lane_output_domain(record.output);
@@ -320,7 +335,8 @@ namespace iv {
             LaneId id,
             TypeErasedLaneNode node,
             LaneMetadata metadata = {},
-            std::vector<std::string> external_task_dependencies = {})
+            std::vector<std::string> external_task_dependencies = {},
+            std::optional<ChannelTypeId> sample_channel_type = std::nullopt)
         {
             LaneOutputConfig output = node.output();
             LanePortDomain const domain = lane_output_domain(output);
@@ -332,6 +348,9 @@ namespace iv {
                 auto& record = lane(id);
                 record.node = std::move(node);
                 record.output = std::move(output);
+                record.sample_channel_type = sample_channel_type.has_value()
+                    ? sample_channel_type
+                    : default_sample_channel_type(output);
                 record.metadata = std::move(metadata);
                 record.external_task_dependencies = std::move(external_task_dependencies);
                 return;
@@ -342,6 +361,9 @@ namespace iv {
                 .id = id,
                 .node = std::move(node),
                 .output = std::move(output),
+                .sample_channel_type = sample_channel_type.has_value()
+                    ? sample_channel_type
+                    : default_sample_channel_type(output),
                 .metadata = std::move(metadata),
                 .external_task_dependencies = std::move(external_task_dependencies),
             };

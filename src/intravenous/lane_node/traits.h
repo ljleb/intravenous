@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/lane_node/channels.h>
 #include <intravenous/ports.h>
 
 #include <array>
@@ -21,6 +22,7 @@ namespace iv {
     struct CompiledSampleLaneInputConfig {
         std::string name {};
         Sample default_value = 0.0f;
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
     };
 
     struct CompiledEventLaneInputConfig {
@@ -31,6 +33,7 @@ namespace iv {
     struct RealtimeSampleLaneInputConfig {
         std::string name {};
         Sample default_value = 0.0f;
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
     };
 
     struct RealtimeEventLaneInputConfig {
@@ -40,6 +43,7 @@ namespace iv {
 
     struct CompiledSampleLaneOutputConfig {
         std::string name {};
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
     };
 
     struct CompiledEventLaneOutputConfig {
@@ -49,6 +53,7 @@ namespace iv {
 
     struct RealtimeSampleLaneOutputConfig {
         std::string name {};
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
     };
 
     struct RealtimeEventLaneOutputConfig {
@@ -62,6 +67,35 @@ namespace iv {
         RealtimeSampleLaneOutputConfig,
         RealtimeEventLaneOutputConfig
     >;
+
+    inline std::optional<SampleStreamLayout> sample_stream_layout_for(
+        LaneOutputConfig const& output)
+    {
+        return std::visit([](auto const& config) -> std::optional<SampleStreamLayout> {
+            using Config = std::remove_cvref_t<decltype(config)>;
+            if constexpr (
+                std::same_as<Config, CompiledSampleLaneOutputConfig>
+                || std::same_as<Config, RealtimeSampleLaneOutputConfig>) {
+                return config.sample_layout;
+            } else {
+                return std::nullopt;
+            }
+        }, output);
+    }
+
+    inline std::optional<ChannelLayout> sample_channel_layout_for(
+        LaneOutputConfig const& output,
+        std::optional<ChannelTypeId> sample_channel_type)
+    {
+        auto const sample_layout = sample_stream_layout_for(output);
+        if (!sample_layout.has_value()) {
+            return std::nullopt;
+        }
+        return ChannelLayout{
+            .channel_type = sample_channel_type.value_or(ChannelTypeId::stereo),
+            .sample_layout = *sample_layout,
+        };
+    }
 
     namespace lane_node_details {
         template<typename LaneNode>

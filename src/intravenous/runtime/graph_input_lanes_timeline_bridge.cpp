@@ -128,6 +128,7 @@ void emit_lane_change(
                             lane,
                             record.node,
                             record.output,
+                            record.sample_channel_type,
                             graph.inputs_for(lane),
                             record.external_task_dependencies);
                     }
@@ -157,7 +158,7 @@ void handle_timeline_batch_requested(
     builder.succeed();
 }
 
-void handle_sample_block_published(LaneId lane, std::span<Sample const> block)
+void handle_sample_block_published(LaneId lane, BorrowedSampleBlock const &block)
 {
     if (bound_graph_input_lanes == nullptr) {
         return;

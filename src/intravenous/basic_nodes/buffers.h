@@ -112,8 +112,9 @@ namespace iv {
                 _lane,
                 builder);
             auto const block = builder.build();
+            auto const view = block.view();
             for (size_t i = 0; i < ctx.block_size; ++i) {
-                ctx.outputs[0].push(i < block.size() ? block[i] : Sample{0.0f});
+                ctx.outputs[0].push(i < view.frames() ? view.get(i, 0) : Sample{0.0f});
             }
         }
     };
@@ -150,10 +151,18 @@ namespace iv {
             for (size_t i = 0; i < ctx.block_size; ++i) {
                 samples[i] = i < block.size() ? block[i] : Sample{0.0f};
             }
+            auto published = BorrowedSampleBlock{
+                .samples = samples,
+                .channel_layout = ChannelLayout{
+                    .channel_type = ChannelTypeId::mono,
+                    .sample_layout = SampleStreamLayout::planar,
+                },
+                .frame_count = ctx.block_size,
+            };
             IV_INVOKE_SINGLETON_EVENT(
                 iv_runtime_graph_input_lanes_sample_block_published_event,
                 _lane,
-                std::span<Sample const>(samples));
+                published);
         }
     };
 

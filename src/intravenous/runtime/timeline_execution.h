@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/lane_node/graph.h>
+#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/task_ids.h>
 #include <intravenous/runtime/task_runner.h>
 #include <intravenous/runtime/timeline_events.h>
@@ -30,11 +31,11 @@ public:
     void set_realtime_start_index(size_t start_index);
     void set_compiled_sample_cache_chunk_size_multiplier(size_t multiplier);
     size_t compiled_sample_cache_chunk_size_multiplier() const;
-    std::span<Sample const> realtime_sample_block(LaneId lane) const;
+    BorrowedSampleBlock realtime_sample_block(LaneId lane) const;
     std::span<TimedEvent const> realtime_event_block(LaneId lane) const;
-    std::vector<Sample> compiled_sample_block(LaneId lane, size_t start_index);
+    OwnedSampleBlock compiled_sample_block(LaneId lane, size_t start_index);
     std::vector<TimedEvent> compiled_event_block(LaneId lane, size_t start_index);
-    std::vector<Sample> sparse_compiled_sample_window(LaneId lane, size_t first, size_t last, size_t count);
+    OwnedSampleBlock sparse_compiled_sample_window(LaneId lane, size_t first, size_t last, size_t count);
     std::vector<TimedEvent> compiled_events_in_range(LaneId lane, size_t first, size_t last);
 
 private:
@@ -42,6 +43,7 @@ private:
         LaneId id {};
         TypeErasedLaneNode const *node = nullptr;
         LaneOutputConfig output {};
+        std::optional<ChannelTypeId> sample_channel_type {};
         std::vector<LaneInputConnection> inputs {};
         std::vector<std::string> external_task_dependencies {};
         TaskCallback callback {};
@@ -69,6 +71,12 @@ private:
 
     struct RealtimeSamplePortDescriptor {
         LaneId lane {};
+        size_t sample_offset = 0;
+        size_t sample_count = 0;
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
     };
 
     size_t block_size_ = 0;
@@ -77,7 +85,7 @@ private:
     std::unordered_map<LaneId, TrackedLane, LaneIdHash> tracked_lanes_;
     std::unordered_map<LaneId, std::unique_ptr<LaneCallbackContext>, LaneIdHash> callback_contexts_;
     std::vector<RealtimeSamplePortDescriptor> realtime_sample_descriptors_;
-    std::unordered_map<LaneId, size_t, LaneIdHash> realtime_sample_slot_by_lane_;
+    std::unordered_map<LaneId, RealtimeSamplePortDescriptor, LaneIdHash> realtime_sample_slot_by_lane_;
     std::vector<Sample> realtime_sample_storage_;
     std::unordered_map<LaneId, std::vector<TimedEvent>, LaneIdHash> realtime_event_blocks_;
     std::unordered_map<LaneId, CompiledSupportState, LaneIdHash> compiled_support_by_lane_;
@@ -92,14 +100,14 @@ private:
     VersionedTaskGraphUpdate replace_all_lanes_locked(std::vector<TrackedLane> lanes);
     std::vector<LaneId> topological_order_locked() const;
     void execute_lane_locked(LaneId lane, size_t start_index);
-    std::span<Sample> realtime_sample_block_mutable_locked(LaneId lane);
-    std::span<Sample const> realtime_sample_block_locked(LaneId lane) const;
+    SampleBlockView<Sample> realtime_sample_block_mutable_locked(LaneId lane);
+    SampleBlockView<Sample const> realtime_sample_block_locked(LaneId lane) const;
     std::span<CompiledSupportRange const> compiled_support_ranges_locked(LaneId lane) const;
     std::span<CompiledSupportChunkRange const> compiled_support_chunk_ranges_locked(LaneId lane) const;
     bool compiled_support_intersects_request_locked(LaneId lane, size_t start_index, size_t sample_count) const;
     size_t compiled_sample_cache_chunk_size_locked() const;
     void execute_compiled_sample_chunk_locked(LaneId lane, size_t chunk_index);
-    std::vector<Sample> read_compiled_sample_block_locked(LaneId lane, size_t start_index);
+    OwnedSampleBlock read_compiled_sample_block_locked(LaneId lane, size_t start_index);
     std::vector<TimedEvent> const& ensure_compiled_event_block_locked(LaneId lane, size_t start_index);
     static bool has_task_graph_changes(TaskGraphUpdate const &update);
 };

@@ -9,12 +9,31 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <optional>
 #include <string_view>
 #include <vector>
 
 namespace {
+iv::BorrowedSampleBlock mono_block(std::span<iv::Sample const> samples)
+{
+    return iv::BorrowedSampleBlock {
+        .samples = samples,
+        .channel_layout =
+            iv::ChannelLayout {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+        .frame_count = samples.size(),
+    };
+}
+
+std::vector<iv::Sample> sample_values(iv::OwnedSampleBlock const &block)
+{
+    return std::vector<iv::Sample>(block.samples.begin(), block.samples.end());
+}
+
 struct TestEventSink {
     auto event_inputs() const
     {
@@ -822,11 +841,13 @@ TEST_F(GraphInputLanesTest, SampleOutputBlockRoundTripsThroughGraphInputLanesSto
     auto const lane = iv::LaneId{42};
     auto const block = std::array<iv::Sample, 3>{0.25f, -0.5f, 1.0f};
 
-    lanes.handle_sample_block_published(lane, std::span<iv::Sample const>(block));
+    lanes.handle_sample_block_published(lane, mono_block(std::span<iv::Sample const>(block)));
 
-    EXPECT_EQ(
-        lanes.handle_sample_block_requested(lane),
-        (std::vector<iv::Sample>{0.25f, -0.5f, 1.0f}));
+    auto const stored = lanes.handle_sample_block_requested(lane);
+    EXPECT_EQ(stored.channel_layout.channel_type, iv::ChannelTypeId::mono);
+    EXPECT_EQ(stored.channel_layout.sample_layout, iv::SampleStreamLayout::planar);
+    EXPECT_EQ(stored.frame_count, block.size());
+    EXPECT_EQ(sample_values(stored), (std::vector<iv::Sample>{0.25f, -0.5f, 1.0f}));
 }
 
 TEST_F(GraphInputLanesTest, EventOutputBlockRoundTripsThroughGraphInputLanesStorage)
@@ -865,10 +886,12 @@ TEST_F(GraphInputLanesTest, RepublishedSampleOutputBlockReplacesPreviousBlock)
     auto const first = std::array<iv::Sample, 2>{1.0f, 2.0f};
     auto const second = std::array<iv::Sample, 1>{-3.0f};
 
-    lanes.handle_sample_block_published(lane, std::span<iv::Sample const>(first));
-    lanes.handle_sample_block_published(lane, std::span<iv::Sample const>(second));
+    lanes.handle_sample_block_published(lane, mono_block(std::span<iv::Sample const>(first)));
+    lanes.handle_sample_block_published(lane, mono_block(std::span<iv::Sample const>(second)));
 
-    EXPECT_EQ(
-        lanes.handle_sample_block_requested(lane),
-        (std::vector<iv::Sample>{-3.0f}));
+    auto const stored = lanes.handle_sample_block_requested(lane);
+    EXPECT_EQ(stored.channel_layout.channel_type, iv::ChannelTypeId::mono);
+    EXPECT_EQ(stored.channel_layout.sample_layout, iv::SampleStreamLayout::planar);
+    EXPECT_EQ(stored.frame_count, second.size());
+    EXPECT_EQ(sample_values(stored), (std::vector<iv::Sample>{-3.0f}));
 }

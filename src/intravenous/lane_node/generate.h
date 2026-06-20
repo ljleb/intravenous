@@ -8,44 +8,232 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
 namespace iv {
-    struct CompiledSampleLaneInput {
-        std::vector<std::span<Sample const>> sources {};
-        Sample default_value = 0.0f;
+    template<typename T>
+    class SampleBlockView {
+        std::span<T> _samples {};
+        ChannelLayout _layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
+        size_t _frame_count = 0;
 
-        Sample sample_at(size_t index) const
+        static constexpr size_t sample_offset(
+            SampleStreamLayout layout,
+            size_t frame,
+            size_t channel,
+            size_t frame_count,
+            size_t channel_count_value) noexcept
         {
-            if (sources.empty()) {
-                return default_value;
+            if (layout == SampleStreamLayout::planar) {
+                return channel * frame_count + frame;
             }
-            Sample value = 0.0f;
-            for (auto const source : sources) {
-                if (index < source.size()) {
-                    value += source[index];
-                }
-            }
-            return value;
+            return frame * channel_count_value + channel;
         }
 
-        void read(size_t start_index, std::span<Sample> out) const
+    public:
+        using value_type = std::remove_cv_t<T>;
+
+        SampleBlockView() = default;
+
+        explicit SampleBlockView(
+            std::span<T> samples,
+            ChannelLayout layout = {},
+            size_t frame_count = 0) :
+            _samples(samples),
+            _layout(layout),
+            _frame_count(frame_count == 0 ? samples.size() / channel_count(layout) : frame_count)
+        {}
+
+        std::span<T> samples() const
         {
-            if (sources.empty()) {
-                std::ranges::fill(out, default_value);
+            return _samples;
+        }
+
+        ChannelLayout channel_layout() const
+        {
+            return _layout;
+        }
+
+        ChannelTypeId channel_type() const
+        {
+            return _layout.channel_type;
+        }
+
+        SampleStreamLayout sample_layout() const
+        {
+            return _layout.sample_layout;
+        }
+
+        size_t channels() const
+        {
+            return channel_count(_layout);
+        }
+
+        size_t frames() const
+        {
+            return _frame_count;
+        }
+
+        size_t size() const
+        {
+            return _samples.size();
+        }
+
+        bool empty() const
+        {
+            return _samples.empty();
+        }
+
+        Sample get(size_t frame, size_t channel) const
+        {
+            if (frame >= frames() || channel >= channels()) {
+                return Sample {};
+            }
+            return _samples[sample_offset(
+                _layout.sample_layout,
+                frame,
+                channel,
+                frames(),
+                channels())];
+        }
+
+        template<typename U = T>
+        requires (!std::is_const_v<U>)
+        void set(size_t frame, size_t channel, Sample value) const
+        {
+            if (frame >= frames() || channel >= channels()) {
                 return;
             }
-            std::ranges::fill(out, 0.0f);
-            for (auto const source : sources) {
-                if (start_index >= source.size()) {
-                    continue;
-                }
-                size_t const available = std::min(out.size(), source.size() - start_index);
-                for (size_t i = 0; i < available; ++i) {
-                    out[i] += source[start_index + i];
+            _samples[sample_offset(
+                _layout.sample_layout,
+                frame,
+                channel,
+                frames(),
+                channels())] = value;
+        }
+
+        std::span<T> channel_span(size_t channel) const
+        {
+            if (_layout.sample_layout != SampleStreamLayout::planar || channel >= channels()) {
+                return {};
+            }
+            return _samples.subspan(channel * frames(), frames());
+        }
+
+        T* interleaved_frame_ptr(size_t frame) const
+        {
+            if (_layout.sample_layout != SampleStreamLayout::interleaved || frame >= frames()) {
+                return nullptr;
+            }
+            return _samples.data() + frame * channels();
+        }
+    };
+
+    template<SampleStreamLayout Layout, typename T>
+    class LayoutSpecializedSampleBlockView {
+        SampleBlockView<T> _view {};
+
+    public:
+        LayoutSpecializedSampleBlockView() = default;
+        explicit LayoutSpecializedSampleBlockView(SampleBlockView<T> view) :
+            _view(view)
+        {}
+
+        SampleBlockView<T> view() const
+        {
+            return _view;
+        }
+
+        ChannelLayout channel_layout() const
+        {
+            return _view.channel_layout();
+        }
+
+        size_t frames() const
+        {
+            return _view.frames();
+        }
+
+        size_t channels() const
+        {
+            return _view.channels();
+        }
+
+        Sample get(size_t frame, size_t channel) const
+        {
+            return _view.get(frame, channel);
+        }
+
+        std::span<T> channel_span(size_t channel) const
+        requires (Layout == SampleStreamLayout::planar)
+        {
+            return _view.channel_span(channel);
+        }
+
+        T* frame_ptr(size_t frame) const
+        requires (Layout == SampleStreamLayout::interleaved)
+        {
+            return _view.interleaved_frame_ptr(frame);
+        }
+    };
+
+    struct CompiledSampleLaneInput {
+        std::vector<SampleBlockView<Sample const>> sources {};
+        Sample default_value = 0.0f;
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
+        size_t frame_count = 0;
+        mutable std::vector<Sample> merged_storage {};
+
+        bool connected() const
+        {
+            return !sources.empty();
+        }
+
+        SampleBlockView<Sample const> block_view() const
+        {
+            if (frame_count == 0) {
+                return {};
+            }
+            if (sources.empty()) {
+                merged_storage.assign(
+                    sample_storage_size(channel_layout, frame_count),
+                    default_value);
+                return SampleBlockView<Sample const>(merged_storage, channel_layout, frame_count);
+            }
+            if (sources.size() == 1 && sources.front().channel_layout() == channel_layout) {
+                return sources.front();
+            }
+
+            merged_storage.assign(
+                sample_storage_size(channel_layout, frame_count),
+                Sample {});
+            auto merged = SampleBlockView<Sample>(merged_storage, channel_layout, frame_count);
+            for (auto const& source : sources) {
+                for (size_t frame = 0; frame < frame_count; ++frame) {
+                    for (size_t channel = 0; channel < merged.channels(); ++channel) {
+                        merged.set(
+                            frame,
+                            channel,
+                            merged.get(frame, channel)
+                                + (channel < source.channels() ? source.get(frame, channel) : default_value));
+                    }
                 }
             }
+            return SampleBlockView<Sample const>(merged_storage, channel_layout, frame_count);
+        }
+
+        template<SampleStreamLayout Layout>
+        auto block_view_as() const
+        {
+            return LayoutSpecializedSampleBlockView<Layout, Sample const>(block_view());
         }
     };
 
@@ -70,47 +258,57 @@ namespace iv {
     };
 
     struct RealtimeSampleLaneInput {
-        using GetBlockFn = std::span<Sample const> (*)(void*, size_t, size_t);
-
-        void* context = nullptr;
-        GetBlockFn get_block_fn = nullptr;
+        std::vector<SampleBlockView<Sample const>> sources {};
         Sample default_value = 0.0f;
-        size_t active_start_index = 0;
-        size_t active_count = 0;
-        bool has_source = false;
-        std::span<Sample const> block_override {};
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
+        size_t frame_count = 0;
+        mutable std::vector<Sample> merged_storage {};
 
         bool connected() const
         {
-            return has_source;
+            return !sources.empty();
         }
 
-        Sample get(size_t index) const
+        SampleBlockView<Sample const> block_view() const
         {
-            auto const block = get_block(active_start_index, active_count);
-            if (index >= block.size()) {
-                return default_value;
-            }
-            return block[index];
-        }
-
-        std::span<Sample const> get_block(size_t start_index, size_t count) const
-        {
-            if (!block_override.empty()) {
-                if (start_index != active_start_index) {
-                    return {};
-                }
-                return block_override.first(std::min(count, block_override.size()));
-            }
-            if (!get_block_fn) {
+            if (frame_count == 0) {
                 return {};
             }
-            return get_block_fn(context, start_index, count);
+            if (sources.empty()) {
+                merged_storage.assign(
+                    sample_storage_size(channel_layout, frame_count),
+                    default_value);
+                return SampleBlockView<Sample const>(merged_storage, channel_layout, frame_count);
+            }
+            if (sources.size() == 1 && sources.front().channel_layout() == channel_layout) {
+                return sources.front();
+            }
+
+            merged_storage.assign(
+                sample_storage_size(channel_layout, frame_count),
+                Sample {});
+            auto merged = SampleBlockView<Sample>(merged_storage, channel_layout, frame_count);
+            for (auto const& source : sources) {
+                for (size_t frame = 0; frame < frame_count; ++frame) {
+                    for (size_t channel = 0; channel < merged.channels(); ++channel) {
+                        merged.set(
+                            frame,
+                            channel,
+                            merged.get(frame, channel)
+                                + (channel < source.channels() ? source.get(frame, channel) : default_value));
+                    }
+                }
+            }
+            return SampleBlockView<Sample const>(merged_storage, channel_layout, frame_count);
         }
 
-        std::span<Sample const> get_block() const
+        template<SampleStreamLayout Layout>
+        auto block_view_as() const
         {
-            return get_block(active_start_index, active_count);
+            return LayoutSpecializedSampleBlockView<Layout, Sample const>(block_view());
         }
     };
 
@@ -147,38 +345,54 @@ namespace iv {
         std::vector<Sample>* samples = nullptr;
         size_t window_start_index = 0;
         bool clamp_to_window = false;
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
 
-        void write(size_t start_index, std::span<Sample const> values)
+        void write_block(size_t start_frame, SampleBlockView<Sample const> values)
         {
             if (!samples) {
                 return;
             }
-            size_t write_start = start_index;
+            size_t write_start_frame = start_frame;
             if (clamp_to_window) {
-                if (start_index < window_start_index) {
-                    size_t const delta = window_start_index - start_index;
-                    if (delta >= values.size()) {
-                        return;
-                    }
-                    values = values.subspan(delta);
-                    write_start = 0;
-                } else {
-                    write_start = start_index - window_start_index;
-                }
-                if (write_start >= samples->size()) {
+                if (start_frame < window_start_index) {
                     return;
                 }
-                values = values.first(std::min(values.size(), samples->size() - write_start));
-            } else if (samples->size() < start_index + values.size()) {
-                samples->resize(start_index + values.size());
+                write_start_frame -= window_start_index;
             }
-            std::ranges::copy(values, samples->begin() + static_cast<std::ptrdiff_t>(write_start));
-        }
+            auto const total_samples = sample_storage_size(channel_layout, values.frames());
+            if (channel_layout == values.channel_layout()) {
+                size_t const write_start = write_start_frame * channel_count(channel_layout);
+                if (samples->size() < write_start + total_samples) {
+                    samples->resize(write_start + total_samples);
+                }
+                std::ranges::copy(
+                    values.samples().first(total_samples),
+                    samples->begin() + static_cast<std::ptrdiff_t>(write_start));
+                return;
+            }
 
-        template<size_t N>
-        void write(size_t start_index, std::array<Sample, N> const& values)
-        {
-            write(start_index, std::span<Sample const>(values));
+            auto const start_index = write_start_frame * channel_count(channel_layout);
+            if (samples->size() < start_index + total_samples) {
+                samples->resize(start_index + total_samples);
+            }
+            SampleBlockView<Sample> dst(
+                std::span<Sample>(*samples).subspan(start_index, total_samples),
+                channel_layout,
+                values.frames());
+            auto const frame_count = std::min(dst.frames(), values.frames());
+            auto const dst_channels = dst.channels();
+            auto const src_channels = values.channels();
+            for (size_t frame = 0; frame < frame_count; ++frame) {
+                for (size_t channel = 0; channel < std::min(dst_channels, src_channels); ++channel) {
+                    dst.set(frame, channel, values.get(frame, channel));
+                }
+                for (size_t channel = src_channels; channel < dst_channels; ++channel) {
+                    dst.set(frame, channel, Sample {});
+                }
+            }
         }
     };
 
@@ -203,33 +417,44 @@ namespace iv {
     };
 
     class RealtimeSampleLaneOutput {
-        BlockView<Sample> _block {};
-        size_t _position = 0;
+        SampleBlockView<Sample> _block {};
 
     public:
         RealtimeSampleLaneOutput() = default;
-        explicit RealtimeSampleLaneOutput(BlockView<Sample> block) :
+        explicit RealtimeSampleLaneOutput(SampleBlockView<Sample> block) :
             _block(block)
         {}
 
-        void push(Sample value)
+        ChannelLayout channel_layout() const
         {
-            if (_position >= _block.size()) {
-                return;
-            }
-            _block[_position++] = value;
+            return _block.channel_layout();
         }
 
-        void push_block(BlockView<Sample const> samples)
-        {
-            for (size_t i = 0; i < samples.size(); ++i) {
-                push(samples[i]);
-            }
-        }
-
-        BlockView<Sample> block() const
+        SampleBlockView<Sample> block_view() const
         {
             return _block;
+        }
+
+        template<SampleStreamLayout Layout>
+        auto block_view_as() const
+        {
+            return LayoutSpecializedSampleBlockView<Layout, Sample>(block_view());
+        }
+
+        void write_block(SampleBlockView<Sample const> values)
+        {
+            auto const dst = block_view();
+            auto const frame_count = std::min(dst.frames(), values.frames());
+            auto const dst_channels = dst.channels();
+            auto const src_channels = values.channels();
+            for (size_t frame = 0; frame < frame_count; ++frame) {
+                for (size_t channel = 0; channel < std::min(dst_channels, src_channels); ++channel) {
+                    dst.set(frame, channel, values.get(frame, channel));
+                }
+                for (size_t channel = src_channels; channel < dst_channels; ++channel) {
+                    dst.set(frame, channel, Sample {});
+                }
+            }
         }
     };
 
@@ -495,6 +720,21 @@ namespace iv {
     } // namespace lane_node_details
 
     namespace lane_tick_details {
+        template<typename OutputView>
+        ChannelLayout output_channel_layout(OutputView const& output)
+        {
+            if constexpr (requires { output.channel_layout(); }) {
+                return output.channel_layout();
+            } else if constexpr (requires { output.channel_layout; }) {
+                return output.channel_layout;
+            } else {
+                return ChannelLayout{
+                    .channel_type = ChannelTypeId::mono,
+                    .sample_layout = SampleStreamLayout::planar,
+                };
+            }
+        }
+
         template<typename LaneNode>
         void invoke_compiled_from_realtime(LaneNode& node, RealtimeLaneTickContext<LaneNode>& ctx)
         {
@@ -504,11 +744,17 @@ namespace iv {
             compiled_sample_inputs_storage.resize(compiled_sample_decls.size());
             for (size_t i = 0; i < compiled_sample_decls.size(); ++i) {
                 compiled_sample_inputs_storage[i].default_value = compiled_sample_decls[i].default_value;
+                auto const out_layout = output_channel_layout(ctx.out());
+                compiled_sample_inputs_storage[i].channel_layout = ChannelLayout {
+                    .channel_type = out_layout.channel_type,
+                    .sample_layout = compiled_sample_decls[i].sample_layout,
+                };
+                compiled_sample_inputs_storage[i].frame_count = ctx.sample_count();
             }
             for (size_t i = 0; i < std::min(ctx.realtime_sample_inputs().size(), compiled_sample_inputs_storage.size()); ++i) {
                 auto const& input = ctx.realtime_sample_inputs()[i];
                 if (input.connected()) {
-                    compiled_sample_inputs_storage[i].sources.push_back(input.get_block());
+                    compiled_sample_inputs_storage[i].sources.push_back(input.block_view());
                 }
                 compiled_sample_inputs_storage[i].default_value = input.default_value;
             }

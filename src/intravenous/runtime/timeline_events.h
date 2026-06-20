@@ -17,12 +17,14 @@ namespace iv {
         LaneId,
         TypeErasedLaneNode const&,
         LaneOutputConfig const&,
+        std::optional<ChannelTypeId>,
         std::vector<LaneInputConnection> const&,
         std::vector<std::string> const&)>;
 
     struct TimelineLaneUpsert {
         LaneId lane {};
         std::function<TypeErasedLaneNode()> make_node {};
+        std::optional<ChannelTypeId> sample_channel_type {};
         LaneMetadata metadata {};
         std::vector<std::string> external_task_dependencies {};
     };

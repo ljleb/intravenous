@@ -2,8 +2,10 @@
 
 #include <intravenous/lane_node/generate.h>
 #include <intravenous/ports.h>
+#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/sample.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -16,22 +18,31 @@ struct RealtimeSampleBlockQueue {
     static constexpr size_t kCapacity = 16;
 
     struct Slot {
-        std::vector<Sample> samples {};
+        OwnedSampleBlock block {};
     };
 
     std::array<Slot, kCapacity> ring {};
     alignas(64) std::atomic<size_t> head { 0 };
     alignas(64) std::atomic<size_t> tail { 0 };
+    ChannelLayout channel_layout {
+        .channel_type = ChannelTypeId::mono,
+        .sample_layout = SampleStreamLayout::planar,
+    };
+    size_t frame_count = 0;
 
-    explicit RealtimeSampleBlockQueue(size_t block_size)
+    RealtimeSampleBlockQueue(ChannelLayout layout, size_t block_size) :
+        channel_layout(layout),
+        frame_count(block_size)
     {
         for (auto& slot : ring) {
-            slot.samples.resize(block_size);
+            slot.block.channel_layout = channel_layout;
+            slot.block.frame_count = frame_count;
+            slot.block.samples.resize(sample_storage_size(channel_layout, frame_count));
         }
     }
 
     // Producer side (task runner thread) — lock-free
-    void push(std::span<Sample const> block)
+    void push(SampleBlockView<Sample const> block)
     {
         auto const t = tail.load(std::memory_order_relaxed);
         auto const next = (t + 1) % kCapacity;
@@ -39,9 +50,13 @@ struct RealtimeSampleBlockQueue {
             return; // full — drop
         }
         auto& slot = ring[t];
-        auto const n = std::min(block.size(), slot.samples.size());
-        std::copy_n(block.begin(), n, slot.samples.begin());
-        slot.samples.resize(n);
+        slot.block.channel_layout = block.channel_layout();
+        slot.block.frame_count = block.frames();
+        auto const n = sample_storage_size(slot.block.channel_layout, slot.block.frame_count);
+        if (slot.block.samples.size() != n) {
+            slot.block.samples.resize(n);
+        }
+        std::ranges::copy(block.samples(), slot.block.samples.begin());
         tail.store(next, std::memory_order_release);
     }
 
@@ -54,7 +69,7 @@ struct RealtimeSampleBlockQueue {
             if (h == tail.load(std::memory_order_acquire)) {
                 break;
             }
-            callback(std::span<Sample const>(ring[h].samples));
+            callback(ring[h].block);
             head.store((h + 1) % kCapacity, std::memory_order_release);
         }
     }
@@ -114,16 +129,17 @@ struct VisualizationRealtimeSampleLane {
     void tick_block_realtime(RealtimeLaneTickContext<VisualizationRealtimeSampleLane>& ctx)
     {
         if (ctx.realtime_sample_input(0).connected()) {
-            auto const block = ctx.realtime_sample_input(0).get_block();
-            for (size_t i = 0; i < ctx.sample_count(); ++i) {
-                ctx.out().push(i < block.size() ? block[i] : Sample{});
-            }
+            auto const block = ctx.realtime_sample_input(0).block_view();
+            ctx.out().write_block(block);
             if (queue != nullptr) {
                 queue->push(block);
             }
         } else {
-            for (size_t i = 0; i < ctx.sample_count(); ++i) {
-                ctx.out().push(Sample{});
+            auto const out = ctx.out().block_view();
+            for (size_t frame = 0; frame < out.frames(); ++frame) {
+                for (size_t channel = 0; channel < out.channels(); ++channel) {
+                    out.set(frame, channel, Sample{});
+                }
             }
         }
     }

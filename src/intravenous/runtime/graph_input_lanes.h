@@ -5,6 +5,7 @@
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/task_runner_events.h>
 #include <intravenous/runtime/lane_graph.h>
 
@@ -103,7 +104,7 @@ private:
     std::unordered_set<std::string> pending_rebuild_instance_ids;
     std::vector<TimelineLaneBatchUpdate> pending_timeline_batches;
     std::uint64_t current_update_version_index_ = 1;
-    std::unordered_map<LaneId, std::vector<Sample>, LaneIdHash> sample_output_blocks_;
+    std::unordered_map<LaneId, OwnedSampleBlock, LaneIdHash> sample_output_blocks_;
     std::unordered_map<LaneId, std::vector<TimedEvent>, LaneIdHash> event_output_blocks_;
 
     static std::vector<DesiredGraphInputPort> graph_input_port_descriptors_for(
@@ -197,9 +198,9 @@ private:
     void queue_timeline_batch_locked(TimelineLaneBatchUpdate const &batch);
     std::vector<TimelineLaneBatchUpdate> take_pending_timeline_batches_locked();
     void apply_timeline_batch(TimelineLaneBatchUpdate const &batch);
-    void publish_sample_output_block(LaneId lane, std::span<Sample const> block);
+    void publish_sample_output_block(LaneId lane, BorrowedSampleBlock const &block);
     void publish_event_output_block(LaneId lane, std::span<TimedEvent const> events);
-    std::vector<Sample> sample_output_block(LaneId lane) const;
+    OwnedSampleBlock sample_output_block(LaneId lane) const;
     std::vector<TimedEvent> event_output_block(LaneId lane) const;
 
 public:
@@ -226,9 +227,9 @@ public:
     BuilderCompletionDiff complete_builder(
         std::string const &instance_id,
         GraphBuilder &builder);
-    void handle_sample_block_published(LaneId lane, std::span<Sample const> block);
+    void handle_sample_block_published(LaneId lane, BorrowedSampleBlock const &block);
     void handle_event_block_published(LaneId lane, std::span<TimedEvent const> events);
-    std::vector<Sample> handle_sample_block_requested(LaneId lane) const;
+    OwnedSampleBlock handle_sample_block_requested(LaneId lane) const;
     std::vector<TimedEvent> handle_event_block_requested(LaneId lane) const;
 };
 } // namespace iv

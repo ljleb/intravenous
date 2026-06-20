@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/lane_node/channels.h>
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/sample.h>
@@ -45,6 +46,11 @@ namespace iv {
 
     struct SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest {
         size_t compiled_sample_cache_chunk_size_multiplier = 0;
+    };
+
+    struct SetTimelineLaneSampleChannelTypeRequest {
+        std::uint64_t lane_id = 0;
+        ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
     };
 
     struct OpenLaneViewRpcRequest {
@@ -101,6 +107,7 @@ namespace iv {
         DeleteIvModuleInstanceRequest,
         SetIvModuleInstanceDefaultSilenceTtlSamplesRequest,
         SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest,
+        SetTimelineLaneSampleChannelTypeRequest,
         OpenLaneViewRpcRequest,
         UpdateLaneViewRpcRequest,
         SetSampleInputValueRequest,
