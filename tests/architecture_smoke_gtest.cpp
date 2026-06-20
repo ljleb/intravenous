@@ -1413,6 +1413,24 @@ TEST(ArchitectureSmoke, TimelineBatchCanOverrideSampleLaneChannelType)
     EXPECT_EQ(timeline.lane_sample_channel_type(lane), ChannelTypeId::mono);
 }
 
+TEST(ArchitectureSmoke, TimelineBatchDefaultsSampleLaneChannelTypeToStereoWhenOmitted)
+{
+    Timeline timeline;
+    LaneId const lane{43};
+    timeline.apply_lane_batch(TimelineLaneBatchUpdate{
+        .upserts = {
+            TimelineLaneUpsert{
+                .lane = lane,
+                .make_node = [] {
+                    return TypeErasedLaneNode(KnobLaneNode{});
+                },
+            },
+        },
+    });
+
+    EXPECT_EQ(timeline.lane_sample_channel_type(lane), ChannelTypeId::stereo);
+}
+
 TEST(ArchitectureSmoke, PolyphonicMixMergesEventLanesInTimeOrder)
 {
     std::vector<size_t> event_times;

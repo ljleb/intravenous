@@ -1107,12 +1107,28 @@ OwnedSampleBlock TimelineExecution::read_compiled_sample_block_locked(LaneId lan
                     continue;
                 }
 
-                auto const source_offset = (supported_copy_start - chunk_start) * channels;
-                auto const dest_offset = (supported_copy_start - request_start) * channels;
-                auto const count = (supported_copy_end - supported_copy_start) * channels;
-                std::ranges::copy(
-                    std::span<Sample const>(chunk_it->second).subspan(source_offset, count),
-                    result.begin() + static_cast<std::ptrdiff_t>(dest_offset));
+                if (output_layout.sample_layout == SampleStreamLayout::interleaved) {
+                    auto const source_offset =
+                        (supported_copy_start - chunk_start) * channels;
+                    auto const dest_offset =
+                        (supported_copy_start - request_start) * channels;
+                    auto const count =
+                        (supported_copy_end - supported_copy_start) * channels;
+                    std::ranges::copy(
+                        std::span<Sample const>(chunk_it->second).subspan(source_offset, count),
+                        result.begin() + static_cast<std::ptrdiff_t>(dest_offset));
+                } else {
+                    auto const source_frame_offset = supported_copy_start - chunk_start;
+                    auto const dest_frame_offset = supported_copy_start - request_start;
+                    auto const frame_count = supported_copy_end - supported_copy_start;
+                    for (size_t channel = 0; channel < channels; ++channel) {
+                        auto const source_offset = channel * chunk_size + source_frame_offset;
+                        auto const dest_offset = channel * block_size_ + dest_frame_offset;
+                        std::ranges::copy(
+                            std::span<Sample const>(chunk_it->second).subspan(source_offset, frame_count),
+                            result.begin() + static_cast<std::ptrdiff_t>(dest_offset));
+                    }
+                }
             }
         }
     }

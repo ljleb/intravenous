@@ -11,6 +11,7 @@
 #include <queue>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace {
     struct TaskState {
@@ -114,6 +115,143 @@ namespace {
         }
         return values;
     }
+
+    std::vector<iv::Sample> raw_samples(iv::BorrowedSampleBlock const& block)
+    {
+        return std::vector<iv::Sample>(block.samples.begin(), block.samples.end());
+    }
+
+    std::vector<iv::Sample> raw_samples(iv::OwnedSampleBlock const& block)
+    {
+        return block.samples;
+    }
+
+    std::vector<std::vector<iv::Sample>> per_channel_values(iv::BorrowedSampleBlock const& block)
+    {
+        auto const view = block.view();
+        std::vector<std::vector<iv::Sample>> values(view.channels());
+        for (size_t channel = 0; channel < view.channels(); ++channel) {
+            values[channel].reserve(view.frames());
+            for (size_t frame = 0; frame < view.frames(); ++frame) {
+                values[channel].push_back(view.get(frame, channel));
+            }
+        }
+        return values;
+    }
+
+    std::vector<std::vector<iv::Sample>> per_channel_values(iv::OwnedSampleBlock const& block)
+    {
+        auto const view = block.view();
+        std::vector<std::vector<iv::Sample>> values(view.channels());
+        for (size_t channel = 0; channel < view.channels(); ++channel) {
+            values[channel].reserve(view.frames());
+            for (size_t frame = 0; frame < view.frames(); ++frame) {
+                values[channel].push_back(view.get(frame, channel));
+            }
+        }
+        return values;
+    }
+
+    struct TestPatternRealtimeSampleLaneNode {
+        iv::SampleStreamLayout layout = iv::SampleStreamLayout::planar;
+        std::vector<iv::Sample> left { 1.0f, 2.0f, 3.0f, 4.0f };
+        std::vector<iv::Sample> right { 10.0f, 20.0f, 30.0f, 40.0f };
+
+        iv::RealtimeSampleLaneOutputConfig output() const
+        {
+            return {
+                .name = "samples",
+                .sample_layout = layout,
+            };
+        }
+
+        void tick_block_realtime(iv::RealtimeLaneTickContext<TestPatternRealtimeSampleLaneNode>& ctx) const
+        {
+            auto const out = ctx.out().block_view();
+            for (size_t frame = 0; frame < out.frames(); ++frame) {
+                out.set(frame, 0, left[frame % left.size()]);
+                if (out.channels() > 1) {
+                    out.set(frame, 1, right[frame % right.size()]);
+                }
+            }
+        }
+    };
+
+    struct TestPassthroughRealtimeSampleLaneNode {
+        iv::SampleStreamLayout input_layout = iv::SampleStreamLayout::planar;
+        iv::SampleStreamLayout output_layout = iv::SampleStreamLayout::planar;
+
+        std::array<iv::RealtimeSampleLaneInputConfig, 1> realtime_sample_inputs() const
+        {
+            return {{
+                {
+                    .name = "samples",
+                    .sample_layout = input_layout,
+                }
+            }};
+        }
+
+        iv::RealtimeSampleLaneOutputConfig output() const
+        {
+            return {
+                .name = "samples",
+                .sample_layout = output_layout,
+            };
+        }
+
+        void tick_block_realtime(iv::RealtimeLaneTickContext<TestPassthroughRealtimeSampleLaneNode>& ctx) const
+        {
+            ctx.out().write_block(ctx.realtime_sample_input(0).block_view());
+        }
+    };
+
+    struct TestPatternCompiledSampleLaneNode {
+        iv::SampleStreamLayout layout = iv::SampleStreamLayout::planar;
+        size_t support_start = 0;
+        size_t support_end = 4096;
+        int* tick_count = nullptr;
+        iv::Sample right_bias = 100.0f;
+
+        iv::CompiledSampleLaneOutputConfig output() const
+        {
+            return {
+                .name = "samples",
+                .sample_layout = layout,
+            };
+        }
+
+        std::vector<iv::CompiledSupportRange> compiled_support_ranges(
+            iv::CompiledSupportContext<TestPatternCompiledSampleLaneNode>&) const
+        {
+            return { iv::CompiledSupportRange{
+                .start_index = support_start,
+                .end_index = support_end,
+            }};
+        }
+
+        void tick_block_compiled(iv::CompiledLaneTickContext<TestPatternCompiledSampleLaneNode>& ctx)
+        {
+            if (tick_count) {
+                *tick_count += 1;
+            }
+            auto const frames = ctx.sample_count();
+            auto const layout_value = ctx.out().channel_layout;
+            std::vector<iv::Sample> samples(iv::sample_storage_size(layout_value, frames), iv::Sample{});
+            auto const block = iv::SampleBlockView<iv::Sample>(samples, layout_value, frames);
+            for (size_t frame = 0; frame < frames; ++frame) {
+                block.set(frame, 0, static_cast<iv::Sample>(ctx.start_index() + frame));
+                if (block.channels() > 1) {
+                    block.set(
+                        frame,
+                        1,
+                        static_cast<iv::Sample>(right_bias + ctx.start_index() + frame));
+                }
+            }
+            ctx.out().write_block(
+                ctx.start_index(),
+                iv::SampleBlockView<iv::Sample const>(samples, layout_value, frames));
+        }
+    };
 
     struct TestCompiledSampleSourceLaneNode {
         int* tick_count = nullptr;
@@ -537,4 +675,350 @@ TEST(TimelineExecution, RejectsZeroChunkSizeMultiplier)
     EXPECT_THROW(
         (void)iv::TimelineExecution(8, 0),
         std::runtime_error);
+}
+
+TEST(TimelineExecution, ConvertsMonoPlanarToStereoInterleaved)
+{
+    iv::Timeline timeline;
+    iv::LaneId source {};
+    iv::LaneId sink {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        source = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                .layout = iv::SampleStreamLayout::planar,
+                .left = { 1.0f, 2.0f, 3.0f, 4.0f },
+            }),
+            {},
+            iv::ChannelTypeId::mono);
+        sink = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPassthroughRealtimeSampleLaneNode{
+                .input_layout = iv::SampleStreamLayout::interleaved,
+                .output_layout = iv::SampleStreamLayout::interleaved,
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+        graph.connect(source, sink, iv::realtime_sample_input());
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+    harness.run_once();
+
+    auto const sink_block = execution.realtime_sample_block(sink);
+    EXPECT_EQ(sink_block.channel_layout.channel_type, iv::ChannelTypeId::stereo);
+    EXPECT_EQ(sink_block.channel_layout.sample_layout, iv::SampleStreamLayout::interleaved);
+    EXPECT_EQ(
+        raw_samples(sink_block),
+        (std::vector<iv::Sample>{ 1.0f, 1.0f, 2.0f, 2.0f, 3.0f, 3.0f, 4.0f, 4.0f }));
+}
+
+TEST(TimelineExecution, ConvertsStereoInterleavedToMonoPlanar)
+{
+    iv::Timeline timeline;
+    iv::LaneId source {};
+    iv::LaneId sink {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        source = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                .layout = iv::SampleStreamLayout::interleaved,
+                .left = { 1.0f, 2.0f, 3.0f, 4.0f },
+                .right = { 9.0f, 10.0f, 11.0f, 12.0f },
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+        sink = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPassthroughRealtimeSampleLaneNode{
+                .input_layout = iv::SampleStreamLayout::planar,
+                .output_layout = iv::SampleStreamLayout::planar,
+            }),
+            {},
+            iv::ChannelTypeId::mono);
+        graph.connect(source, sink, iv::realtime_sample_input());
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+    harness.run_once();
+
+    auto const sink_block = execution.realtime_sample_block(sink);
+    EXPECT_EQ(sink_block.channel_layout.channel_type, iv::ChannelTypeId::mono);
+    EXPECT_EQ(sink_block.channel_layout.sample_layout, iv::SampleStreamLayout::planar);
+    EXPECT_EQ(raw_samples(sink_block), (std::vector<iv::Sample>{ 5.0f, 6.0f, 7.0f, 8.0f }));
+}
+
+TEST(TimelineExecution, OneStereoSourceFeedsMultipleConsumerLayouts)
+{
+    iv::Timeline timeline;
+    iv::LaneId source {};
+    iv::LaneId planar_sink {};
+    iv::LaneId interleaved_sink {};
+    iv::LaneId mono_sink {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        source = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                .layout = iv::SampleStreamLayout::planar,
+                .left = { 1.0f, 2.0f, 3.0f, 4.0f },
+                .right = { 10.0f, 20.0f, 30.0f, 40.0f },
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+        planar_sink = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPassthroughRealtimeSampleLaneNode{
+                .input_layout = iv::SampleStreamLayout::planar,
+                .output_layout = iv::SampleStreamLayout::planar,
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+        interleaved_sink = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPassthroughRealtimeSampleLaneNode{
+                .input_layout = iv::SampleStreamLayout::interleaved,
+                .output_layout = iv::SampleStreamLayout::interleaved,
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+        mono_sink = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPassthroughRealtimeSampleLaneNode{
+                .input_layout = iv::SampleStreamLayout::planar,
+                .output_layout = iv::SampleStreamLayout::planar,
+            }),
+            {},
+            iv::ChannelTypeId::mono);
+        graph.connect(source, planar_sink, iv::realtime_sample_input());
+        graph.connect(source, interleaved_sink, iv::realtime_sample_input());
+        graph.connect(source, mono_sink, iv::realtime_sample_input());
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+    harness.run_once();
+
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(planar_sink)),
+        (std::vector<iv::Sample>{ 1.0f, 2.0f, 3.0f, 4.0f, 10.0f, 20.0f, 30.0f, 40.0f }));
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(interleaved_sink)),
+        (std::vector<iv::Sample>{ 1.0f, 10.0f, 2.0f, 20.0f, 3.0f, 30.0f, 4.0f, 40.0f }));
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(mono_sink)),
+        (std::vector<iv::Sample>{ 5.5f, 11.0f, 16.5f, 22.0f }));
+}
+
+TEST(TimelineExecution, MixedLayoutFanInSumsAfterConversion)
+{
+    iv::Timeline timeline;
+    iv::LaneId mono_source {};
+    iv::LaneId stereo_source {};
+    iv::LaneId sink {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        mono_source = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                .layout = iv::SampleStreamLayout::planar,
+                .left = { 1.0f, 2.0f, 3.0f, 4.0f },
+            }),
+            {},
+            iv::ChannelTypeId::mono);
+        stereo_source = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                .layout = iv::SampleStreamLayout::interleaved,
+                .left = { 10.0f, 20.0f, 30.0f, 40.0f },
+                .right = { 100.0f, 200.0f, 300.0f, 400.0f },
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+        sink = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPassthroughRealtimeSampleLaneNode{
+                .input_layout = iv::SampleStreamLayout::planar,
+                .output_layout = iv::SampleStreamLayout::planar,
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+        graph.connect(mono_source, sink, iv::realtime_sample_input());
+        graph.connect(stereo_source, sink, iv::realtime_sample_input());
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+    harness.run_once();
+
+    auto const sink_block = execution.realtime_sample_block(sink);
+    EXPECT_EQ(
+        per_channel_values(sink_block),
+        (std::vector<std::vector<iv::Sample>>{
+            { 11.0f, 22.0f, 33.0f, 44.0f },
+            { 101.0f, 202.0f, 303.0f, 404.0f },
+        }));
+    EXPECT_EQ(
+        raw_samples(sink_block),
+        (std::vector<iv::Sample>{ 11.0f, 22.0f, 33.0f, 44.0f, 101.0f, 202.0f, 303.0f, 404.0f }));
+}
+
+TEST(TimelineExecution, ReusesStereoInterleavedCompiledChunksWithinChunkBoundaries)
+{
+    iv::Timeline timeline;
+    int compiled_ticks = 0;
+    auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
+        return graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternCompiledSampleLaneNode{
+                .layout = iv::SampleStreamLayout::interleaved,
+                .support_start = 8,
+                .support_end = 24,
+                .tick_count = &compiled_ticks,
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+    });
+
+    iv::TimelineExecution execution(4, 2);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    auto const first_block = execution.compiled_sample_block(compiled_source, 8);
+    EXPECT_EQ(
+        raw_samples(first_block),
+        (std::vector<iv::Sample>{ 8.0f, 108.0f, 9.0f, 109.0f, 10.0f, 110.0f, 11.0f, 111.0f }));
+    EXPECT_EQ(compiled_ticks, 1);
+
+    auto const same_chunk_block = execution.compiled_sample_block(compiled_source, 12);
+    EXPECT_EQ(
+        raw_samples(same_chunk_block),
+        (std::vector<iv::Sample>{ 12.0f, 112.0f, 13.0f, 113.0f, 14.0f, 114.0f, 15.0f, 115.0f }));
+    EXPECT_EQ(compiled_ticks, 1);
+
+    auto const next_chunk_block = execution.compiled_sample_block(compiled_source, 16);
+    EXPECT_EQ(
+        raw_samples(next_chunk_block),
+        (std::vector<iv::Sample>{ 16.0f, 116.0f, 17.0f, 117.0f, 18.0f, 118.0f, 19.0f, 119.0f }));
+    EXPECT_EQ(compiled_ticks, 2);
+}
+
+TEST(TimelineExecution, StereoSparseCompiledSupportFillsUnsupportedRemainderWithDefaults)
+{
+    iv::Timeline timeline;
+    int compiled_ticks = 0;
+    auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
+        return graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternCompiledSampleLaneNode{
+                .layout = iv::SampleStreamLayout::planar,
+                .support_start = 8,
+                .support_end = 12,
+                .tick_count = &compiled_ticks,
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    auto const partially_supported = execution.compiled_sample_block(compiled_source, 6);
+    EXPECT_EQ(
+        per_channel_values(partially_supported),
+        (std::vector<std::vector<iv::Sample>>{
+            { 0.0f, 0.0f, 8.0f, 9.0f },
+            { 0.0f, 0.0f, 108.0f, 109.0f },
+        }));
+    EXPECT_EQ(
+        raw_samples(partially_supported),
+        (std::vector<iv::Sample>{ 0.0f, 0.0f, 8.0f, 9.0f, 0.0f, 0.0f, 108.0f, 109.0f }));
+    EXPECT_EQ(compiled_ticks, 1);
+}
+
+TEST(TimelineExecution, ChannelTypeChangeRebuildsDownstreamConversionState)
+{
+    iv::Timeline timeline;
+    iv::LaneId source {};
+    iv::LaneId sink {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        source = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                .layout = iv::SampleStreamLayout::planar,
+                .left = { 4.0f, 8.0f, 12.0f, 16.0f },
+            }),
+            {},
+            iv::ChannelTypeId::mono);
+        sink = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPassthroughRealtimeSampleLaneNode{
+                .input_layout = iv::SampleStreamLayout::planar,
+                .output_layout = iv::SampleStreamLayout::planar,
+            }),
+            {},
+            iv::ChannelTypeId::mono);
+        graph.connect(source, sink, iv::realtime_sample_input());
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+    harness.run_once();
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(sink)),
+        (std::vector<iv::Sample>{ 4.0f, 8.0f, 12.0f, 16.0f }));
+
+    timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate{
+        .upserts = {
+            iv::TimelineLaneUpsert{
+                .lane = source,
+                .make_node = [] {
+                    return iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                        .layout = iv::SampleStreamLayout::planar,
+                        .left = { 4.0f, 8.0f, 12.0f, 16.0f },
+                        .right = { 20.0f, 24.0f, 28.0f, 32.0f },
+                    });
+                },
+                .sample_channel_type = iv::ChannelTypeId::stereo,
+            },
+        },
+    });
+
+    iv::TimelineLanesChanged change {
+        .lane_set_changed = false,
+        .visit_lanes = [&timeline](std::vector<iv::LaneId> const& lanes, iv::TimelineLaneVisitFn const& visit) {
+            timeline.with_graph([&](iv::LaneGraph const& graph) {
+                for (auto const lane : lanes) {
+                    auto const& record = graph.lane(lane);
+                    visit(
+                        lane,
+                        record.node,
+                        record.output,
+                        record.sample_channel_type,
+                        graph.inputs_for(lane),
+                        record.external_task_dependencies);
+                }
+            });
+        },
+        .changed_lanes = { source },
+    };
+    harness.apply(execution.handle_timeline_lanes_changed(change));
+    harness.run_once();
+
+    auto const source_block = execution.realtime_sample_block(source);
+    EXPECT_EQ(source_block.channel_layout.channel_type, iv::ChannelTypeId::stereo);
+    EXPECT_EQ(
+        per_channel_values(source_block),
+        (std::vector<std::vector<iv::Sample>>{
+            { 4.0f, 8.0f, 12.0f, 16.0f },
+            { 20.0f, 24.0f, 28.0f, 32.0f },
+        }));
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(sink)),
+        (std::vector<iv::Sample>{ 12.0f, 16.0f, 20.0f, 24.0f }));
 }
