@@ -210,7 +210,7 @@ TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     ASSERT_GE(witness.timeline_batches.size(), 1u);
     size_t upsert_count = 0;
@@ -232,7 +232,7 @@ TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
     size_t created_count = 0;
     for (auto const &batch : witness.timeline_batches) {
         created_count += batch.upserts.size();
@@ -242,7 +242,7 @@ TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .deleted_instance_ids = {"instance:1"},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 2});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 2});
 
     ASSERT_GE(witness.timeline_batches.size(), 1u);
     size_t removal_count = 0;
@@ -261,7 +261,7 @@ TEST_F(GraphInputLanesTest, UpdatedInstancePublishesTimelineBatch)
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     ASSERT_GE(witness.timeline_batches.size(), 1u);
     size_t upsert_count = 0;
@@ -315,7 +315,7 @@ TEST_F(GraphInputLanesTest, SampleValueChangesDoNotQueueRebuilds)
         .value = iv::Sample{0.5f},
     });
 
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
     EXPECT_TRUE(witness.rebuild_requests.empty());
 }
 
@@ -353,7 +353,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDepe
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
 
     witness.timeline_batches.clear();
     witness.rebuild_requests.clear();
@@ -364,7 +364,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDepe
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
 
@@ -423,7 +423,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputTimelineStatePublishesTimelineDep
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
 
     witness.timeline_batches.clear();
     witness.rebuild_requests.clear();
@@ -434,7 +434,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputTimelineStatePublishesTimelineDep
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
 
@@ -467,7 +467,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
 
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
         .node_id = "node-1",
@@ -475,7 +475,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     witness.timeline_batches.clear();
     witness.rebuild_requests.clear();
@@ -486,7 +486,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::default_,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 2});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 2});
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
 
@@ -520,7 +520,7 @@ TEST_F(GraphInputLanesTest, VacantEventInputsDefaultToLogicalFollowWithTimelineD
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     }, &ack);
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     ASSERT_EQ(
         ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
         1u);
@@ -542,7 +542,7 @@ TEST_F(GraphInputLanesTest, ConnectedEventInputsDefaultToDisconnectedWithoutTime
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     }, &ack);
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     EXPECT_EQ(
         ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
         0u);
@@ -562,7 +562,7 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputTimelineStatePublishesTimelineDepe
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     witness.timeline_batches.clear();
     witness.rebuild_requests.clear();
 
@@ -572,7 +572,7 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputTimelineStatePublishesTimelineDepe
         .input_ordinal = 0,
         .state = iv::ProjectEventInputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     EXPECT_FALSE(witness.timeline_batches.empty());
 
@@ -605,7 +605,7 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputDefaultClearsExplicitTimelineState
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
 
     lanes.set_event_input_state(iv::ProjectSetEventInputStateRequest{
         .node_id = "node-1",
@@ -613,7 +613,7 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputDefaultClearsExplicitTimelineState
         .input_ordinal = 0,
         .state = iv::ProjectEventInputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     witness.timeline_batches.clear();
     witness.rebuild_requests.clear();
@@ -624,7 +624,7 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputDefaultClearsExplicitTimelineState
         .input_ordinal = 0,
         .state = iv::ProjectEventInputState::default_,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 2});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 2});
 
     EXPECT_FALSE(witness.timeline_batches.empty());
 
@@ -675,7 +675,7 @@ TEST_F(GraphInputLanesTest, DisconnectedOutputsCreateNoOutputLanes)
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     for (auto const &batch : witness.timeline_batches) {
         EXPECT_FALSE(batch_has_output_lane(batch, "dsp_graph.sample"));
@@ -695,7 +695,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleOutputTimelineStateCreatesAggregationLa
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     witness.timeline_batches.clear();
     lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
         .node_id = "node-1",
@@ -703,7 +703,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleOutputTimelineStateCreatesAggregationLa
         .output_ordinal = 0,
         .state = iv::ProjectSampleOutputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
     iv::TimelineLaneUpsert const *upsert = nullptr;
@@ -742,7 +742,7 @@ TEST_F(GraphInputLanesTest, SettingSampleOutputStateMarksInstanceRebuild)
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     witness.rebuild_requests.clear();
 
     lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
@@ -751,7 +751,7 @@ TEST_F(GraphInputLanesTest, SettingSampleOutputStateMarksInstanceRebuild)
         .output_ordinal = 0,
         .state = iv::ProjectSampleOutputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     ASSERT_EQ(witness.rebuild_requests.size(), 1u);
     ASSERT_EQ(witness.rebuild_requests.front().size(), 1u);
@@ -771,7 +771,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLan
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     witness.timeline_batches.clear();
     lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
         .node_id = "node-1",
@@ -779,7 +779,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLan
         .output_ordinal = 0,
         .state = iv::ProjectSampleOutputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
     iv::TimelineLaneUpsert const *upsert = nullptr;
@@ -818,7 +818,7 @@ TEST_F(GraphInputLanesTest, TogglingSampleOutputBackToDisconnectedRemovesLane)
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
 
     lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
         .node_id = "node-1",
@@ -826,7 +826,7 @@ TEST_F(GraphInputLanesTest, TogglingSampleOutputBackToDisconnectedRemovesLane)
         .output_ordinal = 0,
         .state = iv::ProjectSampleOutputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
     iv::TimelineLaneUpsert const *created = nullptr;
     ASSERT_TRUE(batch_has_output_lane(
         witness.timeline_batches.back(),
@@ -841,7 +841,7 @@ TEST_F(GraphInputLanesTest, TogglingSampleOutputBackToDisconnectedRemovesLane)
         .output_ordinal = 0,
         .state = iv::ProjectSampleOutputState::disconnected,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 2});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 2});
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
     auto const &removals = witness.timeline_batches.front().removals;
@@ -861,7 +861,7 @@ TEST_F(GraphInputLanesTest, SampleOutputLanesRemainMonoAcrossRebuild)
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 0});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     witness.timeline_batches.clear();
 
     lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
@@ -870,7 +870,7 @@ TEST_F(GraphInputLanesTest, SampleOutputLanesRemainMonoAcrossRebuild)
         .output_ordinal = 0,
         .state = iv::ProjectSampleOutputState::timeline_lane,
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     iv::TimelineLaneUpsert const *created = nullptr;
     for (auto const &batch : witness.timeline_batches) {
@@ -892,7 +892,7 @@ TEST_F(GraphInputLanesTest, SampleOutputLanesRemainMonoAcrossRebuild)
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
     });
-    lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 2});
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 2});
 
     iv::TimelineLaneUpsert const *rebuilt_upsert = nullptr;
     for (auto const &batch : witness.timeline_batches) {

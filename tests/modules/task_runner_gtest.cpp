@@ -149,9 +149,9 @@ namespace {
     PassFinishedWitness *g_pass_finished_witness = nullptr;
 
     IV_SUBSCRIBE_LINKER_EVENT(
-        iv::TasksRunnerPassFinishedEvent,
-        iv_runtime_task_runner_pass_finished_event,
-        +[](iv::TasksRunnerPassFinished const &finished) {
+        iv::TasksRunnerAfterPassEvent,
+        iv_runtime_task_runner_after_pass_event,
+        +[](iv::TasksRunnerAfterPass const &finished) {
             if (g_pass_finished_witness != nullptr) {
                 g_pass_finished_witness->push(finished.graph_revision);
             }

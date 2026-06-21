@@ -40,6 +40,7 @@ namespace iv {
         { const_device.config() } -> std::same_as<RenderConfig const&>;
         { device.wait_for_block_request() } -> std::same_as<std::span<Sample>>;
         { device.submit_response() } -> std::same_as<void>;
+        { device.request_shutdown() } -> std::same_as<void>;
     };
 
     class AudioOutputDevice {
@@ -48,6 +49,7 @@ namespace iv {
         RenderConfig const& (*_config)(void const*) noexcept;
         std::span<Sample> (*_wait_for_block_request)(void*);
         void (*_submit_response)(void*);
+        void (*_request_shutdown)(void*);
 
         template<AudioOutputDeviceBackend Device>
         void bind_device() noexcept
@@ -63,6 +65,9 @@ namespace iv {
             };
             _submit_response = +[](void* self) {
                 static_cast<Device*>(self)->submit_response();
+            };
+            _request_shutdown = +[](void* self) {
+                static_cast<Device*>(self)->request_shutdown();
             };
         }
 
@@ -98,12 +103,14 @@ namespace iv {
         , _config(other._config)
         , _wait_for_block_request(other._wait_for_block_request)
         , _submit_response(other._submit_response)
+        , _request_shutdown(other._request_shutdown)
         {
             other._state = nullptr;
             other._destroy = nullptr;
             other._config = nullptr;
             other._wait_for_block_request = nullptr;
             other._submit_response = nullptr;
+            other._request_shutdown = nullptr;
         }
 
         AudioOutputDevice& operator=(AudioOutputDevice&& other) noexcept
@@ -120,11 +127,13 @@ namespace iv {
             _config = other._config;
             _wait_for_block_request = other._wait_for_block_request;
             _submit_response = other._submit_response;
+            _request_shutdown = other._request_shutdown;
             other._state = nullptr;
             other._destroy = nullptr;
             other._config = nullptr;
             other._wait_for_block_request = nullptr;
             other._submit_response = nullptr;
+            other._request_shutdown = nullptr;
             return *this;
         }
 
@@ -153,6 +162,12 @@ namespace iv {
             if (!operator bool()) return;
             _submit_response(_state);
         }
+
+        void request_shutdown()
+        {
+            if (!operator bool()) return;
+            _request_shutdown(_state);
+        }
     };
 
     template<typename Device>
@@ -160,6 +175,7 @@ namespace iv {
         { const_device.config() } -> std::same_as<RenderConfig const&>;
         { device.wait_for_captured_block() } -> std::same_as<AudioInputBlock>;
         { device.release_captured_block() } -> std::same_as<void>;
+        { device.request_shutdown() } -> std::same_as<void>;
     };
 
     class AudioInputDevice {
@@ -168,6 +184,7 @@ namespace iv {
         RenderConfig const& (*_config)(void const*) noexcept = nullptr;
         AudioInputBlock (*_wait_for_captured_block)(void*) = nullptr;
         void (*_release_captured_block)(void*) = nullptr;
+        void (*_request_shutdown)(void*) = nullptr;
 
         template<AudioInputDeviceBackend Device>
         void bind_device() noexcept
@@ -183,6 +200,9 @@ namespace iv {
             };
             _release_captured_block = +[](void* self) {
                 static_cast<Device*>(self)->release_captured_block();
+            };
+            _request_shutdown = +[](void* self) {
+                static_cast<Device*>(self)->request_shutdown();
             };
         }
 
@@ -218,12 +238,14 @@ namespace iv {
         , _config(other._config)
         , _wait_for_captured_block(other._wait_for_captured_block)
         , _release_captured_block(other._release_captured_block)
+        , _request_shutdown(other._request_shutdown)
         {
             other._state = nullptr;
             other._destroy = nullptr;
             other._config = nullptr;
             other._wait_for_captured_block = nullptr;
             other._release_captured_block = nullptr;
+            other._request_shutdown = nullptr;
         }
 
         AudioInputDevice& operator=(AudioInputDevice&& other) noexcept
@@ -240,11 +262,13 @@ namespace iv {
             _config = other._config;
             _wait_for_captured_block = other._wait_for_captured_block;
             _release_captured_block = other._release_captured_block;
+            _request_shutdown = other._request_shutdown;
             other._state = nullptr;
             other._destroy = nullptr;
             other._config = nullptr;
             other._wait_for_captured_block = nullptr;
             other._release_captured_block = nullptr;
+            other._request_shutdown = nullptr;
             return *this;
         }
 
@@ -272,6 +296,12 @@ namespace iv {
         {
             if (!operator bool()) return;
             _release_captured_block(_state);
+        }
+
+        void request_shutdown()
+        {
+            if (!operator bool()) return;
+            _request_shutdown(_state);
         }
     };
 }

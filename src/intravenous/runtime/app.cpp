@@ -1,7 +1,11 @@
 #include <intravenous/runtime/app.h>
 
 #include <intravenous/compat.h>
+#include <intravenous/devices/miniaudio_device.h>
 #include <intravenous/juce/vst_runtime.h>
+#include <intravenous/runtime/audio_device_lanes.h>
+#include <intravenous/runtime/audio_device_lanes_timeline_bridge.h>
+#include <intravenous/runtime/audio_device_lanes_timeline_execution_bridge.h>
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_iv_module_instances_bridge.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
@@ -37,6 +41,7 @@
 #include <intravenous/runtime/startup_config.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/task_runner.h>
+#include <intravenous/runtime/task_runner_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/task_runner_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
@@ -48,6 +53,8 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <optional>
+#include <algorithm>
 
 namespace iv {
     namespace {
@@ -77,6 +84,33 @@ namespace iv {
                 startup.execution.block_size,
                 startup.execution.compiled_sample_cache_chunk_size_multiplier);
             IvModuleInstancesExecution iv_module_instances_execution(startup.execution.block_size);
+            std::optional<AudioOutputDevice> output_device;
+            std::optional<AudioInputDevice> input_device;
+            try {
+                output_device.emplace(make_miniaudio_output_device(RenderConfig{
+                    .sample_rate = startup.execution.sample_rate,
+                    .num_channels = 2,
+                    .max_block_frames = std::max<size_t>(startup.execution.block_size * 4, 4096),
+                    .preferred_block_size = startup.execution.block_size,
+                }));
+            } catch (std::exception const &e) {
+                std::cerr << "Intravenous audio output disabled: " << e.what() << '\n';
+            }
+            try {
+                input_device.emplace(make_miniaudio_input_device(RenderConfig{
+                    .sample_rate = startup.execution.sample_rate,
+                    .num_channels = 2,
+                    .max_block_frames = std::max<size_t>(startup.execution.block_size * 4, 4096),
+                    .preferred_block_size = startup.execution.block_size,
+                }));
+            } catch (std::exception const &e) {
+                std::cerr << "Intravenous audio input disabled: " << e.what() << '\n';
+            }
+            AudioDeviceLanes audio_device_lanes(
+                startup.execution.sample_rate,
+                startup.execution.block_size,
+                std::move(output_device),
+                std::move(input_device));
             LaneFilters lane_filters;
             LaneViews lane_views;
             LanesVisualization lanes_visualization(
@@ -84,6 +118,9 @@ namespace iv {
                 16,
                 startup.execution.block_size);
             IvModuleSourceIntrospection introspection;
+            bind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
+            bind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, timeline_execution);
+            bind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
             bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
             bind_task_runner_graph_input_lanes_bridge(graph_input_lanes);
             bind_timeline_execution_task_runner_bridge(timeline_execution, task_runner);
@@ -105,6 +142,7 @@ namespace iv {
             bind_lanes_visualization_timeline_bridge(lanes_visualization, timeline);
             bind_task_runner_lanes_visualization_bridge(lanes_visualization);
             bind_timeline_execution_lanes_visualization_bridge(timeline_execution);
+            audio_device_lanes.bind();
 
             SocketRpcServer server(options.workspace_root, options.rpc_fd);
             std::function<void()> shutdown = [&]() {
@@ -127,6 +165,7 @@ namespace iv {
             server.start();
             std::cout << "Intravenous server connected on rpc fd " << options.rpc_fd << '\n';
             server.wait();
+            audio_device_lanes.request_shutdown();
             unbind_socket_rpc_notification_bridge(server);
             unbind_socket_rpc_lane_views_bridge(lane_views);
             unbind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
@@ -134,6 +173,9 @@ namespace iv {
             unbind_socket_rpc_iv_module_source_introspection_bridge(
                 introspection,
                 graph_input_lanes);
+            unbind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
+            unbind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, timeline_execution);
+            unbind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
             unbind_timeline_execution_lanes_visualization_bridge(timeline_execution);
             unbind_task_runner_lanes_visualization_bridge(lanes_visualization);
             unbind_lanes_visualization_timeline_bridge(lanes_visualization, timeline);

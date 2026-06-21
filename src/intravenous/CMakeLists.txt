@@ -149,6 +149,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_runtime_iv_module_reload_events
         intravenous_runtime_iv_module_source_introspection_events
         intravenous_runtime_graph_input_lanes_events
+        intravenous_runtime_audio_device_lanes_events
         intravenous_runtime_lane_filters_events
         intravenous_runtime_lane_views_events
         intravenous_runtime_lanes_visualization_events
@@ -247,6 +248,10 @@ iv_add_linker_event_object(
     runtime/graph_input_lanes_linker_events.cpp
 )
 iv_add_linker_event_object(
+    intravenous_runtime_audio_device_lanes_events
+    runtime/audio_device_lanes_events.cpp
+)
+iv_add_linker_event_object(
     intravenous_runtime_lane_filters_events
     runtime/lane_filters_events.cpp
 )
@@ -284,6 +289,10 @@ iv_add_linker_event_object(
 )
 
 add_library(intravenous_tooling_runtime_objects OBJECT
+    runtime/audio_device_lanes.cpp
+    runtime/audio_device_lanes_timeline_bridge.cpp
+    runtime/audio_device_lanes_timeline_execution_bridge.cpp
+    runtime/audio_input_synchronizer.cpp
     runtime/config.cpp
     runtime/graph_input_lanes.cpp
     runtime/graph_input_lanes_events.cpp
@@ -324,6 +333,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_server.cpp
     runtime/startup_config.cpp
     runtime/task_runner.cpp
+    runtime/task_runner_audio_device_lanes_bridge.cpp
     runtime/task_runner_graph_input_lanes_bridge.cpp
     runtime/timeline_execution.cpp
     runtime/timeline_execution_lanes_visualization_bridge.cpp

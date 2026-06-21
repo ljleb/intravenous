@@ -134,9 +134,14 @@ namespace iv {
             }
             _cv.notify_all();
         }
+
+        void request_shutdown()
+        {
+            begin_shutdown();
+        }
     };
 
-    inline AudioOutputDevice make_miniaudio_device(RenderConfig config = {})
+    inline AudioOutputDevice make_miniaudio_output_device(RenderConfig config = {})
     {
         return AudioOutputDevice(std::in_place_type<MiniaudioAudioOutputDevice>, std::move(config));
     }
@@ -322,6 +327,11 @@ namespace iv {
             slot.capture_timestamp_seconds = 0.0;
             slot.discontinuous = false;
             _acquired_index.reset();
+        }
+
+        void request_shutdown()
+        {
+            begin_shutdown();
         }
     };
 

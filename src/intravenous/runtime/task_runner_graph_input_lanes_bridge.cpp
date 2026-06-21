@@ -7,18 +7,18 @@ namespace iv {
 namespace {
 GraphInputLanes *bound_lanes = nullptr;
 
-void handle_task_runner_pass_finished(TasksRunnerPassFinished const &finished)
+void handle_task_runner_after_pass(TasksRunnerAfterPass const &finished)
 {
     if (bound_lanes == nullptr) {
         return;
     }
-    bound_lanes->handle_task_runner_pass_finished(finished);
+    bound_lanes->handle_task_runner_after_pass(finished);
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    TasksRunnerPassFinishedEvent,
-    iv_runtime_task_runner_pass_finished_event,
-    handle_task_runner_pass_finished);
+    TasksRunnerAfterPassEvent,
+    iv_runtime_task_runner_after_pass_event,
+    handle_task_runner_after_pass);
 } // namespace
 
 void bind_task_runner_graph_input_lanes_bridge(GraphInputLanes &lanes)

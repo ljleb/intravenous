@@ -510,6 +510,26 @@ void TasksRunner::coordinator_loop()
                 continue;
             }
 
+            auto const current_revision = active_graph_->revision;
+            lock.unlock();
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_task_runner_before_pass_event,
+                TasksRunnerBeforePass{
+                    .graph_revision = current_revision,
+                });
+            lock.lock();
+            if (workers_should_exit_) {
+                return;
+            }
+            if (current_pass_) {
+                continue;
+            }
+            if (pending_graph_ && pending_graph_is_complete_) {
+                active_graph_ = std::move(pending_graph_);
+            }
+            if (active_graph_->compiled_plan.groups.empty()) {
+                continue;
+            }
             current_pass_ = std::make_shared<PassState>(
                 std::const_pointer_cast<GraphVersion const>(active_graph_));
             state_cv_.notify_all();
@@ -529,18 +549,15 @@ void TasksRunner::coordinator_loop()
         if (current_pass_ != pass) {
             continue;
         }
-        auto const finished_revision = pass->graph->revision;
+        auto const current_revision = pass->graph->revision;
+        current_pass_.reset();
         lock.unlock();
         IV_INVOKE_LINKER_EVENT(
-            iv_runtime_task_runner_pass_finished_event,
-            TasksRunnerPassFinished{
-                .graph_revision = finished_revision,
-            });
+            iv_runtime_task_runner_after_pass_event,
+            TasksRunnerAfterPass{
+                .graph_revision = current_revision,
+                });
         lock.lock();
-        if (current_pass_ != pass) {
-            continue;
-        }
-        current_pass_.reset();
     }
 }
 

@@ -225,7 +225,7 @@ public:
         ProjectSetEventOutputStateRequest const &request);
     [[nodiscard]] GraphInputLaneBindings graph_input_lane_bindings(
         ProjectGraphInputLaneBindingsRequest const &request);
-    void handle_task_runner_pass_finished(TasksRunnerPassFinished const &finished);
+    void handle_task_runner_after_pass(TasksRunnerAfterPass const &finished);
     BuilderCompletionDiff complete_builder(
         std::string const &instance_id,
         GraphBuilder &builder);
