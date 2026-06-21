@@ -24,13 +24,13 @@ namespace {
     }
 }
 
-struct TaskRunner::DeclaredTask {
+struct TasksRunner::DeclaredTask {
     std::string id {};
     std::vector<std::string> depends_on {};
     TaskCallback callback {};
 };
 
-struct TaskRunner::ExecutionGroup {
+struct TasksRunner::ExecutionGroup {
     std::vector<std::string> task_ids {};
     std::vector<TaskCallback> callbacks {};
     std::vector<std::size_t> depends_on {};
@@ -38,11 +38,11 @@ struct TaskRunner::ExecutionGroup {
     std::size_t order = 0;
 };
 
-struct TaskRunner::CompiledPlan {
+struct TasksRunner::CompiledPlan {
     std::vector<ExecutionGroup> groups {};
 };
 
-struct TaskRunner::GraphVersion {
+struct TasksRunner::GraphVersion {
     std::uint64_t revision = 0;
     bool is_complete = true;
     std::unordered_map<std::string, DeclaredTask> tasks {};
@@ -50,7 +50,7 @@ struct TaskRunner::GraphVersion {
     CompiledPlan compiled_plan {};
 };
 
-struct TaskRunner::PassState {
+struct TasksRunner::PassState {
     struct ReadyItem {
         std::size_t user_count = 0;
         std::size_t order = 0;
@@ -100,8 +100,8 @@ namespace {
         }
     }
 
-    std::unordered_map<std::string, TaskRunner::DeclaredTask> apply_update(
-        std::shared_ptr<TaskRunner::GraphVersion const> const &base,
+    std::unordered_map<std::string, TasksRunner::DeclaredTask> apply_update(
+        std::shared_ptr<TasksRunner::GraphVersion const> const &base,
         TaskGraphUpdate const &update)
     {
         std::unordered_set<std::string> touched;
@@ -155,7 +155,7 @@ namespace {
             if (has_duplicate_strings(task.depends_on)) {
                 throw std::runtime_error("task '" + task.id + "' declares duplicate dependencies");
             }
-            tasks.emplace(task.id, TaskRunner::DeclaredTask{
+            tasks.emplace(task.id, TasksRunner::DeclaredTask{
                 .id = task.id,
                 .depends_on = task.depends_on,
                 .callback = task.callback,
@@ -183,7 +183,7 @@ namespace {
     }
 
     std::vector<std::string> sorted_task_ids(
-        std::unordered_map<std::string, TaskRunner::DeclaredTask> const &tasks)
+        std::unordered_map<std::string, TasksRunner::DeclaredTask> const &tasks)
     {
         std::vector<std::string> ids;
         ids.reserve(tasks.size());
@@ -201,7 +201,7 @@ namespace {
     };
 
     DeclaredGraphAnalysis analyze_declared_graph(
-        std::unordered_map<std::string, TaskRunner::DeclaredTask> const &tasks,
+        std::unordered_map<std::string, TasksRunner::DeclaredTask> const &tasks,
         std::vector<std::string> const &sorted_ids)
     {
         DeclaredGraphAnalysis analysis;
@@ -259,8 +259,8 @@ namespace {
         return analysis;
     }
 
-    TaskRunner::CompiledPlan compile_execution_plan(
-        std::unordered_map<std::string, TaskRunner::DeclaredTask> const &tasks,
+    TasksRunner::CompiledPlan compile_execution_plan(
+        std::unordered_map<std::string, TasksRunner::DeclaredTask> const &tasks,
         std::vector<std::string> const &sorted_ids)
     {
         auto const analysis = analyze_declared_graph(tasks, sorted_ids);
@@ -313,11 +313,11 @@ namespace {
             }
         }
 
-        TaskRunner::CompiledPlan plan;
+        TasksRunner::CompiledPlan plan;
         plan.groups.reserve(chains.size());
         for (std::size_t group_index = 0; group_index < chains.size(); ++group_index) {
             auto const &chain = chains[group_index];
-            TaskRunner::ExecutionGroup group;
+            TasksRunner::ExecutionGroup group;
             group.order = group_index;
             group.task_ids = chain;
             group.callbacks.reserve(chain.size());
@@ -356,7 +356,7 @@ namespace {
     }
 }
 
-std::shared_ptr<TaskRunner::GraphVersion> TaskRunner::build_graph_version(
+std::shared_ptr<TasksRunner::GraphVersion> TasksRunner::build_graph_version(
     std::shared_ptr<GraphVersion const> const &base,
     TaskGraphUpdate const &update,
     std::uint64_t revision)
@@ -376,7 +376,7 @@ std::shared_ptr<TaskRunner::GraphVersion> TaskRunner::build_graph_version(
     return graph;
 }
 
-TaskRunner::TaskRunner(std::optional<std::size_t> worker_count)
+TasksRunner::TasksRunner(std::optional<std::size_t> worker_count)
   : worker_count_(std::max<std::size_t>(1, worker_count.value_or(std::thread::hardware_concurrency())))
   , active_graph_(std::make_shared<GraphVersion>())
 {
@@ -387,7 +387,7 @@ TaskRunner::TaskRunner(std::optional<std::size_t> worker_count)
     }
 }
 
-TaskRunner::~TaskRunner()
+TasksRunner::~TasksRunner()
 {
     {
         std::unique_lock update_lock(update_mutex_);
@@ -411,7 +411,7 @@ TaskRunner::~TaskRunner()
     }
 }
 
-void TaskRunner::update_tasks(TaskGraphUpdate const &update)
+void TasksRunner::update_tasks(TaskGraphUpdate const &update)
 {
     update_tasks(VersionedTaskGraphUpdate{
         .version_index = 0,
@@ -419,7 +419,7 @@ void TaskRunner::update_tasks(TaskGraphUpdate const &update)
     });
 }
 
-void TaskRunner::update_tasks(VersionedTaskGraphUpdate const &update)
+void TasksRunner::update_tasks(VersionedTaskGraphUpdate const &update)
 {
     std::scoped_lock update_lock(update_mutex_);
 
@@ -461,13 +461,13 @@ void TaskRunner::update_tasks(VersionedTaskGraphUpdate const &update)
     state_cv_.notify_all();
 }
 
-std::uint64_t TaskRunner::active_graph_revision() const
+std::uint64_t TasksRunner::active_graph_revision() const
 {
     std::scoped_lock lock(state_mutex_);
     return active_graph_->revision;
 }
 
-std::optional<std::uint64_t> TaskRunner::pending_graph_revision() const
+std::optional<std::uint64_t> TasksRunner::pending_graph_revision() const
 {
     std::scoped_lock lock(state_mutex_);
     if (!pending_graph_) {
@@ -476,19 +476,19 @@ std::optional<std::uint64_t> TaskRunner::pending_graph_revision() const
     return pending_graph_->revision;
 }
 
-std::vector<std::string> TaskRunner::active_task_ids() const
+std::vector<std::string> TasksRunner::active_task_ids() const
 {
     std::scoped_lock lock(state_mutex_);
     return active_graph_->sorted_task_ids;
 }
 
-std::size_t TaskRunner::active_execution_group_count() const
+std::size_t TasksRunner::active_execution_group_count() const
 {
     std::scoped_lock lock(state_mutex_);
     return active_graph_->compiled_plan.groups.size();
 }
 
-void TaskRunner::coordinator_loop()
+void TasksRunner::coordinator_loop()
 {
     std::unique_lock lock(state_mutex_);
     while (true) {
@@ -533,7 +533,7 @@ void TaskRunner::coordinator_loop()
         lock.unlock();
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_task_runner_pass_finished_event,
-            TaskRunnerPassFinished{
+            TasksRunnerPassFinished{
                 .graph_revision = finished_revision,
             });
         lock.lock();
@@ -544,7 +544,7 @@ void TaskRunner::coordinator_loop()
     }
 }
 
-void TaskRunner::worker_loop()
+void TasksRunner::worker_loop()
 {
     std::unique_lock lock(state_mutex_);
     while (true) {

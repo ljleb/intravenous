@@ -2,6 +2,6 @@
 
 namespace iv {
 IV_DEFINE_LINKER_EVENT(
-    TaskRunnerPassFinishedEvent,
+    TasksRunnerPassFinishedEvent,
     iv_runtime_task_runner_pass_finished_event);
 } // namespace iv

@@ -16,7 +16,7 @@
 #include <vector>
 
 namespace iv {
-struct TaskRunnerPassFinished;
+struct TasksRunnerPassFinished;
 
 class LanesVisualization {
     struct SampleHistory {
@@ -86,7 +86,7 @@ public:
 
     void handle_lane_views_updated(LaneViewResult const &update);
     void handle_lane_view_closed(std::string const &view_id);
-    void handle_task_runner_pass_finished(TaskRunnerPassFinished const &finished);
+    void handle_task_runner_pass_finished(TasksRunnerPassFinished const &finished);
     void publish_now();
 };
 } // namespace iv

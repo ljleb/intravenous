@@ -7,7 +7,7 @@ namespace iv {
 namespace {
 LanesVisualization *bound_visualization = nullptr;
 
-void handle_task_runner_pass_finished(TaskRunnerPassFinished const &finished)
+void handle_task_runner_pass_finished(TasksRunnerPassFinished const &finished)
 {
     if (bound_visualization == nullptr) {
         return;
@@ -16,7 +16,7 @@ void handle_task_runner_pass_finished(TaskRunnerPassFinished const &finished)
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    TaskRunnerPassFinishedEvent,
+    TasksRunnerPassFinishedEvent,
     iv_runtime_task_runner_pass_finished_event,
     handle_task_runner_pass_finished);
 } // namespace

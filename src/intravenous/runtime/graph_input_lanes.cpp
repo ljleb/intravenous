@@ -1949,7 +1949,7 @@ GraphInputLaneBindings GraphInputLanes::graph_input_lane_bindings(
 }
 
 void GraphInputLanes::handle_task_runner_pass_finished(
-    TaskRunnerPassFinished const &finished)
+    TasksRunnerPassFinished const &finished)
 {
     std::vector<std::string> instance_ids;
     std::vector<TimelineLaneBatchUpdate> timeline_batches;

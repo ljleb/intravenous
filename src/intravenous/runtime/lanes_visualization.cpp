@@ -349,7 +349,7 @@ void LanesVisualization::handle_lane_view_closed(std::string const &view_id)
 }
 
 void LanesVisualization::handle_task_runner_pass_finished(
-    TaskRunnerPassFinished const &)
+    TasksRunnerPassFinished const &)
 {
     // Compute which source lanes are currently in use by any active view
     std::unordered_set<uint64_t> used_sample_sources;

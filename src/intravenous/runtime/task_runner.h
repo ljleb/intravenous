@@ -40,7 +40,7 @@ struct VersionedTaskGraphUpdate {
     TaskGraphUpdate update {};
 };
 
-class TaskRunner {
+class TasksRunner {
 public:
     struct DeclaredTask;
     struct ExecutionGroup;
@@ -72,13 +72,13 @@ private:
     void worker_loop();
 
 public:
-    explicit TaskRunner(std::optional<std::size_t> worker_count = std::nullopt);
-    ~TaskRunner();
+    explicit TasksRunner(std::optional<std::size_t> worker_count = std::nullopt);
+    ~TasksRunner();
 
-    TaskRunner(TaskRunner const &) = delete;
-    TaskRunner(TaskRunner &&) = delete;
-    TaskRunner &operator=(TaskRunner const &) = delete;
-    TaskRunner &operator=(TaskRunner &&) = delete;
+    TasksRunner(TasksRunner const &) = delete;
+    TasksRunner(TasksRunner &&) = delete;
+    TasksRunner &operator=(TasksRunner const &) = delete;
+    TasksRunner &operator=(TasksRunner &&) = delete;
 
     void update_tasks(TaskGraphUpdate const &update);
     void update_tasks(VersionedTaskGraphUpdate const &update);

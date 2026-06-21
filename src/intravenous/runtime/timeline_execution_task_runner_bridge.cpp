@@ -7,7 +7,7 @@
 namespace iv {
 namespace {
 TimelineExecution *bound_execution = nullptr;
-TaskRunner *bound_runner = nullptr;
+TasksRunner *bound_runner = nullptr;
 
 void handle_timeline_execution_tasks_changed(VersionedTaskGraphUpdate const &update)
 {
@@ -23,13 +23,13 @@ IV_SUBSCRIBE_LINKER_EVENT(
     handle_timeline_execution_tasks_changed);
 }
 
-void bind_timeline_execution_task_runner_bridge(TimelineExecution &execution, TaskRunner &runner)
+void bind_timeline_execution_task_runner_bridge(TimelineExecution &execution, TasksRunner &runner)
 {
     bound_execution = &execution;
     bound_runner = &runner;
 }
 
-void unbind_timeline_execution_task_runner_bridge(TimelineExecution const &execution, TaskRunner const &runner)
+void unbind_timeline_execution_task_runner_bridge(TimelineExecution const &execution, TasksRunner const &runner)
 {
     if (bound_execution == &execution) {
         bound_execution = nullptr;

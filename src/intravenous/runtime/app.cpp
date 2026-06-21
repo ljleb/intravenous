@@ -72,7 +72,7 @@ namespace iv {
             IvModuleDefinitions iv_module_definitions;
             IvModuleReload iv_module_reload(startup);
             GraphInputLanes graph_input_lanes;
-            TaskRunner task_runner;
+            TasksRunner task_runner;
             TimelineExecution timeline_execution(
                 startup.execution.block_size,
                 startup.execution.compiled_sample_cache_chunk_size_multiplier);

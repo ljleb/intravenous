@@ -47,7 +47,7 @@ struct IntegrationReloadWitness {
 IntegrationReloadWitness *g_integration_reload_witness = nullptr;
 struct IntegrationPassFinishedAction {
     std::mutex mutex;
-    std::function<void(iv::TaskRunnerPassFinished const &)> fn {};
+    std::function<void(iv::TasksRunnerPassFinished const &)> fn {};
 };
 
 IntegrationPassFinishedAction *g_integration_pass_finished_action = nullptr;
@@ -62,13 +62,13 @@ IV_SUBSCRIBE_LINKER_EVENT(
     });
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::TaskRunnerPassFinishedEvent,
+    iv::TasksRunnerPassFinishedEvent,
     iv_runtime_task_runner_pass_finished_event,
-    +[](iv::TaskRunnerPassFinished const &finished) {
+    +[](iv::TasksRunnerPassFinished const &finished) {
         if (g_integration_pass_finished_action == nullptr) {
             return;
         }
-        std::function<void(iv::TaskRunnerPassFinished const &)> fn;
+        std::function<void(iv::TasksRunnerPassFinished const &)> fn;
         {
             std::scoped_lock lock(g_integration_pass_finished_action->mutex);
             fn = std::move(g_integration_pass_finished_action->fn);
@@ -175,7 +175,7 @@ struct TestAudioBufferSinkLaneNode {
 void apply_timeline_batch_to_execution_and_runner(
     iv::Timeline &timeline,
     iv::TimelineExecution &execution,
-    iv::TaskRunner &runner,
+    iv::TasksRunner &runner,
     iv::TimelineLaneBatchUpdate const &batch)
 {
     std::vector<iv::LaneId> created_lanes;
@@ -337,7 +337,7 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,
     });
-    graph_input_lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
+    graph_input_lanes.handle_task_runner_pass_finished(iv::TasksRunnerPassFinished{.graph_revision = 1});
 
     auto const view = lane_views.open_view(iv::LaneViewRequest{
         .view_id = "view",
@@ -427,7 +427,7 @@ TEST(Integration, TimelineRealtimeSinewaveReachesAudioBuffer)
 
     iv::Timeline timeline;
     iv::TimelineExecution execution(64);
-    iv::TaskRunner runner(1);
+    iv::TasksRunner runner(1);
     iv::LaneIdAllocator lane_ids;
 
     auto const source_lane = lane_ids.next();
@@ -486,7 +486,7 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
 
     iv::Timeline timeline;
     iv::TimelineExecution execution(64);
-    iv::TaskRunner runner(1);
+    iv::TasksRunner runner(1);
     iv::LaneIdAllocator lane_ids;
 
     auto const source_lane = lane_ids.next();
@@ -532,7 +532,7 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
     {
         std::scoped_lock lock(pass_finished_action.mutex);
         pass_finished_action.fn =
-            [&](iv::TaskRunnerPassFinished const &) {
+            [&](iv::TasksRunnerPassFinished const &) {
                 apply_timeline_batch_to_execution_and_runner(
                     timeline,
                     execution,

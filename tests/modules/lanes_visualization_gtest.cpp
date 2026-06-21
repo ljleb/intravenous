@@ -231,7 +231,7 @@ TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished
     });
 
     // Pass finished should trigger timeline batch with one upsert and one connection
-    visualization.handle_task_runner_pass_finished(TaskRunnerPassFinished{});
+    visualization.handle_task_runner_pass_finished(TasksRunnerPassFinished{});
 
     ASSERT_EQ(state.last_batch.upserts.size(), 1u);
     ASSERT_EQ(state.last_batch.connections_to_add.size(), 1u);
@@ -258,13 +258,13 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
         },
     });
 
-    visualization.handle_task_runner_pass_finished(TaskRunnerPassFinished{});
+    visualization.handle_task_runner_pass_finished(TasksRunnerPassFinished{});
     ASSERT_EQ(state.last_batch.upserts.size(), 1u);
     auto const vis_lane = state.last_batch.upserts.front().lane;
 
     state.last_batch = {};
     visualization.handle_lane_view_closed("view-rt");
-    visualization.handle_task_runner_pass_finished(TaskRunnerPassFinished{});
+    visualization.handle_task_runner_pass_finished(TasksRunnerPassFinished{});
 
     ASSERT_EQ(state.last_batch.removals.size(), 1u);
     EXPECT_EQ(state.last_batch.removals.front(), vis_lane);
@@ -290,12 +290,12 @@ TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateT
         },
     };
     visualization.handle_lane_views_updated(view);
-    visualization.handle_task_runner_pass_finished(TaskRunnerPassFinished{});
+    visualization.handle_task_runner_pass_finished(TasksRunnerPassFinished{});
     ASSERT_EQ(state.last_batch.upserts.size(), 1u);
 
     state.last_batch = {};
     visualization.handle_lane_views_updated(view);
-    visualization.handle_task_runner_pass_finished(TaskRunnerPassFinished{});
+    visualization.handle_task_runner_pass_finished(TasksRunnerPassFinished{});
     EXPECT_TRUE(state.last_batch.upserts.empty());
     EXPECT_TRUE(state.last_batch.connections_to_add.empty());
 
@@ -320,7 +320,7 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
         },
     };
     visualization.handle_lane_views_updated(view);
-    visualization.handle_task_runner_pass_finished(TaskRunnerPassFinished{});
+    visualization.handle_task_runner_pass_finished(TasksRunnerPassFinished{});
     ASSERT_EQ(state.last_batch.upserts.size(), 1u);
     auto const old_vis_lane = state.last_batch.upserts.front().lane;
     EXPECT_EQ(state.last_batch.connections_to_add.front().input.kind, PortKind::sample);
@@ -330,7 +330,7 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
     };
     state.last_batch = {};
     visualization.handle_lane_views_updated(view);
-    visualization.handle_task_runner_pass_finished(TaskRunnerPassFinished{});
+    visualization.handle_task_runner_pass_finished(TasksRunnerPassFinished{});
 
     ASSERT_EQ(state.last_batch.removals.size(), 1u);
     EXPECT_EQ(state.last_batch.removals.front(), old_vis_lane);

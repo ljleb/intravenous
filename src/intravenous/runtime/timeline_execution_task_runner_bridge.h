@@ -2,8 +2,8 @@
 
 namespace iv {
 class TimelineExecution;
-class TaskRunner;
+class TasksRunner;
 
-void bind_timeline_execution_task_runner_bridge(TimelineExecution &execution, TaskRunner &runner);
-void unbind_timeline_execution_task_runner_bridge(TimelineExecution const &execution, TaskRunner const &runner);
+void bind_timeline_execution_task_runner_bridge(TimelineExecution &execution, TasksRunner &runner);
+void unbind_timeline_execution_task_runner_bridge(TimelineExecution const &execution, TasksRunner const &runner);
 }

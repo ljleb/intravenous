@@ -149,15 +149,15 @@ namespace {
     PassFinishedWitness *g_pass_finished_witness = nullptr;
 
     IV_SUBSCRIBE_LINKER_EVENT(
-        iv::TaskRunnerPassFinishedEvent,
+        iv::TasksRunnerPassFinishedEvent,
         iv_runtime_task_runner_pass_finished_event,
-        +[](iv::TaskRunnerPassFinished const &finished) {
+        +[](iv::TasksRunnerPassFinished const &finished) {
             if (g_pass_finished_witness != nullptr) {
                 g_pass_finished_witness->push(finished.graph_revision);
             }
         });
 
-    class TaskRunnerTest : public ::testing::Test {
+    class TasksRunnerTest : public ::testing::Test {
     protected:
         static iv::TaskRecord task(
             std::string id,
@@ -186,11 +186,11 @@ namespace {
         }
     };
 
-    TEST_F(TaskRunnerTest, UpdateRejectsDuplicateTaskIdsAcrossCreateUpdateDelete)
+    TEST_F(TasksRunnerTest, UpdateRejectsDuplicateTaskIdsAcrossCreateUpdateDelete)
     {
         LogState log;
         RecordingContext ctx{ .name = "a", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
         EXPECT_THROW(
             runner.update_tasks(iv::TaskGraphUpdate{
                 .to_create = { task("a", {}, &record_callback, &ctx) },
@@ -199,11 +199,11 @@ namespace {
             std::runtime_error);
     }
 
-    TEST_F(TaskRunnerTest, CreateExistingTaskThrows)
+    TEST_F(TasksRunnerTest, CreateExistingTaskThrows)
     {
         LogState log;
         RecordingContext ctx{ .name = "a", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = { task("a", {}, &record_callback, &ctx) },
         });
@@ -215,9 +215,9 @@ namespace {
             std::runtime_error);
     }
 
-    TEST_F(TaskRunnerTest, UpdateMissingTaskThrows)
+    TEST_F(TasksRunnerTest, UpdateMissingTaskThrows)
     {
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
         EXPECT_THROW(
             runner.update_tasks(iv::TaskGraphUpdate{
                 .to_update = { iv::TaskUpdateRecord{
@@ -228,9 +228,9 @@ namespace {
             std::runtime_error);
     }
 
-    TEST_F(TaskRunnerTest, DeleteMissingTaskThrows)
+    TEST_F(TasksRunnerTest, DeleteMissingTaskThrows)
     {
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
         EXPECT_THROW(
             runner.update_tasks(iv::TaskGraphUpdate{
                 .to_delete = { "missing" },
@@ -238,11 +238,11 @@ namespace {
             std::runtime_error);
     }
 
-    TEST_F(TaskRunnerTest, UnresolvedDependencyOpensIncompletePendingGraph)
+    TEST_F(TasksRunnerTest, UnresolvedDependencyOpensIncompletePendingGraph)
     {
         LogState log;
         RecordingContext ctx{ .name = "a", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
         runner.update_tasks(versioned(1, iv::TaskGraphUpdate{
                 .to_create = { task("a", { "missing" }, &record_callback, &ctx) },
             }));
@@ -253,12 +253,12 @@ namespace {
         EXPECT_EQ(ctx.invocations.load(), 0);
     }
 
-    TEST_F(TaskRunnerTest, CycleThrows)
+    TEST_F(TasksRunnerTest, CycleThrows)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
         EXPECT_THROW(
             runner.update_tasks(iv::TaskGraphUpdate{
                 .to_create = {
@@ -269,12 +269,12 @@ namespace {
             std::runtime_error);
     }
 
-    TEST_F(TaskRunnerTest, MatchingVersionCompletesIncompletePendingGraph)
+    TEST_F(TasksRunnerTest, MatchingVersionCompletesIncompletePendingGraph)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(versioned(1, iv::TaskGraphUpdate{
             .to_create = { task("a", { "b" }, &record_callback, &a) },
@@ -290,12 +290,12 @@ namespace {
         }));
     }
 
-    TEST_F(TaskRunnerTest, DifferentVersionWhilePendingIncompleteThrows)
+    TEST_F(TasksRunnerTest, DifferentVersionWhilePendingIncompleteThrows)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(versioned(1, iv::TaskGraphUpdate{
             .to_create = { task("a", { "b" }, &record_callback, &a) },
@@ -308,12 +308,12 @@ namespace {
             std::runtime_error);
     }
 
-    TEST_F(TaskRunnerTest, DeleteAutomaticallyRemovesDependencyReferencesFromSuccessorGraph)
+    TEST_F(TasksRunnerTest, DeleteAutomaticallyRemovesDependencyReferencesFromSuccessorGraph)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -335,14 +335,14 @@ namespace {
         ASSERT_TRUE(wait_until([&] { return b.invocations.load() >= 2; }));
     }
 
-    TEST_F(TaskRunnerTest, UpdateCanReplaceDependenciesAndCallback)
+    TEST_F(TasksRunnerTest, UpdateCanReplaceDependenciesAndCallback)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
         RecordingContext c{ .name = "c", .log = &log };
         RecordingContext d{ .name = "d", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -370,7 +370,7 @@ namespace {
         ASSERT_TRUE(wait_until([&] { return c.invocations.load() >= 2; }));
     }
 
-    TEST_F(TaskRunnerTest, UpdateBuildsFromLatestPendingVersionWhenMultipleUpdatesArriveDuringPass)
+    TEST_F(TasksRunnerTest, UpdateBuildsFromLatestPendingVersionWhenMultipleUpdatesArriveDuringPass)
     {
         LogState log;
         BlockingContext a;
@@ -378,7 +378,7 @@ namespace {
         a.log = &log;
         RecordingContext b{ .name = "b", .log = &log };
         RecordingContext c{ .name = "c", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = { task("a", {}, &blocking_callback, &a) },
@@ -411,13 +411,13 @@ namespace {
         }));
     }
 
-    TEST_F(TaskRunnerTest, ExecutesTasksInDependencyOrder)
+    TEST_F(TasksRunnerTest, ExecutesTasksInDependencyOrder)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
         RecordingContext c{ .name = "c", .log = &log };
-        iv::TaskRunner runner(2);
+        iv::TasksRunner runner(2);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -435,7 +435,7 @@ namespace {
         EXPECT_EQ(entries[2], "c");
     }
 
-    TEST_F(TaskRunnerTest, ReadyTasksUseHigherUserCountAsTieBreaker)
+    TEST_F(TasksRunnerTest, ReadyTasksUseHigherUserCountAsTieBreaker)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
@@ -443,7 +443,7 @@ namespace {
         RecordingContext c{ .name = "c", .log = &log };
         RecordingContext d{ .name = "d", .log = &log };
         RecordingContext e{ .name = "e", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -462,12 +462,12 @@ namespace {
         EXPECT_EQ(entries[1], "a");
     }
 
-    TEST_F(TaskRunnerTest, RunsIndependentTasksInParallel)
+    TEST_F(TasksRunnerTest, RunsIndependentTasksInParallel)
     {
         OverlapState state;
         OverlapContext a{ .state = &state };
         OverlapContext b{ .state = &state };
-        iv::TaskRunner runner(2);
+        iv::TasksRunner runner(2);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -486,12 +486,12 @@ namespace {
         ASSERT_TRUE(wait_until([&] { return state.max_running.load() >= 2; }));
     }
 
-    TEST_F(TaskRunnerTest, RunsEveryTaskOncePerPass)
+    TEST_F(TasksRunnerTest, RunsEveryTaskOncePerPass)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -505,14 +505,14 @@ namespace {
         EXPECT_EQ(a.invocations.load(), b.invocations.load());
     }
 
-    TEST_F(TaskRunnerTest, SwapsToLatestReadyGraphOnlyAtPassBoundary)
+    TEST_F(TasksRunnerTest, SwapsToLatestReadyGraphOnlyAtPassBoundary)
     {
         LogState log;
         BlockingContext a;
         a.name = "a";
         a.log = &log;
         RecordingContext b{ .name = "b", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = { task("a", {}, &blocking_callback, &a) },
@@ -539,13 +539,13 @@ namespace {
         ASSERT_TRUE(wait_until([&] { return runner.active_graph_revision() == 2; }));
     }
 
-    TEST_F(TaskRunnerTest, RunningTaskMayFinishBeforeDeletedTaskDisappears)
+    TEST_F(TasksRunnerTest, RunningTaskMayFinishBeforeDeletedTaskDisappears)
     {
         LogState log;
         BlockingContext a;
         a.name = "a";
         a.log = &log;
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = { task("a", {}, &blocking_callback, &a) },
@@ -571,11 +571,11 @@ namespace {
         ASSERT_TRUE(wait_until([&] { return runner.active_task_ids().empty(); }));
     }
 
-    TEST_F(TaskRunnerTest, EmptyGraphWorkersSleepUntilUpdateArrives)
+    TEST_F(TasksRunnerTest, EmptyGraphWorkersSleepUntilUpdateArrives)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
-        iv::TaskRunner runner(2);
+        iv::TasksRunner runner(2);
 
         std::this_thread::sleep_for(20ms);
         EXPECT_EQ(a.invocations.load(), 0);
@@ -587,13 +587,13 @@ namespace {
         ASSERT_TRUE(wait_until([&] { return a.invocations.load() > 0; }));
     }
 
-    TEST_F(TaskRunnerTest, MergesStrictLinearChainIntoSingleExecutionGroup)
+    TEST_F(TasksRunnerTest, MergesStrictLinearChainIntoSingleExecutionGroup)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
         RecordingContext c{ .name = "c", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -607,13 +607,13 @@ namespace {
         EXPECT_EQ(runner.active_execution_group_count(), 1u);
     }
 
-    TEST_F(TaskRunnerTest, DoesNotMergeAcrossFanOut)
+    TEST_F(TasksRunnerTest, DoesNotMergeAcrossFanOut)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
         RecordingContext c{ .name = "c", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -627,13 +627,13 @@ namespace {
         EXPECT_EQ(runner.active_execution_group_count(), 3u);
     }
 
-    TEST_F(TaskRunnerTest, DoesNotMergeAcrossFanIn)
+    TEST_F(TasksRunnerTest, DoesNotMergeAcrossFanIn)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
         RecordingContext c{ .name = "c", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -647,7 +647,7 @@ namespace {
         EXPECT_EQ(runner.active_execution_group_count(), 3u);
     }
 
-    TEST_F(TaskRunnerTest, DoesNotMergeWhenSuccessorHasMultipleDependencies)
+    TEST_F(TasksRunnerTest, DoesNotMergeWhenSuccessorHasMultipleDependencies)
     {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
@@ -655,7 +655,7 @@ namespace {
         RecordingContext b{ .name = "b", .log = &log };
         RecordingContext c{ .name = "c", .log = &log };
         RecordingContext d{ .name = "d", .log = &log };
-        iv::TaskRunner runner(1);
+        iv::TasksRunner runner(1);
 
         runner.update_tasks(iv::TaskGraphUpdate{
             .to_create = {
@@ -671,9 +671,9 @@ namespace {
         EXPECT_EQ(runner.active_execution_group_count(), 5u);
     }
 
-    TEST_F(TaskRunnerTest, DestructorWaitsForCurrentPassToFinish)
+    TEST_F(TasksRunnerTest, DestructorWaitsForCurrentPassToFinish)
     {
-        auto runner = std::make_unique<iv::TaskRunner>(1);
+        auto runner = std::make_unique<iv::TasksRunner>(1);
         auto log = std::make_unique<LogState>();
         auto ctx = std::make_unique<BlockingContext>();
         ctx->name = "a";
@@ -702,10 +702,10 @@ namespace {
         EXPECT_EQ(destroy_future.wait_for(2s), std::future_status::ready);
     }
 
-    TEST_F(TaskRunnerTest, DestructorRequestsShutdownAndJoinsWorkers)
+    TEST_F(TasksRunnerTest, DestructorRequestsShutdownAndJoinsWorkers)
     {
         auto log = std::make_unique<LogState>();
-        auto *runner = new iv::TaskRunner(1);
+        auto *runner = new iv::TasksRunner(1);
         auto *ctx = new BlockingContext();
         ctx->name = "a";
         ctx->log = log.get();
@@ -734,7 +734,7 @@ namespace {
         EXPECT_EQ(destroy_future.wait_for(2s), std::future_status::ready);
     }
 
-    TEST_F(TaskRunnerTest, EmitsPassFinishedAfterCompletedPass)
+    TEST_F(TasksRunnerTest, EmitsPassFinishedAfterCompletedPass)
     {
         LogState log;
         RecordingContext ctx{ .name = "a", .log = &log };
@@ -742,7 +742,7 @@ namespace {
         g_pass_finished_witness = &witness;
 
         {
-            iv::TaskRunner runner(1);
+            iv::TasksRunner runner(1);
             runner.update_tasks(iv::TaskGraphUpdate{
                 .to_create = { task("a", {}, &record_callback, &ctx) },
             });

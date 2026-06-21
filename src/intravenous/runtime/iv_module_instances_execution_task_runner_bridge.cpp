@@ -7,7 +7,7 @@
 namespace iv {
 namespace {
 IvModuleInstancesExecution *bound_execution = nullptr;
-TaskRunner *bound_runner = nullptr;
+TasksRunner *bound_runner = nullptr;
 
 void handle_iv_module_instances_execution_tasks_changed(VersionedTaskGraphUpdate const &update)
 {
@@ -25,7 +25,7 @@ IV_SUBSCRIBE_LINKER_EVENT(
 
 void bind_iv_module_instances_execution_task_runner_bridge(
     IvModuleInstancesExecution &execution,
-    TaskRunner &runner)
+    TasksRunner &runner)
 {
     bound_execution = &execution;
     bound_runner = &runner;
@@ -33,7 +33,7 @@ void bind_iv_module_instances_execution_task_runner_bridge(
 
 void unbind_iv_module_instances_execution_task_runner_bridge(
     IvModuleInstancesExecution const &execution,
-    TaskRunner const &runner)
+    TasksRunner const &runner)
 {
     if (bound_execution == &execution) {
         bound_execution = nullptr;
