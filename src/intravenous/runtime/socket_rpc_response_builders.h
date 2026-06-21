@@ -3,6 +3,7 @@
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
+#include <intravenous/devices/audio_device.h>
 
 #include <optional>
 #include <string>
@@ -79,6 +80,19 @@ namespace iv {
 
     public:
         void succeed(std::string created_instance_id);
+        void fail(std::string message);
+        void fail(int code, std::string message);
+
+        [[nodiscard]] std::string build(int request_id) const;
+    };
+
+    class SocketRpcAudioDevicesResultBuilder {
+        int error_code = -32000;
+        std::string error_message;
+        std::optional<AudioDevicesSnapshot> result;
+
+    public:
+        void succeed(AudioDevicesSnapshot value);
         void fail(std::string message);
         void fail(int code, std::string message);
 

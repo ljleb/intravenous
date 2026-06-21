@@ -53,6 +53,13 @@ namespace iv {
         ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
     };
 
+    struct GetAudioDevicesRequest {};
+
+    struct SetAudioDevicesRequest {
+        std::optional<std::string> output_device_id {};
+        std::optional<std::string> input_device_id {};
+    };
+
     struct OpenLaneViewRpcRequest {
         LaneViewRequest request{};
     };
@@ -108,6 +115,8 @@ namespace iv {
         SetIvModuleInstanceDefaultSilenceTtlSamplesRequest,
         SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest,
         SetTimelineLaneSampleChannelTypeRequest,
+        GetAudioDevicesRequest,
+        SetAudioDevicesRequest,
         OpenLaneViewRpcRequest,
         UpdateLaneViewRpcRequest,
         SetSampleInputValueRequest,

@@ -136,6 +136,76 @@ public:
     }
 };
 
+class IdleFakeAudioInputDevice {
+    iv::RenderConfig config_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool shutdown_requested_ = false;
+    std::vector<iv::Sample> storage_;
+
+public:
+    explicit IdleFakeAudioInputDevice(iv::RenderConfig config)
+        : config_(std::move(config)),
+          storage_(config_.max_block_frames * config_.num_channels, iv::Sample {})
+    {
+        iv::validate_render_config(config_);
+    }
+
+    iv::RenderConfig const &config() const
+    {
+        return config_;
+    }
+
+    iv::AudioInputBlock wait_for_captured_block()
+    {
+        std::unique_lock lock(mutex_);
+        cv_.wait(lock, [&] {
+            return shutdown_requested_;
+        });
+        throw std::logic_error("idle fake input device interrupted");
+    }
+
+    void release_captured_block() {}
+
+    void request_shutdown()
+    {
+        {
+            std::scoped_lock lock(mutex_);
+            shutdown_requested_ = true;
+        }
+        cv_.notify_all();
+    }
+};
+
+iv::AudioDeviceLanesBackend make_test_audio_backend(
+    std::shared_ptr<SharedFakeAudioOutputState> output_state)
+{
+    return iv::AudioDeviceLanesBackend{
+        .list_output_devices = [] {
+            return std::vector<iv::AudioDeviceDescriptor>{
+                {.device_id = "default", .name = "System Default"},
+                {.device_id = "out-1", .name = "Output 1"},
+            };
+        },
+        .list_input_devices = [] {
+            return std::vector<iv::AudioDeviceDescriptor>{
+                {.device_id = "default", .name = "System Default"},
+                {.device_id = "in-1", .name = "Input 1"},
+            };
+        },
+        .make_output_device = [output_state](std::string const &, iv::RenderConfig const &) {
+            return iv::AudioOutputDevice(
+                std::in_place_type<SharedFakeAudioOutputDevice>,
+                output_state);
+        },
+        .make_input_device = [](std::string const &, iv::RenderConfig const &config) {
+            return iv::AudioInputDevice(
+                std::in_place_type<IdleFakeAudioInputDevice>,
+                config);
+        },
+    };
+}
+
 std::optional<iv::LaneId> find_lane_with_unit(iv::Timeline &timeline, std::string_view key)
 {
     return timeline.with_graph([&](iv::LaneGraph const &graph) -> std::optional<iv::LaneId> {
@@ -196,9 +266,8 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
     iv::AudioDeviceLanes audio_device_lanes(
         48000,
         kBlockSize,
-        std::optional<iv::AudioOutputDevice>(iv::AudioOutputDevice(
-            std::in_place_type<SharedFakeAudioOutputDevice>,
-            output_state)),
+        make_test_audio_backend(output_state),
+        std::optional<std::string>("default"),
         std::nullopt);
 
     iv::bind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
@@ -252,6 +321,44 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
     iv::unbind_timeline_timeline_execution_bridge(timeline, execution);
     iv::unbind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, execution);
     iv::unbind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
+}
+
+TEST(AudioDeviceLanes, ReportsInventoryAndUnavailableSelections)
+{
+    auto output_state = std::make_shared<SharedFakeAudioOutputState>(iv::RenderConfig{
+        .sample_rate = 48000,
+        .num_channels = 2,
+        .max_block_frames = 64,
+        .preferred_block_size = 64,
+    });
+
+    iv::AudioDeviceLanes audio_device_lanes(
+        48000,
+        64,
+        make_test_audio_backend(output_state),
+        std::optional<std::string>("default"),
+        std::nullopt);
+
+    auto snapshot = audio_device_lanes.audio_devices_snapshot();
+    EXPECT_EQ(snapshot.output_devices.size(), 2u);
+    EXPECT_EQ(snapshot.input_devices.size(), 2u);
+    ASSERT_TRUE(snapshot.selected_output.device_id.has_value());
+    EXPECT_EQ(*snapshot.selected_output.device_id, "default");
+    EXPECT_TRUE(snapshot.selected_output.available);
+    EXPECT_FALSE(snapshot.selected_input.device_id.has_value());
+    EXPECT_FALSE(snapshot.selected_input.available);
+
+    snapshot = audio_device_lanes.set_selected_devices(
+        std::optional<std::string>("missing-output"),
+        std::optional<std::string>("in-1"));
+    ASSERT_TRUE(snapshot.selected_output.device_id.has_value());
+    EXPECT_EQ(*snapshot.selected_output.device_id, "missing-output");
+    EXPECT_FALSE(snapshot.selected_output.available);
+    ASSERT_TRUE(snapshot.selected_input.device_id.has_value());
+    EXPECT_EQ(*snapshot.selected_input.device_id, "in-1");
+    EXPECT_TRUE(snapshot.selected_input.available);
+
+    audio_device_lanes.request_shutdown();
 }
 
 } // namespace

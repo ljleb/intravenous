@@ -324,6 +324,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_source_introspection_graph_input_lanes_bridge.cpp
     runtime/runtime_project_events.cpp
     runtime/socket_rpc_lane_views_bridge.cpp
+    runtime/socket_rpc_audio_device_lanes_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_iv_module_instances_bridge.cpp
     runtime/socket_rpc_timeline_execution_bridge.cpp

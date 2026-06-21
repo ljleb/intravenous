@@ -45,6 +45,10 @@ namespace iv {
         void (*)(SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcSetTimelineLaneSampleChannelTypeEvent =
         void (*)(SetTimelineLaneSampleChannelTypeRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcGetAudioDevicesEvent =
+        void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
+    using SocketRpcSetAudioDevicesEvent =
+        void (*)(SetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
     using SocketRpcOpenLaneViewEvent =
         void (*)(LaneViewRequest const &, SocketRpcLaneViewResultBuilder &);
     using SocketRpcUpdateLaneViewEvent =
@@ -73,6 +77,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcSetIvModuleInstanceDefaultSilenceTtlSamplesEvent, iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetTimelineCompiledSampleCacheChunkSizeMultiplierEvent, iv_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetTimelineLaneSampleChannelTypeEvent, iv_socket_rpc_set_timeline_lane_sample_channel_type_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcOpenLaneViewEvent, iv_socket_rpc_open_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateLaneViewEvent, iv_socket_rpc_update_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCloseLaneViewEvent, iv_socket_rpc_close_lane_view_event);

@@ -190,6 +190,43 @@ Json lane_view_result_json(LaneViewResult const &result) {
     json["viewId"] = result.view_id;
     return json;
 }
+
+Json audio_device_descriptor_json(AudioDeviceDescriptor const &device)
+{
+    return Json{
+        {"deviceId", device.device_id},
+        {"name", device.name},
+    };
+}
+
+Json audio_device_descriptors_json(std::vector<AudioDeviceDescriptor> const &devices)
+{
+    Json json = Json::array();
+    for (auto const &device : devices) {
+        json.push_back(audio_device_descriptor_json(device));
+    }
+    return json;
+}
+
+Json audio_device_selection_json(AudioDeviceSelectionState const &selection)
+{
+    Json json = Json{
+        {"deviceId", selection.device_id.has_value() ? Json(*selection.device_id) : Json(nullptr)},
+        {"name", selection.name.has_value() ? Json(*selection.name) : Json(nullptr)},
+        {"available", selection.available},
+    };
+    return json;
+}
+
+Json audio_devices_snapshot_json(AudioDevicesSnapshot const &snapshot)
+{
+    return Json{
+        {"outputDevices", audio_device_descriptors_json(snapshot.output_devices)},
+        {"inputDevices", audio_device_descriptors_json(snapshot.input_devices)},
+        {"selectedOutput", audio_device_selection_json(snapshot.selected_output)},
+        {"selectedInput", audio_device_selection_json(snapshot.selected_input)},
+    };
+}
 } // namespace
 
 void SocketRpcAckResponseBuilder::fail(std::string message) {
@@ -329,6 +366,34 @@ std::string SocketRpcCreateIvModuleInstanceResultBuilder::build(int request_id) 
         throw_unbuilt_response("SocketRpcCreateIvModuleInstanceResultBuilder");
     }
     return jsonrpc_result(request_id, Json{{"instanceId", *instance_id}});
+}
+
+void SocketRpcAudioDevicesResultBuilder::succeed(AudioDevicesSnapshot value)
+{
+    result = std::move(value);
+}
+
+void SocketRpcAudioDevicesResultBuilder::fail(std::string message)
+{
+    error_code = -32000;
+    error_message = std::move(message);
+}
+
+void SocketRpcAudioDevicesResultBuilder::fail(int code, std::string message)
+{
+    error_code = code;
+    error_message = std::move(message);
+}
+
+std::string SocketRpcAudioDevicesResultBuilder::build(int request_id) const
+{
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    if (!result.has_value()) {
+        throw_unbuilt_response("SocketRpcAudioDevicesResultBuilder");
+    }
+    return jsonrpc_result(request_id, audio_devices_snapshot_json(*result));
 }
 
 void SocketRpcLaneViewResultBuilder::succeed(LaneViewResult value) {

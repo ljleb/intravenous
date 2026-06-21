@@ -42,6 +42,10 @@ namespace {
         bool close_lane_view_should_fail = false;
         int close_lane_view_fail_code = -32000;
         std::string close_lane_view_fail_message;
+        int get_audio_devices_hits = 0;
+        int set_audio_devices_hits = 0;
+        std::optional<iv::SetAudioDevicesRequest> last_set_audio_devices_request;
+        iv::AudioDevicesSnapshot audio_devices_snapshot;
 
         int shutdown_hits = 0;
 
@@ -62,6 +66,10 @@ namespace {
             close_lane_view_should_fail = false;
             close_lane_view_fail_code = -32000;
             close_lane_view_fail_message.clear();
+            get_audio_devices_hits = 0;
+            set_audio_devices_hits = 0;
+            last_set_audio_devices_request.reset();
+            audio_devices_snapshot = {};
             shutdown_hits = 0;
         }
     };
@@ -122,6 +130,27 @@ namespace {
         ++socket_rpc_test_state.shutdown_hits;
     }
 
+    void handle_test_get_audio_devices(
+        iv::GetAudioDevicesRequest const &,
+        iv::SocketRpcAudioDevicesResultBuilder &builder)
+    {
+        ++socket_rpc_test_state.get_audio_devices_hits;
+        builder.succeed(socket_rpc_test_state.audio_devices_snapshot);
+    }
+
+    void handle_test_set_audio_devices(
+        iv::SetAudioDevicesRequest const &request,
+        iv::SocketRpcAudioDevicesResultBuilder &builder)
+    {
+        ++socket_rpc_test_state.set_audio_devices_hits;
+        socket_rpc_test_state.last_set_audio_devices_request = request;
+        socket_rpc_test_state.audio_devices_snapshot.selected_output.device_id =
+            request.output_device_id;
+        socket_rpc_test_state.audio_devices_snapshot.selected_input.device_id =
+            request.input_device_id;
+        builder.succeed(socket_rpc_test_state.audio_devices_snapshot);
+    }
+
     IV_SUBSCRIBE_LINKER_EVENT(
         iv::SocketRpcGraphQueryBySpansEvent,
         iv_socket_rpc_graph_query_by_spans_event,
@@ -138,6 +167,14 @@ namespace {
         iv::SocketRpcCloseLaneViewEvent,
         iv_socket_rpc_close_lane_view_event,
         handle_test_close_lane_view)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::SocketRpcGetAudioDevicesEvent,
+        iv_socket_rpc_get_audio_devices_event,
+        handle_test_get_audio_devices)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::SocketRpcSetAudioDevicesEvent,
+        iv_socket_rpc_set_audio_devices_event,
+        handle_test_set_audio_devices)
     IV_SUBSCRIBE_LINKER_EVENT(
         iv::SocketRpcServerShutdownEvent,
         iv_socket_rpc_server_shutdown_event,
@@ -384,6 +421,52 @@ TEST(SocketRpcServer, DistinguishesOpenAndUpdateLaneViewEvents)
     ASSERT_EQ(socket_rpc_test_state.update_lane_view_requests.size(), 1u);
     EXPECT_EQ(socket_rpc_test_state.update_lane_view_requests.front().view_id, "view-b");
     EXPECT_EQ(socket_rpc_test_state.update_lane_view_requests.front().start_index, 3u);
+}
+
+TEST(SocketRpcServer, DispatchesAudioDeviceGetAndSetRequests)
+{
+    socket_rpc_test_state.reset();
+    socket_rpc_test_state.audio_devices_snapshot.output_devices = {
+        iv::AudioDeviceDescriptor{.device_id = "default", .name = "System Default"},
+        iv::AudioDeviceDescriptor{.device_id = "out-1", .name = "Output 1"},
+    };
+    socket_rpc_test_state.audio_devices_snapshot.input_devices = {
+        iv::AudioDeviceDescriptor{.device_id = "default", .name = "System Default"},
+        iv::AudioDeviceDescriptor{.device_id = "in-1", .name = "Input 1"},
+    };
+    socket_rpc_test_state.audio_devices_snapshot.selected_output = iv::AudioDeviceSelectionState{
+        .device_id = std::string("default"),
+        .name = std::string("System Default"),
+        .available = true,
+    };
+    socket_rpc_test_state.audio_devices_snapshot.selected_input = iv::AudioDeviceSelectionState{
+        .device_id = std::string("in-1"),
+        .name = std::string("Input 1"),
+        .available = true,
+    };
+    auto harness = SocketRpcHarness(make_server_workspace());
+
+    ASSERT_FALSE(harness.read_line().empty());
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":8,"method":"audioDevices.get","params":{}})"
+        "\n");
+    auto const get_response = harness.read_response(8);
+    EXPECT_TRUE(get_response.contains(R"("outputDevices")")) << get_response;
+    EXPECT_TRUE(get_response.contains(R"("deviceId":"out-1")")) << get_response;
+    EXPECT_EQ(socket_rpc_test_state.get_audio_devices_hits, 1);
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":9,"method":"audioDevices.set","params":{"outputDeviceId":"out-1","inputDeviceId":null}})"
+        "\n");
+    auto const set_response = harness.read_response(9);
+    EXPECT_TRUE(set_response.contains(R"("deviceId":"out-1")")) << set_response;
+    EXPECT_TRUE(set_response.contains(R"("selectedInput")")) << set_response;
+    EXPECT_EQ(socket_rpc_test_state.set_audio_devices_hits, 1);
+    ASSERT_TRUE(socket_rpc_test_state.last_set_audio_devices_request.has_value());
+    ASSERT_TRUE(socket_rpc_test_state.last_set_audio_devices_request->output_device_id.has_value());
+    EXPECT_EQ(*socket_rpc_test_state.last_set_audio_devices_request->output_device_id, "out-1");
+    EXPECT_FALSE(socket_rpc_test_state.last_set_audio_devices_request->input_device_id.has_value());
 }
 
 TEST(SocketRpcServer, AckSubscriberCanFailAndShutdownEventIsInvoked)

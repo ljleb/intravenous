@@ -34,6 +34,7 @@
 #include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/server_options.h>
 #include <intravenous/runtime/socket_rpc_lane_views_bridge.h>
+#include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/socket_rpc_timeline_execution_bridge.h>
@@ -84,33 +85,27 @@ namespace iv {
                 startup.execution.block_size,
                 startup.execution.compiled_sample_cache_chunk_size_multiplier);
             IvModuleInstancesExecution iv_module_instances_execution(startup.execution.block_size);
-            std::optional<AudioOutputDevice> output_device;
-            std::optional<AudioInputDevice> input_device;
-            try {
-                output_device.emplace(make_miniaudio_output_device(RenderConfig{
-                    .sample_rate = startup.execution.sample_rate,
-                    .num_channels = 2,
-                    .max_block_frames = std::max<size_t>(startup.execution.block_size * 4, 4096),
-                    .preferred_block_size = startup.execution.block_size,
-                }));
-            } catch (std::exception const &e) {
-                std::cerr << "Intravenous audio output disabled: " << e.what() << '\n';
-            }
-            try {
-                input_device.emplace(make_miniaudio_input_device(RenderConfig{
-                    .sample_rate = startup.execution.sample_rate,
-                    .num_channels = 2,
-                    .max_block_frames = std::max<size_t>(startup.execution.block_size * 4, 4096),
-                    .preferred_block_size = startup.execution.block_size,
-                }));
-            } catch (std::exception const &e) {
-                std::cerr << "Intravenous audio input disabled: " << e.what() << '\n';
-            }
             AudioDeviceLanes audio_device_lanes(
                 startup.execution.sample_rate,
                 startup.execution.block_size,
-                std::move(output_device),
-                std::move(input_device));
+                AudioDeviceLanesBackend{
+                    .list_output_devices = [] {
+                        return list_miniaudio_output_devices();
+                    },
+                    .list_input_devices = [] {
+                        return list_miniaudio_input_devices();
+                    },
+                    .make_output_device = [](
+                        std::string const &device_id,
+                        RenderConfig const &config) {
+                        return make_miniaudio_output_device(config, device_id);
+                    },
+                    .make_input_device = [](
+                        std::string const &device_id,
+                        RenderConfig const &config) {
+                        return make_miniaudio_input_device(config, device_id);
+                    },
+                });
             LaneFilters lane_filters;
             LaneViews lane_views;
             LanesVisualization lanes_visualization(
@@ -151,6 +146,7 @@ namespace iv {
             shutdown_callback = &shutdown;
             install_shutdown_handlers(request_shutdown);
             bind_socket_rpc_lane_views_bridge(lane_views);
+            bind_socket_rpc_audio_device_lanes_bridge(audio_device_lanes);
             bind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
             bind_socket_rpc_timeline_execution_bridge(
                 timeline,
@@ -168,6 +164,7 @@ namespace iv {
             audio_device_lanes.request_shutdown();
             unbind_socket_rpc_notification_bridge(server);
             unbind_socket_rpc_lane_views_bridge(lane_views);
+            unbind_socket_rpc_audio_device_lanes_bridge(audio_device_lanes);
             unbind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
             unbind_socket_rpc_timeline_execution_bridge(timeline_execution);
             unbind_socket_rpc_iv_module_source_introspection_bridge(

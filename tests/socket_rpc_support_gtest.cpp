@@ -6,7 +6,9 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -194,6 +196,29 @@ TEST(SocketRpcRequestParser, ParsesSetTimelineLaneSampleChannelTypeRequest)
     EXPECT_EQ(request->sample_channel_type, iv::ChannelTypeId::mono);
 }
 
+TEST(SocketRpcRequestParser, ParsesGetAudioDevicesRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":30,"method":"audioDevices.get","params":{}})");
+
+    EXPECT_EQ(parsed.request_id, 30);
+    auto const *request = std::get_if<iv::GetAudioDevicesRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+}
+
+TEST(SocketRpcRequestParser, ParsesSetAudioDevicesRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":31,"method":"audioDevices.set","params":{"outputDeviceId":"default","inputDeviceId":null}})");
+
+    EXPECT_EQ(parsed.request_id, 31);
+    auto const *request = std::get_if<iv::SetAudioDevicesRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    ASSERT_TRUE(request->output_device_id.has_value());
+    EXPECT_EQ(*request->output_device_id, "default");
+    EXPECT_FALSE(request->input_device_id.has_value());
+}
+
 TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
@@ -378,4 +403,38 @@ TEST(SocketRpcCreateIvModuleInstanceResultBuilder, SerializesCreatedInstanceId)
 
     EXPECT_EQ(response["id"], 17);
     EXPECT_EQ(response["result"]["instanceId"], "instance:7");
+}
+
+TEST(SocketRpcAudioDevicesResultBuilder, SerializesSnapshot)
+{
+    iv::SocketRpcAudioDevicesResultBuilder builder;
+    builder.succeed(iv::AudioDevicesSnapshot{
+        .output_devices = {
+            iv::AudioDeviceDescriptor{.device_id = "default", .name = "System Default"},
+            iv::AudioDeviceDescriptor{.device_id = "out-1", .name = "Output 1"},
+        },
+        .input_devices = {
+            iv::AudioDeviceDescriptor{.device_id = "default", .name = "System Default"},
+            iv::AudioDeviceDescriptor{.device_id = "in-1", .name = "Input 1"},
+        },
+        .selected_output = iv::AudioDeviceSelectionState{
+            .device_id = std::string("out-1"),
+            .name = std::string("Output 1"),
+            .available = true,
+        },
+        .selected_input = iv::AudioDeviceSelectionState{
+            .device_id = std::string("missing"),
+            .name = std::nullopt,
+            .available = false,
+        },
+    });
+
+    auto const response = parse_json_line(builder.build(18));
+
+    EXPECT_EQ(response["id"], 18);
+    EXPECT_EQ(response["result"]["outputDevices"].size(), 2u);
+    EXPECT_EQ(response["result"]["outputDevices"][1]["deviceId"], "out-1");
+    EXPECT_EQ(response["result"]["selectedOutput"]["name"], "Output 1");
+    EXPECT_EQ(response["result"]["selectedInput"]["deviceId"], "missing");
+    EXPECT_EQ(response["result"]["selectedInput"]["available"], false);
 }

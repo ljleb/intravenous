@@ -4,10 +4,13 @@
 
 #include <concepts>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace iv {
     struct RenderConfig {
@@ -33,6 +36,24 @@ namespace iv {
         std::span<Sample const> samples {};
         double capture_timestamp_seconds = 0.0;
         bool discontinuous = false;
+    };
+
+    struct AudioDeviceDescriptor {
+        std::string device_id {};
+        std::string name {};
+    };
+
+    struct AudioDeviceSelectionState {
+        std::optional<std::string> device_id {};
+        std::optional<std::string> name {};
+        bool available = false;
+    };
+
+    struct AudioDevicesSnapshot {
+        std::vector<AudioDeviceDescriptor> output_devices {};
+        std::vector<AudioDeviceDescriptor> input_devices {};
+        AudioDeviceSelectionState selected_output {};
+        AudioDeviceSelectionState selected_input {};
     };
 
     template<typename Device>

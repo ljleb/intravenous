@@ -376,6 +376,20 @@ void SocketRpcServer::handle_client(int fd) {
                             event_request,
                             builder);
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, GetAudioDevicesRequest>) {
+                        SocketRpcAudioDevicesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_get_audio_devices_event,
+                            event_request,
+                            builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, SetAudioDevicesRequest>) {
+                        SocketRpcAudioDevicesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_set_audio_devices_event,
+                            event_request,
+                            builder);
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, OpenLaneViewRpcRequest>) {
                         SocketRpcLaneViewResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_open_lane_view_event, event_request.request, builder);

@@ -51,6 +51,20 @@ std::string parse_string_param(Json const &params, std::string const &key) {
     return value_it->get<std::string>();
 }
 
+std::optional<std::string> parse_optional_nullable_string_param(
+    Json const &params,
+    std::string const &key)
+{
+    auto const value_it = params.find(key);
+    if (value_it == params.end() || value_it->is_null()) {
+        return std::nullopt;
+    }
+    if (!value_it->is_string()) {
+        throw std::runtime_error("JSON-RPC request param '" + key + "' must be a string or null");
+    }
+    return value_it->get<std::string>();
+}
+
 std::vector<std::string> parse_string_array_param(Json const &params, std::string const &key) {
     auto const value_it = params.find(key);
     if (value_it == params.end() || !value_it->is_array()) {
@@ -328,6 +342,21 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             .payload = SetTimelineLaneSampleChannelTypeRequest{
                 .lane_id = parse_uint64_param(params, "laneId"),
                 .sample_channel_type = parse_channel_type_param(params, "sampleChannelType"),
+            },
+        };
+    }
+    if (method == "audioDevices.get") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = GetAudioDevicesRequest{},
+        };
+    }
+    if (method == "audioDevices.set") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = SetAudioDevicesRequest{
+                .output_device_id = parse_optional_nullable_string_param(params, "outputDeviceId"),
+                .input_device_id = parse_optional_nullable_string_param(params, "inputDeviceId"),
             },
         };
     }
