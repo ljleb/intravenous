@@ -14,21 +14,24 @@ inline void project_v1(iv::ModuleContext const& c)
 {
     using namespace iv;
     auto& g = c.builder();
-    auto const& io = c.target_factory();
+    SamplePortRef left;
+    SamplePortRef right;
 
-    for (size_t channel = 0; channel < c.render_config().num_channels; ++channel) {
-        auto sink = io.sink(g, channel);
-
+    g.multi_channel(ChannelTypeId::stereo, [&]<auto Ch>() {
         auto voice = polyphonic<16>(g, [&](auto m) {
             auto& [a, f] = m;
             auto saw = g.node<SawOscillator>();
             return saw(f) * a;
         });
 
-        sink(voice);
-    }
+        if constexpr (std::same_as<decltype(Ch), decltype(channels::stereo_left)>) {
+            left = voice;
+        } else {
+            right = voice;
+        }
+    });
 
-    g.outputs();
+    g.outputs(channels::stereo_left = left, channels::stereo_right = right);
 }
 
 IV_EXPORT_MODULE("iv.project.v1", project_v1);

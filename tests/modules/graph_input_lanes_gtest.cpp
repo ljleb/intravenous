@@ -29,6 +29,19 @@ iv::BorrowedSampleBlock mono_block(std::span<iv::Sample const> samples)
     };
 }
 
+iv::BorrowedSampleBlock stereo_interleaved_block(std::span<iv::Sample const> samples, size_t frame_count)
+{
+    return iv::BorrowedSampleBlock {
+        .samples = samples,
+        .channel_layout =
+            iv::ChannelLayout {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            },
+        .frame_count = frame_count,
+    };
+}
+
 std::vector<iv::Sample> sample_values(iv::OwnedSampleBlock const &block)
 {
     return std::vector<iv::Sample>(block.samples.begin(), block.samples.end());
@@ -835,6 +848,63 @@ TEST_F(GraphInputLanesTest, TogglingSampleOutputBackToDisconnectedRemovesLane)
     EXPECT_NE(std::find(removals.begin(), removals.end(), created_lane), removals.end());
 }
 
+TEST_F(GraphInputLanesTest, SampleOutputLanesRemainMonoAcrossRebuild)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_output_ports();
+    iv::GraphBuilder builder;
+    auto node = iv::_annotate_node_source_info(
+        builder.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 0});
+    witness.timeline_batches.clear();
+
+    lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
+        .node_id = "node-1",
+        .member_ordinal = std::nullopt,
+        .output_ordinal = 0,
+        .state = iv::ProjectSampleOutputState::timeline_lane,
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 1});
+
+    iv::TimelineLaneUpsert const *created = nullptr;
+    for (auto const &batch : witness.timeline_batches) {
+        if (batch_has_output_lane(batch, "dsp_graph.logical", &created)) {
+            break;
+        }
+    }
+    ASSERT_NE(created, nullptr);
+    ASSERT_TRUE(created->sample_channel_type.has_value());
+    EXPECT_EQ(*created->sample_channel_type, iv::ChannelTypeId::mono);
+
+    witness.timeline_batches.clear();
+    iv::GraphBuilder rebuilt;
+    auto rebuilt_node = iv::_annotate_node_source_info(
+        rebuilt.node<iv::Sum<1>>().node_ref(),
+        "node-1");
+    (void)rebuilt_node;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
+    });
+    lanes.handle_task_runner_pass_finished(iv::TaskRunnerPassFinished{.graph_revision = 2});
+
+    iv::TimelineLaneUpsert const *rebuilt_upsert = nullptr;
+    for (auto const &batch : witness.timeline_batches) {
+        if (batch_has_output_lane(batch, "dsp_graph.logical", &rebuilt_upsert)) {
+            break;
+        }
+    }
+    ASSERT_NE(rebuilt_upsert, nullptr);
+    ASSERT_TRUE(rebuilt_upsert->sample_channel_type.has_value());
+    EXPECT_EQ(*rebuilt_upsert->sample_channel_type, iv::ChannelTypeId::mono);
+}
+
 TEST_F(GraphInputLanesTest, SampleOutputBlockRoundTripsThroughGraphInputLanesStorage)
 {
     iv::GraphInputLanes lanes;
@@ -894,4 +964,21 @@ TEST_F(GraphInputLanesTest, RepublishedSampleOutputBlockReplacesPreviousBlock)
     EXPECT_EQ(stored.channel_layout.sample_layout, iv::SampleStreamLayout::planar);
     EXPECT_EQ(stored.frame_count, second.size());
     EXPECT_EQ(sample_values(stored), (std::vector<iv::Sample>{-3.0f}));
+}
+
+TEST_F(GraphInputLanesTest, StereoInterleavedSampleOutputBlockRoundTripsThroughGraphInputLanesStorage)
+{
+    iv::GraphInputLanes lanes;
+    auto const lane = iv::LaneId{45};
+    auto const block = std::array<iv::Sample, 6>{0.25f, -0.25f, 0.5f, -0.5f, 1.0f, -1.0f};
+
+    lanes.handle_sample_block_published(
+        lane,
+        stereo_interleaved_block(std::span<iv::Sample const>(block), 3));
+
+    auto const stored = lanes.handle_sample_block_requested(lane);
+    EXPECT_EQ(stored.channel_layout.channel_type, iv::ChannelTypeId::stereo);
+    EXPECT_EQ(stored.channel_layout.sample_layout, iv::SampleStreamLayout::interleaved);
+    EXPECT_EQ(stored.frame_count, 3u);
+    EXPECT_EQ(sample_values(stored), (std::vector<iv::Sample>{0.25f, -0.25f, 0.5f, -0.5f, 1.0f, -1.0f}));
 }

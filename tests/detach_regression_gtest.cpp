@@ -2,6 +2,7 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/node.h>
+#include <intravenous/node/block_executor.h>
 #include "module_test_utils.h"
 
 #include <gtest/gtest.h>
@@ -13,24 +14,13 @@
 namespace {
     using namespace iv;
 
-    void tick_executor_direct(iv::NodeExecutor& executor, size_t index, size_t block_size)
+    void tick_executor_direct(iv::BlockNodeExecutor& executor, size_t index, size_t block_size)
     {
         iv::validate_block_size(block_size, "test block size must be a power of 2");
-        if (block_size > executor.max_block_size()) {
-            throw std::logic_error("test block size exceeds executor max block size");
+        if (block_size != executor.block_size()) {
+            throw std::logic_error("test block size must match block executor block size");
         }
-
-        executor.root().tick_block({
-            iv::TickContext<iv::TypeErasedNode> {
-                .inputs = {},
-                .outputs = {},
-                .event_inputs = {},
-                .event_outputs = {},
-                .buffer = executor.storage().buffer(),
-            },
-            index,
-            block_size
-        });
+        executor.tick_block(index);
     }
 
     struct BufferSink {
@@ -89,13 +79,9 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     sink(voice_a + voice_b);
     graph.outputs();
 
-    iv::test::FakeAudioDevice audio_device({ .max_block_frames = output.size() });
-    iv::ExecutionTargetRegistry execution_targets(iv::test::make_audio_device_provider(audio_device));
-    iv::NodeExecutor executor = iv::NodeExecutor::create(
+    iv::BlockNodeExecutor executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(graph.build_root_node().graph),
-        {},
-        std::move(execution_targets).to_builder()
-    );
+        output.size());
     tick_executor_direct(executor, 0, output.size());
 
     bool saw_non_zero = false;

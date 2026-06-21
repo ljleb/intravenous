@@ -192,9 +192,8 @@ namespace {
         auto& g = context.builder();
         auto const a = make_value<0>(g, context);
         auto const b = make_value<1>(g, context);
-        auto const sink = context.target_factory().sink(g, 0);
-        sink(a + b);
-        g.outputs();
+        auto const sink = a + b;
+        g.outputs(channels::mono = sink);
     }
 }
 
@@ -237,9 +236,8 @@ namespace {
             g.node<ValueSource>(&context.sample_period()).node_ref(),
             "decl:annotated_symbol_module::a"
         );
-        auto const sink = context.target_factory().sink(g, 0);
-        sink(a);
-        g.outputs();
+        auto const& sink = a;
+        g.outputs(channels::mono = sink);
     }
 }
 
@@ -297,9 +295,8 @@ namespace {
             g.node<ValueSource>(&context.sample_period()).node_ref(),
             "decl:annotated_symbol_module::a"
         );
-        auto const sink = context.target_factory().sink(g, 0);
-        sink(a);
-        g.outputs();
+        auto const& sink = a;
+        g.outputs(channels::mono = sink);
     }
 }
 
@@ -336,9 +333,8 @@ namespace {
         auto& g = context.builder();
         NodeRef x;
         x = g.node<ValueSource>(&context.sample_period()).node_ref();
-        auto const sink = context.target_factory().sink(g, 0);
-        sink(x);
-        g.outputs();
+        auto const& sink = x;
+        g.outputs(channels::mono = sink);
     }
 }
 
@@ -375,9 +371,8 @@ namespace {
         NodeRef x;
         x = g.node<ValueSource>(&context.sample_period()).node_ref();
         x = g.node<ValueSource>(&context.sample_period()).node_ref();
-        auto const sink = context.target_factory().sink(g, 0);
-        sink(x);
-        g.outputs();
+        auto const& sink = x;
+        g.outputs(channels::mono = sink);
     }
 }
 
@@ -418,9 +413,8 @@ namespace {
         auto& g = context.builder();
         auto const a = make_sum<2>(g);
         auto const b = make_sum<3>(g);
-        auto const sink = context.target_factory().sink(g, 0);
-        sink(a + b);
-        g.outputs();
+        auto const sink = a + b;
+        g.outputs(channels::mono = sink);
     }
 }
 
@@ -469,9 +463,8 @@ namespace {
         auto const a = make_sum<0>(g);
         auto const b = make_sum<1>(g);
         a(value);
-        auto const sink = context.target_factory().sink(g, 0);
-        sink(a + b);
-        g.outputs();
+        auto const sink = a + b;
+        g.outputs(channels::mono = sink);
     }
 }
 
@@ -622,9 +615,7 @@ void polyphonic_module(iv::ModuleContext const& context)
 {
     using namespace iv;
     auto& g = context.builder();
-    auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto const sink = io.sink(g, 0);
     auto const voices = iv::polyphonic<2>(g, [&](auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
@@ -634,8 +625,7 @@ void polyphonic_module(iv::ModuleContext const& context)
         );
         return saw * ("amplitude"_P << m);
     });
-    sink(voices);
-    g.outputs();
+    g.outputs(channels::mono = voices);
 }
 
 IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
@@ -647,7 +637,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 
     auto const result = app.query_by_spans(
         module_cpp,
-        {{.start = {.line = 13, .column = 20}, .end = {.line = 13, .column = 20}}});
+        {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
 
     ASSERT_EQ(result.nodes.size(), 1u);
     auto const &logical = result.nodes.front();
@@ -729,9 +719,7 @@ void polyphonic_module(iv::ModuleContext const& context)
 {
     using namespace iv;
     auto& g = context.builder();
-    auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto const sink = io.sink(g, 0);
     auto const voices = iv::polyphonic<2>(g, [&](auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
@@ -741,8 +729,7 @@ void polyphonic_module(iv::ModuleContext const& context)
         );
         return saw * ("amplitude"_P << m);
     });
-    sink(voices);
-    g.outputs();
+    g.outputs(channels::mono = voices);
 }
 
 IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
@@ -754,7 +741,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 
     auto const result = app.query_by_spans(
         module_cpp,
-        {{.start = {.line = 13, .column = 20}, .end = {.line = 13, .column = 20}}});
+        {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
 
     ASSERT_EQ(result.nodes.size(), 1u);
     EXPECT_EQ(result.nodes.front().kind, "iv::SawOscillator");
@@ -778,9 +765,7 @@ void polyphonic_module(iv::ModuleContext const& context)
 {
     using namespace iv;
     auto& g = context.builder();
-    auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto const sink = io.sink(g, 0);
     auto voice = iv::polyphonic<2>(g, [&](auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
@@ -791,8 +776,7 @@ void polyphonic_module(iv::ModuleContext const& context)
         return saw * ("amplitude"_P << m);
     });
     auto x = std::move(voice);
-    sink(x);
-    g.outputs();
+    g.outputs(channels::mono = x);
 }
 
 IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
@@ -804,7 +788,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 
     auto const result = app.query_by_spans(
         module_cpp,
-        {{.start = {.line = 12, .column = 6}, .end = {.line = 12, .column = 10}}});
+        {{.start = {.line = 10, .column = 10}, .end = {.line = 10, .column = 14}}});
 
     ASSERT_FALSE(result.nodes.empty());
     EXPECT_EQ(result.nodes.front().kind, "Polyphonic");

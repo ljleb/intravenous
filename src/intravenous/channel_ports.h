@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <type_traits>
+#include <utility>
 
 namespace iv {
     enum class MonoChannelPortTag {
@@ -138,6 +139,12 @@ namespace iv {
         constexpr operator PortName<port_name, NamedPortKind::sample>() const
         {
             return {};
+        }
+
+        template<class T>
+        constexpr auto operator=(T&& value) const
+        {
+            return static_cast<PortName<port_name, NamedPortKind::sample>>(*this) = std::forward<T>(value);
         }
     };
 

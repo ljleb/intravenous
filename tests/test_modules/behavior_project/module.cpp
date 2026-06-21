@@ -6,32 +6,21 @@ inline void behavior_project(iv::ModuleContext const& context)
 {
     using namespace iv;
     auto& g = context.builder();
-    auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
-    SamplePortRef first_output;
 
     auto const voice_builder = context.load_builder("iv.test.behavior_voice");
+    auto const phase = g.node<PhaseIntegrator>();
+    auto const voice = g.embed_subgraph(voice_builder);
 
-    for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
-        auto const sink = io.sink(g, channel);
-        auto const phase = g.node<PhaseIntegrator>();
-        auto const voice = g.embed_subgraph(voice_builder);
+    phase(0.0);
+    auto const tone = voice(
+        "amplitude"_P = 0.25,
+        "frequency"_P = 220.0,
+        "phase_offset"_P = phase,
+        "dt"_P = dt
+    );
 
-        phase(0.0);
-        auto tone = voice(
-            "amplitude"_P = 0.25,
-            "frequency"_P = 220.0 + 110.0 * static_cast<Sample>(channel),
-            "phase_offset"_P = phase,
-            "dt"_P = dt
-        );
-
-        if (channel == 0) {
-            first_output = tone;
-        }
-        sink(channel == 0 ? tone : first_output);
-    }
-
-    g.outputs();
+    g.outputs(channels::stereo_left = tone, channels::stereo_right = tone);
 }
 
 IV_EXPORT_MODULE("iv.test.behavior_project", behavior_project);

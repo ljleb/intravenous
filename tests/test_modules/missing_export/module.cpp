@@ -4,12 +4,10 @@ namespace {
     iv::TypeErasedNode missing_export_module(iv::ModuleContext const& context)
     {
         auto& g = context.builder();
-        for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
-            auto const sink = context.target_factory().sink(g, channel);
-            sink(0.0f);
-        }
-
-        g.outputs();
+        g.outputs(
+            iv::channels::stereo_left = 0.0f,
+            iv::channels::stereo_right = 0.0f
+        );
         return iv::TypeErasedNode(g.build_root_node().graph);
     }
 }

@@ -1,5 +1,6 @@
 #include <intravenous/runtime/iv_module_reload.h>
 
+#include <intravenous/devices/audio_device.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/iv_module_reload_events.h>

@@ -39,7 +39,6 @@ namespace iv {
             std::filesystem::path module_path;
             std::string module_id;
             std::vector<ModuleDependency> dependencies;
-            size_t sink_count = 0;
 
             LoadedGraph(
                 TypeErasedNode root_,
@@ -49,8 +48,7 @@ namespace iv {
                 GraphBuildMetadata graph_build_metadata_,
                 std::filesystem::path module_path_,
                 std::string module_id_,
-                std::vector<ModuleDependency> dependencies_,
-                size_t sink_count_
+                std::vector<ModuleDependency> dependencies_
             );
         };
 
@@ -61,7 +59,6 @@ namespace iv {
             std::filesystem::path module_path;
             std::string module_id;
             std::vector<ModuleDependency> dependencies;
-            size_t sink_count = 0;
 
             LoadedDefinition(
                 std::vector<ModuleRef> module_refs_,
@@ -69,8 +66,7 @@ namespace iv {
                 GraphIntrospectionMetadata introspection_,
                 std::filesystem::path module_path_,
                 std::string module_id_,
-                std::vector<ModuleDependency> dependencies_,
-                size_t sink_count_
+                std::vector<ModuleDependency> dependencies_
             );
         };
 

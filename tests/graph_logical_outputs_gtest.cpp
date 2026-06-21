@@ -5,6 +5,52 @@
 
 namespace iv {
 
+namespace {
+struct StereoOutputNode {
+    auto inputs() const
+    {
+        return std::array<InputConfig, 1>{{
+            {.name = "in", .default_value = 0.0f}
+        }};
+    }
+
+    auto outputs() const
+    {
+        return std::array<OutputConfig, 2>{{
+            {.name = "__stereo_left_0"},
+            {.name = "__stereo_right_0"},
+        }};
+    }
+
+    void tick(auto const& ctx) const
+    {
+        ctx.outputs[0].push(Sample{0.0f});
+        ctx.outputs[1].push(Sample{0.0f});
+    }
+};
+
+struct StereoLeftOnlyNode {
+    auto inputs() const
+    {
+        return std::array<InputConfig, 1>{{
+            {.name = "in", .default_value = 0.0f}
+        }};
+    }
+
+    auto outputs() const
+    {
+        return std::array<OutputConfig, 1>{{
+            {.name = "__stereo_left_0"},
+        }};
+    }
+
+    void tick(auto const& ctx) const
+    {
+        ctx.outputs[0].push(Sample{0.0f});
+    }
+};
+} // namespace
+
 TEST(GraphLogicalOutputsTest, EnumeratesLogicalNodeOutputPorts)
 {
     GraphBuilder g;
@@ -45,6 +91,39 @@ TEST(GraphLogicalOutputsTest, GroupsConcreteMembersOfSharedLogicalNode)
     EXPECT_EQ(outputs.sample[0].logical_node_id, "shared");
     EXPECT_EQ(outputs.sample[1].logical_node_id, "shared");
     EXPECT_NE(outputs.sample[0].member_ordinal, outputs.sample[1].member_ordinal);
+}
+
+TEST(GraphLogicalOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
+{
+    GraphBuilder g;
+    auto node = _annotate_node_source_info(g.node<StereoOutputNode>().node_ref(), "stereo");
+    (void)node;
+
+    auto const families = g.logical_sample_output_families();
+    ASSERT_EQ(families.families.size(), 1u);
+    auto const& family = families.families.front();
+    EXPECT_EQ(family.logical_node_id, "stereo");
+    EXPECT_EQ(family.family_ordinal, 0u);
+    EXPECT_EQ(family.channel_type, ChannelTypeId::stereo);
+    EXPECT_EQ(family.channels.size(), 2u);
+    ASSERT_TRUE(family.channels[0].source.has_value());
+    ASSERT_TRUE(family.channels[1].source.has_value());
+}
+
+TEST(GraphLogicalOutputsTest, KeepsSparseStereoFamiliesSparse)
+{
+    GraphBuilder g;
+    auto node = _annotate_node_source_info(g.node<StereoLeftOnlyNode>().node_ref(), "stereo");
+    (void)node;
+
+    auto const families = g.logical_sample_output_families();
+    ASSERT_EQ(families.families.size(), 1u);
+    auto const& family = families.families.front();
+    EXPECT_EQ(family.logical_node_id, "stereo");
+    EXPECT_EQ(family.channel_type, ChannelTypeId::stereo);
+    EXPECT_EQ(family.channels.size(), 2u);
+    ASSERT_TRUE(family.channels[0].source.has_value());
+    EXPECT_FALSE(family.channels[1].source.has_value());
 }
 
 } // namespace iv

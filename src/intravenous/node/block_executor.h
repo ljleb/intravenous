@@ -3,7 +3,6 @@
 #include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/compat.h>
 #include <intravenous/node/lifecycle.h>
-#include <intravenous/orchestrator/orchestrator_builder.h>
 
 #include <optional>
 #include <stdexcept>
@@ -23,7 +22,6 @@ class BlockNodeExecutor {
 
     TypeErasedNode root_;
     ResourceContext resources_;
-    OrchestratorBuilder orchestrator_builder_;
     NodeLayout layout_;
     NodeStorage storage_;
     size_t block_size_ = 0;
@@ -125,8 +123,7 @@ class BlockNodeExecutor {
 
         if (initialize_storage) {
             try {
-                OrchestratorBuilder builder;
-                prepared.storage.initialize(nullptr, &builder);
+                prepared.storage.initialize();
             } catch (std::exception const& e) {
                 throw std::runtime_error(wrap_exception(
                     std::string("failed to ") + operation + " block executor: initialize_storage",
@@ -144,7 +141,7 @@ public:
     ~BlockNodeExecutor()
     {
         try {
-            storage_.release(&orchestrator_builder_);
+            storage_.release();
         } catch (...) {
         }
     }
@@ -152,7 +149,6 @@ public:
     BlockNodeExecutor(BlockNodeExecutor&& other) noexcept
       : root_(std::move(other.root_))
       , resources_(std::move(other.resources_))
-      , orchestrator_builder_(std::move(other.orchestrator_builder_))
       , layout_(std::move(other.layout_))
       , storage_(std::move(other.storage_))
       , block_size_(other.block_size_)
@@ -169,13 +165,12 @@ public:
         }
 
         try {
-            storage_.release(&orchestrator_builder_);
+            storage_.release();
         } catch (...) {
         }
 
         root_ = std::move(other.root_);
         resources_ = std::move(other.resources_);
-        orchestrator_builder_ = std::move(other.orchestrator_builder_);
         layout_ = std::move(other.layout_);
         storage_ = std::move(other.storage_);
         block_size_ = other.block_size_;
@@ -245,9 +240,9 @@ public:
             default_silence_ttl_samples_,
             event_port_buffer_base_multiplier_);
 
-        storage_.release(&orchestrator_builder_);
+        storage_.release();
         try {
-            prepared.storage.initialize(nullptr, &orchestrator_builder_);
+            prepared.storage.initialize();
         } catch (std::exception const& e) {
             throw std::runtime_error(wrap_exception(
                 "failed to reload block executor: initialize_storage",

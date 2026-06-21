@@ -3,7 +3,7 @@
 #include <intravenous/devices/audio_device.h>
 #include "fake_audio_device.h"
 #include <intravenous/module/loader.h>
-#include <intravenous/node/executor.h>
+#include <intravenous/node/block_executor.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_reload.h>
@@ -315,9 +315,8 @@ namespace iv::test {
     {
         auto const workspace = shared_test_fixtures_root() / sanitize_test_token(fixture_name);
         auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(fixture_name) + ".lock"));
-        if (!std::filesystem::exists(workspace)) {
-            copy_directory(test_modules_root() / fixture_name, workspace);
-        }
+        std::filesystem::remove_all(workspace);
+        copy_directory(test_modules_root() / fixture_name, workspace);
         return workspace;
     }
 
@@ -531,38 +530,6 @@ namespace iv::test {
     }
 
     template<typename Device>
-    inline iv::DeviceOrchestrator make_audio_device_provider(Device& audio_device)
-    {
-        struct RefBackend {
-            Device* device = nullptr;
-
-            auto const& config() const
-            {
-                return device->config();
-            }
-
-            std::span<iv::Sample> wait_for_block_request()
-            {
-                return device->wait_for_block_request();
-            }
-
-            void submit_response()
-            {
-                device->submit_response();
-            }
-        };
-
-        std::vector<iv::OutputDeviceMixer> mixers;
-        mixers.emplace_back(
-            iv::AudioOutputDevice(RefBackend{ &audio_device }),
-            [](iv::OrchestratorBuilder& builder, iv::OutputDeviceMixer&& mixer) {
-                builder.add_audio_mixer(0, std::move(mixer));
-            }
-        );
-        return iv::DeviceOrchestrator(std::move(mixers));
-    }
-
-    template<typename Device>
     inline iv::ModuleExecutorTarget module_executor_target(Device const& audio_device)
     {
         return iv::ModuleExecutorTarget{
@@ -588,125 +555,6 @@ namespace iv::test {
         return resources;
     }
 
-    template<typename Device>
-    inline iv::NodeExecutor make_executor(
-        Device& audio_device,
-        iv::DeviceOrchestrator device_orchestrator,
-        iv::ModuleLoader& loader,
-        std::filesystem::path const& module_path
-    )
-    {
-        auto graph = loader.load_root_definition(
-            module_path,
-            module_executor_target(audio_device),
-            &audio_device.sample_period()
-        );
-        auto root = graph.canonical_builder->build_root_node().graph;
-
-        auto resources = make_resource_context(audio_device);
-        auto executor = iv::NodeExecutor::create(
-            std::move(root),
-            std::move(resources),
-            std::move(device_orchestrator).to_builder(),
-            std::move(graph.module_refs)
-        );
-        return executor;
-    }
-
-    template<typename Device>
-    inline iv::NodeExecutor make_executor(
-        Device& audio_device,
-        iv::DeviceOrchestrator device_orchestrator,
-        [[maybe_unused]] size_t executor_id,
-        iv::ModuleLoader& loader,
-        std::filesystem::path const& module_path
-    )
-    {
-        return make_executor(audio_device, std::move(device_orchestrator), loader, module_path);
-    }
-
-    template<typename Device>
-    inline iv::NodeExecutor make_executor(
-        iv::ModuleLoader& loader,
-        Device& audio_device,
-        iv::DeviceOrchestrator device_orchestrator,
-        std::filesystem::path const& module_path
-    )
-    {
-        return make_executor(audio_device, std::move(device_orchestrator), loader, module_path);
-    }
-
-    template<typename Device>
-    inline iv::NodeExecutor make_executor(
-        iv::ModuleLoader& loader,
-        Device& audio_device,
-        iv::DeviceOrchestrator device_orchestrator,
-        [[maybe_unused]] size_t executor_id,
-        std::filesystem::path const& module_path
-    )
-    {
-        return make_executor(audio_device, std::move(device_orchestrator), loader, module_path);
-    }
-
-    template<typename Executor>
-    inline void stop_running_executor(FakeAudioDevice& audio_device, Executor& processor, std::future<void>& worker)
-    {
-        processor.request_shutdown();
-
-        bool posted_unblock_request = false;
-        if (worker.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
-            audio_device.begin_requested_block(0, 1);
-            posted_unblock_request = true;
-            require(
-                worker.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready,
-                "executor did not exit after shutdown"
-            );
-        }
-
-        worker.get();
-        if (posted_unblock_request) {
-            audio_device.finish_requested_block();
-        }
-    }
-
-    template<typename Executor>
-    inline void run_processor_ticks(FakeAudioDevice& audio_device, Executor& processor, size_t ticks = 16)
-    {
-        auto worker = std::async(std::launch::async, [&] {
-            processor.execute();
-        });
-
-        for (size_t i = 0; i < ticks; ++i) {
-            audio_device.begin_requested_block(i, 1);
-            require(audio_device.wait_until_block_ready(), "processor tick did not satisfy fake audio request");
-            audio_device.finish_requested_block();
-        }
-
-        stop_running_executor(audio_device, processor, worker);
-    }
-
-    template<typename Executor>
-    inline void run_processor_blocks(
-        FakeAudioDevice& audio_device,
-        Executor& processor,
-        std::span<size_t const> block_sizes,
-        size_t start_index = 0
-    )
-    {
-        auto worker = std::async(std::launch::async, [&] {
-            processor.execute();
-        });
-
-        size_t index = start_index;
-        for (size_t block_size : block_sizes) {
-            audio_device.begin_requested_block(index, block_size);
-            require(audio_device.wait_until_block_ready(), "processor block did not satisfy fake audio request");
-            audio_device.finish_requested_block();
-            index += block_size;
-        }
-
-        stop_running_executor(audio_device, processor, worker);
-    }
 
     inline void install_crash_handlers()
     {

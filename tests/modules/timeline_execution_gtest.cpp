@@ -940,6 +940,38 @@ TEST(TimelineExecution, StereoSparseCompiledSupportFillsUnsupportedRemainderWith
     EXPECT_EQ(compiled_ticks, 1);
 }
 
+TEST(TimelineExecution, StereoSparseCompiledSupportFillsUnsupportedPrefixWithDefaults)
+{
+    iv::Timeline timeline;
+    int compiled_ticks = 0;
+    auto const compiled_source = timeline.with_graph([&](iv::LaneGraph& graph) {
+        return graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternCompiledSampleLaneNode{
+                .layout = iv::SampleStreamLayout::planar,
+                .support_start = 10,
+                .support_end = 14,
+                .tick_count = &compiled_ticks,
+            }),
+            {},
+            iv::ChannelTypeId::stereo);
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    auto const partially_supported = execution.compiled_sample_block(compiled_source, 8);
+    EXPECT_EQ(
+        per_channel_values(partially_supported),
+        (std::vector<std::vector<iv::Sample>>{
+            { 0.0f, 0.0f, 10.0f, 11.0f },
+            { 0.0f, 0.0f, 110.0f, 111.0f },
+        }));
+    EXPECT_EQ(compiled_ticks, 1);
+}
+
 TEST(TimelineExecution, ChannelTypeChangeRebuildsDownstreamConversionState)
 {
     iv::Timeline timeline;

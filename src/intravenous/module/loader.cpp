@@ -3,7 +3,6 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/compat.h>
 
-#include <intravenous/devices/channel_buffer_sink.h>
 #include <intravenous/graph/builder.h>
 
 #include <algorithm>
@@ -497,7 +496,6 @@ namespace iv {
             std::unordered_map<std::string, ResolvedModule> registry;
             std::vector<std::filesystem::path> search_roots;
             std::unordered_set<std::string> seen_dependencies;
-            size_t sink_count = 0;
 
             TypeErasedModule load_module(std::string_view id)
             {
@@ -623,24 +621,6 @@ namespace iv {
         static TypeErasedModule load_from_context(void* session_ptr, std::string_view id)
         {
             return static_cast<BuildSession*>(session_ptr)->load_module(id);
-        }
-
-        static NodeRef sink_from_context(void* session_ptr, GraphBuilder& builder, size_t channel, size_t device_id)
-        {
-            auto& session = *static_cast<BuildSession*>(session_ptr);
-            ++session.sink_count;
-            return builder.node<AudioDeviceSink>(AudioDeviceSink{
-                .device_id = device_id,
-                .channel = channel,
-            });
-        }
-
-        static NodeRef file_from_context(void*, GraphBuilder& builder, size_t channel, std::filesystem::path const& path)
-        {
-            return builder.node<FileSink>(FileSink{
-                .path = path,
-                .channel = channel,
-            });
         }
 
         ResolvedModule resolve_module_path(std::filesystem::path const& requested_path) const
@@ -1175,14 +1155,8 @@ namespace iv {
             session.search_roots = search_roots;
 
             GraphBuilder builder;
-            ModuleTargetFactory target_factory(
-                &session,
-                &Impl::sink_from_context,
-                &Impl::file_from_context
-            );
             ModuleContext context(
                 builder,
-                target_factory,
                 render_config,
                 sample_period,
                 &Impl::load_from_context,
@@ -1213,8 +1187,7 @@ namespace iv {
                 std::move(introspection),
                 root.request_path,
                 root.id,
-                std::move(session.dependencies),
-                session.sink_count
+                std::move(session.dependencies)
             );
         }
     };
@@ -1227,8 +1200,7 @@ namespace iv {
         GraphBuildMetadata graph_build_metadata_,
         std::filesystem::path module_path_,
         std::string module_id_,
-        std::vector<ModuleDependency> dependencies_,
-        size_t sink_count_
+        std::vector<ModuleDependency> dependencies_
     ) :
         module_refs(std::move(module_refs_)),
         root(std::move(root_)),
@@ -1237,8 +1209,7 @@ namespace iv {
         graph_build_metadata(std::move(graph_build_metadata_)),
         module_path(std::move(module_path_)),
         module_id(std::move(module_id_)),
-        dependencies(std::move(dependencies_)),
-        sink_count(sink_count_)
+        dependencies(std::move(dependencies_))
     {}
 
     ModuleLoader::LoadedDefinition::LoadedDefinition(
@@ -1247,16 +1218,14 @@ namespace iv {
         GraphIntrospectionMetadata introspection_,
         std::filesystem::path module_path_,
         std::string module_id_,
-        std::vector<ModuleDependency> dependencies_,
-        size_t sink_count_
+        std::vector<ModuleDependency> dependencies_
     ) :
         module_refs(std::move(module_refs_)),
         canonical_builder(std::move(canonical_builder_)),
         introspection(std::move(introspection_)),
         module_path(std::move(module_path_)),
         module_id(std::move(module_id_)),
-        dependencies(std::move(dependencies_)),
-        sink_count(sink_count_)
+        dependencies(std::move(dependencies_))
     {}
 
     ModuleLoader::ModuleLoader(

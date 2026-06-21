@@ -102,7 +102,12 @@ TEST_F(IvModuleReloadTest, InvalidDeclarationPublishesFailure)
 TEST_F(IvModuleReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherChanges)
 {
     auto const workspace =
-        iv::test_support::read_only_module_fixture_workspace("local_cmake");
+        iv::test_support::fresh_module_fixture_workspace(
+            "iv_module_reload_without_watcher_changes");
+    iv::test_support::copy_directory(
+        iv::test_support::test_modules_root() / "local_cmake",
+        workspace);
+    iv::test_support::write_text(workspace / ".intravenous", "");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();

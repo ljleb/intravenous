@@ -52,8 +52,8 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 #endif
 
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
-    auto project_needle = std::string("SamplePortRef first_output;");
-    auto project_replacement = std::string("SamplePortRef first_output;\n    // behavior source marker");
+    auto project_needle = std::string("    using namespace iv;");
+    auto project_replacement = std::string("    using namespace iv;\n    // behavior source marker");
     ASSERT_NE(project_source.find(project_needle), std::string::npos);
     project_source.replace(project_source.find(project_needle), project_needle.size(), project_replacement);
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
