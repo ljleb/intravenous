@@ -2,6 +2,7 @@
 
 #include <intravenous/ports.h>
 
+#include <array>
 #include <cstddef>
 #include <ranges>
 #include <string_view>
@@ -14,6 +15,11 @@ namespace iv {
         constexpr fixed_string(char const (&str)[N])
         {
             std::ranges::copy(str, value);
+        }
+
+        constexpr fixed_string(std::array<char, N> const& chars)
+        {
+            std::ranges::copy(chars, value);
         }
 
         constexpr std::string_view view() const

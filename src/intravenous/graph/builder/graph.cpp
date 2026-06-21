@@ -352,9 +352,19 @@ GraphBuilder::LogicalInputs GraphBuilder::logical_inputs() const
     return _connections.collect_logical_inputs(_topology);
 }
 
+GraphBuilder::LogicalSampleInputFamilies GraphBuilder::logical_sample_input_families() const
+{
+    return _connections.collect_logical_sample_input_families(_topology);
+}
+
 GraphBuilder::LogicalOutputs GraphBuilder::logical_outputs() const
 {
     return _connections.collect_logical_outputs(_topology);
+}
+
+GraphBuilder::LogicalSampleOutputFamilies GraphBuilder::logical_sample_output_families() const
+{
+    return _connections.collect_logical_sample_output_families(_topology);
 }
 
 void GraphBuilder::connect_sample_input(PortId target, SamplePortRef source)

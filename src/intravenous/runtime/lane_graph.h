@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/lane_node/channels.h>
 #include <intravenous/ports.h>
 
 #include <atomic>
@@ -87,6 +88,7 @@ namespace iv {
         size_t port_ordinal = 0;
         std::string port_name {};
         std::string port_type {};
+        std::optional<ChannelTypeId> sample_channel_type {};
 
         bool operator==(GraphInputPortDescriptor const&) const = default;
     };
@@ -120,6 +122,12 @@ namespace iv {
             key += port.port_kind == PortKind::sample ? "sample" : "event";
             key += "\x1fordinal:";
             key += std::to_string(port.port_ordinal);
+            key += "\x1f" "channel:";
+            if (port.sample_channel_type.has_value()) {
+                key += std::to_string(static_cast<int>(*port.sample_channel_type));
+            } else {
+                key += "none";
+            }
             return key;
         }
 

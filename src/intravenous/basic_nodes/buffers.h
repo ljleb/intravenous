@@ -79,19 +79,23 @@ namespace iv {
 
     class LaneInputValue {
         LaneId _lane {};
+        size_t _channel_index = 0;
         std::string _identity;
 
     public:
-        static std::string nominal_identity(LaneId lane)
+        static std::string nominal_identity(LaneId lane, size_t channel_index = 0)
         {
-            return "timeline-input-lane:" + std::to_string(lane.value);
+            return "timeline-input-lane:" + std::to_string(lane.value)
+                + ":channel:" + std::to_string(channel_index);
         }
 
         explicit LaneInputValue(
-            LaneId lane
+            LaneId lane,
+            size_t channel_index = 0
         ) :
             _lane(lane),
-            _identity(nominal_identity(lane))
+            _channel_index(channel_index),
+            _identity(nominal_identity(lane, channel_index))
         {}
 
         constexpr auto outputs() const
@@ -114,13 +118,17 @@ namespace iv {
             auto const block = builder.build();
             auto const view = block.view();
             for (size_t i = 0; i < ctx.block_size; ++i) {
-                ctx.outputs[0].push(i < view.frames() ? view.get(i, 0) : Sample{0.0f});
+                ctx.outputs[0].push(
+                    i < view.frames() && _channel_index < view.channels()
+                        ? view.get(i, _channel_index)
+                        : Sample{0.0f});
             }
         }
     };
 
     class GraphSampleOutputSink {
         LaneId _lane {};
+        ChannelTypeId _channel_type = ChannelTypeId::mono;
         std::string _identity;
 
     public:
@@ -129,14 +137,15 @@ namespace iv {
             return "graph-output-sample-sink:" + std::to_string(lane.value);
         }
 
-        explicit GraphSampleOutputSink(LaneId lane) :
+        explicit GraphSampleOutputSink(LaneId lane, ChannelTypeId channel_type = ChannelTypeId::mono) :
             _lane(lane),
+            _channel_type(channel_type),
             _identity(nominal_identity(lane))
         {}
 
         auto inputs() const
         {
-            return std::array<InputConfig, 1>{};
+            return std::vector<InputConfig>(channel_count(_channel_type));
         }
 
         std::string identity() const
@@ -146,15 +155,18 @@ namespace iv {
 
         void tick_block(TickBlockContext<GraphSampleOutputSink> const& ctx) const
         {
-            auto const block = ctx.inputs[0].get_block(ctx.block_size);
-            std::vector<Sample> samples(ctx.block_size);
-            for (size_t i = 0; i < ctx.block_size; ++i) {
-                samples[i] = i < block.size() ? block[i] : Sample{0.0f};
+            std::vector<Sample> samples(channel_count(_channel_type) * ctx.block_size);
+            for (size_t channel = 0; channel < channel_count(_channel_type); ++channel) {
+                auto const block = ctx.inputs[channel].get_block(ctx.block_size);
+                for (size_t i = 0; i < ctx.block_size; ++i) {
+                    samples[channel * ctx.block_size + i] =
+                        i < block.size() ? block[i] : Sample{0.0f};
+                }
             }
             auto published = BorrowedSampleBlock{
                 .samples = samples,
                 .channel_layout = ChannelLayout{
-                    .channel_type = ChannelTypeId::mono,
+                    .channel_type = _channel_type,
                     .sample_layout = SampleStreamLayout::planar,
                 },
                 .frame_count = ctx.block_size,

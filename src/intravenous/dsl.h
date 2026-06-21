@@ -5,6 +5,7 @@
 #endif
 
 #include <intravenous/basic_nodes/midi.h>
+#include <intravenous/channel_ports.h>
 #include <intravenous/module/module.h>
 
 namespace iv {

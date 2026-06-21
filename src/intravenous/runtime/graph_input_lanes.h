@@ -130,7 +130,8 @@ private:
     static GraphInputPortDescriptor sample_input_descriptor(
         std::string const &node_id,
         std::optional<size_t> member_ordinal,
-        size_t input_ordinal);
+        size_t input_ordinal,
+        ChannelTypeId channel_type = ChannelTypeId::mono);
     static LaneMetadata graph_input_metadata(
         DesiredGraphInputPort const &port,
         bool knob,
@@ -190,7 +191,8 @@ private:
     GraphInputLaneBindings sample_input_bindings(
         std::string const &node_id,
         std::optional<size_t> member_ordinal,
-        size_t input_ordinal);
+        size_t input_ordinal,
+        ChannelTypeId channel_type);
     GraphInputLaneBindings query_graph_input_lane_bindings(
         ProjectGraphInputLaneBindingsRequest const &request);
     std::optional<LaneMetadata> tracked_lane_metadata_locked(LaneId lane) const;

@@ -353,6 +353,26 @@ namespace {
     static_assert(BitNotInvocable<iv::SamplePortRef>);
     static_assert(BitNotInvocable<iv::StructuredNodeRef<UnaryPassthrough>>);
     static_assert(std::same_as<iv::details::node_ref_for_t<iv::Broadcast>, iv::TypedNodeRef<iv::Broadcast>>);
+    using MonoPortName = iv::PortName<iv::fixed_string("__mono_center_0"), iv::NamedPortKind::sample>;
+    using StereoLeftPortName = iv::PortName<iv::fixed_string("__stereo_left_0"), iv::NamedPortKind::sample>;
+    using StereoRightPortName = iv::PortName<iv::fixed_string("__stereo_right_0"), iv::NamedPortKind::sample>;
+    using StereoLeftPortName3 = iv::PortName<iv::fixed_string("__stereo_left_3"), iv::NamedPortKind::sample>;
+    static_assert(std::same_as<
+        decltype(static_cast<MonoPortName>(iv::channels::mono)),
+        MonoPortName>);
+    static_assert(std::same_as<
+        decltype(static_cast<MonoPortName>(swap_side(iv::channels::mono))),
+        MonoPortName>);
+    static_assert(std::same_as<
+        decltype(static_cast<StereoLeftPortName>(iv::channels::stereo_left)),
+        StereoLeftPortName>);
+    static_assert(std::same_as<
+        decltype(static_cast<StereoRightPortName>(swap_side(iv::channels::stereo_left))),
+        StereoRightPortName>);
+    static_assert(port_index(iv::channels::stereo_left) == 0);
+    static_assert(std::same_as<
+        decltype(static_cast<StereoLeftPortName3>(with_port_index<3>(iv::channels::stereo_left))),
+        StereoLeftPortName3>);
 
     void expect_constant_block(std::span<iv::Sample const> block, iv::Sample expected)
     {

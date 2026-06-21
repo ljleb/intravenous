@@ -9,6 +9,7 @@
 #include <intravenous/graph/builder/annotations.h>
 #include <intravenous/graph/builder/finalize.h>
 #include <intravenous/basic_nodes/arithmetic.h>
+#include <intravenous/channel_ports.h>
 
 #include <algorithm>
 #include <array>
@@ -108,19 +109,30 @@ namespace iv {
         using LogicalSampleInput = GraphBuilderLogicalSampleInput;
         using LogicalEventInput = GraphBuilderLogicalEventInput;
         using LogicalInputs = GraphBuilderLogicalInputs;
+        using LogicalSampleInputChannel = GraphBuilderLogicalSampleInputChannel;
+        using LogicalSampleInputFamily = GraphBuilderLogicalSampleInputFamily;
+        using LogicalSampleInputFamilies = GraphBuilderLogicalSampleInputFamilies;
         using LogicalSampleOutput = GraphBuilderLogicalSampleOutput;
         using LogicalEventOutput = GraphBuilderLogicalEventOutput;
         using LogicalOutputs = GraphBuilderLogicalOutputs;
+        using LogicalSampleOutputChannel = GraphBuilderLogicalSampleOutputChannel;
+        using LogicalSampleOutputFamily = GraphBuilderLogicalSampleOutputFamily;
+        using LogicalSampleOutputFamilies = GraphBuilderLogicalSampleOutputFamilies;
 
         VacantInputs vacant_inputs() const;
         LogicalInputs logical_inputs() const;
+        LogicalSampleInputFamilies logical_sample_input_families() const;
         LogicalOutputs logical_outputs() const;
+        LogicalSampleOutputFamilies logical_sample_output_families() const;
         void connect_sample_input(PortId target, SamplePortRef source);
         void connect_event_input(PortId target, EventPortRef source);
         void mark_runtime_filled_sample_input(PortId target);
         void mark_runtime_filled_event_input(PortId target);
         GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
         RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
+
+        template<class Fn>
+        void multi_channel(ChannelTypeId channel_type, Fn&& fn);
 
     private:
         static std::string allocate_root_builder_id();
@@ -238,6 +250,23 @@ namespace iv {
             },
             std::forward<Refs>(refs)...
         );
+    }
+
+    template<class Fn>
+    void GraphBuilder::multi_channel(ChannelTypeId channel_type, Fn&& fn)
+    {
+        switch (channel_type) {
+        case ChannelTypeId::mono:
+            fn.template operator()<iv::channels::mono>();
+            return;
+        case ChannelTypeId::stereo:
+            fn.template operator()<iv::channels::stereo_left>();
+            fn.template operator()<iv::channels::stereo_right>();
+            return;
+        case ChannelTypeId::count:
+            break;
+        }
+        details::error("builder " + _identity.value + ": invalid channel type passed to multi_channel()");
     }
 
     template<class Derived, class Node>

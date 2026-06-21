@@ -1,11 +1,13 @@
 #pragma once
 
+#include <intravenous/lane_node/channels.h>
 #include <intravenous/graph/scc_wrapper.h>
 #include <intravenous/graph/types.h>
 #include <intravenous/graph/wiring.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +28,7 @@ namespace iv {
         Sample default_value = 0.0f;
         size_t history = 0;
         size_t latency = 0;
+        std::optional<ChannelTypeId> sample_channel_type {};
 
         bool operator==(IntrospectionPortInfo const&) const = default;
     };
@@ -38,6 +41,7 @@ namespace iv {
         Sample default_value = 0.0f;
         Sample current_value = 0.0f;
         bool has_concrete_override = false;
+        std::optional<ChannelTypeId> sample_channel_type {};
 
         bool operator==(LogicalPortInfo const&) const = default;
     };

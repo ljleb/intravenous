@@ -2,7 +2,9 @@
 
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/port_refs.h>
+#include <intravenous/lane_node/channels.h>
 
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -53,6 +55,26 @@ namespace iv {
         std::vector<GraphBuilderLogicalEventInput> event {};
     };
 
+    struct GraphBuilderLogicalSampleInputChannel {
+        std::optional<PortId> target {};
+        bool has_existing_connection = false;
+        bool runtime_filled = false;
+    };
+
+    struct GraphBuilderLogicalSampleInputFamily {
+        std::string logical_node_id {};
+        size_t member_ordinal = 0;
+        size_t family_ordinal = 0;
+        std::string family_name {};
+        InputConfig config {};
+        ChannelTypeId channel_type = ChannelTypeId::mono;
+        std::vector<GraphBuilderLogicalSampleInputChannel> channels {};
+    };
+
+    struct GraphBuilderLogicalSampleInputFamilies {
+        std::vector<GraphBuilderLogicalSampleInputFamily> families {};
+    };
+
     struct GraphBuilderLogicalSampleOutput {
         PortId source {};
         std::string logical_node_id {};
@@ -72,6 +94,25 @@ namespace iv {
     struct GraphBuilderLogicalOutputs {
         std::vector<GraphBuilderLogicalSampleOutput> sample {};
         std::vector<GraphBuilderLogicalEventOutput> event {};
+    };
+
+    struct GraphBuilderLogicalSampleOutputChannel {
+        std::optional<PortId> source {};
+        bool has_existing_downstream_connection = false;
+    };
+
+    struct GraphBuilderLogicalSampleOutputFamily {
+        std::string logical_node_id {};
+        size_t member_ordinal = 0;
+        size_t family_ordinal = 0;
+        std::string family_name {};
+        OutputConfig config {};
+        ChannelTypeId channel_type = ChannelTypeId::mono;
+        std::vector<GraphBuilderLogicalSampleOutputChannel> channels {};
+    };
+
+    struct GraphBuilderLogicalSampleOutputFamilies {
+        std::vector<GraphBuilderLogicalSampleOutputFamily> families {};
     };
 
     class GraphBuilderConnections {
@@ -95,7 +136,11 @@ namespace iv {
         void mark_runtime_filled_event_input(PortId target);
         GraphBuilderVacantInputs collect_vacant_inputs(GraphBuilderTopology const&) const;
         GraphBuilderLogicalInputs collect_logical_inputs(GraphBuilderTopology const&) const;
+        GraphBuilderLogicalSampleInputFamilies collect_logical_sample_input_families(
+            GraphBuilderTopology const&) const;
         GraphBuilderLogicalOutputs collect_logical_outputs(GraphBuilderTopology const&) const;
+        GraphBuilderLogicalSampleOutputFamilies collect_logical_sample_output_families(
+            GraphBuilderTopology const&) const;
         void import_child(GraphBuilderConnections const& child, size_t child_node_offset);
         template<class Fn>
         void for_each_runtime_filled_sample_input(Fn&& fn) const
