@@ -42,6 +42,15 @@ This module is allowed to be a bottleneck on purpose.
 
 It should expose only authored mutation commands, not queries.
 
+The preferred implementation shape is intentionally minimal:
+
+- a thin event-forwarding surface
+- one stable mutation ingress for JSON-RPC and project loading
+- no policy-heavy normalization layer inside the dispatcher by default
+
+The dispatcher may still become a useful orchestration point in rare cases, but
+that is a fallback, not the desired steady state.
+
 Examples:
 
 - create iv-module instance
@@ -63,7 +72,9 @@ A stable transport-independent modification module:
 
 - receives typed authored mutation commands
 - invokes owning/managing modules
-- optionally coordinates more than one module when needed
+- acts primarily as a thin event forwarder
+- may optionally coordinate more than one module when needed, but should not
+  become orchestration-heavy by default
 
 ### Project persistence module
 
@@ -98,6 +109,20 @@ Important property:
 
 - project load does not directly mutate owning modules through custom private
   persistence hooks
+
+Replay semantics should be:
+
+- best-effort
+- comprehensive in diagnostics
+- lossless in intent reporting
+
+That means:
+
+- a command that can be applied should be applied
+- a command that fails should emit a clear diagnostic
+- later commands are still attempted in file order
+- dependency truth is discovered dynamically by real command execution rather
+  than by a separate dependency graph or annotation layer
 
 ## Config-file split
 
@@ -174,13 +199,6 @@ This means that today:
 - installation `.intravenous_defaults` is really an installation defaults file
 - module-local `.intravenous` is not currently carrying meaningful active state
 
-There is also at least one stale tooling path worth remembering:
-
-- `scripts/generate_intravenous_defaults.sh` currently writes camelCase keys
-  while the runtime parser expects snake_case keys
-
-That should be cleaned up separately later.
-
 ## One route per purpose
 
 We should never create two different command routes for the same logical
@@ -201,6 +219,10 @@ So a project-owned setting may hold either:
 and `default` means:
 
 - resolve through installation defaults
+
+Resolving `default` is not the job of the thin shared command dispatcher.
+
+It belongs with the owning/managing module and the persistence/config model.
 
 This should apply to things like:
 
@@ -238,6 +260,40 @@ For example:
 - create an iv-module instance
 - immediately follow with authored settings for that instance
 
+Each serialized command object should have exactly two top-level fields:
+
+- `command`
+- `args`
+
+If a command needs an id, that id should appear as a named field inside
+`args`.
+
+No generic cross-command metadata fields should be added by default.
+
+Project-wide settings should be represented by one command at the beginning of
+the command list rather than by a separate non-command header section.
+
+Commands should be object-oriented:
+
+- one command per authored object
+- a lane connection is one authored object
+- a lane view is one authored object
+- an iv-module instance is one authored object
+
+This means the default shape of a command should be a full object definition
+rather than a tiny UI-gesture-like patch.
+
+Paths should be stored relative to the project directory.
+
+The YAML subset should only be used to express tree structures:
+
+- mappings
+- sequences
+- scalar values
+
+Object references should be represented only as UUID strings inside that tree
+data. YAML-native alias/reference features are not needed.
+
 ## Serialization policy for module-managed lanes
 
 `Timeline` should not blindly serialize every lane visible in its structural
@@ -258,6 +314,26 @@ The principle is:
 - serialize authored policy owned by the managing module
 - do not serialize purely derived lane records just because they exist inside
   the timeline substrate
+
+One important consequence is that lane connectivity becomes first-class authored
+state over partly derived lane state.
+
+In current code and in the intended direction:
+
+- which lanes exist is often owned by lane-authoring/managing modules
+- which lanes connect is owned by the timeline substrate
+
+Therefore:
+
+- any lane that may participate in saved authored connectivity must have a
+  stable identity
+- that stable identity must be chosen and preserved by the module that owns the
+  lane's existence/policy
+- timeline connectivity should be serialized against those stable lane ids
+
+So even when a lane body is derived, its stable lane identity may still be part
+of authored persisted state if authored connectivity or authored views need to
+refer to it reliably.
 
 For graph-input-derived lanes specifically:
 
@@ -281,6 +357,212 @@ Current intended authored state includes:
 
 Lane filters do not need to be stored separately if the query already is the
 filter model.
+
+## Concrete per-module persistence proposal
+
+This section is the current best-shot proposal for what project persistence
+should save by app module.
+
+### `IvModuleInstances`
+
+Persist:
+
+- stable instance id
+- module root / definition reference
+- all per-instance authored settings
+- any future per-instance setting that affects materialization
+
+Do not persist:
+
+- realized builder
+- live loaded module id
+- introspection snapshot
+- realized module refs
+
+### `GraphInputLanes`
+
+Persist:
+
+- authored input policy state per relevant port
+- authored output policy state per relevant port
+- authored sample override values
+- any authored setting that controls disconnected / logical-follow /
+  overridden / timeline-lane style behavior
+- stable lane ids for any graph-input-managed lanes that must be referencable
+  by saved connectivity or saved views
+
+Do not persist:
+
+- fully derived lane records that can be regenerated from authored policy
+- runtime-only live values that are not authored overrides
+
+### `AudioDeviceLanes`
+
+Persist:
+
+- authored project value for selected input/output device as `explicit |
+  default`
+- stable ids for audio-device-managed lanes if those lanes may participate in
+  saved connectivity or saved views
+- any authored settings for those lanes
+
+Do not persist:
+
+- current device availability snapshot
+- runtime stream state
+- synchronizer/resampler buffers and live device state
+
+### `Timeline`
+
+Persist:
+
+- authored lane connectivity
+- any truly timeline-owned settings that are not owned by another managing
+  module
+
+Do not persist:
+
+- lane existence for module-managed lanes
+- execution caches
+- task graph state
+
+Important property:
+
+- timeline connectivity should be serialized by stable lane ids, not by
+  transient allocation order
+
+### `LaneViews`
+
+Persist:
+
+- stable view id
+- query string
+- viewport/window/order/layout state needed to restore the project UI meaningfully
+- any additional authored view settings later considered part of reopening the
+  project "as it was"
+
+Do not persist:
+
+- resolved query results
+- transient dirty/runtime state
+
+### `LaneFilters`
+
+Persist:
+
+- nothing separately when the query already is the filter model
+
+Do not persist:
+
+- bound/compiled query state
+- cached filter evaluation state
+
+### `LanesVisualization`
+
+Persist:
+
+- nothing
+
+Do not persist:
+
+- visualization helper lanes
+- visualization payloads
+- refresh/publishing runtime state
+
+### `IvModuleDefinitions`
+
+Persist:
+
+- nothing directly
+
+Do not persist:
+
+- live loaded definitions
+- canonical builders
+- status or message notifications
+
+### `IvModuleReload`
+
+Persist:
+
+- nothing
+
+Do not persist:
+
+- watcher state
+- reload attempts/results
+- dependency tracking state
+
+### `IvModuleSourceIntrospection`
+
+Persist:
+
+- nothing
+
+Do not persist:
+
+- introspection indexes
+- query-facing cached snapshots
+
+### `TimelineExecution`
+
+Persist:
+
+- the project value for `compiled_sample_cache_chunk_size_multiplier` as
+  `explicit | default`, if this setting remains useful
+
+Do not persist:
+
+- compiled support ranges
+- compiled sample caches
+- compiled event caches
+- runtime execution memory/state
+
+### `TaskRunner`
+
+Persist:
+
+- nothing
+
+Do not persist:
+
+- declared task graph
+- compiled execution plan
+
+### Project/execution/build settings
+
+Persist:
+
+- project-owned build or execution settings
+- project overrides of installation defaults
+
+Do not persist:
+
+- resolved installation values as though they were explicit project values
+
+## Save builder model
+
+App modules should not emit commands directly while saving.
+
+Instead:
+
+- the persistence module owns a structured save-state builder
+- each contributor updates only its fixed subset of that structured builder
+  state
+- the builder lowers the structured save state into the final normalized
+  command list when output is built
+
+This keeps module save contributions structured and local while keeping the
+serialized file flat and stable.
+
+The structured builder state will likely need slices for:
+
+- project settings
+- iv-module instances
+- graph-input policy objects
+- module-managed lane objects
+- timeline connectivity objects
+- lane view objects
 
 ## Lane views
 
@@ -342,6 +624,19 @@ Important property:
 
 - save normalization must never renumber or compact IDs
 
+Recommended direction:
+
+- use UUIDs for persisted authored object creation
+- preserve them forever
+- reuse them on subsequent saves
+
+This is especially important for:
+
+- iv-module instances
+- lane views
+- any module-managed lanes that may participate in saved connectivity or saved
+  views
+
 ## What should not be stored
 
 The project file should not store:
@@ -356,6 +651,30 @@ The project file should not store:
 - device enumeration snapshots
 - reload/watcher state
 - any other fully derived runtime state
+
+## Replay diagnostics
+
+Project replay should produce comprehensive diagnostics.
+
+Suggested command outcome states:
+
+- `applied`
+- `failed`
+
+Where:
+
+- `failed` means the command itself could not be applied
+
+Diagnostics should retain enough information to avoid information loss:
+
+- command identity or file location
+- outcome state
+- human-readable error message
+- exception text from the real command execution path
+
+No explicit dependency graph, skip graph, or cause-annotation layer should be
+required. Someone reading diagnostics can infer practical dependency failures
+from the real exception output and command order.
 
 ## Current and future settings
 
@@ -385,6 +704,6 @@ explicitly deferred for now.
 4. Audit authored-state owners, especially `IvModuleInstances`.
 5. Define serialization ownership policy per managing module.
 6. Define persisted ID policy.
-7. Define normalized one-command-per-line project file semantics.
-8. Only after that, settle the concrete YAML schema and implementation.
-
+7. Define replay diagnostics and best-effort failure semantics.
+8. Define normalized one-command-per-line project file semantics.
+9. Only after that, settle the concrete YAML schema and implementation.
