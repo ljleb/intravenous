@@ -43,5 +43,6 @@ public:
 
     VersionedTaskGraphUpdate handle_instance_builders_changed(
         IvModuleInstanceBuildersChanged const &diff);
+    void resume(size_t start_index);
 };
 }

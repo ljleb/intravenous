@@ -1,6 +1,7 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/basic_lane_nodes/controls.h>
+#include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/runtime/runtime_project_timeline_execution_bridge.h>
@@ -8,6 +9,8 @@
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
+#include <intravenous/runtime/timeline_timeline_execution_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_instances_execution_bridge.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -268,4 +271,101 @@ TEST(SocketRpcTimelineExecutionBridge, LoadAppliesRecognizedOverrideSettingsAndL
     iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
     g_project_notification_witness = nullptr;
+}
+
+TEST(SocketRpcTimelineExecutionBridge, PlaybackPauseAndResumeDriveExecutionState)
+{
+    iv::Timeline timeline;
+    iv::TimelineExecution execution(8, 16);
+    iv::bind_timeline_timeline_execution_bridge(timeline, execution);
+    iv::bind_socket_rpc_timeline_execution_bridge(
+        timeline,
+        execution,
+        std::filesystem::current_path());
+
+    iv::SocketRpcAckResponseBuilder pause_builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_socket_rpc_pause_event,
+        iv::PauseRequest{},
+        pause_builder);
+    auto const pause_response = parse_json_line(pause_builder.build(1));
+    EXPECT_EQ(pause_response["result"]["ok"], true);
+    EXPECT_TRUE(execution.is_paused());
+
+    iv::SocketRpcAckResponseBuilder resume_builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_socket_rpc_resume_event,
+        iv::ResumeRequest{.start_index = 96},
+        resume_builder);
+    auto const resume_response = parse_json_line(resume_builder.build(2));
+    EXPECT_EQ(resume_response["result"]["ok"], true);
+    EXPECT_FALSE(execution.is_paused());
+    EXPECT_EQ(execution.realtime_start_index(), 96u);
+
+    iv::unbind_socket_rpc_timeline_execution_bridge(execution);
+    iv::unbind_timeline_timeline_execution_bridge(timeline, execution);
+}
+
+TEST(SocketRpcTimelineExecutionBridge, PlaybackResumeRealignsIvModuleExecutionIndices)
+{
+    iv::Timeline timeline;
+    iv::TimelineExecution timeline_execution(8, 16);
+    iv::IvModuleInstancesExecution execution(8);
+    iv::bind_timeline_timeline_execution_bridge(timeline, timeline_execution);
+    iv::bind_iv_module_instances_iv_module_instances_execution_bridge(execution);
+    iv::bind_socket_rpc_timeline_execution_bridge(
+        timeline,
+        timeline_execution,
+        std::filesystem::current_path());
+
+    struct IndexRecordingNode {
+        std::vector<size_t> *indices = nullptr;
+
+        void tick_block(iv::TickBlockContext<IndexRecordingNode> const &ctx) const
+        {
+            if (indices) {
+                indices->push_back(ctx.index);
+            }
+        }
+    };
+
+    iv::IvModuleInstance instance {};
+    instance.instance_id = "instance:1";
+    instance.definition_id = "definition:1";
+    instance.module_id = "module.test";
+
+    iv::GraphBuilder builder;
+    std::vector<size_t> indices;
+    (void)builder.node<IndexRecordingNode>(&indices);
+    builder.outputs();
+
+    auto update = execution.handle_instance_builders_changed(
+        iv::IvModuleInstanceBuildersChanged{
+            .created = {
+                iv::IvModuleInstanceBuilderRef{
+                    .instance = &instance,
+                    .builder = &builder,
+                },
+            },
+        });
+    ASSERT_EQ(update.update.to_create.size(), 1u);
+    auto const callback = update.update.to_create[0].callback;
+
+    callback.invoke(callback.context);
+    callback.invoke(callback.context);
+
+    iv::SocketRpcAckResponseBuilder resume_builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_socket_rpc_resume_event,
+        iv::ResumeRequest{.start_index = 128},
+        resume_builder);
+    auto const resume_response = parse_json_line(resume_builder.build(3));
+    EXPECT_EQ(resume_response["result"]["ok"], true);
+
+    callback.invoke(callback.context);
+    EXPECT_EQ(indices, (std::vector<size_t>{0u, 8u, 128u}));
+
+    iv::unbind_socket_rpc_timeline_execution_bridge(timeline_execution);
+    iv::unbind_iv_module_instances_iv_module_instances_execution_bridge(execution);
+    iv::unbind_timeline_timeline_execution_bridge(timeline, timeline_execution);
 }

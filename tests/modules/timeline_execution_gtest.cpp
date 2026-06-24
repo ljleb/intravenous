@@ -516,6 +516,50 @@ TEST(TimelineExecution, ReadsCompiledEventStorageIntoRealtimeEventInputs)
     EXPECT_EQ(compiled_events[0].time, 32u);
 }
 
+TEST(TimelineExecution, PausePinsRealtimeStartIndexUntilResume)
+{
+    iv::Timeline timeline;
+    int compiled_ticks = 0;
+    iv::LaneId compiled_source {};
+    iv::LaneId realtime_target {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        compiled_source = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledSampleSourceLaneNode {
+            .tick_count = &compiled_ticks,
+        }), {}, iv::ChannelTypeId::mono);
+        realtime_target = graph.add_lane(iv::TypeErasedLaneNode(iv::GraphSampleInputLaneNode {
+            .default_value = -1.0f,
+        }), {}, iv::ChannelTypeId::mono);
+        graph.connect(compiled_source, realtime_target, iv::realtime_sample_input());
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    execution.set_realtime_start_index(8);
+    harness.run_once();
+    EXPECT_EQ(sample_values(execution.realtime_sample_block(realtime_target)),
+        (std::vector<iv::Sample>{8.0f, 9.0f, 10.0f, 11.0f}));
+
+    execution.pause();
+    EXPECT_TRUE(execution.is_paused());
+    execution.set_realtime_start_index(32);
+    harness.run_once();
+    EXPECT_EQ(execution.realtime_start_index(), 8u);
+    EXPECT_EQ(sample_values(execution.realtime_sample_block(realtime_target)),
+        (std::vector<iv::Sample>{8.0f, 9.0f, 10.0f, 11.0f}));
+
+    execution.resume(32);
+    EXPECT_FALSE(execution.is_paused());
+    harness.run_once();
+    EXPECT_EQ(execution.realtime_start_index(), 32u);
+    EXPECT_EQ(sample_values(execution.realtime_sample_block(realtime_target)),
+        (std::vector<iv::Sample>{32.0f, 33.0f, 34.0f, 35.0f}));
+    EXPECT_EQ(compiled_ticks, 1);
+}
+
 TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
 {
     iv::Timeline timeline;

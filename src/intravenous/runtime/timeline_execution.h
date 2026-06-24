@@ -28,7 +28,11 @@ public:
     VersionedTaskGraphUpdate handle_timeline_lanes_changed(TimelineLanesChanged const &change);
 
     std::vector<LaneId> realtime_sample_output_lanes() const;
+    void pause();
+    void resume(size_t start_index);
+    [[nodiscard]] bool is_paused() const;
     void set_realtime_start_index(size_t start_index);
+    [[nodiscard]] size_t realtime_start_index() const;
     void set_compiled_sample_cache_chunk_size_multiplier(size_t multiplier);
     size_t compiled_sample_cache_chunk_size_multiplier() const;
     BorrowedSampleBlock realtime_sample_block(LaneId lane) const;
@@ -92,6 +96,7 @@ private:
     std::unordered_map<LaneId, CompiledSampleChunkCache, LaneIdHash> compiled_sample_cache_;
     std::unordered_map<LaneId, CompiledEventCacheEntry, LaneIdHash> compiled_event_cache_;
     size_t current_start_index_ = 0;
+    bool paused_ = false;
 
     static void invoke_lane_task(void *context);
     void execute_lane_task(LaneId lane);

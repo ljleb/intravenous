@@ -368,6 +368,21 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             .payload = SaveProjectRequest{},
         };
     }
+    if (method == "playback.pause") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = PauseRequest{},
+        };
+    }
+    if (method == "playback.resume") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = ResumeRequest{
+                .start_index = static_cast<size_t>(
+                    parse_uint64_param(params, "startIndex")),
+            },
+        };
+    }
     if (method == "timeline.openLaneView" || method == "timeline.updateLaneView") {
         auto const request_payload = parse_lane_view_request(params);
         if (method == "timeline.openLaneView") {

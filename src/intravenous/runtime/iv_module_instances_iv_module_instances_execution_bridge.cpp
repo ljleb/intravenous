@@ -3,6 +3,7 @@
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/iv_module_instances_execution_events.h>
+#include <intravenous/runtime/timeline_execution_events.h>
 
 namespace iv {
 namespace {
@@ -31,6 +32,15 @@ IV_SUBSCRIBE_LINKER_EVENT(
     IvModuleInstanceBuildersCompletedEvent,
     iv_runtime_iv_module_instance_builders_completed_event,
     handle_iv_module_instance_builders_completed);
+IV_SUBSCRIBE_LINKER_EVENT(
+    TimelineExecutionResumedEvent,
+    iv_runtime_timeline_execution_resumed_event,
+    +[](TimelineExecutionResumed const &resumed) {
+        if (!bound_execution) {
+            return;
+        }
+        bound_execution->resume(resumed.start_index);
+    });
 }
 
 void bind_iv_module_instances_iv_module_instances_execution_bridge(

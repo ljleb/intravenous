@@ -129,4 +129,13 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
         .update = std::move(update),
     };
 }
+
+void IvModuleInstancesExecution::resume(size_t start_index)
+{
+    std::scoped_lock lock(mutex_);
+    for (auto &[instance_id, state] : instances_by_id_) {
+        (void)instance_id;
+        state.next_block_index = start_index;
+    }
+}
 }

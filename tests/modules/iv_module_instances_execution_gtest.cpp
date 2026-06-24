@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <vector>
+
 namespace {
     struct CountingNode {
         int *ticks = nullptr;
@@ -10,6 +12,17 @@ namespace {
         {
             if (ticks) {
                 *ticks += 1;
+            }
+        }
+    };
+
+    struct IndexRecordingNode {
+        std::vector<size_t> *indices = nullptr;
+
+        void tick_block(iv::TickBlockContext<IndexRecordingNode> const &ctx) const
+        {
+            if (indices) {
+                indices->push_back(ctx.index);
             }
         }
     };
@@ -130,4 +143,36 @@ TEST(IvModuleInstancesExecution, TaskCallbackTicksTheBuiltGraph)
     callback.invoke(callback.context);
 
     EXPECT_EQ(ticks, 2);
+}
+
+TEST(IvModuleInstancesExecution, ResumeResetsBlockIndexWhileOngoingTicksKeepAdvancing)
+{
+    iv::IvModuleInstancesExecution execution(8);
+    auto instance = make_instance("instance:1");
+    iv::GraphBuilder builder;
+    std::vector<size_t> indices;
+    (void)builder.node<IndexRecordingNode>(&indices);
+    builder.outputs();
+
+    auto update = execution.handle_instance_builders_changed(
+        iv::IvModuleInstanceBuildersChanged {
+            .created = {
+                iv::IvModuleInstanceBuilderRef {
+                    .instance = &instance,
+                    .builder = &builder,
+                },
+            },
+        });
+
+    ASSERT_EQ(update.update.to_create.size(), 1u);
+    auto const callback = update.update.to_create[0].callback;
+    ASSERT_NE(callback.invoke, nullptr);
+
+    callback.invoke(callback.context);
+    callback.invoke(callback.context);
+    execution.resume(64);
+    callback.invoke(callback.context);
+    callback.invoke(callback.context);
+
+    EXPECT_EQ(indices, (std::vector<size_t>{0u, 8u, 64u, 72u}));
 }

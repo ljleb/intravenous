@@ -234,6 +234,27 @@ TEST(SocketRpcRequestParser, ParsesProjectSaveRequest)
     ASSERT_NE(request, nullptr);
 }
 
+TEST(SocketRpcRequestParser, ParsesPlaybackPauseRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":33,"method":"playback.pause","params":{}})");
+
+    EXPECT_EQ(parsed.request_id, 33);
+    auto const *request = std::get_if<iv::PauseRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+}
+
+TEST(SocketRpcRequestParser, ParsesPlaybackResumeRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":34,"method":"playback.resume","params":{"startIndex":96}})");
+
+    EXPECT_EQ(parsed.request_id, 34);
+    auto const *request = std::get_if<iv::ResumeRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->start_index, 96u);
+}
+
 TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(

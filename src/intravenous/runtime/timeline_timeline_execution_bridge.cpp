@@ -48,6 +48,27 @@ void handle_realtime_event_block_requested(
     builder.succeed(bound_execution->realtime_event_block(lane));
 }
 
+void handle_pause(PauseRequest const &)
+{
+    if (!bound_execution) {
+        return;
+    }
+    bound_execution->pause();
+}
+
+void handle_resume(ResumeRequest const &request)
+{
+    if (!bound_execution) {
+        return;
+    }
+    bound_execution->resume(request.start_index);
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_timeline_execution_resumed_event,
+        TimelineExecutionResumed{
+            .start_index = request.start_index,
+        });
+}
+
 IV_SUBSCRIBE_LINKER_EVENT(
     TimelineLanesChangedEvent,
     iv_runtime_timeline_lanes_changed_event,
@@ -60,6 +81,14 @@ IV_SUBSCRIBE_SINGLETON_EVENT(
     TimelineExecutionRealtimeEventBlockRequestedEvent,
     iv_runtime_timeline_execution_realtime_event_block_requested_event,
     handle_realtime_event_block_requested);
+IV_SUBSCRIBE_LINKER_EVENT(
+    PauseEvent,
+    iv_runtime_pause_event,
+    handle_pause);
+IV_SUBSCRIBE_LINKER_EVENT(
+    ResumeEvent,
+    iv_runtime_resume_event,
+    handle_resume);
 }
 
 void bind_timeline_timeline_execution_bridge(Timeline &timeline, TimelineExecution &execution)

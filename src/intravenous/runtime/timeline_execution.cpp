@@ -302,10 +302,38 @@ std::vector<LaneId> TimelineExecution::realtime_sample_output_lanes() const
     return lanes;
 }
 
-void TimelineExecution::set_realtime_start_index(size_t start_index)
+void TimelineExecution::pause()
+{
+    std::scoped_lock lock(mutex_);
+    paused_ = true;
+}
+
+void TimelineExecution::resume(size_t start_index)
 {
     std::scoped_lock lock(mutex_);
     current_start_index_ = start_index;
+    paused_ = false;
+}
+
+bool TimelineExecution::is_paused() const
+{
+    std::scoped_lock lock(mutex_);
+    return paused_;
+}
+
+void TimelineExecution::set_realtime_start_index(size_t start_index)
+{
+    std::scoped_lock lock(mutex_);
+    if (paused_) {
+        return;
+    }
+    current_start_index_ = start_index;
+}
+
+size_t TimelineExecution::realtime_start_index() const
+{
+    std::scoped_lock lock(mutex_);
+    return current_start_index_;
 }
 
 void TimelineExecution::set_compiled_sample_cache_chunk_size_multiplier(size_t multiplier)

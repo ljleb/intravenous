@@ -3,6 +3,7 @@
 #include <intravenous/lane_node/channels.h>
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
+#include <intravenous/runtime/timeline_execution_events.h>
 #include <intravenous/runtime/uuid.h>
 #include <intravenous/sample.h>
 
@@ -127,6 +128,8 @@ namespace iv {
         SetEventInputStateRequest,
         SetSampleOutputStateRequest,
         SetEventOutputStateRequest,
+        PauseRequest,
+        ResumeRequest,
         SaveProjectRequest,
         ServerShutdownRequest,
         std::string>;

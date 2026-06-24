@@ -422,6 +422,14 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_event_output_state_event, event_request, builder);
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, PauseRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_pause_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, ResumeRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_resume_event, event_request, builder);
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, SaveProjectRequest>) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_save_project_event, event_request, builder);
