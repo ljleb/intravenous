@@ -27,6 +27,11 @@ namespace {
 using namespace std::chrono_literals;
 using Json = nlohmann::ordered_json;
 
+InternedString intern(std::string_view value)
+{
+    return InternedString::from_view(value);
+}
+
 constexpr auto socket_rpc_notification_startup_timeout = 30s;
 
 std::string pop_line(std::string *buffer)
@@ -193,7 +198,7 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
         iv_runtime_project_notification_event,
         ProjectNotification(ProjectLaneViewNotification{
             .lane_view = LaneViewResult{
-                .view_id = "view-1",
+                .view_id = intern("view-1"),
                 .lanes = LaneQueryResult{
                     .start_index = 0,
                     .visible_lane_count = 1,
@@ -253,10 +258,10 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_lane_view_content_updated_event,
         iv::LaneViewContentUpdate{
-            .view_id = "view-1",
+            .view_id = intern("view-1"),
             .lanes = {
                 iv::LaneVisualizationSeries{
-                    .lane_id = 42,
+                    .lane_id = intern("lane-42"),
                     .adapter_type = "samples",
                     .sample_channel_type = iv::ChannelTypeId::stereo,
                     .sample_layout = iv::SampleStreamLayout::planar,
@@ -272,7 +277,7 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
     EXPECT_EQ(json["method"], "timeline.laneViewContentUpdated");
     EXPECT_EQ(json["params"]["viewId"], "view-1");
     ASSERT_EQ(json["params"]["lanes"].size(), 1u);
-    EXPECT_EQ(json["params"]["lanes"][0]["laneId"], 42);
+    EXPECT_EQ(json["params"]["lanes"][0]["laneId"], "lane-42");
     EXPECT_EQ(json["params"]["lanes"][0]["adapterType"], "samples");
     EXPECT_EQ(json["params"]["lanes"][0]["sampleChannelType"], "stereo");
     EXPECT_EQ(json["params"]["lanes"][0]["sampleLayout"], "planar");

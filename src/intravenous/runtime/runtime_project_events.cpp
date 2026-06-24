@@ -26,49 +26,42 @@ void ProjectAckBuilder::build() const
     }
 }
 
-void ProjectLiveInputSnapshotsBuilder::succeed(
-    std::vector<ProjectLiveInputSnapshot> value)
+void ProjectStringBuilder::succeed(std::string value)
 {
     result = std::move(value);
 }
 
-std::vector<ProjectLiveInputSnapshot>
-ProjectLiveInputSnapshotsBuilder::build() const
+std::string ProjectStringBuilder::build() const
 {
     if (!result.has_value()) {
-        throw std::runtime_error(
-            "runtime project live input snapshots were not provided");
+        throw std::runtime_error("runtime project string result was not provided");
     }
     return *result;
 }
 
-void ProjectGraphInputLaneBindingsBuilder::succeed(
-    GraphInputLaneBindings value)
+void ProjectAudioDevicesBuilder::succeed(AudioDevicesSnapshot value)
 {
     result = std::move(value);
 }
 
-GraphInputLaneBindings ProjectGraphInputLaneBindingsBuilder::build() const
+AudioDevicesSnapshot ProjectAudioDevicesBuilder::build() const
 {
     if (!result.has_value()) {
         throw std::runtime_error(
-            "runtime project graph input lane bindings were not provided");
+            "runtime project audio devices result was not provided");
     }
     return *result;
 }
 
-void ProjectLaneOutputsBuilder::succeed(
-    std::vector<ProjectLaneOutputs> value)
+void ProjectLaneViewBuilder::succeed(LaneViewResult value)
 {
     result = std::move(value);
 }
 
-std::vector<ProjectLaneOutputs>
-ProjectLaneOutputsBuilder::build() const
+LaneViewResult ProjectLaneViewBuilder::build() const
 {
     if (!result.has_value()) {
-        throw std::runtime_error(
-            "runtime project lane outputs were not provided");
+        throw std::runtime_error("runtime project lane view result was not provided");
     }
     return *result;
 }

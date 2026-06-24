@@ -2,12 +2,12 @@
 
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 namespace iv {
 namespace {
 IvModuleSourceIntrospection *bound_introspection = nullptr;
-GraphInputLanes *bound_graph_input_lanes = nullptr;
 std::function<void()> *bound_shutdown = nullptr;
 
 ProjectSampleInputState parse_project_sample_input_state(std::string const &state)
@@ -120,82 +120,107 @@ void handle_get_logical_nodes(
 
 void handle_set_sample_input_value(
     SetSampleInputValueRequest const &request,
-    SocketRpcAckResponseBuilder &)
+    SocketRpcAckResponseBuilder &builder)
 {
-    if (bound_graph_input_lanes == nullptr) {
-        return;
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_sample_input_value_requested_event,
+            ProjectSetSampleInputValueRequest{
+                .node_id = request.node_id,
+                .member_ordinal = request.member_ordinal,
+                .input_ordinal = request.input_ordinal,
+                .value = request.value,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
     }
-    bound_graph_input_lanes->set_sample_input_value(
-        ProjectSetSampleInputValueRequest{
-            .node_id = request.node_id,
-            .member_ordinal = request.member_ordinal,
-            .input_ordinal = request.input_ordinal,
-            .value = request.value,
-        });
 }
 
 void handle_set_sample_input_state(
     SetSampleInputStateRequest const &request,
-    SocketRpcAckResponseBuilder &)
+    SocketRpcAckResponseBuilder &builder)
 {
-    if (bound_graph_input_lanes == nullptr) {
-        return;
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_sample_input_state_requested_event,
+            ProjectSetSampleInputStateRequest{
+                .node_id = request.node_id,
+                .member_ordinal = request.member_ordinal,
+                .input_ordinal = request.input_ordinal,
+                .state = parse_project_sample_input_state(request.state),
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
     }
-    bound_graph_input_lanes->set_sample_input_state(
-        ProjectSetSampleInputStateRequest{
-            .node_id = request.node_id,
-            .member_ordinal = request.member_ordinal,
-            .input_ordinal = request.input_ordinal,
-            .state = parse_project_sample_input_state(request.state),
-        });
 }
 
 void handle_set_event_input_state(
     SetEventInputStateRequest const &request,
-    SocketRpcAckResponseBuilder &)
+    SocketRpcAckResponseBuilder &builder)
 {
-    if (bound_graph_input_lanes == nullptr) {
-        return;
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_event_input_state_requested_event,
+            ProjectSetEventInputStateRequest{
+                .node_id = request.node_id,
+                .member_ordinal = request.member_ordinal,
+                .input_ordinal = request.input_ordinal,
+                .state = parse_project_event_input_state(request.state),
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
     }
-    bound_graph_input_lanes->set_event_input_state(
-        ProjectSetEventInputStateRequest{
-            .node_id = request.node_id,
-            .member_ordinal = request.member_ordinal,
-            .input_ordinal = request.input_ordinal,
-            .state = parse_project_event_input_state(request.state),
-        });
 }
 
 void handle_set_sample_output_state(
     SetSampleOutputStateRequest const &request,
-    SocketRpcAckResponseBuilder &)
+    SocketRpcAckResponseBuilder &builder)
 {
-    if (bound_graph_input_lanes == nullptr) {
-        return;
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_sample_output_state_requested_event,
+            ProjectSetSampleOutputStateRequest{
+                .node_id = request.node_id,
+                .member_ordinal = request.member_ordinal,
+                .output_ordinal = request.output_ordinal,
+                .state = parse_project_sample_output_state(request.state),
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
     }
-    bound_graph_input_lanes->set_sample_output_state(
-        ProjectSetSampleOutputStateRequest{
-            .node_id = request.node_id,
-            .member_ordinal = request.member_ordinal,
-            .output_ordinal = request.output_ordinal,
-            .state = parse_project_sample_output_state(request.state),
-        });
 }
 
 void handle_set_event_output_state(
     SetEventOutputStateRequest const &request,
-    SocketRpcAckResponseBuilder &)
+    SocketRpcAckResponseBuilder &builder)
 {
-    if (bound_graph_input_lanes == nullptr) {
-        return;
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_event_output_state_requested_event,
+            ProjectSetEventOutputStateRequest{
+                .node_id = request.node_id,
+                .member_ordinal = request.member_ordinal,
+                .output_ordinal = request.output_ordinal,
+                .state = parse_project_event_output_state(request.state),
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
     }
-    bound_graph_input_lanes->set_event_output_state(
-        ProjectSetEventOutputStateRequest{
-            .node_id = request.node_id,
-            .member_ordinal = request.member_ordinal,
-            .output_ordinal = request.output_ordinal,
-            .state = parse_project_event_output_state(request.state),
-        });
 }
 
 void handle_server_shutdown(
@@ -255,7 +280,7 @@ void bind_socket_rpc_iv_module_source_introspection_bridge(
     std::function<void()> *shutdown_callback)
 {
     bound_introspection = &introspection;
-    bound_graph_input_lanes = &graph_input_lanes;
+    (void)graph_input_lanes;
     bound_shutdown = shutdown_callback;
 }
 
@@ -266,9 +291,7 @@ void unbind_socket_rpc_iv_module_source_introspection_bridge(
     if (bound_introspection == &introspection) {
         bound_introspection = nullptr;
     }
-    if (bound_graph_input_lanes == &graph_input_lanes) {
-        bound_graph_input_lanes = nullptr;
-    }
+    (void)graph_input_lanes;
     bound_shutdown = nullptr;
 }
 } // namespace iv

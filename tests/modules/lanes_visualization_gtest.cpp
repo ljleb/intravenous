@@ -9,6 +9,11 @@
 #include <unordered_map>
 
 namespace {
+iv::InternedString intern(std::string_view value)
+{
+    return iv::InternedString::from_view(value);
+}
+
 struct VisualizationTestState {
     std::unordered_map<std::uint64_t, iv::LaneVisualizationOutputDescriptor> output_descriptors {};
     std::unordered_map<std::uint64_t, iv::OwnedSampleBlock> compiled_samples {};
@@ -111,9 +116,12 @@ TEST(LanesVisualizationTest, PublishesCompiledSampleDataForVisibleLanes)
 
     LanesVisualization visualization(std::nullopt, 2, 512);
     visualization.handle_lane_views_updated(LaneViewResult{
-        .view_id = "view-1",
+        .view_id = intern("view-1"),
         .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{ .lane_id = 42 } },
+            .lanes = { LaneInfo{
+                .lane_id = intern("lane-42"),
+                .runtime_lane = LaneId{42},
+            } },
         },
         .first_sample_index = 0,
         .last_sample_index = 100,
@@ -123,9 +131,9 @@ TEST(LanesVisualizationTest, PublishesCompiledSampleDataForVisibleLanes)
     visualization.publish_now();
 
     ASSERT_EQ(state.updates.size(), 1u);
-    EXPECT_EQ(state.updates.front().view_id, "view-1");
+    EXPECT_EQ(state.updates.front().view_id.str(), "view-1");
     ASSERT_EQ(state.updates.front().lanes.size(), 1u);
-    EXPECT_EQ(state.updates.front().lanes.front().lane_id, 42u);
+    EXPECT_EQ(state.updates.front().lanes.front().lane_id.str(), "lane-42");
     EXPECT_EQ(state.updates.front().lanes.front().adapter_type, "samples");
     ASSERT_TRUE(state.updates.front().lanes.front().sample_channel_type.has_value());
     EXPECT_EQ(*state.updates.front().lanes.front().sample_channel_type, ChannelTypeId::stereo);
@@ -153,9 +161,12 @@ TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
 
     LanesVisualization visualization(std::nullopt, 2, 512);
     visualization.handle_lane_views_updated(LaneViewResult{
-        .view_id = "view-2",
+        .view_id = intern("view-2"),
         .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{ .lane_id = 7 } },
+            .lanes = { LaneInfo{
+                .lane_id = intern("lane-7"),
+                .runtime_lane = LaneId{7},
+            } },
         },
         .first_sample_index = 0,
         .last_sample_index = 100,
@@ -166,7 +177,7 @@ TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
 
     ASSERT_EQ(state.updates.size(), 1u);
     ASSERT_EQ(state.updates.front().lanes.size(), 1u);
-    EXPECT_EQ(state.updates.front().lanes.front().lane_id, 7u);
+    EXPECT_EQ(state.updates.front().lanes.front().lane_id.str(), "lane-7");
     EXPECT_EQ(state.updates.front().lanes.front().adapter_type, "events");
     EXPECT_EQ(state.updates.front().lanes.front().events.size(), 2u);
 
@@ -193,9 +204,12 @@ TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
 
     LanesVisualization visualization(std::nullopt, 2, 512);
     visualization.handle_lane_views_updated(LaneViewResult{
-        .view_id = "view-1",
+        .view_id = intern("view-1"),
         .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{ .lane_id = 42 } },
+            .lanes = { LaneInfo{
+                .lane_id = intern("lane-42"),
+                .runtime_lane = LaneId{42},
+            } },
         },
         .first_sample_index = 0,
         .last_sample_index = 100,
@@ -205,7 +219,7 @@ TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
     ASSERT_EQ(state.updates.size(), 1u);
 
     state.updates.clear();
-    visualization.handle_lane_view_closed("view-1");
+    visualization.handle_lane_view_closed(intern("view-1"));
     visualization.publish_now();
     EXPECT_TRUE(state.updates.empty());
 
@@ -224,9 +238,12 @@ TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished
 
     LanesVisualization visualization(std::nullopt, 2, 8);
     visualization.handle_lane_views_updated(LaneViewResult{
-        .view_id = "view-rt",
+        .view_id = intern("view-rt"),
         .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{ .lane_id = 10 } },
+            .lanes = { LaneInfo{
+                .lane_id = intern("lane-10"),
+                .runtime_lane = LaneId{10},
+            } },
         },
     });
 
@@ -252,9 +269,12 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
 
     LanesVisualization visualization(std::nullopt, 2, 8);
     visualization.handle_lane_views_updated(LaneViewResult{
-        .view_id = "view-rt",
+        .view_id = intern("view-rt"),
         .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{ .lane_id = 10 } },
+            .lanes = { LaneInfo{
+                .lane_id = intern("lane-10"),
+                .runtime_lane = LaneId{10},
+            } },
         },
     });
 
@@ -263,7 +283,7 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
     auto const vis_lane = state.last_batch.upserts.front().lane;
 
     state.last_batch = {};
-    visualization.handle_lane_view_closed("view-rt");
+    visualization.handle_lane_view_closed(intern("view-rt"));
     visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
 
     ASSERT_EQ(state.last_batch.removals.size(), 1u);
@@ -284,9 +304,12 @@ TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateT
 
     LanesVisualization visualization(std::nullopt, 2, 8);
     LaneViewResult view{
-        .view_id = "view-rt",
+        .view_id = intern("view-rt"),
         .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{ .lane_id = 10 } },
+            .lanes = { LaneInfo{
+                .lane_id = intern("lane-10"),
+                .runtime_lane = LaneId{10},
+            } },
         },
     };
     visualization.handle_lane_views_updated(view);
@@ -314,9 +337,12 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
 
     LanesVisualization visualization(std::nullopt, 2, 8);
     LaneViewResult view{
-        .view_id = "view-rt",
+        .view_id = intern("view-rt"),
         .lanes = LaneQueryResult{
-            .lanes = { LaneInfo{ .lane_id = 10 } },
+            .lanes = { LaneInfo{
+                .lane_id = intern("lane-10"),
+                .runtime_lane = LaneId{10},
+            } },
         },
     };
     visualization.handle_lane_views_updated(view);

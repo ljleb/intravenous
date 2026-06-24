@@ -32,6 +32,13 @@
 #include <intravenous/runtime/task_runner_lanes_visualization_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
+#include <intravenous/runtime/project_persistence.h>
+#include <intravenous/runtime/runtime_project_audio_device_lanes_bridge.h>
+#include <intravenous/runtime/runtime_project_graph_input_lanes_bridge.h>
+#include <intravenous/runtime/runtime_project_iv_module_instances_bridge.h>
+#include <intravenous/runtime/runtime_project_iv_module_reload_bridge.h>
+#include <intravenous/runtime/runtime_project_lane_views_bridge.h>
+#include <intravenous/runtime/runtime_project_timeline_execution_bridge.h>
 #include <intravenous/runtime/server_options.h>
 #include <intravenous/runtime/socket_rpc_lane_views_bridge.h>
 #include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
@@ -105,7 +112,9 @@ namespace iv {
                         RenderConfig const &config) {
                         return make_miniaudio_input_device(config, device_id);
                     },
-                });
+                },
+                startup.output_device_id,
+                startup.input_device_id);
             LaneFilters lane_filters;
             LaneViews lane_views;
             LanesVisualization lanes_visualization(
@@ -116,16 +125,24 @@ namespace iv {
             bind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
             bind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, timeline_execution);
             bind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
+            bind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
             bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
             bind_task_runner_graph_input_lanes_bridge(graph_input_lanes);
+            bind_runtime_project_graph_input_lanes_bridge(graph_input_lanes);
             bind_timeline_execution_task_runner_bridge(timeline_execution, task_runner);
             bind_timeline_timeline_execution_bridge(timeline, timeline_execution);
+            bind_runtime_project_timeline_execution_bridge(
+                timeline,
+                timeline_execution,
+                startup.workspace_root);
             bind_iv_module_definitions_builder_bridge(iv_module_definitions);
             bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
             bind_iv_module_instances_execution_task_runner_bridge(iv_module_instances_execution, task_runner);
             bind_iv_module_instances_iv_module_instances_execution_bridge(iv_module_instances_execution);
             bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
+            bind_runtime_project_iv_module_instances_bridge(iv_module_instances);
             bind_iv_module_definitions_iv_module_reload_bridge(iv_module_reload);
+            bind_runtime_project_iv_module_reload_bridge(iv_module_reload);
             bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
             bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
             bind_graph_input_lanes_iv_module_instances_bridge(iv_module_instances);
@@ -133,11 +150,17 @@ namespace iv {
             bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
             bind_timeline_lane_filters_bridge(lane_filters);
             bind_lane_filters_lane_views_bridge(lane_filters, lane_views);
+            bind_runtime_project_lane_views_bridge(lane_views);
             bind_lane_views_lanes_visualization_bridge(lanes_visualization);
             bind_lanes_visualization_timeline_bridge(lanes_visualization, timeline);
             bind_task_runner_lanes_visualization_bridge(lanes_visualization);
             bind_timeline_execution_lanes_visualization_bridge(timeline_execution);
             audio_device_lanes.bind();
+            ProjectPersistence project_persistence(
+                startup.workspace_root,
+                startup);
+            bind_project_persistence_bridge(project_persistence);
+            project_persistence.load();
 
             SocketRpcServer server(options.workspace_root, options.rpc_fd);
             std::function<void()> shutdown = [&]() {
@@ -170,6 +193,13 @@ namespace iv {
             unbind_socket_rpc_iv_module_source_introspection_bridge(
                 introspection,
                 graph_input_lanes);
+            unbind_project_persistence_bridge(project_persistence);
+            unbind_runtime_project_lane_views_bridge(lane_views);
+            unbind_runtime_project_iv_module_reload_bridge(iv_module_reload);
+            unbind_runtime_project_iv_module_instances_bridge(iv_module_instances);
+            unbind_runtime_project_timeline_execution_bridge(timeline_execution);
+            unbind_runtime_project_graph_input_lanes_bridge(graph_input_lanes);
+            unbind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
             unbind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
             unbind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, timeline_execution);
             unbind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);

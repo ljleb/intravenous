@@ -326,7 +326,7 @@ namespace iv::test {
         auto const lock = ScopedFileLock(
             shared_test_fixtures_root() /
             (sanitize_test_token(fixture_name) + ".project.lock"));
-        write_text(workspace / ".intravenous", "");
+        write_text(workspace / "project.intravenous", "");
         return workspace;
     }
 
@@ -337,7 +337,7 @@ namespace iv::test {
     {
         auto const workspace = fresh_module_fixture_workspace(test_name, location);
         std::filesystem::create_directories(workspace);
-        write_text(workspace / ".intravenous", "");
+        write_text(workspace / "project.intravenous", "");
         write_text(workspace / "module.cpp", module_text);
         return workspace;
     }
@@ -349,7 +349,7 @@ namespace iv::test {
         auto const workspace = shared_test_fixtures_root() / sanitize_test_token(test_name);
         auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(test_name) + ".lock"));
         std::filesystem::create_directories(workspace);
-        write_text(workspace / ".intravenous", "");
+        write_text(workspace / "project.intravenous", "");
         write_text(workspace / "module.cpp", module_text);
         return workspace;
     }

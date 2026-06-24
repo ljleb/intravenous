@@ -155,8 +155,8 @@ Json lane_metadata_json(LaneMetadata const &metadata) {
 Json lane_query_result_json(LaneQueryResult const &result) {
     Json json_lanes = Json::array();
     for (auto const &lane : result.lanes) {
-        json_lanes.push_back({
-            {"laneId", lane.lane_id},
+        json_lanes.push_back(Json{
+            {"laneId", lane.lane_id.str()},
             {"domain", std::string(lane_domain_json(lane.domain))},
             {"metadata", lane_metadata_json(lane.metadata)},
         });
@@ -164,9 +164,9 @@ Json lane_query_result_json(LaneQueryResult const &result) {
 
     Json json_connections = Json::array();
     for (auto const &connection : result.connections) {
-        json_connections.push_back({
-            {"sourceLaneId", connection.source_lane_id},
-            {"targetLaneId", connection.target_lane_id},
+        json_connections.push_back(Json{
+            {"sourceLaneId", connection.source_lane_id.str()},
+            {"targetLaneId", connection.target_lane_id.str()},
             {"portKind", std::string(port_kind_json(connection.port_kind))},
             {"portOrdinal", connection.port_ordinal},
         });
@@ -187,7 +187,7 @@ Json lane_query_result_json(LaneQueryResult const &result) {
 
 Json lane_view_result_json(LaneViewResult const &result) {
     Json json = lane_query_result_json(result.lanes);
-    json["viewId"] = result.view_id;
+    json["viewId"] = result.view_id.str();
     return json;
 }
 

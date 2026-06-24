@@ -50,11 +50,12 @@ class LanesVisualization {
     };
 
     struct ActiveView {
-        std::string view_id {};
+        InternedString view_id {};
         std::vector<LaneId> realtime_sample_lanes {};
         std::vector<LaneId> realtime_event_lanes {};
         std::vector<LaneId> compiled_sample_lanes {};
         std::vector<LaneId> compiled_event_lanes {};
+        std::unordered_map<uint64_t, InternedString> public_lane_ids_by_runtime_lane {};
         size_t first_sample_index = 0;
         size_t last_sample_index = 0;
         size_t display_sample_count = 0;
@@ -63,7 +64,7 @@ class LanesVisualization {
     };
 
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, ActiveView> active_views_;
+    std::unordered_map<InternedString, ActiveView> active_views_;
     std::unordered_map<LaneId, TrackedRealtimeSampleLane, LaneIdHash> tracked_sample_lanes_;
     std::unordered_map<LaneId, TrackedRealtimeEventLane, LaneIdHash> tracked_event_lanes_;
     std::vector<std::shared_ptr<RealtimeSampleBlockQueue>> draining_sample_queues_;
@@ -85,7 +86,7 @@ public:
     ~LanesVisualization() = default;
 
     void handle_lane_views_updated(LaneViewResult const &update);
-    void handle_lane_view_closed(std::string const &view_id);
+    void handle_lane_view_closed(InternedString view_id);
     void handle_task_runner_after_pass(TasksRunnerAfterPass const &finished);
     void publish_now();
 };

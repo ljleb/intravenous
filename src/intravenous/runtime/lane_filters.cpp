@@ -61,6 +61,7 @@ public:
 LaneFilterResult filter_result_from(
     LaneFilters::RegisteredLaneFilter const &filter,
     std::function<LaneMetadata(LaneId)> const &metadata_for_lane,
+    std::function<InternedString(LaneId)> const &public_id_for_lane,
     std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> const &outputs_for_lanes)
 {
     if (filter.error_message.has_value()) {
@@ -83,6 +84,7 @@ LaneFilterResult filter_result_from(
             .revision = filter.bound_ast.schema_revision,
             .lane_ids = filter.matching_lanes,
             .metadata_for_lane = metadata_for_lane,
+            .public_id_for_lane = public_id_for_lane,
             .outputs_for_lanes = outputs_for_lanes,
         },
     };
@@ -275,7 +277,7 @@ std::vector<LaneFilterResult> LaneFilters::refresh_all_filters_locked()
             continue;
         }
         refresh_filter_locked(it->second, visiting);
-        results.push_back(filter_result_from(it->second, metadata_for_lane, outputs_for_lanes));
+        results.push_back(filter_result_from(it->second, metadata_for_lane, public_id_for_lane, outputs_for_lanes));
     }
     return results;
 }
@@ -358,6 +360,7 @@ void LaneFilters::handle_timeline_lanes_changed(TimelineLanesChanged const &chan
         std::scoped_lock lock(mutex);
         dataset = change.dataset;
         metadata_for_lane = change.metadata_for_lane;
+        public_id_for_lane = change.public_id_for_lane;
         outputs_for_lanes = change.outputs_for_lanes;
         last_schema_change = change.schema_change;
 

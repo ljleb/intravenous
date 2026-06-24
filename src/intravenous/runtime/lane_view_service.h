@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/lane_node/graph.h>
+#include <intravenous/runtime/uuid.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -13,14 +14,15 @@
 
 namespace iv {
     struct LaneInfo {
-        uint64_t lane_id = 0;
+        InternedString lane_id {};
+        LaneId runtime_lane {};
         LaneDomain domain = LaneDomain::realtime;
         LaneMetadata metadata {};
     };
 
     struct LaneConnectionInfo {
-        uint64_t source_lane_id = 0;
-        uint64_t target_lane_id = 0;
+        InternedString source_lane_id {};
+        InternedString target_lane_id {};
         PortKind port_kind = PortKind::sample;
         size_t port_ordinal = 0;
     };
@@ -43,7 +45,7 @@ namespace iv {
     };
 
     struct LaneViewRequest {
-        std::string view_id {};
+        InternedString view_id {};
         LaneQuery query {};
         size_t start_index = 0;
         size_t visible_lane_count = 0;
@@ -53,7 +55,7 @@ namespace iv {
     };
 
     struct LaneViewResult {
-        std::string view_id {};
+        InternedString view_id {};
         LaneQueryResult lanes {};
         size_t first_sample_index = 0;
         size_t last_sample_index = 0;
@@ -68,6 +70,19 @@ namespace iv {
     using LaneViewUpdateSink = std::function<void(LaneViewResult const&)>;
 
     class LaneViewService {
+    public:
+        struct ActiveViewSnapshot {
+            std::string view_id {};
+            
+            LaneQueryFilter filter {};
+            size_t start_index = 0;
+            size_t visible_lane_count = 0;
+            size_t first_sample_index = 0;
+            size_t last_sample_index = 0;
+            size_t display_sample_count = 0;
+        };
+
+    private:
         struct ActiveView {
             LaneQueryFilter filter {};
             size_t start_index = 0;
@@ -80,7 +95,7 @@ namespace iv {
 
         LaneViewQueryProvider _query_provider;
         LaneViewUpdateSink _update_sink;
-        std::unordered_map<std::string, ActiveView> _active_views;
+        std::unordered_map<InternedString, ActiveView> _active_views;
 
         LaneQueryResult query_lanes(
             LaneQueryFilter const& filter,
@@ -88,7 +103,7 @@ namespace iv {
             std::optional<size_t> visible_lane_count
         ) const;
         static std::unordered_set<uint64_t> visible_lane_ids(LaneQueryResult const& result);
-        void notify_view_changed(std::string const& view_id);
+        void notify_view_changed(InternedString view_id);
 
     public:
         LaneViewService() = default;
@@ -99,7 +114,8 @@ namespace iv {
 
         LaneViewResult open_view(LaneViewRequest request);
         LaneViewResult update_view(LaneViewRequest request);
-        void close_view(std::string const& view_id);
+        void close_view(InternedString view_id);
+        std::vector<ActiveViewSnapshot> active_views() const;
 
         void mark_lane_set_changed();
         void mark_lane_changed(LaneId lane_id);

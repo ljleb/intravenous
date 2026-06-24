@@ -11,6 +11,11 @@
 #include <vector>
 
 namespace {
+iv::InternedString intern(std::string_view value)
+{
+    return iv::InternedString::from_view(value);
+}
+
 struct LaneViewsWitness {
     std::vector<iv::LaneFilterStoredRequest> stored_filters {};
     std::vector<std::string> removed_filters {};
@@ -78,7 +83,8 @@ TEST(LaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
             result.visible_lane_count = visible_lane_count.value_or(2);
             result.total_lane_count = 3;
             result.lanes.push_back(iv::LaneInfo{
-                .lane_id = static_cast<uint64_t>(result.start_index + 1),
+                .lane_id = intern(std::to_string(result.start_index + 1)),
+                .runtime_lane = iv::LaneId{result.start_index + 1},
             });
             return result;
         });
@@ -87,7 +93,7 @@ TEST(LaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
     });
 
     auto opened = views.open_view(iv::LaneViewRequest{
-        .view_id = "view",
+        .view_id = intern("view"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
@@ -95,7 +101,7 @@ TEST(LaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
         .visible_lane_count = 2,
     });
 
-    EXPECT_EQ(opened.view_id, "view");
+    EXPECT_EQ(opened.view_id.str(), "view");
     EXPECT_EQ(opened.lanes.start_index, 1u);
     EXPECT_EQ(opened.lanes.visible_lane_count, 2u);
     EXPECT_EQ(query_count, 1u);
@@ -103,7 +109,7 @@ TEST(LaneViews, LaneViewServiceTracksViewportAndPushesUpdates)
 
     views.mark_lane_changed(iv::LaneId{2});
     ASSERT_EQ(updates.size(), 1u);
-    EXPECT_EQ(updates[0].view_id, "view");
+    EXPECT_EQ(updates[0].view_id.str(), "view");
     EXPECT_EQ(updates[0].lanes.start_index, 1u);
     EXPECT_EQ(updates[0].lanes.visible_lane_count, 2u);
     EXPECT_EQ(query_count, 2u);
@@ -126,7 +132,7 @@ TEST(LaneViews, LaneViewServiceCloseStopsPushedUpdates)
     });
 
     views.open_view(iv::LaneViewRequest{
-        .view_id = "view",
+        .view_id = intern("view"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
@@ -134,7 +140,7 @@ TEST(LaneViews, LaneViewServiceCloseStopsPushedUpdates)
     views.mark_lane_set_changed();
     ASSERT_EQ(updates.size(), 1u);
     updates.clear();
-    views.close_view("view");
+    views.close_view(intern("view"));
     views.mark_lane_set_changed();
 
     EXPECT_TRUE(updates.empty());
@@ -145,13 +151,13 @@ TEST_F(LaneViewsModuleTest, OpenViewStoresFilterAsLaneViewDotId)
     iv::LaneViews views;
 
     auto result = views.open_view(iv::LaneViewRequest{
-        .view_id = "abc",
+        .view_id = intern("abc"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
     });
 
-    EXPECT_EQ(result.view_id, "abc");
+    EXPECT_EQ(result.view_id.str(), "abc");
     ASSERT_EQ(witness.stored_filters.size(), 1u);
     EXPECT_EQ(witness.stored_filters.front().filter_name, "lane_view.abc");
     EXPECT_EQ(witness.stored_filters.front().query_source, "graph_input");
@@ -162,7 +168,7 @@ TEST_F(LaneViewsModuleTest, UpdateViewReplacesFilterForLaneViewDotId)
     iv::LaneViews views;
 
     (void)views.open_view(iv::LaneViewRequest{
-        .view_id = "abc",
+        .view_id = intern("abc"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
@@ -170,7 +176,7 @@ TEST_F(LaneViewsModuleTest, UpdateViewReplacesFilterForLaneViewDotId)
     witness.stored_filters.clear();
 
     (void)views.update_view(iv::LaneViewRequest{
-        .view_id = "abc",
+        .view_id = intern("abc"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input knob"},
         },
@@ -186,7 +192,7 @@ TEST_F(LaneViewsModuleTest, CloseViewRemovesLaneViewDotIdFilter)
     iv::LaneViews views;
 
     (void)views.open_view(iv::LaneViewRequest{
-        .view_id = "abc",
+        .view_id = intern("abc"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
@@ -203,7 +209,7 @@ TEST_F(LaneViewsModuleTest, MatchingSnapshotRefreshesOpenView)
 {
     iv::LaneViews views;
     (void)views.open_view(iv::LaneViewRequest{
-        .view_id = "abc",
+        .view_id = intern("abc"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
@@ -228,16 +234,16 @@ TEST_F(LaneViewsModuleTest, MatchingSnapshotRefreshesOpenView)
     });
 
     ASSERT_EQ(witness.updates.size(), 1u);
-    EXPECT_EQ(witness.updates.front().view_id, "abc");
+    EXPECT_EQ(witness.updates.front().view_id.str(), "abc");
     ASSERT_EQ(witness.updates.front().lanes.lanes.size(), 1u);
-    EXPECT_EQ(witness.updates.front().lanes.lanes.front().lane_id, 42u);
+    EXPECT_EQ(witness.updates.front().lanes.lanes.front().lane_id.str(), "42");
 }
 
 TEST_F(LaneViewsModuleTest, MatchingFilterErrorRefreshesOpenView)
 {
     iv::LaneViews views;
     (void)views.open_view(iv::LaneViewRequest{
-        .view_id = "abc",
+        .view_id = intern("abc"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
@@ -261,7 +267,7 @@ TEST_F(LaneViewsModuleTest, MatchingFilterErrorRefreshesOpenView)
     });
 
     ASSERT_EQ(witness.updates.size(), 1u);
-    EXPECT_EQ(witness.updates.front().view_id, "abc");
+    EXPECT_EQ(witness.updates.front().view_id.str(), "abc");
     ASSERT_TRUE(witness.updates.front().lanes.error_message.has_value());
     EXPECT_EQ(*witness.updates.front().lanes.error_message, "bad filter");
 }

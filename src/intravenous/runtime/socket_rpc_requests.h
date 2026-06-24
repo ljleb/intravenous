@@ -3,6 +3,7 @@
 #include <intravenous/lane_node/channels.h>
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
+#include <intravenous/runtime/uuid.h>
 #include <intravenous/sample.h>
 
 #include <filesystem>
@@ -49,7 +50,7 @@ namespace iv {
     };
 
     struct SetTimelineLaneSampleChannelTypeRequest {
-        std::uint64_t lane_id = 0;
+        InternedString lane_id {};
         ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
     };
 
@@ -103,6 +104,8 @@ namespace iv {
         std::string state{};
     };
 
+    struct SaveProjectRequest {};
+
     struct ServerShutdownRequest {};
 
     using SocketRpcRequestPayload = std::variant<
@@ -124,6 +127,7 @@ namespace iv {
         SetEventInputStateRequest,
         SetSampleOutputStateRequest,
         SetEventOutputStateRequest,
+        SaveProjectRequest,
         ServerShutdownRequest,
         std::string>;
 

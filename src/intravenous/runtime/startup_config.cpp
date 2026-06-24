@@ -16,7 +16,7 @@ StartupConfig::StartupConfig(
 
 StartupConfigState StartupConfig::initialize() const
 {
-    auto project_config = load_runtime_project_config(workspace_root);
+    auto project_config = load_runtime_installation_config(workspace_root);
     auto search_roots = parse_search_path_env();
     search_roots.insert(
         search_roots.end(),
@@ -29,6 +29,8 @@ StartupConfigState StartupConfig::initialize() const
         .search_roots = std::move(search_roots),
         .toolchain = std::move(project_config.toolchain),
         .execution = project_config.execution,
+        .output_device_id = std::move(project_config.output_device_id),
+        .input_device_id = std::move(project_config.input_device_id),
     };
 }
 } // namespace iv

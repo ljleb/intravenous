@@ -20,6 +20,11 @@
 #include <vector>
 
 namespace {
+iv::InternedString intern(std::string_view value)
+{
+    return iv::InternedString::from_view(value);
+}
+
 struct FakeLaneRecord {
     std::uint64_t lane_id = 0;
     std::unordered_map<std::string, bool> unit_values {};
@@ -205,7 +210,7 @@ TEST_F(LaneFilterBridgesTest, LaneFiltersLaneViewsBridgeForwardsFilterResultsToV
         });
 
     (void)views.open_view(iv::LaneViewRequest{
-        .view_id = "abc",
+        .view_id = intern("abc"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
@@ -231,13 +236,13 @@ TEST_F(LaneFilterBridgesTest, LaneFiltersLaneViewsBridgeForwardsFilterResultsToV
         });
 
     ASSERT_EQ(witness.view_updates.size(), 1u);
-    EXPECT_EQ(witness.view_updates.front().view_id, "abc");
+    EXPECT_EQ(witness.view_updates.front().view_id.str(), "abc");
 }
 
 TEST_F(LaneFilterBridgesTest, LaneFiltersLaneViewsBridgeForwardsFilterErrorsToViews)
 {
     (void)views.open_view(iv::LaneViewRequest{
-        .view_id = "abc",
+        .view_id = intern("abc"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "graph_input"},
         },
@@ -262,7 +267,7 @@ TEST_F(LaneFilterBridgesTest, LaneFiltersLaneViewsBridgeForwardsFilterErrorsToVi
         });
 
     ASSERT_EQ(witness.view_updates.size(), 1u);
-    EXPECT_EQ(witness.view_updates.front().view_id, "abc");
+    EXPECT_EQ(witness.view_updates.front().view_id.str(), "abc");
     ASSERT_TRUE(witness.view_updates.front().lanes.error_message.has_value());
     EXPECT_EQ(*witness.view_updates.front().lanes.error_message, "bad filter");
 }

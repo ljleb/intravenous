@@ -145,7 +145,7 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
     {
         std::scoped_lock lock(mutex_);
         for (auto const &info : new_lane_infos) {
-            auto const lane = LaneId { info.lane_id };
+            auto const lane = info.runtime_lane;
             lanes_to_classify.push_back(lane);
         }
     }
@@ -308,12 +308,13 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
         view.display_sample_count = update.display_sample_count;
 
         for (auto const &info : new_lane_infos) {
-            auto const lane = LaneId { info.lane_id };
+            auto const lane = info.runtime_lane;
             auto const cfg_it = output_descriptors.find(lane.value);
             auto const desired_kind =
                 cfg_it != output_descriptors.end()
                     ? output_lane_kind(cfg_it->second.config)
                     : tracked_kind_for(lane);
+            view.public_lane_ids_by_runtime_lane[lane.value] = info.lane_id;
             if (desired_kind == TrackedLaneKind::realtime_sample && tracked_sample_lanes_.contains(lane)) {
                 view.realtime_sample_lanes.push_back(lane);
             } else if (desired_kind == TrackedLaneKind::realtime_event && tracked_event_lanes_.contains(lane)) {
@@ -342,7 +343,7 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
     }
 }
 
-void LanesVisualization::handle_lane_view_closed(std::string const &view_id)
+void LanesVisualization::handle_lane_view_closed(InternedString view_id)
 {
     std::scoped_lock lock(mutex_);
     active_views_.erase(view_id);
@@ -575,7 +576,7 @@ void LanesVisualization::publish_now()
                     continue;
                 }
                 content.lanes.push_back(LaneVisualizationSeries{
-                    .lane_id = lane.value,
+                    .lane_id = view.public_lane_ids_by_runtime_lane.at(lane.value),
                     .adapter_type = "samples",
                     .sample_channel_type = samples.channel_layout.channel_type,
                     .sample_layout = samples.channel_layout.sample_layout,
@@ -594,7 +595,7 @@ void LanesVisualization::publish_now()
                     continue;
                 }
                 content.lanes.push_back(LaneVisualizationSeries{
-                    .lane_id = lane.value,
+                    .lane_id = view.public_lane_ids_by_runtime_lane.at(lane.value),
                     .adapter_type = "events",
                     .events = hist,
                 });
@@ -606,7 +607,7 @@ void LanesVisualization::publish_now()
                     continue;
                 }
                 content.lanes.push_back(LaneVisualizationSeries{
-                    .lane_id = lane.value,
+                    .lane_id = view.public_lane_ids_by_runtime_lane.at(lane.value),
                     .adapter_type = "samples",
                     .sample_channel_type = dit->second.channel_layout.channel_type,
                     .sample_layout = dit->second.channel_layout.sample_layout,
@@ -621,7 +622,7 @@ void LanesVisualization::publish_now()
                     continue;
                 }
                 content.lanes.push_back(LaneVisualizationSeries{
-                    .lane_id = lane.value,
+                    .lane_id = view.public_lane_ids_by_runtime_lane.at(lane.value),
                     .adapter_type = "events",
                     .events = dit->second,
                 });

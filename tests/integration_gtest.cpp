@@ -40,6 +40,11 @@ using iv::test_support::read_only_module_fixture_workspace;
 using iv::test_support::shared_inline_module_workspace;
 using namespace std::chrono_literals;
 
+iv::InternedString intern(std::string_view value)
+{
+    return iv::InternedString::from_view(value);
+}
+
 struct IntegrationReloadWitness {
     std::optional<iv::IvModuleReloadResults> results {};
 };
@@ -340,7 +345,7 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
     graph_input_lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     auto const view = lane_views.open_view(iv::LaneViewRequest{
-        .view_id = "view",
+        .view_id = intern("view"),
         .query = iv::LaneQuery{
             .filter = iv::LaneQueryFilter{.source = "dsp_graph.graph_input"},
         },

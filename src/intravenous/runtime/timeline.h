@@ -3,6 +3,7 @@
 #include <intravenous/runtime/timeline_events.h>
 #include <intravenous/runtime/lane_graph.h>
 #include <intravenous/runtime/timeline_fwd.h>
+#include <intravenous/runtime/uuid.h>
 #include <intravenous/sample.h>
 
 #include <algorithm>
@@ -25,6 +26,20 @@ namespace iv {
     class Timeline {
         std::mutex _graph_mutex;
         LaneGraph _graph;
+        std::unordered_map<LaneId, InternedString, LaneIdHash> _external_ids_by_lane;
+        std::unordered_map<InternedString, LaneId> _lanes_by_external_id;
+
+        InternedString ensure_external_id_locked(LaneId lane)
+        {
+            if (auto const it = _external_ids_by_lane.find(lane);
+                it != _external_ids_by_lane.end()) {
+                return it->second;
+            }
+            auto external_id = generate_uuid_v4();
+            _external_ids_by_lane.emplace(lane, external_id);
+            _lanes_by_external_id.emplace(external_id, lane);
+            return external_id;
+        }
 
     public:
         template<typename Fn>
@@ -57,6 +72,23 @@ namespace iv {
                     ids.push_back(lane.id);
                 });
                 return ids;
+            });
+        }
+
+        std::vector<LaneGraphConnection> lane_connections()
+        {
+            return with_graph([&](LaneGraph& graph) {
+                std::vector<LaneGraphConnection> connections;
+                graph.for_each_lane([&](LaneRecord const& lane) {
+                    for (auto const &output : graph.outputs_for(lane.id)) {
+                        connections.push_back(LaneGraphConnection{
+                            .source = lane.id,
+                            .target = output.target,
+                            .input = output.input,
+                        });
+                    }
+                });
+                return connections;
             });
         }
 
@@ -118,7 +150,33 @@ namespace iv {
 
         void apply_lane_batch(TimelineLaneBatchUpdate const &batch)
         {
-            with_graph([&](LaneGraph& graph) {
+            std::scoped_lock lock(_graph_mutex);
+            for (auto const lane : batch.removals) {
+                if (auto const it = _external_ids_by_lane.find(lane);
+                    it != _external_ids_by_lane.end()) {
+                    _lanes_by_external_id.erase(it->second);
+                    _external_ids_by_lane.erase(it);
+                }
+            }
+            for (auto const &upsert : batch.upserts) {
+                if (!upsert.external_id.empty()) {
+                    if (auto const existing = _lanes_by_external_id.find(upsert.external_id);
+                        existing != _lanes_by_external_id.end() && existing->second != upsert.lane) {
+                        throw std::runtime_error(
+                            "duplicate timeline external lane id: " + upsert.external_id.str());
+                    }
+                    if (auto const it = _external_ids_by_lane.find(upsert.lane);
+                        it != _external_ids_by_lane.end() && it->second != upsert.external_id) {
+                        _lanes_by_external_id.erase(it->second);
+                    }
+                    _external_ids_by_lane[upsert.lane] = upsert.external_id;
+                    _lanes_by_external_id[upsert.external_id] = upsert.lane;
+                } else {
+                    (void)ensure_external_id_locked(upsert.lane);
+                }
+            }
+            auto &graph = _graph;
+            [&] {
                 for (auto const &child : batch.hierarchy_removals) {
                     graph.remove_child(child.parent, child.child);
                 }
@@ -145,14 +203,34 @@ namespace iv {
                 for (auto const &connection : batch.connections_to_add) {
                     graph.connect(connection.source, connection.target, connection.input);
                 }
-            });
+            }();
         }
 
         void remove_lane(LaneId lane)
         {
-            with_graph([&](LaneGraph& graph) {
-                graph.remove_lane(lane);
-            });
+            std::scoped_lock lock(_graph_mutex);
+            if (auto const it = _external_ids_by_lane.find(lane);
+                it != _external_ids_by_lane.end()) {
+                _lanes_by_external_id.erase(it->second);
+                _external_ids_by_lane.erase(it);
+            }
+            _graph.remove_lane(lane);
+        }
+
+        InternedString lane_public_id(LaneId lane)
+        {
+            std::scoped_lock lock(_graph_mutex);
+            return ensure_external_id_locked(lane);
+        }
+
+        std::optional<LaneId> resolve_public_lane_id(InternedString external_id)
+        {
+            std::scoped_lock lock(_graph_mutex);
+            if (auto const it = _lanes_by_external_id.find(external_id);
+                it != _lanes_by_external_id.end()) {
+                return it->second;
+            }
+            return std::nullopt;
         }
     };
 }

@@ -801,7 +801,7 @@ TEST(IvModuleSourceIntrospection, ReloadKeepsLogicalNodeIdsAddressable)
 {
     auto const workspace = mutable_module_fixture_workspace("iv_module_source_introspection_reload_epoch", "local_cmake");
     auto const module_cpp = workspace / "module.cpp";
-    iv::test_support::write_text(workspace / ".intravenous", "");
+    iv::test_support::write_text(workspace / "project.intravenous", "");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();

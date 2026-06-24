@@ -5,6 +5,7 @@
 #include <intravenous/linker_event.h>
 #include <intravenous/query/lane_query_dataset.h>
 #include <intravenous/query/lane_query_schema.h>
+#include <intravenous/runtime/uuid.h>
 
 #include <cstdint>
 #include <functional>
@@ -23,6 +24,7 @@ namespace iv {
 
     struct TimelineLaneUpsert {
         LaneId lane {};
+        InternedString external_id {};
         std::function<TypeErasedLaneNode()> make_node {};
         std::optional<ChannelTypeId> sample_channel_type {};
         LaneMetadata metadata {};
@@ -55,6 +57,7 @@ namespace iv {
         query::LaneQueryDatasetPtr dataset {};
         query::LaneQuerySchemaChange schema_change {};
         std::function<LaneMetadata(LaneId)> metadata_for_lane {};
+        std::function<InternedString(LaneId)> public_id_for_lane {};
         std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes {};
         std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> visit_lanes {};
         std::vector<LaneId> created_lanes {};

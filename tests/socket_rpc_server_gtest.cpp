@@ -1,5 +1,6 @@
 #include "module_test_utils.h"
 
+#include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
@@ -23,6 +24,11 @@ namespace {
     constexpr auto socket_rpc_startup_timeout = 30s;
     constexpr auto socket_rpc_response_timeout = 30s;
 
+    iv::InternedString intern(std::string_view value)
+    {
+        return iv::InternedString::from_view(value);
+    }
+
     struct SocketRpcTestState {
         iv::SocketRpcServer *current_server = nullptr;
 
@@ -44,7 +50,7 @@ namespace {
         std::string close_lane_view_fail_message;
         int get_audio_devices_hits = 0;
         int set_audio_devices_hits = 0;
-        std::optional<iv::SetAudioDevicesRequest> last_set_audio_devices_request;
+        std::optional<iv::ProjectSetAudioDevicesRequest> last_set_audio_devices_request;
         iv::AudioDevicesSnapshot audio_devices_snapshot;
 
         int shutdown_hits = 0;
@@ -96,31 +102,31 @@ namespace {
     }
 
     void handle_test_open_lane_view(
-        iv::LaneViewRequest const &request,
-        iv::SocketRpcLaneViewResultBuilder &builder)
+        iv::ProjectOpenLaneViewRequest const &request,
+        iv::ProjectLaneViewBuilder &builder)
     {
-        socket_rpc_test_state.open_lane_view_requests.push_back(request);
+        socket_rpc_test_state.open_lane_view_requests.push_back(request.request);
         builder.succeed(socket_rpc_test_state.open_lane_view_result);
     }
 
     void handle_test_update_lane_view(
-        iv::LaneViewRequest const &request,
-        iv::SocketRpcLaneViewResultBuilder &builder)
+        iv::ProjectUpdateLaneViewRequest const &request,
+        iv::ProjectLaneViewBuilder &builder)
     {
-        socket_rpc_test_state.update_lane_view_requests.push_back(request);
+        socket_rpc_test_state.update_lane_view_requests.push_back(request.request);
         builder.succeed(socket_rpc_test_state.update_lane_view_result);
     }
 
     void handle_test_close_lane_view(
-        std::string const &view_id,
-        iv::SocketRpcAckResponseBuilder &builder)
+        iv::ProjectCloseLaneViewRequest const &request,
+        iv::ProjectAckBuilder &builder)
     {
-        socket_rpc_test_state.close_lane_view_requests.push_back(view_id);
+        socket_rpc_test_state.close_lane_view_requests.push_back(request.view_id.str());
         if (socket_rpc_test_state.close_lane_view_should_fail) {
-            builder.fail(
-                socket_rpc_test_state.close_lane_view_fail_code,
-                socket_rpc_test_state.close_lane_view_fail_message);
+            builder.fail(socket_rpc_test_state.close_lane_view_fail_message);
+            return;
         }
+        builder.succeed();
     }
 
     void handle_test_server_shutdown(
@@ -139,8 +145,8 @@ namespace {
     }
 
     void handle_test_set_audio_devices(
-        iv::SetAudioDevicesRequest const &request,
-        iv::SocketRpcAudioDevicesResultBuilder &builder)
+        iv::ProjectSetAudioDevicesRequest const &request,
+        iv::ProjectAudioDevicesBuilder &builder)
     {
         ++socket_rpc_test_state.set_audio_devices_hits;
         socket_rpc_test_state.last_set_audio_devices_request = request;
@@ -156,24 +162,24 @@ namespace {
         iv_socket_rpc_graph_query_by_spans_event,
         handle_test_graph_query_by_spans)
     IV_SUBSCRIBE_LINKER_EVENT(
-        iv::SocketRpcOpenLaneViewEvent,
-        iv_socket_rpc_open_lane_view_event,
+        iv::ProjectOpenLaneViewRequestedEvent,
+        iv_runtime_project_open_lane_view_requested_event,
         handle_test_open_lane_view)
     IV_SUBSCRIBE_LINKER_EVENT(
-        iv::SocketRpcUpdateLaneViewEvent,
-        iv_socket_rpc_update_lane_view_event,
+        iv::ProjectUpdateLaneViewRequestedEvent,
+        iv_runtime_project_update_lane_view_requested_event,
         handle_test_update_lane_view)
     IV_SUBSCRIBE_LINKER_EVENT(
-        iv::SocketRpcCloseLaneViewEvent,
-        iv_socket_rpc_close_lane_view_event,
+        iv::ProjectCloseLaneViewRequestedEvent,
+        iv_runtime_project_close_lane_view_requested_event,
         handle_test_close_lane_view)
     IV_SUBSCRIBE_LINKER_EVENT(
         iv::SocketRpcGetAudioDevicesEvent,
         iv_socket_rpc_get_audio_devices_event,
         handle_test_get_audio_devices)
     IV_SUBSCRIBE_LINKER_EVENT(
-        iv::SocketRpcSetAudioDevicesEvent,
-        iv_socket_rpc_set_audio_devices_event,
+        iv::ProjectSetAudioDevicesRequestedEvent,
+        iv_runtime_project_set_audio_devices_requested_event,
         handle_test_set_audio_devices)
     IV_SUBSCRIBE_LINKER_EVENT(
         iv::SocketRpcServerShutdownEvent,
@@ -183,7 +189,7 @@ namespace {
     std::filesystem::path make_server_workspace()
     {
         auto const workspace = iv::test::fresh_module_fixture_workspace("socket_rpc_server");
-        std::ofstream marker(workspace / ".intravenous", std::ios::binary | std::ios::trunc);
+        std::ofstream marker(workspace / "project.intravenous", std::ios::binary | std::ios::trunc);
         EXPECT_TRUE(static_cast<bool>(marker));
         std::ofstream module_cpp(workspace / "module.cpp", std::ios::binary | std::ios::trunc);
         EXPECT_TRUE(static_cast<bool>(module_cpp));
@@ -394,9 +400,9 @@ TEST(SocketRpcServer, DispatchesQueryEventAndReturnsSubscriberResult)
 TEST(SocketRpcServer, DistinguishesOpenAndUpdateLaneViewEvents)
 {
     socket_rpc_test_state.reset();
-    socket_rpc_test_state.open_lane_view_result.view_id = "open-view";
+    socket_rpc_test_state.open_lane_view_result.view_id = intern("open-view");
     socket_rpc_test_state.open_lane_view_result.lanes.start_index = 1;
-    socket_rpc_test_state.update_lane_view_result.view_id = "update-view";
+    socket_rpc_test_state.update_lane_view_result.view_id = intern("update-view");
     socket_rpc_test_state.update_lane_view_result.lanes.start_index = 3;
     auto harness = SocketRpcHarness(make_server_workspace());
 
@@ -415,11 +421,11 @@ TEST(SocketRpcServer, DistinguishesOpenAndUpdateLaneViewEvents)
     EXPECT_TRUE(update_response.contains(R"("viewId":"update-view")")) << update_response;
 
     ASSERT_EQ(socket_rpc_test_state.open_lane_view_requests.size(), 1u);
-    EXPECT_EQ(socket_rpc_test_state.open_lane_view_requests.front().view_id, "view-a");
+    EXPECT_EQ(socket_rpc_test_state.open_lane_view_requests.front().view_id.str(), "view-a");
     EXPECT_EQ(socket_rpc_test_state.open_lane_view_requests.front().start_index, 1u);
 
     ASSERT_EQ(socket_rpc_test_state.update_lane_view_requests.size(), 1u);
-    EXPECT_EQ(socket_rpc_test_state.update_lane_view_requests.front().view_id, "view-b");
+    EXPECT_EQ(socket_rpc_test_state.update_lane_view_requests.front().view_id.str(), "view-b");
     EXPECT_EQ(socket_rpc_test_state.update_lane_view_requests.front().start_index, 3u);
 }
 
@@ -483,7 +489,7 @@ TEST(SocketRpcServer, AckSubscriberCanFailAndShutdownEventIsInvoked)
         R"({"jsonrpc":"2.0","id":5,"method":"timeline.closeLaneView","params":{"viewId":"view-z"}})"
         "\n");
     auto const close_response = harness.read_response(5);
-    EXPECT_TRUE(close_response.contains(R"("code":-32077)")) << close_response;
+    EXPECT_TRUE(close_response.contains(R"("code":-32000)")) << close_response;
     EXPECT_TRUE(close_response.contains(R"("message":"close failed")")) << close_response;
     ASSERT_EQ(socket_rpc_test_state.close_lane_view_requests.size(), 1u);
     EXPECT_EQ(socket_rpc_test_state.close_lane_view_requests.front(), "view-z");
@@ -504,7 +510,7 @@ TEST(SocketRpcServer, DefersLaneViewNotificationsUntilAfterResponse)
         .kind = "DeferredNode",
     });
     socket_rpc_test_state.deferred_lane_view_notification = iv::LaneViewResult {
-        .view_id = "deferred-view",
+        .view_id = intern("deferred-view"),
         .lanes = iv::LaneQueryResult {
             .start_index = 0,
             .visible_lane_count = 1,

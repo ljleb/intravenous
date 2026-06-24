@@ -1,4 +1,5 @@
 #include <intravenous/runtime/lane_view_service.h>
+#include <intravenous/runtime/uuid.h>
 
 #include <stdexcept>
 #include <utility>
@@ -35,7 +36,7 @@ namespace iv {
         std::unordered_set<uint64_t> ids;
         ids.reserve(result.lanes.size());
         for (auto const& lane : result.lanes) {
-            ids.insert(lane.lane_id);
+            ids.insert(lane.runtime_lane.value);
         }
         return ids;
     }
@@ -43,7 +44,7 @@ namespace iv {
     LaneViewResult LaneViewService::open_view(LaneViewRequest request)
     {
         if (request.view_id.empty()) {
-            throw std::runtime_error("lane view id must not be empty");
+            request.view_id = generate_uuid_v4();
         }
 
         auto lanes = query_lanes(
@@ -98,9 +99,27 @@ namespace iv {
         };
     }
 
-    void LaneViewService::close_view(std::string const& view_id)
+    void LaneViewService::close_view(InternedString view_id)
     {
         _active_views.erase(view_id);
+    }
+
+    std::vector<LaneViewService::ActiveViewSnapshot> LaneViewService::active_views() const
+    {
+        std::vector<ActiveViewSnapshot> views;
+        views.reserve(_active_views.size());
+        for (auto const &[view_id, view] : _active_views) {
+            views.push_back(ActiveViewSnapshot{
+                .view_id = view_id.str(),
+                .filter = view.filter,
+                .start_index = view.start_index,
+                .visible_lane_count = view.visible_lane_count,
+                .first_sample_index = view.first_sample_index,
+                .last_sample_index = view.last_sample_index,
+                .display_sample_count = view.display_sample_count,
+            });
+        }
+        return views;
     }
 
     void LaneViewService::mark_lane_set_changed()
@@ -124,7 +143,7 @@ namespace iv {
         }
     }
 
-    void LaneViewService::notify_view_changed(std::string const& view_id)
+    void LaneViewService::notify_view_changed(InternedString view_id)
     {
         auto view_it = _active_views.find(view_id);
         if (view_it == _active_views.end()) {

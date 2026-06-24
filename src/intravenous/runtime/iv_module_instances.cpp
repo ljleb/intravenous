@@ -3,6 +3,7 @@
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/uuid.h>
 
 #include <algorithm>
 #include <ranges>
@@ -43,7 +44,9 @@ IvModuleInstance make_instance_from_definition(
 
 } // namespace
 
-std::string IvModuleInstances::create_instance(std::filesystem::path module_root)
+std::string IvModuleInstances::create_instance(
+    std::filesystem::path module_root,
+    std::optional<std::string> requested_instance_id)
 {
     IvModuleRequiredDefinitionsChanged required_diff{};
     bool list_changed = false;
@@ -53,7 +56,14 @@ std::string IvModuleInstances::create_instance(std::filesystem::path module_root
 
     {
         std::scoped_lock lock(mutex);
-        instance_id = "instance:" + std::to_string(next_instance_id++);
+        if (requested_instance_id.has_value()) {
+            instance_id = *requested_instance_id;
+            if (desired_instances_by_id.contains(instance_id)) {
+                throw std::runtime_error("duplicate iv module instance id: " + instance_id);
+            }
+        } else {
+            instance_id = generate_uuid_v4().str();
+        }
         desired_instances_by_id.emplace(instance_id, DesiredInstance{
             .instance_id = instance_id,
             .definition_id = definition_id,

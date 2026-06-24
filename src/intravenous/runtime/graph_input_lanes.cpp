@@ -4,6 +4,7 @@
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_lane_nodes/controls.h>
 #include <intravenous/runtime/task_ids.h>
+#include <intravenous/runtime/uuid.h>
 
 #include <array>
 #include <charconv>
@@ -34,6 +35,20 @@ constexpr std::string_view metadata_output = "dsp_graph.output";
 int local_hash_string(std::string const &value)
 {
     return static_cast<int>(std::hash<std::string>{}(value));
+}
+
+LaneId stable_lane_id_for_key(std::string const &key)
+{
+    std::uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : key) {
+        hash ^= static_cast<std::uint64_t>(c);
+        hash *= 1099511628211ull;
+    }
+    hash &= 0x7fffffffffffffffull;
+    if (hash == 0) {
+        hash = 1;
+    }
+    return LaneId{hash};
 }
 
 void append_graph_input_port_descriptors(
@@ -227,6 +242,21 @@ std::string existing_identity_key(
         + "\x1f" + "ordinal:" + std::to_string(*port_ordinal)
         + "\x1f" + "channel:"
         + (channel_type.has_value() ? std::to_string(*channel_type) : std::string("none"));
+}
+
+InternedString lane_external_id_or_new(
+    std::unordered_map<std::string, InternedString> const &stored_ids_by_key,
+    std::unordered_map<std::string, GraphInputLanes::ExistingTrackedLane> const &existing_by_key,
+    std::string const &key)
+{
+    if (auto const it = stored_ids_by_key.find(key); it != stored_ids_by_key.end()) {
+        return it->second;
+    }
+    if (auto const it = existing_by_key.find(key); it != existing_by_key.end()
+        && !it->second.external_id.empty()) {
+        return it->second.external_id;
+    }
+    return generate_uuid_v4();
 }
 
 TypeErasedLaneNode make_sample_input_node(Sample default_value)
@@ -880,11 +910,16 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
         if (auto const it = logical_outputs_by_key.find(key); it != logical_outputs_by_key.end()) {
             lane = it->second.lane;
         } else {
-            lane = lane_ids.next();
+            lane = stable_lane_id_for_key(key);
             if (batch != nullptr) {
                 auto metadata = graph_output_metadata(port, true, false, !is_event, is_event);
+                auto external_id = lane_external_id_or_new(
+                    logical_output_lane_ids_by_key,
+                    logical_outputs_by_key,
+                    key);
                 batch->upserts.push_back(TimelineLaneUpsert{
                     .lane = lane,
+                    .external_id = external_id,
                     .make_node = [lane, is_event] {
                         if (is_event) {
                             return TypeErasedLaneNode(GraphEventOutputLaneNode{ .lane = lane });
@@ -920,11 +955,16 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
         if (auto const it = concrete_outputs_by_key.find(key); it != concrete_outputs_by_key.end()) {
             lane = it->second.lane;
         } else {
-            lane = lane_ids.next();
+            lane = stable_lane_id_for_key(key);
             if (batch != nullptr) {
                 auto metadata = graph_output_metadata(port, false, true, !is_event, is_event);
+                auto external_id = lane_external_id_or_new(
+                    concrete_output_lane_ids_by_key,
+                    concrete_outputs_by_key,
+                    key);
                 batch->upserts.push_back(TimelineLaneUpsert{
                     .lane = lane,
+                    .external_id = external_id,
                     .make_node = [lane, is_event] {
                         if (is_event) {
                             return TypeErasedLaneNode(GraphEventOutputLaneNode{ .lane = lane });
@@ -1078,7 +1118,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             it != logical_sample_knobs_by_key.end()) {
             lane = it->second.lane;
         } else {
-            lane = lane_ids.next();
+            lane = stable_lane_id_for_key(key);
             if (batch != nullptr) {
                 auto metadata = graph_input_metadata(
                     port,
@@ -1089,8 +1129,13 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                     false);
                 auto const current_value =
                     live_input_value_or_locked(port.port.logical_node_id, port.port.port_ordinal, Sample{0.0f});
+                auto external_id = lane_external_id_or_new(
+                    logical_sample_knob_lane_ids_by_key,
+                    logical_sample_knobs_by_key,
+                    key);
                 batch->upserts.push_back(TimelineLaneUpsert{
                     .lane = lane,
+                    .external_id = external_id,
                     .make_node = [current_value] {
                         return TypeErasedLaneNode(KnobLaneNode{ .value = current_value });
                     },
@@ -1157,7 +1202,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             it != sample_inputs_by_key.end()) {
             graph_input_lane = it->second.lane;
         } else {
-            graph_input_lane = lane_ids.next();
+            graph_input_lane = stable_lane_id_for_key(sample_key);
             if (batch != nullptr) {
                 auto metadata = graph_input_metadata(
                     port,
@@ -1171,8 +1216,13 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                     sample_input_default_values.contains(default_key)
                         ? sample_input_default_values.at(default_key)
                         : Sample{0.0f};
+                auto external_id = lane_external_id_or_new(
+                    concrete_sample_input_lane_ids_by_key,
+                    sample_inputs_by_key,
+                    sample_key);
                 batch->upserts.push_back(TimelineLaneUpsert{
                     .lane = graph_input_lane,
+                    .external_id = external_id,
                     .make_node = [default_value] {
                         return make_sample_input_node(default_value);
                     },
@@ -1200,7 +1250,11 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             return it->second.lane;
         }
 
-        auto const lane = lane_ids.next();
+        auto const lane = stable_lane_id_for_key(key);
+        auto const external_id = lane_external_id_or_new(
+            logical_event_input_lane_ids_by_key,
+            logical_event_inputs_by_key,
+            key);
         if (batch != nullptr) {
             auto metadata = graph_input_metadata(
                 logical_port,
@@ -1211,6 +1265,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                 true);
             batch->upserts.push_back(TimelineLaneUpsert{
                 .lane = lane,
+                .external_id = external_id,
                 .make_node = [] {
                     return TypeErasedLaneNode(GraphEventInputLaneNode{});
                 },
@@ -1221,6 +1276,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             key,
             ExistingTrackedLane{
                 .lane = lane,
+                .external_id = external_id,
                 .metadata = graph_input_metadata(
                     logical_port,
                     false,
@@ -1261,7 +1317,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                 it != event_inputs_by_key.end()) {
                 graph_input_lane = it->second.lane;
             } else {
-                graph_input_lane = lane_ids.next();
+                graph_input_lane = stable_lane_id_for_key(key);
                 if (batch != nullptr) {
                     auto metadata = graph_input_metadata(
                         port,
@@ -1270,8 +1326,13 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                         true,
                         false,
                         true);
+                    auto external_id = lane_external_id_or_new(
+                        concrete_event_input_lane_ids_by_key,
+                        event_inputs_by_key,
+                        key);
                     batch->upserts.push_back(TimelineLaneUpsert{
                         .lane = graph_input_lane,
+                        .external_id = external_id,
                         .make_node = [] {
                             return TypeErasedLaneNode(GraphEventInputLaneNode{});
                         },
@@ -1347,6 +1408,7 @@ void GraphInputLanes::apply_tracked_batch_locked(TimelineLaneBatchUpdate const &
         bool replaced = false;
         for (auto &tracked : tracked_lanes) {
             if (tracked.lane == upsert.lane) {
+                tracked.external_id = upsert.external_id;
                 tracked.metadata = upsert.metadata;
                 replaced = true;
                 break;
@@ -1355,6 +1417,7 @@ void GraphInputLanes::apply_tracked_batch_locked(TimelineLaneBatchUpdate const &
         if (!replaced) {
             tracked_lanes.push_back(ExistingTrackedLane{
                 .lane = upsert.lane,
+                .external_id = upsert.external_id,
                 .metadata = upsert.metadata,
             });
         }
@@ -1717,6 +1780,19 @@ void GraphInputLanes::set_sample_input_state(
     {
         std::scoped_lock lock(mutex);
         if (request.member_ordinal.has_value()) {
+            auto const sample_key = sample_input_key(DesiredGraphInputPort{
+                .instance_id = {},
+                .module_instance_id = 0,
+                .port = sample_input_descriptor(
+                    request.node_id,
+                    request.member_ordinal,
+                    request.input_ordinal,
+                    resolve_sample_channel_type(
+                        desired_ports,
+                        request.node_id,
+                        request.member_ordinal,
+                        request.input_ordinal).value_or(ChannelTypeId::mono)),
+            });
             auto const sample_channel_type = resolve_sample_channel_type(
                 desired_ports,
                 request.node_id,
@@ -1736,26 +1812,35 @@ void GraphInputLanes::set_sample_input_state(
             case ProjectSampleInputState::default_:
                 concrete_live_input_overrides.erase(override_key);
                 concrete_sample_input_states_by_key.erase(port_key);
+                concrete_sample_input_lane_ids_by_key.erase(sample_key);
                 break;
             case ProjectSampleInputState::overridden:
                 concrete_live_input_overrides.insert(override_key);
                 concrete_sample_input_states_by_key[port_key] =
                     ConcreteSampleInputState::overridden;
+                concrete_sample_input_lane_ids_by_key.erase(sample_key);
                 break;
             case ProjectSampleInputState::logical_follow:
                 concrete_live_input_overrides.erase(override_key);
                 concrete_sample_input_states_by_key[port_key] =
                     ConcreteSampleInputState::logical_follow;
+                concrete_sample_input_lane_ids_by_key.erase(sample_key);
                 break;
             case ProjectSampleInputState::timeline_lane:
                 concrete_live_input_overrides.erase(override_key);
                 concrete_sample_input_states_by_key[port_key] =
                     ConcreteSampleInputState::timeline_lane;
+                if (request.lane_id.has_value()) {
+                    concrete_sample_input_lane_ids_by_key[sample_key] = *request.lane_id;
+                } else {
+                    concrete_sample_input_lane_ids_by_key.erase(sample_key);
+                }
                 break;
             case ProjectSampleInputState::disconnected:
                 concrete_live_input_overrides.erase(override_key);
                 concrete_sample_input_states_by_key[port_key] =
                     ConcreteSampleInputState::disconnected;
+                concrete_sample_input_lane_ids_by_key.erase(sample_key);
                 break;
             }
 
@@ -1764,6 +1849,19 @@ void GraphInputLanes::set_sample_input_state(
                 request.member_ordinal,
                 request.input_ordinal);
         } else {
+            auto const logical_key = logical_knob_key(DesiredGraphInputPort{
+                .instance_id = {},
+                .module_instance_id = 0,
+                .port = sample_input_descriptor(
+                    request.node_id,
+                    std::nullopt,
+                    request.input_ordinal,
+                    resolve_sample_channel_type(
+                        desired_ports,
+                        request.node_id,
+                        std::nullopt,
+                        request.input_ordinal).value_or(ChannelTypeId::mono)),
+            });
             auto const sample_channel_type = resolve_sample_channel_type(
                 desired_ports,
                 request.node_id,
@@ -1779,10 +1877,16 @@ void GraphInputLanes::set_sample_input_state(
             case ProjectSampleInputState::overridden:
                 logical_sample_knob_states_by_key[port_key] =
                     LogicalSampleKnobState::overridden;
+                logical_sample_knob_lane_ids_by_key.erase(logical_key);
                 break;
             case ProjectSampleInputState::timeline_lane:
                 logical_sample_knob_states_by_key[port_key] =
                     LogicalSampleKnobState::timeline_lane;
+                if (request.lane_id.has_value()) {
+                    logical_sample_knob_lane_ids_by_key[logical_key] = *request.lane_id;
+                } else {
+                    logical_sample_knob_lane_ids_by_key.erase(logical_key);
+                }
                 break;
             case ProjectSampleInputState::logical_follow:
             case ProjectSampleInputState::disconnected:
@@ -1804,6 +1908,26 @@ void GraphInputLanes::set_event_input_state(
     TimelineLaneBatchUpdate batch;
     {
         std::scoped_lock lock(mutex);
+        auto const concrete_key_value = event_input_key(DesiredGraphInputPort{
+            .instance_id = {},
+            .module_instance_id = 0,
+            .port = GraphInputPortDescriptor{
+                .logical_node_id = request.node_id,
+                .concrete_member_ordinal = request.member_ordinal,
+                .port_kind = PortKind::event,
+                .port_ordinal = request.input_ordinal,
+            },
+        });
+        auto const logical_key_value = logical_event_input_key(DesiredGraphInputPort{
+            .instance_id = {},
+            .module_instance_id = 0,
+            .port = GraphInputPortDescriptor{
+                .logical_node_id = request.node_id,
+                .concrete_member_ordinal = std::nullopt,
+                .port_kind = PortKind::event,
+                .port_ordinal = request.input_ordinal,
+            },
+        });
         auto const port_key = graph_input_port_key(GraphInputPortDescriptor{
             .logical_node_id = request.node_id,
             .concrete_member_ordinal = request.member_ordinal,
@@ -1814,19 +1938,58 @@ void GraphInputLanes::set_event_input_state(
         switch (request.state) {
         case ProjectEventInputState::default_:
             concrete_event_input_states_by_key.erase(port_key);
+            concrete_event_input_lane_ids_by_key.erase(concrete_key_value);
             break;
         case ProjectEventInputState::logical_follow:
             concrete_event_input_states_by_key[port_key] =
                 ConcreteEventInputState::logical_follow;
+            concrete_event_input_lane_ids_by_key.erase(concrete_key_value);
+            if (request.lane_id.has_value()) {
+                logical_event_input_lane_ids_by_key[logical_key_value] = *request.lane_id;
+            }
             break;
         case ProjectEventInputState::timeline_lane:
             concrete_event_input_states_by_key[port_key] =
                 ConcreteEventInputState::timeline_lane;
+            if (request.lane_id.has_value()) {
+                concrete_event_input_lane_ids_by_key[concrete_key_value] = *request.lane_id;
+            } else {
+                concrete_event_input_lane_ids_by_key.erase(concrete_key_value);
+            }
             break;
         case ProjectEventInputState::disconnected:
             concrete_event_input_states_by_key[port_key] =
                 ConcreteEventInputState::disconnected;
+            concrete_event_input_lane_ids_by_key.erase(concrete_key_value);
             break;
+        }
+
+        bool has_logical_follow_remaining = false;
+        for (auto const &port : desired_ports) {
+            if (port.port.port_kind != PortKind::event) {
+                continue;
+            }
+            if (port.port.logical_node_id != request.node_id) {
+                continue;
+            }
+            if (port.port.port_ordinal != request.input_ordinal) {
+                continue;
+            }
+            auto const candidate_port_key = graph_input_port_key(GraphInputPortDescriptor{
+                .logical_node_id = port.port.logical_node_id,
+                .concrete_member_ordinal = port.port.concrete_member_ordinal,
+                .port_kind = PortKind::event,
+                .port_ordinal = port.port.port_ordinal,
+            });
+            if (auto const it = concrete_event_input_states_by_key.find(candidate_port_key);
+                it != concrete_event_input_states_by_key.end()
+                && it->second == ConcreteEventInputState::logical_follow) {
+                has_logical_follow_remaining = true;
+                break;
+            }
+        }
+        if (!has_logical_follow_remaining) {
+            logical_event_input_lane_ids_by_key.erase(logical_key_value);
         }
 
         mark_instances_requiring_rebuild_locked(
@@ -1844,6 +2007,23 @@ void GraphInputLanes::set_sample_output_state(
     TimelineLaneBatchUpdate batch;
     {
         std::scoped_lock lock(mutex);
+        auto const identity_key = output_identity_key(
+            DesiredGraphInputPort{
+                .instance_id = {},
+                .module_instance_id = 0,
+                .port = GraphInputPortDescriptor{
+                    .logical_node_id = request.node_id,
+                    .concrete_member_ordinal = request.member_ordinal,
+                    .port_kind = PortKind::sample,
+                    .port_ordinal = request.output_ordinal,
+                    .sample_channel_type = resolve_sample_channel_type(
+                        desired_output_ports,
+                        request.node_id,
+                        request.member_ordinal,
+                        request.output_ordinal).value_or(ChannelTypeId::mono),
+                },
+            },
+            request.member_ordinal.has_value() ? "concrete-output" : "logical-output");
         auto const sample_channel_type = resolve_sample_channel_type(
             desired_output_ports,
             request.node_id,
@@ -1861,21 +2041,34 @@ void GraphInputLanes::set_sample_output_state(
             switch (request.state) {
             case ProjectSampleOutputState::disconnected:
                 concrete_output_states_by_key.erase(port_key);
+                concrete_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectSampleOutputState::logical:
                 concrete_output_states_by_key[port_key] = ConcreteOutputState::logical;
+                concrete_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectSampleOutputState::timeline_lane:
                 concrete_output_states_by_key[port_key] = ConcreteOutputState::timeline_lane;
+                if (request.lane_id.has_value()) {
+                    concrete_output_lane_ids_by_key[identity_key] = *request.lane_id;
+                } else {
+                    concrete_output_lane_ids_by_key.erase(identity_key);
+                }
                 break;
             }
         } else {
             switch (request.state) {
             case ProjectSampleOutputState::disconnected:
                 logical_output_states_by_key.erase(port_key);
+                logical_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectSampleOutputState::timeline_lane:
                 logical_output_states_by_key[port_key] = LogicalOutputState::timeline_lane;
+                if (request.lane_id.has_value()) {
+                    logical_output_lane_ids_by_key[identity_key] = *request.lane_id;
+                } else {
+                    logical_output_lane_ids_by_key.erase(identity_key);
+                }
                 break;
             case ProjectSampleOutputState::logical:
                 throw std::runtime_error(
@@ -1899,6 +2092,18 @@ void GraphInputLanes::set_event_output_state(
     TimelineLaneBatchUpdate batch;
     {
         std::scoped_lock lock(mutex);
+        auto const identity_key = output_identity_key(
+            DesiredGraphInputPort{
+                .instance_id = {},
+                .module_instance_id = 0,
+                .port = GraphInputPortDescriptor{
+                    .logical_node_id = request.node_id,
+                    .concrete_member_ordinal = request.member_ordinal,
+                    .port_kind = PortKind::event,
+                    .port_ordinal = request.output_ordinal,
+                },
+            },
+            request.member_ordinal.has_value() ? "concrete-output" : "logical-output");
         auto const port_key = graph_input_port_key(GraphInputPortDescriptor{
             .logical_node_id = request.node_id,
             .concrete_member_ordinal = request.member_ordinal,
@@ -1910,21 +2115,34 @@ void GraphInputLanes::set_event_output_state(
             switch (request.state) {
             case ProjectEventOutputState::disconnected:
                 concrete_output_states_by_key.erase(port_key);
+                concrete_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectEventOutputState::logical:
                 concrete_output_states_by_key[port_key] = ConcreteOutputState::logical;
+                concrete_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectEventOutputState::timeline_lane:
                 concrete_output_states_by_key[port_key] = ConcreteOutputState::timeline_lane;
+                if (request.lane_id.has_value()) {
+                    concrete_output_lane_ids_by_key[identity_key] = *request.lane_id;
+                } else {
+                    concrete_output_lane_ids_by_key.erase(identity_key);
+                }
                 break;
             }
         } else {
             switch (request.state) {
             case ProjectEventOutputState::disconnected:
                 logical_output_states_by_key.erase(port_key);
+                logical_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectEventOutputState::timeline_lane:
                 logical_output_states_by_key[port_key] = LogicalOutputState::timeline_lane;
+                if (request.lane_id.has_value()) {
+                    logical_output_lane_ids_by_key[identity_key] = *request.lane_id;
+                } else {
+                    logical_output_lane_ids_by_key.erase(identity_key);
+                }
                 break;
             case ProjectEventOutputState::logical:
                 throw std::runtime_error(
@@ -1946,6 +2164,284 @@ GraphInputLaneBindings GraphInputLanes::graph_input_lane_bindings(
     ProjectGraphInputLaneBindingsRequest const &request)
 {
     return query_graph_input_lane_bindings(request);
+}
+
+GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
+{
+    std::scoped_lock lock(mutex);
+    AuthoredStateSnapshot snapshot;
+    std::unordered_map<std::string, InternedString> logical_sample_knob_external_ids_by_key;
+    std::unordered_map<std::string, InternedString> sample_input_external_ids_by_key;
+    std::unordered_map<std::string, InternedString> logical_event_input_external_ids_by_key;
+    std::unordered_map<std::string, InternedString> event_input_external_ids_by_key;
+    std::unordered_map<std::string, InternedString> logical_output_external_ids_by_key;
+    std::unordered_map<std::string, InternedString> concrete_output_external_ids_by_key;
+
+    for (auto const &tracked : tracked_lanes) {
+        if (tracked.external_id.empty()) {
+            continue;
+        }
+        if (tracked.metadata.has_unit(metadata_graph_input)) {
+            if (tracked.metadata.has_unit(metadata_knob)
+                && tracked.metadata.has_unit(metadata_logical)
+                && tracked.metadata.has_unit(metadata_sample)) {
+                logical_sample_knob_external_ids_by_key.emplace(
+                    existing_identity_key(tracked.metadata, "logical-knob"),
+                    tracked.external_id);
+            } else if (tracked.metadata.has_unit(metadata_input)
+                && tracked.metadata.has_unit(metadata_logical)
+                && tracked.metadata.has_unit(metadata_event)) {
+                logical_event_input_external_ids_by_key.emplace(
+                    existing_identity_key(tracked.metadata, "logical-event-input"),
+                    tracked.external_id);
+            } else if (tracked.metadata.has_unit(metadata_input)
+                && tracked.metadata.has_unit(metadata_sample)) {
+                sample_input_external_ids_by_key.emplace(
+                    existing_identity_key(tracked.metadata, "sample-input"),
+                    tracked.external_id);
+            } else if (tracked.metadata.has_unit(metadata_input)
+                && tracked.metadata.has_unit(metadata_event)) {
+                event_input_external_ids_by_key.emplace(
+                    existing_identity_key(tracked.metadata, "event-input"),
+                    tracked.external_id);
+            }
+        }
+        if (tracked.metadata.has_unit(metadata_graph_output)) {
+            if (tracked.metadata.has_unit(metadata_logical)) {
+                logical_output_external_ids_by_key.emplace(
+                    existing_identity_key(tracked.metadata, "logical-output"),
+                    tracked.external_id);
+            } else if (tracked.metadata.has_unit(metadata_concrete)) {
+                concrete_output_external_ids_by_key.emplace(
+                    existing_identity_key(tracked.metadata, "concrete-output"),
+                    tracked.external_id);
+            }
+        }
+    }
+
+    for (auto const &port : desired_ports) {
+        if (port.port.port_kind == PortKind::sample) {
+            if (!port.port.concrete_member_ordinal.has_value()) {
+                auto const state_key = graph_input_port_key(port.port);
+                if (auto const state_it = logical_sample_knob_states_by_key.find(state_key);
+                    state_it != logical_sample_knob_states_by_key.end()) {
+                    if (state_it->second == LogicalSampleKnobState::timeline_lane) {
+                        snapshot.sample_input_states.push_back(ProjectSetSampleInputStateRequest{
+                            .node_id = port.port.logical_node_id,
+                            .member_ordinal = std::nullopt,
+                            .input_ordinal = port.port.port_ordinal,
+                            .state = ProjectSampleInputState::timeline_lane,
+                            .lane_id = [&]() -> std::optional<InternedString> {
+                                auto const key = logical_knob_key(port);
+                                if (auto const it = logical_sample_knob_external_ids_by_key.find(key);
+                                    it != logical_sample_knob_external_ids_by_key.end()) {
+                                    return it->second;
+                                }
+                                return std::nullopt;
+                            }(),
+                        });
+                    } else {
+                        snapshot.sample_input_values.push_back(ProjectSetSampleInputValueRequest{
+                            .node_id = port.port.logical_node_id,
+                            .member_ordinal = std::nullopt,
+                            .input_ordinal = port.port.port_ordinal,
+                            .value = live_input_value_or_locked(
+                                port.port.logical_node_id,
+                                port.port.port_ordinal,
+                                Sample{0.0f}),
+                        });
+                    }
+                }
+                continue;
+            }
+
+            auto const state_key = graph_input_port_key(port.port);
+            if (auto const state_it = concrete_sample_input_states_by_key.find(state_key);
+                state_it != concrete_sample_input_states_by_key.end()) {
+                auto const member_ordinal = *port.port.concrete_member_ordinal;
+                if (state_it->second == ConcreteSampleInputState::overridden) {
+                    snapshot.sample_input_values.push_back(ProjectSetSampleInputValueRequest{
+                        .node_id = port.port.logical_node_id,
+                        .member_ordinal = member_ordinal,
+                        .input_ordinal = port.port.port_ordinal,
+                        .value = live_input_value_or_locked(
+                            port.port.logical_node_id,
+                            member_ordinal,
+                            port.port.port_ordinal,
+                            Sample{0.0f}),
+                    });
+                } else {
+                    ProjectSampleInputState state = ProjectSampleInputState::default_;
+                    switch (state_it->second) {
+                    case ConcreteSampleInputState::overridden:
+                        state = ProjectSampleInputState::overridden;
+                        break;
+                    case ConcreteSampleInputState::logical_follow:
+                        state = ProjectSampleInputState::logical_follow;
+                        break;
+                    case ConcreteSampleInputState::timeline_lane:
+                        state = ProjectSampleInputState::timeline_lane;
+                        break;
+                    case ConcreteSampleInputState::disconnected:
+                        state = ProjectSampleInputState::disconnected;
+                        break;
+                    }
+                    snapshot.sample_input_states.push_back(ProjectSetSampleInputStateRequest{
+                        .node_id = port.port.logical_node_id,
+                        .member_ordinal = member_ordinal,
+                        .input_ordinal = port.port.port_ordinal,
+                        .state = state,
+                        .lane_id = state == ProjectSampleInputState::timeline_lane
+                            ? [&]() -> std::optional<InternedString> {
+                                auto const key = sample_input_key(port);
+                                if (auto const it = sample_input_external_ids_by_key.find(key);
+                                    it != sample_input_external_ids_by_key.end()) {
+                                    return it->second;
+                                }
+                                return std::nullopt;
+                            }()
+                            : std::nullopt,
+                    });
+                }
+            }
+            continue;
+        }
+
+        auto const event_state_key = graph_input_port_key(port.port);
+        if (auto const state_it = concrete_event_input_states_by_key.find(event_state_key);
+            state_it != concrete_event_input_states_by_key.end()) {
+            ProjectEventInputState state = ProjectEventInputState::default_;
+            switch (state_it->second) {
+            case ConcreteEventInputState::default_:
+                state = ProjectEventInputState::default_;
+                break;
+            case ConcreteEventInputState::logical_follow:
+                state = ProjectEventInputState::logical_follow;
+                break;
+            case ConcreteEventInputState::timeline_lane:
+                state = ProjectEventInputState::timeline_lane;
+                break;
+            case ConcreteEventInputState::disconnected:
+                state = ProjectEventInputState::disconnected;
+                break;
+            }
+            snapshot.event_input_states.push_back(ProjectSetEventInputStateRequest{
+                .node_id = port.port.logical_node_id,
+                .member_ordinal = port.port.concrete_member_ordinal,
+                .input_ordinal = port.port.port_ordinal,
+                .state = state,
+                .lane_id = [&]() -> std::optional<InternedString> {
+                    if (state == ProjectEventInputState::timeline_lane) {
+                        auto const key = event_input_key(port);
+                        if (auto const it = event_input_external_ids_by_key.find(key);
+                            it != event_input_external_ids_by_key.end()) {
+                            return it->second;
+                        }
+                    }
+                    if (state == ProjectEventInputState::logical_follow) {
+                        auto logical_port = port;
+                        logical_port.port.concrete_member_ordinal = std::nullopt;
+                        auto const key = logical_event_input_key(logical_port);
+                        if (auto const it = logical_event_input_external_ids_by_key.find(key);
+                            it != logical_event_input_external_ids_by_key.end()) {
+                            return it->second;
+                        }
+                    }
+                    return std::nullopt;
+                }(),
+            });
+        }
+    }
+
+    for (auto const &port : desired_output_ports) {
+        auto const output_state_key = graph_input_port_key(port.port);
+        if (port.port.port_kind == PortKind::sample) {
+            if (port.port.concrete_member_ordinal.has_value()) {
+                if (auto const it = concrete_output_states_by_key.find(output_state_key);
+                    it != concrete_output_states_by_key.end()) {
+                snapshot.sample_output_states.push_back(ProjectSetSampleOutputStateRequest{
+                    .node_id = port.port.logical_node_id,
+                    .member_ordinal = port.port.concrete_member_ordinal,
+                    .output_ordinal = port.port.port_ordinal,
+                    .state = it->second == ConcreteOutputState::logical
+                        ? ProjectSampleOutputState::logical
+                        : ProjectSampleOutputState::timeline_lane,
+                    .lane_id = it->second == ConcreteOutputState::timeline_lane
+                        ? [&]() -> std::optional<InternedString> {
+                            auto const key = output_identity_key(port, "concrete-output");
+                            if (auto const lane_it = concrete_output_external_ids_by_key.find(key);
+                                lane_it != concrete_output_external_ids_by_key.end()) {
+                                return lane_it->second;
+                            }
+                            return std::nullopt;
+                        }()
+                        : std::nullopt,
+                });
+            }
+        } else if (auto const it = logical_output_states_by_key.find(output_state_key);
+            it != logical_output_states_by_key.end()) {
+            (void)it;
+            snapshot.sample_output_states.push_back(ProjectSetSampleOutputStateRequest{
+                .node_id = port.port.logical_node_id,
+                .member_ordinal = std::nullopt,
+                .output_ordinal = port.port.port_ordinal,
+                .state = ProjectSampleOutputState::timeline_lane,
+                .lane_id = [&]() -> std::optional<InternedString> {
+                    auto const key = output_identity_key(port, "logical-output");
+                    if (auto const lane_it = logical_output_external_ids_by_key.find(key);
+                        lane_it != logical_output_external_ids_by_key.end()) {
+                        return lane_it->second;
+                    }
+                    return std::nullopt;
+                }(),
+            });
+        }
+            continue;
+        }
+
+        if (port.port.concrete_member_ordinal.has_value()) {
+            if (auto const it = concrete_output_states_by_key.find(output_state_key);
+                it != concrete_output_states_by_key.end()) {
+                snapshot.event_output_states.push_back(ProjectSetEventOutputStateRequest{
+                    .node_id = port.port.logical_node_id,
+                    .member_ordinal = port.port.concrete_member_ordinal,
+                    .output_ordinal = port.port.port_ordinal,
+                    .state = it->second == ConcreteOutputState::logical
+                        ? ProjectEventOutputState::logical
+                        : ProjectEventOutputState::timeline_lane,
+                    .lane_id = it->second == ConcreteOutputState::timeline_lane
+                        ? [&]() -> std::optional<InternedString> {
+                            auto const key = output_identity_key(port, "concrete-output");
+                            if (auto const lane_it = concrete_output_external_ids_by_key.find(key);
+                                lane_it != concrete_output_external_ids_by_key.end()) {
+                                return lane_it->second;
+                            }
+                            return std::nullopt;
+                        }()
+                        : std::nullopt,
+                });
+            }
+        } else if (auto const it = logical_output_states_by_key.find(output_state_key);
+            it != logical_output_states_by_key.end()) {
+            (void)it;
+            snapshot.event_output_states.push_back(ProjectSetEventOutputStateRequest{
+                .node_id = port.port.logical_node_id,
+                .member_ordinal = std::nullopt,
+                .output_ordinal = port.port.port_ordinal,
+                .state = ProjectEventOutputState::timeline_lane,
+                .lane_id = [&]() -> std::optional<InternedString> {
+                    auto const key = output_identity_key(port, "logical-output");
+                    if (auto const lane_it = logical_output_external_ids_by_key.find(key);
+                        lane_it != logical_output_external_ids_by_key.end()) {
+                        return lane_it->second;
+                    }
+                    return std::nullopt;
+                }(),
+            });
+        }
+    }
+
+    return snapshot;
 }
 
 void GraphInputLanes::handle_task_runner_after_pass(

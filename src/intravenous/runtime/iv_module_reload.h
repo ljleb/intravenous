@@ -49,6 +49,8 @@ class IvModuleReload {
 public:
     explicit IvModuleReload(StartupConfigState startup_config_);
 
+    void set_toolchain_config(ModuleLoader::ToolchainConfig toolchain);
+    [[nodiscard]] ModuleLoader::ToolchainConfig toolchain_config() const;
     void handle_definition_declarations_changed(
         IvModuleDefinitionDeclarationsChanged const &diff);
 

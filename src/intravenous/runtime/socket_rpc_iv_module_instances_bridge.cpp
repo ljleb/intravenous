@@ -1,42 +1,64 @@
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 namespace iv {
 namespace {
-IvModuleInstances *bound_iv_module_instances = nullptr;
-
 void handle_create_iv_module_instance(
     CreateIvModuleInstanceRequest const &request,
     SocketRpcCreateIvModuleInstanceResultBuilder &builder)
 {
-    if (bound_iv_module_instances == nullptr) {
-        return;
+    try {
+        ProjectStringBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_create_iv_module_instance_requested_event,
+            ProjectCreateIvModuleInstanceRequest{
+                .module_root = request.module_root,
+            },
+            project_builder);
+        builder.succeed(project_builder.build());
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
     }
-    builder.succeed(bound_iv_module_instances->create_instance(request.module_root));
 }
 
 void handle_delete_iv_module_instance(
     DeleteIvModuleInstanceRequest const &request,
-    SocketRpcAckResponseBuilder &)
+    SocketRpcAckResponseBuilder &builder)
 {
-    if (bound_iv_module_instances == nullptr) {
-        return;
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_delete_iv_module_instance_requested_event,
+            ProjectDeleteIvModuleInstanceRequest{
+                .instance_id = request.instance_id,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
     }
-    bound_iv_module_instances->remove_instance(request.instance_id);
 }
 
 void handle_set_iv_module_instance_default_silence_ttl_samples(
     SetIvModuleInstanceDefaultSilenceTtlSamplesRequest const &request,
-    SocketRpcAckResponseBuilder &)
+    SocketRpcAckResponseBuilder &builder)
 {
-    if (bound_iv_module_instances == nullptr) {
-        return;
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_iv_module_instance_default_silence_ttl_samples_requested_event,
+            ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequest{
+                .instance_id = request.instance_id,
+                .default_silence_ttl_samples = request.default_silence_ttl_samples,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
     }
-    bound_iv_module_instances->set_default_silence_ttl_samples(
-        request.instance_id,
-        request.default_silence_ttl_samples);
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
@@ -55,14 +77,12 @@ IV_SUBSCRIBE_LINKER_EVENT(
 
 void bind_socket_rpc_iv_module_instances_bridge(IvModuleInstances &iv_module_instances)
 {
-    bound_iv_module_instances = &iv_module_instances;
+    (void)iv_module_instances;
 }
 
 void unbind_socket_rpc_iv_module_instances_bridge(
     IvModuleInstances const &iv_module_instances)
 {
-    if (bound_iv_module_instances == &iv_module_instances) {
-        bound_iv_module_instances = nullptr;
-    }
+    (void)iv_module_instances;
 }
 } // namespace iv

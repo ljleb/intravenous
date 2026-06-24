@@ -3,6 +3,7 @@
 #include <intravenous/runtime/audio_device_lane_nodes.h>
 #include <intravenous/runtime/audio_device_lanes_events.h>
 #include <intravenous/runtime/timeline_execution_events.h>
+#include <intravenous/runtime/uuid.h>
 
 #include <algorithm>
 #include <iostream>
@@ -15,7 +16,16 @@ constexpr ChannelLayout kStereoInterleaved {
     .channel_type = ChannelTypeId::stereo,
     .sample_layout = SampleStreamLayout::interleaved,
 };
-LaneIdAllocator g_audio_device_lane_ids;
+constexpr std::uint64_t stable_lane_id_for(std::string_view key)
+{
+    std::uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : key) {
+        hash ^= static_cast<std::uint64_t>(c);
+        hash *= 1099511628211ull;
+    }
+    hash &= 0x7fffffffffffffffull;
+    return hash == 0 ? 1ull : hash;
+}
 
 LaneMetadata make_output_metadata()
 {
@@ -72,7 +82,9 @@ AudioDeviceLanes::AudioDeviceLanes(
           .preferred_block_size = timeline_block_size,
       }),
       selected_output_device_id_(std::move(selected_output_device_id)),
-      selected_input_device_id_(std::move(selected_input_device_id))
+      selected_input_device_id_(std::move(selected_input_device_id)),
+      output_lane_external_id_(generate_uuid_v4()),
+      input_lane_external_id_(generate_uuid_v4())
 {
     if (timeline_sample_rate_ == 0 || timeline_block_size_ == 0) {
         throw std::invalid_argument(
@@ -83,8 +95,8 @@ AudioDeviceLanes::AudioDeviceLanes(
         throw std::invalid_argument("audio device lanes backend is incomplete");
     }
 
-    output_lane_id_ = g_audio_device_lane_ids.next();
-    input_lane_id_ = g_audio_device_lane_ids.next();
+    output_lane_id_ = LaneId{stable_lane_id_for("audio_device.output")};
+    input_lane_id_ = LaneId{stable_lane_id_for("audio_device.input")};
     initialize_current_input_block();
     replace_output_device(create_output_device(selected_output_device_id_));
     replace_input_device(create_input_device(selected_input_device_id_));
@@ -237,6 +249,7 @@ void AudioDeviceLanes::initialize_timeline_lanes()
     batch.version_index = 1;
     batch.upserts.push_back(TimelineLaneUpsert{
         .lane = output_lane_id_,
+        .external_id = output_lane_external_id_,
         .make_node = [] {
             return TypeErasedLaneNode(AudioDeviceOutputLaneNode{});
         },
@@ -245,6 +258,7 @@ void AudioDeviceLanes::initialize_timeline_lanes()
     });
     batch.upserts.push_back(TimelineLaneUpsert{
         .lane = input_lane_id_,
+        .external_id = input_lane_external_id_,
         .make_node = [lane = input_lane_id_] {
             return TypeErasedLaneNode(AudioDeviceInputLaneNode{.lane = lane});
         },
@@ -254,6 +268,53 @@ void AudioDeviceLanes::initialize_timeline_lanes()
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_audio_device_lanes_timeline_batch_requested_event,
         batch);
+}
+
+void AudioDeviceLanes::set_lane_external_ids(
+    InternedString output_lane_external_id,
+    InternedString input_lane_external_id)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        output_lane_external_id_ = std::move(output_lane_external_id);
+        input_lane_external_id_ = std::move(input_lane_external_id);
+    }
+
+    TimelineLaneBatchUpdate batch;
+    batch.version_index = 1;
+    batch.upserts.push_back(TimelineLaneUpsert{
+        .lane = output_lane_id_,
+        .external_id = output_lane_external_id_,
+        .make_node = [] {
+            return TypeErasedLaneNode(AudioDeviceOutputLaneNode{});
+        },
+        .sample_channel_type = ChannelTypeId::stereo,
+        .metadata = make_output_metadata(),
+    });
+    batch.upserts.push_back(TimelineLaneUpsert{
+        .lane = input_lane_id_,
+        .external_id = input_lane_external_id_,
+        .make_node = [lane = input_lane_id_] {
+            return TypeErasedLaneNode(AudioDeviceInputLaneNode{.lane = lane});
+        },
+        .sample_channel_type = ChannelTypeId::stereo,
+        .metadata = make_input_metadata(),
+    });
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_audio_device_lanes_timeline_batch_requested_event,
+        batch);
+}
+
+InternedString AudioDeviceLanes::output_lane_external_id() const
+{
+    std::scoped_lock lock(mutex_);
+    return output_lane_external_id_;
+}
+
+InternedString AudioDeviceLanes::input_lane_external_id() const
+{
+    std::scoped_lock lock(mutex_);
+    return input_lane_external_id_;
 }
 
 void AudioDeviceLanes::append_output_block_locked(SampleBlockView<Sample const> view)

@@ -40,6 +40,19 @@ The useful architectural consequence is:
 - project file replay does not need to store JSON-RPC specifically
 - project file replay can use any serialized format that can be decoded into the same typed request structs and `IV_INVOKE_LINKER_EVENT(...)` calls
 
+The currently chosen persisted format is:
+
+- JSON
+- one command object per line
+- each command object has exactly `command` and `args`
+
+For `project.overrideSettings` specifically:
+
+- recognized keys are parsed explicitly before dispatch
+- unknown sibling keys are logged
+- recognized keys must still apply even when unknown siblings are present
+- after parsing/logging, the original args object is forwarded to owning modules
+
 ## Persistence shape
 
 The project file should not store C++ binary objects.
@@ -80,8 +93,10 @@ Its responsibilities should be:
 - load the project file
 - hold the normalized reconstruction program
 - replay that program by invoking the same typed command events used by the live app
-- update its stored authored state as project mutations happen
 - write the project file only on explicit save
+
+It may rebuild normalized save output from live module state on save, but it
+should not autosave on ordinary authored mutations.
 
 This module should not depend on the UI.
 
@@ -89,12 +104,21 @@ This module should not depend on the UI.
 
 Project file writes should not happen on every state change.
 
-They should happen only when an explicit save command is received from the UI.
+They should happen only when an explicit save command is received from the UI /
+JSON-RPC surface.
+
+The intended save flow is:
+
+- JSON-RPC receives explicit save
+- JSON-RPC raises a save request into project persistence
+- project persistence raises its state-collection event into contributors
+- contributors fill the structured builder
+- the builder lowers to the normalized command list
+- project persistence writes `project.intravenous`
 
 This keeps serialization cost under control and lets app modules mutate live state freely without forcing immediate disk writes.
 
 ## Open questions
 
-- Whether the persisted command file format should look JSON-RPC-like or use a simpler internal command syntax.
 - Which currently existing linker events are already suitable as canonical reconstruction commands, and which authored-state commands still need to be introduced.
-- How the persistent-state module should observe and normalize live authored mutations without pushing policy back into bridges.
+- How lane-view 2D layout should be represented and restored from the VS Code side once that deferred work starts.

@@ -10,9 +10,11 @@
 #include <string>
 #include <vector>
 
+#include <intravenous/runtime/uuid.h>
+
 namespace iv {
 struct LaneVisualizationSeries {
-    std::uint64_t lane_id = 0;
+    InternedString lane_id {};
     std::string adapter_type = "samples"; // "samples" or "events"
     std::optional<ChannelTypeId> sample_channel_type {};
     SampleStreamLayout sample_layout = SampleStreamLayout::planar;
@@ -22,7 +24,7 @@ struct LaneVisualizationSeries {
 };
 
 struct LaneViewContentUpdate {
-    std::string view_id {};
+    InternedString view_id {};
     std::vector<LaneVisualizationSeries> lanes {};
 };
 } // namespace iv

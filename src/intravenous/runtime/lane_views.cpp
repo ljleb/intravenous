@@ -7,9 +7,9 @@
 
 namespace iv {
     namespace {
-        std::string lane_view_filter_name(std::string const &view_id)
+        std::string lane_view_filter_name(InternedString view_id)
         {
-            return "lane_view." + view_id;
+            return "lane_view." + view_id.str();
         }
     }
 
@@ -79,13 +79,16 @@ namespace iv {
         requested_output_lanes.reserve(window_lane_count);
 
         for (size_t lane_index = lane_begin; lane_index < lane_end; ++lane_index) {
-            auto const lane_id = snapshot->lane_ids[lane_index];
-            visible_lane_ids.insert(lane_id.value);
-            requested_output_lanes.push_back(lane_id);
+            auto const runtime_lane = snapshot->lane_ids[lane_index];
+            visible_lane_ids.insert(runtime_lane.value);
+            requested_output_lanes.push_back(runtime_lane);
             result.lanes.push_back(LaneInfo{
-                .lane_id = lane_id.value,
+                .lane_id = snapshot->public_id_for_lane
+                    ? snapshot->public_id_for_lane(runtime_lane)
+                    : InternedString::from_string(std::to_string(runtime_lane.value)),
+                .runtime_lane = runtime_lane,
                 .domain = LaneDomain::realtime,
-                .metadata = snapshot->metadata_for_lane ? snapshot->metadata_for_lane(lane_id) : LaneMetadata{},
+                .metadata = snapshot->metadata_for_lane ? snapshot->metadata_for_lane(runtime_lane) : LaneMetadata{},
             });
         }
 
@@ -100,8 +103,12 @@ namespace iv {
                         continue;
                     }
                     result.connections.push_back(LaneConnectionInfo{
-                        .source_lane_id = group.lane.value,
-                        .target_lane_id = output.target.value,
+                        .source_lane_id = snapshot->public_id_for_lane
+                            ? snapshot->public_id_for_lane(group.lane)
+                            : InternedString::from_string(std::to_string(group.lane.value)),
+                        .target_lane_id = snapshot->public_id_for_lane
+                            ? snapshot->public_id_for_lane(output.target)
+                            : InternedString::from_string(std::to_string(output.target.value)),
                         .port_kind = output.input.kind,
                         .port_ordinal = output.input.ordinal,
                     });
@@ -142,7 +149,8 @@ namespace iv {
 
     void LaneViews::close_view(std::string const &view_id)
     {
-        auto const filter_name = lane_view_filter_name(view_id);
+        auto const interned_view_id = InternedString::from_string(view_id);
+        auto const filter_name = lane_view_filter_name(interned_view_id);
         {
             std::scoped_lock lock(mutex);
             results_by_filter.erase(filter_name);
@@ -150,10 +158,40 @@ namespace iv {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_lane_filter_removed_event,
             filter_name);
-        lane_views.close_view(view_id);
+        lane_views.close_view(interned_view_id);
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_lane_view_closed_event,
             view_id);
+    }
+
+    std::vector<LaneViewRequest> LaneViews::active_view_requests() const
+    {
+        std::vector<LaneViewRequest> requests;
+        auto active_views = lane_views.active_views();
+        requests.reserve(active_views.size());
+
+        std::scoped_lock lock(mutex);
+        for (auto const &view : active_views) {
+            auto query_source = view.filter.source;
+            if (auto const it = results_by_filter.find(view.filter.source);
+                it != results_by_filter.end()) {
+                query_source = it->second.query_source;
+            }
+            requests.push_back(LaneViewRequest{
+                .view_id = InternedString::from_string(view.view_id),
+                .query = LaneQuery{
+                    .filter = LaneQueryFilter{
+                        .source = query_source,
+                    },
+                },
+                .start_index = view.start_index,
+                .visible_lane_count = view.visible_lane_count,
+                .first_sample_index = view.first_sample_index,
+                .last_sample_index = view.last_sample_index,
+                .display_sample_count = view.display_sample_count,
+            });
+        }
+        return requests;
     }
 
     void LaneViews::handle_lane_filters_changed(

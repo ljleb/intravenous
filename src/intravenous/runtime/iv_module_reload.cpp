@@ -40,6 +40,18 @@ IvModuleReload::IvModuleReload(StartupConfigState startup_config_)
 {
 }
 
+void IvModuleReload::set_toolchain_config(ModuleLoader::ToolchainConfig toolchain)
+{
+    std::scoped_lock lock(mutex);
+    startup_config.toolchain = std::move(toolchain);
+}
+
+ModuleLoader::ToolchainConfig IvModuleReload::toolchain_config() const
+{
+    std::scoped_lock lock(mutex);
+    return startup_config.toolchain;
+}
+
 void IvModuleReload::refresh_watched_dependencies_locked()
 {
     std::vector<ModuleDependency> dependencies;

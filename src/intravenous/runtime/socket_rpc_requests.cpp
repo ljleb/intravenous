@@ -249,7 +249,9 @@ LaneQuery parse_lane_query(Json const &params) {
 
 LaneViewRequest parse_lane_view_request(Json const &params) {
     return LaneViewRequest{
-        .view_id = parse_string_param(params, "viewId"),
+        .view_id = parse_optional_nullable_string_param(params, "viewId").has_value()
+            ? InternedString::from_string(*parse_optional_nullable_string_param(params, "viewId"))
+            : InternedString{},
         .query = parse_lane_query(params),
         .start_index = parse_optional_size_param(params, "startIndex", 0),
         .visible_lane_count = parse_optional_size_param(params, "visibleLaneCount", 0),
@@ -340,7 +342,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
         return ParsedSocketRpcRequest{
             .request_id = request_id,
             .payload = SetTimelineLaneSampleChannelTypeRequest{
-                .lane_id = parse_uint64_param(params, "laneId"),
+                .lane_id = InternedString::from_string(parse_string_param(params, "laneId")),
                 .sample_channel_type = parse_channel_type_param(params, "sampleChannelType"),
             },
         };
@@ -358,6 +360,12 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
                 .output_device_id = parse_optional_nullable_string_param(params, "outputDeviceId"),
                 .input_device_id = parse_optional_nullable_string_param(params, "inputDeviceId"),
             },
+        };
+    }
+    if (method == "project.save") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = SaveProjectRequest{},
         };
     }
     if (method == "timeline.openLaneView" || method == "timeline.updateLaneView") {

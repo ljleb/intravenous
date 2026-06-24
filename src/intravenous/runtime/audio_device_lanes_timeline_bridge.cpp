@@ -117,6 +117,9 @@ void emit_lane_change(
             .metadata_for_lane = [timeline = bound_timeline](LaneId lane) {
                 return timeline->lane_metadata(lane);
             },
+            .public_id_for_lane = [timeline = bound_timeline](LaneId lane) {
+                return timeline->lane_public_id(lane);
+            },
             .outputs_for_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes) {
                 return outputs_for_lanes(*timeline, lanes);
             },

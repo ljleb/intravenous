@@ -24,6 +24,7 @@ namespace iv {
         LaneViewResult open_view(LaneViewRequest request);
         LaneViewResult update_view(LaneViewRequest request);
         void close_view(std::string const &view_id);
+        [[nodiscard]] std::vector<LaneViewRequest> active_view_requests() const;
         void handle_lane_filters_changed(LaneFiltersChanged const &change);
     };
 } // namespace iv

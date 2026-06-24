@@ -88,6 +88,18 @@ A dedicated persistence module:
 
 This module must not become a second mutation API.
 
+Save should not happen implicitly from ordinary project mutations.
+
+Instead:
+
+- JSON-RPC should expose an explicit save command
+- that command should enter the project persistence module
+- the project persistence module should then raise its save-side contribution
+  event
+- contributors should fill the builder
+- the builder should lower into the final command list
+- only then should the file be written
+
 ## Event direction
 
 The persistence module likely needs at least two important event flows.
@@ -113,8 +125,7 @@ Important property:
 Replay semantics should be:
 
 - best-effort
-- comprehensive in diagnostics
-- lossless in intent reporting
+- failure-logged
 
 That means:
 
@@ -168,36 +179,15 @@ It should not contain:
 The project needs to own compilation compatibility so that all iv-modules built
 for the project remain compatible together.
 
-## Current `.intravenous` reality
+## Current config reality
 
-Current code does not appear to use module-local `.intravenous` files in any
-active way.
+The runtime now uses:
 
-Instead, the runtime currently treats workspace-root `.intravenous` as the
-project config file and required marker.
+- `project.intravenous` as the project-owned command/settings file
+- `.intravenous_defaults` as the installation defaults file
 
-The active runtime parser currently recognizes these keys:
-
-Toolchain/build keys:
-
-- `c_compiler`
-- `cxx_compiler`
-- `cmake_program`
-- `cmake_generator`
-- `make_program`
-- `juce_dir`
-
-Execution keys:
-
-- `sample_rate`
-- `block_size`
-- `compiled_sample_cache_chunk_size_multiplier`
-
-This means that today:
-
-- workspace `.intravenous` is really a project config file
-- installation `.intravenous_defaults` is really an installation defaults file
-- module-local `.intravenous` is not currently carrying meaningful active state
+Module-local `.intravenous` files are still reserved for iv-module-local
+settings, but current project persistence work does not rely on them.
 
 ## One route per purpose
 
@@ -285,14 +275,16 @@ rather than a tiny UI-gesture-like patch.
 
 Paths should be stored relative to the project directory.
 
-The YAML subset should only be used to express tree structures:
+The persisted format should be JSON, one object per line.
 
-- mappings
-- sequences
-- scalar values
+Reasons:
 
-Object references should be represented only as UUID strings inside that tree
-data. YAML-native alias/reference features are not needed.
+- simpler dependency story
+- no extra parser work for now
+- still easy enough to diff and hand-edit in line-oriented command form
+
+Object references should be represented only as UUID strings inside command
+args.
 
 ## Serialization policy for module-managed lanes
 
@@ -437,7 +429,8 @@ Persist:
 
 - stable view id
 - query string
-- viewport/window/order/layout state needed to restore the project UI meaningfully
+- viewport/window/order/layout state needed to restore the project UI
+  meaningfully
 - any additional authored view settings later considered part of reopening the
   project "as it was"
 
@@ -445,6 +438,15 @@ Do not persist:
 
 - resolved query results
 - transient dirty/runtime state
+
+Important implementation note:
+
+- the actual 2D editor/view layout is VS Code-facing UI state
+- this should be explicitly represented as structure, not inferred from list
+  ordering
+- restoring that layout belongs with the app/UI module on project load
+- this work can be deferred, but it should not be treated as solved by command
+  ordering alone
 
 ### `LaneFilters`
 
@@ -564,6 +566,25 @@ The structured builder state will likely need slices for:
 - timeline connectivity objects
 - lane view objects
 
+## `project.overrideSettings`
+
+`project.overrideSettings` is allowed to parse known keys before forwarding the
+override request.
+
+Desired behavior:
+
+- recognized keys should be parsed explicitly
+- recognized valid keys should still be applied even if some sibling keys are
+  unknown
+- unknown keys should not prevent recognized settings from being applied
+- unknown keys should not be silently ignored
+- unknown keys should at least emit a diagnostic/log message
+- after that parsing/logging step, the original structured args object should
+  still be forwarded so owning modules can pull the fields they care about
+
+This keeps the command surface practical while still making unexpected data
+visible.
+
 ## Lane views
 
 Lane views should be stored in the project file.
@@ -610,15 +631,7 @@ Recommended direction:
 - assign a UUID when a persisted resource is created
 - preserve it forever across save/load cycles
 - reuse it on subsequent saves
-
-Optional readability improvement:
-
-- include a human-readable type prefix around the UUID if useful
-
-Examples:
-
-- `instance:<uuid>`
-- `view:<uuid>`
+- use raw UUID strings in persisted command args
 
 Important property:
 
@@ -654,27 +667,17 @@ The project file should not store:
 
 ## Replay diagnostics
 
-Project replay should produce comprehensive diagnostics.
+Project replay should stay simple:
 
-Suggested command outcome states:
+- run commands in file order
+- log failures when they happen
+- keep going with later commands
 
-- `applied`
-- `failed`
+We do not currently need a structured `applied` / `failed` outcome model, an
+explicit dependency graph, or a cause-annotation layer.
 
-Where:
-
-- `failed` means the command itself could not be applied
-
-Diagnostics should retain enough information to avoid information loss:
-
-- command identity or file location
-- outcome state
-- human-readable error message
-- exception text from the real command execution path
-
-No explicit dependency graph, skip graph, or cause-annotation layer should be
-required. Someone reading diagnostics can infer practical dependency failures
-from the real exception output and command order.
+The useful diagnostic source is the real exception text produced by command
+execution in file order.
 
 ## Current and future settings
 
@@ -706,4 +709,5 @@ explicitly deferred for now.
 6. Define persisted ID policy.
 7. Define replay diagnostics and best-effort failure semantics.
 8. Define normalized one-command-per-line project file semantics.
-9. Only after that, settle the concrete YAML schema and implementation.
+9. Only after that, settle the concrete JSON command schema and
+   implementation.

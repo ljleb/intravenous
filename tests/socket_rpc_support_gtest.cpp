@@ -14,6 +14,11 @@
 namespace {
     using Json = nlohmann::ordered_json;
 
+    iv::InternedString intern(std::string_view value)
+    {
+        return iv::InternedString::from_view(value);
+    }
+
     Json parse_json_line(std::string_view line)
     {
         return Json::parse(line);
@@ -93,7 +98,7 @@ TEST(SocketRpcRequestParser, ParsesLaneViewUpdateRequest)
     EXPECT_EQ(parsed.request_id, 22);
     auto const* request = std::get_if<iv::UpdateLaneViewRpcRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->request.view_id, "view-a");
+    EXPECT_EQ(request->request.view_id.str(), "view-a");
     EXPECT_EQ(request->request.query.filter.source, "dsp_graph.graph_input");
     EXPECT_EQ(request->request.start_index, 4u);
     EXPECT_EQ(request->request.visible_lane_count, 8u);
@@ -187,12 +192,12 @@ TEST(SocketRpcRequestParser, ParsesSetEventOutputStateRequest)
 TEST(SocketRpcRequestParser, ParsesSetTimelineLaneSampleChannelTypeRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":29,"method":"timeline.setLaneSampleChannelType","params":{"laneId":42,"sampleChannelType":"mono"}})");
+        R"({"jsonrpc":"2.0","id":29,"method":"timeline.setLaneSampleChannelType","params":{"laneId":"lane-42","sampleChannelType":"mono"}})");
 
     EXPECT_EQ(parsed.request_id, 29);
     auto const* request = std::get_if<iv::SetTimelineLaneSampleChannelTypeRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->lane_id, 42u);
+    EXPECT_EQ(request->lane_id.str(), "lane-42");
     EXPECT_EQ(request->sample_channel_type, iv::ChannelTypeId::mono);
 }
 
@@ -217,6 +222,16 @@ TEST(SocketRpcRequestParser, ParsesSetAudioDevicesRequest)
     ASSERT_TRUE(request->output_device_id.has_value());
     EXPECT_EQ(*request->output_device_id, "default");
     EXPECT_FALSE(request->input_device_id.has_value());
+}
+
+TEST(SocketRpcRequestParser, ParsesProjectSaveRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":32,"method":"project.save","params":{}})");
+
+    EXPECT_EQ(parsed.request_id, 32);
+    auto const *request = std::get_if<iv::SaveProjectRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
 }
 
 TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
@@ -333,14 +348,14 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
 {
     iv::SocketRpcLaneViewResultBuilder builder;
     iv::LaneViewResult result {
-        .view_id = "view-1",
+        .view_id = intern("view-1"),
         .lanes = iv::LaneQueryResult {
             .start_index = 2,
             .visible_lane_count = 3,
             .total_lane_count = 5,
             .lanes = {
                 iv::LaneInfo {
-                    .lane_id = 42,
+                    .lane_id = intern("42"),
                     .domain = iv::LaneDomain::realtime,
                     .metadata = iv::LaneMetadata{
                         .unit_values = {"graph_input"},
@@ -353,8 +368,8 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
             },
             .connections = {
                 iv::LaneConnectionInfo {
-                    .source_lane_id = 42,
-                    .target_lane_id = 99,
+                    .source_lane_id = intern("lane-42"),
+                    .target_lane_id = intern("lane-99"),
                     .port_kind = iv::PortKind::sample,
                     .port_ordinal = 7,
                 },
@@ -370,18 +385,18 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
     EXPECT_EQ(response["result"]["startIndex"], 2);
     EXPECT_EQ(response["result"]["visibleLaneCount"], 3);
     EXPECT_EQ(response["result"]["totalLaneCount"], 5);
-    EXPECT_EQ(response["result"]["lanes"][0]["laneId"], 42);
+    EXPECT_EQ(response["result"]["lanes"][0]["laneId"], "42");
     EXPECT_EQ(response["result"]["lanes"][0]["domain"], "realtime");
     EXPECT_TRUE(response["result"]["lanes"][0].contains("metadata"));
     EXPECT_EQ(response["result"]["lanes"][0]["metadata"]["member_ordinal"], 1);
-    EXPECT_EQ(response["result"]["connections"][0]["targetLaneId"], 99);
+    EXPECT_EQ(response["result"]["connections"][0]["targetLaneId"], "lane-99");
 }
 
 TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewErrorPayload)
 {
     iv::SocketRpcLaneViewResultBuilder builder;
     builder.succeed(iv::LaneViewResult{
-        .view_id = "view-1",
+        .view_id = intern("view-1"),
         .lanes = iv::LaneQueryResult{
             .error_message = "bad filter",
         },

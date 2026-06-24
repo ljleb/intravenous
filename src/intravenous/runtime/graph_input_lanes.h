@@ -8,6 +8,7 @@
 #include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/task_runner_events.h>
 #include <intravenous/runtime/lane_graph.h>
+#include <intravenous/runtime/uuid.h>
 
 #include <functional>
 #include <atomic>
@@ -63,6 +64,7 @@ public:
 
     struct ExistingTrackedLane {
         LaneId lane {};
+        InternedString external_id {};
         LaneMetadata metadata {};
     };
 
@@ -83,6 +85,14 @@ public:
         std::vector<LaneId> prerequisite_lanes {};
     };
 
+    struct AuthoredStateSnapshot {
+        std::vector<ProjectSetSampleInputValueRequest> sample_input_values {};
+        std::vector<ProjectSetSampleInputStateRequest> sample_input_states {};
+        std::vector<ProjectSetEventInputStateRequest> event_input_states {};
+        std::vector<ProjectSetSampleOutputStateRequest> sample_output_states {};
+        std::vector<ProjectSetEventOutputStateRequest> event_output_states {};
+    };
+
 private:
     mutable std::mutex mutex;
     mutable std::mutex output_blocks_mutex_;
@@ -101,6 +111,12 @@ private:
     std::unordered_map<std::string, LogicalSampleKnobState> logical_sample_knob_states_by_key;
     std::unordered_map<std::string, ConcreteSampleInputState> concrete_sample_input_states_by_key;
     std::unordered_map<std::string, ConcreteEventInputState> concrete_event_input_states_by_key;
+    std::unordered_map<std::string, InternedString> logical_sample_knob_lane_ids_by_key;
+    std::unordered_map<std::string, InternedString> concrete_sample_input_lane_ids_by_key;
+    std::unordered_map<std::string, InternedString> logical_event_input_lane_ids_by_key;
+    std::unordered_map<std::string, InternedString> concrete_event_input_lane_ids_by_key;
+    std::unordered_map<std::string, InternedString> logical_output_lane_ids_by_key;
+    std::unordered_map<std::string, InternedString> concrete_output_lane_ids_by_key;
     std::unordered_set<std::string> pending_rebuild_instance_ids;
     std::vector<TimelineLaneBatchUpdate> pending_timeline_batches;
     std::uint64_t current_update_version_index_ = 1;
@@ -225,6 +241,7 @@ public:
         ProjectSetEventOutputStateRequest const &request);
     [[nodiscard]] GraphInputLaneBindings graph_input_lane_bindings(
         ProjectGraphInputLaneBindingsRequest const &request);
+    [[nodiscard]] AuthoredStateSnapshot authored_state() const;
     void handle_task_runner_after_pass(TasksRunnerAfterPass const &finished);
     BuilderCompletionDiff complete_builder(
         std::string const &instance_id,

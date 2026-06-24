@@ -5,6 +5,7 @@
 #include <intravenous/runtime/lane_graph.h>
 #include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/task_runner_events.h>
+#include <intravenous/runtime/uuid.h>
 
 #include <atomic>
 #include <functional>
@@ -61,6 +62,8 @@ class AudioDeviceLanes {
     std::shared_ptr<ActiveInputDevice> active_input_device_ {};
     LaneId output_lane_id_ {};
     LaneId input_lane_id_ {};
+    InternedString output_lane_external_id_ {};
+    InternedString input_lane_external_id_ {};
     std::atomic<bool> shutdown_requested_ = false;
     mutable std::mutex mutex_;
     std::vector<Sample> output_reservoir_ {};
@@ -113,6 +116,11 @@ public:
     AudioDevicesSnapshot set_selected_devices(
         std::optional<std::string> output_device_id,
         std::optional<std::string> input_device_id);
+    void set_lane_external_ids(
+        InternedString output_lane_external_id,
+        InternedString input_lane_external_id);
+    [[nodiscard]] InternedString output_lane_external_id() const;
+    [[nodiscard]] InternedString input_lane_external_id() const;
 
     void handle_task_runner_before_pass(TasksRunnerBeforePass const &pass);
     void handle_task_runner_after_pass(TasksRunnerAfterPass const &pass);

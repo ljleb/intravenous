@@ -109,8 +109,8 @@ Json lane_metadata_json(LaneMetadata const &metadata) {
 Json lane_query_result_json(LaneQueryResult const &result) {
     Json json_lanes = Json::array();
     for (auto const &lane : result.lanes) {
-        json_lanes.push_back({
-            {"laneId", lane.lane_id},
+        json_lanes.push_back(Json{
+            {"laneId", lane.lane_id.str()},
             {"domain", std::string(lane_domain_json(lane.domain))},
             {"metadata", lane_metadata_json(lane.metadata)},
         });
@@ -118,9 +118,9 @@ Json lane_query_result_json(LaneQueryResult const &result) {
 
     Json json_connections = Json::array();
     for (auto const &connection : result.connections) {
-        json_connections.push_back({
-            {"sourceLaneId", connection.source_lane_id},
-            {"targetLaneId", connection.target_lane_id},
+        json_connections.push_back(Json{
+            {"sourceLaneId", connection.source_lane_id.str()},
+            {"targetLaneId", connection.target_lane_id.str()},
             {"portKind", std::string(port_kind_json(connection.port_kind))},
             {"portOrdinal", connection.port_ordinal},
         });
@@ -141,7 +141,7 @@ Json lane_query_result_json(LaneQueryResult const &result) {
 
 Json lane_view_result_json(LaneViewResult const &result) {
     Json json = lane_query_result_json(result.lanes);
-    json["viewId"] = result.view_id;
+    json["viewId"] = result.view_id.str();
     return json;
 }
 
@@ -183,8 +183,8 @@ Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
                 event.value);
             json_events.push_back(std::move(json_event));
         }
-        json_lanes.push_back({
-            {"laneId", lane.lane_id},
+        json_lanes.push_back(Json{
+            {"laneId", lane.lane_id.str()},
             {"adapterType", lane.adapter_type},
             {"sampleChannelType", lane.sample_channel_type.has_value()
                 ? Json(channel_type_json(*lane.sample_channel_type))
@@ -197,7 +197,7 @@ Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
     }
 
     return Json{
-        {"viewId", update.view_id},
+        {"viewId", update.view_id.str()},
         {"lanes", std::move(json_lanes)},
     };
 }
@@ -421,6 +421,10 @@ void SocketRpcServer::handle_client(int fd) {
                     } else if constexpr (std::same_as<Request, SetEventOutputStateRequest>) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_event_output_state_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, SaveProjectRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_save_project_event, event_request, builder);
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, ServerShutdownRequest>) {
                         SocketRpcAckResponseBuilder builder;

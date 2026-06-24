@@ -1,6 +1,7 @@
 #include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
 
 #include <intravenous/runtime/audio_device_lanes.h>
+#include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 namespace iv {
@@ -21,12 +22,19 @@ void handle_set_audio_devices(
     SetAudioDevicesRequest const &request,
     SocketRpcAudioDevicesResultBuilder &builder)
 {
-    if (bound_audio_device_lanes == nullptr) {
-        return;
+    try {
+        ProjectAudioDevicesBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_audio_devices_requested_event,
+            ProjectSetAudioDevicesRequest{
+                .output_device_id = request.output_device_id,
+                .input_device_id = request.input_device_id,
+            },
+            project_builder);
+        builder.succeed(project_builder.build());
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
     }
-    builder.succeed(bound_audio_device_lanes->set_selected_devices(
-        request.output_device_id,
-        request.input_device_id));
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(

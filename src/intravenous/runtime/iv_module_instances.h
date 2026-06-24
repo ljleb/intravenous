@@ -70,12 +70,13 @@ class IvModuleInstances {
     std::unordered_map<std::string, IvModuleInstance> realized_instances_by_id;
     std::unordered_map<std::string, std::vector<ModuleRef>> realized_module_refs_by_id;
     std::unordered_map<std::string, GraphBuilder> realized_builders_by_id;
-    size_t next_instance_id = 1;
 
 public:
     IvModuleInstances() = default;
 
-    std::string create_instance(std::filesystem::path module_root);
+    std::string create_instance(
+        std::filesystem::path module_root,
+        std::optional<std::string> instance_id = std::nullopt);
     void remove_instance(std::string const &instance_id);
     void set_default_silence_ttl_samples(
         std::string const &instance_id,

@@ -20,7 +20,8 @@ void handle_lane_view_closed(std::string const &view_id)
     if (bound_visualization == nullptr) {
         return;
     }
-    bound_visualization->handle_lane_view_closed(view_id);
+    bound_visualization->handle_lane_view_closed(
+        InternedString::from_string(view_id));
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(

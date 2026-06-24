@@ -1,4 +1,5 @@
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/runtime_project_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -17,7 +18,7 @@ Json parse_json_line(std::string_view line)
 }
 } // namespace
 
-TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesBuilderUnbuilt)
+TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventReturnsError)
 {
     iv::SocketRpcCreateIvModuleInstanceResultBuilder builder;
 
@@ -28,12 +29,16 @@ TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesBuilderUnbuilt)
         },
         builder);
 
-    EXPECT_THROW((void)builder.build(1), std::runtime_error);
+    auto const response = parse_json_line(builder.build(1));
+    EXPECT_EQ(
+        response["error"]["message"].get<std::string>(),
+        "runtime project string result was not provided");
 }
 
 TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
 {
     iv::IvModuleInstances instances;
+    iv::bind_runtime_project_iv_module_instances_bridge(instances);
     iv::bind_socket_rpc_iv_module_instances_bridge(instances);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
@@ -58,12 +63,14 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
     auto const delete_response = parse_json_line(delete_builder.build(3));
     EXPECT_EQ(delete_response["result"]["ok"], true);
 
+    iv::unbind_runtime_project_iv_module_instances_bridge(instances);
     iv::unbind_socket_rpc_iv_module_instances_bridge(instances);
 }
 
 TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
 {
     iv::IvModuleInstances instances;
+    iv::bind_runtime_project_iv_module_instances_bridge(instances);
     iv::bind_socket_rpc_iv_module_instances_bridge(instances);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
@@ -93,5 +100,6 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
     ASSERT_TRUE(listed.front().default_silence_ttl_samples.has_value());
     EXPECT_EQ(*listed.front().default_silence_ttl_samples, 1234u);
 
+    iv::unbind_runtime_project_iv_module_instances_bridge(instances);
     iv::unbind_socket_rpc_iv_module_instances_bridge(instances);
 }

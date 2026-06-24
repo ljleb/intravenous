@@ -2,6 +2,7 @@
 
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/timeline_events.h>
+#include <intravenous/runtime/uuid.h>
 #include <intravenous/query/lane_query_schema.h>
 
 #include <functional>
@@ -15,6 +16,7 @@ struct FilteredLanesSnapshot {
     std::uint64_t revision = 0;
     std::vector<LaneId> lane_ids {};
     std::function<LaneMetadata(LaneId)> metadata_for_lane {};
+    std::function<InternedString(LaneId)> public_id_for_lane {};
     std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes {};
 };
 
