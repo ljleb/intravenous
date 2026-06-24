@@ -23,7 +23,7 @@ struct ProjectCommand {
 class ProjectPersistenceBuilder {
     std::filesystem::path project_root_;
     StartupConfigState startup_;
-    std::optional<ModuleLoader::ToolchainConfig> toolchain_config_ {};
+    std::optional<ModuleLoaderToolchainConfig> toolchain_config_ {};
     std::optional<size_t> compiled_sample_cache_chunk_size_multiplier_ {};
     bool has_output_device_id_ = false;
     bool has_input_device_id_ = false;
@@ -52,7 +52,7 @@ public:
         std::filesystem::path project_root,
         StartupConfigState startup);
 
-    void add_project_toolchain_config(ModuleLoader::ToolchainConfig toolchain_config);
+    void add_project_toolchain_config(ModuleLoaderToolchainConfig toolchain_config);
     void add_project_compiled_sample_cache_chunk_size_multiplier(size_t multiplier);
     void add_project_audio_device_selection(
         std::optional<std::string> output_device_id,

@@ -131,6 +131,7 @@ void handle_connect_timeline_lanes(
             *source,
             *target,
             LanePortId{
+                .domain = request.port_domain,
                 .kind = request.port_kind,
                 .ordinal = request.port_ordinal,
             });
@@ -181,6 +182,7 @@ IV_SUBSCRIBE_LINKER_EVENT(
             lane_connections.push_back(ProjectConnectTimelineLanesRequest{
                 .source_lane_id = bound_timeline->lane_public_id(connection.source),
                 .target_lane_id = bound_timeline->lane_public_id(connection.target),
+                .port_domain = connection.input.domain,
                 .port_kind = connection.input.kind,
                 .port_ordinal = connection.input.ordinal,
             });

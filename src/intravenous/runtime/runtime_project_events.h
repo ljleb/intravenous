@@ -89,7 +89,7 @@ namespace iv {
     };
 
     struct ProjectSetIvModuleToolchainConfigRequest {
-        ModuleLoader::ToolchainConfig toolchain {};
+        ModuleLoaderToolchainConfig toolchain {};
     };
 
     struct ProjectOverrideSettingsRequest {
@@ -185,6 +185,7 @@ namespace iv {
     struct ProjectConnectTimelineLanesRequest {
         InternedString source_lane_id {};
         InternedString target_lane_id {};
+        LanePortDomain port_domain = LanePortDomain::realtime;
         PortKind port_kind = PortKind::sample;
         size_t port_ordinal = 0;
     };

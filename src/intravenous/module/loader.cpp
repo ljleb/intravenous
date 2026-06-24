@@ -593,14 +593,14 @@ namespace iv {
         std::filesystem::path default_template_path;
         std::filesystem::path default_pch_path;
         std::vector<std::filesystem::path> extra_search_roots;
-        ToolchainConfig toolchain;
+        ModuleLoaderToolchainConfig toolchain;
         LogSink log_sink;
         mutable std::mutex build_mutex;
 
         explicit Impl(
             std::filesystem::path discovery_start,
             std::vector<std::filesystem::path> extra_roots,
-            ToolchainConfig toolchain_,
+            ModuleLoaderToolchainConfig toolchain_,
             LogSink log_sink_
         ) :
             repo_root(discover_repo_root(std::move(discovery_start))),
@@ -1231,7 +1231,7 @@ namespace iv {
     ModuleLoader::ModuleLoader(
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_search_roots,
-        ToolchainConfig toolchain,
+        ModuleLoaderToolchainConfig toolchain,
         LogSink log_sink
     ) :
         _impl(std::make_unique<Impl>(

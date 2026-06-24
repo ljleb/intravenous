@@ -79,6 +79,18 @@ PortKind require_port_kind(Json const &args, std::string const &key)
     throw std::runtime_error("unknown port kind: " + value);
 }
 
+LanePortDomain require_port_domain(Json const &args, std::string const &key)
+{
+    auto const value = require_string(args, key);
+    if (value == "compiled") {
+        return LanePortDomain::compiled;
+    }
+    if (value == "realtime") {
+        return LanePortDomain::realtime;
+    }
+    throw std::runtime_error("unknown port domain: " + value);
+}
+
 ChannelTypeId require_channel_type(Json const &args, std::string const &key)
 {
     auto const value = require_string(args, key);
@@ -513,6 +525,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
             ProjectConnectTimelineLanesRequest{
                 .source_lane_id = InternedString::from_string(require_string(args, "source_lane_id")),
                 .target_lane_id = InternedString::from_string(require_string(args, "target_lane_id")),
+                .port_domain = require_port_domain(args, "port_domain"),
                 .port_kind = require_port_kind(args, "port_kind"),
                 .port_ordinal = require_size(args, "port_ordinal"),
             },

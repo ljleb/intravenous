@@ -14,21 +14,21 @@ namespace iv {
     using ModuleRef = std::shared_ptr<void>;
     class GraphBuilder;
 
+    struct ModuleLoaderToolchainConfig {
+        std::optional<std::filesystem::path> c_compiler {};
+        std::optional<std::filesystem::path> cxx_compiler {};
+        std::optional<std::filesystem::path> cmake_program {};
+        std::optional<std::string> cmake_generator {};
+        std::optional<std::filesystem::path> make_program {};
+        std::optional<std::filesystem::path> juce_dir {};
+    };
+
     class ModuleLoader {
         class Impl;
         std::unique_ptr<Impl> _impl;
 
     public:
         using LogSink = std::function<void(std::string const&)>;
-
-        struct ToolchainConfig {
-            std::optional<std::filesystem::path> c_compiler;
-            std::optional<std::filesystem::path> cxx_compiler;
-            std::optional<std::filesystem::path> cmake_program;
-            std::optional<std::string> cmake_generator;
-            std::optional<std::filesystem::path> make_program;
-            std::optional<std::filesystem::path> juce_dir;
-        };
 
         struct LoadedGraph {
             std::vector<ModuleRef> module_refs;
@@ -73,7 +73,7 @@ namespace iv {
         explicit ModuleLoader(
             std::filesystem::path discovery_start = std::filesystem::current_path(),
             std::vector<std::filesystem::path> extra_search_roots = {},
-            ToolchainConfig toolchain = ToolchainConfig(),
+            ModuleLoaderToolchainConfig toolchain = ModuleLoaderToolchainConfig(),
             LogSink log_sink = {}
         );
         ~ModuleLoader();

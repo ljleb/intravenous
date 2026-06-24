@@ -13,7 +13,7 @@ namespace iv {
 
     struct ProjectConfig {
         std::filesystem::path workspace_root {};
-        ModuleLoader::ToolchainConfig toolchain {};
+        ModuleLoaderToolchainConfig toolchain {};
         RuntimeExecutionConfig execution {};
         std::optional<std::string> output_device_id {std::optional<std::string>("default")};
         std::optional<std::string> input_device_id {std::optional<std::string>("default")};

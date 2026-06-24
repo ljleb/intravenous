@@ -34,7 +34,7 @@ ProjectPersistenceBuilder::ProjectPersistenceBuilder(
 }
 
 void ProjectPersistenceBuilder::add_project_toolchain_config(
-    ModuleLoader::ToolchainConfig toolchain_config)
+    ModuleLoaderToolchainConfig toolchain_config)
 {
     toolchain_config_ = std::move(toolchain_config);
 }
@@ -379,6 +379,9 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
         if (a.target_lane_id != b.target_lane_id) {
             return a.target_lane_id < b.target_lane_id;
         }
+        if (a.port_domain != b.port_domain) {
+            return static_cast<int>(a.port_domain) < static_cast<int>(b.port_domain);
+        }
         if (a.port_kind != b.port_kind) {
             return static_cast<int>(a.port_kind) < static_cast<int>(b.port_kind);
         }
@@ -390,6 +393,7 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
             .args = nlohmann::ordered_json{
                 {"source_lane_id", connection.source_lane_id.str()},
                 {"target_lane_id", connection.target_lane_id.str()},
+                {"port_domain", connection.port_domain == LanePortDomain::compiled ? "compiled" : "realtime"},
                 {"port_kind", connection.port_kind == PortKind::sample ? "sample" : "event"},
                 {"port_ordinal", connection.port_ordinal},
             },

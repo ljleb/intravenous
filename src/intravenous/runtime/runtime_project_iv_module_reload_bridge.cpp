@@ -28,7 +28,7 @@ void handle_override_settings(ProjectOverrideSettingsRequest const &request)
 
     bool touched = false;
     auto toolchain = bound_iv_module_reload->toolchain_config();
-    auto const assign_path = [&](std::optional<std::filesystem::path> const &value, std::optional<std::filesystem::path> ModuleLoader::ToolchainConfig::*field) {
+    auto const assign_path = [&](std::optional<std::filesystem::path> const &value, std::optional<std::filesystem::path> ModuleLoaderToolchainConfig::*field) {
         if (!value.has_value()) {
             return;
         }
@@ -38,7 +38,7 @@ void handle_override_settings(ProjectOverrideSettingsRequest const &request)
             touched = true;
         }
     };
-    auto const assign_string = [&](std::optional<std::string> const &value, std::optional<std::string> ModuleLoader::ToolchainConfig::*field) {
+    auto const assign_string = [&](std::optional<std::string> const &value, std::optional<std::string> ModuleLoaderToolchainConfig::*field) {
         if (!value.has_value()) {
             return;
         }
@@ -51,22 +51,22 @@ void handle_override_settings(ProjectOverrideSettingsRequest const &request)
 
     assign_path(
         request.c_compiler,
-        &ModuleLoader::ToolchainConfig::c_compiler);
+        &ModuleLoaderToolchainConfig::c_compiler);
     assign_path(
         request.cxx_compiler,
-        &ModuleLoader::ToolchainConfig::cxx_compiler);
+        &ModuleLoaderToolchainConfig::cxx_compiler);
     assign_path(
         request.cmake_program,
-        &ModuleLoader::ToolchainConfig::cmake_program);
+        &ModuleLoaderToolchainConfig::cmake_program);
     assign_string(
         request.cmake_generator,
-        &ModuleLoader::ToolchainConfig::cmake_generator);
+        &ModuleLoaderToolchainConfig::cmake_generator);
     assign_path(
         request.make_program,
-        &ModuleLoader::ToolchainConfig::make_program);
+        &ModuleLoaderToolchainConfig::make_program);
     assign_path(
         request.juce_dir,
-        &ModuleLoader::ToolchainConfig::juce_dir);
+        &ModuleLoaderToolchainConfig::juce_dir);
     if (!touched) {
         return;
     }
