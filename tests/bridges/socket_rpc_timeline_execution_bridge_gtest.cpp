@@ -218,18 +218,7 @@ TEST(SocketRpcTimelineExecutionBridge, DirectOverrideSettingsEventUpdatesTimelin
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_project_override_settings_requested_event,
         iv::ProjectOverrideSettingsRequest{
-            .args = Json{
-                {"compiled_sample_cache_chunk_size_multiplier", 8},
-            },
-            .workspace_root = workspace,
-            .startup = iv::StartupConfigState{
-                .workspace_root = workspace,
-                .execution = iv::RuntimeExecutionConfig{
-                    .sample_rate = 48000,
-                    .block_size = 8,
-                    .compiled_sample_cache_chunk_size_multiplier = 16,
-                },
-            },
+            .compiled_sample_cache_chunk_size_multiplier = 8,
         });
 
     EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 8u);

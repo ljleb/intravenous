@@ -8,56 +8,6 @@ namespace iv {
 namespace {
 IvModuleReload *bound_iv_module_reload = nullptr;
 
-std::optional<std::filesystem::path> resolve_path_override(
-    ProjectOverrideSettingsRequest const &request,
-    char const *key,
-    std::optional<std::filesystem::path> const &startup_default,
-    std::optional<std::filesystem::path> const &current_value)
-{
-    auto const it = request.args.find(key);
-    if (it == request.args.end()) {
-        return current_value;
-    }
-    if (it->is_null()) {
-        return std::optional<std::filesystem::path>{};
-    }
-    if (!it->is_string()) {
-        throw std::runtime_error(std::string("project override setting '") + key + "' must be a string or null");
-    }
-    auto const value = it->get<std::string>();
-    if (value == "default") {
-        return startup_default;
-    }
-    std::filesystem::path path = value;
-    if (!path.is_absolute()) {
-        path = request.workspace_root / path;
-    }
-    return std::filesystem::weakly_canonical(path).lexically_normal();
-}
-
-std::optional<std::string> resolve_string_override(
-    ProjectOverrideSettingsRequest const &request,
-    char const *key,
-    std::optional<std::string> const &startup_default,
-    std::optional<std::string> const &current_value)
-{
-    auto const it = request.args.find(key);
-    if (it == request.args.end()) {
-        return current_value;
-    }
-    if (it->is_null()) {
-        return std::optional<std::string>{};
-    }
-    if (!it->is_string()) {
-        throw std::runtime_error(std::string("project override setting '") + key + "' must be a string or null");
-    }
-    auto const value = it->get<std::string>();
-    if (value == "default") {
-        return startup_default;
-    }
-    return value;
-}
-
 void handle_set_iv_module_toolchain_config(
     ProjectSetIvModuleToolchainConfigRequest const &request,
     ProjectAckBuilder &builder)
@@ -78,35 +28,45 @@ void handle_override_settings(ProjectOverrideSettingsRequest const &request)
 
     bool touched = false;
     auto toolchain = bound_iv_module_reload->toolchain_config();
-    auto const assign_path = [&](char const *key, std::optional<std::filesystem::path> ModuleLoader::ToolchainConfig::*field) {
-        auto const next = resolve_path_override(
-            request,
-            key,
-            request.startup.toolchain.*field,
-            toolchain.*field);
+    auto const assign_path = [&](std::optional<std::filesystem::path> const &value, std::optional<std::filesystem::path> ModuleLoader::ToolchainConfig::*field) {
+        if (!value.has_value()) {
+            return;
+        }
+        auto const next = value;
         if (next != toolchain.*field) {
             toolchain.*field = next;
             touched = true;
         }
     };
-    auto const assign_string = [&](char const *key, std::optional<std::string> ModuleLoader::ToolchainConfig::*field) {
-        auto const next = resolve_string_override(
-            request,
-            key,
-            request.startup.toolchain.*field,
-            toolchain.*field);
+    auto const assign_string = [&](std::optional<std::string> const &value, std::optional<std::string> ModuleLoader::ToolchainConfig::*field) {
+        if (!value.has_value()) {
+            return;
+        }
+        auto const next = value;
         if (next != toolchain.*field) {
             toolchain.*field = next;
             touched = true;
         }
     };
 
-    assign_path("c_compiler", &ModuleLoader::ToolchainConfig::c_compiler);
-    assign_path("cxx_compiler", &ModuleLoader::ToolchainConfig::cxx_compiler);
-    assign_path("cmake_program", &ModuleLoader::ToolchainConfig::cmake_program);
-    assign_string("cmake_generator", &ModuleLoader::ToolchainConfig::cmake_generator);
-    assign_path("make_program", &ModuleLoader::ToolchainConfig::make_program);
-    assign_path("juce_dir", &ModuleLoader::ToolchainConfig::juce_dir);
+    assign_path(
+        request.c_compiler,
+        &ModuleLoader::ToolchainConfig::c_compiler);
+    assign_path(
+        request.cxx_compiler,
+        &ModuleLoader::ToolchainConfig::cxx_compiler);
+    assign_path(
+        request.cmake_program,
+        &ModuleLoader::ToolchainConfig::cmake_program);
+    assign_string(
+        request.cmake_generator,
+        &ModuleLoader::ToolchainConfig::cmake_generator);
+    assign_path(
+        request.make_program,
+        &ModuleLoader::ToolchainConfig::make_program);
+    assign_path(
+        request.juce_dir,
+        &ModuleLoader::ToolchainConfig::juce_dir);
     if (!touched) {
         return;
     }

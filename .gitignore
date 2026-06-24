@@ -3,7 +3,7 @@
 /.cache
 /.codex
 /.claude
-/intravenious
+intravenious
 /scripts/benchmark.txt*
 node_modules
 *.vsix

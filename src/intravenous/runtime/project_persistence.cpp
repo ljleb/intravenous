@@ -30,6 +30,30 @@ std::optional<InternedString> optional_interned_string(Json const &args, std::st
     return InternedString::from_string(it->get<std::string>());
 }
 
+std::optional<std::filesystem::path> parse_optional_path_override_value(
+    Json const &value,
+    std::filesystem::path const &workspace_root)
+{
+    if (value.is_null()) {
+        return std::nullopt;
+    }
+    auto path = std::filesystem::path(value.get<std::string>());
+    if (!path.is_absolute()) {
+        path = workspace_root / path;
+    }
+    return std::filesystem::weakly_canonical(path).lexically_normal();
+}
+
+template<typename T>
+void assign_if_present(
+    std::optional<T> &target,
+    bool &has_any,
+    std::optional<T> value)
+{
+    target = std::move(value);
+    has_any = true;
+}
+
 size_t require_size(Json const &args, std::string const &key)
 {
     auto const it = args.find(key);
@@ -146,6 +170,98 @@ bool is_recognized_project_override_key(std::string const &key)
         || key == "output_device_id"
         || key == "input_device_id";
 }
+
+std::optional<ProjectOverrideSettingsRequest> parse_project_override_settings_request(
+    Json const &args,
+    std::filesystem::path const &workspace_root,
+    auto const &emit_warning)
+{
+    ProjectOverrideSettingsRequest request;
+    bool has_any = false;
+
+    for (auto const &[key, value] : args.items()) {
+        if (!is_recognized_project_override_key(key)) {
+            emit_warning(
+                "project override setting key is not recognized and will be ignored: " + key);
+            continue;
+        }
+        if (key == "c_compiler" || key == "cxx_compiler" || key == "cmake_program" ||
+            key == "make_program" || key == "juce_dir") {
+            if (!value.is_null() && !value.is_string()) {
+                throw std::runtime_error("project override toolchain settings must be strings or null");
+            }
+            auto const parsed_value = (value.is_string() && value.get<std::string>() == "default")
+                ? std::optional<std::filesystem::path>{}
+                : parse_optional_path_override_value(value, workspace_root);
+            if (key == "c_compiler") {
+                assign_if_present(request.c_compiler, has_any, std::move(parsed_value));
+            } else if (key == "cxx_compiler") {
+                assign_if_present(request.cxx_compiler, has_any, std::move(parsed_value));
+            } else if (key == "cmake_program") {
+                assign_if_present(request.cmake_program, has_any, std::move(parsed_value));
+            } else if (key == "make_program") {
+                assign_if_present(request.make_program, has_any, std::move(parsed_value));
+            } else {
+                assign_if_present(request.juce_dir, has_any, std::move(parsed_value));
+            }
+            continue;
+        }
+        if (key == "cmake_generator") {
+            if (!value.is_null() && !value.is_string()) {
+                throw std::runtime_error("project override toolchain settings must be strings or null");
+            }
+            assign_if_present(
+                request.cmake_generator,
+                has_any,
+                (value.is_string() && value.get<std::string>() != "default")
+                    ? std::optional<std::string>(value.get<std::string>())
+                    : std::optional<std::string>{});
+            continue;
+        }
+        if (key == "compiled_sample_cache_chunk_size_multiplier") {
+            if (!value.is_string()
+                && (!value.is_number_integer() || value.get<std::int64_t>() < 0)) {
+                throw std::runtime_error(
+                    "project override setting 'compiled_sample_cache_chunk_size_multiplier' must be a non-negative integer or 'default'");
+            }
+            if (value.is_string()) {
+                if (value.get<std::string>() != "default") {
+                    throw std::runtime_error(
+                        "project override setting 'compiled_sample_cache_chunk_size_multiplier' must be a non-negative integer or 'default'");
+                }
+                assign_if_present(
+                    request.compiled_sample_cache_chunk_size_multiplier,
+                    has_any,
+                    std::optional<size_t>{});
+            } else {
+                assign_if_present(
+                    request.compiled_sample_cache_chunk_size_multiplier,
+                    has_any,
+                    std::optional<size_t>(static_cast<size_t>(value.get<std::int64_t>())));
+            }
+            continue;
+        }
+        if (key == "output_device_id" || key == "input_device_id") {
+            if (!value.is_null() && !value.is_string()) {
+                throw std::runtime_error("project audio device id override settings must be strings or null");
+            }
+            auto const parsed_value = (value.is_string() && value.get<std::string>() != "default")
+                ? std::optional<std::string>(value.get<std::string>())
+                : std::optional<std::string>{};
+            if (key == "output_device_id") {
+                assign_if_present(request.output_device_id, has_any, parsed_value);
+            } else {
+                assign_if_present(request.input_device_id, has_any, parsed_value);
+            }
+            continue;
+        }
+    }
+
+    if (!has_any) {
+        return std::nullopt;
+    }
+    return request;
+}
 } // namespace
 
 ProjectPersistence::ProjectPersistence(
@@ -210,47 +326,18 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
     auto const &args = command.args;
 
     if (command.command == "project.overrideSettings") {
-        bool has_recognized_key = false;
-        for (auto const &[key, value] : args.items()) {
-            if (!is_recognized_project_override_key(key)) {
-                emit_message(
-                    "warning",
-                    "project override setting key is not recognized and will be ignored: " + key);
-                continue;
-            }
-            has_recognized_key = true;
-            if (key == "c_compiler" || key == "cxx_compiler" || key == "cmake_program" ||
-                key == "cmake_generator" || key == "make_program" || key == "juce_dir") {
-                if (!value.is_null() && !value.is_string()) {
-                    throw std::runtime_error("project override toolchain settings must be strings or null");
-                }
-                continue;
-            }
-            if (key == "compiled_sample_cache_chunk_size_multiplier") {
-                if (!value.is_string()
-                    && (!value.is_number_integer() || value.get<std::int64_t>() < 0)) {
-                    throw std::runtime_error(
-                        "project override setting 'compiled_sample_cache_chunk_size_multiplier' must be a non-negative integer or 'default'");
-                }
-                continue;
-            }
-            if (key == "output_device_id" || key == "input_device_id") {
-                if (!value.is_null() && !value.is_string()) {
-                    throw std::runtime_error("project audio device id override settings must be strings or null");
-                }
-                continue;
-            }
-        }
-        if (!has_recognized_key) {
+        auto const request = parse_project_override_settings_request(
+            args,
+            workspace_root_,
+            [&](std::string const &message) {
+                emit_message("warning", message);
+            });
+        if (!request.has_value()) {
             return;
         }
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_override_settings_requested_event,
-            ProjectOverrideSettingsRequest{
-                .args = args,
-                .workspace_root = workspace_root_,
-                .startup = startup_,
-            });
+            *request);
         return;
     }
 

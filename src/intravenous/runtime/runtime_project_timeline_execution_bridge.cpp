@@ -45,28 +45,11 @@ void handle_override_settings(ProjectOverrideSettingsRequest const &request)
     if (bound_timeline_execution == nullptr) {
         return;
     }
-    auto const it = request.args.find("compiled_sample_cache_chunk_size_multiplier");
-    if (it == request.args.end()) {
+    if (!request.compiled_sample_cache_chunk_size_multiplier.has_value()) {
         return;
     }
-    size_t multiplier = request.startup.execution.compiled_sample_cache_chunk_size_multiplier;
-    if (it->is_string()) {
-        if (it->get<std::string>() != "default") {
-            throw std::runtime_error(
-                "project override setting 'compiled_sample_cache_chunk_size_multiplier' must be a non-negative integer or 'default'");
-        }
-    } else if (it->is_number_integer()) {
-        auto const value = it->get<std::int64_t>();
-        if (value < 0) {
-            throw std::runtime_error(
-                "project override setting 'compiled_sample_cache_chunk_size_multiplier' must be a non-negative integer or 'default'");
-        }
-        multiplier = static_cast<size_t>(value);
-    } else {
-        throw std::runtime_error(
-            "project override setting 'compiled_sample_cache_chunk_size_multiplier' must be a non-negative integer or 'default'");
-    }
-    bound_timeline_execution->set_compiled_sample_cache_chunk_size_multiplier(multiplier);
+    bound_timeline_execution->set_compiled_sample_cache_chunk_size_multiplier(
+        *request.compiled_sample_cache_chunk_size_multiplier);
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 

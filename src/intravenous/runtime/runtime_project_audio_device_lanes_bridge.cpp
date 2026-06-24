@@ -8,28 +8,6 @@ namespace iv {
 namespace {
 AudioDeviceLanes *bound_audio_device_lanes = nullptr;
 
-std::optional<std::string> resolve_device_override(
-    nlohmann::ordered_json const &args,
-    char const *key,
-    std::optional<std::string> const &startup_default)
-{
-    auto const it = args.find(key);
-    if (it == args.end()) {
-        return std::nullopt;
-    }
-    if (it->is_null()) {
-        return std::optional<std::string>{};
-    }
-    if (!it->is_string()) {
-        throw std::runtime_error(std::string("project override setting '") + key + "' must be a string or null");
-    }
-    auto value = it->get<std::string>();
-    if (value == "default") {
-        return startup_default;
-    }
-    return value;
-}
-
 void handle_set_audio_devices(
     ProjectSetAudioDevicesRequest const &request,
     ProjectAudioDevicesBuilder &builder)
@@ -62,23 +40,15 @@ void handle_override_settings(ProjectOverrideSettingsRequest const &request)
     if (bound_audio_device_lanes == nullptr) {
         return;
     }
-    auto const output_device_id = resolve_device_override(
-        request.args,
-        "output_device_id",
-        request.startup.output_device_id);
-    auto const input_device_id = resolve_device_override(
-        request.args,
-        "input_device_id",
-        request.startup.input_device_id);
-    if (!request.args.contains("output_device_id") && !request.args.contains("input_device_id")) {
+    if (!request.output_device_id.has_value() && !request.input_device_id.has_value()) {
         return;
     }
     (void)bound_audio_device_lanes->set_selected_devices(
-        request.args.contains("output_device_id")
-            ? output_device_id
+        request.output_device_id.has_value()
+            ? request.output_device_id
             : bound_audio_device_lanes->audio_devices_snapshot().selected_output.device_id,
-        request.args.contains("input_device_id")
-            ? input_device_id
+        request.input_device_id.has_value()
+            ? request.input_device_id
             : bound_audio_device_lanes->audio_devices_snapshot().selected_input.device_id);
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }

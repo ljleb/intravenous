@@ -6,11 +6,9 @@
 #include <intravenous/runtime/graph_input_lane_controller.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
-#include <intravenous/runtime/startup_config.h>
 #include <intravenous/runtime/uuid.h>
 
 #include <filesystem>
-#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <vector>
@@ -95,9 +93,15 @@ namespace iv {
     };
 
     struct ProjectOverrideSettingsRequest {
-        nlohmann::ordered_json args = nlohmann::ordered_json::object();
-        std::filesystem::path workspace_root {};
-        StartupConfigState startup {};
+        std::optional<std::filesystem::path> c_compiler {};
+        std::optional<std::filesystem::path> cxx_compiler {};
+        std::optional<std::filesystem::path> cmake_program {};
+        std::optional<std::string> cmake_generator {};
+        std::optional<std::filesystem::path> make_program {};
+        std::optional<std::filesystem::path> juce_dir {};
+        std::optional<size_t> compiled_sample_cache_chunk_size_multiplier {};
+        std::optional<std::string> output_device_id {};
+        std::optional<std::string> input_device_id {};
     };
 
     struct ProjectGraphInputLaneBindingsRequest {
