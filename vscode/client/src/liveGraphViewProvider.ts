@@ -1,6 +1,18 @@
-const vscode = require("vscode");
-const fs = require("fs");
-const path = require("path");
+import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
+
+import { LogicalNode } from "./graphModel";
+import {
+    applySampleInputValueUpdate,
+    clearSampleInputValueOverride,
+    serializeLiveGraphNodes,
+} from "./liveGraphModel";
+import {
+    isLiveGraphControlMessage,
+    LiveGraphControlHandler,
+    LiveGraphSetStateMessage,
+} from "./liveGraphProtocol";
 
 const mergedNodeIconPath = path.join(__dirname, "media", "merged_node.svg");
 const singleNodeIconPath = path.join(__dirname, "media", "single_node.svg");
@@ -9,217 +21,66 @@ const chevronRightSourceIconPath = path.join(__dirname, "media", "chevron_left.s
 const chevronDownIconPath = path.join(__dirname, "media", "chevron_down.svg");
 const portIconSizePx = 16;
 
-class LiveGraphViewProvider {
-    constructor(extensionUri) {
+export class LiveGraphViewProvider {
+    private readonly extensionUri: vscode.Uri;
+    private view: vscode.WebviewView | null = null;
+    private nodes: LogicalNode[] = [];
+    private controlHandler: LiveGraphControlHandler | null = null;
+
+    constructor(extensionUri: vscode.Uri) {
         this.extensionUri = extensionUri;
-        this.view = null;
-        this.nodes = [];
-        this.controlHandler = null;
     }
 
-    setNodes(nodes) {
+    setNodes(nodes: LogicalNode[]): void {
         this.nodes = Array.isArray(nodes) ? nodes : [];
         this.postState();
     }
 
-    pruneDeletedNodeState(_deletedNodeIds) {
+    pruneDeletedNodeState(_deletedNodeIds: string[]): void {
     }
 
-    setControlHandler(handler) {
+    setControlHandler(handler: LiveGraphControlHandler): void {
         this.controlHandler = handler;
     }
 
-    updateSampleInputValue(nodeId, ordinal, value, memberOrdinal = null) {
-        for (const node of this.nodes) {
-            if (node.id !== nodeId) {
-                continue;
-            }
-            const updateInputs = (inputs, markOverride) => {
-                if (!Array.isArray(inputs)) {
-                    return;
-                }
-                for (const input of inputs) {
-                    if (Number(input.ordinal) === Number(ordinal)) {
-                        input.currentValue = value;
-                        if (markOverride != null) {
-                            input.hasConcreteOverride = markOverride;
-                        }
-                    }
-                }
-            };
-            const inputs = memberOrdinal == null
-                ? node.sampleInputs
-                : ((node.members || []).find((member) => Number(member.ordinal) === Number(memberOrdinal)) || {}).sampleInputs;
-            updateInputs(inputs, memberOrdinal == null ? null : true);
-            if (memberOrdinal == null) {
-                for (const member of node.members || []) {
-                    const memberInputs = Array.isArray(member.sampleInputs) ? member.sampleInputs : [];
-                    for (const input of memberInputs) {
-                        if (Number(input.ordinal) === Number(ordinal) && !input.hasConcreteOverride) {
-                            input.currentValue = value;
-                        }
-                    }
-                }
-            }
-        }
+    updateSampleInputValue(nodeId: string, ordinal: number, value: unknown, memberOrdinal: number | null = null): void {
+        applySampleInputValueUpdate(this.nodes, nodeId, ordinal, value, memberOrdinal);
         this.postState();
     }
 
-    clearSampleInputValueOverride(nodeId, memberOrdinal, ordinal) {
-        for (const node of this.nodes) {
-            if (node.id !== nodeId) {
-                continue;
-            }
-            const logicalInput = Array.isArray(node.sampleInputs)
-                ? node.sampleInputs.find((input) => Number(input.ordinal) === Number(ordinal))
-                : null;
-            const logicalValue = logicalInput && typeof logicalInput.currentValue === "number"
-                ? logicalInput.currentValue
-                : null;
-            const member = (node.members || []).find((candidate) => Number(candidate.ordinal) === Number(memberOrdinal));
-            const inputs = member && Array.isArray(member.sampleInputs) ? member.sampleInputs : [];
-            for (const input of inputs) {
-                if (Number(input.ordinal) === Number(ordinal)) {
-                    input.hasConcreteOverride = false;
-                    if (logicalValue != null) {
-                        input.currentValue = logicalValue;
-                    }
-                }
-            }
-        }
+    clearSampleInputValueOverride(nodeId: string, memberOrdinal: number, ordinal: number): void {
+        clearSampleInputValueOverride(this.nodes, nodeId, memberOrdinal, ordinal);
         this.postState();
     }
 
-    logicalIdentitySummary(node) {
-        const identity = typeof node?.sourceIdentity === "string" && node.sourceIdentity.length > 0
-            ? node.sourceIdentity
-            : (typeof node?.id === "string" ? node.id : "");
-        if (!identity) {
-            return "";
-        }
-
-        const matches = [...identity.matchAll(/@([^@#:$]+)$/g)];
-        if (matches.length > 0 && matches[0][1]) {
-            return matches[0][1];
-        }
-
-        const atIndex = identity.lastIndexOf("@");
-        if (atIndex >= 0 && atIndex + 1 < identity.length) {
-            return identity.slice(atIndex + 1);
-        }
-
-        return identity;
-    }
-
-    sampleInputsForMemberView(node, member) {
-        const logicalInputs = new Map();
-        for (const input of node.sampleInputs || []) {
-            logicalInputs.set(Number(input.ordinal), input);
-        }
-        return (member.sampleInputs || []).map((input) => {
-            if (input.hasConcreteOverride) {
-                return input;
-            }
-            const logicalInput = logicalInputs.get(Number(input.ordinal));
-            if (!logicalInput || typeof logicalInput.currentValue !== "number") {
-                return input;
-            }
-            return {
-                ...input,
-                currentValue: logicalInput.currentValue,
-            };
-        });
-    }
-
-    serializeNodes() {
-        return this.nodes.map((node) => ({
-            id: node.id || "",
-            kind: node.kind || node.id || "",
-            description: node.memberCount > 1
-                ? (() => {
-                    const identity = this.logicalIdentitySummary(node);
-                    return identity ? `${identity} • ${node.memberCount} nodes` : `${node.memberCount} nodes`;
-                })()
-                : (this.logicalIdentitySummary(node) || node.id || ""),
-            tooltip: `${node.kind || "node"}${this.logicalIdentitySummary(node) ? ` • ${this.logicalIdentitySummary(node)}` : ""}${node.memberCount > 1 ? ` • ${node.memberCount} members` : ""}`,
-            memberCount: Number(node.memberCount || 0),
-            icon: node.memberCount > 1 ? "merged" : "single",
-            groups: [
-                this.makePortGroup("sample inputs", node.sampleInputs || [], "input", "sample"),
-                this.makePortGroup("sample outputs", node.sampleOutputs || [], "output", "sample"),
-                this.makePortGroup("event inputs", node.eventInputs || [], "input", "event"),
-                this.makePortGroup("event outputs", node.eventOutputs || [], "output", "event"),
-            ].filter(Boolean),
-            members: Array.isArray(node.members)
-                ? node.members.map((member) => ({
-                    ordinal: Number(member.ordinal || 0),
-                    backingNodeId: member.backingNodeId || "",
-                    kind: member.kind || node.kind || "",
-                    description: `member ${Number(member.ordinal || 0)}`,
-                    groups: [
-                        this.makePortGroup("sample inputs", this.sampleInputsForMemberView(node, member), "input", "sample", true),
-                        this.makePortGroup("sample outputs", member.sampleOutputs || [], "output", "sample", false),
-                        this.makePortGroup("event inputs", member.eventInputs || [], "input", "event", false),
-                        this.makePortGroup("event outputs", member.eventOutputs || [], "output", "event", false),
-                    ].filter(Boolean),
-                }))
-                : [],
-        }));
-    }
-
-    makePortGroup(label, ports, direction, portKind, forceTweakable = false) {
-        if (!Array.isArray(ports) || ports.length === 0) {
-            return null;
-        }
-        return {
-            label,
-            count: ports.length,
-            direction,
-            portKind,
-            ports: ports.map((port, index) => ({
-                name: port.name || `[${index}]`,
-                connectivity: port.connectivity || "disconnected",
-                ordinal: Number.isInteger(port.ordinal) ? port.ordinal : index,
-                defaultValue: typeof port.defaultValue === "number" ? port.defaultValue : 0,
-                currentValue: typeof port.currentValue === "number" ? port.currentValue : 0,
-                hasConcreteOverride: Boolean(port.hasConcreteOverride),
-                tweakable: (forceTweakable || direction === "input")
-                    && direction === "input"
-                    && portKind === "sample"
-                    && (port.connectivity === "mixed" || port.connectivity === "disconnected"),
-            })),
-        };
-    }
-
-    resolveWebviewView(webviewView) {
+    resolveWebviewView(webviewView: vscode.WebviewView): void {
         this.view = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
             localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
         };
         webviewView.webview.onDidReceiveMessage(async (message) => {
-            if (!message || !this.controlHandler) {
+            if (!this.controlHandler || !isLiveGraphControlMessage(message)) {
                 return;
             }
-            if (message.type === "setSampleInputValue" || message.type === "setSampleInputState") {
-                await this.controlHandler(message);
-            }
+            await this.controlHandler(message);
         });
         webviewView.webview.html = this.getHtml(webviewView.webview);
         this.postState();
     }
 
-    postState() {
+    postState(): void {
         if (!this.view) {
             return;
         }
-        this.view.webview.postMessage({
+        const message: LiveGraphSetStateMessage = {
             type: "setState",
-            nodes: this.serializeNodes(),
-        });
+            nodes: serializeLiveGraphNodes(this.nodes),
+        };
+        void this.view.webview.postMessage(message);
     }
 
-    getHtml(webview) {
+    getHtml(webview: vscode.Webview): string {
         const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const mergedIconUri = webview.asWebviewUri(vscode.Uri.file(mergedNodeIconPath));
         const singleIconUri = webview.asWebviewUri(vscode.Uri.file(singleNodeIconPath));
@@ -545,7 +406,7 @@ class LiveGraphViewProvider {
             nodes: [],
             expanded: new Map(),
             pendingUpdates: new Map(),
-            activeConcretePort: null,
+            activePort: null,
             portRows: new Map(),
             renderedPortRows: new Set(),
         };
@@ -693,8 +554,8 @@ class LiveGraphViewProvider {
             state.pendingUpdates.delete(key);
         }
 
-        function setActiveConcretePort(portRef) {
-            state.activeConcretePort = portRef;
+        function setActivePort(portRef) {
+            state.activePort = portRef;
         }
 
         function hideContextMenu() {
@@ -702,18 +563,42 @@ class LiveGraphViewProvider {
             contextMenu.textContent = "";
         }
 
-        function clearSampleInputOverride(portRef) {
-            if (!portRef || portRef.memberOrdinal == null || !portRef.hasConcreteOverride) {
+        function controlMessageTypeForPort(portRef) {
+            if (!portRef || !portRef.stateFamily) {
+                return null;
+            }
+            switch (portRef.stateFamily) {
+            case "sampleInput":
+                return "setSampleInputState";
+            case "eventInput":
+                return "setEventInputState";
+            case "sampleOutput":
+                return "setSampleOutputState";
+            case "eventOutput":
+                return "setEventOutputState";
+            default:
+                return null;
+            }
+        }
+
+        function runPortStateAction(portRef, action) {
+            const type = controlMessageTypeForPort(portRef);
+            if (!type || !action) {
                 return;
             }
-            clearPendingUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.inputOrdinal);
-            vscode.postMessage({
-                type: "setSampleInputState",
+            clearPendingUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal);
+            const message = {
                 nodeId: portRef.nodeId,
                 memberOrdinal: portRef.memberOrdinal,
-                inputOrdinal: portRef.inputOrdinal,
-                state: "default",
-            });
+                state: action.state,
+                type,
+            };
+            if (portRef.stateFamily === "sampleOutput" || portRef.stateFamily === "eventOutput") {
+                message.outputOrdinal = portRef.ordinal;
+            } else {
+                message.inputOrdinal = portRef.ordinal;
+            }
+            vscode.postMessage(message);
             hideContextMenu();
         }
 
@@ -731,10 +616,10 @@ class LiveGraphViewProvider {
         }
 
         function updateConcreteOverrideVisual(portRow, hasOverride) {
-            if (!portRow || !portRow.__concretePortRef) {
+            if (!portRow || !portRow.__statePortRef) {
                 return;
             }
-            portRow.__concretePortRef.hasConcreteOverride = hasOverride;
+            portRow.__statePortRef.hasConcreteOverride = hasOverride;
             if (portRow.__knobDrag && portRow.__knobDrag.port) {
                 portRow.__knobDrag.port.hasConcreteOverride = hasOverride;
             }
@@ -742,22 +627,24 @@ class LiveGraphViewProvider {
             portRow.classList.toggle("concrete-inherited", !hasOverride);
             const descriptionEl = portRow.querySelector(".description");
             if (descriptionEl) {
-                descriptionEl.textContent = hasOverride ? "override" : "inherited";
+                descriptionEl.textContent = hasOverride ? "override" : "default";
             }
             if (portRow.__knobDrag && portRow.__knobDrag.port) {
                 portRow.title = portRow.__knobDrag.port.name + " • " + (hasOverride ? "override" : "inherited from logical");
             }
         }
 
-        function concretePortRefForRow(portRow) {
-            if (!portRow || !portRow.__concretePortRef || !portRow.__knobDrag || !portRow.__knobDrag.port) {
+        function portRefForRow(portRow) {
+            if (!portRow || !portRow.__statePortRef) {
                 return null;
             }
-            portRow.__concretePortRef.nodeId = portRow.__knobDrag.nodeId;
-            portRow.__concretePortRef.memberOrdinal = portRow.__knobDrag.memberOrdinal;
-            portRow.__concretePortRef.inputOrdinal = portRow.__knobDrag.port.ordinal;
-            portRow.__concretePortRef.hasConcreteOverride = Boolean(portRow.__knobDrag.port.hasConcreteOverride);
-            return portRow.__concretePortRef;
+            portRow.__statePortRef.nodeId = portRow.__knobDrag ? portRow.__knobDrag.nodeId : portRow.__statePortRef.nodeId;
+            portRow.__statePortRef.memberOrdinal = portRow.__knobDrag ? portRow.__knobDrag.memberOrdinal : portRow.__statePortRef.memberOrdinal;
+            if (portRow.__knobDrag && portRow.__knobDrag.port) {
+                portRow.__statePortRef.ordinal = portRow.__knobDrag.port.ordinal;
+                portRow.__statePortRef.hasConcreteOverride = Boolean(portRow.__knobDrag.port.hasConcreteOverride);
+            }
+            return portRow.__statePortRef;
         }
 
         function applyLocalControlValue(nodeId, memberOrdinal, ordinal, value) {
@@ -825,18 +712,20 @@ class LiveGraphViewProvider {
         }
 
         function showContextMenu(event, portRef) {
-            if (!portRef || !portRef.hasConcreteOverride) {
+            if (!portRef || !Array.isArray(portRef.stateActions) || portRef.stateActions.length === 0) {
                 hideContextMenu();
                 return;
             }
-            setActiveConcretePort(portRef);
+            setActivePort(portRef);
             contextMenu.textContent = "";
 
-            const clearButton = document.createElement("button");
-            clearButton.type = "button";
-            clearButton.textContent = "Follow logical value";
-            clearButton.addEventListener("click", () => clearSampleInputOverride(portRef));
-            contextMenu.appendChild(clearButton);
+            for (const action of portRef.stateActions) {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.textContent = action.label;
+                button.addEventListener("click", () => runPortStateAction(portRef, action));
+                contextMenu.appendChild(button);
+            }
 
             contextMenu.classList.remove("hidden");
             const maxLeft = Math.max(0, window.innerWidth - contextMenu.offsetWidth - 4);
@@ -851,7 +740,7 @@ class LiveGraphViewProvider {
                 return null;
             }
             const portRow = hit.closest(".port-row");
-            if (!portRow || !root.contains(portRow) || !portRow.__knobDrag) {
+            if (!portRow || !root.contains(portRow) || (!portRow.__knobDrag && !portRow.__statePortRef)) {
                 return null;
             }
             return portRow;
@@ -970,10 +859,13 @@ class LiveGraphViewProvider {
                 return;
             }
             const portRow = resolved;
-            const { knob, valueEl, nodeId, memberOrdinal, port } = portRow.__knobDrag;
-            if (portRow.__concretePortRef) {
-                setActiveConcretePort(portRow.__concretePortRef);
+            if (portRow.__statePortRef) {
+                setActivePort(portRefForRow(portRow));
             }
+            if (!portRow.__knobDrag) {
+                return;
+            }
+            const { knob, valueEl, nodeId, memberOrdinal, port } = portRow.__knobDrag;
             beginKnobDrag(portRow, knob, valueEl, nodeId, memberOrdinal, port, event);
         }, true);
 
@@ -1007,9 +899,7 @@ class LiveGraphViewProvider {
         function renderPort(parent, nodeId, memberOrdinal, group, port, index) {
             const memberKeyPart = memberOrdinal == null ? "" : \`/member:\${memberOrdinal}\`;
             const portKey = \`node:\${nodeId}\${memberKeyPart}/group:\${group.label}/port:\${index}\`;
-            const portDescription = memberOrdinal != null && port.tweakable
-                ? (port.hasConcreteOverride ? "override" : "inherited")
-                : port.connectivity;
+            const portDescription = port.stateSummary || port.connectivity;
             state.renderedPortRows.add(portKey);
 
             let portRow = state.portRows.get(portKey);
@@ -1085,33 +975,34 @@ class LiveGraphViewProvider {
                 portRow.__knobDrag = null;
             }
 
-            if (memberOrdinal != null && port.tweakable) {
+            if (Array.isArray(port.stateActions) && port.stateActions.length > 0) {
                 portRow.tabIndex = 0;
-                if (!portRow.__concreteListenersAttached) {
-                    portRow.__concretePortRef = {};
-                    portRow.addEventListener("click", () => setActiveConcretePort(concretePortRefForRow(portRow)));
-                    portRow.addEventListener("focus", () => setActiveConcretePort(concretePortRefForRow(portRow)));
+                if (!portRow.__stateListenersAttached) {
+                    portRow.__statePortRef = {};
+                    portRow.addEventListener("click", () => setActivePort(portRefForRow(portRow)));
+                    portRow.addEventListener("focus", () => setActivePort(portRefForRow(portRow)));
                     portRow.addEventListener("contextmenu", (event) => {
                         event.preventDefault();
-                        showContextMenu(event, concretePortRefForRow(portRow));
+                        showContextMenu(event, portRefForRow(portRow));
                     });
-                    portRow.__concreteListenersAttached = true;
+                    portRow.__stateListenersAttached = true;
                 }
-                if (!portRow.__concretePortRef) {
-                    portRow.__concretePortRef = {};
+                if (!portRow.__statePortRef) {
+                    portRow.__statePortRef = {};
                 }
-                portRow.__concretePortRef.nodeId = nodeId;
-                portRow.__concretePortRef.memberOrdinal = memberOrdinal;
-                portRow.__concretePortRef.inputOrdinal = port.ordinal;
-                portRow.__concretePortRef.hasConcreteOverride = Boolean(port.hasConcreteOverride);
+                portRow.__statePortRef.nodeId = nodeId;
+                portRow.__statePortRef.memberOrdinal = memberOrdinal;
+                portRow.__statePortRef.ordinal = port.ordinal;
+                portRow.__statePortRef.hasConcreteOverride = Boolean(port.hasConcreteOverride);
+                portRow.__statePortRef.stateFamily = port.stateFamily;
+                portRow.__statePortRef.stateActions = Array.isArray(port.stateActions) ? port.stateActions : [];
+                portRow.__statePortRef.resetState = port.resetState || null;
             } else {
                 portRow.removeAttribute("tabindex");
-                portRow.__concretePortRef = null;
+                portRow.__statePortRef = null;
             }
 
-            portRow.title = memberOrdinal != null && port.tweakable
-                ? \`\${port.name} • \${port.hasConcreteOverride ? "override" : "inherited from logical"}\`
-                : \`\${port.name} • \${port.connectivity}\`;
+            portRow.title = \`\${port.name} • \${portDescription || port.connectivity}\`;
             parent.appendChild(portRow);
             return portKey;
         }
@@ -1259,9 +1150,13 @@ class LiveGraphViewProvider {
                 hideContextMenu();
                 return;
             }
-            if (event.key.toLowerCase() === "d" && state.activeConcretePort) {
+            if (event.key.toLowerCase() === "d" && state.activePort && state.activePort.resetState) {
                 event.preventDefault();
-                clearSampleInputOverride(state.activeConcretePort);
+                runPortStateAction(state.activePort, {
+                    state: state.activePort.resetState,
+                    label: "Reset",
+                    reset: true,
+                });
             }
         });
 
@@ -1277,5 +1172,3 @@ class LiveGraphViewProvider {
 </html>`;
     }
 }
-
-module.exports = { LiveGraphViewProvider };

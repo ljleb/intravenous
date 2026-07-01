@@ -14,7 +14,23 @@
         "workspaceContains:.intravenous",
         "onWebviewPanel:intravenous.lanes"
     ],
-    "main": "./extension.js",
+    "main": "./dist/extension.js",
+    "scripts": {
+        "build": "node ./esbuild.mjs",
+        "watch": "node ./esbuild.mjs --watch",
+        "typecheck": "tsc --noEmit -p ./tsconfig.json",
+        "test": "tsc -p ./tsconfig.tests.json && node --test dist-test/test/**/*.test.js"
+    },
+    "dependencies": {
+        "reflect-metadata": "^0.2.2",
+        "tsyringe": "^4.8.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.15.31",
+        "@types/vscode": "^1.85.0",
+        "esbuild": "^0.25.5",
+        "typescript": "^5.8.3"
+    },
     "contributes": {
         "configuration": {
             "title": "Intravenous",

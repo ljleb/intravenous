@@ -7,3 +7,5 @@ intravenious
 /scripts/benchmark.txt*
 node_modules
 *.vsix
+vscode/client/dist
+vscode/client/dist-test

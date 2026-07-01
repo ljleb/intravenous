@@ -1,15 +1,20 @@
-const vscode = require("vscode");
+import "reflect-metadata";
 
-const { LiveGraphViewProvider } = require("./liveGraphViewProvider");
-const { LaneViewProvider } = require("./lanesViewProvider");
-const { NodeSpanHighlighter } = require("./nodeSpanHighlighter");
-const { WorkspaceSession } = require("./workspaceSession");
+import * as vscode from "vscode";
+import { container } from "tsyringe";
 
-async function activate(context) {
+import { LiveGraphViewProvider } from "./liveGraphViewProvider";
+import { LaneViewProvider } from "./lanesViewProvider";
+import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
+import { WorkspaceSessionFactory } from "./workspaceSessionFactory";
+
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const outputChannel = vscode.window.createOutputChannel("Intravenous");
     const provider = new LiveGraphViewProvider(context.extensionUri);
     const laneProvider = new LaneViewProvider();
     const highlighter = new NodeSpanHighlighter();
+    const sessionFactory = container.resolve(WorkspaceSessionFactory);
+
     context.subscriptions.push(outputChannel);
     context.subscriptions.push(highlighter);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider("intravenous.liveGraph", provider, {
@@ -18,64 +23,45 @@ async function activate(context) {
         },
     }));
 
-    const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
         return;
     }
 
-    const session = new WorkspaceSession(workspaceFolder, outputChannel, provider, laneProvider, highlighter);
+    const session = sessionFactory.create(workspaceFolder, outputChannel, provider, laneProvider, highlighter);
     laneProvider.setCloseHandler(() => {
-        session.closeLaneView().catch((error) => {
+        session.closeLaneView().catch((error: Error) => {
             outputChannel.appendLine(`Intravenous lane view close failed: ${error.message}`);
         });
     });
     laneProvider.setViewportHandler(() => {
-        session.updateLaneViewVisibleLanes().catch((error) => {
+        session.updateLaneViewVisibleLanes().catch((error: Error) => {
             outputChannel.appendLine(`Intravenous lane viewport update failed: ${error.message}`);
         });
     });
+
     context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.lanes", {
         async deserializeWebviewPanel(panel, state) {
             laneProvider.revive(panel, state);
-            if (session.client) {
-                try {
-                    await session.openLaneView();
-                } catch (error) {
-                    outputChannel.appendLine(`Intravenous lane view restore failed: ${error.message}`);
-                }
+            try {
+                await session.openLaneView();
+            } catch (error: any) {
+                outputChannel.appendLine(`Intravenous lane view restore failed: ${error.message}`);
             }
         },
     }));
+
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openLanes", async () => {
         laneProvider.open();
         try {
             await session.openLaneView();
-        } catch (error) {
+        } catch (error: any) {
             outputChannel.appendLine(`Intravenous lane query failed: ${error.message}`);
         }
     }));
-    provider.setControlHandler(async (message) => {
-        const memberOrdinal = message.memberOrdinal == null ? null : Number(message.memberOrdinal);
-        if (message.type === "setSampleInputState") {
-            if (memberOrdinal == null) {
-                return;
-            }
-            await session.setSampleInputState(
-                message.nodeId,
-                Number(message.inputOrdinal),
-                String(message.state || "default"),
-                memberOrdinal
-            );
-            session.provider.clearSampleInputValueOverride(message.nodeId, memberOrdinal, Number(message.inputOrdinal));
-            return;
-        }
-        await session.setSampleInputValue(
-            message.nodeId,
-            Number(message.inputOrdinal),
-            message.value,
-            memberOrdinal
-        );
-    });
+
+    provider.setControlHandler(async (message) => session.dispatchLiveGraphControl(message));
+
     context.subscriptions.push({ dispose: () => void session.shutdown() });
     context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(() => {
         highlighter.refresh();
@@ -94,7 +80,7 @@ async function activate(context) {
     context.subscriptions.push(vscode.languages.registerDocumentHighlightProvider(
         { scheme: "file", language: "cpp" },
         {
-            provideDocumentHighlights: async (document, position) => {
+            async provideDocumentHighlights(document, position) {
                 const owningWorkspace = vscode.workspace.getWorkspaceFolder(document.uri);
                 if (!owningWorkspace || owningWorkspace.uri.fsPath !== session.workspaceRoot()) {
                     return undefined;
@@ -104,29 +90,20 @@ async function activate(context) {
                     if (!(await session.ensureReady())) {
                         return undefined;
                     }
-                } catch (_) {
+                } catch {
                     return undefined;
                 }
 
                 try {
-                    const result = await session.client.request("graph.queryBySpans", {
-                        filePath: document.uri.fsPath,
-                        ranges: [{
-                            start: { line: position.line + 1, column: position.character + 1 },
-                            end: { line: position.line + 1, column: position.character + 1 },
-                        }],
-                        match: "intersection",
-                    });
-
-                    if (Array.isArray(result.nodes) && result.nodes.length > 0) {
+                    if (await session.hasNodesAtPosition(document, position)) {
                         return [];
                     }
-                } catch (_) {
+                } catch {
                 }
 
                 return undefined;
             },
-        }
+        },
     ));
 
     try {
@@ -138,7 +115,7 @@ async function activate(context) {
             const nodes = await session.updateFromEditor(vscode.window.activeTextEditor);
             session.updatePrimaryHighlight(nodes);
         }
-    } catch (error) {
+    } catch (error: any) {
         outputChannel.appendLine(`Intravenous startup failed: ${error.message}`);
         throw error;
     }
@@ -150,7 +127,7 @@ async function activate(context) {
         try {
             const nodes = await session.updateFromEditor(event.textEditor);
             session.updatePrimaryHighlight(nodes);
-        } catch (error) {
+        } catch (error: any) {
             const message = `Intravenous query failed: ${error.message}`;
             if (message !== session.lastQueryError) {
                 outputChannel.appendLine(message);
@@ -160,9 +137,4 @@ async function activate(context) {
     }));
 }
 
-function deactivate() {}
-
-module.exports = {
-    activate,
-    deactivate,
-};
+export function deactivate(): void {}

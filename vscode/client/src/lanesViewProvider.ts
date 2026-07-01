@@ -1,6 +1,7 @@
-const vscode = require("vscode");
+// @ts-nocheck
+import * as vscode from "vscode";
 
-class LaneViewProvider {
+export class LaneViewProvider {
     constructor() {
         this.panel = null;
         this.lanes = [];
@@ -573,5 +574,3 @@ class LaneViewProvider {
 </html>`;
     }
 }
-
-module.exports = { LaneViewProvider };

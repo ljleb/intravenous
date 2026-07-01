@@ -1,21 +1,32 @@
-const net = require("net");
+import * as net from "net";
 
-class JsonRpcSocketClient {
-    constructor(socketPath, notificationHandler = null) {
+export type JsonRpcNotificationHandler =
+    ((method: string, params: Record<string, unknown>) => void) | null;
+
+type PendingRequest = {
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+};
+
+export class JsonRpcSocketClient {
+    private readonly socketPath: string;
+    private readonly notificationHandler: JsonRpcNotificationHandler;
+    private socket: net.Socket | null = null;
+    private nextId = 1;
+    private readonly pending = new Map<number, PendingRequest>();
+    private buffer = "";
+
+    constructor(socketPath: string, notificationHandler: JsonRpcNotificationHandler = null) {
         this.socketPath = socketPath;
         this.notificationHandler = notificationHandler;
-        this.socket = null;
-        this.nextId = 1;
-        this.pending = new Map();
-        this.buffer = "";
     }
 
-    async connect(timeoutMs = 10000) {
+    async connect(timeoutMs = 10000): Promise<void> {
         if (this.socket) {
             return;
         }
 
-        await new Promise((resolve, reject) => {
+        await new Promise<void>((resolve, reject) => {
             const socket = net.createConnection(this.socketPath);
             const timeout = setTimeout(() => {
                 socket.destroy();
@@ -26,11 +37,12 @@ class JsonRpcSocketClient {
                 clearTimeout(timeout);
                 this.socket = socket;
                 socket.setEncoding("utf8");
-                socket.on("data", (chunk) => this.onData(chunk));
+                socket.on("data", (chunk) => this.onData(String(chunk)));
                 socket.on("error", (error) => this.failPending(error));
                 socket.on("close", () => this.failPending(new Error("Intravenous server connection closed")));
                 resolve();
             });
+
             socket.on("error", (error) => {
                 clearTimeout(timeout);
                 reject(error);
@@ -38,7 +50,7 @@ class JsonRpcSocketClient {
         });
     }
 
-    async request(method, params) {
+    async request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
         const id = this.nextId++;
         const payload = JSON.stringify({
             jsonrpc: "2.0",
@@ -47,13 +59,17 @@ class JsonRpcSocketClient {
             params,
         }) + "\n";
 
-        return await new Promise((resolve, reject) => {
+        if (!this.socket) {
+            throw new Error("Intravenous JSON-RPC client is not connected");
+        }
+
+        return await new Promise<T>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
-            this.socket.write(payload, "utf8");
+            this.socket!.write(payload, "utf8");
         });
     }
 
-    onData(chunk) {
+    private onData(chunk: string): void {
         this.buffer += chunk;
         for (;;) {
             const newline = this.buffer.indexOf("\n");
@@ -67,10 +83,10 @@ class JsonRpcSocketClient {
                 continue;
             }
 
-            let message;
+            let message: any;
             try {
                 message = JSON.parse(line);
-            } catch (error) {
+            } catch (error: any) {
                 this.failPending(new Error(`failed to parse server response: ${error.message}`));
                 return;
             }
@@ -96,14 +112,14 @@ class JsonRpcSocketClient {
         }
     }
 
-    failPending(error) {
+    private failPending(error: Error): void {
         for (const { reject } of this.pending.values()) {
             reject(error);
         }
         this.pending.clear();
     }
 
-    dispose() {
+    dispose(): void {
         if (this.socket) {
             this.socket.destroy();
             this.socket = null;
@@ -111,5 +127,3 @@ class JsonRpcSocketClient {
         this.failPending(new Error("Intravenous client disposed"));
     }
 }
-
-module.exports = { JsonRpcSocketClient };
