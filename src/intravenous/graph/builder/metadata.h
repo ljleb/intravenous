@@ -68,8 +68,7 @@ namespace iv::details {
     LogicalPortConnectivity aggregate_connectivity(std::span<LogicalConcretePortInfo const> ports);
     void sort_and_deduplicate_spans(std::vector<SourceSpan>& spans);
     std::vector<SourceSpan> source_spans_for(
-        std::span<LogicalConcreteNode const* const> nodes,
-        std::string_view source_identity
+        std::span<LogicalConcreteNode const* const> nodes
     );
 
     inline std::vector<IntrospectionPortInfo> aggregate_ports(

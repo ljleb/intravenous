@@ -27,6 +27,7 @@ export type LogicalPort = {
     defaultValue?: number;
     currentValue?: number;
     hasConcreteOverride?: boolean;
+    stateValue?: string;
 };
 
 export type LogicalNodeMember = {
@@ -42,6 +43,7 @@ export type LogicalNodeMember = {
 
 export type LogicalNode = {
     id?: string;
+    instanceId?: string;
     kind?: string;
     sourceIdentity?: string;
     typeIdentity?: string;

@@ -57,7 +57,7 @@ protected:
 };
 } // namespace
 
-TEST_F(IvModuleReloadTest, CreatedDeclarationPublishesLoadedDefinition)
+TEST_F(IvModuleReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition)
 {
     auto const workspace =
         iv::test_support::read_only_module_fixture_workspace("local_cmake");
@@ -71,6 +71,15 @@ TEST_F(IvModuleReloadTest, CreatedDeclarationPublishesLoadedDefinition)
             .created = {make_declaration(workspace)},
         });
 
+    EXPECT_TRUE(reload.has_dirty_definitions());
+    EXPECT_FALSE(witness.results.has_value());
+
+    reload.compile_dirty_definitions();
+    EXPECT_TRUE(reload.has_pending_results());
+    EXPECT_FALSE(witness.results.has_value());
+
+    reload.apply_pending_results();
+
     ASSERT_TRUE(witness.results.has_value());
     ASSERT_EQ(witness.results->loaded.size(), 1u);
     EXPECT_TRUE(witness.results->failed.empty());
@@ -78,7 +87,7 @@ TEST_F(IvModuleReloadTest, CreatedDeclarationPublishesLoadedDefinition)
     EXPECT_FALSE(witness.results->loaded.front().module_id.empty());
 }
 
-TEST_F(IvModuleReloadTest, InvalidDeclarationPublishesFailure)
+TEST_F(IvModuleReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
 {
     auto const workspace =
         iv::test_support::read_only_module_fixture_workspace("missing_export");
@@ -91,6 +100,13 @@ TEST_F(IvModuleReloadTest, InvalidDeclarationPublishesFailure)
         iv::IvModuleDefinitionDeclarationsChanged{
             .created = {make_declaration(workspace)},
         });
+
+    EXPECT_TRUE(reload.has_dirty_definitions());
+
+    reload.compile_dirty_definitions();
+    EXPECT_TRUE(reload.has_pending_results());
+
+    reload.apply_pending_results();
 
     ASSERT_TRUE(witness.results.has_value());
     EXPECT_TRUE(witness.results->loaded.empty());

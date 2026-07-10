@@ -6,6 +6,9 @@
 #include <intravenous/runtime/timeline_events.h>
 #include <intravenous/runtime/timeline_execution.h>
 
+#include <algorithm>
+#include <unordered_set>
+
 namespace iv {
 namespace {
 Timeline *bound_timeline = nullptr;
@@ -25,6 +28,36 @@ std::vector<TimelineLaneOutputs> outputs_for_lanes(
         });
     }
     return results;
+}
+
+std::vector<LaneId> affected_lanes_from_connection_delta(
+    std::vector<LaneGraphConnection> const &before,
+    std::vector<LaneGraphConnection> const &after)
+{
+    auto contains = [](std::vector<LaneGraphConnection> const &connections, LaneGraphConnection const &candidate) {
+        return std::find(connections.begin(), connections.end(), candidate) != connections.end();
+    };
+
+    std::unordered_set<std::uint64_t> lane_values;
+    for (auto const &connection : after) {
+        if (!contains(before, connection)) {
+            lane_values.insert(connection.source.value);
+            lane_values.insert(connection.target.value);
+        }
+    }
+    for (auto const &connection : before) {
+        if (!contains(after, connection)) {
+            lane_values.insert(connection.source.value);
+            lane_values.insert(connection.target.value);
+        }
+    }
+
+    std::vector<LaneId> lanes;
+    lanes.reserve(lane_values.size());
+    for (auto const value : lane_values) {
+        lanes.push_back(LaneId{value});
+    }
+    return lanes;
 }
 
 void handle_set_timeline_compiled_sample_cache_chunk_size(
@@ -118,24 +151,52 @@ void handle_connect_timeline_lanes(
         return;
     }
 
-    auto const source = bound_timeline->resolve_public_lane_id(request.source_lane_id);
-    auto const target = bound_timeline->resolve_public_lane_id(request.target_lane_id);
-    bound_timeline->with_graph([&](LaneGraph &graph) {
-        if (!source.has_value() || !graph.contains(*source)) {
-            throw std::runtime_error("timeline source lane not found");
-        }
-        if (!target.has_value() || !graph.contains(*target)) {
-            throw std::runtime_error("timeline target lane not found");
-        }
-        graph.connect(
-            *source,
-            *target,
-            LanePortId{
-                .domain = request.port_domain,
-                .kind = request.port_kind,
-                .ordinal = request.port_ordinal,
+    auto const connections_before = bound_timeline->lane_connections();
+    bound_timeline->connect_public_lanes_or_defer(
+        request.source_lane_id,
+        request.target_lane_id,
+        LanePortId{
+            .domain = request.port_domain,
+            .kind = request.port_kind,
+            .ordinal = request.port_ordinal,
+        });
+    auto const connections_after = bound_timeline->lane_connections();
+    auto changed_lanes = affected_lanes_from_connection_delta(connections_before, connections_after);
+    if (!changed_lanes.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_timeline_lanes_changed_event,
+            TimelineLanesChanged{
+                .version_index = timeline_change_version_index++,
+                .lane_set_changed = false,
+                .metadata_for_lane = [timeline = bound_timeline](LaneId lane_id) {
+                    return timeline->lane_metadata(lane_id);
+                },
+                .public_id_for_lane = [timeline = bound_timeline](LaneId lane_id) {
+                    return timeline->lane_public_id(lane_id);
+                },
+                .outputs_for_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes) {
+                    return outputs_for_lanes(*timeline, lanes);
+                },
+                .visit_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes, TimelineLaneVisitFn const &visit) {
+                    timeline->with_graph([&](LaneGraph const &graph) {
+                        for (auto const lane_id : lanes) {
+                            if (!graph.contains(lane_id)) {
+                                continue;
+                            }
+                            auto const &record = graph.lane(lane_id);
+                            visit(
+                                lane_id,
+                                record.node,
+                                record.output,
+                                record.sample_channel_type,
+                                graph.inputs_for(lane_id),
+                                record.external_task_dependencies);
+                        }
+                    });
+                },
+                .changed_lanes = std::move(changed_lanes),
             });
-    });
+    }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
@@ -185,6 +246,15 @@ IV_SUBSCRIBE_LINKER_EVENT(
                 .port_domain = connection.input.domain,
                 .port_kind = connection.input.kind,
                 .port_ordinal = connection.input.ordinal,
+            });
+        }
+        for (auto const &[source_id, target_id, input] : bound_timeline->pending_public_connections()) {
+            lane_connections.push_back(ProjectConnectTimelineLanesRequest{
+                .source_lane_id = source_id,
+                .target_lane_id = target_id,
+                .port_domain = input.domain,
+                .port_kind = input.kind,
+                .port_ordinal = input.ordinal,
             });
         }
         builder.add_lane_connections(std::move(lane_connections));

@@ -45,6 +45,11 @@ iv::InternedString intern(std::string_view value)
     return iv::InternedString::from_view(value);
 }
 
+std::string runtime_node_id(std::string_view instance_id, std::string_view logical_node_id)
+{
+    return std::string(instance_id) + "\x1flogical:" + std::string(logical_node_id);
+}
+
 struct IntegrationReloadWitness {
     std::optional<iv::IvModuleReloadResults> results {};
 };
@@ -257,11 +262,11 @@ TEST(Integration, StartupConfigDefinitionsAndIvModuleSourceIntrospectionInitiali
     auto const loaded = iv::test_support::BoundIvModuleSourceIntrospection::load_definition(
         startup,
         std::filesystem::weakly_canonical(workspace));
-    auto const module_id = loaded.module_id;
     definitions.seed_loaded_definition(std::move(loaded));
-    auto const initialized = introspection.initialize();
+    auto const result = introspection.query_active_regions(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"));
 
-    EXPECT_EQ(initialized.module_id, module_id);
+    ASSERT_FALSE(result.source_spans.empty());
 
     iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
 }
@@ -317,7 +322,12 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
 
     IntegrationReloadWitness reload_witness;
     g_integration_reload_witness = &reload_witness;
-    (void)instances.create_instance(std::filesystem::weakly_canonical(workspace));
+    auto const created = instances.create_instance(std::filesystem::weakly_canonical(workspace));
+    EXPECT_TRUE(reload.has_dirty_definitions());
+    EXPECT_FALSE(reload_witness.results.has_value());
+    reload.compile_dirty_definitions();
+    EXPECT_TRUE(reload.has_pending_results());
+    reload.apply_pending_results();
     g_integration_reload_witness = nullptr;
 
     ASSERT_TRUE(reload_witness.results.has_value());
@@ -337,7 +347,7 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
     ASSERT_NE(logical_node_it, loaded_definitions.front().introspection.logical_nodes.end());
 
     graph_input_lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
-        .node_id = logical_node_it->id,
+        .node_id = runtime_node_id(created, logical_node_it->id),
         .member_ordinal = std::nullopt,
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,

@@ -72,6 +72,10 @@ class AudioDeviceLanes {
     OwnedSampleBlock current_input_block_ {};
     size_t next_realtime_start_index_ = 0;
     std::thread input_capture_thread_ {};
+    bool logged_missing_output_device_ = false;
+    bool logged_first_output_request_ = false;
+    bool logged_first_non_silent_output_ = false;
+    size_t silent_output_pass_count_ = 0;
 
     std::vector<AudioDeviceDescriptor> list_output_devices_unlocked() const;
     std::vector<AudioDeviceDescriptor> list_input_devices_unlocked() const;
@@ -124,7 +128,7 @@ public:
 
     void handle_task_runner_before_pass(TasksRunnerBeforePass const &pass);
     void handle_task_runner_after_pass(TasksRunnerAfterPass const &pass);
-    BorrowedSampleBlock handle_input_block_requested(LaneId lane) const;
+    OwnedSampleBlock handle_input_block_requested(LaneId lane) const;
 };
 
 } // namespace iv

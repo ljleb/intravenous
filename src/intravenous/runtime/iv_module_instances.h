@@ -45,6 +45,9 @@ struct IvModuleInstancesChanged {
 struct IvModuleInstanceBuilderRef {
     IvModuleInstance const *instance = nullptr;
     GraphBuilder *builder = nullptr;
+    // Keeps the binary generation that owns the builder's type-erased code live
+    // until consumers have replaced and released their previous execution graph.
+    std::vector<ModuleRef> module_refs {};
     std::vector<LaneId> prerequisite_lanes {};
     std::optional<size_t> default_silence_ttl_samples {};
 };

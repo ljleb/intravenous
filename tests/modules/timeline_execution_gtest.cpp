@@ -406,6 +406,41 @@ TEST(TimelineExecution, SynchronizeTracksRealtimeSampleOutputLanes)
     EXPECT_EQ(lanes[1], target);
 }
 
+TEST(TimelineExecution, SynchronizeDiffUpdatesRetainedLanesInsteadOfRecreatingThem)
+{
+    iv::Timeline timeline;
+    auto const first_lane = timeline.with_graph([&](iv::LaneGraph& graph) {
+        return graph.add_lane(
+            iv::TypeErasedLaneNode(iv::KnobLaneNode{.value = 1.0f}),
+            {},
+            iv::ChannelTypeId::mono);
+    });
+    iv::TimelineExecution execution(8);
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        auto const initial = execution.synchronize_from_graph(graph);
+        ASSERT_EQ(initial.update.to_create.size(), 1u);
+        EXPECT_TRUE(initial.update.to_update.empty());
+        EXPECT_TRUE(initial.update.to_delete.empty());
+    });
+
+    auto const second_lane = timeline.with_graph([&](iv::LaneGraph& graph) {
+        return graph.add_lane(
+            iv::TypeErasedLaneNode(iv::KnobLaneNode{.value = 2.0f}),
+            {},
+            iv::ChannelTypeId::mono);
+    });
+
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        auto const update = execution.synchronize_from_graph(graph);
+        ASSERT_EQ(update.update.to_create.size(), 1u);
+        ASSERT_EQ(update.update.to_update.size(), 1u);
+        EXPECT_TRUE(update.update.to_delete.empty());
+        EXPECT_NE(update.update.to_create.front().id, update.update.to_update.front().id);
+    });
+
+    EXPECT_NE(first_lane, second_lane);
+}
+
 TEST(TimelineExecution, ExecutesRealtimeSampleKnobChainForward)
 {
     iv::Timeline timeline;
@@ -1097,4 +1132,100 @@ TEST(TimelineExecution, ChannelTypeChangeRebuildsDownstreamConversionState)
     EXPECT_EQ(
         raw_samples(execution.realtime_sample_block(sink)),
         (std::vector<iv::Sample>{ 12.0f, 16.0f, 20.0f, 24.0f }));
+}
+
+TEST(TimelineExecution, RealtimeLaneCreationDoesNotInvalidateUntouchedLanePointers)
+{
+    iv::Timeline timeline;
+    iv::LaneId untouched {};
+    iv::LaneId changed {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        untouched = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                .layout = iv::SampleStreamLayout::planar,
+                .left = { 1.0f, 2.0f, 3.0f, 4.0f },
+            }),
+            {},
+            iv::ChannelTypeId::mono);
+        changed = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                .layout = iv::SampleStreamLayout::planar,
+                .left = { 5.0f, 6.0f, 7.0f, 8.0f },
+            }),
+            {},
+            iv::ChannelTypeId::mono);
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+    harness.run_once();
+
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(untouched)),
+        (std::vector<iv::Sample>{ 1.0f, 2.0f, 3.0f, 4.0f }));
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(changed)),
+        (std::vector<iv::Sample>{ 5.0f, 6.0f, 7.0f, 8.0f }));
+
+    iv::LaneId created {};
+    timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate{
+        .upserts = {
+            iv::TimelineLaneUpsert{
+                .lane = changed,
+                .make_node = [] {
+                    return iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                        .layout = iv::SampleStreamLayout::planar,
+                        .left = { 9.0f, 10.0f, 11.0f, 12.0f },
+                    });
+                },
+                .sample_channel_type = iv::ChannelTypeId::mono,
+            },
+            iv::TimelineLaneUpsert{
+                .lane = iv::LaneId{999001},
+                .make_node = [] {
+                    return iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
+                        .layout = iv::SampleStreamLayout::planar,
+                        .left = { 13.0f, 14.0f, 15.0f, 16.0f },
+                    });
+                },
+                .sample_channel_type = iv::ChannelTypeId::mono,
+            },
+        },
+    });
+    created = iv::LaneId{999001};
+
+    iv::TimelineLanesChanged change {
+        .lane_set_changed = true,
+        .visit_lanes = [&timeline](std::vector<iv::LaneId> const& lanes, iv::TimelineLaneVisitFn const& visit) {
+            timeline.with_graph([&](iv::LaneGraph const& graph) {
+                for (auto const lane : lanes) {
+                    auto const& record = graph.lane(lane);
+                    visit(
+                        lane,
+                        record.node,
+                        record.output,
+                        record.sample_channel_type,
+                        graph.inputs_for(lane),
+                        record.external_task_dependencies);
+                }
+            });
+        },
+        .created_lanes = { created },
+        .changed_lanes = { changed },
+    };
+    harness.apply(execution.handle_timeline_lanes_changed(change));
+    harness.run_once();
+
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(untouched)),
+        (std::vector<iv::Sample>{ 1.0f, 2.0f, 3.0f, 4.0f }));
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(changed)),
+        (std::vector<iv::Sample>{ 9.0f, 10.0f, 11.0f, 12.0f }));
+    EXPECT_EQ(
+        raw_samples(execution.realtime_sample_block(created)),
+        (std::vector<iv::Sample>{ 13.0f, 14.0f, 15.0f, 16.0f }));
 }

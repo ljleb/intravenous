@@ -1,6 +1,28 @@
 #include <intravenous/runtime/iv_module_instances_execution.h>
 
 namespace iv {
+namespace {
+GraphBuilder::RootNodeBuildResult build_execution_root(GraphBuilder &builder)
+{
+    auto const has_public_sample_inputs =
+        !builder.public_sample_input_families().families.empty();
+    auto const has_public_event_inputs =
+        !builder.public_event_inputs().empty();
+    auto const has_public_sample_outputs =
+        !builder.public_sample_output_families().families.empty();
+    auto const has_public_event_outputs =
+        !builder.public_event_outputs().empty();
+
+    if (!has_public_sample_inputs &&
+        !has_public_event_inputs &&
+        !has_public_sample_outputs &&
+        !has_public_event_outputs) {
+        return builder.build_root_node();
+    }
+    return builder.build_execution_root_node();
+}
+}
+
 std::unique_ptr<BlockNodeExecutor> IvModuleInstancesExecution::make_executor(
     GraphBuilder &builder,
     size_t block_size,
@@ -8,7 +30,7 @@ std::unique_ptr<BlockNodeExecutor> IvModuleInstancesExecution::make_executor(
 {
     return std::make_unique<BlockNodeExecutor>(
         BlockNodeExecutor::create(
-            TypeErasedNode(builder.build_root_node().graph),
+            TypeErasedNode(build_execution_root(builder).graph),
             block_size,
             {},
             default_silence_ttl_samples));
@@ -48,6 +70,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
         state.instance = created.instance;
         state.builder = created.builder;
         state.default_silence_ttl_samples = created.default_silence_ttl_samples;
+        state.module_refs = created.module_refs;
         state.executor = make_executor(
             *created.builder,
             block_size_,
@@ -87,13 +110,17 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             state.default_silence_ttl_samples != changed.default_silence_ttl_samples;
         state.default_silence_ttl_samples = changed.default_silence_ttl_samples;
         if (state.executor && !ttl_changed) {
-            state.executor->reload(TypeErasedNode(changed.builder->build_root_node().graph));
+            state.executor->reload(
+                TypeErasedNode(build_execution_root(*changed.builder).graph));
         } else {
             state.executor = make_executor(
                 *changed.builder,
                 block_size_,
                 state.default_silence_ttl_samples);
         }
+        // Release the old graph before allowing its loaded binary generation to
+        // go away. Its type-erased lifecycle functions live in that binary.
+        state.module_refs = changed.module_refs;
         state.next_block_index = 0;
         auto &callback = callback_contexts_[changed.instance->instance_id];
         if (!callback) {

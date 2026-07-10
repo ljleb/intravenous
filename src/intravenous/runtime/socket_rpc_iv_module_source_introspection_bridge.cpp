@@ -2,13 +2,85 @@
 
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
+
+#include <ranges>
 
 namespace iv {
 namespace {
 IvModuleSourceIntrospection *bound_introspection = nullptr;
 std::function<void()> *bound_shutdown = nullptr;
+
+void notify_updated_node_ids(std::vector<std::string> node_ids)
+{
+    if (bound_introspection == nullptr || node_ids.empty()) {
+        return;
+    }
+    try {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_source_introspection_nodes_updated_event,
+            ProjectLogicalNodesNotification{
+                .nodes = bound_introspection->get_logical_nodes(std::move(node_ids)),
+            });
+    } catch (...) {
+    }
+}
+
+void notify_replaced_instances(IvModuleInstanceBuildersChanged const &diff)
+{
+    if (bound_introspection == nullptr) {
+        return;
+    }
+
+    std::vector<std::string> replace_instance_ids;
+    std::vector<IvModuleInstanceInfo> instances;
+
+    auto append_instance = [&](IvModuleInstance const *instance) {
+        if (instance == nullptr) {
+            return;
+        }
+        if (std::ranges::find(replace_instance_ids, instance->instance_id) != replace_instance_ids.end()) {
+            return;
+        }
+        replace_instance_ids.push_back(instance->instance_id);
+        instances.push_back(IvModuleInstanceInfo{
+            .instance_id = instance->instance_id,
+            .definition_id = instance->definition_id,
+            .module_root = instance->module_root,
+            .default_silence_ttl_samples = instance->default_silence_ttl_samples,
+            .realized = true,
+            .module_id = instance->module_id,
+        });
+    };
+
+    for (auto const &created : diff.created) {
+        append_instance(created.instance);
+    }
+    for (auto const &updated : diff.updated) {
+        append_instance(updated.instance);
+    }
+    for (auto const &deleted_instance_id : diff.deleted_instance_ids) {
+        if (std::ranges::find(replace_instance_ids, deleted_instance_id) == replace_instance_ids.end()) {
+            replace_instance_ids.push_back(deleted_instance_id);
+        }
+    }
+
+    if (replace_instance_ids.empty()) {
+        return;
+    }
+
+    try {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_source_introspection_nodes_updated_event,
+            ProjectLogicalNodesNotification{
+                .nodes = bound_introspection->get_logical_nodes_for_instances(instances),
+                .replace_instance_ids = std::move(replace_instance_ids),
+            });
+    } catch (...) {
+    }
+}
 
 ProjectSampleInputState parse_project_sample_input_state(std::string const &state)
 {
@@ -85,7 +157,8 @@ void handle_graph_query_by_spans(
     builder.succeed(bound_introspection->query_by_spans(
         request.file_path,
         request.ranges,
-        request.match_mode));
+        request.match_mode,
+        request.instance_id));
 }
 
 void handle_graph_query_active_regions(
@@ -134,6 +207,7 @@ void handle_set_sample_input_value(
             },
             project_builder);
         project_builder.build();
+        notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());
     }
@@ -155,6 +229,7 @@ void handle_set_sample_input_state(
             },
             project_builder);
         project_builder.build();
+        notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());
     }
@@ -176,6 +251,7 @@ void handle_set_event_input_state(
             },
             project_builder);
         project_builder.build();
+        notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());
     }
@@ -197,6 +273,7 @@ void handle_set_sample_output_state(
             },
             project_builder);
         project_builder.build();
+        notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());
     }
@@ -218,6 +295,7 @@ void handle_set_event_output_state(
             },
             project_builder);
         project_builder.build();
+        notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());
     }
@@ -268,6 +346,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcSetEventOutputStateEvent,
     iv_socket_rpc_set_event_output_state_event,
     handle_set_event_output_state);
+IV_SUBSCRIBE_LINKER_EVENT(
+    IvModuleInstanceBuildersCompletedEvent,
+    iv_runtime_iv_module_instance_builders_completed_event,
+    notify_replaced_instances);
 IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcServerShutdownEvent,
     iv_socket_rpc_server_shutdown_event,

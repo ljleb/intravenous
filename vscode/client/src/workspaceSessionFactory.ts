@@ -6,11 +6,11 @@ import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { WorkspaceSession } from "./workspaceSession";
 
 type LiveGraphProviderLike = {
-    clearSampleInputValueOverride(nodeId: string, memberOrdinal: number, inputOrdinal: number): void;
     setControlHandler(handler: LiveGraphControlHandler): void;
+    setInstances(instances: unknown[]): void;
     setNodes(nodes: unknown[]): void;
-    updateSampleInputValue(nodeId: string, inputOrdinal: number, value: unknown, memberOrdinal?: number | null): void;
-    pruneDeletedNodeState(nodeIds: string[]): void;
+    upsertNodes(nodes: unknown[], replaceInstanceIds?: string[]): void;
+    setSelectedInstanceId(instanceId: string | null): void;
 };
 
 type LaneViewProviderLike = {

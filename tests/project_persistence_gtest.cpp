@@ -42,6 +42,11 @@ iv::InternedString intern(std::string_view value)
     return iv::InternedString::from_view(value);
 }
 
+std::string runtime_node_id(std::string_view instance_id, std::string_view logical_node_id)
+{
+    return std::string(instance_id) + "\x1flogical:" + std::string(logical_node_id);
+}
+
 struct TestEventLaneNode {
     static auto output()
     {
@@ -728,13 +733,10 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
             }},
         }.dump() + "\n" +
         Json{
-            {"command", "timeline.connectLanes"},
+            {"command", "ivModuleInstances.setDefaultSilenceTtlSamples"},
             {"args", Json{
-                {"source_lane_id", "missing"},
-                {"target_lane_id", "lane-b"},
-                {"port_domain", "realtime"},
-                {"port_kind", "sample"},
-                {"port_ordinal", 0},
+                {"instance_id", "missing"},
+                {"default_silence_ttl_samples", 32},
             }},
         }.dump() + "\n" +
         Json{
@@ -752,14 +754,10 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    iv::Timeline timeline;
-    iv::TimelineExecution execution(8, 16);
     iv::LaneViews lane_views;
     iv::ProjectPersistence persistence(workspace, startup);
-    initialize_two_timeline_lanes(timeline);
 
     iv::bind_runtime_project_iv_module_instances_bridge(instances);
-    iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
     iv::bind_project_persistence_bridge(persistence);
 
@@ -770,10 +768,10 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
     ASSERT_EQ(lane_views.active_view_requests().size(), 1u);
     EXPECT_EQ(lane_views.active_view_requests().front().view_id.str(), "view-b");
     EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
+    EXPECT_TRUE(witness.messages.front().message.contains("missing"));
 
     iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
-    iv::unbind_runtime_project_timeline_execution_bridge(execution);
     iv::unbind_runtime_project_iv_module_instances_bridge(instances);
 }
 
@@ -1084,44 +1082,50 @@ TEST_F(ProjectPersistenceTest, GraphInputAuthoredStateCoversAllMutationKinds)
 
 TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsForMemberAndLogicalPorts)
 {
+    auto const logical_sample_input_node_id = runtime_node_id("instance:a", "node-logical");
+    auto const member_sample_input_node_id = runtime_node_id("instance:a", "node-member");
+    auto const logical_event_input_node_id = runtime_node_id("instance:b", "event-logical");
+    auto const member_event_input_node_id = runtime_node_id("instance:b", "event-member");
+    auto const logical_sample_output_node_id = runtime_node_id("instance:c", "sample-out");
+    auto const member_event_output_node_id = runtime_node_id("instance:c", "event-out");
     iv::GraphInputLanes::AuthoredStateSnapshot snapshot;
     snapshot.sample_input_states.push_back(iv::ProjectSetSampleInputStateRequest{
-        .node_id = "node-logical",
+        .node_id = logical_sample_input_node_id,
         .member_ordinal = std::nullopt,
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::disconnected,
         .lane_id = std::nullopt,
     });
     snapshot.sample_input_states.push_back(iv::ProjectSetSampleInputStateRequest{
-        .node_id = "node-member",
+        .node_id = member_sample_input_node_id,
         .member_ordinal = 1,
         .input_ordinal = 2,
         .state = iv::ProjectSampleInputState::logical_follow,
         .lane_id = std::nullopt,
     });
     snapshot.event_input_states.push_back(iv::ProjectSetEventInputStateRequest{
-        .node_id = "event-logical",
+        .node_id = logical_event_input_node_id,
         .member_ordinal = std::nullopt,
         .input_ordinal = 0,
         .state = iv::ProjectEventInputState::default_,
         .lane_id = std::nullopt,
     });
     snapshot.event_input_states.push_back(iv::ProjectSetEventInputStateRequest{
-        .node_id = "event-member",
+        .node_id = member_event_input_node_id,
         .member_ordinal = 3,
         .input_ordinal = 1,
         .state = iv::ProjectEventInputState::disconnected,
         .lane_id = std::nullopt,
     });
     snapshot.sample_output_states.push_back(iv::ProjectSetSampleOutputStateRequest{
-        .node_id = "sample-out",
+        .node_id = logical_sample_output_node_id,
         .member_ordinal = std::nullopt,
         .output_ordinal = 0,
         .state = iv::ProjectSampleOutputState::logical,
         .lane_id = std::nullopt,
     });
     snapshot.event_output_states.push_back(iv::ProjectSetEventOutputStateRequest{
-        .node_id = "event-out",
+        .node_id = member_event_output_node_id,
         .member_ordinal = 4,
         .output_ordinal = 1,
         .state = iv::ProjectEventOutputState::disconnected,
@@ -1143,31 +1147,21 @@ TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsFo
         throw std::runtime_error("command not found");
     };
 
-    EXPECT_EQ(find_command("graph.setSampleInputState", "node-logical")["state"], "disconnected");
-    EXPECT_TRUE(find_command("graph.setSampleInputState", "node-logical")["member_ordinal"].is_null());
-    EXPECT_EQ(find_command("graph.setSampleInputState", "node-member")["state"], "logicalFollow");
-    EXPECT_EQ(find_command("graph.setSampleInputState", "node-member")["member_ordinal"], 1);
-    EXPECT_EQ(find_command("graph.setEventInputState", "event-logical")["state"], "default");
-    EXPECT_EQ(find_command("graph.setEventInputState", "event-member")["state"], "disconnected");
-    EXPECT_EQ(find_command("graph.setSampleOutputState", "sample-out")["state"], "logical");
-    EXPECT_EQ(find_command("graph.setEventOutputState", "event-out")["state"], "disconnected");
+    EXPECT_EQ(find_command("graph.setSampleInputState", logical_sample_input_node_id)["state"], "disconnected");
+    EXPECT_TRUE(find_command("graph.setSampleInputState", logical_sample_input_node_id)["member_ordinal"].is_null());
+    EXPECT_EQ(find_command("graph.setSampleInputState", member_sample_input_node_id)["state"], "logicalFollow");
+    EXPECT_EQ(find_command("graph.setSampleInputState", member_sample_input_node_id)["member_ordinal"], 1);
+    EXPECT_EQ(find_command("graph.setEventInputState", logical_event_input_node_id)["state"], "default");
+    EXPECT_EQ(find_command("graph.setEventInputState", member_event_input_node_id)["state"], "disconnected");
+    EXPECT_EQ(find_command("graph.setSampleOutputState", logical_sample_output_node_id)["state"], "logical");
+    EXPECT_EQ(find_command("graph.setEventOutputState", member_event_output_node_id)["state"], "disconnected");
 }
 
-TEST_F(ProjectPersistenceTest, TimelineConnectivityReplaySkipsBadConnectionAndAppliesLaterValidOne)
+TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersConnectionUntilLanesExist)
 {
     auto const workspace = mutable_module_fixture_workspace("project_timeline_connectivity_replay", "local_cmake");
     write_text(
         workspace / "project.intravenous",
-        Json{
-            {"command", "timeline.connectLanes"},
-            {"args", Json{
-                {"source_lane_id", "missing"},
-                {"target_lane_id", "lane-b"},
-                {"port_domain", "realtime"},
-                {"port_kind", "sample"},
-                {"port_ordinal", 0},
-            }},
-        }.dump() + "\n" +
         Json{
             {"command", "timeline.connectLanes"},
             {"args", Json{
@@ -1182,7 +1176,6 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplaySkipsBadConnectionAndAp
     auto const startup = make_startup(workspace);
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
-    initialize_two_timeline_lanes(timeline);
     iv::ProjectPersistence persistence(workspace, startup);
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
@@ -1190,19 +1183,23 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplaySkipsBadConnectionAndAp
 
     persistence.load();
 
+    EXPECT_TRUE(timeline.lane_connections().empty());
+    ASSERT_EQ(timeline.pending_public_connections().size(), 1u);
+    EXPECT_TRUE(witness.messages.empty());
+
+    initialize_two_timeline_lanes(timeline);
+
     auto const connections = timeline.lane_connections();
     ASSERT_EQ(connections.size(), 1u);
     EXPECT_EQ(timeline.lane_public_id(connections.front().source).str(), "lane-a");
     EXPECT_EQ(timeline.lane_public_id(connections.front().target).str(), "lane-b");
-    ASSERT_EQ(witness.messages.size(), 1u);
-    EXPECT_EQ(witness.messages.front().level, "error");
-    EXPECT_TRUE(witness.messages.front().message.contains("timeline source lane not found"));
+    EXPECT_TRUE(timeline.pending_public_connections().empty());
 
     iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
 }
 
-TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayMissingTargetFailsAndLaterViewStillRestores)
+TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersUntilTargetExistsAndStillRestoresView)
 {
     auto const workspace = mutable_module_fixture_workspace("project_timeline_missing_target", "local_cmake");
     write_text(
@@ -1211,7 +1208,7 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayMissingTargetFailsAndLa
             {"command", "timeline.connectLanes"},
             {"args", Json{
                 {"source_lane_id", "lane-a"},
-                {"target_lane_id", "missing"},
+                {"target_lane_id", "lane-b"},
                 {"port_domain", "realtime"},
                 {"port_kind", "sample"},
                 {"port_ordinal", 0},
@@ -1235,7 +1232,6 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayMissingTargetFailsAndLa
     iv::TimelineExecution execution(8, 16);
     iv::LaneViews lane_views;
     iv::ProjectPersistence persistence(workspace, startup);
-    initialize_two_timeline_lanes(timeline);
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
@@ -1244,10 +1240,14 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayMissingTargetFailsAndLa
     persistence.load();
 
     EXPECT_TRUE(timeline.lane_connections().empty());
+    ASSERT_EQ(timeline.pending_public_connections().size(), 1u);
     ASSERT_EQ(lane_views.active_view_requests().size(), 1u);
     EXPECT_EQ(lane_views.active_view_requests().front().view_id.str(), "view-after-target-failure");
-    ASSERT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
-    EXPECT_TRUE(witness.messages.front().message.contains("timeline target lane not found"));
+    EXPECT_TRUE(witness.messages.empty());
+
+    initialize_two_timeline_lanes(timeline);
+    ASSERT_EQ(timeline.lane_connections().size(), 1u);
+    EXPECT_TRUE(timeline.pending_public_connections().empty());
 
     iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
@@ -1361,6 +1361,7 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
         .display_sample_count = 20,
     });
     auto graph_instance = make_instance_with_member_ports();
+    auto const graph_runtime_node_id = runtime_node_id(graph_instance.instance_id, "node-1");
     iv::GraphBuilder graph_builder;
     auto graph_node = iv::_annotate_node_source_info(
         graph_builder.node<iv::Sum<1>>().node_ref(),
@@ -1371,7 +1372,7 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
     });
     graph_input_lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     graph_input_lanes.set_sample_input_value(iv::ProjectSetSampleInputValueRequest{
-        .node_id = "node-1",
+        .node_id = graph_runtime_node_id,
         .member_ordinal = std::nullopt,
         .input_ordinal = 0,
         .value = iv::Sample{0.25f},
@@ -1405,6 +1406,10 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
     EXPECT_TRUE(contains_command("ivModuleInstances.create"));
     EXPECT_TRUE(contains_command("graph.setSampleInputValue"));
     EXPECT_TRUE(contains_command("timeline.openLaneView"));
+    EXPECT_TRUE(std::ranges::any_of(commands, [&](auto const &command) {
+        return command["command"] == "graph.setSampleInputValue"
+            && command["args"]["node_id"] == graph_runtime_node_id;
+    }));
 
     iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);

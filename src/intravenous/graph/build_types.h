@@ -42,6 +42,7 @@ namespace iv {
         Sample current_value = 0.0f;
         bool has_concrete_override = false;
         std::optional<ChannelTypeId> sample_channel_type {};
+        std::string state_value {};
 
         bool operator==(LogicalPortInfo const&) const = default;
     };

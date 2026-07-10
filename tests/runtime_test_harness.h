@@ -9,6 +9,7 @@
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/lane_filters_lane_views_bridge.h>
@@ -56,6 +57,7 @@ struct BoundIvModuleSourceIntrospection {
         iv::bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
         iv::bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
         iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
+        iv::bind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
         iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
         iv::bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
         iv::bind_timeline_lane_filters_bridge(lane_filters);
@@ -68,6 +70,7 @@ struct BoundIvModuleSourceIntrospection {
         iv::unbind_timeline_lane_filters_bridge(lane_filters);
         iv::unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
         iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+        iv::unbind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
         iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
         iv::unbind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
         iv::unbind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
@@ -80,15 +83,15 @@ struct BoundIvModuleSourceIntrospection {
         auto const module_root = std::filesystem::weakly_canonical(config.workspace_root);
         (void)iv_module_instances.create_instance(module_root);
         iv_module_definitions.seed_loaded_definition(load_definition(config, module_root));
-        return introspection.initialize();
     }
 
     auto query_by_spans(
         std::filesystem::path const &file_path,
         std::vector<iv::SourceRange> const &ranges,
-        iv::SourceRangeMatchMode match_mode = iv::SourceRangeMatchMode::intersection) const
+        iv::SourceRangeMatchMode match_mode = iv::SourceRangeMatchMode::intersection,
+        std::optional<std::string> instance_id = std::nullopt) const
     {
-        return introspection.query_by_spans(file_path, ranges, match_mode);
+        return introspection.query_by_spans(file_path, ranges, match_mode, instance_id);
     }
 
     auto query_active_regions(std::filesystem::path const &file_path) const

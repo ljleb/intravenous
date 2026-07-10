@@ -11,7 +11,7 @@
         "Other"
     ],
     "activationEvents": [
-        "workspaceContains:.intravenous",
+        "workspaceContains:project.intravenous",
         "onWebviewPanel:intravenous.lanes"
     ],
     "main": "./dist/extension.js",
@@ -64,6 +64,10 @@
             {
                 "command": "intravenous.openLanes",
                 "title": "Intravenous: Open Lanes"
+            },
+            {
+                "command": "intravenous.resumePlayback",
+                "title": "Intravenous: Resume Playback"
             }
         ]
     }

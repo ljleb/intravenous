@@ -27,16 +27,12 @@ void sort_and_deduplicate_spans(std::vector<SourceSpan>& spans)
 }
 
 std::vector<SourceSpan> source_spans_for(
-    std::span<LogicalConcreteNode const* const> nodes,
-    std::string_view source_identity
+    std::span<LogicalConcreteNode const* const> nodes
 )
 {
     std::vector<SourceSpan> spans;
     for (auto const* node : nodes) {
         for (auto const& info : node->source_infos) {
-            if (info.declaration_identity != source_identity) {
-                continue;
-            }
             if (info.span.file_path.empty() || info.span.begin > info.span.end) {
                 continue;
             }
@@ -297,7 +293,7 @@ LogicalMetadataBuildResult build_logical_metadata(
             });
         }
 
-        auto source_spans = source_spans_for(members, group.logical_node_id);
+        auto source_spans = source_spans_for(members);
         std::string logical_id = group.logical_node_id;
         if (same_identity_group_count > 1) {
             logical_id += "#type:" + stable_identity_suffix(group.type_identity);

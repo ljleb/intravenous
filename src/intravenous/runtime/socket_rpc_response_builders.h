@@ -86,6 +86,19 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
+    class SocketRpcIvModuleInstancesResultBuilder {
+        int error_code = -32000;
+        std::string error_message;
+        std::optional<std::vector<IvModuleInstanceInfo>> result;
+
+    public:
+        void succeed(std::vector<IvModuleInstanceInfo> value);
+        void fail(std::string message);
+        void fail(int code, std::string message);
+
+        [[nodiscard]] std::string build(int request_id) const;
+    };
+
     class SocketRpcAudioDevicesResultBuilder {
         int error_code = -32000;
         std::string error_message;

@@ -146,7 +146,34 @@ namespace {
         }
     };
 
+    struct PassStartedWitness {
+        mutable std::mutex mutex;
+        std::vector<std::uint64_t> revisions;
+
+        void push(std::uint64_t revision)
+        {
+            std::scoped_lock lock(mutex);
+            revisions.push_back(revision);
+        }
+
+        std::vector<std::uint64_t> snapshot() const
+        {
+            std::scoped_lock lock(mutex);
+            return revisions;
+        }
+    };
+
+    PassStartedWitness *g_pass_started_witness = nullptr;
     PassFinishedWitness *g_pass_finished_witness = nullptr;
+
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::TasksRunnerBeforePassEvent,
+        iv_runtime_task_runner_before_pass_event,
+        +[](iv::TasksRunnerBeforePass const &started) {
+            if (g_pass_started_witness != nullptr) {
+                g_pass_started_witness->push(started.graph_revision);
+            }
+        });
 
     IV_SUBSCRIBE_LINKER_EVENT(
         iv::TasksRunnerAfterPassEvent,
@@ -587,6 +614,25 @@ namespace {
         ASSERT_TRUE(wait_until([&] { return a.invocations.load() > 0; }));
     }
 
+    TEST_F(TasksRunnerTest, EmptyGraphStillEmitsPassBoundaries)
+    {
+        PassStartedWitness started;
+        PassFinishedWitness finished;
+        g_pass_started_witness = &started;
+        g_pass_finished_witness = &finished;
+
+        {
+            iv::TasksRunner runner(1);
+            ASSERT_TRUE(wait_until([&] { return !started.snapshot().empty(); }));
+            ASSERT_TRUE(wait_until([&] { return !finished.snapshot().empty(); }));
+            EXPECT_EQ(started.snapshot().front(), 0u);
+            EXPECT_EQ(finished.snapshot().front(), 0u);
+        }
+
+        g_pass_started_witness = nullptr;
+        g_pass_finished_witness = nullptr;
+    }
+
     TEST_F(TasksRunnerTest, MergesStrictLinearChainIntoSingleExecutionGroup)
     {
         LogState log;
@@ -748,8 +794,10 @@ namespace {
             });
 
             ASSERT_TRUE(wait_until([&] { return ctx.invocations.load() >= 1; }));
-            ASSERT_TRUE(wait_until([&] { return !witness.snapshot().empty(); }));
-            EXPECT_EQ(witness.snapshot().front(), runner.active_graph_revision());
+            ASSERT_TRUE(wait_until([&] {
+                auto const revisions = witness.snapshot();
+                return std::ranges::find(revisions, runner.active_graph_revision()) != revisions.end();
+            }));
         }
 
         g_pass_finished_witness = nullptr;

@@ -49,38 +49,39 @@ void emit_lane_change(
     auto dataset = std::make_shared<query::LaneQuerySchema>(candidate_schema);
     (void)dataset; // dataset is built by the timeline bridge; we reuse emit_lane_change pattern
 
+    TimelineLanesChanged notification{
+        .lane_set_changed = lane_set_changed,
+        .dataset = nullptr,
+        .schema_change = diff,
+        .metadata_for_lane = [timeline = bound_timeline](LaneId lane) {
+            return timeline->lane_metadata(lane);
+        },
+        .outputs_for_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes) {
+            return outputs_for_lanes(*timeline, lanes);
+        },
+        .visit_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes, TimelineLaneVisitFn const &visit) {
+            timeline->with_graph([&](LaneGraph const& graph) {
+                for (auto const lane : lanes) {
+                    if (!graph.contains(lane)) {
+                        continue;
+                    }
+                    auto const& record = graph.lane(lane);
+                    visit(
+                        lane,
+                        record.node,
+                        record.output,
+                        record.sample_channel_type,
+                        graph.inputs_for(lane),
+                        record.external_task_dependencies);
+                }
+            });
+        },
+        .created_lanes = std::move(created_lanes),
+        .removed_lanes = std::move(removed_lanes),
+    };
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_timeline_lanes_changed_event,
-        TimelineLanesChanged{
-            .lane_set_changed = lane_set_changed,
-            .dataset = nullptr,
-            .schema_change = diff,
-            .metadata_for_lane = [timeline = bound_timeline](LaneId lane) {
-                return timeline->lane_metadata(lane);
-            },
-            .outputs_for_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes) {
-                return outputs_for_lanes(*timeline, lanes);
-            },
-            .visit_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes, TimelineLaneVisitFn const &visit) {
-                timeline->with_graph([&](LaneGraph const& graph) {
-                    for (auto const lane : lanes) {
-                        if (!graph.contains(lane)) {
-                            continue;
-                        }
-                        auto const& record = graph.lane(lane);
-                        visit(
-                            lane,
-                            record.node,
-                            record.output,
-                            record.sample_channel_type,
-                            graph.inputs_for(lane),
-                            record.external_task_dependencies);
-                    }
-                });
-            },
-            .created_lanes = std::move(created_lanes),
-            .removed_lanes = std::move(removed_lanes),
-        });
+        notification);
 }
 
 void handle_timeline_batch_requested(TimelineLaneBatchUpdate const &batch)

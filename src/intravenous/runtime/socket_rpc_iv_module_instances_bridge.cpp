@@ -6,6 +6,8 @@
 
 namespace iv {
 namespace {
+IvModuleInstances *bound_iv_module_instances = nullptr;
+
 void handle_create_iv_module_instance(
     CreateIvModuleInstanceRequest const &request,
     SocketRpcCreateIvModuleInstanceResultBuilder &builder)
@@ -60,6 +62,15 @@ void handle_set_iv_module_instance_default_silence_ttl_samples(
         builder.fail(e.what());
     }
 }
+void handle_get_iv_module_instances(
+    GetIvModuleInstancesRequest const &,
+    SocketRpcIvModuleInstancesResultBuilder &builder)
+{
+    if (bound_iv_module_instances == nullptr) {
+        return;
+    }
+    builder.succeed(bound_iv_module_instances->list_instances());
+}
 
 IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcCreateIvModuleInstanceEvent,
@@ -73,16 +84,22 @@ IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcSetIvModuleInstanceDefaultSilenceTtlSamplesEvent,
     iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event,
     handle_set_iv_module_instance_default_silence_ttl_samples);
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcGetIvModuleInstancesEvent,
+    iv_socket_rpc_get_iv_module_instances_event,
+    handle_get_iv_module_instances);
 } // namespace
 
 void bind_socket_rpc_iv_module_instances_bridge(IvModuleInstances &iv_module_instances)
 {
-    (void)iv_module_instances;
+    bound_iv_module_instances = &iv_module_instances;
 }
 
 void unbind_socket_rpc_iv_module_instances_bridge(
     IvModuleInstances const &iv_module_instances)
 {
-    (void)iv_module_instances;
+    if (bound_iv_module_instances == &iv_module_instances) {
+        bound_iv_module_instances = nullptr;
+    }
 }
 } // namespace iv

@@ -11,6 +11,7 @@
 namespace {
 using iv::test_support::fresh_module_fixture_workspace;
 using iv::test_support::make_loaded_definition;
+using iv::test_support::read_only_module_fixture_workspace;
 }
 
 TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionRequiresBinding)
@@ -21,23 +22,42 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionRequiresBindi
     iv::IvModuleSourceIntrospection introspection;
 
     definitions.seed_loaded_definition(make_loaded_definition(workspace));
-    EXPECT_THROW((void)introspection.initialize(), std::runtime_error);
+    auto const result = introspection.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {
+            iv::SourceRange{
+                .start = {.line = 1, .column = 1},
+                .end = {.line = 2, .column = 1},
+            },
+        });
+    EXPECT_TRUE(result.nodes.empty());
 }
 
 TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenBound)
 {
     auto const workspace =
-        fresh_module_fixture_workspace("runtime_bridges_defs_to_introspection_bound");
+        read_only_module_fixture_workspace("local_cmake");
     iv::IvModuleDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
     iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
 
-    auto const loaded = make_loaded_definition(workspace);
-    auto const module_id = loaded.module_id;
-    definitions.seed_loaded_definition(std::move(loaded));
-    auto const initialized = introspection.initialize();
+    auto const startup = iv::StartupConfig(workspace, iv::test::repo_root(), {}).initialize();
+    auto loaded = iv::test::load_runtime_iv_module_definition(
+        startup,
+        std::filesystem::weakly_canonical(workspace));
+    definitions.seed_loaded_definition(iv::IvModuleReloadedDefinition{
+        .definition_id = loaded.definition_id,
+        .module_root = loaded.module_root,
+        .module_id = loaded.module_id,
+        .introspection = loaded.introspection,
+        .dependencies = loaded.dependencies,
+        .module_refs = std::move(loaded.module_refs),
+        .canonical_builder = std::move(loaded.canonical_builder),
+    });
+    auto const result = introspection.query_active_regions(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"));
 
-    EXPECT_EQ(initialized.module_id, module_id);
+    EXPECT_FALSE(result.source_spans.empty());
 
     iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
 }

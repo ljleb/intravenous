@@ -2,8 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-    applySampleInputValueUpdate,
-    clearSampleInputValueOverride,
+    serializeLiveGraphInstances,
     serializeLiveGraphNodes,
 } from "../src/liveGraphModel";
 import { LogicalNode } from "../src/graphModel";
@@ -20,21 +19,25 @@ function sampleNode(): LogicalNode {
             connectivity: "disconnected",
             defaultValue: 0.5,
             currentValue: 0.25,
+            stateValue: "overridden",
         }],
         sampleOutputs: [{
             ordinal: 2,
             name: "out",
             connectivity: "connected",
+            stateValue: "disconnected",
         }],
         eventInputs: [{
             ordinal: 3,
             name: "gate",
             connectivity: "mixed",
+            stateValue: "default",
         }],
         eventOutputs: [{
             ordinal: 4,
             name: "trig",
             connectivity: "connected",
+            stateValue: "disconnected",
         }],
         members: [{
             ordinal: 7,
@@ -47,21 +50,25 @@ function sampleNode(): LogicalNode {
                 defaultValue: 0.5,
                 currentValue: 0.25,
                 hasConcreteOverride: false,
+                stateValue: "logicalFollow",
             }],
             sampleOutputs: [{
                 ordinal: 2,
                 name: "out",
                 connectivity: "connected",
+                stateValue: "disconnected",
             }],
             eventInputs: [{
                 ordinal: 3,
                 name: "gate",
                 connectivity: "mixed",
+                stateValue: "logicalFollow",
             }],
             eventOutputs: [{
                 ordinal: 4,
                 name: "trig",
                 connectivity: "connected",
+                stateValue: "disconnected",
             }],
         }],
     };
@@ -79,55 +86,94 @@ test("serializeLiveGraphNodes exposes all supported port state families", () => 
     const memberSampleInput = node.members[0].groups[0].ports[0];
 
     assert.equal(logicalSampleInput.stateFamily, "sampleInput");
-    assert.deepEqual(logicalSampleInput.stateActions.map((action) => action.state), [
-        "default",
-        "disconnected",
-        "timelineLane",
-    ]);
+    assert.equal(logicalSampleInput.stateSummary, "knob value");
+    assert.deepEqual(logicalSampleInput.stateActions.map((action) => action.state), ["timelineLane"]);
 
     assert.equal(logicalEventInput.stateFamily, "eventInput");
-    assert.deepEqual(logicalEventInput.stateActions.map((action) => action.state), [
-        "default",
-        "disconnected",
-        "timelineLane",
-    ]);
+    assert.equal(logicalEventInput.stateSummary, "default");
+    assert.deepEqual(logicalEventInput.stateActions.map((action) => action.state), ["timelineLane"]);
 
     assert.equal(logicalSampleOutput.stateFamily, "sampleOutput");
-    assert.deepEqual(logicalSampleOutput.stateActions.map((action) => action.state), [
-        "disconnected",
-        "timelineLane",
-    ]);
+    assert.equal(logicalSampleOutput.stateSummary, "disconnected");
+    assert.deepEqual(logicalSampleOutput.stateActions.map((action) => action.state), ["timelineLane"]);
 
     assert.equal(logicalEventOutput.stateFamily, "eventOutput");
-    assert.deepEqual(logicalEventOutput.stateActions.map((action) => action.state), [
-        "disconnected",
-        "timelineLane",
-    ]);
+    assert.equal(logicalEventOutput.stateSummary, "disconnected");
+    assert.deepEqual(logicalEventOutput.stateActions.map((action) => action.state), ["timelineLane"]);
 
-    assert.equal(memberSampleInput.resetState, "default");
+    assert.equal(memberSampleInput.stateSummary, "follow logical value");
+    assert.equal(memberSampleInput.resetState, null);
     assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
-        "default",
-        "logicalFollow",
-        "disconnected",
+        "overridden",
         "timelineLane",
+        "disconnected",
     ]);
 });
 
-test("applySampleInputValueUpdate updates logical and inherited member values", () => {
-    const nodes = [sampleNode()];
-    applySampleInputValueUpdate(nodes, "node-1", 1, 0.75, null);
+test("serializeLiveGraphNodes treats default-connected concrete ports as connected", () => {
+    const node: LogicalNode = {
+        id: "node-1",
+        kind: "Module",
+        sampleOutputs: [{
+            ordinal: 2,
+            name: "mix",
+            connectivity: "connected",
+            stateValue: "timelineLane",
+        }],
+        members: [{
+            ordinal: 1,
+            backingNodeId: "backing-1",
+            kind: "Member",
+            sampleInputs: [{
+                ordinal: 3,
+                name: "in",
+                connectivity: "connected",
+                stateValue: "disconnected",
+            }],
+            sampleOutputs: [{
+                ordinal: 2,
+                name: "mix",
+                connectivity: "connected",
+                stateValue: "logical",
+            }],
+        }],
+    };
 
-    assert.equal(nodes[0].sampleInputs?.[0].currentValue, 0.75);
-    assert.equal(nodes[0].members?.[0].sampleInputs?.[0].currentValue, 0.75);
+    const serialized = serializeLiveGraphNodes([node]);
+    const memberSampleInput = serialized[0].members[0].groups[0].ports[0];
+    const memberSampleOutput = serialized[0].members[0].groups[1].ports[0];
+
+    assert.equal(memberSampleInput.stateSummary, "built-in connection");
+    assert.equal(memberSampleInput.resetState, null);
+    assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
+        "overridden",
+        "logicalFollow",
+        "timelineLane",
+    ]);
+
+    assert.equal(memberSampleOutput.stateSummary, "logical output");
+    assert.equal(memberSampleOutput.resetState, null);
+    assert.deepEqual(memberSampleOutput.stateActions.map((action) => action.state), [
+        "timelineLane",
+        "disconnected",
+    ]);
 });
 
-test("clearSampleInputValueOverride restores inherited logical value", () => {
-    const nodes = [sampleNode()];
-    applySampleInputValueUpdate(nodes, "node-1", 1, 0.1, null);
-    applySampleInputValueUpdate(nodes, "node-1", 1, 0.9, 7);
+test("serializeLiveGraphInstances builds stable dropdown labels", () => {
+    const serialized = serializeLiveGraphInstances([{
+        instanceId: "instance-1",
+        definitionId: "definition-1",
+        moduleId: "iv.project.simple_sine",
+        moduleRoot: "/tmp/simple_sine",
+        realized: true,
+    }]);
 
-    clearSampleInputValueOverride(nodes, "node-1", 7, 1);
-
-    assert.equal(nodes[0].members?.[0].sampleInputs?.[0].hasConcreteOverride, false);
-    assert.equal(nodes[0].members?.[0].sampleInputs?.[0].currentValue, 0.1);
+    assert.deepEqual(serialized, [{
+        instanceId: "instance-1",
+        definitionId: "definition-1",
+        moduleId: "iv.project.simple_sine",
+        moduleRoot: "/tmp/simple_sine",
+        realized: true,
+        label: "iv.project.simple_sine • instance-1",
+    }]);
 });

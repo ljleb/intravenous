@@ -4,6 +4,7 @@
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/lane_views_events.h>
 #include <intravenous/runtime/lanes_visualization_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
@@ -38,6 +39,10 @@ namespace {
                                          Payload,
                                          ProjectLaneViewNotification>) {
                     bound_server->send_lane_view_updated(payload.lane_view);
+                } else if constexpr (std::same_as<
+                                         Payload,
+                                         ProjectLogicalNodesNotification>) {
+                    bound_server->send_logical_nodes_updated(payload);
                 }
             },
             notification);
@@ -120,6 +125,15 @@ namespace {
         IvModuleInstancesListChangedEvent,
         iv_runtime_iv_module_instances_list_changed_event,
         forward_runtime_iv_module_instances_list_changed);
+    IV_SUBSCRIBE_LINKER_EVENT(
+        IvModuleSourceIntrospectionNodesUpdatedEvent,
+        iv_runtime_iv_module_source_introspection_nodes_updated_event,
+        +[](ProjectLogicalNodesNotification const &notification) {
+            if (bound_server == nullptr) {
+                return;
+            }
+            bound_server->send_logical_nodes_updated(notification);
+        });
 } // namespace
 
 void bind_socket_rpc_notification_bridge(SocketRpcServer &server) {

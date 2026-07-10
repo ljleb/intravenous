@@ -4,6 +4,7 @@
 #include <cmath>
 #include <queue>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace iv {
 namespace {
@@ -230,6 +231,16 @@ VersionedTaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(Timeli
     if (change.visit_lanes) {
         std::vector<LaneId> visited = change.created_lanes;
         visited.insert(visited.end(), change.changed_lanes.begin(), change.changed_lanes.end());
+        if (change.lane_set_changed) {
+            visited.reserve(visited.size() + tracked_lanes_.size());
+            for (auto const &[lane, _] : tracked_lanes_) {
+                visited.push_back(lane);
+            }
+            std::ranges::sort(visited, {}, &LaneId::value);
+            visited.erase(
+                std::unique(visited.begin(), visited.end()),
+                visited.end());
+        }
         change.visit_lanes(visited, [&](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output, std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &inputs, std::vector<std::string> const &external_task_dependencies) {
             auto &tracked = tracked_lanes_[lane];
             bool const existed = tracked.id == lane && tracked.node != nullptr;
@@ -592,12 +603,22 @@ void TimelineExecution::rebuild_compiled_support_and_notify_locked()
 VersionedTaskGraphUpdate TimelineExecution::replace_all_lanes_locked(std::vector<TrackedLane> lanes)
 {
     TaskGraphUpdate update;
-    for (auto const &[lane, _] : tracked_lanes_) {
-        update.to_delete.push_back(timeline_lane_task_id(lane));
+    std::unordered_set<LaneId, LaneIdHash> incoming_lanes;
+    incoming_lanes.reserve(lanes.size());
+    for (auto const &tracked : lanes) {
+        incoming_lanes.insert(tracked.id);
     }
 
-    tracked_lanes_.clear();
-    callback_contexts_.clear();
+    for (auto it = tracked_lanes_.begin(); it != tracked_lanes_.end();) {
+        if (incoming_lanes.contains(it->first)) {
+            ++it;
+            continue;
+        }
+        update.to_delete.push_back(timeline_lane_task_id(it->first));
+        callback_contexts_.erase(it->first);
+        it = tracked_lanes_.erase(it);
+    }
+
     realtime_sample_descriptors_.clear();
     realtime_sample_slot_by_lane_.clear();
     realtime_sample_storage_.clear();
@@ -607,8 +628,9 @@ VersionedTaskGraphUpdate TimelineExecution::replace_all_lanes_locked(std::vector
     compiled_event_cache_.clear();
 
     for (auto &tracked : lanes) {
+        bool const existed = tracked_lanes_.contains(tracked.id);
         auto &stored = tracked_lanes_[tracked.id];
-        stored = tracked;
+        stored = std::move(tracked);
         auto &callback = callback_contexts_[tracked.id];
         if (!callback) {
             callback = std::make_unique<LaneCallbackContext>();
@@ -628,11 +650,19 @@ VersionedTaskGraphUpdate TimelineExecution::replace_all_lanes_locked(std::vector
         for (auto const &dependency : stored.external_task_dependencies) {
             depends_on.push_back(dependency);
         }
-        update.to_create.push_back(TaskRecord {
-            .id = timeline_lane_task_id(stored.id),
-            .depends_on = std::move(depends_on),
-            .callback = stored.callback,
-        });
+        if (existed) {
+            update.to_update.push_back(TaskUpdateRecord {
+                .id = timeline_lane_task_id(stored.id),
+                .depends_on = std::move(depends_on),
+                .callback = stored.callback,
+            });
+        } else {
+            update.to_create.push_back(TaskRecord {
+                .id = timeline_lane_task_id(stored.id),
+                .depends_on = std::move(depends_on),
+                .callback = stored.callback,
+            });
+        }
     }
 
     rebuild_runtime_storage_locked();
@@ -689,7 +719,6 @@ void TimelineExecution::execute_lane_locked(LaneId lane, size_t start_index)
         return;
     }
     auto &tracked = it->second;
-
     if (is_compiled_sample_output(tracked.output)) {
         (void)read_compiled_sample_block_locked(lane, start_index);
         return;

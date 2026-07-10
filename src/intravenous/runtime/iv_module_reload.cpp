@@ -6,6 +6,7 @@
 #include <intravenous/runtime/iv_module_reload_events.h>
 
 #include <exception>
+#include <iterator>
 
 namespace iv {
 namespace {
@@ -31,6 +32,47 @@ std::string describe_exception(std::exception_ptr exception)
     } catch (...) {
         return "unknown exception";
     }
+}
+
+IvModuleReloadResults coalesce_results_by_definition(IvModuleReloadResults results)
+{
+    std::unordered_map<std::string, IvModuleReloadedDefinition> loaded_by_definition;
+    std::unordered_map<std::string, IvModuleReloadFailure> failed_by_definition;
+    std::vector<std::string> order;
+    order.reserve(results.loaded.size() + results.failed.size());
+
+    auto const remember_order = [&](std::string const &definition_id) {
+        if (std::ranges::find(order, definition_id) == order.end()) {
+            order.push_back(definition_id);
+        }
+    };
+
+    for (auto &loaded : results.loaded) {
+        remember_order(loaded.definition_id);
+        failed_by_definition.erase(loaded.definition_id);
+        loaded_by_definition[loaded.definition_id] = std::move(loaded);
+    }
+    for (auto &failed : results.failed) {
+        remember_order(failed.definition_id);
+        loaded_by_definition.erase(failed.definition_id);
+        failed_by_definition[failed.definition_id] = std::move(failed);
+    }
+
+    IvModuleReloadResults coalesced;
+    coalesced.loaded.reserve(loaded_by_definition.size());
+    coalesced.failed.reserve(failed_by_definition.size());
+    for (auto const &definition_id : order) {
+        if (auto loaded = loaded_by_definition.find(definition_id);
+            loaded != loaded_by_definition.end()) {
+            coalesced.loaded.push_back(std::move(loaded->second));
+            continue;
+        }
+        if (auto failed = failed_by_definition.find(definition_id);
+            failed != failed_by_definition.end()) {
+            coalesced.failed.push_back(std::move(failed->second));
+        }
+    }
+    return coalesced;
 }
 } // namespace
 
@@ -64,7 +106,7 @@ void IvModuleReload::refresh_watched_dependencies_locked()
     watcher.update(std::move(dependencies));
 }
 
-void IvModuleReload::reload_declarations(
+IvModuleReloadResults IvModuleReload::reload_declarations(
     std::vector<IvModuleDefinitionDeclaration> const &declarations)
 {
 #if IV_ENABLE_JUCE_VST
@@ -111,36 +153,74 @@ void IvModuleReload::reload_declarations(
         }
     }
 
-    if (!results.loaded.empty() || !results.failed.empty()) {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_reload_results_event,
-            results);
-    }
+    return results;
 }
 
 void IvModuleReload::handle_definition_declarations_changed(
     IvModuleDefinitionDeclarationsChanged const &diff)
 {
-    std::vector<IvModuleDefinitionDeclaration> to_reload;
     {
         std::scoped_lock lock(mutex);
         for (auto const &declaration : diff.created) {
             declarations_by_id[declaration.definition_id] = declaration;
-            to_reload.push_back(declaration);
+            dirty_definition_ids.insert(declaration.definition_id);
         }
         for (auto const &declaration : diff.updated) {
             declarations_by_id[declaration.definition_id] = declaration;
-            to_reload.push_back(declaration);
+            dirty_definition_ids.insert(declaration.definition_id);
         }
         for (auto const &definition_id : diff.deleted_definition_ids) {
             declarations_by_id.erase(definition_id);
             dependencies_by_definition_id.erase(definition_id);
+            dirty_definition_ids.erase(definition_id);
         }
         refresh_watched_dependencies_locked();
     }
+}
 
-    if (!to_reload.empty()) {
-        reload_declarations(to_reload);
+bool IvModuleReload::has_dirty_definitions() const
+{
+    std::scoped_lock lock(mutex);
+    return !dirty_definition_ids.empty();
+}
+
+void IvModuleReload::compile_dirty_definitions()
+{
+    std::vector<IvModuleDefinitionDeclaration> declarations;
+    {
+        std::scoped_lock lock(mutex);
+        if (dirty_definition_ids.empty()) {
+            return;
+        }
+        declarations.reserve(dirty_definition_ids.size());
+        for (auto const &definition_id : dirty_definition_ids) {
+            if (auto const it = declarations_by_id.find(definition_id);
+                it != declarations_by_id.end()) {
+                declarations.push_back(it->second);
+            }
+        }
+        dirty_definition_ids.clear();
+    }
+
+    if (declarations.empty()) {
+        return;
+    }
+
+    auto results = reload_declarations(declarations);
+    if (results.loaded.empty() && results.failed.empty()) {
+        return;
+    }
+
+    {
+        std::scoped_lock lock(mutex);
+        pending_results.loaded.insert(
+            pending_results.loaded.end(),
+            std::make_move_iterator(results.loaded.begin()),
+            std::make_move_iterator(results.loaded.end()));
+        pending_results.failed.insert(
+            pending_results.failed.end(),
+            std::make_move_iterator(results.failed.begin()),
+            std::make_move_iterator(results.failed.end()));
     }
 }
 
@@ -152,19 +232,42 @@ bool IvModuleReload::has_changes()
 
 void IvModuleReload::reload_changed_definitions()
 {
-    std::vector<IvModuleDefinitionDeclaration> declarations;
     {
         std::scoped_lock lock(mutex);
         if (!watcher.has_changes()) {
             return;
         }
-        declarations.reserve(declarations_by_id.size());
         for (auto const &entry : declarations_by_id) {
-            declarations.push_back(entry.second);
+            dirty_definition_ids.insert(entry.first);
         }
     }
-    if (!declarations.empty()) {
-        reload_declarations(declarations);
+    compile_dirty_definitions();
+}
+
+bool IvModuleReload::has_pending_results() const
+{
+    std::scoped_lock lock(mutex);
+    return !pending_results.loaded.empty() || !pending_results.failed.empty();
+}
+
+void IvModuleReload::apply_pending_results()
+{
+    IvModuleReloadResults results;
+    {
+        std::scoped_lock lock(mutex);
+        if (pending_results.loaded.empty() && pending_results.failed.empty()) {
+            return;
+        }
+        results = std::move(pending_results);
+        pending_results = {};
     }
+    results = coalesce_results_by_definition(std::move(results));
+    if (results.loaded.empty() && results.failed.empty()) {
+        return;
+    }
+
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_reload_results_event,
+        results);
 }
 } // namespace iv

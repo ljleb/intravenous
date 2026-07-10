@@ -165,28 +165,11 @@ function(iv_add_host_runtime_objects target)
     )
 
     if(JUCE_FOUND)
-        target_sources(${target} PRIVATE
-            ${CMAKE_SOURCE_DIR}/src/intravenous/juce/vst_runtime.cpp
-        )
         target_compile_definitions(${target} PRIVATE
             IV_ENABLE_JUCE_VST=1
             JUCE_PLUGINHOST_VST3=1
         )
-        if(TARGET juce::juce_audio_processors)
-            target_link_libraries(${target} PRIVATE
-                juce::juce_audio_processors
-                juce::juce_audio_devices
-                juce::juce_events
-                juce::juce_core
-            )
-        elseif(TARGET JUCE::juce_audio_processors)
-            target_link_libraries(${target} PRIVATE
-                JUCE::juce_audio_processors
-                JUCE::juce_audio_devices
-                JUCE::juce_events
-                JUCE::juce_core
-            )
-        endif()
+        target_link_libraries(${target} PRIVATE intravenous_juce_runtime)
     else()
         target_compile_definitions(${target} PRIVATE
             IV_ENABLE_JUCE_VST=0
@@ -320,6 +303,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_instances_iv_module_definitions_bridge.cpp
     runtime/iv_module_instances_iv_module_instances_execution_bridge.cpp
     runtime/iv_module_instances_graph_input_lanes_bridge.cpp
+    runtime/iv_module_instances_iv_module_source_introspection_bridge.cpp
     runtime/iv_module_reload.cpp
     runtime/iv_module_reload_iv_module_definitions_bridge.cpp
     runtime/lane_filters.cpp
@@ -349,6 +333,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_project_persistence_bridge.cpp
     runtime/socket_rpc_timeline_execution_bridge.cpp
     runtime/socket_rpc_notification_bridge.cpp
+    runtime/socket_rpc_json_serialization.cpp
     runtime/socket_rpc_requests.cpp
     runtime/socket_rpc_response_builders.cpp
     runtime/socket_rpc_server.cpp
@@ -357,6 +342,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/task_runner.cpp
     runtime/task_runner_audio_device_lanes_bridge.cpp
     runtime/task_runner_graph_input_lanes_bridge.cpp
+    runtime/task_runner_iv_module_reload_bridge.cpp
     runtime/timeline_execution.cpp
     runtime/timeline_execution_lanes_visualization_bridge.cpp
     runtime/timeline_execution_task_runner_bridge.cpp
@@ -374,22 +360,32 @@ target_link_libraries(intravenous_tooling_runtime_objects PRIVATE
 
 if(JUCE_FOUND)
     iv_configure_juce()
-    
-    target_sources(iv_module_shared PRIVATE
+
+    # JUCE module targets expose their implementation files as interface
+    # sources. Consume them once here, rather than once per host executable.
+    add_library(intravenous_juce_runtime STATIC
         juce/vst_runtime.cpp
+    )
+    set_target_properties(intravenous_juce_runtime PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+    )
+    iv_configure_intravenous_target(intravenous_juce_runtime PUBLIC)
+    target_compile_definitions(intravenous_juce_runtime PRIVATE
+        IV_ENABLE_JUCE_VST=1
+        JUCE_PLUGINHOST_VST3=1
+    )
+    target_link_libraries(intravenous_juce_runtime PRIVATE
+        ${IV_JUCE_AUDIO_PROCESSORS_TARGET}
+        ${IV_JUCE_AUDIO_DEVICES_TARGET}
+        ${IV_JUCE_EVENTS_TARGET}
+        ${IV_JUCE_CORE_TARGET}
     )
 
     target_compile_definitions(iv_module_shared PUBLIC
         IV_ENABLE_JUCE_VST=1
         JUCE_PLUGINHOST_VST3=1
     )
-
-    target_link_libraries(iv_module_shared PRIVATE
-        ${IV_JUCE_AUDIO_PROCESSORS_TARGET}
-        ${IV_JUCE_AUDIO_DEVICES_TARGET}
-        ${IV_JUCE_EVENTS_TARGET}
-        ${IV_JUCE_CORE_TARGET}
-    )
+    target_link_libraries(iv_module_shared PRIVATE intravenous_juce_runtime)
 
     target_compile_definitions(intravenous_module_loader PRIVATE
         IV_CONFIGURED_ENABLE_JUCE_VST=1

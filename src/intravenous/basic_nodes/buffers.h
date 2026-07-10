@@ -126,6 +126,49 @@ namespace iv {
         }
     };
 
+    class LaneInputEvents {
+        LaneId _lane {};
+        EventTypeId _type {};
+        std::string _identity;
+
+    public:
+        static std::string nominal_identity(LaneId lane)
+        {
+            return "timeline-input-events:" + std::to_string(lane.value);
+        }
+
+        explicit LaneInputEvents(LaneId lane, EventTypeId type) :
+            _lane(lane),
+            _type(type),
+            _identity(nominal_identity(lane))
+        {}
+
+        auto event_outputs() const
+        {
+            return std::array<EventOutputConfig, 1>{{
+                EventOutputConfig{ .type = _type },
+            }};
+        }
+
+        std::string identity() const
+        {
+            return _identity;
+        }
+
+        void tick_block(TickBlockContext<LaneInputEvents> const& ctx) const
+        {
+            TimelineExecutionRealtimeEventBlockBuilder builder;
+            IV_INVOKE_SINGLETON_EVENT(
+                iv_runtime_timeline_execution_realtime_event_block_requested_event,
+                _lane,
+                builder);
+            auto const events = builder.build();
+            for (auto const& event : events) {
+                ctx.event_outputs[0].push(event);
+            }
+        }
+    };
+
     class GraphSampleOutputSink {
         LaneId _lane {};
         ChannelTypeId _channel_type = ChannelTypeId::mono;

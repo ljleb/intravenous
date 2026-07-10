@@ -16,16 +16,35 @@ type LaneViewParams = {
 export class WorkspaceRpc {
     constructor(private readonly client: JsonRpcSocketClient) {}
 
-    initialize(workspaceRoot: string): Promise<unknown> {
-        return this.client.request("server.initialize", { workspaceRoot });
+    getIvModuleInstances(): Promise<{ instances?: Array<Record<string, unknown>> }> {
+        return this.client.request("ivModuleInstances.get", {});
     }
 
     shutdown(): Promise<void> {
         return this.client.request("server.shutdown", {});
     }
 
-    queryNodesBySpans(filePath: string, ranges: SourceQueryRange[], match: "union" | "intersection"): Promise<{ nodes?: LogicalNode[] }> {
-        return this.client.request("graph.queryBySpans", { filePath, ranges, match });
+    pausePlayback(): Promise<void> {
+        return this.client.request("playback.pause", {});
+    }
+
+    resumePlayback(startIndex: number): Promise<void> {
+        return this.client.request("playback.resume", {
+            startIndex,
+        });
+    }
+
+    queryNodesBySpans(
+        filePath: string,
+        ranges: SourceQueryRange[],
+        match: "union" | "intersection",
+        instanceId: string | null,
+    ): Promise<{ nodes?: LogicalNode[] }> {
+        const params: Record<string, unknown> = { filePath, ranges, match };
+        if (instanceId != null) {
+            params.instanceId = instanceId;
+        }
+        return this.client.request("graph.queryBySpans", params);
     }
 
     queryActiveRegions(filePath: string): Promise<{ sourceSpans?: SourceSpan[] }> {

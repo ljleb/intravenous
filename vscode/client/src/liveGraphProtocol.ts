@@ -17,6 +17,7 @@ export type SerializedLiveGraphPort = {
     defaultValue: number;
     currentValue: number;
     hasConcreteOverride: boolean;
+    stateValue: string;
     tweakable: boolean;
     stateFamily: LiveGraphPortStateFamily | null;
     stateSummary: string;
@@ -42,6 +43,7 @@ export type SerializedLiveGraphMember = {
 
 export type SerializedLiveGraphNode = {
     id: string;
+    instanceId: string;
     kind: string;
     description: string;
     tooltip: string;
@@ -51,8 +53,33 @@ export type SerializedLiveGraphNode = {
     members: SerializedLiveGraphMember[];
 };
 
-export type LiveGraphSetStateMessage = {
-    type: "setState";
+export type SerializedLiveGraphInstance = {
+    instanceId: string;
+    definitionId: string;
+    moduleId: string;
+    moduleRoot: string;
+    realized: boolean;
+    label: string;
+};
+
+export type LiveGraphSetInstancesMessage = {
+    type: "setInstances";
+    instances: SerializedLiveGraphInstance[];
+};
+
+export type LiveGraphSetSelectedInstanceMessage = {
+    type: "setSelectedInstance";
+    selectedInstanceId: string | null;
+};
+
+export type LiveGraphSetNodesMessage = {
+    type: "setNodes";
+    nodes: SerializedLiveGraphNode[];
+};
+
+export type LiveGraphUpsertNodesMessage = {
+    type: "upsertNodes";
+    replaceInstanceIds: string[];
     nodes: SerializedLiveGraphNode[];
 };
 
@@ -96,7 +123,13 @@ export type LiveGraphSetEventOutputStateMessage = {
     memberOrdinal?: number | null;
 };
 
+export type LiveGraphSelectInstanceMessage = {
+    type: "selectInstance";
+    instanceId: string | null;
+};
+
 export type LiveGraphControlMessage =
+    | LiveGraphSelectInstanceMessage
     | LiveGraphSetSampleInputValueMessage
     | LiveGraphSetSampleInputStateMessage
     | LiveGraphSetEventInputStateMessage
@@ -112,10 +145,15 @@ export function isLiveGraphControlMessage(message: unknown): message is LiveGrap
 
     const candidate = message as Record<string, unknown>;
     if (typeof candidate.type !== "string" || typeof candidate.nodeId !== "string") {
+        if (candidate.type === "selectInstance") {
+            return candidate.instanceId == null || typeof candidate.instanceId === "string";
+        }
         return false;
     }
 
     switch (candidate.type) {
+    case "selectInstance":
+        return candidate.instanceId == null || typeof candidate.instanceId === "string";
     case "setSampleInputValue":
         return typeof candidate.inputOrdinal === "number";
     case "setSampleInputState":

@@ -2,6 +2,11 @@
 
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
@@ -20,6 +25,7 @@ namespace {
 using Json = nlohmann::ordered_json;
 using namespace iv;
 bool g_answer_live_input_snapshots = false;
+bool g_answer_authored_state_snapshot = false;
 
 IV_SUBSCRIBE_LINKER_EVENT(
     IvModuleSourceIntrospectionLiveInputSnapshotsRequestedEvent,
@@ -44,6 +50,16 @@ IV_SUBSCRIBE_LINKER_EVENT(
         builder.succeed(std::move(snapshots));
     });
 
+IV_SUBSCRIBE_LINKER_EVENT(
+    IvModuleSourceIntrospectionAuthoredStateSnapshotRequestedEvent,
+    iv_runtime_iv_module_source_introspection_authored_state_snapshot_requested_event,
+    +[](IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder &builder) {
+        if (!g_answer_authored_state_snapshot) {
+            return;
+        }
+        builder.succeed(IvModuleSourceIntrospectionAuthoredStateSnapshot{});
+    });
+
 std::filesystem::path make_project_workspace()
 {
     return iv::test::read_only_module_fixture_workspace("local_cmake");
@@ -55,6 +71,8 @@ Json parse_json_line(std::string_view line)
 }
 
 struct SeededIvModuleSourceIntrospectionOwner {
+    IvModuleInstances instances;
+    IvModuleDefinitions definitions;
     GraphInputLanes graph_input_lanes;
     IvModuleSourceIntrospection introspection;
     StartupConfig startup_config;
@@ -74,23 +92,24 @@ struct SeededIvModuleSourceIntrospectionOwner {
 
     void initialize()
     {
+        bind_iv_module_instances_iv_module_definitions_bridge(definitions);
+        bind_iv_module_definitions_iv_module_instances_bridge(instances);
+        bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
+        bind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
         auto const startup = startup_config.initialize();
         auto const module_root =
             std::filesystem::weakly_canonical(startup.workspace_root);
-        auto loaded =
-            iv::test::load_runtime_iv_module_definition(startup, module_root);
-        introspection.handle_iv_module_definitions_changed(
-            IvModuleDefinitionsChanged{
-                .created = {IvModuleDefinition{
-                    .definition_id = loaded.definition_id,
-                    .module_root = loaded.module_root,
-                    .module_id = loaded.module_id,
-                    .introspection = loaded.introspection,
-                    .dependencies = loaded.dependencies,
-                    .canonical_builder = &loaded.canonical_builder,
-                }},
-            });
-        (void)introspection.initialize();
+        (void)instances.create_instance(module_root, "instance:1");
+        definitions.seed_loaded_definition(
+            iv::test::load_runtime_iv_module_definition(startup, module_root));
+    }
+
+    void shutdown()
+    {
+        unbind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
+        unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
+        unbind_iv_module_definitions_iv_module_instances_bridge(instances);
+        unbind_iv_module_instances_iv_module_definitions_bridge(definitions);
     }
 };
 } // namespace
@@ -111,6 +130,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, UnboundQueryEventLeavesBuilderU
                 },
             },
             .match_mode = iv::SourceRangeMatchMode::intersection,
+            .instance_id = "instance:1",
         },
         builder);
 
@@ -121,6 +141,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilder
 {
     auto const workspace = make_project_workspace();
     g_answer_live_input_snapshots = true;
+    g_answer_authored_state_snapshot = true;
     SeededIvModuleSourceIntrospectionOwner owner(workspace, iv::test::repo_root(), {});
     owner.initialize();
     bind_socket_rpc_iv_module_source_introspection_bridge(
@@ -139,6 +160,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilder
                 },
             },
             .match_mode = iv::SourceRangeMatchMode::intersection,
+            .instance_id = "instance:1",
         },
         builder);
 
@@ -147,9 +169,12 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilder
     unbind_socket_rpc_iv_module_source_introspection_bridge(
         owner.introspection,
         owner.graph_input_lanes);
+    owner.shutdown();
     g_answer_live_input_snapshots = false;
+    g_answer_authored_state_snapshot = false;
 
     EXPECT_EQ(response["id"], 2);
     ASSERT_TRUE(response["result"].contains("nodes"));
     EXPECT_FALSE(response["result"]["nodes"].empty());
+    EXPECT_EQ(response["result"]["nodes"][0]["instanceId"], "instance:1");
 }

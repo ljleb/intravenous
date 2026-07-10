@@ -124,12 +124,17 @@ namespace iv {
         LogicalSampleInputFamilies logical_sample_input_families() const;
         LogicalOutputs logical_outputs() const;
         LogicalSampleOutputFamilies logical_sample_output_families() const;
+        GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
+        std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
+        GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
+        std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
         void connect_sample_input(PortId target, SamplePortRef source);
         void connect_event_input(PortId target, EventPortRef source);
         void mark_runtime_filled_sample_input(PortId target);
         void mark_runtime_filled_event_input(PortId target);
         GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
         RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
+        RootNodeBuildResult build_execution_root_node(size_t detach_id_offset = 0) const;
 
         template<class Fn>
         void multi_channel(ChannelTypeId channel_type, Fn&& fn);

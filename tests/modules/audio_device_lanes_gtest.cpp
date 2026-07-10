@@ -5,6 +5,7 @@
 #include <intravenous/runtime/audio_input_synchronizer.h>
 #include <intravenous/runtime/task_runner.h>
 #include <intravenous/runtime/task_runner_audio_device_lanes_bridge.h>
+#include <intravenous/runtime/task_ids.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
 #include <intravenous/runtime/timeline_timeline_execution_bridge.h>
@@ -273,7 +274,6 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
     iv::bind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
     iv::bind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, execution);
     iv::bind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
-    iv::bind_timeline_timeline_execution_bridge(timeline, execution);
 
     audio_device_lanes.bind();
 
@@ -302,6 +302,22 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
         return execution.synchronize_from_graph(graph);
     });
     runner->update_tasks(update);
+    iv::bind_timeline_timeline_execution_bridge(timeline, execution);
+
+    auto const source_task_id = iv::timeline_lane_task_id(iv::LaneId{1000});
+    auto const deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto const active_tasks = runner->active_task_ids();
+        if (std::find(active_tasks.begin(), active_tasks.end(), source_task_id)
+            != active_tasks.end()) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    auto const active_tasks = runner->active_task_ids();
+    ASSERT_NE(
+        std::find(active_tasks.begin(), active_tasks.end(), source_task_id),
+        active_tasks.end());
 
     output_state->begin_requested_block(0, kBlockSize);
     ASSERT_TRUE(output_state->wait_until_block_ready_for(2s));
@@ -317,10 +333,10 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
 
     audio_device_lanes.request_shutdown();
     iv::unbind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
-    runner.reset();
     iv::unbind_timeline_timeline_execution_bridge(timeline, execution);
     iv::unbind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, execution);
     iv::unbind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
+    runner.reset();
 }
 
 TEST(AudioDeviceLanes, ReportsInventoryAndUnavailableSelections)

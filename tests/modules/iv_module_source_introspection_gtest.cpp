@@ -2,8 +2,12 @@
 
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/timeline_lane_filters_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
@@ -29,6 +33,7 @@ using iv::test_support::shared_inline_module_workspace;
 
 struct SeededIvModuleSourceIntrospectionApp {
     iv::Timeline timeline;
+    iv::IvModuleInstances instances;
     iv::IvModuleDefinitions definitions;
     iv::GraphInputLanes graph_input_lanes;
     iv::LaneFilters lane_filters;
@@ -45,8 +50,11 @@ struct SeededIvModuleSourceIntrospectionApp {
               std::move(extra_search_roots))
     {
         iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
+        iv::bind_iv_module_instances_iv_module_definitions_bridge(definitions);
+        iv::bind_iv_module_definitions_iv_module_instances_bridge(instances);
         iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
         iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
+        iv::bind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
         iv::bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
         iv::bind_timeline_lane_filters_bridge(lane_filters);
     }
@@ -54,8 +62,11 @@ struct SeededIvModuleSourceIntrospectionApp {
     ~SeededIvModuleSourceIntrospectionApp()
     {
         iv::unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
+        iv::unbind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
         iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
         iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+        iv::unbind_iv_module_definitions_iv_module_instances_bridge(instances);
+        iv::unbind_iv_module_instances_iv_module_definitions_bridge(definitions);
         iv::unbind_timeline_lane_filters_bridge(lane_filters);
         iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
     }
@@ -64,29 +75,10 @@ struct SeededIvModuleSourceIntrospectionApp {
     {
         auto const config = startup_config.initialize();
         auto const module_root = std::filesystem::weakly_canonical(config.workspace_root);
-        auto loaded = iv::test::load_runtime_iv_module_definition(
+        (void)instances.create_instance(module_root, "instance:1");
+        definitions.seed_loaded_definition(iv::test::load_runtime_iv_module_definition(
             config,
-            module_root);
-        auto instance = iv::IvModuleInstance{
-            .instance_id = "instance:1",
-            .definition_id = loaded.definition_id,
-            .module_root = loaded.module_root,
-            .module_id = loaded.module_id,
-            .introspection = loaded.introspection,
-        };
-
-        graph_input_lanes.handle_iv_module_instance_builders_changed(
-            iv::IvModuleInstanceBuildersChanged{
-                .created = {
-                    iv::IvModuleInstanceBuilderRef{
-                        .instance = &instance,
-                        .builder = &loaded.canonical_builder,
-                    },
-                },
-            });
-
-        definitions.seed_loaded_definition(std::move(loaded));
-        return introspection.initialize();
+            module_root));
     }
 
     auto query_by_spans(

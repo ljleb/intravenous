@@ -16,6 +16,7 @@ class IvModuleInstancesExecution {
         IvModuleInstance const *instance = nullptr;
         GraphBuilder *builder = nullptr;
         std::optional<size_t> default_silence_ttl_samples {};
+        std::vector<ModuleRef> module_refs {};
         std::unique_ptr<BlockNodeExecutor> executor {};
         size_t next_block_index = 0;
     };

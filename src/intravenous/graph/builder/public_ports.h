@@ -5,7 +5,9 @@
 #include <intravenous/graph/builder/node_call.h>
 #include <intravenous/graph/builder/output_refs.h>
 
+#include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -14,6 +16,33 @@
 namespace iv {
     class GraphBuilder;
     class GraphBuilderTopology;
+
+    struct GraphBuilderPublicSamplePortChannel {
+        std::optional<size_t> port_ordinal {};
+    };
+
+    struct GraphBuilderPublicSamplePortFamily {
+        size_t family_ordinal = 0;
+        std::string family_name {};
+        InputConfig input_config {};
+        OutputConfig output_config {};
+        ChannelTypeId channel_type = ChannelTypeId::mono;
+        std::vector<GraphBuilderPublicSamplePortChannel> channels {};
+    };
+
+    struct GraphBuilderPublicSamplePortFamilies {
+        std::vector<GraphBuilderPublicSamplePortFamily> families {};
+    };
+
+    struct GraphBuilderPublicEventInput {
+        size_t port_ordinal = 0;
+        EventInputConfig config {};
+    };
+
+    struct GraphBuilderPublicEventOutput {
+        size_t port_ordinal = 0;
+        EventOutputConfig config {};
+    };
 
     class GraphBuilderPublicPorts {
     public:
@@ -59,6 +88,10 @@ namespace iv {
         std::span<EventInputConfig const> event_inputs() const;
         std::span<OutputConfig const> sample_outputs() const;
         std::span<EventOutputConfig const> event_outputs() const;
+        GraphBuilderPublicSamplePortFamilies sample_input_families() const;
+        GraphBuilderPublicSamplePortFamilies sample_output_families() const;
+        std::vector<GraphBuilderPublicEventInput> collected_event_inputs() const;
+        std::vector<GraphBuilderPublicEventOutput> collected_event_outputs() const;
 
     private:
         std::vector<InputConfig> _sample_inputs {};

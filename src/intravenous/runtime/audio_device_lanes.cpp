@@ -6,6 +6,7 @@
 #include <intravenous/runtime/uuid.h>
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <ranges>
 #include <stdexcept>
@@ -58,6 +59,7 @@ std::optional<AudioDeviceDescriptor> find_device_descriptor(
     }
     return *it;
 }
+
 } // namespace
 
 AudioDeviceLanes::AudioDeviceLanes(
@@ -485,13 +487,19 @@ void AudioDeviceLanes::replace_output_device(
     std::shared_ptr<ActiveOutputDevice> output_device)
 {
     std::shared_ptr<ActiveOutputDevice> old_output;
+    std::optional<std::string> selected_output_device_id;
     {
         std::scoped_lock lock(mutex_);
         old_output = std::move(active_output_device_);
         active_output_device_ = std::move(output_device);
+        selected_output_device_id = selected_output_device_id_;
         output_reservoir_.clear();
         output_reservoir_read_offset_ = 0;
         pending_output_request_.reset();
+        logged_missing_output_device_ = false;
+        logged_first_output_request_ = false;
+        logged_first_non_silent_output_ = false;
+        silent_output_pass_count_ = 0;
         if (pass_output_device_ == old_output) {
             pass_output_device_.reset();
         }
@@ -499,17 +507,22 @@ void AudioDeviceLanes::replace_output_device(
     if (old_output) {
         old_output->device.request_shutdown();
     }
+    (void)selected_output_device_id;
 }
 
 void AudioDeviceLanes::replace_input_device(
     std::shared_ptr<ActiveInputDevice> input_device)
 {
     std::shared_ptr<ActiveInputDevice> old_input;
+    std::shared_ptr<ActiveInputDevice> new_input;
     std::thread old_thread;
+    std::optional<std::string> selected_input_device_id;
     {
         std::scoped_lock lock(mutex_);
         old_input = std::move(active_input_device_);
         active_input_device_ = input_device;
+        new_input = active_input_device_;
+        selected_input_device_id = selected_input_device_id_;
         if (input_capture_thread_.joinable()) {
             old_thread = std::move(input_capture_thread_);
         }
@@ -523,6 +536,8 @@ void AudioDeviceLanes::replace_input_device(
         old_thread.join();
     }
     start_input_capture_thread(std::move(input_device));
+    (void)new_input;
+    (void)selected_input_device_id;
 }
 
 AudioDevicesSnapshot AudioDeviceLanes::set_selected_devices(
@@ -551,6 +566,9 @@ void AudioDeviceLanes::handle_task_runner_before_pass(TasksRunnerBeforePass cons
         {
             std::scoped_lock lock(mutex_);
             output_device = active_output_device_;
+            if (!output_device && !logged_missing_output_device_) {
+                logged_missing_output_device_ = true;
+            }
         }
         if (!output_device) {
             return;
@@ -623,6 +641,10 @@ void AudioDeviceLanes::handle_task_runner_before_pass(TasksRunnerBeforePass cons
             }
         }
 
+        if (!logged_first_output_request_) {
+            logged_first_output_request_ = true;
+        }
+
         if (should_submit_response) {
             output_device->device.submit_response();
             continue;
@@ -663,6 +685,10 @@ void AudioDeviceLanes::handle_task_runner_after_pass(TasksRunnerAfterPass const 
         output_lane_id_,
         builder);
     auto const rendered = builder.build();
+    Sample::storage peak = 0.0f;
+    for (auto const &sample : rendered.samples) {
+        peak = std::max<Sample::storage>(peak, std::abs(sample.value));
+    }
 
     bool should_submit_response = false;
     {
@@ -683,6 +709,14 @@ void AudioDeviceLanes::handle_task_runner_after_pass(TasksRunnerAfterPass const 
                 kStereoInterleaved,
                 timeline_block_size_));
         }
+        if (peak > 0.0f) {
+            if (!logged_first_non_silent_output_) {
+                logged_first_non_silent_output_ = true;
+            }
+            silent_output_pass_count_ = 0;
+        } else {
+            ++silent_output_pass_count_;
+        }
         if (pending_output_request_.has_value()
             && try_fill_pending_output_request_locked()) {
             pending_output_request_.reset();
@@ -700,18 +734,14 @@ void AudioDeviceLanes::handle_task_runner_after_pass(TasksRunnerAfterPass const 
     }
 }
 
-BorrowedSampleBlock AudioDeviceLanes::handle_input_block_requested(LaneId lane) const
+OwnedSampleBlock AudioDeviceLanes::handle_input_block_requested(LaneId lane) const
 {
     if (lane != input_lane_id_) {
         return {};
     }
 
     std::scoped_lock lock(mutex_);
-    return BorrowedSampleBlock{
-        .samples = current_input_block_.samples,
-        .channel_layout = current_input_block_.channel_layout,
-        .frame_count = current_input_block_.frame_count,
-    };
+    return current_input_block_;
 }
 
 } // namespace iv

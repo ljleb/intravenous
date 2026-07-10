@@ -272,6 +272,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
                 .file_path = parse_string_param(params, "filePath"),
                 .ranges = parse_ranges(params),
                 .match_mode = parse_match_mode(params),
+                .instance_id = parse_optional_nullable_string_param(params, "instanceId"),
             },
         };
     }
@@ -305,6 +306,12 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             .payload = CreateIvModuleInstanceRequest{
                 .module_root = parse_string_param(params, "moduleRoot"),
             },
+        };
+    }
+    if (method == "ivModuleInstances.get") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = GetIvModuleInstancesRequest{},
         };
     }
     if (method == "ivModuleInstances.delete") {

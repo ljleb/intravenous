@@ -59,6 +59,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             outputChannel.appendLine(`Intravenous lane query failed: ${error.message}`);
         }
     }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.resumePlayback", async () => {
+        try {
+            await session.resumePlayback(0);
+        } catch (error: any) {
+            outputChannel.appendLine(`Intravenous resume failed: ${error.message}`);
+        }
+    }));
 
     provider.setControlHandler(async (message) => session.dispatchLiveGraphControl(message));
 

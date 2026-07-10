@@ -1,4 +1,5 @@
 import * as net from "net";
+import { Duplex } from "stream";
 
 export type JsonRpcNotificationHandler =
     ((method: string, params: Record<string, unknown>) => void) | null;
@@ -9,25 +10,30 @@ type PendingRequest = {
 };
 
 export class JsonRpcSocketClient {
-    private readonly socketPath: string;
+    private readonly socketPath: string | null;
     private readonly notificationHandler: JsonRpcNotificationHandler;
-    private socket: net.Socket | null = null;
+    private socket: Duplex | null = null;
     private nextId = 1;
     private readonly pending = new Map<number, PendingRequest>();
     private buffer = "";
+    private socketInitialized = false;
 
-    constructor(socketPath: string, notificationHandler: JsonRpcNotificationHandler = null) {
-        this.socketPath = socketPath;
+    constructor(socketPathOrSocket: string | Duplex, notificationHandler: JsonRpcNotificationHandler = null) {
+        this.socketPath = typeof socketPathOrSocket === "string" ? socketPathOrSocket : null;
         this.notificationHandler = notificationHandler;
+        if (typeof socketPathOrSocket !== "string") {
+            this.socket = socketPathOrSocket;
+        }
     }
 
     async connect(timeoutMs = 10000): Promise<void> {
         if (this.socket) {
+            this.initializeSocket(this.socket);
             return;
         }
 
         await new Promise<void>((resolve, reject) => {
-            const socket = net.createConnection(this.socketPath);
+            const socket = net.createConnection(this.socketPath!);
             const timeout = setTimeout(() => {
                 socket.destroy();
                 reject(new Error(`timed out connecting to ${this.socketPath}`));
@@ -35,11 +41,7 @@ export class JsonRpcSocketClient {
 
             socket.on("connect", () => {
                 clearTimeout(timeout);
-                this.socket = socket;
-                socket.setEncoding("utf8");
-                socket.on("data", (chunk) => this.onData(String(chunk)));
-                socket.on("error", (error) => this.failPending(error));
-                socket.on("close", () => this.failPending(new Error("Intravenous server connection closed")));
+                this.initializeSocket(socket);
                 resolve();
             });
 
@@ -48,6 +50,20 @@ export class JsonRpcSocketClient {
                 reject(error);
             });
         });
+    }
+
+    private initializeSocket(socket: Duplex): void {
+        if (this.socketInitialized) {
+            return;
+        }
+        this.socket = socket;
+        this.socketInitialized = true;
+        if ("setEncoding" in socket && typeof socket.setEncoding === "function") {
+            socket.setEncoding("utf8");
+        }
+        socket.on("data", (chunk: Buffer | string) => this.onData(String(chunk)));
+        socket.on("error", (error) => this.failPending(error));
+        socket.on("close", () => this.failPending(new Error("Intravenous server connection closed")));
     }
 
     async request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {

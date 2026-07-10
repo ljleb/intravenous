@@ -4,9 +4,11 @@
 #include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/uuid.h>
+#include <intravenous/runtime/runtime_project_events.h>
 
 #include <algorithm>
 #include <ranges>
+#include <sstream>
 #include <stdexcept>
 #include <system_error>
 
@@ -40,6 +42,16 @@ IvModuleInstance make_instance_from_definition(
     instance.introspection = definition.introspection;
     instance.default_silence_ttl_samples = default_silence_ttl_samples;
     return instance;
+}
+
+void emit_debug_message(std::string message)
+{
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_notification_event,
+        ProjectNotification(ProjectMessageNotification{
+            .level = "debug",
+            .message = std::move(message),
+        }));
 }
 
 } // namespace
@@ -146,6 +158,7 @@ void IvModuleInstances::remove_instance(std::string const &instance_id)
             iv_runtime_iv_module_instances_list_changed_event,
             list_instances());
     }
+
 }
 
 void IvModuleInstances::set_default_silence_ttl_samples(
@@ -171,6 +184,7 @@ void IvModuleInstances::set_default_silence_ttl_samples(
                 builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
                     .instance = &realized->second,
                     .builder = &builder_it->second,
+                    .module_refs = realized_module_refs_by_id[instance_id],
                     .default_silence_ttl_samples = default_silence_ttl_samples,
                 });
             }
@@ -240,6 +254,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 builders_diff.created.push_back(IvModuleInstanceBuilderRef{
                     .instance = &stored_instance,
                     .builder = &stored_builder,
+                    .module_refs = definition.module_refs,
                     .default_silence_ttl_samples =
                         entry.second.default_silence_ttl_samples,
                 });
@@ -266,6 +281,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
                     .instance = &stored_instance,
                     .builder = &stored_builder,
+                    .module_refs = definition.module_refs,
                     .default_silence_ttl_samples =
                         entry.second.default_silence_ttl_samples,
                 });
@@ -322,6 +338,28 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
             iv_runtime_iv_module_instances_list_changed_event,
             list_instances());
     }
+    if (!instance_diff.created.empty() ||
+        !instance_diff.updated.empty() ||
+        !instance_diff.deleted_instance_ids.empty()) {
+        auto const instances = list_instances();
+        size_t realized_count = 0;
+        for (auto const &instance : instances) {
+            if (instance.realized) {
+                ++realized_count;
+            }
+        }
+        std::ostringstream message;
+        message
+            << "iv instances realized: created=" << instance_diff.created.size()
+            << " updated=" << instance_diff.updated.size()
+            << " deleted=" << instance_diff.deleted_instance_ids.size()
+            << " buildersCreated=" << builders_diff.created.size()
+            << " buildersUpdated=" << builders_diff.updated.size()
+            << " buildersDeleted=" << builders_diff.deleted_instance_ids.size()
+            << " totalInstances=" << instances.size()
+            << " realizedInstances=" << realized_count;
+        emit_debug_message(message.str());
+    }
 }
 
 void IvModuleInstances::handle_graph_input_lanes_rebuild_requested(
@@ -359,6 +397,7 @@ void IvModuleInstances::handle_graph_input_lanes_rebuild_requested(
             builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
                 .instance = &realized->second,
                 .builder = &stored_builder,
+                .module_refs = realized_module_refs_by_id[instance_id],
                 .default_silence_ttl_samples =
                     desired->second.default_silence_ttl_samples,
             });
@@ -366,6 +405,10 @@ void IvModuleInstances::handle_graph_input_lanes_rebuild_requested(
     }
 
     if (builders_diff.updated.empty()) {
+        emit_debug_message(
+            "iv instances rebuild request produced no builders: revision="
+            + std::to_string(request.version_index)
+            + " requestedInstances=" + std::to_string(request.instance_ids.size()));
         return;
     }
 
@@ -385,5 +428,9 @@ void IvModuleInstances::handle_graph_input_lanes_rebuild_requested(
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_iv_module_instance_builders_completed_event,
         builders_diff);
+    emit_debug_message(
+        "iv instances rebuild applied builders: revision="
+        + std::to_string(request.version_index)
+        + " updatedBuilders=" + std::to_string(builders_diff.updated.size()));
 }
 } // namespace iv

@@ -1,6 +1,7 @@
 #include <intravenous/runtime/project_persistence.h>
 
 #include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/task_runner_events.h>
 
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -540,9 +541,15 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
 void ProjectPersistence::load()
 {
     auto const commands = read_commands();
+    std::uint64_t synthetic_graph_revision = 0;
     for (auto const &command : commands) {
         try {
             apply_command(command);
+            // Project replay is sequential: later commands may depend on graph-input
+            // lanes and rebuilds requested by earlier ones already being materialized.
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_task_runner_after_pass_event,
+                TasksRunnerAfterPass{.graph_revision = synthetic_graph_revision++});
         } catch (std::exception const &e) {
             emit_message(
                 "error",

@@ -1,4 +1,5 @@
 #include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/runtime/socket_rpc_json_serialization.h>
 
 #include <intravenous/filesystem_paths.h>
 
@@ -72,79 +73,6 @@ Json string_array_json(std::vector<std::string> const &values) {
     return json;
 }
 
-std::string_view port_kind_json(PortKind kind) {
-    switch (kind) {
-    case PortKind::sample:
-        return "sample";
-    case PortKind::event:
-        return "event";
-    }
-    return "sample";
-}
-
-std::string_view lane_domain_json(LaneDomain domain) {
-    switch (domain) {
-    case LaneDomain::compiled:
-        return "compiled";
-    case LaneDomain::realtime:
-        return "realtime";
-    }
-    return "realtime";
-}
-
-Json lane_metadata_json(LaneMetadata const &metadata) {
-    Json json = Json::object();
-    for (auto const &key : metadata.unit_values) {
-        json[key] = nullptr;
-    }
-    for (auto const &[key, value] : metadata.int_values) {
-        json[key] = value;
-    }
-    for (auto const &[key, value] : metadata.float_values) {
-        json[key] = value;
-    }
-    return json;
-}
-
-Json lane_query_result_json(LaneQueryResult const &result) {
-    Json json_lanes = Json::array();
-    for (auto const &lane : result.lanes) {
-        json_lanes.push_back(Json{
-            {"laneId", lane.lane_id.str()},
-            {"domain", std::string(lane_domain_json(lane.domain))},
-            {"metadata", lane_metadata_json(lane.metadata)},
-        });
-    }
-
-    Json json_connections = Json::array();
-    for (auto const &connection : result.connections) {
-        json_connections.push_back(Json{
-            {"sourceLaneId", connection.source_lane_id.str()},
-            {"targetLaneId", connection.target_lane_id.str()},
-            {"portKind", std::string(port_kind_json(connection.port_kind))},
-            {"portOrdinal", connection.port_ordinal},
-        });
-    }
-
-    Json json = Json{
-        {"startIndex", result.start_index},
-        {"visibleLaneCount", result.visible_lane_count},
-        {"totalLaneCount", result.total_lane_count},
-        {"lanes", std::move(json_lanes)},
-        {"connections", std::move(json_connections)},
-    };
-    if (result.error_message.has_value()) {
-        json["error"] = *result.error_message;
-    }
-    return json;
-}
-
-Json lane_view_result_json(LaneViewResult const &result) {
-    Json json = lane_query_result_json(result.lanes);
-    json["viewId"] = result.view_id.str();
-    return json;
-}
-
 Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
     Json json_lanes = Json::array();
     for (auto const &lane : update.lanes) {
@@ -202,27 +130,6 @@ Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
     };
 }
 
-Json iv_module_instance_json(IvModuleInstanceInfo const &instance) {
-    Json json{
-        {"instanceId", instance.instance_id},
-        {"definitionId", instance.definition_id},
-        {"moduleRoot", instance.module_root.generic_string()},
-        {"realized", instance.realized},
-    };
-    if (!instance.module_id.empty()) {
-        json["moduleId"] = instance.module_id;
-    }
-    return json;
-}
-
-Json iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &instances) {
-    Json json = Json::array();
-    for (auto const &instance : instances) {
-        json.push_back(iv_module_instance_json(instance));
-    }
-    return json;
-}
-
 Json server_message_json(SocketRpcServerMessage const &notification) {
     Json json = {
         {"level", notification.level},
@@ -250,6 +157,16 @@ Json server_status_json(SocketRpcServerStatus const &notification) {
     }
     if (!notification.deleted_node_ids.empty()) {
         json["deletedNodeIds"] = string_array_json(notification.deleted_node_ids);
+    }
+    return json;
+}
+
+Json logical_nodes_updated_json(ProjectLogicalNodesNotification const &notification) {
+    Json json{
+        {"nodes", logical_nodes_json(notification.nodes)},
+    };
+    if (!notification.replace_instance_ids.empty()) {
+        json["replaceInstanceIds"] = string_array_json(notification.replace_instance_ids);
     }
     return json;
 }
@@ -350,6 +267,10 @@ void SocketRpcServer::handle_client(int fd) {
                     } else if constexpr (std::same_as<Request, CreateIvModuleInstanceRequest>) {
                         SocketRpcCreateIvModuleInstanceResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_iv_module_instance_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, GetIvModuleInstancesRequest>) {
+                        SocketRpcIvModuleInstancesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_module_instances_event, event_request, builder);
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, DeleteIvModuleInstanceRequest>) {
                         SocketRpcAckResponseBuilder builder;
@@ -651,6 +572,38 @@ void SocketRpcServer::send_iv_module_instances_updated(
     auto const message = jsonrpc_notification(
         "ivModuleInstances.updated",
         Json{{"instances", iv_module_instances_json(instances)}});
+
+    {
+        std::scoped_lock deferred_lock(deferred_notification_mutex);
+        if (defer_current_request_notifications &&
+            deferred_notification_thread == std::this_thread::get_id()) {
+            deferred_notifications.push_back(message);
+            return;
+        }
+    }
+
+    if (!send_message(fd, message)) {
+        std::scoped_lock client_lock(client_mutex);
+        if (client_fd == fd) {
+            client_fd = -1;
+        }
+    }
+}
+
+void SocketRpcServer::send_logical_nodes_updated(
+    ProjectLogicalNodesNotification const &notification) {
+    int fd = -1;
+    {
+        std::scoped_lock client_lock(client_mutex);
+        fd = client_fd;
+    }
+    if (fd < 0) {
+        return;
+    }
+
+    auto const message = jsonrpc_notification(
+        "graph.nodesUpdated",
+        logical_nodes_updated_json(notification));
 
     {
         std::scoped_lock deferred_lock(deferred_notification_mutex);

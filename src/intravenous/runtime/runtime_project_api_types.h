@@ -50,6 +50,7 @@ namespace iv {
 
     struct LogicalNodeInfo {
         std::string id{};
+        std::string instance_id{};
         std::string kind{};
         std::string source_identity{};
         std::string type_identity{};
@@ -60,11 +61,6 @@ namespace iv {
         std::vector<LogicalPortInfo> event_outputs{};
         size_t member_count = 0;
         std::vector<LogicalNodeMemberInfo> members{};
-    };
-
-    struct ProjectInitializeResult {
-        std::filesystem::path module_root{};
-        std::string module_id{};
     };
 
     struct ProjectQueryResult {
@@ -94,8 +90,14 @@ namespace iv {
         LaneViewResult lane_view{};
     };
 
+    struct ProjectLogicalNodesNotification {
+        std::vector<LogicalNodeInfo> nodes{};
+        std::vector<std::string> replace_instance_ids{};
+    };
+
     using ProjectNotification = std::variant<
         ProjectMessageNotification,
         ProjectStatusNotification,
-        ProjectLaneViewNotification>;
+        ProjectLaneViewNotification,
+        ProjectLogicalNodesNotification>;
 } // namespace iv

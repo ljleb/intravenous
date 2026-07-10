@@ -9,15 +9,15 @@
 namespace iv {
 
 class AudioDeviceLanesInputBlockBuilder {
-    BorrowedSampleBlock block_ {};
+    OwnedSampleBlock block_ {};
 
 public:
-    void succeed(BorrowedSampleBlock block)
+    void succeed(OwnedSampleBlock block)
     {
-        block_ = block;
+        block_ = std::move(block);
     }
 
-    [[nodiscard]] BorrowedSampleBlock build() const
+    [[nodiscard]] OwnedSampleBlock build() const
     {
         return block_;
     }

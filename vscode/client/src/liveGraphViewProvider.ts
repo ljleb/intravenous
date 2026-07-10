@@ -4,14 +4,17 @@ import * as path from "path";
 
 import { LogicalNode } from "./graphModel";
 import {
-    applySampleInputValueUpdate,
-    clearSampleInputValueOverride,
+    LiveGraphInstance,
+    serializeLiveGraphInstances,
     serializeLiveGraphNodes,
 } from "./liveGraphModel";
 import {
     isLiveGraphControlMessage,
     LiveGraphControlHandler,
-    LiveGraphSetStateMessage,
+    LiveGraphSetInstancesMessage,
+    LiveGraphSetNodesMessage,
+    LiveGraphSetSelectedInstanceMessage,
+    LiveGraphUpsertNodesMessage,
 } from "./liveGraphProtocol";
 
 const mergedNodeIconPath = path.join(__dirname, "media", "merged_node.svg");
@@ -24,7 +27,9 @@ const portIconSizePx = 16;
 export class LiveGraphViewProvider {
     private readonly extensionUri: vscode.Uri;
     private view: vscode.WebviewView | null = null;
+    private instances: LiveGraphInstance[] = [];
     private nodes: LogicalNode[] = [];
+    private selectedInstanceId: string | null = null;
     private controlHandler: LiveGraphControlHandler | null = null;
 
     constructor(extensionUri: vscode.Uri) {
@@ -33,51 +38,136 @@ export class LiveGraphViewProvider {
 
     setNodes(nodes: LogicalNode[]): void {
         this.nodes = Array.isArray(nodes) ? nodes : [];
-        this.postState();
+        this.postNodes();
     }
 
-    pruneDeletedNodeState(_deletedNodeIds: string[]): void {
+    setInstances(instances: LiveGraphInstance[]): void {
+        this.instances = Array.isArray(instances) ? instances : [];
+        const validInstanceIds = new Set(this.instances.map((instance) => instance.instanceId));
+        this.nodes = this.nodes.filter((node) => !node.instanceId || validInstanceIds.has(node.instanceId));
+        if (
+            this.selectedInstanceId &&
+            !this.instances.some((instance) => instance.instanceId === this.selectedInstanceId)
+        ) {
+            this.selectedInstanceId = null;
+        }
+        this.postInstances();
+        this.postNodes();
+    }
+
+    setSelectedInstanceId(instanceId: string | null): void {
+        this.selectedInstanceId = instanceId;
+        this.postSelectedInstance();
+    }
+
+    upsertNodes(nodes: LogicalNode[], replaceInstanceIds: string[] = []): void {
+        const replaceIds = new Set(replaceInstanceIds);
+        const nextNodes = this.nodes.filter((node) => !node.instanceId || !replaceIds.has(node.instanceId));
+        const nextById = new Map(nextNodes.map((node) => [node.id || "", node]));
+        for (const node of nodes) {
+            if (!node.id) {
+                continue;
+            }
+            nextById.set(node.id, node);
+        }
+        this.nodes = [...nextById.values()];
+        this.postNodeDelta(nodes, replaceInstanceIds);
     }
 
     setControlHandler(handler: LiveGraphControlHandler): void {
         this.controlHandler = handler;
     }
 
-    updateSampleInputValue(nodeId: string, ordinal: number, value: unknown, memberOrdinal: number | null = null): void {
-        applySampleInputValueUpdate(this.nodes, nodeId, ordinal, value, memberOrdinal);
-        this.postState();
-    }
-
-    clearSampleInputValueOverride(nodeId: string, memberOrdinal: number, ordinal: number): void {
-        clearSampleInputValueOverride(this.nodes, nodeId, memberOrdinal, ordinal);
-        this.postState();
-    }
-
     resolveWebviewView(webviewView: vscode.WebviewView): void {
         this.view = webviewView;
+        const builtMediaRoot = vscode.Uri.file(path.join(__dirname, "media"));
         webviewView.webview.options = {
             enableScripts: true,
-            localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
+            localResourceRoots: [
+                vscode.Uri.joinPath(this.extensionUri, "media"),
+                builtMediaRoot,
+            ],
         };
         webviewView.webview.onDidReceiveMessage(async (message) => {
-            if (!this.controlHandler || !isLiveGraphControlMessage(message)) {
+            if (!isLiveGraphControlMessage(message)) {
+                return;
+            }
+            if (message.type === "selectInstance") {
+                this.selectedInstanceId = message.instanceId ?? null;
+                this.postSelectedInstance();
+            }
+            if (!this.controlHandler) {
                 return;
             }
             await this.controlHandler(message);
         });
         webviewView.webview.html = this.getHtml(webviewView.webview);
-        this.postState();
+        this.postInstances();
+        this.postSelectedInstance();
+        this.postNodes();
     }
 
-    postState(): void {
+    private postInstances(): void {
         if (!this.view) {
             return;
         }
-        const message: LiveGraphSetStateMessage = {
-            type: "setState",
-            nodes: serializeLiveGraphNodes(this.nodes),
+        const message: LiveGraphSetInstancesMessage = {
+            type: "setInstances",
+            instances: serializeLiveGraphInstances(this.instances),
         };
         void this.view.webview.postMessage(message);
+    }
+
+    private postSelectedInstance(): void {
+        if (!this.view) {
+            return;
+        }
+        const message: LiveGraphSetSelectedInstanceMessage = {
+            type: "setSelectedInstance",
+            selectedInstanceId: this.selectedInstanceId,
+        };
+        void this.view.webview.postMessage(message);
+    }
+
+    private postNodes(): void {
+        if (!this.view) {
+            return;
+        }
+        const message: LiveGraphSetNodesMessage = {
+            type: "setNodes",
+            nodes: serializeLiveGraphNodes(this.filteredNodes()),
+        };
+        void this.view.webview.postMessage(message);
+    }
+
+    private postNodeDelta(nodes: LogicalNode[], replaceInstanceIds: string[]): void {
+        if (!this.view) {
+            return;
+        }
+        const filteredNodes = nodes.filter((node) => {
+            if (!this.selectedInstanceId) {
+                return true;
+            }
+            return node.instanceId === this.selectedInstanceId;
+        });
+        const filteredReplaceInstanceIds = !this.selectedInstanceId
+            ? replaceInstanceIds
+            : replaceInstanceIds.filter((instanceId) => instanceId === this.selectedInstanceId);
+        const message: LiveGraphUpsertNodesMessage = {
+            type: "upsertNodes",
+            replaceInstanceIds: filteredReplaceInstanceIds,
+            nodes: serializeLiveGraphNodes(filteredNodes),
+        };
+        void this.view.webview.postMessage(message);
+    }
+
+    private filteredNodes(): LogicalNode[] {
+        if (!this.selectedInstanceId) {
+            return this.nodes;
+        }
+
+        const selectedNodes = this.nodes.filter((node) => node.instanceId === this.selectedInstanceId);
+        return selectedNodes.length > 0 ? selectedNodes : this.nodes;
     }
 
     getHtml(webview: vscode.Webview): string {
@@ -120,6 +210,42 @@ export class LiveGraphViewProvider {
             min-height: 100vh;
             user-select: none;
             -webkit-user-select: none;
+        }
+
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--vscode-sideBar-border, var(--vscode-widget-border));
+            background: color-mix(in srgb, var(--vscode-sideBar-background) 90%, var(--vscode-editor-background));
+        }
+
+        .toolbar-label {
+            color: var(--vscode-descriptionForeground);
+            flex: 0 0 auto;
+        }
+
+        .toolbar-select {
+            min-width: 0;
+            flex: 1 1 auto;
+            border: 1px solid var(--vscode-dropdown-border, transparent);
+            background: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            font: inherit;
+            padding: 4px 6px;
+        }
+
+        .toolbar-select:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: 0;
+        }
+
+        .content {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            flex: 1 1 auto;
         }
 
         .empty {
@@ -396,13 +522,23 @@ export class LiveGraphViewProvider {
     </style>
 </head>
 <body>
-    <div id="root"></div>
+    <div id="root">
+        <div class="toolbar">
+            <div class="toolbar-label">instance</div>
+            <select id="instanceSelect" class="toolbar-select" aria-label="Selected iv module instance"></select>
+        </div>
+        <div id="content" class="content"></div>
+    </div>
     <div id="contextMenu" class="context-menu hidden"></div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         const root = document.getElementById("root");
+        const content = document.getElementById("content");
         const contextMenu = document.getElementById("contextMenu");
+        const instanceSelect = document.getElementById("instanceSelect");
         const state = {
+            instances: [],
+            selectedInstanceId: null,
             nodes: [],
             expanded: new Map(),
             pendingUpdates: new Map(),
@@ -1110,20 +1246,52 @@ export class LiveGraphViewProvider {
             parent.appendChild(nodeEl);
         }
 
+        function renderInstanceSelect() {
+            const previousValue = instanceSelect.value;
+            instanceSelect.textContent = "";
+
+            const placeholder = document.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = state.instances.length > 0
+                ? "[all available instances]"
+                : "[no instances]";
+            instanceSelect.appendChild(placeholder);
+
+            for (const instance of state.instances) {
+                const option = document.createElement("option");
+                option.value = instance.instanceId;
+                option.textContent = instance.label || instance.instanceId;
+                if (!instance.realized) {
+                    option.textContent += " [loading]";
+                }
+                instanceSelect.appendChild(option);
+            }
+
+            const selectedValue = state.selectedInstanceId || "";
+            instanceSelect.value = [...instanceSelect.options].some((option) => option.value === selectedValue)
+                ? selectedValue
+                : "";
+            if (instanceSelect.value !== previousValue) {
+                instanceSelect.title = instanceSelect.selectedOptions[0]?.textContent || "";
+            }
+            instanceSelect.disabled = state.instances.length === 0;
+        }
+
         function render() {
             state.renderedPortRows.clear();
-            root.textContent = "";
+            renderInstanceSelect();
+            content.textContent = "";
             if (!Array.isArray(state.nodes) || state.nodes.length === 0) {
                 const empty = document.createElement("div");
                 empty.className = "empty";
                 empty.textContent = "[no nodes]";
                 empty.title = "No visible logical nodes at the current selection";
-                root.appendChild(empty);
+                content.appendChild(empty);
                 return;
             }
 
             for (const node of state.nodes) {
-                renderNode(root, node);
+                renderNode(content, node);
             }
             for (const [key, portRow] of state.portRows) {
                 if (!state.renderedPortRows.has(key)) {
@@ -1135,14 +1303,40 @@ export class LiveGraphViewProvider {
 
         window.addEventListener("message", (event) => {
             const message = event.data || {};
-            if (message.type === "setState") {
+            if (message.type === "setInstances") {
+                state.instances = Array.isArray(message.instances) ? message.instances : [];
+            } else if (message.type === "setSelectedInstance") {
+                state.selectedInstanceId = typeof message.selectedInstanceId === "string"
+                    ? message.selectedInstanceId
+                    : null;
+            } else if (message.type === "setNodes") {
                 state.nodes = Array.isArray(message.nodes) ? message.nodes : [];
-                if (knobDrag.active) {
-                    renderDeferredUntilDragEnd = true;
-                    return;
+            } else if (message.type === "upsertNodes") {
+                const replaceInstanceIds = new Set(Array.isArray(message.replaceInstanceIds) ? message.replaceInstanceIds : []);
+                const nextNodes = state.nodes.filter((node) => !replaceInstanceIds.has(node.instanceId));
+                const nextById = new Map(nextNodes.map((node) => [node.id, node]));
+                for (const node of Array.isArray(message.nodes) ? message.nodes : []) {
+                    nextById.set(node.id, node);
                 }
-                render();
+                state.nodes = [...nextById.values()];
+            } else {
+                return;
             }
+            if (knobDrag.active) {
+                renderDeferredUntilDragEnd = true;
+                return;
+            }
+            render();
+        });
+
+        instanceSelect.addEventListener("change", () => {
+            const instanceId = instanceSelect.value || null;
+            state.selectedInstanceId = instanceId;
+            instanceSelect.title = instanceSelect.selectedOptions[0]?.textContent || "";
+            vscode.postMessage({
+                type: "selectInstance",
+                instanceId,
+            });
         });
 
         window.addEventListener("keydown", (event) => {

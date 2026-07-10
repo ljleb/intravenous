@@ -87,5 +87,6 @@ public:
     std::optional<std::uint64_t> pending_graph_revision() const;
     std::vector<std::string> active_task_ids() const;
     std::size_t active_execution_group_count() const;
+    bool pass_active() const;
 };
 } // namespace iv

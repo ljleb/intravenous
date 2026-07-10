@@ -2,6 +2,7 @@
 #include <intravenous/runtime/task_runner_events.h>
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <queue>
@@ -11,6 +12,8 @@
 
 namespace iv {
 namespace {
+    constexpr auto empty_graph_pass_interval = std::chrono::milliseconds(1);
+
     template<typename Range>
     bool has_duplicate_strings(Range const &range)
     {
@@ -488,6 +491,12 @@ std::size_t TasksRunner::active_execution_group_count() const
     return active_graph_->compiled_plan.groups.size();
 }
 
+bool TasksRunner::pass_active() const
+{
+    std::scoped_lock lock(state_mutex_);
+    return current_pass_ != nullptr;
+}
+
 void TasksRunner::coordinator_loop()
 {
     std::unique_lock lock(state_mutex_);
@@ -502,10 +511,26 @@ void TasksRunner::coordinator_loop()
                 return;
             }
             if (active_graph_->compiled_plan.groups.empty()) {
-                state_cv_.wait(lock, [&] {
+                auto const current_revision = active_graph_->revision;
+                lock.unlock();
+                IV_INVOKE_LINKER_EVENT(
+                    iv_runtime_task_runner_before_pass_event,
+                    TasksRunnerBeforePass{
+                        .graph_revision = current_revision,
+                    });
+                IV_INVOKE_LINKER_EVENT(
+                    iv_runtime_task_runner_after_pass_event,
+                    TasksRunnerAfterPass{
+                        .graph_revision = current_revision,
+                    });
+                lock.lock();
+                if (workers_should_exit_) {
+                    return;
+                }
+                state_cv_.wait_for(lock, empty_graph_pass_interval, [&] {
                     return workers_should_exit_
                         || (pending_graph_ != nullptr && pending_graph_is_complete_)
-                        || (shutdown_requested_ && active_graph_->compiled_plan.groups.empty());
+                        || shutdown_requested_;
                 });
                 continue;
             }

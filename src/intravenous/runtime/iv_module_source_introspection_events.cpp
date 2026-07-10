@@ -19,4 +19,20 @@ IvModuleSourceIntrospectionLiveInputSnapshotsBuilder::build() const
     return *result;
 }
 
+void IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder::succeed(
+    IvModuleSourceIntrospectionAuthoredStateSnapshot value)
+{
+    result = std::move(value);
+}
+
+IvModuleSourceIntrospectionAuthoredStateSnapshot
+IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder::build() const
+{
+    if (!result.has_value()) {
+        throw std::runtime_error(
+            "runtime project introspection authored state snapshot request was not handled");
+    }
+    return *result;
+}
+
 } // namespace iv

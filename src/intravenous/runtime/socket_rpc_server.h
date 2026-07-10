@@ -37,6 +37,8 @@ namespace iv {
         void (*)(GetLogicalNodesRequest const &, SocketRpcLogicalNodesResultBuilder &);
     using SocketRpcCreateIvModuleInstanceEvent =
         void (*)(CreateIvModuleInstanceRequest const &, SocketRpcCreateIvModuleInstanceResultBuilder &);
+    using SocketRpcGetIvModuleInstancesEvent =
+        void (*)(GetIvModuleInstancesRequest const &, SocketRpcIvModuleInstancesResultBuilder &);
     using SocketRpcDeleteIvModuleInstanceEvent =
         void (*)(DeleteIvModuleInstanceRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcSetIvModuleInstanceDefaultSilenceTtlSamplesEvent =
@@ -79,6 +81,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetLogicalNodeEvent, iv_socket_rpc_get_logical_node_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetLogicalNodesEvent, iv_socket_rpc_get_logical_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetIvModuleInstancesEvent, iv_socket_rpc_get_iv_module_instances_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteIvModuleInstanceEvent, iv_socket_rpc_delete_iv_module_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetIvModuleInstanceDefaultSilenceTtlSamplesEvent, iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetTimelineCompiledSampleCacheChunkSizeMultiplierEvent, iv_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier_event);
@@ -143,5 +146,7 @@ namespace iv {
         void send_lane_view_content_updated(LaneViewContentUpdate const &notification);
         void send_iv_module_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
+        void send_logical_nodes_updated(
+            ProjectLogicalNodesNotification const &notification);
     };
 } // namespace iv

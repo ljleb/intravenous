@@ -19,6 +19,7 @@ namespace iv {
         std::filesystem::path file_path{};
         std::vector<SourceRange> ranges{};
         SourceRangeMatchMode match_mode = SourceRangeMatchMode::intersection;
+        std::optional<std::string> instance_id{};
     };
 
     struct GraphQueryActiveRegionsRequest {
@@ -36,6 +37,8 @@ namespace iv {
     struct CreateIvModuleInstanceRequest {
         std::filesystem::path module_root{};
     };
+
+    struct GetIvModuleInstancesRequest {};
 
     struct DeleteIvModuleInstanceRequest {
         std::string instance_id{};
@@ -115,6 +118,7 @@ namespace iv {
         GetLogicalNodeRequest,
         GetLogicalNodesRequest,
         CreateIvModuleInstanceRequest,
+        GetIvModuleInstancesRequest,
         DeleteIvModuleInstanceRequest,
         SetIvModuleInstanceDefaultSilenceTtlSamplesRequest,
         SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest,

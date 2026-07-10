@@ -367,6 +367,26 @@ GraphBuilder::LogicalSampleOutputFamilies GraphBuilder::logical_sample_output_fa
     return _connections.collect_logical_sample_output_families(_topology);
 }
 
+GraphBuilderPublicSamplePortFamilies GraphBuilder::public_sample_input_families() const
+{
+    return _public_ports.sample_input_families();
+}
+
+std::vector<GraphBuilderPublicEventInput> GraphBuilder::public_event_inputs() const
+{
+    return _public_ports.collected_event_inputs();
+}
+
+GraphBuilderPublicSamplePortFamilies GraphBuilder::public_sample_output_families() const
+{
+    return _public_ports.sample_output_families();
+}
+
+std::vector<GraphBuilderPublicEventOutput> GraphBuilder::public_event_outputs() const
+{
+    return _public_ports.collected_event_outputs();
+}
+
 void GraphBuilder::connect_sample_input(PortId target, SamplePortRef source)
 {
     _connections.connect_sample_input(_topology, _identity, target, source);
@@ -438,6 +458,15 @@ GraphBuilder::RootNodeBuildResult GraphBuilder::build_root_node(size_t detach_id
         _detach,
         detach_id_offset
     );
+}
+
+GraphBuilder::RootNodeBuildResult GraphBuilder::build_execution_root_node(
+    size_t detach_id_offset) const
+{
+    GraphBuilder execution_builder;
+    execution_builder.embed_subgraph(*this);
+    execution_builder.outputs({});
+    return execution_builder.build_root_node(detach_id_offset);
 }
 
 } // namespace iv

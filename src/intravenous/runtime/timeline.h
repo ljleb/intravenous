@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <unordered_map>
 #include <unordered_set>
@@ -24,10 +25,17 @@
 
 namespace iv {
     class Timeline {
+        struct PendingPublicConnection {
+            InternedString source_id {};
+            InternedString target_id {};
+            LanePortId input {};
+        };
+
         std::mutex _graph_mutex;
         LaneGraph _graph;
         std::unordered_map<LaneId, InternedString, LaneIdHash> _external_ids_by_lane;
         std::unordered_map<InternedString, LaneId> _lanes_by_external_id;
+        std::vector<PendingPublicConnection> _pending_public_connections;
 
         InternedString ensure_external_id_locked(LaneId lane)
         {
@@ -39,6 +47,35 @@ namespace iv {
             _external_ids_by_lane.emplace(lane, external_id);
             _lanes_by_external_id.emplace(external_id, lane);
             return external_id;
+        }
+
+        bool try_connect_public_lanes_locked(PendingPublicConnection const &connection)
+        {
+            auto const source = _lanes_by_external_id.find(connection.source_id);
+            auto const target = _lanes_by_external_id.find(connection.target_id);
+            if (source == _lanes_by_external_id.end() || target == _lanes_by_external_id.end()) {
+                return false;
+            }
+            if (!_graph.contains(source->second) || !_graph.contains(target->second)) {
+                return false;
+            }
+            _graph.connect(source->second, target->second, connection.input);
+            return true;
+        }
+
+        void resolve_pending_public_connections_locked()
+        {
+            if (_pending_public_connections.empty()) {
+                return;
+            }
+
+            auto pending = std::move(_pending_public_connections);
+            _pending_public_connections.clear();
+            for (auto const &connection : pending) {
+                if (!try_connect_public_lanes_locked(connection)) {
+                    _pending_public_connections.push_back(connection);
+                }
+            }
         }
 
     public:
@@ -203,6 +240,7 @@ namespace iv {
                 for (auto const &connection : batch.connections_to_add) {
                     graph.connect(connection.source, connection.target, connection.input);
                 }
+                resolve_pending_public_connections_locked();
             }();
         }
 
@@ -231,6 +269,37 @@ namespace iv {
                 return it->second;
             }
             return std::nullopt;
+        }
+
+        void connect_public_lanes_or_defer(
+            InternedString source_id,
+            InternedString target_id,
+            LanePortId input)
+        {
+            std::scoped_lock lock(_graph_mutex);
+            PendingPublicConnection connection{
+                .source_id = source_id,
+                .target_id = target_id,
+                .input = input,
+            };
+            if (!try_connect_public_lanes_locked(connection)) {
+                _pending_public_connections.push_back(std::move(connection));
+            }
+        }
+
+        std::vector<std::tuple<InternedString, InternedString, LanePortId>>
+        pending_public_connections()
+        {
+            std::scoped_lock lock(_graph_mutex);
+            std::vector<std::tuple<InternedString, InternedString, LanePortId>> pending;
+            pending.reserve(_pending_public_connections.size());
+            for (auto const &connection : _pending_public_connections) {
+                pending.emplace_back(
+                    connection.source_id,
+                    connection.target_id,
+                    connection.input);
+            }
+            return pending;
         }
     };
 }

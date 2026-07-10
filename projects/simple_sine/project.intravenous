@@ -1,0 +1,3 @@
+{"command":"audioDevices.setLaneIds","args":{"output_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","input_lane_id":"5c55a6fc-58e4-4d3f-b121-466dcb2cf44a"}}
+{"command":"ivModuleInstances.create","args":{"instance_id":"4b95f2d8-56c7-4c84-b07f-2d74b61f08cd","module_root":"."}}
+{"command":"timeline.connectLanes","args":{"source_lane_id":"iv.public:output:instance:4b95f2d8-56c7-4c84-b07f-2d74b61f08cd:kind:sample:ordinal:0:channel:0","target_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","port_domain":"realtime","port_kind":"sample","port_ordinal":0}}
