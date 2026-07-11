@@ -7,4 +7,4 @@ inline void module_main(iv::ModuleContext const& ctx)
     g.outputs();
 }
 
-IV_EXPORT_MODULE("iv.project.arst", module_main);
+IV_EXPORT_MODULE("iv.project.template", module_main);

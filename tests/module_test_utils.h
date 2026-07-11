@@ -431,7 +431,7 @@ namespace iv::test {
             },
             &device_sample_period);
         return iv::IvModuleReloadedDefinition{
-            .definition_id = normalized_module_root.string(),
+            .definition_id = loaded_graph.module_id,
             .module_root = normalized_module_root,
             .module_id = loaded_graph.module_id,
             .introspection = loaded_graph.introspection,
@@ -449,7 +449,7 @@ namespace iv::test {
     {
         auto const normalized_module_root = std::filesystem::weakly_canonical(module_root).lexically_normal();
         return iv::IvModuleReloadedDefinition{
-            .definition_id = normalized_module_root.string(),
+            .definition_id = module_id,
             .module_root = normalized_module_root,
             .module_id = std::move(module_id),
             .introspection = std::move(introspection),

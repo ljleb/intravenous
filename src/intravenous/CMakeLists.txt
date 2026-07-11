@@ -201,6 +201,21 @@ add_library(iv_module_shared SHARED
 iv_configure_intravenous_target(iv_module_shared PUBLIC)
 iv_link_stacktrace_support(iv_module_shared)
 
+# This source represents the default project-local module. Its compilation
+# database entry is copied to new module sources, where clangd infers the
+# command for their module.cpp from this canonical source.
+add_library(intravenous_module_source_template_tooling OBJECT EXCLUDE_FROM_ALL
+    runtime/module_source_template/module.cpp
+)
+iv_configure_intravenous_target(intravenous_module_source_template_tooling PUBLIC)
+target_link_libraries(intravenous_module_source_template_tooling PRIVATE iv_module_shared)
+foreach(iv_implicit_include_dir IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+    if(iv_implicit_include_dir AND EXISTS "${iv_implicit_include_dir}")
+        target_compile_options(intravenous_module_source_template_tooling PRIVATE
+            "-isystem${iv_implicit_include_dir}")
+    endif()
+endforeach()
+
 add_library(intravenous_module_loader OBJECT
     module/loader.cpp
 )
@@ -358,6 +373,9 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     query/lane_query_tokenizer.cpp
 )
 iv_configure_intravenous_target(intravenous_tooling_runtime_objects PUBLIC)
+target_compile_definitions(intravenous_tooling_runtime_objects PRIVATE
+    IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_DATABASE="${CMAKE_BINARY_DIR}/compile_commands.json"
+)
 target_link_libraries(intravenous_tooling_runtime_objects PRIVATE
     nlohmann_json::nlohmann_json
 )

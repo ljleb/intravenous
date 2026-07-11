@@ -72,7 +72,9 @@ public:
     IvModuleDefinitions() = default;
     ~IvModuleDefinitions();
 
-    std::string declare_definition(std::filesystem::path module_root);
+    std::string declare_definition(
+        std::string module_id,
+        std::filesystem::path module_root);
     void remove_definition(std::string const &definition_id);
 
     void handle_required_definitions_changed(

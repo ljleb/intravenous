@@ -361,7 +361,7 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
             iv_runtime_project_create_iv_module_instance_requested_event,
             ProjectCreateIvModuleInstanceRequest{
                 .instance_id = require_string(args, "instance_id"),
-                .module_root = workspace_root_ / require_string(args, "module_root"),
+                .module_id = require_string(args, "module_id"),
             },
             builder);
         (void)builder.build();

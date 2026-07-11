@@ -15,10 +15,22 @@ namespace iv {
     namespace {
         std::filesystem::file_time_type compute_directory_stamp(std::filesystem::path const& dir)
         {
+            std::error_code ec;
+            if (!std::filesystem::exists(dir, ec) || ec) {
+                return {};
+            }
+
             std::filesystem::file_time_type latest {};
             bool saw_file = false;
 
-            for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
+            auto const options = std::filesystem::directory_options::skip_permission_denied;
+            for (std::filesystem::recursive_directory_iterator it(dir, options, ec), end;
+                 it != end;
+                 it.increment(ec)) {
+                if (ec) {
+                    return {};
+                }
+                auto const& entry = *it;
                 if (!entry.is_regular_file()) {
                     continue;
                 }
@@ -87,9 +99,21 @@ namespace iv {
 
     void DependencyWatcher::add_directory_recursive(std::filesystem::path const& dir)
     {
+        std::error_code ec;
+        if (!std::filesystem::exists(dir, ec) || ec) {
+            return;
+        }
+
         (void)inotify_add_watch(_fd, dir.string().c_str(), IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
 
-        for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
+        auto const options = std::filesystem::directory_options::skip_permission_denied;
+        for (std::filesystem::recursive_directory_iterator it(dir, options, ec), end;
+             it != end;
+             it.increment(ec)) {
+            if (ec) {
+                return;
+            }
+            auto const& entry = *it;
             if (entry.is_directory()) {
                 (void)inotify_add_watch(_fd, entry.path().string().c_str(), IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
             }

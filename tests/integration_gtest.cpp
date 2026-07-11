@@ -322,7 +322,9 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
 
     IntegrationReloadWitness reload_witness;
     g_integration_reload_witness = &reload_witness;
-    auto const created = instances.create_instance(std::filesystem::weakly_canonical(workspace));
+    auto const created = instances.create_instance(
+        "iv.test.graph_input_module",
+        std::filesystem::weakly_canonical(workspace));
     EXPECT_TRUE(reload.has_dirty_definitions());
     EXPECT_FALSE(reload_witness.results.has_value());
     reload.compile_dirty_definitions();

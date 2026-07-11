@@ -35,7 +35,7 @@ namespace iv {
     };
 
     struct CreateIvModuleInstanceRequest {
-        std::filesystem::path module_root{};
+        std::string module_id{};
     };
 
     struct GetIvModuleSourcesRequest {};

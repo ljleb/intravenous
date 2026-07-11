@@ -70,7 +70,9 @@ TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)
     iv::IvModuleInstances instances;
     iv::IvModuleDefinitions definitions;
 
-    (void)instances.create_instance(std::filesystem::weakly_canonical(workspace));
+    (void)instances.create_instance(
+        "iv.test.runtime_module_bridges",
+        std::filesystem::weakly_canonical(workspace));
 
     EXPECT_TRUE(definitions.loaded_definitions().empty());
 }

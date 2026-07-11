@@ -51,3 +51,34 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
 
     EXPECT_TRUE(saw_change);
 }
+
+TEST(ModuleWatcher, MissingDependencyDirectoryIsReportedAsChangeWithoutThrowing)
+{
+    auto const fixtures = iv::test::test_modules_root();
+    auto const runtime_root = iv::test::runtime_modules_root() / "module_watcher_missing_dependency";
+    auto const project_src = fixtures / "reload_project";
+    auto const project_dst = runtime_root / "watch_target";
+    auto const voice_src = fixtures / "reload_voice";
+    auto const voice_dst = runtime_root / "watch_voice";
+
+    std::filesystem::remove_all(runtime_root);
+    std::filesystem::create_directories(runtime_root);
+    iv::test::copy_directory(project_src, project_dst);
+    iv::test::copy_directory(voice_src, voice_dst);
+
+    iv::test::FakeAudioDevice audio_device;
+    auto loader = iv::test::make_loader({ runtime_root });
+    auto graph = loader.load_root_definition(
+        project_dst,
+        iv::test::module_executor_target(audio_device),
+        &audio_device.sample_period()
+    );
+
+    auto watcher = iv::make_dependency_watcher();
+    watcher.update(graph.dependencies);
+    EXPECT_FALSE(watcher.has_changes());
+
+    std::filesystem::rename(voice_dst, runtime_root / "watch_voice_renamed");
+
+    EXPECT_TRUE(watcher.has_changes());
+}

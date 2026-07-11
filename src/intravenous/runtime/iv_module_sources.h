@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,8 @@ class IvModuleSources {
 public:
     IvModuleSources(std::filesystem::path project_root, std::vector<std::filesystem::path> shared_roots);
     [[nodiscard]] std::vector<IvModuleSourceInfo> list_sources() const;
+    [[nodiscard]] std::optional<IvModuleSourceInfo> find_source(
+        std::string const& module_id) const;
     [[nodiscard]] IvModuleSourceInfo create_project_source(std::string const& name) const;
 };
 } // namespace iv

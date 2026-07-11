@@ -57,7 +57,7 @@ namespace iv {
 
     struct ProjectCreateIvModuleInstanceRequest {
         std::optional<std::string> instance_id {};
-        std::filesystem::path module_root {};
+        std::string module_id {};
     };
 
     struct ProjectDeleteIvModuleInstanceRequest {

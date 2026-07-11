@@ -51,5 +51,6 @@ int main()
     }
 
     iv::test::require(saw_change, "watcher did not observe dependency edit");
+
     return 0;
 }

@@ -48,6 +48,23 @@ std::string source_template(std::string const& name)
         "}\n\n"
         "IV_EXPORT_MODULE(\"" + module_identifier(name) + "\", module_main);\n";
 }
+
+void copy_initial_compile_commands(std::filesystem::path const& destination)
+{
+#ifndef IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_DATABASE
+    throw std::runtime_error("no compile_commands.json template was configured");
+#else
+    std::error_code error;
+    std::filesystem::copy_file(
+        IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_DATABASE,
+        destination,
+        std::filesystem::copy_options::none,
+        error);
+    if (error) {
+        throw std::runtime_error("cannot copy compile_commands.json template: " + error.message());
+    }
+#endif
+}
 }
 
 IvModuleSources::IvModuleSources(std::filesystem::path project_root, std::vector<std::filesystem::path> shared_roots)
@@ -70,6 +87,15 @@ std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
     for (auto const& root : shared_roots_) scan(root, false);
     std::ranges::sort(result, {}, &IvModuleSourceInfo::module_id);
     return result;
+}
+
+std::optional<IvModuleSourceInfo> IvModuleSources::find_source(
+    std::string const& module_id) const
+{
+    auto const sources = list_sources();
+    auto const found = std::ranges::find(sources, module_id, &IvModuleSourceInfo::module_id);
+    if (found == sources.end()) return std::nullopt;
+    return *found;
 }
 
 IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& name) const
@@ -98,6 +124,7 @@ IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& nam
         std::ofstream source(root / "module.cpp", std::ios::binary | std::ios::noreplace);
         source << source_template(name);
         if (!source) throw std::runtime_error("cannot write module.cpp");
+        copy_initial_compile_commands(root / "compile_commands.json");
     } catch (...) {
         std::filesystem::remove_all(root, error);
         throw;

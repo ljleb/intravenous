@@ -79,12 +79,18 @@ namespace iv {
 
         class IvModuleReloadWatcherService {
             IvModuleReload* reload_ = nullptr;
+            IvModuleInstances* instances_ = nullptr;
+            IvModuleSources* sources_ = nullptr;
             std::optional<std::jthread> thread_ {};
 
         public:
             explicit IvModuleReloadWatcherService(
-                IvModuleReload& reload)
+                IvModuleReload& reload,
+                IvModuleInstances& instances,
+                IvModuleSources& sources)
                 : reload_(&reload)
+                , instances_(&instances)
+                , sources_(&sources)
             {
             }
 
@@ -96,6 +102,7 @@ namespace iv {
 
                 thread_.emplace([this](std::stop_token stop_token) {
                     while (!stop_token.stop_requested()) {
+                        instances_->refresh_source_roots(*sources_);
                         if (reload_->has_dirty_definitions()) {
                             reload_->compile_dirty_definitions();
                         } else {
@@ -253,7 +260,9 @@ namespace iv {
             bind_iv_module_instances_execution_task_runner_bridge(iv_module_instances_execution, task_runner);
             bind_iv_module_instances_iv_module_instances_execution_bridge(iv_module_instances_execution);
             bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
-            bind_runtime_project_iv_module_instances_bridge(iv_module_instances);
+            bind_runtime_project_iv_module_instances_bridge(
+                iv_module_instances,
+                iv_module_sources);
             bind_iv_module_definitions_iv_module_reload_bridge(iv_module_reload);
             bind_runtime_project_iv_module_reload_bridge(iv_module_reload);
             bind_task_runner_iv_module_reload_bridge(iv_module_reload);
@@ -282,7 +291,10 @@ namespace iv {
 
             startup_log("constructing socket rpc server");
             SocketRpcServer server(options.workspace_root, options.rpc_fd);
-            IvModuleReloadWatcherService iv_module_reload_watcher(iv_module_reload);
+            IvModuleReloadWatcherService iv_module_reload_watcher(
+                iv_module_reload,
+                iv_module_instances,
+                iv_module_sources);
             std::function<void()> shutdown = [&]() {
                 iv_module_reload_watcher.request_shutdown();
                 project_autosave_service.request_shutdown();
@@ -343,7 +355,9 @@ namespace iv {
             unbind_runtime_project_lane_views_bridge(lane_views);
             unbind_runtime_project_iv_module_reload_bridge(iv_module_reload);
             unbind_task_runner_iv_module_reload_bridge(iv_module_reload);
-            unbind_runtime_project_iv_module_instances_bridge(iv_module_instances);
+            unbind_runtime_project_iv_module_instances_bridge(
+                iv_module_instances,
+                iv_module_sources);
             unbind_runtime_project_timeline_execution_bridge(timeline_execution);
             unbind_runtime_project_graph_input_lanes_bridge(graph_input_lanes);
             unbind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);

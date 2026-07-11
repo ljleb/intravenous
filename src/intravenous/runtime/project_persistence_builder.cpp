@@ -243,7 +243,7 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
             .command = "ivModuleInstances.create",
             .args = nlohmann::ordered_json{
                 {"instance_id", instance.instance_id},
-                {"module_root", relativize_path(instance.module_root)},
+                {"module_id", instance.definition_id},
             },
         });
         if (instance.default_silence_ttl_samples.has_value()) {

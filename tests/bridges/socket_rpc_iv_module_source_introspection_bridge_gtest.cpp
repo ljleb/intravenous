@@ -99,9 +99,12 @@ struct SeededIvModuleSourceIntrospectionOwner {
         auto const startup = startup_config.initialize();
         auto const module_root =
             std::filesystem::weakly_canonical(startup.workspace_root);
-        (void)instances.create_instance(module_root, "instance:1");
-        definitions.seed_loaded_definition(
-            iv::test::load_runtime_iv_module_definition(startup, module_root));
+        auto definition = iv::test::load_runtime_iv_module_definition(startup, module_root);
+        (void)instances.create_instance(
+            definition.module_id,
+            module_root,
+            "instance:1");
+        definitions.seed_loaded_definition(std::move(definition));
     }
 
     void shutdown()

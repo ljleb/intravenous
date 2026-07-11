@@ -8,6 +8,7 @@
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
+#include <intravenous/runtime/iv_module_sources.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/runtime_project_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/runtime_project_graph_input_lanes_bridge.h>
@@ -179,6 +180,13 @@ iv::StartupConfigState make_startup(std::filesystem::path const &workspace)
         .input_device_id = std::optional<std::string>("default"),
     };
 }
+
+iv::IvModuleSources local_cmake_sources(std::filesystem::path const &workspace)
+{
+    return iv::IvModuleSources(workspace, {workspace});
+}
+
+constexpr std::string_view local_cmake_module_id = "iv.test.local_cmake";
 
 iv::TimelineLaneBatchUpdate timeline_batch_with_two_lanes()
 {
@@ -415,15 +423,16 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLa
             {"command", "ivModuleInstances.create"},
             {"args", Json{
                 {"instance_id", "instance-z"},
-                {"module_root", "."},
+                {"module_id", local_cmake_module_id},
             }},
         }.dump() + "\n");
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
+    auto sources = local_cmake_sources(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
 
-    iv::bind_runtime_project_iv_module_instances_bridge(instances);
+    iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
@@ -436,7 +445,7 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLa
     EXPECT_TRUE(witness.messages.front().message.contains("compiled_sample_cache_chunk_size_multiplier"));
 
     iv::unbind_project_persistence_bridge(persistence);
-    iv::unbind_runtime_project_iv_module_instances_bridge(instances);
+    iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
 
 TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogErrorsAndReplayContinues)
@@ -514,16 +523,17 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogError
                 {"command", "ivModuleInstances.create"},
                 {"args", Json{
                     {"instance_id", "instance-ok"},
-                    {"module_root", "."},
+                    {"module_id", local_cmake_module_id},
                 }},
             }.dump() + "\n");
 
         auto const startup = make_startup(workspace);
         iv::IvModuleInstances instances;
+        auto sources = local_cmake_sources(workspace);
         iv::ProjectPersistence persistence(workspace, startup);
         witness.messages.clear();
 
-        iv::bind_runtime_project_iv_module_instances_bridge(instances);
+        iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
         iv::bind_project_persistence_bridge(persistence);
 
         persistence.load();
@@ -536,7 +546,7 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogError
             << cases[i].name;
 
         iv::unbind_project_persistence_bridge(persistence);
-        iv::unbind_runtime_project_iv_module_instances_bridge(instances);
+        iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
     }
 }
 
@@ -698,10 +708,11 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRe
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
+    auto sources = local_cmake_sources(workspace);
     iv::LaneViews lane_views;
     iv::ProjectPersistence persistence(workspace, startup);
 
-    iv::bind_runtime_project_iv_module_instances_bridge(instances);
+    iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
     iv::bind_project_persistence_bridge(persistence);
 
@@ -717,7 +728,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRe
 
     iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
-    iv::unbind_runtime_project_iv_module_instances_bridge(instances);
+    iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
 
 TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
@@ -729,7 +740,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
             {"command", "ivModuleInstances.create"},
             {"args", Json{
                 {"instance_id", "instance-a"},
-                {"module_root", "."},
+                {"module_id", local_cmake_module_id},
             }},
         }.dump() + "\n" +
         Json{
@@ -754,10 +765,11 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
+    auto sources = local_cmake_sources(workspace);
     iv::LaneViews lane_views;
     iv::ProjectPersistence persistence(workspace, startup);
 
-    iv::bind_runtime_project_iv_module_instances_bridge(instances);
+    iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
     iv::bind_project_persistence_bridge(persistence);
 
@@ -772,7 +784,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
 
     iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
-    iv::unbind_runtime_project_iv_module_instances_bridge(instances);
+    iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
 
 TEST_F(ProjectPersistenceTest, UnknownOverrideKeysWarnAndDoNotBlockLaterCommands)
@@ -791,15 +803,16 @@ TEST_F(ProjectPersistenceTest, UnknownOverrideKeysWarnAndDoNotBlockLaterCommands
             {"command", "ivModuleInstances.create"},
             {"args", Json{
                 {"instance_id", "instance-after-warning"},
-                {"module_root", "."},
+                {"module_id", local_cmake_module_id},
             }},
         }.dump() + "\n");
 
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
+    auto sources = local_cmake_sources(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
 
-    iv::bind_runtime_project_iv_module_instances_bridge(instances);
+    iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
@@ -810,7 +823,7 @@ TEST_F(ProjectPersistenceTest, UnknownOverrideKeysWarnAndDoNotBlockLaterCommands
     EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 0u);
 
     iv::unbind_project_persistence_bridge(persistence);
-    iv::unbind_runtime_project_iv_module_instances_bridge(instances);
+    iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
 
 TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
@@ -822,6 +835,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     write_text(toolchain_dir / "clang", "");
 
     iv::IvModuleInstances instances;
+    auto sources = local_cmake_sources(workspace);
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
     iv::AudioDeviceLanes audio_device_lanes(48000, 8, make_audio_backend());
@@ -830,7 +844,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     iv::ProjectPersistence persistence(workspace, startup);
 
     initialize_two_timeline_lanes(timeline);
-    instances.create_instance(workspace, "instance-a");
+    instances.create_instance(local_cmake_module_id, workspace, "instance-a");
     instances.set_default_silence_ttl_samples("instance-a", 123);
     execution.set_compiled_sample_cache_chunk_size_multiplier(8);
     (void)audio_device_lanes.set_selected_devices("out-1", "in-1");
@@ -871,7 +885,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
         connection_builder);
     connection_builder.build();
 
-    iv::bind_runtime_project_iv_module_instances_bridge(instances);
+    iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::bind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
     iv::bind_runtime_project_iv_module_reload_bridge(reload);
@@ -890,10 +904,11 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     iv::unbind_runtime_project_iv_module_reload_bridge(reload);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
     iv::unbind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
-    iv::unbind_runtime_project_iv_module_instances_bridge(instances);
+    iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
 
     iv::IvModuleInstances fresh_instances;
+    auto fresh_sources = local_cmake_sources(workspace);
     iv::Timeline fresh_timeline;
     iv::TimelineExecution fresh_execution(8, 16);
     iv::AudioDeviceLanes fresh_audio_device_lanes(48000, 8, make_audio_backend());
@@ -903,7 +918,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
 
     initialize_two_timeline_lanes(fresh_timeline);
     iv::bind_runtime_project_timeline_execution_bridge(fresh_timeline, fresh_execution, workspace);
-    iv::bind_runtime_project_iv_module_instances_bridge(fresh_instances);
+    iv::bind_runtime_project_iv_module_instances_bridge(fresh_instances, fresh_sources);
     iv::bind_runtime_project_audio_device_lanes_bridge(fresh_audio_device_lanes);
     iv::bind_runtime_project_lane_views_bridge(fresh_lane_views);
     iv::bind_runtime_project_iv_module_reload_bridge(fresh_reload);
@@ -931,7 +946,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     iv::unbind_runtime_project_iv_module_reload_bridge(fresh_reload);
     iv::unbind_runtime_project_lane_views_bridge(fresh_lane_views);
     iv::unbind_runtime_project_audio_device_lanes_bridge(fresh_audio_device_lanes);
-    iv::unbind_runtime_project_iv_module_instances_bridge(fresh_instances);
+    iv::unbind_runtime_project_iv_module_instances_bridge(fresh_instances, fresh_sources);
     iv::unbind_runtime_project_timeline_execution_bridge(fresh_execution);
 }
 
@@ -1347,7 +1362,7 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
     iv::ProjectPersistence persistence(workspace, startup);
 
     initialize_two_timeline_lanes(timeline);
-    instances.create_instance(workspace, "instance-save");
+    instances.create_instance(local_cmake_module_id, workspace, "instance-save");
     execution.set_compiled_sample_cache_chunk_size_multiplier(8);
     (void)audio_device_lanes.set_selected_devices("out-1", "in-1");
     audio_device_lanes.set_lane_external_ids(intern("audio-out-save"), intern("audio-in-save"));
@@ -1379,7 +1394,8 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
     });
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
-    iv::bind_runtime_project_iv_module_instances_bridge(instances);
+    auto sources = local_cmake_sources(workspace);
+    iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::bind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
     iv::bind_runtime_project_graph_input_lanes_bridge(graph_input_lanes);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
@@ -1415,7 +1431,7 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
     iv::unbind_runtime_project_graph_input_lanes_bridge(graph_input_lanes);
     iv::unbind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
-    iv::unbind_runtime_project_iv_module_instances_bridge(instances);
+    iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
 }
 
@@ -1466,10 +1482,11 @@ TEST_F(ProjectPersistenceTest, RepeatedProjectSaveIsIdempotent)
     auto const workspace = mutable_module_fixture_workspace("project_save_idempotent", "local_cmake");
     auto const startup = make_startup(workspace);
     iv::IvModuleInstances instances;
-    instances.create_instance(workspace, "instance-a");
+    auto sources = local_cmake_sources(workspace);
+    instances.create_instance(local_cmake_module_id, workspace, "instance-a");
     iv::ProjectPersistence persistence(workspace, startup);
 
-    iv::bind_runtime_project_iv_module_instances_bridge(instances);
+    iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::bind_project_persistence_bridge(persistence);
 
     iv::SocketRpcAckResponseBuilder builder1;
@@ -1487,7 +1504,7 @@ TEST_F(ProjectPersistenceTest, RepeatedProjectSaveIsIdempotent)
     EXPECT_EQ(read_text(workspace / "iv_project.jsonl"), first);
 
     iv::unbind_project_persistence_bridge(persistence);
-    iv::unbind_runtime_project_iv_module_instances_bridge(instances);
+    iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
 
 TEST(Uuid, InterningAndUuidGenerationBehavior)

@@ -3,6 +3,7 @@
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/iv_module_sources.h>
 #include <intravenous/runtime/uuid.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
@@ -22,11 +23,6 @@ std::filesystem::path normalize_path(std::filesystem::path const &path)
         return canonical.lexically_normal();
     }
     return std::filesystem::absolute(path).lexically_normal();
-}
-
-std::string definition_id_for(std::filesystem::path const &module_root)
-{
-    return normalize_path(module_root).string();
 }
 
 IvModuleInstance make_instance_from_definition(
@@ -57,13 +53,14 @@ void emit_debug_message(std::string message)
 } // namespace
 
 std::string IvModuleInstances::create_instance(
+    std::string_view definition_id,
     std::filesystem::path module_root,
     std::optional<std::string> requested_instance_id)
 {
     IvModuleRequiredDefinitionsChanged required_diff{};
     bool list_changed = false;
     auto normalized_root = normalize_path(module_root);
-    auto definition_id = definition_id_for(normalized_root);
+    auto const definition_key = std::string(definition_id);
     std::string instance_id{};
 
     {
@@ -78,20 +75,22 @@ std::string IvModuleInstances::create_instance(
         }
         desired_instances_by_id.emplace(instance_id, DesiredInstance{
             .instance_id = instance_id,
-            .definition_id = definition_id,
+            .definition_id = definition_key,
             .module_root = normalized_root,
         });
         list_changed = true;
 
-        if (!required_definitions_by_id.contains(definition_id)) {
+        if (!required_definitions_by_id.contains(definition_key)) {
             IvModuleRequiredDefinition required{
-                .definition_id = definition_id,
+                .definition_id = definition_key,
                 .module_root = normalized_root,
             };
-            required_definitions_by_id.emplace(definition_id, required);
+            required_definitions_by_id.emplace(definition_key, required);
             required_diff.created.push_back(std::move(required));
         } else {
-            required_diff.updated.push_back(required_definitions_by_id.at(definition_id));
+            auto &required = required_definitions_by_id.at(definition_key);
+            required.module_root = normalized_root;
+            required_diff.updated.push_back(required);
         }
     }
 
@@ -212,6 +211,57 @@ void IvModuleInstances::set_default_silence_ttl_samples(
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_instance_builders_completed_event,
             builders_diff);
+    }
+}
+
+void IvModuleInstances::refresh_source_roots(IvModuleSources const &sources)
+{
+    auto const listed_sources = sources.list_sources();
+    std::unordered_map<std::string, std::filesystem::path> roots_by_definition_id;
+    roots_by_definition_id.reserve(listed_sources.size());
+    for (auto const &source : listed_sources) {
+        roots_by_definition_id.emplace(
+            source.module_id,
+            normalize_path(source.module_root));
+    }
+
+    IvModuleRequiredDefinitionsChanged required_diff{};
+    bool list_changed = false;
+
+    {
+        std::scoped_lock lock(mutex);
+        for (auto &entry : desired_instances_by_id) {
+            auto const source = roots_by_definition_id.find(entry.second.definition_id);
+            if (source == roots_by_definition_id.end()) {
+                continue;
+            }
+            if (entry.second.module_root == source->second) {
+                continue;
+            }
+
+            entry.second.module_root = source->second;
+            list_changed = true;
+
+            auto required = required_definitions_by_id.find(entry.second.definition_id);
+            if (required != required_definitions_by_id.end() &&
+                required->second.module_root != source->second) {
+                required->second.module_root = source->second;
+                required_diff.updated.push_back(required->second);
+            }
+        }
+    }
+
+    if (!required_diff.created.empty() ||
+        !required_diff.updated.empty() ||
+        !required_diff.deleted_definition_ids.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_required_definitions_changed_event,
+            required_diff);
+    }
+    if (list_changed) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instances_list_changed_event,
+            list_instances());
     }
 }
 

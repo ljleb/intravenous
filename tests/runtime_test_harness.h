@@ -81,8 +81,11 @@ struct BoundIvModuleSourceIntrospection {
     {
         auto const config = startup_config.initialize();
         auto const module_root = std::filesystem::weakly_canonical(config.workspace_root);
-        (void)iv_module_instances.create_instance(module_root);
-        iv_module_definitions.seed_loaded_definition(load_definition(config, module_root));
+        auto definition = load_definition(config, module_root);
+        (void)iv_module_instances.create_instance(
+            definition.module_id,
+            module_root);
+        iv_module_definitions.seed_loaded_definition(std::move(definition));
     }
 
     auto query_by_spans(

@@ -199,8 +199,8 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
     iv::IvModuleInstancesExecution execution(8);
     iv::IvModuleInstances instances;
     auto const module_root = std::filesystem::absolute("reload-generation-test");
-    auto const definition_id = module_root.string();
-    (void)instances.create_instance(module_root, "instance:1");
+    auto const definition_id = std::string("iv.test.reload_generation");
+    (void)instances.create_instance(definition_id, module_root, "instance:1");
     iv::bind_iv_module_instances_iv_module_instances_execution_bridge(execution);
 
     bool old_module_is_live = true;

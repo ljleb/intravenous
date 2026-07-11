@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace {
 struct IvModuleReloadWitness {
@@ -44,11 +45,13 @@ struct SampleCapture {
     }
 };
 
-iv::IvModuleDefinitionDeclaration make_declaration(std::filesystem::path module_root)
+iv::IvModuleDefinitionDeclaration make_declaration(
+    std::string_view definition_id,
+    std::filesystem::path module_root)
 {
     auto const normalized = std::filesystem::weakly_canonical(module_root).lexically_normal();
     return iv::IvModuleDefinitionDeclaration{
-        .definition_id = normalized.string(),
+        .definition_id = std::string(definition_id),
         .module_root = normalized,
     };
 }
@@ -89,7 +92,7 @@ TEST_F(IvModuleReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition)
 
     reload.handle_definition_declarations_changed(
         iv::IvModuleDefinitionDeclarationsChanged{
-            .created = {make_declaration(workspace)},
+            .created = {make_declaration("iv.test.local_cmake", workspace)},
         });
 
     EXPECT_TRUE(reload.has_dirty_definitions());
@@ -104,7 +107,7 @@ TEST_F(IvModuleReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition)
     ASSERT_TRUE(witness.results.has_value());
     ASSERT_EQ(witness.results->loaded.size(), 1u);
     EXPECT_TRUE(witness.results->failed.empty());
-    EXPECT_EQ(witness.results->loaded.front().definition_id, std::filesystem::weakly_canonical(workspace).string());
+    EXPECT_EQ(witness.results->loaded.front().definition_id, "iv.test.local_cmake");
     EXPECT_FALSE(witness.results->loaded.front().module_id.empty());
 }
 
@@ -119,7 +122,7 @@ TEST_F(IvModuleReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
 
     reload.handle_definition_declarations_changed(
         iv::IvModuleDefinitionDeclarationsChanged{
-            .created = {make_declaration(workspace)},
+            .created = {make_declaration("iv.test.missing_export", workspace)},
         });
 
     EXPECT_TRUE(reload.has_dirty_definitions());
@@ -132,7 +135,7 @@ TEST_F(IvModuleReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
     ASSERT_TRUE(witness.results.has_value());
     EXPECT_TRUE(witness.results->loaded.empty());
     ASSERT_EQ(witness.results->failed.size(), 1u);
-    EXPECT_EQ(witness.results->failed.front().definition_id, std::filesystem::weakly_canonical(workspace).string());
+    EXPECT_EQ(witness.results->failed.front().definition_id, "iv.test.missing_export");
     EXPECT_FALSE(witness.results->failed.front().message.empty());
 }
 
@@ -147,7 +150,7 @@ TEST_F(IvModuleReloadTest, RetainsSamplePeriodForCompiledDefinitionBuilders)
 
     reload.handle_definition_declarations_changed(
         iv::IvModuleDefinitionDeclarationsChanged{
-            .created = {make_declaration(workspace)},
+            .created = {make_declaration("iv.test.reload_sample_period", workspace)},
         });
     reload.compile_dirty_definitions();
     reload.apply_pending_results();
@@ -186,7 +189,7 @@ TEST_F(IvModuleReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherChan
 
     reload.handle_definition_declarations_changed(
         iv::IvModuleDefinitionDeclarationsChanged{
-            .created = {make_declaration(workspace)},
+            .created = {make_declaration("iv.test.local_cmake", workspace)},
         });
     witness.reset();
 

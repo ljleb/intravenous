@@ -589,7 +589,9 @@ export class WorkspaceSession {
                 return;
             }
             {
-                const created = await this.rpc.createIvModuleInstance(this.activeModuleRoot);
+                const created = await this.rpc.createIvModuleInstance(
+                    await this.moduleIdForRoot(this.activeModuleRoot),
+                );
                 this.selectedInstanceId = created.instanceId;
                 this.rememberSelectedInstance();
                 this.refreshVisibleInstances();
@@ -682,7 +684,9 @@ export class WorkspaceSession {
         }
         case "instantiate":
         case "duplicate": {
-            const created = await this.rpc.createIvModuleInstance(message.moduleRoot);
+            const created = await this.rpc.createIvModuleInstance(
+                await this.moduleIdForRoot(message.moduleRoot),
+            );
             this.selectedInstanceId = created.instanceId;
             await this.refreshModulesPanel();
             return;
@@ -725,6 +729,19 @@ export class WorkspaceSession {
             return;
         }
         await vscode.window.showTextDocument(document, { preview: false });
+    }
+
+    private async moduleIdForRoot(moduleRoot: string): Promise<string> {
+        let source = this.ivModuleSources.find((candidate) => candidate.moduleRoot === moduleRoot);
+        if (!source && this.rpc) {
+            const result = await this.rpc.getIvModuleSources();
+            this.ivModuleSources = this.parseIvModuleSources(result.sources);
+            source = this.ivModuleSources.find((candidate) => candidate.moduleRoot === moduleRoot);
+        }
+        if (!source) {
+            throw new Error(`module source is no longer available: ${moduleRoot}`);
+        }
+        return source.moduleId;
     }
 
     private async refreshActiveEditorSelection(): Promise<void> {

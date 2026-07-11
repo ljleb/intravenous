@@ -304,7 +304,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
         return ParsedSocketRpcRequest{
             .request_id = request_id,
             .payload = CreateIvModuleInstanceRequest{
-                .module_root = parse_string_param(params, "moduleRoot"),
+                .module_id = parse_string_param(params, "moduleId"),
             },
         };
     }

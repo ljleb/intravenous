@@ -75,10 +75,12 @@ struct SeededIvModuleSourceIntrospectionApp {
     {
         auto const config = startup_config.initialize();
         auto const module_root = std::filesystem::weakly_canonical(config.workspace_root);
-        (void)instances.create_instance(module_root, "instance:1");
-        definitions.seed_loaded_definition(iv::test::load_runtime_iv_module_definition(
-            config,
-            module_root));
+        auto definition = iv::test::load_runtime_iv_module_definition(config, module_root);
+        (void)instances.create_instance(
+            definition.module_id,
+            module_root,
+            "instance:1");
+        definitions.seed_loaded_definition(std::move(definition));
     }
 
     auto query_by_spans(

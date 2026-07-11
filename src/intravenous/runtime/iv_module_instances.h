@@ -10,10 +10,13 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace iv {
+class IvModuleSources;
+
 struct IvModuleRequiredDefinition {
     std::string definition_id{};
     std::filesystem::path module_root{};
@@ -78,12 +81,14 @@ public:
     IvModuleInstances() = default;
 
     std::string create_instance(
+        std::string_view definition_id,
         std::filesystem::path module_root,
         std::optional<std::string> instance_id = std::nullopt);
     void remove_instance(std::string const &instance_id);
     void set_default_silence_ttl_samples(
         std::string const &instance_id,
         size_t default_silence_ttl_samples);
+    void refresh_source_roots(IvModuleSources const &sources);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
 
     void handle_iv_module_definitions_changed(

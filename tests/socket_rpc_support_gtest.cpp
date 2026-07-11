@@ -275,12 +275,12 @@ TEST(SocketRpcRequestParser, ParsesPlaybackResumeRequest)
 TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":26,"method":"ivModuleInstances.create","params":{"moduleRoot":"/tmp/mod"}})");
+        R"({"jsonrpc":"2.0","id":26,"method":"ivModuleInstances.create","params":{"moduleId":"iv.test.mod"}})");
 
     EXPECT_EQ(parsed.request_id, 26);
     auto const *request = std::get_if<iv::CreateIvModuleInstanceRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->module_root, "/tmp/mod");
+    EXPECT_EQ(request->module_id, "iv.test.mod");
 }
 
 TEST(SocketRpcRequestParser, ParsesDeleteIvModuleInstanceRequest)

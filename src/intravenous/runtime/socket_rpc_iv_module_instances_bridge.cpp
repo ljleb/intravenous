@@ -69,7 +69,7 @@ void handle_create_iv_module_instance(
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_create_iv_module_instance_requested_event,
             ProjectCreateIvModuleInstanceRequest{
-                .module_root = request.module_root,
+                .module_id = request.module_id,
             },
             project_builder);
         builder.succeed(project_builder.build());

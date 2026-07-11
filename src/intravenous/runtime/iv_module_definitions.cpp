@@ -19,11 +19,6 @@ std::filesystem::path normalize_path(std::filesystem::path const &path)
     return std::filesystem::absolute(path).lexically_normal();
 }
 
-std::string make_definition_id(std::filesystem::path const &module_root)
-{
-    return normalize_path(module_root).string();
-}
-
 std::unique_ptr<IvModuleDefinitions::DefinitionState> make_definition_state(
     IvModuleReloadedDefinition const &loaded)
 {
@@ -65,10 +60,12 @@ void IvModuleDefinitions::emit_message(
     });
 }
 
-std::string IvModuleDefinitions::declare_definition(std::filesystem::path module_root)
+std::string IvModuleDefinitions::declare_definition(
+    std::string module_id,
+    std::filesystem::path module_root)
 {
     IvModuleDefinitionDeclaration declaration{
-        .definition_id = make_definition_id(module_root),
+        .definition_id = std::move(module_id),
         .module_root = normalize_path(module_root),
     };
 

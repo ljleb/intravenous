@@ -20,8 +20,8 @@ export class WorkspaceRpc {
         return this.client.request("ivModuleInstances.get", sourceFilePath ? { sourceFilePath } : {});
     }
 
-    createIvModuleInstance(moduleRoot: string): Promise<{ instanceId: string }> {
-        return this.client.request("ivModuleInstances.create", { moduleRoot });
+    createIvModuleInstance(moduleId: string): Promise<{ instanceId: string }> {
+        return this.client.request("ivModuleInstances.create", { moduleId });
     }
 
     deleteIvModuleInstance(instanceId: string): Promise<void> {
