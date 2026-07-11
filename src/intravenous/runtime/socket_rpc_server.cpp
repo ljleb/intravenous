@@ -273,6 +273,14 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcCreateIvModuleInstanceResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_iv_module_instance_event, event_request, builder);
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, GetIvModuleSourcesRequest>) {
+                        SocketRpcIvModuleSourcesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_module_sources_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, CreateIvModuleSourceRequest>) {
+                        SocketRpcIvModuleSourceResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_iv_module_source_event, event_request, builder);
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetIvModuleInstancesRequest>) {
                         SocketRpcIvModuleInstancesResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_module_instances_event, event_request, builder);

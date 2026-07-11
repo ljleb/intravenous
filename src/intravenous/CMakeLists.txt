@@ -315,6 +315,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/task_runner_lanes_visualization_bridge.cpp
     runtime/lane_view_service.cpp
     runtime/iv_module_source_introspection.cpp
+    runtime/iv_module_sources.cpp
     runtime/iv_module_source_introspection_events.cpp
     runtime/iv_module_source_introspection_graph_input_lanes_bridge.cpp
     runtime/project_persistence.cpp

@@ -12,6 +12,7 @@ import {
     isLiveGraphControlMessage,
     LiveGraphControlHandler,
     LiveGraphSetInstancesMessage,
+    LiveGraphSetModuleSourceMessage,
     LiveGraphSetNodesMessage,
     LiveGraphSetSelectedInstanceMessage,
     LiveGraphUpsertNodesMessage,
@@ -30,6 +31,7 @@ export class LiveGraphViewProvider {
     private instances: LiveGraphInstance[] = [];
     private nodes: LogicalNode[] = [];
     private selectedInstanceId: string | null = null;
+    private moduleRoot: string | null = null;
     private controlHandler: LiveGraphControlHandler | null = null;
 
     constructor(extensionUri: vscode.Uri) {
@@ -58,6 +60,18 @@ export class LiveGraphViewProvider {
     setSelectedInstanceId(instanceId: string | null): void {
         this.selectedInstanceId = instanceId;
         this.postSelectedInstance();
+    }
+
+    setModuleSource(moduleRoot: string | null): void {
+        this.moduleRoot = moduleRoot;
+        if (!this.view) {
+            return;
+        }
+        const message: LiveGraphSetModuleSourceMessage = {
+            type: "setModuleSource",
+            moduleRoot,
+        };
+        void this.view.webview.postMessage(message);
     }
 
     upsertNodes(nodes: LogicalNode[], replaceInstanceIds: string[] = []): void {
@@ -103,6 +117,7 @@ export class LiveGraphViewProvider {
         });
         webviewView.webview.html = this.getHtml(webviewView.webview);
         this.postInstances();
+        this.setModuleSource(this.moduleRoot);
         this.postSelectedInstance();
         this.postNodes();
     }
@@ -526,6 +541,7 @@ export class LiveGraphViewProvider {
         <div class="toolbar">
             <div class="toolbar-label">instance</div>
             <select id="instanceSelect" class="toolbar-select" aria-label="Selected iv module instance"></select>
+            <button id="createInstance" class="toolbar-button" type="button">Duplicate</button>
         </div>
         <div id="content" class="content"></div>
     </div>
@@ -536,9 +552,11 @@ export class LiveGraphViewProvider {
         const content = document.getElementById("content");
         const contextMenu = document.getElementById("contextMenu");
         const instanceSelect = document.getElementById("instanceSelect");
+        const createInstance = document.getElementById("createInstance");
         const state = {
             instances: [],
             selectedInstanceId: null,
+            moduleRoot: null,
             nodes: [],
             expanded: new Map(),
             pendingUpdates: new Map(),
@@ -1275,6 +1293,7 @@ export class LiveGraphViewProvider {
                 instanceSelect.title = instanceSelect.selectedOptions[0]?.textContent || "";
             }
             instanceSelect.disabled = state.instances.length === 0;
+            createInstance.disabled = !state.moduleRoot;
         }
 
         function render() {
@@ -1309,6 +1328,8 @@ export class LiveGraphViewProvider {
                 state.selectedInstanceId = typeof message.selectedInstanceId === "string"
                     ? message.selectedInstanceId
                     : null;
+            } else if (message.type === "setModuleSource") {
+                state.moduleRoot = typeof message.moduleRoot === "string" ? message.moduleRoot : null;
             } else if (message.type === "setNodes") {
                 state.nodes = Array.isArray(message.nodes) ? message.nodes : [];
             } else if (message.type === "upsertNodes") {
@@ -1337,6 +1358,10 @@ export class LiveGraphViewProvider {
                 type: "selectInstance",
                 instanceId,
             });
+        });
+
+        createInstance.addEventListener("click", () => {
+            vscode.postMessage({ type: "createInstance" });
         });
 
         window.addEventListener("keydown", (event) => {

@@ -7,11 +7,13 @@ import { LiveGraphViewProvider } from "./liveGraphViewProvider";
 import { LaneViewProvider } from "./lanesViewProvider";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { WorkspaceSessionFactory } from "./workspaceSessionFactory";
+import { ModulesViewProvider } from "./modulesViewProvider";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const outputChannel = vscode.window.createOutputChannel("Intravenous");
     const provider = new LiveGraphViewProvider(context.extensionUri);
     const laneProvider = new LaneViewProvider();
+    const modulesProvider = new ModulesViewProvider();
     const highlighter = new NodeSpanHighlighter();
     const sessionFactory = container.resolve(WorkspaceSessionFactory);
 
@@ -28,7 +30,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
     }
 
-    const session = sessionFactory.create(workspaceFolder, outputChannel, provider, laneProvider, highlighter);
+    const session = sessionFactory.create(
+        workspaceFolder,
+        outputChannel,
+        provider,
+        laneProvider,
+        modulesProvider,
+        highlighter,
+    );
     laneProvider.setCloseHandler(() => {
         session.closeLaneView().catch((error: Error) => {
             outputChannel.appendLine(`Intravenous lane view close failed: ${error.message}`);
@@ -39,6 +48,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             outputChannel.appendLine(`Intravenous lane viewport update failed: ${error.message}`);
         });
     });
+    modulesProvider.setControlHandler((message) => session.dispatchModulesControl(message));
 
     context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.lanes", {
         async deserializeWebviewPanel(panel, state) {
@@ -50,6 +60,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
         },
     }));
+    context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.modules", {
+        async deserializeWebviewPanel(panel) {
+            modulesProvider.revive(panel);
+            try {
+                await session.refreshModulesPanel();
+            } catch (error: any) {
+                outputChannel.appendLine(`Intravenous modules restore failed: ${error.message}`);
+            }
+        },
+    }));
 
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openLanes", async () => {
         laneProvider.open();
@@ -57,6 +77,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             await session.openLaneView();
         } catch (error: any) {
             outputChannel.appendLine(`Intravenous lane query failed: ${error.message}`);
+        }
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.openModules", async () => {
+        modulesProvider.open();
+        try {
+            await session.refreshModulesPanel();
+        } catch (error: any) {
+            outputChannel.appendLine(`Intravenous modules refresh failed: ${error.message}`);
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.resumePlayback", async () => {
@@ -106,6 +134,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor) {
             highlighter.applyToEditor(editor);
+            void session.updateFromEditor(editor).then((nodes) => {
+                session.updatePrimaryHighlight(nodes);
+            }, (error: Error) => {
+                outputChannel.appendLine(`Intravenous editor query failed: ${error.message}`);
+            });
         }
     }));
 

@@ -90,10 +90,14 @@ std::string IvModuleInstances::create_instance(
             };
             required_definitions_by_id.emplace(definition_id, required);
             required_diff.created.push_back(std::move(required));
+        } else {
+            required_diff.updated.push_back(required_definitions_by_id.at(definition_id));
         }
     }
 
-    if (!required_diff.created.empty()) {
+    if (!required_diff.created.empty() ||
+        !required_diff.updated.empty() ||
+        !required_diff.deleted_definition_ids.empty()) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_required_definitions_changed_event,
             required_diff);
@@ -110,6 +114,7 @@ void IvModuleInstances::remove_instance(std::string const &instance_id)
 {
     IvModuleRequiredDefinitionsChanged required_diff{};
     IvModuleInstancesChanged instance_diff{};
+    IvModuleInstanceBuildersChanged builders_diff{};
     bool list_changed = false;
 
     {
@@ -125,6 +130,7 @@ void IvModuleInstances::remove_instance(std::string const &instance_id)
 
         if (realized_instances_by_id.erase(instance_id) > 0) {
             instance_diff.deleted_instance_ids.push_back(instance_id);
+            builders_diff.deleted_instance_ids.push_back(instance_id);
         }
         realized_module_refs_by_id.erase(instance_id);
         realized_builders_by_id.erase(instance_id);
@@ -145,6 +151,17 @@ void IvModuleInstances::remove_instance(std::string const &instance_id)
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_instances_changed_event,
             instance_diff);
+    }
+    if (!builders_diff.deleted_instance_ids.empty()) {
+        IvModuleInstanceBuildersAckBuilder builders_ack;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instance_builders_changed_event,
+            builders_diff,
+            builders_ack);
+        builders_diff.version_index = builders_ack.version_index().value_or(builders_diff.version_index);
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instance_builders_completed_event,
+            builders_diff);
     }
     if (!required_diff.created.empty() ||
         !required_diff.updated.empty() ||
@@ -239,6 +256,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 if (entry.second.definition_id != definition.definition_id) {
                     continue;
                 }
+                auto const is_new_instance = !realized_instances_by_id.contains(entry.second.instance_id);
                 auto instance = make_instance_from_definition(
                     definition,
                     entry.second.instance_id,
@@ -250,14 +268,15 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 stored_builder = definition.canonical_builder != nullptr
                     ? *definition.canonical_builder
                     : GraphBuilder{};
-                instance_diff.created.push_back(std::move(instance));
-                builders_diff.created.push_back(IvModuleInstanceBuilderRef{
+                (is_new_instance ? instance_diff.created : instance_diff.updated).push_back(std::move(instance));
+                auto builder_ref = IvModuleInstanceBuilderRef{
                     .instance = &stored_instance,
                     .builder = &stored_builder,
                     .module_refs = definition.module_refs,
                     .default_silence_ttl_samples =
                         entry.second.default_silence_ttl_samples,
-                });
+                };
+                (is_new_instance ? builders_diff.created : builders_diff.updated).push_back(std::move(builder_ref));
                 list_changed = true;
             }
         }
@@ -266,6 +285,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 if (entry.second.definition_id != definition.definition_id) {
                     continue;
                 }
+                auto const is_new_instance = !realized_instances_by_id.contains(entry.second.instance_id);
                 auto instance = make_instance_from_definition(
                     definition,
                     entry.second.instance_id,
@@ -277,14 +297,15 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 stored_builder = definition.canonical_builder != nullptr
                     ? *definition.canonical_builder
                     : GraphBuilder{};
-                instance_diff.updated.push_back(std::move(instance));
-                builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
+                (is_new_instance ? instance_diff.created : instance_diff.updated).push_back(std::move(instance));
+                auto builder_ref = IvModuleInstanceBuilderRef{
                     .instance = &stored_instance,
                     .builder = &stored_builder,
                     .module_refs = definition.module_refs,
                     .default_silence_ttl_samples =
                         entry.second.default_silence_ttl_samples,
-                });
+                };
+                (is_new_instance ? builders_diff.created : builders_diff.updated).push_back(std::move(builder_ref));
                 list_changed = true;
             }
         }

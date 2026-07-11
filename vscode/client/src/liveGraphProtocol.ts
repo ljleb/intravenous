@@ -72,6 +72,11 @@ export type LiveGraphSetSelectedInstanceMessage = {
     selectedInstanceId: string | null;
 };
 
+export type LiveGraphSetModuleSourceMessage = {
+    type: "setModuleSource";
+    moduleRoot: string | null;
+};
+
 export type LiveGraphSetNodesMessage = {
     type: "setNodes";
     nodes: SerializedLiveGraphNode[];
@@ -128,8 +133,13 @@ export type LiveGraphSelectInstanceMessage = {
     instanceId: string | null;
 };
 
+export type LiveGraphCreateInstanceMessage = {
+    type: "createInstance";
+};
+
 export type LiveGraphControlMessage =
     | LiveGraphSelectInstanceMessage
+    | LiveGraphCreateInstanceMessage
     | LiveGraphSetSampleInputValueMessage
     | LiveGraphSetSampleInputStateMessage
     | LiveGraphSetEventInputStateMessage
@@ -147,6 +157,9 @@ export function isLiveGraphControlMessage(message: unknown): message is LiveGrap
     if (typeof candidate.type !== "string" || typeof candidate.nodeId !== "string") {
         if (candidate.type === "selectInstance") {
             return candidate.instanceId == null || typeof candidate.instanceId === "string";
+        }
+        if (candidate.type === "createInstance") {
+            return true;
         }
         return false;
     }

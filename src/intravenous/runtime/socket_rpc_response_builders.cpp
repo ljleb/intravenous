@@ -203,6 +203,46 @@ void SocketRpcCreateIvModuleInstanceResultBuilder::fail(int code, std::string me
     error_message = std::move(message);
 }
 
+void SocketRpcIvModuleSourcesResultBuilder::succeed(std::vector<IvModuleSourceInfo> value) {
+    result = std::move(value);
+}
+
+void SocketRpcIvModuleSourcesResultBuilder::fail(std::string message) {
+    error_code = -32000;
+    error_message = std::move(message);
+}
+
+void SocketRpcIvModuleSourcesResultBuilder::fail(int code, std::string message) {
+    error_code = code;
+    error_message = std::move(message);
+}
+
+std::string SocketRpcIvModuleSourcesResultBuilder::build(int request_id) const {
+    if (!error_message.empty()) return jsonrpc_error(request_id, error_code, error_message);
+    if (!result.has_value()) throw_unbuilt_response("SocketRpcIvModuleSourcesResultBuilder");
+    return jsonrpc_result(request_id, Json{{"sources", iv_module_sources_json(*result)}});
+}
+
+void SocketRpcIvModuleSourceResultBuilder::succeed(IvModuleSourceInfo value) {
+    result = std::move(value);
+}
+
+void SocketRpcIvModuleSourceResultBuilder::fail(std::string message) {
+    error_code = -32000;
+    error_message = std::move(message);
+}
+
+void SocketRpcIvModuleSourceResultBuilder::fail(int code, std::string message) {
+    error_code = code;
+    error_message = std::move(message);
+}
+
+std::string SocketRpcIvModuleSourceResultBuilder::build(int request_id) const {
+    if (!error_message.empty()) return jsonrpc_error(request_id, error_code, error_message);
+    if (!result.has_value()) throw_unbuilt_response("SocketRpcIvModuleSourceResultBuilder");
+    return jsonrpc_result(request_id, Json{{"source", iv_module_source_json(*result)}});
+}
+
 std::string SocketRpcCreateIvModuleInstanceResultBuilder::build(int request_id) const {
     if (!error_message.empty()) {
         return jsonrpc_error(request_id, error_code, error_message);

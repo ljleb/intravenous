@@ -10,7 +10,7 @@ namespace iv {
         return filename != "iv_project.jsonl"
             && filename != "iv_project.jsonl.tmp"
             && filename != "compile_commands.json"
-            && path.parent_path().filename() != ".intravenous-tooling";
+            && filename != "compile_commands.json.tmp";
     }
 
     struct ModuleDependency {

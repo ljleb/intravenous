@@ -113,7 +113,7 @@ TEST_F(IvModuleInstancesTest, CreateInstancePublishesRequiredDefinitionAndListCh
     EXPECT_FALSE(witness.listed_instances->front().realized);
 }
 
-TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionDoesNotRepublishRequirement)
+TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionRepublishesLoadedDefinition)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_dedup_required");
@@ -126,7 +126,10 @@ TEST_F(IvModuleInstancesTest, CreateSecondInstanceForSameDefinitionDoesNotRepubl
     auto const second_instance_id = instances.create_instance(module_root);
 
     EXPECT_FALSE(second_instance_id.empty());
-    EXPECT_FALSE(witness.required_diff.has_value());
+    ASSERT_TRUE(witness.required_diff.has_value());
+    ASSERT_EQ(witness.required_diff->updated.size(), 1u);
+    EXPECT_EQ(witness.required_diff->updated.front().definition_id, module_root.string());
+    EXPECT_EQ(witness.required_diff->updated.front().module_root, module_root);
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 2u);
 }

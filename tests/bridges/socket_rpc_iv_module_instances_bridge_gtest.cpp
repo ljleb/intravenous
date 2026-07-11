@@ -1,4 +1,6 @@
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/iv_module_sources.h>
 #include <intravenous/runtime/runtime_project_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -38,8 +40,10 @@ TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventReturnsError)
 TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
 {
     iv::IvModuleInstances instances;
+    iv::IvModuleSourceIntrospection introspection;
+    iv::IvModuleSources sources("/tmp", {});
     iv::bind_runtime_project_iv_module_instances_bridge(instances);
-    iv::bind_socket_rpc_iv_module_instances_bridge(instances);
+    iv::bind_socket_rpc_iv_module_instances_bridge(instances, introspection, sources);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
     IV_INVOKE_LINKER_EVENT(
@@ -64,14 +68,16 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
     EXPECT_EQ(delete_response["result"]["ok"], true);
 
     iv::unbind_runtime_project_iv_module_instances_bridge(instances);
-    iv::unbind_socket_rpc_iv_module_instances_bridge(instances);
+    iv::unbind_socket_rpc_iv_module_instances_bridge(instances, introspection, sources);
 }
 
 TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
 {
     iv::IvModuleInstances instances;
+    iv::IvModuleSourceIntrospection introspection;
+    iv::IvModuleSources sources("/tmp", {});
     iv::bind_runtime_project_iv_module_instances_bridge(instances);
-    iv::bind_socket_rpc_iv_module_instances_bridge(instances);
+    iv::bind_socket_rpc_iv_module_instances_bridge(instances, introspection, sources);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
     IV_INVOKE_LINKER_EVENT(
@@ -101,5 +107,5 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
     EXPECT_EQ(*listed.front().default_silence_ttl_samples, 1234u);
 
     iv::unbind_runtime_project_iv_module_instances_bridge(instances);
-    iv::unbind_socket_rpc_iv_module_instances_bridge(instances);
+    iv::unbind_socket_rpc_iv_module_instances_bridge(instances, introspection, sources);
 }

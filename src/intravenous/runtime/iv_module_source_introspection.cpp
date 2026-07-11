@@ -224,17 +224,27 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
     std::string const &definition_id,
     GraphIntrospectionMetadata const &introspection,
     std::filesystem::path const &module_root,
-    std::string const &module_id)
+    std::string const &module_id,
+    std::span<ModuleDependency const> dependencies)
 {
     LoadedGraphIntrospectionIndex graph_index;
     graph_index.definition_id = definition_id;
     graph_index.module_root = normalize_path(module_root);
     graph_index.module_id = module_id;
     graph_index.logical_nodes = introspection.logical_nodes;
+    graph_index.dependency_file_paths.insert(
+        normalized_path_string(graph_index.module_root / "module.cpp"));
+    for (auto const &dependency : dependencies) {
+        if (!dependency.entry_file.empty()) {
+            graph_index.dependency_file_paths.insert(
+                normalized_path_string(dependency.entry_file));
+        }
+    }
     for (auto &logical_node : graph_index.logical_nodes) {
         for (auto &span : logical_node.source_spans) {
             if (!span.file_path.empty()) {
                 span.file_path = normalized_path_string(span.file_path);
+                graph_index.dependency_file_paths.insert(span.file_path);
             }
         }
         sort_and_deduplicate_spans(logical_node.source_spans);
@@ -564,7 +574,8 @@ void IvModuleSourceIntrospection::handle_iv_module_definitions_changed(
                 definition.definition_id,
                 definition.introspection,
                 definition.module_root,
-                definition.module_id);
+                definition.module_id,
+                definition.dependencies);
     }
     for (auto const &definition : diff.updated) {
         invalidate_source_texts(definition.dependencies);
@@ -573,7 +584,8 @@ void IvModuleSourceIntrospection::handle_iv_module_definitions_changed(
                 definition.definition_id,
                 definition.introspection,
                 definition.module_root,
-                definition.module_id);
+                definition.module_id,
+                definition.dependencies);
     }
 }
 
@@ -783,6 +795,19 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
     }
 
     return result;
+}
+
+bool IvModuleSourceIntrospection::definition_uses_source_file(
+    std::string const &definition_id,
+    std::filesystem::path const &file_path) const
+{
+    std::scoped_lock lock(mutex);
+    auto const definition = graph_indexes_by_definition_id.find(definition_id);
+    if (definition == graph_indexes_by_definition_id.end()) {
+        return false;
+    }
+    return definition->second.dependency_file_paths.contains(
+        normalized_path_string(file_path));
 }
 
 LogicalNodeInfo IvModuleSourceIntrospection::get_logical_node(std::string const &node_id) const

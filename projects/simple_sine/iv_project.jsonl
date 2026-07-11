@@ -1,6 +1,9 @@
 {"command":"audioDevices.setLaneIds","args":{"output_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","input_lane_id":"5c55a6fc-58e4-4d3f-b121-466dcb2cf44a"}}
-{"command":"ivModuleInstances.create","args":{"instance_id":"4b95f2d8-56c7-4c84-b07f-2d74b61f08cd","module_root":"."}}
+{"command":"ivModuleInstances.create","args":{"instance_id":"58670446-94fc-42ac-b472-2683300fc2f3","module_root":"modules/arst"}}
+{"command":"ivModuleInstances.create","args":{"instance_id":"88661d88-a23c-48de-94c8-2a1bff0d4c70","module_root":"modules/saw"}}
+{"command":"ivModuleInstances.create","args":{"instance_id":"e7aafdf3-87d1-470f-b387-c670bcbbe300","module_root":"modules/saw"}}
 {"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"5c55a6fc-58e4-4d3f-b121-466dcb2cf44a","sample_channel_type":"stereo"}}
 {"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","sample_channel_type":"stereo"}}
-{"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"iv.public:output:instance:4b95f2d8-56c7-4c84-b07f-2d74b61f08cd:kind:sample:ordinal:0:channel:1","sample_channel_type":"stereo"}}
+{"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"iv.public:output:instance:88661d88-a23c-48de-94c8-2a1bff0d4c70:kind:sample:ordinal:0:channel:1","sample_channel_type":"stereo"}}
+{"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"iv.public:output:instance:e7aafdf3-87d1-470f-b387-c670bcbbe300:kind:sample:ordinal:0:channel:1","sample_channel_type":"stereo"}}
 {"command":"timeline.connectLanes","args":{"source_lane_id":"iv.public:output:instance:4b95f2d8-56c7-4c84-b07f-2d74b61f08cd:kind:sample:ordinal:0:channel:1","target_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","port_domain":"realtime","port_kind":"sample","port_ordinal":0}}

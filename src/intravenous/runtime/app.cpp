@@ -32,6 +32,8 @@
 #include <intravenous/runtime/lanes_visualization_timeline_bridge.h>
 #include <intravenous/runtime/task_runner_lanes_visualization_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/module/search_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_autosave.h>
@@ -229,6 +231,9 @@ namespace iv {
                 16,
                 startup.execution.block_size);
             IvModuleSourceIntrospection introspection;
+            IvModuleSources iv_module_sources(
+                startup.workspace_root,
+                parse_search_path_env());
             startup_log("binding runtime bridges");
             bind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
             bind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, timeline_execution);
@@ -288,7 +293,10 @@ namespace iv {
             startup_log("binding socket rpc bridges");
             bind_socket_rpc_lane_views_bridge(lane_views);
             bind_socket_rpc_audio_device_lanes_bridge(audio_device_lanes);
-            bind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
+            bind_socket_rpc_iv_module_instances_bridge(
+                iv_module_instances,
+                introspection,
+                iv_module_sources);
             bind_socket_rpc_timeline_execution_bridge(
                 timeline,
                 timeline_execution,
@@ -322,7 +330,10 @@ namespace iv {
             unbind_socket_rpc_notification_bridge(server);
             unbind_socket_rpc_lane_views_bridge(lane_views);
             unbind_socket_rpc_audio_device_lanes_bridge(audio_device_lanes);
-            unbind_socket_rpc_iv_module_instances_bridge(iv_module_instances);
+            unbind_socket_rpc_iv_module_instances_bridge(
+                iv_module_instances,
+                introspection,
+                iv_module_sources);
             unbind_socket_rpc_timeline_execution_bridge(timeline_execution);
             unbind_socket_rpc_iv_module_source_introspection_bridge(
                 introspection,

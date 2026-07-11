@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 
 import { LiveGraphControlHandler } from "./liveGraphProtocol";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
+import { ModulesViewProvider } from "./modulesViewProvider";
 import { WorkspaceSession } from "./workspaceSession";
 
 type LiveGraphProviderLike = {
@@ -11,6 +12,7 @@ type LiveGraphProviderLike = {
     setNodes(nodes: unknown[]): void;
     upsertNodes(nodes: unknown[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
+    setModuleSource(moduleRoot: string | null): void;
 };
 
 type LaneViewProviderLike = {
@@ -24,6 +26,8 @@ type LaneViewProviderLike = {
     viewportState(): { startIndex: number; visibleLaneCount: number };
 };
 
+type ModulesViewProviderLike = Pick<ModulesViewProvider, "setState">;
+
 @injectable()
 export class WorkspaceSessionFactory {
     create(
@@ -31,6 +35,7 @@ export class WorkspaceSessionFactory {
         outputChannel: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
         laneProvider: LaneViewProviderLike,
+        modulesProvider: ModulesViewProviderLike,
         highlighter: NodeSpanHighlighter,
     ): WorkspaceSession {
         return new WorkspaceSession(
@@ -38,6 +43,7 @@ export class WorkspaceSessionFactory {
             outputChannel,
             provider,
             laneProvider,
+            modulesProvider,
             highlighter,
         );
     }

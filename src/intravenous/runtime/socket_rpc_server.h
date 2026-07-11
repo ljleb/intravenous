@@ -37,6 +37,10 @@ namespace iv {
         void (*)(GetLogicalNodesRequest const &, SocketRpcLogicalNodesResultBuilder &);
     using SocketRpcCreateIvModuleInstanceEvent =
         void (*)(CreateIvModuleInstanceRequest const &, SocketRpcCreateIvModuleInstanceResultBuilder &);
+    using SocketRpcGetIvModuleSourcesEvent =
+        void (*)(GetIvModuleSourcesRequest const &, SocketRpcIvModuleSourcesResultBuilder &);
+    using SocketRpcCreateIvModuleSourceEvent =
+        void (*)(CreateIvModuleSourceRequest const &, SocketRpcIvModuleSourceResultBuilder &);
     using SocketRpcGetIvModuleInstancesEvent =
         void (*)(GetIvModuleInstancesRequest const &, SocketRpcIvModuleInstancesResultBuilder &);
     using SocketRpcDeleteIvModuleInstanceEvent =
@@ -85,6 +89,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetLogicalNodeEvent, iv_socket_rpc_get_logical_node_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetLogicalNodesEvent, iv_socket_rpc_get_logical_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetIvModuleSourcesEvent, iv_socket_rpc_get_iv_module_sources_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleSourceEvent, iv_socket_rpc_create_iv_module_source_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvModuleInstancesEvent, iv_socket_rpc_get_iv_module_instances_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteIvModuleInstanceEvent, iv_socket_rpc_delete_iv_module_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetIvModuleInstanceDefaultSilenceTtlSamplesEvent, iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event);

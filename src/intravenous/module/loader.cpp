@@ -1037,18 +1037,19 @@ namespace iv {
                 return;
             }
 
+            auto const legacy_metadata_dir = resolved.module_dir / ".intravenous-tooling";
+            std::filesystem::remove(
+                legacy_metadata_dir / "compile_commands.owner",
+                ec);
+            ec.clear();
+            std::filesystem::remove(legacy_metadata_dir, ec);
+            ec.clear();
+
             auto const destination = resolved.module_dir / "compile_commands.json";
-            auto const metadata_dir = resolved.module_dir / ".intravenous-tooling";
-            auto const ownership_marker = metadata_dir / "compile_commands.owner";
             auto const destination_exists = std::filesystem::exists(destination, ec);
             if (ec) {
                 return;
             }
-            auto const owned_by_intravenous = std::filesystem::exists(ownership_marker, ec);
-            if (ec || (destination_exists && !owned_by_intravenous)) {
-                return;
-            }
-
             if (destination_exists) {
                 try {
                     if (read_text(source) == read_text(destination)) {
@@ -1059,19 +1060,7 @@ namespace iv {
                 }
             }
 
-            std::filesystem::create_directories(metadata_dir, ec);
-            if (ec) {
-                return;
-            }
-
-            if (!owned_by_intravenous) {
-                std::ofstream ownership(ownership_marker, std::ios::trunc);
-                if (!ownership) {
-                    return;
-                }
-            }
-
-            auto const temporary = metadata_dir / "compile_commands.json.tmp";
+            auto const temporary = resolved.module_dir / "compile_commands.json.tmp";
             std::filesystem::copy_file(
                 source,
                 temporary,

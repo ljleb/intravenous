@@ -103,6 +103,24 @@ SocketRpcJson iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &
     return json;
 }
 
+SocketRpcJson iv_module_source_json(IvModuleSourceInfo const &source)
+{
+    return SocketRpcJson{
+        {"moduleId", source.module_id},
+        {"moduleRoot", source.module_root.generic_string()},
+        {"projectLocal", source.project_local},
+    };
+}
+
+SocketRpcJson iv_module_sources_json(std::vector<IvModuleSourceInfo> const &sources)
+{
+    SocketRpcJson json = SocketRpcJson::array();
+    for (auto const &source : sources) {
+        json.push_back(iv_module_source_json(source));
+    }
+    return json;
+}
+
 SocketRpcJson logical_port_json(LogicalPortInfo const &port)
 {
     SocketRpcJson json = SocketRpcJson::object();

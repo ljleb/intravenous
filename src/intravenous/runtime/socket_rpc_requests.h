@@ -38,7 +38,15 @@ namespace iv {
         std::filesystem::path module_root{};
     };
 
-    struct GetIvModuleInstancesRequest {};
+    struct GetIvModuleSourcesRequest {};
+
+    struct CreateIvModuleSourceRequest {
+        std::string name{};
+    };
+
+    struct GetIvModuleInstancesRequest {
+        std::optional<std::filesystem::path> source_file_path {};
+    };
 
     struct DeleteIvModuleInstanceRequest {
         std::string instance_id{};
@@ -122,6 +130,8 @@ namespace iv {
         GetLogicalNodeRequest,
         GetLogicalNodesRequest,
         CreateIvModuleInstanceRequest,
+        GetIvModuleSourcesRequest,
+        CreateIvModuleSourceRequest,
         GetIvModuleInstancesRequest,
         DeleteIvModuleInstanceRequest,
         SetIvModuleInstanceDefaultSilenceTtlSamplesRequest,

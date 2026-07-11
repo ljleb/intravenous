@@ -14,18 +14,24 @@ import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
+import { ModuleInstanceInfo, ModuleSourceInfo, ModulesControlMessage } from "./modulesViewProvider";
 
 type LiveGraphProviderLike = {
     setInstances(instances: IvModuleInstanceInfo[]): void;
     setNodes(nodes: LogicalNode[]): void;
     upsertNodes(nodes: LogicalNode[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
+    setModuleSource(moduleRoot: string | null): void;
 };
 
 type LaneProviderLike = {
     viewportState(): { startIndex: number; visibleLaneCount: number };
     clear(): void;
     setLanes(result: Record<string, unknown>): void;
+};
+
+type ModulesProviderLike = {
+    setState(sources: ModuleSourceInfo[], instances: ModuleInstanceInfo[], selectedInstanceId: string | null): void;
 };
 
 type ServerStatusNotification = {
@@ -68,6 +74,7 @@ export class WorkspaceSession {
     private readonly outputChannel: vscode.OutputChannel;
     readonly provider: LiveGraphProviderLike;
     private readonly laneProvider: LaneProviderLike;
+    private readonly modulesProvider: ModulesProviderLike;
     private readonly highlighter: NodeSpanHighlighter;
     private readonly rebuildStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     private readonly clangdDatabaseWatcher: vscode.FileSystemWatcher;
@@ -91,7 +98,12 @@ export class WorkspaceSession {
         timeout: NodeJS.Timeout;
     }> = [];
     private ivModuleInstances: IvModuleInstanceInfo[] = [];
+    private projectModuleInstances: IvModuleInstanceInfo[] = [];
+    private ivModuleSources: ModuleSourceInfo[] = [];
     private selectedInstanceId: string | null = null;
+    private activeSourceFilePath: string | null = null;
+    private activeModuleRoot: string | null = null;
+    private readonly selectedInstanceIdBySourceFile = new Map<string, string>();
     private clangdRestartTimer: NodeJS.Timeout | null = null;
 
     constructor(
@@ -99,12 +111,14 @@ export class WorkspaceSession {
         outputChannel: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
         laneProvider: LaneProviderLike,
+        modulesProvider: ModulesProviderLike,
         highlighter: NodeSpanHighlighter,
     ) {
         this.workspaceFolder = workspaceFolder;
         this.outputChannel = outputChannel;
         this.provider = provider;
         this.laneProvider = laneProvider;
+        this.modulesProvider = modulesProvider;
         this.highlighter = highlighter;
         this.clangdDatabaseWatcher = vscode.workspace.createFileSystemWatcher(
             new vscode.RelativePattern(this.workspaceFolder, "compile_commands.json"),
@@ -140,13 +154,18 @@ export class WorkspaceSession {
         });
 
         this.notifications.subscribe<IvModuleInstancesUpdatedNotification>("ivModuleInstances.updated", (params) => {
-            this.ivModuleInstances = Array.isArray(params.instances) ? params.instances : [];
-            this.selectedInstanceId = this.resolveSelectedInstanceId(
-                this.ivModuleInstances,
-                this.selectedInstanceId,
-            );
-            this.provider.setInstances(this.ivModuleInstances);
-            this.provider.setSelectedInstanceId(this.selectedInstanceId);
+            this.projectModuleInstances = Array.isArray(params.instances) ? params.instances : [];
+            if (this.activeSourceFilePath && this.rpc) {
+                void this.rpc.getIvModuleInstances(this.activeSourceFilePath).then((result) => {
+                    this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
+                    this.refreshVisibleInstances();
+                    this.refreshModulesPanelState();
+                });
+                return;
+            }
+            this.ivModuleInstances = this.projectModuleInstances;
+            this.refreshVisibleInstances();
+            this.refreshModulesPanelState();
         });
 
         this.notifications.subscribe<GraphNodesUpdatedNotification>("graph.nodesUpdated", async (params) => {
@@ -248,6 +267,36 @@ export class WorkspaceSession {
         }
         return payload.filter((candidate): candidate is IvModuleInstanceInfo =>
             !!candidate && typeof candidate === "object");
+    }
+
+    private parseIvModuleSource(payload: unknown): ModuleSourceInfo | null {
+        if (!payload || typeof payload !== "object") return null;
+        const source = payload as Record<string, unknown>;
+        if (typeof source.moduleId !== "string" || typeof source.moduleRoot !== "string") return null;
+        return { moduleId: source.moduleId, moduleRoot: source.moduleRoot, projectLocal: source.projectLocal === true };
+    }
+
+    private parseIvModuleSources(payload: unknown): ModuleSourceInfo[] {
+        if (!Array.isArray(payload)) return [];
+        return payload.map((source) => this.parseIvModuleSource(source))
+            .filter((source): source is ModuleSourceInfo => source !== null);
+    }
+
+    private modulePanelInstances(): ModuleInstanceInfo[] {
+        return this.projectModuleInstances.flatMap((instance) => {
+            if (typeof instance.instanceId !== "string" || typeof instance.definitionId !== "string" || typeof instance.moduleRoot !== "string") return [];
+            return [{
+                instanceId: instance.instanceId,
+                definitionId: instance.definitionId,
+                moduleId: instance.moduleId,
+                moduleRoot: instance.moduleRoot,
+                realized: instance.realized === true,
+            }];
+        });
+    }
+
+    private refreshModulesPanelState(): void {
+        this.modulesProvider.setState(this.ivModuleSources, this.modulePanelInstances(), this.selectedInstanceId);
     }
 
     private parseSourcePosition(payload: unknown): SourcePosition | null {
@@ -498,16 +547,12 @@ export class WorkspaceSession {
         if (this.rpc) {
             const result = await this.rpc.getIvModuleInstances();
             this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
-            this.selectedInstanceId = this.resolveSelectedInstanceId(
-                this.ivModuleInstances,
-                this.selectedInstanceId,
-            );
+            this.projectModuleInstances = this.ivModuleInstances;
+            this.refreshVisibleInstances();
             const realizedCount = this.ivModuleInstances.filter((instance) => instance.realized).length;
             this.outputChannel.appendLine(
                 `Intravenous instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
             );
-            this.provider.setInstances(this.ivModuleInstances);
-            this.provider.setSelectedInstanceId(this.selectedInstanceId);
         }
         return true;
     }
@@ -531,11 +576,25 @@ export class WorkspaceSession {
         switch (message.type) {
         case "selectInstance":
             this.selectedInstanceId = this.resolveSelectedInstanceId(
-                this.ivModuleInstances,
+                this.visibleInstances(),
                 message.instanceId ?? null,
             );
+            this.rememberSelectedInstance();
             this.provider.setSelectedInstanceId(this.selectedInstanceId);
             await this.refreshActiveEditorSelection();
+            return;
+
+        case "createInstance":
+            if (!(await this.ensureReady()) || !this.rpc || !this.activeModuleRoot) {
+                return;
+            }
+            {
+                const created = await this.rpc.createIvModuleInstance(this.activeModuleRoot);
+                this.selectedInstanceId = created.instanceId;
+                this.rememberSelectedInstance();
+                this.refreshVisibleInstances();
+                await this.refreshActiveEditorSelection();
+            }
             return;
 
         case "setSampleInputValue":
@@ -600,6 +659,74 @@ export class WorkspaceSession {
         }
     }
 
+    async refreshModulesPanel(): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        const [sources, instances] = await Promise.all([
+            this.rpc.getIvModuleSources(),
+            this.rpc.getIvModuleInstances(),
+        ]);
+        this.ivModuleSources = this.parseIvModuleSources(sources.sources);
+        this.projectModuleInstances = this.parseIvModuleInstances(instances.instances);
+        this.refreshModulesPanelState();
+    }
+
+    async dispatchModulesControl(message: ModulesControlMessage): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        switch (message.type) {
+        case "createSource": {
+            const result = await this.rpc.createIvModuleSource(message.name);
+            const source = this.parseIvModuleSource(result.source);
+            await this.refreshModulesPanel();
+            if (source) await this.revealModuleSource(source.moduleRoot);
+            return;
+        }
+        case "instantiate":
+        case "duplicate": {
+            const created = await this.rpc.createIvModuleInstance(message.moduleRoot);
+            this.selectedInstanceId = created.instanceId;
+            await this.refreshModulesPanel();
+            return;
+        }
+        case "select":
+            this.selectedInstanceId = message.instanceId;
+            this.provider.setSelectedInstanceId(this.selectedInstanceId);
+            await this.revealModuleSource(message.moduleRoot);
+            await this.refreshModulesPanel();
+            return;
+        case "delete":
+            await this.rpc.deleteIvModuleInstance(message.instanceId);
+            if (this.selectedInstanceId === message.instanceId) this.selectedInstanceId = null;
+            await this.refreshModulesPanel();
+            return;
+        case "reveal":
+            await this.revealModuleSource(message.moduleRoot);
+            return;
+        }
+    }
+
+    private async revealModuleSource(moduleRoot: string): Promise<void> {
+        const uri = vscode.Uri.file(path.join(moduleRoot, "module.cpp"));
+        const existing = vscode.window.visibleTextEditors.find(
+            (editor) => editor.document.uri.toString() === uri.toString(),
+        );
+        if (existing) {
+            await vscode.window.showTextDocument(existing.document, existing.viewColumn, false);
+            return;
+        }
+        const existingGroup = vscode.window.tabGroups.all.find((group) =>
+            group.tabs.some((tab) => {
+                const input = tab.input as { uri?: vscode.Uri };
+                return input.uri?.toString() === uri.toString();
+            }),
+        );
+        const document = await vscode.workspace.openTextDocument(uri);
+        if (existingGroup) {
+            await vscode.window.showTextDocument(document, existingGroup.viewColumn, false);
+            return;
+        }
+        await vscode.window.showTextDocument(document, { preview: false });
+    }
+
     private async refreshActiveEditorSelection(): Promise<void> {
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
@@ -627,6 +754,31 @@ export class WorkspaceSession {
 
         const first = instances.find((instance) => typeof instance.instanceId === "string");
         return first?.instanceId || null;
+    }
+
+    private visibleInstances(): IvModuleInstanceInfo[] {
+        if (!this.activeSourceFilePath) {
+            return this.ivModuleInstances;
+        }
+        return this.ivModuleInstances;
+    }
+
+    private refreshVisibleInstances(): void {
+        const instances = this.visibleInstances();
+        const remembered = this.activeSourceFilePath
+            ? this.selectedInstanceIdBySourceFile.get(this.activeSourceFilePath) || null
+            : null;
+        this.selectedInstanceId = this.resolveSelectedInstanceId(instances, remembered || this.selectedInstanceId);
+        this.rememberSelectedInstance();
+        this.provider.setInstances(instances);
+        this.provider.setSelectedInstanceId(this.selectedInstanceId);
+    }
+
+    private rememberSelectedInstance(): void {
+        const selected = this.ivModuleInstances.find((instance) => instance.instanceId === this.selectedInstanceId);
+        if (this.activeSourceFilePath && selected?.instanceId) {
+            this.selectedInstanceIdBySourceFile.set(this.activeSourceFilePath, selected.instanceId);
+        }
     }
 
     async pausePlayback(): Promise<void> {
@@ -732,6 +884,20 @@ export class WorkspaceSession {
         }
         if (editor.document.uri.scheme !== "file") {
             return [];
+        }
+
+        const nextSourceFilePath = editor.document.uri.fsPath;
+        if (nextSourceFilePath !== this.activeSourceFilePath) {
+            this.activeSourceFilePath = nextSourceFilePath;
+            const sourceDirectory = path.dirname(nextSourceFilePath);
+            this.activeModuleRoot = path.basename(nextSourceFilePath) === "module.cpp"
+                && fs.existsSync(path.join(sourceDirectory, "iv_module.json"))
+                ? sourceDirectory
+                : null;
+            const result = await this.rpc.getIvModuleInstances(nextSourceFilePath);
+            this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
+            this.provider.setModuleSource(this.activeModuleRoot);
+            this.refreshVisibleInstances();
         }
 
         const ranges = this.selectionRanges(editor);

@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace iv {
@@ -28,6 +29,7 @@ struct LoadedGraphIntrospectionIndex {
     std::string module_id;
     std::vector<IntrospectionLogicalNode> logical_nodes;
     std::unordered_map<std::string, size_t> logical_node_index_by_id;
+    std::unordered_set<std::string> dependency_file_paths;
 };
 
 class IvModuleSourceIntrospection {
@@ -61,6 +63,9 @@ public:
         std::optional<std::string> instance_id = std::nullopt) const;
     ProjectRegionQueryResult
     query_active_regions(std::filesystem::path const &file_path) const;
+    [[nodiscard]] bool definition_uses_source_file(
+        std::string const &definition_id,
+        std::filesystem::path const &file_path) const;
     LogicalNodeInfo get_logical_node(std::string const &node_id) const;
     std::vector<LogicalNodeInfo>
     get_logical_nodes(std::vector<std::string> const &node_ids) const;

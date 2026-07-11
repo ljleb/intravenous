@@ -16,8 +16,24 @@ type LaneViewParams = {
 export class WorkspaceRpc {
     constructor(private readonly client: JsonRpcSocketClient) {}
 
-    getIvModuleInstances(): Promise<{ instances?: Array<Record<string, unknown>> }> {
-        return this.client.request("ivModuleInstances.get", {});
+    getIvModuleInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {
+        return this.client.request("ivModuleInstances.get", sourceFilePath ? { sourceFilePath } : {});
+    }
+
+    createIvModuleInstance(moduleRoot: string): Promise<{ instanceId: string }> {
+        return this.client.request("ivModuleInstances.create", { moduleRoot });
+    }
+
+    deleteIvModuleInstance(instanceId: string): Promise<void> {
+        return this.client.request("ivModuleInstances.delete", { instanceId });
+    }
+
+    getIvModuleSources(): Promise<{ sources?: Array<Record<string, unknown>> }> {
+        return this.client.request("ivModuleSources.list", {});
+    }
+
+    createIvModuleSource(name: string): Promise<{ source: Record<string, unknown> }> {
+        return this.client.request("ivModuleSources.create", { name });
     }
 
     shutdown(): Promise<void> {

@@ -12,7 +12,8 @@
     ],
     "activationEvents": [
         "workspaceContains:iv_project.jsonl",
-        "onWebviewPanel:intravenous.lanes"
+        "onWebviewPanel:intravenous.lanes",
+        "onWebviewPanel:intravenous.modules"
     ],
     "main": "./dist/extension.js",
     "scripts": {
@@ -64,6 +65,10 @@
             {
                 "command": "intravenous.openLanes",
                 "title": "Intravenous: Open Lanes"
+            },
+            {
+                "command": "intravenous.openModules",
+                "title": "Intravenous: Open Modules"
             },
             {
                 "command": "intravenous.resumePlayback",

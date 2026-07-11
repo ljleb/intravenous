@@ -308,10 +308,29 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
-    if (method == "ivModuleInstances.get") {
+    if (method == "ivModuleSources.list") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,
-            .payload = GetIvModuleInstancesRequest{},
+            .payload = GetIvModuleSourcesRequest{},
+        };
+    }
+    if (method == "ivModuleSources.create") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = CreateIvModuleSourceRequest{
+                .name = parse_string_param(params, "name"),
+            },
+        };
+    }
+    if (method == "ivModuleInstances.get") {
+        auto const source_file_path = parse_optional_nullable_string_param(params, "sourceFilePath");
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = GetIvModuleInstancesRequest{
+                .source_file_path = source_file_path.has_value()
+                    ? std::optional<std::filesystem::path>{*source_file_path}
+                    : std::nullopt,
+            },
         };
     }
     if (method == "ivModuleInstances.delete") {

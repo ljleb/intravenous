@@ -116,7 +116,9 @@ void IvModuleDefinitions::remove_definition(std::string const &definition_id)
                 .deleted_definition_ids = {definition_id},
             });
     }
-    if (!public_diff.deleted_definition_ids.empty()) {
+    if (!public_diff.created.empty() ||
+        !public_diff.updated.empty() ||
+        !public_diff.deleted_definition_ids.empty()) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_definitions_changed_event,
             public_diff);
@@ -153,6 +155,9 @@ void IvModuleDefinitions::handle_required_definitions_changed(
             } else if (existing->second.module_root != normalized_root) {
                 existing->second.module_root = normalized_root;
                 declaration_diff.updated.push_back(existing->second);
+            } else if (auto loaded = loaded_definitions_by_id.find(required.definition_id);
+                       loaded != loaded_definitions_by_id.end()) {
+                public_diff.updated.push_back(loaded->second->snapshot);
             }
         }
         for (auto const &definition_id : diff.deleted_definition_ids) {
@@ -172,7 +177,9 @@ void IvModuleDefinitions::handle_required_definitions_changed(
             iv_runtime_iv_module_definitions_declarations_changed_event,
             declaration_diff);
     }
-    if (!public_diff.deleted_definition_ids.empty()) {
+    if (!public_diff.created.empty() ||
+        !public_diff.updated.empty() ||
+        !public_diff.deleted_definition_ids.empty()) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_definitions_changed_event,
             public_diff);
