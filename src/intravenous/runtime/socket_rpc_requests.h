@@ -110,6 +110,10 @@ namespace iv {
 
     struct SaveProjectRequest {};
 
+    struct EnableProjectAutosaveRequest {};
+
+    struct DisableProjectAutosaveRequest {};
+
     struct ServerShutdownRequest {};
 
     using SocketRpcRequestPayload = std::variant<
@@ -135,6 +139,8 @@ namespace iv {
         PauseRequest,
         ResumeRequest,
         SaveProjectRequest,
+        EnableProjectAutosaveRequest,
+        DisableProjectAutosaveRequest,
         ServerShutdownRequest,
         std::string>;
 

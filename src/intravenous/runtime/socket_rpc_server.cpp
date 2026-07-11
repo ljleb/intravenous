@@ -360,6 +360,14 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_save_project_event, event_request, builder);
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, EnableProjectAutosaveRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_enable_project_autosave_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, DisableProjectAutosaveRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_disable_project_autosave_event, event_request, builder);
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, ServerShutdownRequest>) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_server_shutdown_event, event_request, builder);

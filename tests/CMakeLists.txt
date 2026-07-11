@@ -10,15 +10,18 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 function(add_iv_gtest target source)
-    set(options ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
+    set(options ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION NO_HOST_RUNTIME_OBJECTS)
     set(oneValueArgs)
     set(multiValueArgs IV_MODULE_COMPILATION_TESTS)
     cmake_parse_arguments(IVGT "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-    add_executable(${target}
-        ${source}
-        ${PROJECT_SOURCE_DIR}/src/intravenous/third_party/miniaudio/miniaudio.c
-    )
+    add_executable(${target} ${source})
+
+    if(NOT IVGT_NO_HOST_RUNTIME_OBJECTS)
+        target_sources(${target} PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/intravenous/third_party/miniaudio/miniaudio.c
+        )
+    endif()
 
     target_compile_features(${target} PRIVATE cxx_std_23)
     set_target_properties(${target} PROPERTIES
@@ -44,7 +47,9 @@ function(add_iv_gtest target source)
     target_link_libraries(${target} PRIVATE
         GTest::gtest_main
     )
-    iv_add_host_runtime_objects(${target})
+    if(NOT IVGT_NO_HOST_RUNTIME_OBJECTS)
+        iv_add_host_runtime_objects(${target})
+    endif()
 
     gtest_add_tests(TARGET ${target} TEST_LIST discovered_tests)
 
@@ -101,6 +106,12 @@ add_iv_gtest(
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(intravenous_graph_input_lanes_tests modules/graph_input_lanes_gtest.cpp)
 add_iv_gtest(intravenous_project_persistence_tests project_persistence_gtest.cpp)
+add_iv_gtest(
+    intravenous_project_autosave_tests
+    modules/project_autosave_gtest.cpp
+    NO_HOST_RUNTIME_OBJECTS)
+target_sources(intravenous_project_autosave_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/intravenous/runtime/project_autosave.cpp)
 add_iv_gtest(intravenous_graph_logical_outputs_tests graph_logical_outputs_gtest.cpp)
 add_iv_gtest(intravenous_task_runner_tests modules/task_runner_gtest.cpp)
 add_iv_gtest(intravenous_lane_filters_bridges_tests bridges/lane_filters_bridges_gtest.cpp)

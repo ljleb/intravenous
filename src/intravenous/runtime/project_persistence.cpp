@@ -5,6 +5,7 @@
 
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <system_error>
 
 namespace iv {
 namespace {
@@ -556,19 +557,24 @@ void ProjectPersistence::load()
                 "project load command failed for '" + command.command + "': " + e.what());
         }
     }
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_loaded_event);
 }
 
 void ProjectPersistence::save() const
 {
+    std::lock_guard lock(save_mutex_);
     ProjectPersistenceBuilder builder(workspace_root_, startup_);
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_persistence_collect_state_event,
         builder);
 
     auto const commands = builder.build();
-    std::ofstream out(project_file_path(), std::ios::trunc);
+    auto const project_file = project_file_path();
+    auto const temporary_file = project_file.parent_path()
+        / (project_file.filename().string() + ".tmp");
+    std::ofstream out(temporary_file, std::ios::trunc);
     if (!out) {
-        throw std::runtime_error("failed to write " + project_file_path().string());
+        throw std::runtime_error("failed to write " + temporary_file.string());
     }
     for (auto const &command : commands) {
         out << Json{
@@ -576,6 +582,22 @@ void ProjectPersistence::save() const
             {"args", command.args},
         }.dump() << '\n';
     }
+    out.close();
+    if (!out) {
+        throw std::runtime_error("failed to write " + temporary_file.string());
+    }
+
+    std::error_code error;
+    std::filesystem::rename(temporary_file, project_file, error);
+    if (error) {
+        std::filesystem::remove(temporary_file, error);
+        throw std::runtime_error("failed to replace " + project_file.string());
+    }
+}
+
+void ProjectPersistence::report_autosave_failure(std::string message) const
+{
+    emit_message("error", "project autosave failed: " + std::move(message));
 }
 
 void bind_project_persistence_bridge(ProjectPersistence &project_persistence)

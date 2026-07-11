@@ -73,6 +73,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             outputChannel.appendLine(`Intravenous pause failed: ${error.message}`);
         }
     }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.saveProject", async () => {
+        try {
+            await session.saveProject();
+        } catch (error: any) {
+            outputChannel.appendLine(`Intravenous project save failed: ${error.message}`);
+        }
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.enableProjectAutosave", async () => {
+        try {
+            await session.enableProjectAutosave();
+            void vscode.window.showInformationMessage("Intravenous project autosave enabled");
+        } catch (error: any) {
+            outputChannel.appendLine(`Intravenous autosave enable failed: ${error.message}`);
+        }
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.disableProjectAutosave", async () => {
+        try {
+            await session.disableProjectAutosave();
+            void vscode.window.showInformationMessage("Intravenous project autosave disabled");
+        } catch (error: any) {
+            outputChannel.appendLine(`Intravenous autosave disable failed: ${error.message}`);
+        }
+    }));
 
     provider.setControlHandler(async (message) => session.dispatchLiveGraphControl(message));
 

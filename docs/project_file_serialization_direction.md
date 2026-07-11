@@ -93,30 +93,32 @@ Its responsibilities should be:
 - load the project file
 - hold the normalized reconstruction program
 - replay that program by invoking the same typed command events used by the live app
-- write the project file only on explicit save
+- write the project file through a server-owned autosave service
 
-It may rebuild normalized save output from live module state on save, but it
-should not autosave on ordinary authored mutations.
+It rebuilds normalized save output from live module state when autosave is due.
+Project replay must not schedule a save; autosave is enabled only after the
+project-loaded event fires.
 
 This module should not depend on the UI.
 
 ## Save policy
 
-Project file writes should not happen on every state change.
-
-They should happen only when an explicit save command is received from the UI /
-JSON-RPC surface.
+Project file writes should not happen on every state change. The server coalesces
+ordinary authored mutations with a short debounce and writes atomically. The UI
+can explicitly save immediately, or disable and re-enable server-owned autosave.
 
 The intended save flow is:
 
-- JSON-RPC receives explicit save
-- JSON-RPC raises a save request into project persistence
+- a project mutation is observed after project load
+- autosave coalesces mutations and requests persistence when due
 - project persistence raises its state-collection event into contributors
 - contributors fill the structured builder
 - the builder lowers to the normalized command list
 - project persistence writes `project.intravenous`
 
-This keeps serialization cost under control and lets app modules mutate live state freely without forcing immediate disk writes.
+This keeps serialization cost under control, keeps persistence independent of a
+particular client, and lets app modules mutate live state freely without forcing
+an immediate disk write.
 
 ## Open questions
 

@@ -34,6 +34,18 @@ export class WorkspaceRpc {
         });
     }
 
+    saveProject(): Promise<void> {
+        return this.client.request("project.save", {});
+    }
+
+    enableProjectAutosave(): Promise<void> {
+        return this.client.request("project.enableAutosave", {});
+    }
+
+    disableProjectAutosave(): Promise<void> {
+        return this.client.request("project.disableAutosave", {});
+    }
+
     queryNodesBySpans(
         filePath: string,
         ranges: SourceQueryRange[],

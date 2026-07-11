@@ -375,6 +375,18 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             .payload = SaveProjectRequest{},
         };
     }
+    if (method == "project.enableAutosave") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = EnableProjectAutosaveRequest{},
+        };
+    }
+    if (method == "project.disableAutosave") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = DisableProjectAutosaveRequest{},
+        };
+    }
     if (method == "playback.pause") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,

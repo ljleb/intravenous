@@ -172,7 +172,8 @@ TEST(GraphLogicalOutputsTest, MultiChannelReturnsIndexableChannelSampleRefs)
         g.outputs(channel = refs[channel]);
     });
 
-    auto const outputs = g.build_root_node().graph.outputs();
+    auto const built = g.build_root_node();
+    auto const outputs = built.graph.outputs();
     ASSERT_EQ(outputs.size(), 2u);
     EXPECT_EQ(outputs[0].name, "__stereo_left_0");
     EXPECT_EQ(outputs[1].name, "__stereo_right_0");

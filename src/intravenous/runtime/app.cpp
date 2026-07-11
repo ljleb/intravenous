@@ -34,6 +34,8 @@
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
+#include <intravenous/runtime/project_autosave.h>
+#include <intravenous/runtime/runtime_project_autosave_bridge.h>
 #include <intravenous/runtime/runtime_project_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/runtime_project_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/runtime_project_iv_module_instances_bridge.h>
@@ -107,6 +109,60 @@ namespace iv {
                 if (thread_.has_value()) {
                     thread_->request_stop();
                 }
+            }
+
+        };
+
+        class ProjectAutosaveService {
+            ProjectAutosave* autosave_ = nullptr;
+            ProjectPersistence* persistence_ = nullptr;
+            std::optional<std::jthread> thread_ {};
+
+        public:
+            ProjectAutosaveService(
+                ProjectAutosave& autosave,
+                ProjectPersistence& persistence)
+                : autosave_(&autosave)
+                , persistence_(&persistence)
+            {
+            }
+
+            void start()
+            {
+                if (thread_.has_value()) {
+                    return;
+                }
+
+                thread_.emplace([this](std::stop_token stop_token) {
+                    while (!stop_token.stop_requested()) {
+                        if (autosave_->take_due_save()) {
+                            try {
+                                persistence_->save();
+                                autosave_->save_succeeded();
+                            } catch (std::exception const& exception) {
+                                autosave_->save_failed();
+                                persistence_->report_autosave_failure(exception.what());
+                            } catch (...) {
+                                autosave_->save_failed();
+                                persistence_->report_autosave_failure("unknown failure");
+                            }
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                });
+            }
+
+            void request_shutdown()
+            {
+                if (thread_.has_value()) {
+                    thread_->request_stop();
+                }
+            }
+
+            void stop()
+            {
+                request_shutdown();
+                thread_.reset();
             }
         };
 
@@ -214,12 +270,17 @@ namespace iv {
             ProjectPersistence project_persistence(
                 startup.workspace_root,
                 startup);
+            ProjectAutosave project_autosave;
+            ProjectAutosaveService project_autosave_service(
+                project_autosave,
+                project_persistence);
 
             startup_log("constructing socket rpc server");
             SocketRpcServer server(options.workspace_root, options.rpc_fd);
             IvModuleReloadWatcherService iv_module_reload_watcher(iv_module_reload);
             std::function<void()> shutdown = [&]() {
                 iv_module_reload_watcher.request_shutdown();
+                project_autosave_service.request_shutdown();
                 server.request_shutdown();
             };
             shutdown_callback = &shutdown;
@@ -238,10 +299,12 @@ namespace iv {
                 &shutdown);
             bind_socket_rpc_notification_bridge(server);
             bind_project_persistence_bridge(project_persistence);
+            bind_runtime_project_autosave_bridge(project_autosave);
 
             startup_log("loading project persistence");
             project_persistence.load();
             startup_log("project persistence loaded");
+            project_autosave_service.start();
             startup_log("starting socket rpc server");
             server.start();
             startup_log("socket rpc server started");
@@ -254,6 +317,7 @@ namespace iv {
             server.wait();
             startup_log("socket rpc server stopped");
             iv_module_reload_watcher.request_shutdown();
+            project_autosave_service.stop();
             audio_device_lanes.request_shutdown();
             unbind_socket_rpc_notification_bridge(server);
             unbind_socket_rpc_lane_views_bridge(lane_views);
@@ -263,6 +327,7 @@ namespace iv {
             unbind_socket_rpc_iv_module_source_introspection_bridge(
                 introspection,
                 graph_input_lanes);
+            unbind_runtime_project_autosave_bridge(project_autosave);
             unbind_project_persistence_bridge(project_persistence);
             unbind_runtime_project_lane_views_bridge(lane_views);
             unbind_runtime_project_iv_module_reload_bridge(iv_module_reload);

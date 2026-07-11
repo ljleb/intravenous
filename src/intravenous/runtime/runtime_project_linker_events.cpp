@@ -8,6 +8,12 @@ IV_DEFINE_LINKER_EVENT(
     ProjectStateChangedEvent,
     iv_runtime_project_state_changed_event)
 IV_DEFINE_LINKER_EVENT(
+    ProjectLoadedEvent,
+    iv_runtime_project_loaded_event)
+IV_DEFINE_LINKER_EVENT(
+    ProjectSetAutosaveEnabledRequestedEvent,
+    iv_runtime_project_set_autosave_enabled_requested_event)
+IV_DEFINE_LINKER_EVENT(
     ProjectSetIvModuleToolchainConfigRequestedEvent,
     iv_runtime_project_set_iv_module_toolchain_config_requested_event)
 IV_DEFINE_LINKER_EVENT(

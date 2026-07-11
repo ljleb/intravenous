@@ -11,6 +11,7 @@
 #include <intravenous/runtime/timeline_execution.h>
 
 #include <filesystem>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@ namespace iv {
 class ProjectPersistence {
     std::filesystem::path workspace_root_;
     StartupConfigState startup_;
+    mutable std::mutex save_mutex_;
 
     [[nodiscard]] std::filesystem::path project_file_path() const;
     [[nodiscard]] std::vector<ProjectCommand> read_commands() const;
@@ -32,6 +34,7 @@ public:
 
     void load();
     void save() const;
+    void report_autosave_failure(std::string message) const;
 };
 
 void bind_project_persistence_bridge(ProjectPersistence &project_persistence);

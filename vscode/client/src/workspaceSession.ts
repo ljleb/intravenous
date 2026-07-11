@@ -643,6 +643,27 @@ export class WorkspaceSession {
         await this.rpc.resumePlayback(startIndex);
     }
 
+    async saveProject(): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) {
+            return;
+        }
+        await this.rpc.saveProject();
+    }
+
+    async enableProjectAutosave(): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) {
+            return;
+        }
+        await this.rpc.enableProjectAutosave();
+    }
+
+    async disableProjectAutosave(): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) {
+            return;
+        }
+        await this.rpc.disableProjectAutosave();
+    }
+
     private laneViewRequestParams(): { viewId: string; filter: { kind: string }; startIndex: number; visibleLaneCount: number } {
         const viewport = this.laneProvider.viewportState();
         return {

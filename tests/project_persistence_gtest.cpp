@@ -1456,7 +1456,7 @@ TEST_F(ProjectPersistenceTest, ProjectSaveWriteFailureReturnsError)
 
     auto const response = parse_json_line(builder.build(1));
     EXPECT_TRUE(
-        response["error"]["message"].get<std::string>().contains("failed to write"));
+        response["error"]["message"].get<std::string>().contains("failed to replace"));
 
     iv::unbind_project_persistence_bridge(persistence);
 }

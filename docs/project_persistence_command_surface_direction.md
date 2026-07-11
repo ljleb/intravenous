@@ -88,17 +88,12 @@ A dedicated persistence module:
 
 This module must not become a second mutation API.
 
-Save should not happen implicitly from ordinary project mutations.
-
-Instead:
-
-- JSON-RPC should expose an explicit save command
-- that command should enter the project persistence module
-- the project persistence module should then raise its save-side contribution
-  event
-- contributors should fill the builder
-- the builder should lower into the final command list
-- only then should the file be written
+Save is server-owned and coalesced after ordinary authored project mutations.
+The project-loaded event enables the autosave module only after replay has
+completed, so loading never writes the project back out. JSON-RPC exposes three
+idempotent controls: save now, enable autosave, and disable autosave. Each save
+still enters the project persistence module, which raises its save-side
+contribution event before writing the normalized command list.
 
 ## Event direction
 

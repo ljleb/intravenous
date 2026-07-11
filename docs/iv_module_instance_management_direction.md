@@ -93,3 +93,35 @@ The most useful remaining work in this area is:
 - persisting iv-module instances and their authored per-instance settings
 - exposing richer instance-management UI controls
 - connecting instance lifecycle to the future persistent-state app module
+
+## Project Authoring UI Notes
+
+Instance management should live in a separate command-opened panel rather than
+cluttering the live graph inspector. The panel should list project instances,
+their module roots, realization/build status, and authored per-instance
+settings. It should support create, select, duplicate, delete, source reveal,
+and retry/rebuild for failed instances.
+
+Module discovery remains server-owned. The server should discover definitions
+from the project-local `modules/` directory by default and from configured
+shared source roots. The creation flow should make a project-local module easy
+to create from the standard source template, then offer to instantiate it.
+
+Duplication needs two explicit policies:
+
+- ordinary duplicate copies the module reference and per-instance settings but
+  resets port policy, output routing, and lane connections;
+- duplicate with setup copies authored input values and port policies, creates
+  fresh stable ids for owned lanes, and reproduces eligible lane connections.
+
+Output routing should remain excluded by default. A later advanced flow may
+offer inputs only, inputs plus routing, or the full patch explicitly.
+
+When an editor focuses a module definition source file, the live graph sidebar
+should switch to that definition's instances while preserving the selected
+instance when it belongs to the definition. A definition with no instances
+should offer the creation action rather than showing unrelated instance state.
+
+The panel must only use the typed instance mutation surface. Project save
+normalizes those mutations into `project.intravenous`; users should not need to
+author that file directly outside normal version-control conflict resolution.

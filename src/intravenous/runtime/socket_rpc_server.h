@@ -73,6 +73,10 @@ namespace iv {
         void (*)(ResumeRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcSaveProjectEvent =
         void (*)(SaveProjectRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcEnableProjectAutosaveEvent =
+        void (*)(EnableProjectAutosaveRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcDisableProjectAutosaveEvent =
+        void (*)(DisableProjectAutosaveRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcServerShutdownEvent =
         void (*)(ServerShutdownRequest const &, SocketRpcAckResponseBuilder &);
 
@@ -99,6 +103,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcPauseEvent, iv_socket_rpc_pause_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcResumeEvent, iv_socket_rpc_resume_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDisableProjectAutosaveEvent, iv_socket_rpc_disable_project_autosave_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcServerShutdownEvent, iv_socket_rpc_server_shutdown_event);
 
     class SocketRpcServer {

@@ -319,8 +319,10 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_source_introspection_graph_input_lanes_bridge.cpp
     runtime/project_persistence.cpp
     runtime/project_persistence_builder.cpp
+    runtime/project_autosave.cpp
     runtime/runtime_project_events.cpp
     runtime/runtime_project_audio_device_lanes_bridge.cpp
+    runtime/runtime_project_autosave_bridge.cpp
     runtime/runtime_project_graph_input_lanes_bridge.cpp
     runtime/runtime_project_iv_module_instances_bridge.cpp
     runtime/runtime_project_iv_module_reload_bridge.cpp
@@ -330,6 +332,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_audio_device_lanes_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_iv_module_instances_bridge.cpp
+    runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
     runtime/socket_rpc_timeline_execution_bridge.cpp
     runtime/socket_rpc_notification_bridge.cpp

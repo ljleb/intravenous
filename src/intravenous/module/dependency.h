@@ -8,6 +8,8 @@ namespace iv {
     {
         auto const filename = path.filename();
         return filename != ".intravenous"
+            && filename != "project.intravenous"
+            && filename != "project.intravenous.tmp"
             && filename != "compile_commands.json"
             && path.parent_path().filename() != ".intravenous-tooling";
     }
