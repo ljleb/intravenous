@@ -17,7 +17,7 @@ inline void project_v1(iv::ModuleContext const& c)
     SamplePortRef left;
     SamplePortRef right;
 
-    g.multi_channel(ChannelTypeId::stereo, [&]<auto Ch>() {
+    g.multi_channel<ChannelTypeId::stereo>([&]<auto Ch>() {
         auto voice = polyphonic<16>(g, [&](auto m) {
             auto& [a, f] = m;
             auto saw = g.node<SawOscillator>();

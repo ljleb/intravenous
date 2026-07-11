@@ -66,6 +66,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             outputChannel.appendLine(`Intravenous resume failed: ${error.message}`);
         }
     }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.pausePlayback", async () => {
+        try {
+            await session.pausePlayback();
+        } catch (error: any) {
+            outputChannel.appendLine(`Intravenous pause failed: ${error.message}`);
+        }
+    }));
 
     provider.setControlHandler(async (message) => session.dispatchLiveGraphControl(message));
 

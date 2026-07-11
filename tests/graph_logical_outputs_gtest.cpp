@@ -126,4 +126,56 @@ TEST(GraphLogicalOutputsTest, KeepsSparseStereoFamiliesSparse)
     EXPECT_FALSE(family.channels[1].source.has_value());
 }
 
+TEST(GraphLogicalOutputsTest, AppendsPublicOutputsAcrossMultiChannelCalls)
+{
+    GraphBuilder g;
+    g.multi_channel<ChannelTypeId::stereo>([&]<auto channel>() {
+        g.outputs(channel = 0.0f);
+    });
+
+    auto const built = g.build_root_node();
+    auto const outputs = built.graph.outputs();
+    ASSERT_EQ(outputs.size(), 2u);
+    EXPECT_EQ(outputs[0].name, "__stereo_left_0");
+    EXPECT_EQ(outputs[1].name, "__stereo_right_0");
+}
+
+TEST(GraphLogicalOutputsTest, ChannelPortsSupportConstexprEquality)
+{
+    constexpr auto is_left = []<auto channel>() {
+        if constexpr (channel == channels::stereo_left) {
+            return true;
+        }
+        return false;
+    };
+
+    static_assert(is_left.template operator()<channels::stereo_left>());
+    static_assert(!is_left.template operator()<channels::stereo_right>());
+    static_assert(channels::stereo_left != channels::stereo_right);
+    static_assert(channels::mono != channels::stereo_left);
+
+    EXPECT_TRUE(is_left.template operator()<channels::stereo_left>());
+    EXPECT_FALSE(is_left.template operator()<channels::stereo_right>());
+}
+
+TEST(GraphLogicalOutputsTest, MultiChannelReturnsIndexableChannelSampleRefs)
+{
+    GraphBuilder g;
+    auto refs = g.multi_channel<ChannelTypeId::stereo>([&]<auto channel>() {
+        return channel = g.node<Constant>(0.25f);
+    });
+    static_assert(std::same_as<
+        decltype(refs),
+        ChannelRefs<ChannelTypeId::stereo>>);
+
+    g.multi_channel<ChannelTypeId::stereo>([&]<auto channel>() {
+        g.outputs(channel = refs[channel]);
+    });
+
+    auto const outputs = g.build_root_node().graph.outputs();
+    ASSERT_EQ(outputs.size(), 2u);
+    EXPECT_EQ(outputs[0].name, "__stereo_left_0");
+    EXPECT_EQ(outputs[1].name, "__stereo_right_0");
+}
+
 } // namespace iv

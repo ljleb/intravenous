@@ -16,7 +16,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
     GraphBuilder& g = context.builder();
     SamplePortRef left;
     SamplePortRef right;
-    g.multi_channel(ChannelTypeId::stereo, [&]<auto Ch>() {
+    g.multi_channel<ChannelTypeId::stereo>([&]<auto Ch>() {
         if constexpr (std::same_as<decltype(Ch), decltype(channels::stereo_left)>) {
             left = 0.01;
         } else {

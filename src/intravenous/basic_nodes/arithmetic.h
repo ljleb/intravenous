@@ -50,17 +50,39 @@ namespace iv {
         }
     };
 
+    template<typename BinaryOp>
+    class BinaryOpNode {
+        BinaryOp _binary_op;
+
+    public:
+        auto inputs() const
+        {
+            return std::array<InputConfig, 2>{};
+        }
+
+        auto outputs() const
+        {
+            return std::array<OutputConfig, 1>{};
+        }
+
+        void tick(auto const& ctx) const
+        {
+            auto& out = ctx.outputs[0];
+            auto& in0 = ctx.inputs[0];
+            auto& in1 = ctx.inputs[1];
+            out.push(_binary_op(in0.get(), in1.get()));
+        }
+    };
+
     template<size_t NumInputs>
     using Sum = FixedBinaryOpNode<std::plus<Sample>, NumInputs>;
 
-    template<size_t NumInputs>
-    using Subtract = FixedBinaryOpNode<std::minus<Sample>, NumInputs>;
+    using Subtract = BinaryOpNode<std::minus<Sample>>;
 
     template<size_t NumInputs>
     using Product = FixedBinaryOpNode<std::multiplies<Sample>, NumInputs>;
 
-    template<size_t NumInputs>
-    using Quotient = FixedBinaryOpNode<std::divides<Sample>, NumInputs>;
+    using Quotient = BinaryOpNode<std::divides<Sample>>;
 
     struct Invert {
         auto inputs() const

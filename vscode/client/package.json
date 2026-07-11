@@ -68,6 +68,10 @@
             {
                 "command": "intravenous.resumePlayback",
                 "title": "Intravenous: Resume Playback"
+            },
+            {
+                "command": "intravenous.pausePlayback",
+                "title": "Intravenous: Pause Playback"
             }
         ]
     }

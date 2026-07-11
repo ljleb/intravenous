@@ -110,10 +110,6 @@ namespace iv {
         Refs&&... refs
     )
     {
-        if (sample_outputs_defined()) {
-            details::error("outputs(...) was already called on builder " + identity.value);
-        }
-
         std::vector<OutputRefConfig> output_refs;
         output_refs.reserve(sizeof...(Refs));
         constexpr bool require_names = (sizeof...(Refs) > 1);
@@ -151,10 +147,6 @@ namespace iv {
         std::span<NamedRef const> refs
     )
     {
-        if (sample_outputs_defined()) {
-            details::error("outputs(...) was already called on builder " + identity.value);
-        }
-
         std::vector<OutputRefConfig> output_refs;
         output_refs.reserve(refs.size());
         bool const require_names = refs.size() > 1;

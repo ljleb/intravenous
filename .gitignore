@@ -3,6 +3,8 @@
 /.cache
 /.codex
 /.claude
+.intravenous-tooling/
+compile_commands.json
 intravenious
 /scripts/benchmark.txt*
 node_modules

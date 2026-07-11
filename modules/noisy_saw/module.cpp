@@ -28,7 +28,7 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
     size_t seed = 0;
     SamplePortRef left;
     SamplePortRef right;
-    g.multi_channel(ChannelTypeId::stereo, [&]<auto Ch>() {
+    g.multi_channel<ChannelTypeId::stereo>([&]<auto Ch>() {
         auto voice = polyphonic<16>(g, [&](auto m) {
             // m.connect_event_input("midi", midi);
 

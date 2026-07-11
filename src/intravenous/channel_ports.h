@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <concepts>
 #include <type_traits>
 #include <utility>
 
@@ -20,6 +21,12 @@ namespace iv {
 
     template<ChannelTypeId Type>
     struct ChannelPortTraits;
+
+    template<ChannelTypeId Type>
+    struct ChannelPortIds;
+
+    template<class... PortIds>
+    struct ChannelPortIdList {};
 
     template<>
     struct ChannelPortTraits<ChannelTypeId::mono> {
@@ -37,6 +44,13 @@ namespace iv {
         static constexpr tag_type swap_side(tag_type tag)
         {
             return tag;
+        }
+
+        template<tag_type Tag>
+        static consteval size_t channel_ordinal()
+        {
+            static_assert(Tag == tag_type::center);
+            return 0;
         }
     };
 
@@ -59,6 +73,13 @@ namespace iv {
         static constexpr tag_type swap_side(tag_type tag)
         {
             return tag == tag_type::left ? tag_type::right : tag_type::left;
+        }
+
+        template<tag_type Tag>
+        static consteval size_t channel_ordinal()
+        {
+            static_assert(Tag == tag_type::left || Tag == tag_type::right);
+            return Tag == tag_type::left ? 0 : 1;
         }
     };
 
@@ -148,6 +169,37 @@ namespace iv {
         }
     };
 
+    template<>
+    struct ChannelPortIds<ChannelTypeId::mono> {
+        using type = ChannelPortIdList<ChannelPortId<
+            ChannelTypeId::mono,
+            MonoChannelPortTag::center>>;
+    };
+
+    template<>
+    struct ChannelPortIds<ChannelTypeId::stereo> {
+        using type = ChannelPortIdList<
+            ChannelPortId<ChannelTypeId::stereo, StereoChannelPortTag::left>,
+            ChannelPortId<ChannelTypeId::stereo, StereoChannelPortTag::right>>;
+    };
+
+    template<ChannelTypeId LeftType, auto LeftTag, size_t LeftIndex,
+        ChannelTypeId RightType, auto RightTag, size_t RightIndex>
+    constexpr bool operator==(
+        ChannelPortId<LeftType, LeftTag, LeftIndex>,
+        ChannelPortId<RightType, RightTag, RightIndex>)
+    {
+        if constexpr (LeftType != RightType
+            || LeftIndex != RightIndex
+            || !std::same_as<
+                std::remove_cv_t<decltype(LeftTag)>,
+                std::remove_cv_t<decltype(RightTag)>>) {
+            return false;
+        } else {
+            return LeftTag == RightTag;
+        }
+    }
+
     template<ChannelTypeId Type, auto Tag, size_t Index>
     constexpr size_t port_index(ChannelPortId<Type, Tag, Index>)
     {
@@ -164,6 +216,14 @@ namespace iv {
     constexpr auto swap_side(ChannelPortId<Type, Tag, Index>)
     {
         return ChannelPortId<Type, ChannelPortTraits<Type>::swap_side(Tag), Index>{};
+    }
+
+    template<ChannelTypeId Type, class Fn>
+    constexpr void for_each_channel_port(Fn&& fn)
+    {
+        []<class... PortIds>(ChannelPortIdList<PortIds...>, Fn&& callback) {
+            (callback.template operator()<PortIds{}>(), ...);
+        }(typename ChannelPortIds<Type>::type{}, std::forward<Fn>(fn));
     }
 
     namespace channels {

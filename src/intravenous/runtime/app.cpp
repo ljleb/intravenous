@@ -66,6 +66,7 @@
 #include <optional>
 #include <algorithm>
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 
 namespace iv {
@@ -244,6 +245,9 @@ namespace iv {
             startup_log("starting socket rpc server");
             server.start();
             startup_log("socket rpc server started");
+            if (!server.wait_until_ready(std::chrono::seconds(10))) {
+                throw std::runtime_error("socket rpc server did not deliver server.ready");
+            }
             startup_log("starting iv module reload watcher");
             iv_module_reload_watcher.start();
             std::cout << "Intravenous server connected on rpc fd " << options.rpc_fd << '\n';

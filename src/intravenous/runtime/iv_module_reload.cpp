@@ -80,6 +80,7 @@ IvModuleReload::IvModuleReload(StartupConfigState startup_config_)
     : startup_config(std::move(startup_config_)),
       watcher(make_dependency_watcher())
 {
+    device_sample_period_ = sample_period(RenderConfig{});
 }
 
 void IvModuleReload::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
@@ -120,14 +121,13 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
         startup_config.toolchain);
 
     RenderConfig const render_config{};
-    Sample device_sample_period = sample_period(render_config);
 
     for (auto const &declaration : declarations) {
         try {
             auto loaded_definition = loader.load_root_definition(
                 declaration.module_root,
                 module_executor_target(render_config),
-                &device_sample_period);
+                &device_sample_period_);
 
             IvModuleReloadedDefinition loaded{
                 .definition_id = declaration.definition_id,
@@ -206,9 +206,41 @@ void IvModuleReload::compile_dirty_definitions()
         return;
     }
 
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_reload_status_event,
+        IvModuleReloadStatus{
+            .code = "rebuildStarted",
+            .message = declarations.size() == 1
+                ? "Building module definition"
+                : "Building " + std::to_string(declarations.size()) + " module definitions",
+            .module_root = declarations.size() == 1 ? declarations.front().module_root : std::filesystem::path{},
+        });
+
     auto results = reload_declarations(declarations);
     if (results.loaded.empty() && results.failed.empty()) {
         return;
+    }
+
+    if (!results.failed.empty()) {
+        auto const &failure = results.failed.front();
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_reload_status_event,
+            IvModuleReloadStatus{
+                .level = "error",
+                .code = "rebuildFailed",
+                .message = failure.message,
+                .module_root = failure.module_root,
+            });
+    } else {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_reload_status_event,
+            IvModuleReloadStatus{
+                .code = "rebuildFinished",
+                .message = "Module build ready to apply",
+                .module_root = results.loaded.size() == 1
+                    ? results.loaded.front().module_root
+                    : std::filesystem::path{},
+            });
     }
 
     {

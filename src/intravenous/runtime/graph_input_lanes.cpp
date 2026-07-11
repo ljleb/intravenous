@@ -239,11 +239,7 @@ std::string public_port_identity_key(GraphInputLanes::DesiredPublicGraphPort con
     return std::string(port.input ? "public-input" : "public-output")
         + ":instance:" + std::to_string(port.module_instance_id)
         + "\x1fkind:" + std::to_string(static_cast<int>(port.port_kind == PortKind::event))
-        + "\x1fordinal:" + std::to_string(port.port_ordinal)
-        + "\x1f" "channel:"
-        + (port.sample_channel_type.has_value()
-            ? std::to_string(static_cast<int>(*port.sample_channel_type))
-            : std::string("none"));
+        + "\x1fordinal:" + std::to_string(port.port_ordinal);
 }
 
 std::string existing_identity_key(
@@ -1099,43 +1095,55 @@ void GraphInputLanes::reconcile_public_ports_locked(TimelineLaneBatchUpdate *bat
 
     auto reconcile_port = [&](DesiredPublicGraphPort const &port) {
         auto const key = public_port_key(port);
+        auto const metadata = public_graph_port_metadata(
+            port,
+            port.port_kind == PortKind::sample,
+            port.port_kind == PortKind::event);
+        auto const make_upsert = [&](LaneId lane, InternedString external_id) {
+            return TimelineLaneUpsert{
+                .lane = lane,
+                .external_id = std::move(external_id),
+                .make_node = [port, lane] {
+                    if (port.input) {
+                        if (port.port_kind == PortKind::event) {
+                            return TypeErasedLaneNode(GraphEventInputLaneNode{});
+                        }
+                        return make_sample_input_node(port.default_value);
+                    }
+                    if (port.port_kind == PortKind::event) {
+                        return TypeErasedLaneNode(GraphEventOutputLaneNode{ .lane = lane });
+                    }
+                    return TypeErasedLaneNode(GraphSampleOutputLaneNode{ .lane = lane });
+                },
+                .sample_channel_type = port.port_kind == PortKind::sample
+                    ? port.sample_channel_type
+                    : std::nullopt,
+                .metadata = metadata,
+                .external_task_dependencies = port.input
+                    ? std::vector<std::string>{}
+                    : std::vector<std::string>{
+                        iv_module_instance_dsp_task_id(port.instance_id),
+                    },
+            };
+        };
         LaneId lane {};
         if (auto const it = public_lanes_by_key.find(key); it != public_lanes_by_key.end()) {
             lane = it->second.lane;
             ++reused_count;
+            auto const existing_channel_type = it->second.metadata.int_value(metadata_channel_type);
+            auto const desired_channel_type = port.sample_channel_type.has_value()
+                ? std::optional<int>(static_cast<int>(*port.sample_channel_type))
+                : std::nullopt;
+            if (batch != nullptr && existing_channel_type != desired_channel_type) {
+                batch->upserts.push_back(make_upsert(lane, it->second.external_id));
+            }
         } else {
             lane = stable_lane_id_for_key(key);
             ++created_count;
             if (batch != nullptr) {
-                auto metadata = public_graph_port_metadata(
-                    port,
-                    port.port_kind == PortKind::sample,
-                    port.port_kind == PortKind::event);
-                batch->upserts.push_back(TimelineLaneUpsert{
-                    .lane = lane,
-                    .external_id = InternedString::from_string(public_port_external_id(port)),
-                    .make_node = [port, lane] {
-                        if (port.input) {
-                            if (port.port_kind == PortKind::event) {
-                                return TypeErasedLaneNode(GraphEventInputLaneNode{});
-                            }
-                            return make_sample_input_node(port.default_value);
-                        }
-                        if (port.port_kind == PortKind::event) {
-                            return TypeErasedLaneNode(GraphEventOutputLaneNode{ .lane = lane });
-                        }
-                        return TypeErasedLaneNode(GraphSampleOutputLaneNode{ .lane = lane });
-                    },
-                    .sample_channel_type = port.port_kind == PortKind::sample
-                        ? port.sample_channel_type
-                        : std::nullopt,
-                    .metadata = std::move(metadata),
-                    .external_task_dependencies = port.input
-                        ? std::vector<std::string>{}
-                        : std::vector<std::string>{
-                            iv_module_instance_dsp_task_id(port.instance_id),
-                        },
-                });
+                batch->upserts.push_back(make_upsert(
+                    lane,
+                    InternedString::from_string(public_port_external_id(port))));
             }
         }
         used_lane_ids.insert(lane.value);

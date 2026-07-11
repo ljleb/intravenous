@@ -6,7 +6,6 @@
 #include <intravenous/runtime/uuid.h>
 
 #include <algorithm>
-#include <cmath>
 #include <iostream>
 #include <ranges>
 #include <stdexcept>
@@ -496,10 +495,6 @@ void AudioDeviceLanes::replace_output_device(
         output_reservoir_.clear();
         output_reservoir_read_offset_ = 0;
         pending_output_request_.reset();
-        logged_missing_output_device_ = false;
-        logged_first_output_request_ = false;
-        logged_first_non_silent_output_ = false;
-        silent_output_pass_count_ = 0;
         if (pass_output_device_ == old_output) {
             pass_output_device_.reset();
         }
@@ -566,9 +561,6 @@ void AudioDeviceLanes::handle_task_runner_before_pass(TasksRunnerBeforePass cons
         {
             std::scoped_lock lock(mutex_);
             output_device = active_output_device_;
-            if (!output_device && !logged_missing_output_device_) {
-                logged_missing_output_device_ = true;
-            }
         }
         if (!output_device) {
             return;
@@ -641,10 +633,6 @@ void AudioDeviceLanes::handle_task_runner_before_pass(TasksRunnerBeforePass cons
             }
         }
 
-        if (!logged_first_output_request_) {
-            logged_first_output_request_ = true;
-        }
-
         if (should_submit_response) {
             output_device->device.submit_response();
             continue;
@@ -685,10 +673,6 @@ void AudioDeviceLanes::handle_task_runner_after_pass(TasksRunnerAfterPass const 
         output_lane_id_,
         builder);
     auto const rendered = builder.build();
-    Sample::storage peak = 0.0f;
-    for (auto const &sample : rendered.samples) {
-        peak = std::max<Sample::storage>(peak, std::abs(sample.value));
-    }
 
     bool should_submit_response = false;
     {
@@ -708,14 +692,6 @@ void AudioDeviceLanes::handle_task_runner_after_pass(TasksRunnerAfterPass const 
                 silence,
                 kStereoInterleaved,
                 timeline_block_size_));
-        }
-        if (peak > 0.0f) {
-            if (!logged_first_non_silent_output_) {
-                logged_first_non_silent_output_ = true;
-            }
-            silent_output_pass_count_ = 0;
-        } else {
-            ++silent_output_pass_count_;
         }
         if (pending_output_request_.has_value()
             && try_fill_pending_output_request_locked()) {

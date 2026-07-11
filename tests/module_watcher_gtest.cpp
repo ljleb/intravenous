@@ -29,6 +29,9 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     watcher.update(graph.dependencies);
     EXPECT_FALSE(watcher.has_changes());
 
+    iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
+    EXPECT_FALSE(watcher.has_changes());
+
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
     auto needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");

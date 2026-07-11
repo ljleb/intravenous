@@ -54,28 +54,11 @@ namespace {
         if (bound_server == nullptr) {
             return;
         }
-
-        std::visit(
-            [&](auto const &payload) {
-                using Payload = std::remove_cvref_t<decltype(payload)>;
-                if constexpr (std::same_as<Payload, IvModuleDefinitionsMessage>) {
-                    bound_server->send_server_message(ProjectMessageNotification{
-                        .level = payload.level,
-                        .message = payload.message,
-                        .module_root = payload.module_root,
-                    });
-                } else if constexpr (std::same_as<Payload, IvModuleDefinitionsStatus>) {
-                    bound_server->send_server_status(ProjectStatusNotification{
-                        .level = payload.level,
-                        .code = payload.code,
-                        .message = payload.message,
-                        .module_root = payload.module_root,
-                        .created_node_ids = payload.created_definition_ids,
-                        .deleted_node_ids = payload.deleted_definition_ids,
-                    });
-                }
-            },
-            notification);
+        bound_server->send_server_message(ProjectMessageNotification{
+            .level = notification.level,
+            .message = notification.message,
+            .module_root = notification.module_root,
+        });
     }
 
     void forward_runtime_lane_views_updated(

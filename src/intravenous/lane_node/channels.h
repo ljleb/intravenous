@@ -14,6 +14,28 @@ namespace iv {
         count,
     };
 
+    template<ChannelTypeId Type>
+    struct ChannelTypeTraits;
+
+    template<>
+    struct ChannelTypeTraits<ChannelTypeId::mono> {
+        static constexpr size_t count = 1;
+    };
+
+    template<>
+    struct ChannelTypeTraits<ChannelTypeId::stereo> {
+        static constexpr size_t count = 2;
+    };
+
+    template<ChannelTypeId... Types>
+    struct ChannelTypeList {};
+
+    // Register each supported layout once. Consumers use this registry instead
+    // of maintaining their own mono/stereo dispatch switches.
+    using SupportedChannelTypes = ChannelTypeList<
+        ChannelTypeId::mono,
+        ChannelTypeId::stereo>;
+
     enum class SampleStreamLayout : std::uint8_t {
         planar,
         interleaved,
@@ -37,17 +59,23 @@ namespace iv {
         return static_cast<size_t>(layout) < static_cast<size_t>(SampleStreamLayout::count);
     }
 
+    template<ChannelTypeId... Types>
+    constexpr size_t channel_count(ChannelTypeId type, ChannelTypeList<Types...>)
+    {
+        size_t count = 0;
+        auto const found = ((type == Types
+                ? (count = ChannelTypeTraits<Types>::count, true)
+                : false)
+            || ...);
+        if (!found) {
+            throw std::logic_error("invalid channel type");
+        }
+        return count;
+    }
+
     constexpr size_t channel_count(ChannelTypeId type)
     {
-        switch (type) {
-        case ChannelTypeId::mono:
-            return 1;
-        case ChannelTypeId::stereo:
-            return 2;
-        case ChannelTypeId::count:
-            break;
-        }
-        throw std::logic_error("invalid channel type");
+        return channel_count(type, SupportedChannelTypes{});
     }
 
     constexpr size_t channel_count(ChannelLayout layout)

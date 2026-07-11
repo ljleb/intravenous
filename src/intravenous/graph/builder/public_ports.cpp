@@ -159,12 +159,8 @@ void GraphBuilderPublicPorts::define_sample_outputs(
     std::span<OutputRefConfig const> refs
 )
 {
-    if (_sample_outputs_defined) {
-        details::error("outputs(...) was already called on builder " + identity.value);
-    }
-
-    _sample_outputs.clear();
-    _sample_outputs.reserve(refs.size());
+    size_t const first_output_ordinal = _sample_outputs.size();
+    _sample_outputs.reserve(first_output_ordinal + refs.size());
     bool const require_names = refs.size() > 1;
 
     for (size_t i = 0; i < refs.size(); ++i) {
@@ -189,7 +185,7 @@ void GraphBuilderPublicPorts::define_sample_outputs(
 
         topology.add_sample_edge(GraphEdge{
             PortId{ ref.node_index, ref.output_port },
-            PortId{ GRAPH_ID, i },
+            PortId{ GRAPH_ID, first_output_ordinal + i },
         });
         _sample_outputs.push_back(config);
     }

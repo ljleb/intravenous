@@ -87,14 +87,8 @@ void SubgraphScopeManager::define_sample_outputs(
 )
 {
     auto& scope = current();
-    if (scope.outputs_defined) {
-        details::error("subgraph outputs(...) was already called on builder " + identity.value);
-    }
-
-    scope.output_configs.clear();
-    scope.output_sources.clear();
-    scope.output_configs.reserve(refs.size());
-    scope.output_sources.reserve(refs.size());
+    scope.output_configs.reserve(scope.output_configs.size() + refs.size());
+    scope.output_sources.reserve(scope.output_sources.size() + refs.size());
     bool const require_names = refs.size() > 1;
 
     for (size_t i = 0; i < refs.size(); ++i) {

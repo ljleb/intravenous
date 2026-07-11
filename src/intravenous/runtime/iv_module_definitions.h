@@ -9,7 +9,6 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <variant>
 #include <vector>
 
 namespace iv {
@@ -48,17 +47,7 @@ struct IvModuleDefinitionsMessage {
     std::filesystem::path module_root{};
 };
 
-struct IvModuleDefinitionsStatus {
-    std::string level = "info";
-    std::string code{};
-    std::string message{};
-    std::filesystem::path module_root{};
-    std::vector<std::string> created_definition_ids{};
-    std::vector<std::string> deleted_definition_ids{};
-};
-
-using IvModuleDefinitionsNotification =
-    std::variant<IvModuleDefinitionsMessage, IvModuleDefinitionsStatus>;
+using IvModuleDefinitionsNotification = IvModuleDefinitionsMessage;
 
 struct IvModuleRequiredDefinitionsChanged;
 struct IvModuleReloadResults;
@@ -79,14 +68,6 @@ private:
 
     void emit_notification(IvModuleDefinitionsNotification notification) const;
     void emit_message(std::string level, std::string message, std::filesystem::path module_root = {}) const;
-    void emit_status(
-        std::string code,
-        std::string level,
-        std::string message,
-        std::filesystem::path module_root = {},
-        std::vector<std::string> created_definition_ids = {},
-        std::vector<std::string> deleted_definition_ids = {}) const;
-
 public:
     IvModuleDefinitions() = default;
     ~IvModuleDefinitions();

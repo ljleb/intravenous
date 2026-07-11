@@ -1,12 +1,14 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/linker_event.h>
+#include <intravenous/node/block_executor.h>
 #include <intravenous/runtime/iv_module_reload.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
 #include <intravenous/runtime/startup_config.h>
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -22,6 +24,25 @@ struct IvModuleReloadWitness {
 };
 
 IvModuleReloadWitness *g_iv_module_reload_witness = nullptr;
+
+struct SampleCapture {
+    iv::Sample *observed = nullptr;
+
+    auto inputs() const
+    {
+        return std::array<iv::InputConfig, 1>{{}};
+    }
+
+    auto outputs() const
+    {
+        return std::array<iv::OutputConfig, 0>{};
+    }
+
+    void tick_block(auto const &ctx) const
+    {
+        *observed = ctx.inputs[0].get();
+    }
+};
 
 iv::IvModuleDefinitionDeclaration make_declaration(std::filesystem::path module_root)
 {
@@ -113,6 +134,40 @@ TEST_F(IvModuleReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
     ASSERT_EQ(witness.results->failed.size(), 1u);
     EXPECT_EQ(witness.results->failed.front().definition_id, std::filesystem::weakly_canonical(workspace).string());
     EXPECT_FALSE(witness.results->failed.front().message.empty());
+}
+
+TEST_F(IvModuleReloadTest, RetainsSamplePeriodForCompiledDefinitionBuilders)
+{
+    auto const workspace =
+        iv::test_support::read_only_module_fixture_workspace("reload_sample_period");
+
+    iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
+    auto const startup = startup_config.initialize();
+    iv::IvModuleReload reload(startup);
+
+    reload.handle_definition_declarations_changed(
+        iv::IvModuleDefinitionDeclarationsChanged{
+            .created = {make_declaration(workspace)},
+        });
+    reload.compile_dirty_definitions();
+    reload.apply_pending_results();
+
+    ASSERT_TRUE(witness.results.has_value());
+    ASSERT_EQ(witness.results->loaded.size(), 1u);
+
+    auto builder = std::move(witness.results->loaded.front().canonical_builder);
+    iv::GraphBuilder execution_builder;
+    auto const embedded = execution_builder.embed_subgraph(builder);
+    iv::Sample observed = 0.0f;
+    execution_builder.node<SampleCapture>(&observed)(embedded[0]);
+    execution_builder.outputs({});
+
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(execution_builder.build_root_node().graph),
+        8);
+    executor.tick_block(0);
+
+    EXPECT_NEAR(observed.value, 1.0f / 48000.0f, 1.0e-8f);
 }
 
 TEST_F(IvModuleReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherChanges)

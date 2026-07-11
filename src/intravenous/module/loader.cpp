@@ -1023,6 +1023,71 @@ namespace iv {
             run_command(build.str(), log_sink);
         }
 
+        void publish_compile_database(
+            ResolvedModule const& resolved,
+            BuildWorkspace const& workspace) const noexcept
+        {
+            if (!find_program_on_path("clangd")) {
+                return;
+            }
+
+            std::error_code ec;
+            auto const source = workspace.build_dir / "compile_commands.json";
+            if (!std::filesystem::is_regular_file(source, ec) || ec) {
+                return;
+            }
+
+            auto const destination = resolved.module_dir / "compile_commands.json";
+            auto const metadata_dir = resolved.module_dir / ".intravenous-tooling";
+            auto const ownership_marker = metadata_dir / "compile_commands.owner";
+            auto const destination_exists = std::filesystem::exists(destination, ec);
+            if (ec) {
+                return;
+            }
+            auto const owned_by_intravenous = std::filesystem::exists(ownership_marker, ec);
+            if (ec || (destination_exists && !owned_by_intravenous)) {
+                return;
+            }
+
+            if (destination_exists) {
+                try {
+                    if (read_text(source) == read_text(destination)) {
+                        return;
+                    }
+                } catch (...) {
+                    // A failed comparison should not prevent a best-effort refresh.
+                }
+            }
+
+            std::filesystem::create_directories(metadata_dir, ec);
+            if (ec) {
+                return;
+            }
+
+            if (!owned_by_intravenous) {
+                std::ofstream ownership(ownership_marker, std::ios::trunc);
+                if (!ownership) {
+                    return;
+                }
+            }
+
+            auto const temporary = metadata_dir / "compile_commands.json.tmp";
+            std::filesystem::copy_file(
+                source,
+                temporary,
+                std::filesystem::copy_options::overwrite_existing,
+                ec);
+            if (ec) {
+                return;
+            }
+
+            std::filesystem::rename(temporary, destination, ec);
+            if (ec) {
+                std::filesystem::remove(temporary, ec);
+                return;
+            }
+        }
+
         std::filesystem::path build_artifact(ResolvedModule const& resolved) const
         {
             std::lock_guard lock(build_mutex);
@@ -1056,6 +1121,7 @@ namespace iv {
                     generator
                 );
             }
+            publish_compile_database(resolved, workspace);
 
             std::filesystem::path stable_artifact = workspace.output_dir / shared_library_filename(output_name);
             std::filesystem::path config_artifact =

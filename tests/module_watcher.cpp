@@ -30,6 +30,9 @@ int main()
     watcher.update(graph.dependencies);
     iv::test::require(!watcher.has_changes(), "watcher should be clean before edits");
 
+    iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
+    iv::test::require(!watcher.has_changes(), "watcher should ignore generated compile databases");
+
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
     auto needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");

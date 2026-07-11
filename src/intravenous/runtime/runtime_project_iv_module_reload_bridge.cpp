@@ -1,12 +1,28 @@
 #include <intravenous/runtime/runtime_project_iv_module_reload_bridge.h>
 
 #include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/iv_module_reload_events.h>
 #include <intravenous/runtime/project_persistence_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
 namespace iv {
 namespace {
 IvModuleReload *bound_iv_module_reload = nullptr;
+
+void handle_reload_status(IvModuleReloadStatus const &status)
+{
+    if (bound_iv_module_reload == nullptr) {
+        return;
+    }
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_notification_event,
+        ProjectNotification(ProjectStatusNotification{
+            .level = status.level,
+            .code = status.code,
+            .message = status.message,
+            .module_root = status.module_root,
+        }));
+}
 
 void handle_set_iv_module_toolchain_config(
     ProjectSetIvModuleToolchainConfigRequest const &request,
@@ -94,6 +110,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     ProjectPersistenceCollectStateEvent,
     iv_runtime_project_persistence_collect_state_event,
     handle_collect_state);
+IV_SUBSCRIBE_LINKER_EVENT(
+    IvModuleReloadStatusEvent,
+    iv_runtime_iv_module_reload_status_event,
+    handle_reload_status);
 } // namespace
 
 void bind_runtime_project_iv_module_reload_bridge(IvModuleReload &iv_module_reload)

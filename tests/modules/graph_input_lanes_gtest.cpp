@@ -768,6 +768,56 @@ TEST_F(GraphInputLanesTest, UpdatingBuilderDoesNotRemoveExistingPublicSampleOutp
     }
 }
 
+TEST_F(GraphInputLanesTest, UpdatingPublicSampleOutputFromMonoToStereoPreservesItsLane)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder mono_builder;
+    mono_builder.outputs(iv::channels::mono = 0.25f);
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &mono_builder}},
+    });
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
+
+    std::optional<iv::LaneId> public_output_lane;
+    for (auto const &batch : witness.timeline_batches) {
+        for (auto const &upsert : batch.upserts) {
+            if (upsert.metadata.has_unit("dsp_graph.public_output")
+                && upsert.metadata.has_unit("dsp_graph.sample")) {
+                public_output_lane = upsert.lane;
+                break;
+            }
+        }
+    }
+    ASSERT_TRUE(public_output_lane.has_value());
+
+    witness.timeline_batches.clear();
+
+    iv::GraphBuilder stereo_builder;
+    stereo_builder.outputs(
+        iv::channels::stereo_left = 0.25f,
+        iv::channels::stereo_right = 0.25f);
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &stereo_builder}},
+    });
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
+
+    bool saw_preserved_stereo_lane = false;
+    for (auto const &batch : witness.timeline_batches) {
+        EXPECT_EQ(
+            std::find(batch.removals.begin(), batch.removals.end(), *public_output_lane),
+            batch.removals.end());
+        for (auto const &upsert : batch.upserts) {
+            if (upsert.lane == *public_output_lane
+                && upsert.sample_channel_type == iv::ChannelTypeId::stereo) {
+                saw_preserved_stereo_lane = true;
+            }
+        }
+    }
+    EXPECT_TRUE(saw_preserved_stereo_lane);
+}
+
 TEST_F(GraphInputLanesTest, PublicSampleInputCreatesAutomaticTimelineLaneAndDependency)
 {
     iv::GraphInputLanes lanes;

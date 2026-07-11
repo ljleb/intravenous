@@ -15,6 +15,26 @@ function(iv_rewrite_sources_to_build_dir out_var)
         return()
     endif()
 
+    set(_iv_compile_db_target "${IVSSR_TARGET}__source_span_compile_db")
+    add_library(${_iv_compile_db_target} OBJECT ${IVSSR_SOURCES})
+    set_target_properties(${_iv_compile_db_target} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
+    if(IVSSR_COMPILE_SETTINGS_TARGET)
+        target_link_libraries(${_iv_compile_db_target} PRIVATE ${IVSSR_COMPILE_SETTINGS_TARGET})
+    endif()
+
+    # CMake drops implicit include directories from compile commands. Record
+    # explicit flags for the database-only target because clangd does not query
+    # Nix compiler wrappers for their system paths.
+    if(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+        foreach(_iv_include_dir IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+            if(_iv_include_dir AND EXISTS "${_iv_include_dir}")
+                target_compile_options(${_iv_compile_db_target} PRIVATE
+                    "-isystem${_iv_include_dir}")
+            endif()
+        endforeach()
+    endif()
+
     if(NOT DEFINED IV_SOURCE_SPAN_REWRITER OR IV_SOURCE_SPAN_REWRITER STREQUAL "")
         set(${out_var} ${IVSSR_SOURCES} PARENT_SCOPE)
         return()
@@ -24,14 +44,6 @@ function(iv_rewrite_sources_to_build_dir out_var)
         message(FATAL_ERROR
             "IV_SOURCE_SPAN_REWRITER points to '${IV_SOURCE_SPAN_REWRITER}', but that file does not exist"
         )
-    endif()
-
-    set(_iv_compile_db_target "${IVSSR_TARGET}__source_span_compile_db")
-    add_library(${_iv_compile_db_target} OBJECT ${IVSSR_SOURCES})
-    set_target_properties(${_iv_compile_db_target} PROPERTIES EXCLUDE_FROM_ALL TRUE)
-
-    if(IVSSR_COMPILE_SETTINGS_TARGET)
-        target_link_libraries(${_iv_compile_db_target} PRIVATE ${IVSSR_COMPILE_SETTINGS_TARGET})
     endif()
 
     set(_iv_rewritten_sources "")

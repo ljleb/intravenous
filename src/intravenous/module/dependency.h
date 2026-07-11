@@ -7,7 +7,9 @@ namespace iv {
     inline bool is_module_dependency_source_path(std::filesystem::path const& path)
     {
         auto const filename = path.filename();
-        return filename != ".intravenous";
+        return filename != ".intravenous"
+            && filename != "compile_commands.json"
+            && path.parent_path().filename() != ".intravenous-tooling";
     }
 
     struct ModuleDependency {

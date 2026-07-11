@@ -29,6 +29,7 @@ type LaneProviderLike = {
 };
 
 type ServerStatusNotification = {
+    level?: string;
     code?: string;
     message?: string;
     moduleRoot?: string;
@@ -68,6 +69,8 @@ export class WorkspaceSession {
     readonly provider: LiveGraphProviderLike;
     private readonly laneProvider: LaneProviderLike;
     private readonly highlighter: NodeSpanHighlighter;
+    private readonly rebuildStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    private readonly clangdDatabaseWatcher: vscode.FileSystemWatcher;
     private readonly notifications = new WorkspaceNotificationRouter();
     private process: childProcess.ChildProcess | null = null;
     private client: JsonRpcSocketClient | null = null;
@@ -89,6 +92,7 @@ export class WorkspaceSession {
     }> = [];
     private ivModuleInstances: IvModuleInstanceInfo[] = [];
     private selectedInstanceId: string | null = null;
+    private clangdRestartTimer: NodeJS.Timeout | null = null;
 
     constructor(
         workspaceFolder: vscode.WorkspaceFolder,
@@ -102,6 +106,11 @@ export class WorkspaceSession {
         this.provider = provider;
         this.laneProvider = laneProvider;
         this.highlighter = highlighter;
+        this.clangdDatabaseWatcher = vscode.workspace.createFileSystemWatcher(
+            new vscode.RelativePattern(this.workspaceFolder, "compile_commands.json"),
+        );
+        this.clangdDatabaseWatcher.onDidCreate(() => this.restartClangdForCompilationDatabase());
+        this.clangdDatabaseWatcher.onDidChange(() => this.restartClangdForCompilationDatabase());
         this.registerNotificationHandlers();
     }
 
@@ -168,16 +177,19 @@ export class WorkspaceSession {
 
             if (params.code === "rebuildStarted") {
                 this.logServerState("Intravenous rebuild started", params);
+                this.showRebuildStatus(params);
                 return;
             }
 
             if (params.code === "rebuildFinished") {
                 this.logServerState("Intravenous rebuild finished", params);
+                this.rebuildStatusBar.hide();
                 return;
             }
 
             if (params.code === "rebuildFailed") {
                 this.logServerState("Intravenous rebuild failed", params);
+                this.showRebuildFailure(params);
                 return;
             }
 
@@ -471,6 +483,7 @@ export class WorkspaceSession {
         });
         this.process.on("exit", (code, signal) => {
             this.process = null;
+            this.rebuildStatusBar.hide();
             this.outputChannel.appendLine(`Intravenous server exited: code=${code} signal=${signal}`);
             this.logCapturedServerFailureContext();
             if (!this.serverReadyReceived) {
@@ -720,11 +733,6 @@ export class WorkspaceSession {
         this.lastQueryError = "";
         const nodes = sortNodesByRelevance(this.parseLogicalNodes(result.nodes), this.lastQuery);
         const activeRegions = this.parseSourceSpans(activeRegionsResult.sourceSpans);
-        if (nodes.length === 0 || activeRegions.length === 0) {
-            this.outputChannel.appendLine(
-                `Intravenous editor query: file=${editor.document.uri.fsPath} instance=${this.selectedInstanceId ?? "[none]"} nodes=${nodes.length} activeRegions=${activeRegions.length}`,
-            );
-        }
         this.provider.setNodes(nodes);
         this.highlighter.setActiveRegions(activeRegions);
         return nodes;
@@ -765,6 +773,28 @@ export class WorkspaceSession {
             parts.push(params.code);
         }
         this.outputChannel.appendLine(parts.join(": "));
+    }
+
+    private showRebuildStatus(params: ServerStatusNotification): void {
+        this.rebuildStatusBar.text = "$(sync~spin) Intravenous: Building module";
+        this.rebuildStatusBar.tooltip = params.message || "Building updated Intravenous module definitions";
+        this.rebuildStatusBar.show();
+    }
+
+    private showRebuildFailure(params: ServerStatusNotification): void {
+        this.rebuildStatusBar.text = "$(error) Intravenous: Module build failed";
+        this.rebuildStatusBar.tooltip = params.message || "An Intravenous module build failed";
+        this.rebuildStatusBar.show();
+    }
+
+    private restartClangdForCompilationDatabase(): void {
+        if (this.clangdRestartTimer) {
+            clearTimeout(this.clangdRestartTimer);
+        }
+        this.clangdRestartTimer = setTimeout(() => {
+            this.clangdRestartTimer = null;
+            void vscode.commands.executeCommand("clangd.restart").then(undefined, () => {});
+        }, 200);
     }
 
     private resetCapturedServerLogs(): void {
@@ -844,6 +874,12 @@ export class WorkspaceSession {
     }
 
     async shutdown(): Promise<void> {
+        this.rebuildStatusBar.dispose();
+        this.clangdDatabaseWatcher.dispose();
+        if (this.clangdRestartTimer) {
+            clearTimeout(this.clangdRestartTimer);
+            this.clangdRestartTimer = null;
+        }
         if (this.rpc) {
             try {
                 await this.rpc.shutdown();

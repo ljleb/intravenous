@@ -65,24 +65,6 @@ void IvModuleDefinitions::emit_message(
     });
 }
 
-void IvModuleDefinitions::emit_status(
-    std::string code,
-    std::string level,
-    std::string message,
-    std::filesystem::path module_root,
-    std::vector<std::string> created_definition_ids,
-    std::vector<std::string> deleted_definition_ids) const
-{
-    emit_notification(IvModuleDefinitionsStatus{
-        .level = std::move(level),
-        .code = std::move(code),
-        .message = std::move(message),
-        .module_root = std::move(module_root),
-        .created_definition_ids = std::move(created_definition_ids),
-        .deleted_definition_ids = std::move(deleted_definition_ids),
-    });
-}
-
 std::string IvModuleDefinitions::declare_definition(std::filesystem::path module_root)
 {
     IvModuleDefinitionDeclaration declaration{
@@ -220,14 +202,6 @@ void IvModuleDefinitions::handle_reload_results(IvModuleReloadResults const &res
                 public_diff.updated.push_back(snapshot);
             }
         }
-    }
-
-    for (auto const &failed : results.failed) {
-        emit_status(
-            "reloadFailed",
-            "error",
-            failed.message,
-            failed.module_root);
     }
 
     if (!public_diff.created.empty() ||

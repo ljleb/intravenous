@@ -37,6 +37,13 @@ struct IvModuleReloadResults {
     std::vector<IvModuleReloadFailure> failed{};
 };
 
+struct IvModuleReloadStatus {
+    std::string level = "info";
+    std::string code{};
+    std::string message{};
+    std::filesystem::path module_root{};
+};
+
 class IvModuleReload {
     StartupConfigState startup_config;
     mutable std::mutex mutex;
@@ -45,6 +52,7 @@ class IvModuleReload {
     std::unordered_set<std::string> dirty_definition_ids;
     IvModuleReloadResults pending_results;
     DependencyWatcher watcher;
+    Sample device_sample_period_ {};
 
     [[nodiscard]] IvModuleReloadResults reload_declarations(
         std::vector<IvModuleDefinitionDeclaration> const &declarations);

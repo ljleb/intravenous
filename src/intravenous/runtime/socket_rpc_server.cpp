@@ -218,6 +218,11 @@ void SocketRpcServer::handle_client(int fd) {
     if (!send_message(fd, jsonrpc_notification("server.ready", Json::object()))) {
         return;
     }
+    {
+        std::scoped_lock lock(mutex);
+        ready = true;
+    }
+    ready_cv.notify_all();
 
     for (;;) {
         ssize_t count = ::read(fd, read_buffer.data(), read_buffer.size());
@@ -409,12 +414,6 @@ void SocketRpcServer::start() {
             stopped_cv.notify_all();
             return;
         }
-
-        {
-            std::scoped_lock lock(mutex);
-            ready = true;
-        }
-        ready_cv.notify_all();
 
         int fd = -1;
         {

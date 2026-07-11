@@ -10,7 +10,7 @@ inline void simple_sink(iv::ModuleContext const& context)
     SamplePortRef left;
     SamplePortRef right;
 
-    g.multi_channel(ChannelTypeId::stereo, [&]<auto Ch>() {
+    g.multi_channel<ChannelTypeId::stereo>([&]<auto Ch>() {
         auto const phase = g.node<PhaseIntegrator>();
         auto const osc = g.node<SawOscillator>();
         constexpr Sample channel_offset =

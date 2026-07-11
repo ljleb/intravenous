@@ -1,4 +1,5 @@
 #pragma once
+#include <intravenous/graph/builder/channel_refs.h>
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_refs.h>
 #include <intravenous/graph/builder/topology.h>
@@ -39,6 +40,41 @@
 
 namespace iv {
     class GraphBuilder;
+
+    namespace details {
+        template<class T>
+        concept sample_channel_assignment =
+            is_named_arg_v<T>
+            && requires {
+                typename std::remove_cvref_t<T>::value_type;
+                { std::remove_cvref_t<T>::kind } -> std::convertible_to<NamedPortKind>;
+            }
+            && std::remove_cvref_t<T>::kind == NamedPortKind::sample;
+
+        template<class T>
+        concept sample_port_channel_assignment =
+            sample_channel_assignment<T>
+            && std::convertible_to<
+                typename std::remove_cvref_t<T>::value_type,
+                SamplePortRef>;
+
+        template<class Fn, class... PortIds>
+        consteval bool all_channel_results_void(ChannelPortIdList<PortIds...>)
+        {
+            return (... && std::is_void_v<decltype(
+                std::declval<Fn&>().template operator()<PortIds{}>())>);
+        }
+
+        template<class Fn, class... PortIds>
+        consteval bool all_channel_results_are_sample_assignments(ChannelPortIdList<PortIds...>)
+        {
+            return (... && [] {
+                using Result = std::remove_cvref_t<decltype(
+                    std::declval<Fn&>().template operator()<PortIds{}>())>;
+                return sample_port_channel_assignment<Result>;
+            }());
+        }
+    }
 
     class GraphBuilder {
         template<class Derived, class Node>
@@ -136,8 +172,8 @@ namespace iv {
         RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
         RootNodeBuildResult build_execution_root_node(size_t detach_id_offset = 0) const;
 
-        template<class Fn>
-        void multi_channel(ChannelTypeId channel_type, Fn&& fn);
+        template<ChannelTypeId Type, class Fn>
+        auto multi_channel(Fn&& fn);
 
     private:
         static std::string allocate_root_builder_id();
@@ -257,21 +293,26 @@ namespace iv {
         );
     }
 
-    template<class Fn>
-    void GraphBuilder::multi_channel(ChannelTypeId channel_type, Fn&& fn)
+    template<ChannelTypeId Type, class Fn>
+    auto GraphBuilder::multi_channel(Fn&& fn)
     {
-        switch (channel_type) {
-        case ChannelTypeId::mono:
-            fn.template operator()<iv::channels::mono>();
-            return;
-        case ChannelTypeId::stereo:
-            fn.template operator()<iv::channels::stereo_left>();
-            fn.template operator()<iv::channels::stereo_right>();
-            return;
-        case ChannelTypeId::count:
-            break;
+        static_assert(Type != ChannelTypeId::count);
+        using PortIds = typename ChannelPortIds<Type>::type;
+
+        if constexpr (details::all_channel_results_void<Fn>(PortIds{})) {
+            for_each_channel_port<Type>(std::forward<Fn>(fn));
+        } else {
+            static_assert(
+                details::all_channel_results_are_sample_assignments<Fn>(PortIds{}),
+                "multi_channel must return channel = sample or single-output node references from every channel, or return nothing");
+
+            ChannelRefs<Type> refs;
+            for_each_channel_port<Type>([&]<auto channel>() {
+                refs[channel] = static_cast<SamplePortRef>(
+                    fn.template operator()<channel>().value);
+            });
+            return refs;
         }
-        details::error("builder " + _identity.value + ": invalid channel type passed to multi_channel()");
     }
 
     template<class Derived, class Node>
