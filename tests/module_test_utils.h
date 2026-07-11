@@ -1,11 +1,15 @@
 #pragma once
 
-#include "devices/audio_device.h"
+#include <intravenous/devices/audio_device.h>
 #include "fake_audio_device.h"
-#include "module/loader.h"
-#include "node/executor.h"
-#include "runtime/handlers.h"
-#include "juce/vst_runtime.h"
+#include <intravenous/module/loader.h>
+#include <intravenous/node/block_executor.h>
+#include <intravenous/runtime/handlers.h>
+#include <intravenous/runtime/iv_module_definitions.h>
+#include <intravenous/runtime/iv_module_reload.h>
+#include <intravenous/runtime/startup_config.h>
+#include <intravenous/runtime/timeline.h>
+#include <intravenous/juce/vst_runtime.h>
 
 #include <chrono>
 #include <cstdlib>
@@ -25,13 +29,17 @@
 #define NOMINMAX
 #include <Windows.h>
 #else
+#include <sys/file.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
 namespace iv::test {
+    inline void copy_directory(std::filesystem::path const& from, std::filesystem::path const& to);
+
     inline std::filesystem::path repo_root()
     {
-        return std::filesystem::path(__FILE__).parent_path().parent_path();
+        return std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path();
     }
 
     inline std::filesystem::path test_modules_root()
@@ -99,6 +107,11 @@ namespace iv::test {
         return repo_root() / "build" / "iv_runtime_modules";
     }
 
+    inline std::filesystem::path shared_test_fixtures_root()
+    {
+        return repo_root() / "build" / "test_shared_fixtures";
+    }
+
     inline std::string sanitize_module_id(std::string_view id)
     {
         std::string sanitized(id);
@@ -154,7 +167,7 @@ namespace iv::test {
         return out.str();
     }
 
-    inline std::filesystem::path fresh_test_workspace(
+    inline std::filesystem::path fresh_module_fixture_workspace(
         std::string_view base_name,
         std::source_location location = std::source_location::current()
     )
@@ -256,6 +269,196 @@ namespace iv::test {
         out << text;
     }
 
+    class ScopedFileLock {
+#if !defined(_WIN32)
+        int _fd = -1;
+#endif
+
+    public:
+        explicit ScopedFileLock(std::filesystem::path const& path)
+        {
+#if !defined(_WIN32)
+            std::filesystem::create_directories(path.parent_path());
+            _fd = ::open(path.c_str(), O_CREAT | O_RDWR, 0666);
+            require(_fd >= 0, "failed to open lock file");
+            require(::flock(_fd, LOCK_EX) == 0, "failed to lock file");
+#else
+            (void)path;
+#endif
+        }
+
+        ~ScopedFileLock()
+        {
+#if !defined(_WIN32)
+            if (_fd >= 0) {
+                ::flock(_fd, LOCK_UN);
+                ::close(_fd);
+            }
+#endif
+        }
+
+        ScopedFileLock(ScopedFileLock const&) = delete;
+        ScopedFileLock& operator=(ScopedFileLock const&) = delete;
+    };
+
+    inline std::filesystem::path mutable_module_fixture_workspace(
+        std::string_view test_name,
+        std::string const& fixture_name,
+        std::source_location location = std::source_location::current())
+    {
+        auto const workspace = fresh_module_fixture_workspace(test_name, location);
+        copy_directory(test_modules_root() / fixture_name, workspace);
+        return workspace;
+    }
+
+    inline std::filesystem::path shared_fixture_workspace(std::string const& fixture_name)
+    {
+        auto const workspace = shared_test_fixtures_root() / sanitize_test_token(fixture_name);
+        auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(fixture_name) + ".lock"));
+        std::filesystem::remove_all(workspace);
+        copy_directory(test_modules_root() / fixture_name, workspace);
+        return workspace;
+    }
+
+    inline std::filesystem::path read_only_module_fixture_workspace(std::string const& fixture_name)
+    {
+        auto const workspace = shared_fixture_workspace(fixture_name);
+        auto const lock = ScopedFileLock(
+            shared_test_fixtures_root() /
+            (sanitize_test_token(fixture_name) + ".project.lock"));
+        write_text(workspace / "project.intravenous", "");
+        return workspace;
+    }
+
+    inline std::filesystem::path make_inline_module_workspace(
+        std::string_view test_name,
+        std::string const& module_text,
+        std::source_location location = std::source_location::current())
+    {
+        auto const workspace = fresh_module_fixture_workspace(test_name, location);
+        std::filesystem::create_directories(workspace);
+        write_text(workspace / "project.intravenous", "");
+        write_text(workspace / "module.cpp", module_text);
+        return workspace;
+    }
+
+    inline std::filesystem::path shared_inline_module_workspace(
+        std::string_view test_name,
+        std::string const& module_text)
+    {
+        auto const workspace = shared_test_fixtures_root() / sanitize_test_token(test_name);
+        auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(test_name) + ".lock"));
+        std::filesystem::create_directories(workspace);
+        write_text(workspace / "project.intravenous", "");
+        write_text(workspace / "module.cpp", module_text);
+        return workspace;
+    }
+
+    inline std::string find_program(std::string const& name)
+    {
+        std::string command = "command -v " + name;
+        FILE* pipe = popen(command.c_str(), "r");
+        if (!pipe) {
+            return {};
+        }
+
+        std::string output;
+        char buffer[256];
+        while (fgets(buffer, sizeof(buffer), pipe)) {
+            output += buffer;
+        }
+        pclose(pipe);
+
+        while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
+            output.pop_back();
+        }
+        return output;
+    }
+
+    inline std::string configured_program_or_find(
+        std::string const& name,
+        char const* configured_path)
+    {
+        if (configured_path != nullptr && *configured_path != '\0') {
+            return configured_path;
+        }
+        return find_program(name);
+    }
+
+    struct ScopedEnvVar {
+        std::string key;
+        std::optional<std::string> original;
+
+        ScopedEnvVar(std::string key_, std::string value)
+            : key(std::move(key_))
+        {
+            if (char const* existing = std::getenv(key.c_str())) {
+                original = existing;
+            }
+            setenv(key.c_str(), value.c_str(), 1);
+        }
+
+        ~ScopedEnvVar()
+        {
+            if (original.has_value()) {
+                setenv(key.c_str(), original->c_str(), 1);
+            } else {
+                unsetenv(key.c_str());
+            }
+        }
+    };
+
+    inline iv::IvModuleReloadedDefinition load_runtime_iv_module_definition(
+        iv::StartupConfigState const& config,
+        std::filesystem::path module_root)
+    {
+        auto const normalized_module_root = std::filesystem::weakly_canonical(module_root).lexically_normal();
+        auto const load_lock = ScopedFileLock(
+            runtime_module_cache_root() /
+            ("load_" + stable_path_hash(normalized_module_root) + ".lock"));
+        iv::ModuleLoader loader(
+            config.discovery_start,
+            config.search_roots,
+            config.toolchain);
+        iv::RenderConfig const render_config{};
+        iv::Sample device_sample_period = iv::sample_period(render_config);
+        auto loaded_graph = loader.load_root_definition(
+            module_root,
+            {
+                .sample_rate = render_config.sample_rate,
+                .num_channels = render_config.num_channels,
+                .max_block_frames = render_config.max_block_frames,
+            },
+            &device_sample_period);
+        return iv::IvModuleReloadedDefinition{
+            .definition_id = normalized_module_root.string(),
+            .module_root = normalized_module_root,
+            .module_id = loaded_graph.module_id,
+            .introspection = loaded_graph.introspection,
+            .dependencies = loaded_graph.dependencies,
+            .module_refs = loaded_graph.module_refs,
+            .canonical_builder = *loaded_graph.canonical_builder,
+        };
+    }
+
+    inline iv::IvModuleReloadedDefinition make_loaded_definition(
+        std::filesystem::path module_root,
+        std::string module_id = "iv.test.module",
+        iv::GraphIntrospectionMetadata introspection = {},
+        std::vector<iv::ModuleDependency> dependencies = {})
+    {
+        auto const normalized_module_root = std::filesystem::weakly_canonical(module_root).lexically_normal();
+        return iv::IvModuleReloadedDefinition{
+            .definition_id = normalized_module_root.string(),
+            .module_root = normalized_module_root,
+            .module_id = std::move(module_id),
+            .introspection = std::move(introspection),
+            .dependencies = std::move(dependencies),
+            .module_refs = {},
+            .canonical_builder = {},
+        };
+    }
+
     inline void advance_write_time(std::filesystem::path const& path, std::chrono::seconds delta = std::chrono::seconds(2))
     {
         std::error_code ec;
@@ -323,46 +526,13 @@ namespace iv::test {
 
     inline iv::ModuleLoader make_loader(std::vector<std::filesystem::path> extra_roots = { test_modules_root() })
     {
-        static thread_local iv::Timeline timeline;
-        return iv::ModuleLoader(timeline, repo_root(), std::move(extra_roots));
+        return iv::ModuleLoader(repo_root(), std::move(extra_roots));
     }
 
     template<typename Device>
-    inline iv::DeviceOrchestrator make_audio_device_provider(Device& audio_device)
+    inline iv::ModuleExecutorTarget module_executor_target(Device const& audio_device)
     {
-        struct RefBackend {
-            Device* device = nullptr;
-
-            auto const& config() const
-            {
-                return device->config();
-            }
-
-            std::span<iv::Sample> wait_for_block_request()
-            {
-                return device->wait_for_block_request();
-            }
-
-            void submit_response()
-            {
-                device->submit_response();
-            }
-        };
-
-        std::vector<iv::OutputDeviceMixer> mixers;
-        mixers.emplace_back(
-            iv::LogicalAudioDevice(RefBackend{ &audio_device }),
-            [](iv::OrchestratorBuilder& builder, iv::OutputDeviceMixer&& mixer) {
-                builder.add_audio_mixer(0, std::move(mixer));
-            }
-        );
-        return iv::DeviceOrchestrator(std::move(mixers));
-    }
-
-    template<typename Device>
-    inline iv::ModuleRenderConfig module_render_config(Device const& audio_device)
-    {
-        return iv::ModuleRenderConfig{
+        return iv::ModuleExecutorTarget{
             .sample_rate = audio_device.config().sample_rate,
             .num_channels = audio_device.config().num_channels,
             .max_block_frames = audio_device.config().max_block_frames,
@@ -385,127 +555,33 @@ namespace iv::test {
         return resources;
     }
 
-    template<typename Device>
-    inline iv::NodeExecutor make_executor(
-        Device& audio_device,
-        iv::DeviceOrchestrator device_orchestrator,
-        iv::ModuleLoader& loader,
-        std::filesystem::path const& module_path
-    )
-    {
-        auto graph = loader.load_root(
-            module_path,
-            module_render_config(audio_device),
-            &audio_device.sample_period()
-        );
-
-        auto resources = make_resource_context(audio_device);
-        auto executor = iv::NodeExecutor::create(
-            std::move(graph.root),
-            std::move(resources),
-            std::move(device_orchestrator).to_builder(),
-            std::move(graph.module_refs)
-        );
-        return executor;
-    }
-
-    template<typename Device>
-    inline iv::NodeExecutor make_executor(
-        Device& audio_device,
-        iv::DeviceOrchestrator device_orchestrator,
-        [[maybe_unused]] size_t executor_id,
-        iv::ModuleLoader& loader,
-        std::filesystem::path const& module_path
-    )
-    {
-        return make_executor(audio_device, std::move(device_orchestrator), loader, module_path);
-    }
-
-    template<typename Device>
-    inline iv::NodeExecutor make_executor(
-        iv::ModuleLoader& loader,
-        Device& audio_device,
-        iv::DeviceOrchestrator device_orchestrator,
-        std::filesystem::path const& module_path
-    )
-    {
-        return make_executor(audio_device, std::move(device_orchestrator), loader, module_path);
-    }
-
-    template<typename Device>
-    inline iv::NodeExecutor make_executor(
-        iv::ModuleLoader& loader,
-        Device& audio_device,
-        iv::DeviceOrchestrator device_orchestrator,
-        [[maybe_unused]] size_t executor_id,
-        std::filesystem::path const& module_path
-    )
-    {
-        return make_executor(audio_device, std::move(device_orchestrator), loader, module_path);
-    }
-
-    template<typename Executor>
-    inline void stop_running_executor(FakeAudioDevice& audio_device, Executor& processor, std::future<void>& worker)
-    {
-        processor.request_shutdown();
-
-        bool posted_unblock_request = false;
-        if (worker.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
-            audio_device.begin_requested_block(0, 1);
-            posted_unblock_request = true;
-            require(
-                worker.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready,
-                "executor did not exit after shutdown"
-            );
-        }
-
-        worker.get();
-        if (posted_unblock_request) {
-            audio_device.finish_requested_block();
-        }
-    }
-
-    template<typename Executor>
-    inline void run_processor_ticks(FakeAudioDevice& audio_device, Executor& processor, size_t ticks = 16)
-    {
-        auto worker = std::async(std::launch::async, [&] {
-            processor.execute();
-        });
-
-        for (size_t i = 0; i < ticks; ++i) {
-            audio_device.begin_requested_block(i, 1);
-            require(audio_device.wait_until_block_ready(), "processor tick did not satisfy fake audio request");
-            audio_device.finish_requested_block();
-        }
-
-        stop_running_executor(audio_device, processor, worker);
-    }
-
-    template<typename Executor>
-    inline void run_processor_blocks(
-        FakeAudioDevice& audio_device,
-        Executor& processor,
-        std::span<size_t const> block_sizes,
-        size_t start_index = 0
-    )
-    {
-        auto worker = std::async(std::launch::async, [&] {
-            processor.execute();
-        });
-
-        size_t index = start_index;
-        for (size_t block_size : block_sizes) {
-            audio_device.begin_requested_block(index, block_size);
-            require(audio_device.wait_until_block_ready(), "processor block did not satisfy fake audio request");
-            audio_device.finish_requested_block();
-            index += block_size;
-        }
-
-        stop_running_executor(audio_device, processor, worker);
-    }
 
     inline void install_crash_handlers()
     {
         iv::install_crash_handlers();
+    }
+}
+
+namespace iv::test_support {
+    using iv::test::configured_program_or_find;
+    using iv::test::copy_directory;
+    using iv::test::find_program;
+    using iv::test::fresh_module_fixture_workspace;
+    using iv::test::load_runtime_iv_module_definition;
+    using iv::test::make_loaded_definition;
+    using iv::test::make_inline_module_workspace;
+    using iv::test::mutable_module_fixture_workspace;
+    using iv::test::read_text;
+    using iv::test::read_only_module_fixture_workspace;
+    using iv::test::ScopedEnvVar;
+    using iv::test::shared_inline_module_workspace;
+    using iv::test::test_modules_root;
+    using iv::test::write_text;
+
+    inline std::filesystem::path make_workspace(
+        std::string_view name,
+        std::source_location location = std::source_location::current())
+    {
+        return iv::test::fresh_module_fixture_workspace(name, location);
     }
 }

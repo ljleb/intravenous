@@ -1,6 +1,6 @@
 #include "module_test_utils.h"
 
-#include "module/watcher.h"
+#include <intravenous/module/watcher.h>
 
 int main()
 {
@@ -20,15 +20,18 @@ int main()
 
     iv::test::FakeAudioDevice audio_device;
     auto loader = iv::test::make_loader({ runtime_root });
-    auto graph = loader.load_root(
+    auto graph = loader.load_root_definition(
         project_dst,
-        iv::test::module_render_config(audio_device),
+        iv::test::module_executor_target(audio_device),
         &audio_device.sample_period()
     );
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
     iv::test::require(!watcher.has_changes(), "watcher should be clean before edits");
+
+    iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
+    iv::test::require(!watcher.has_changes(), "watcher should ignore generated compile databases");
 
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);

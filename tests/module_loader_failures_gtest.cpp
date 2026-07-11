@@ -31,7 +31,7 @@ TEST(ModuleLoaderFailures, MissingModuleCppFails)
     std::filesystem::create_directories(missing_dir);
 
     expect_failure_contains(
-        [&] { (void)loader.load_root(missing_dir, iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+        [&] { (void)loader.load_root_definition(missing_dir, iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
         "module.cpp"
     );
 }
@@ -43,7 +43,7 @@ TEST(ModuleLoaderFailures, MissingExportSymbolFails)
     auto loader = iv::test::make_loader();
 
     expect_failure_contains(
-        [&] { (void)loader.load_root(fixtures / "missing_export", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+        [&] { (void)loader.load_root_definition(fixtures / "missing_export", iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
         "does not declare IV_EXPORT_MODULE"
     );
 }
@@ -55,7 +55,7 @@ TEST(ModuleLoaderFailures, BuildFailurePropagates)
     auto loader = iv::test::make_loader();
 
     expect_failure_contains(
-        [&] { (void)loader.load_root(fixtures / "build_failure", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+        [&] { (void)loader.load_root_definition(fixtures / "build_failure", iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
         "command failed"
     );
 }
@@ -67,7 +67,7 @@ TEST(ModuleLoaderFailures, MissingDependencyFails)
     auto loader = iv::test::make_loader();
 
     expect_failure_contains(
-        [&] { (void)loader.load_root(fixtures / "missing_dependency", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+        [&] { (void)loader.load_root_definition(fixtures / "missing_dependency", iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
         "unknown module id"
     );
 }
@@ -79,7 +79,7 @@ TEST(ModuleLoaderFailures, DuplicateModuleIdFails)
     auto loader = iv::test::make_loader({ fixtures, iv::test::duplicate_modules_root() });
 
     expect_failure_contains(
-        [&] { (void)loader.load_root(fixtures / "nested_loader_project", iv::test::module_render_config(audio_device), &audio_device.sample_period()); },
+        [&] { (void)loader.load_root_definition(fixtures / "nested_loader_project", iv::test::module_executor_target(audio_device), &audio_device.sample_period()); },
         "duplicate module id"
     );
 }

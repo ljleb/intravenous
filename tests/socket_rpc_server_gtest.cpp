@@ -1,155 +1,199 @@
 #include "module_test_utils.h"
 
-#include "runtime/socket_rpc_server.h"
+#include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <chrono>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
-#include <regex>
-#include <source_location>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <sys/select.h>
 #include <sys/socket.h>
-#include <sys/un.h>
-#include <thread>
 #include <unistd.h>
+#include <vector>
 
 namespace {
     using namespace std::chrono_literals;
 
-    constexpr auto socket_rpc_response_timeout = 120s;
-    constexpr auto socket_rpc_rebuild_timeout = 120s;
+    constexpr auto socket_rpc_startup_timeout = 30s;
+    constexpr auto socket_rpc_response_timeout = 30s;
 
-    iv::Timeline& socket_server_timeline()
+    iv::InternedString intern(std::string_view value)
     {
-        static thread_local iv::Timeline timeline;
-        return timeline;
+        return iv::InternedString::from_view(value);
     }
 
-    class BackgroundTestAudioDevice {
-        iv::RenderConfig _config {};
-        std::vector<iv::Sample> _buffer;
+    struct SocketRpcTestState {
+        iv::SocketRpcServer *current_server = nullptr;
 
-    public:
-        BackgroundTestAudioDevice()
+        std::vector<iv::GraphQueryBySpansRequest> graph_query_requests;
+        iv::ProjectQueryResult graph_query_result;
+        bool graph_query_should_fail = false;
+        int graph_query_fail_code = -32000;
+        std::string graph_query_fail_message;
+        std::optional<iv::LaneViewResult> deferred_lane_view_notification;
+
+        std::vector<iv::LaneViewRequest> open_lane_view_requests;
+        std::vector<iv::LaneViewRequest> update_lane_view_requests;
+        iv::LaneViewResult open_lane_view_result;
+        iv::LaneViewResult update_lane_view_result;
+
+        std::vector<std::string> close_lane_view_requests;
+        bool close_lane_view_should_fail = false;
+        int close_lane_view_fail_code = -32000;
+        std::string close_lane_view_fail_message;
+        int get_audio_devices_hits = 0;
+        int set_audio_devices_hits = 0;
+        std::optional<iv::ProjectSetAudioDevicesRequest> last_set_audio_devices_request;
+        iv::AudioDevicesSnapshot audio_devices_snapshot;
+
+        int shutdown_hits = 0;
+
+        void reset()
         {
-            _config.max_block_frames = 256;
-            _config.preferred_block_size = 64;
-            _buffer.assign(_config.max_block_frames * _config.num_channels, 0.0f);
+            current_server = nullptr;
+            graph_query_requests.clear();
+            graph_query_result = {};
+            graph_query_should_fail = false;
+            graph_query_fail_code = -32000;
+            graph_query_fail_message.clear();
+            deferred_lane_view_notification.reset();
+            open_lane_view_requests.clear();
+            update_lane_view_requests.clear();
+            open_lane_view_result = {};
+            update_lane_view_result = {};
+            close_lane_view_requests.clear();
+            close_lane_view_should_fail = false;
+            close_lane_view_fail_code = -32000;
+            close_lane_view_fail_message.clear();
+            get_audio_devices_hits = 0;
+            set_audio_devices_hits = 0;
+            last_set_audio_devices_request.reset();
+            audio_devices_snapshot = {};
+            shutdown_hits = 0;
         }
-
-        iv::RenderConfig const& config() const
-        {
-            return _config;
-        }
-
-        std::span<iv::Sample> wait_for_block_request()
-        {
-            std::this_thread::sleep_for(1ms);
-            return std::span<iv::Sample>(_buffer.data(), _config.preferred_block_size * _config.num_channels);
-        }
-
-        void submit_response()
-        {}
     };
 
-    auto make_audio_device_factory()
+    SocketRpcTestState socket_rpc_test_state;
+
+    void handle_test_graph_query_by_spans(
+        iv::GraphQueryBySpansRequest const &request,
+        iv::SocketRpcGraphQueryResultBuilder &builder)
     {
-        return []() -> std::optional<iv::LogicalAudioDevice> {
-            return iv::LogicalAudioDevice(BackgroundTestAudioDevice {});
-        };
+        socket_rpc_test_state.graph_query_requests.push_back(request);
+        if (socket_rpc_test_state.deferred_lane_view_notification.has_value() &&
+            socket_rpc_test_state.current_server != nullptr) {
+            socket_rpc_test_state.current_server->send_lane_view_updated(
+                *socket_rpc_test_state.deferred_lane_view_notification);
+        }
+        if (socket_rpc_test_state.graph_query_should_fail) {
+            builder.fail(
+                socket_rpc_test_state.graph_query_fail_code,
+                socket_rpc_test_state.graph_query_fail_message);
+            return;
+        }
+        builder.succeed(socket_rpc_test_state.graph_query_result);
     }
 
-    std::filesystem::path make_workspace(
-        std::string_view name,
-        std::source_location location = std::source_location::current()
-    )
+    void handle_test_open_lane_view(
+        iv::ProjectOpenLaneViewRequest const &request,
+        iv::ProjectLaneViewBuilder &builder)
     {
-        return iv::test::fresh_test_workspace(name, location);
+        socket_rpc_test_state.open_lane_view_requests.push_back(request.request);
+        builder.succeed(socket_rpc_test_state.open_lane_view_result);
     }
 
-    void write_text(std::filesystem::path const& path, std::string const& text)
+    void handle_test_update_lane_view(
+        iv::ProjectUpdateLaneViewRequest const &request,
+        iv::ProjectLaneViewBuilder &builder)
     {
-        std::filesystem::create_directories(path.parent_path());
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(static_cast<bool>(out)) << "failed to open " << path;
-        out << text;
+        socket_rpc_test_state.update_lane_view_requests.push_back(request.request);
+        builder.succeed(socket_rpc_test_state.update_lane_view_result);
     }
 
-    std::filesystem::path make_project_workspace(std::source_location location = std::source_location::current())
+    void handle_test_close_lane_view(
+        iv::ProjectCloseLaneViewRequest const &request,
+        iv::ProjectAckBuilder &builder)
     {
-        auto const workspace = make_workspace("socket_rpc_server", location);
-        iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", workspace);
-        write_text(workspace / ".intravenous", "");
-        return workspace;
+        socket_rpc_test_state.close_lane_view_requests.push_back(request.view_id.str());
+        if (socket_rpc_test_state.close_lane_view_should_fail) {
+            builder.fail(socket_rpc_test_state.close_lane_view_fail_message);
+            return;
+        }
+        builder.succeed();
     }
 
-    std::filesystem::path make_polyphonic_project_workspace(
-        std::source_location location = std::source_location::current()
-    )
+    void handle_test_server_shutdown(
+        iv::ServerShutdownRequest const &,
+        iv::SocketRpcAckResponseBuilder &)
     {
-        auto const workspace = make_workspace("socket_rpc_server_polyphonic", location);
-        iv::test::copy_directory(iv::test::test_modules_root() / "local_cmake", workspace);
-        write_text(workspace / ".intravenous", "");
-        write_text(workspace / "module.cpp", R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/shaping.h"
-
-void polyphonic_module(iv::ModuleContext const& context)
-{
-    using namespace iv;
-    auto& g = context.builder();
-    auto const& io = context.target_factory();
-    auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto const sink = io.sink(g, 0);
-    auto const voices = iv::polyphonic<2>(g, [&](auto m) {
-        auto const saw = g.node<SawOscillator>();
-        saw(
-            "phase_offset"_P = 0.0,
-            "frequency"_P = 440.0,
-            "dt"_P = dt
-        );
-        return saw * ("amplitude"_P << m);
-    });
-    sink(voices);
-    g.outputs();
-}
-
-IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
-)");
-        return workspace;
+        ++socket_rpc_test_state.shutdown_hits;
     }
 
-    std::filesystem::path make_annotated_symbol_project_workspace(
-        std::source_location location = std::source_location::current()
-    )
+    void handle_test_get_audio_devices(
+        iv::GetAudioDevicesRequest const &,
+        iv::SocketRpcAudioDevicesResultBuilder &builder)
     {
-        auto const workspace = make_workspace("socket_rpc_server_annotated_symbol", location);
-        write_text(workspace / ".intravenous", "");
-        write_text(workspace / "module.cpp", R"(#include "dsl.h"
-#include "basic_nodes/buffers.h"
+        ++socket_rpc_test_state.get_audio_devices_hits;
+        builder.succeed(socket_rpc_test_state.audio_devices_snapshot);
+    }
 
-void annotated_symbol_module(iv::ModuleContext const& context)
-{
-    using namespace iv;
-    auto& g = context.builder();
-    auto const a = _annotate_node_source_info(
-        g.node<ValueSource>(&context.sample_period()).node_ref(),
-        "decl:annotated_symbol_module::a"
-    );
-    auto const sink = context.target_factory().sink(g, 0);
-    sink(a);
-    g.outputs();
-}
+    void handle_test_set_audio_devices(
+        iv::ProjectSetAudioDevicesRequest const &request,
+        iv::ProjectAudioDevicesBuilder &builder)
+    {
+        ++socket_rpc_test_state.set_audio_devices_hits;
+        socket_rpc_test_state.last_set_audio_devices_request = request;
+        socket_rpc_test_state.audio_devices_snapshot.selected_output.device_id =
+            request.output_device_id;
+        socket_rpc_test_state.audio_devices_snapshot.selected_input.device_id =
+            request.input_device_id;
+        builder.succeed(socket_rpc_test_state.audio_devices_snapshot);
+    }
 
-IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
-)");
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::SocketRpcGraphQueryBySpansEvent,
+        iv_socket_rpc_graph_query_by_spans_event,
+        handle_test_graph_query_by_spans)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::ProjectOpenLaneViewRequestedEvent,
+        iv_runtime_project_open_lane_view_requested_event,
+        handle_test_open_lane_view)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::ProjectUpdateLaneViewRequestedEvent,
+        iv_runtime_project_update_lane_view_requested_event,
+        handle_test_update_lane_view)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::ProjectCloseLaneViewRequestedEvent,
+        iv_runtime_project_close_lane_view_requested_event,
+        handle_test_close_lane_view)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::SocketRpcGetAudioDevicesEvent,
+        iv_socket_rpc_get_audio_devices_event,
+        handle_test_get_audio_devices)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::ProjectSetAudioDevicesRequestedEvent,
+        iv_runtime_project_set_audio_devices_requested_event,
+        handle_test_set_audio_devices)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::SocketRpcServerShutdownEvent,
+        iv_socket_rpc_server_shutdown_event,
+        handle_test_server_shutdown)
+
+    std::filesystem::path make_server_workspace()
+    {
+        auto const workspace = iv::test::fresh_module_fixture_workspace("socket_rpc_server");
+        std::ofstream marker(workspace / "project.intravenous", std::ios::binary | std::ios::trunc);
+        EXPECT_TRUE(static_cast<bool>(marker));
+        std::ofstream module_cpp(workspace / "module.cpp", std::ios::binary | std::ios::trunc);
+        EXPECT_TRUE(static_cast<bool>(module_cpp));
+        module_cpp << "// test module\n";
         return workspace;
     }
 
@@ -179,8 +223,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
             FD_SET(fd, &read_fds);
 
             auto const remaining = std::chrono::duration_cast<std::chrono::microseconds>(
-                deadline - std::chrono::steady_clock::now()
-            );
+                deadline - std::chrono::steady_clock::now());
             if (remaining.count() <= 0) {
                 break;
             }
@@ -218,8 +261,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
         int fd,
         std::string* buffer,
         int id,
-        std::chrono::milliseconds timeout = socket_rpc_response_timeout
-    )
+        std::chrono::milliseconds timeout = socket_rpc_response_timeout)
     {
         auto const deadline = std::chrono::steady_clock::now() + timeout;
         std::string const marker = "\"id\":" + std::to_string(id);
@@ -234,350 +276,264 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
         }
         return {};
     }
+
+    std::array<int, 2> make_socket_pair()
+    {
+        std::array<int, 2> fds { -1, -1 };
+        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds.data()) != 0) {
+            throw std::runtime_error(
+                std::string("socketpair failed: ") + std::strerror(errno));
+        }
+        return fds;
+    }
+
+    class SocketRpcHarness {
+        std::array<int, 2> fds;
+
+    public:
+        iv::SocketRpcServer server;
+        std::string response_buffer;
+
+        explicit SocketRpcHarness(std::filesystem::path const& workspace)
+            : fds(make_socket_pair()),
+              server(workspace, fds[1])
+        {
+            socket_rpc_test_state.current_server = &server;
+            server.start();
+            if (!server.wait_until_ready(socket_rpc_startup_timeout)) {
+                throw std::runtime_error("SocketRpcServer did not become ready");
+            }
+        }
+
+        ~SocketRpcHarness()
+        {
+            socket_rpc_test_state.current_server = nullptr;
+            if (fds[0] >= 0) {
+                ::close(fds[0]);
+            }
+            server.request_shutdown();
+            server.wait();
+        }
+
+        int client_fd() const
+        {
+            return fds[0];
+        }
+
+        std::string read_line(std::chrono::milliseconds timeout = socket_rpc_startup_timeout)
+        {
+            return read_line_until(client_fd(), &response_buffer, timeout);
+        }
+
+        std::string read_response(
+            int id,
+            std::chrono::milliseconds timeout = socket_rpc_response_timeout)
+        {
+            return read_response_for_id(client_fd(), &response_buffer, id, timeout);
+        }
+
+        void write_request(std::string const& request) const
+        {
+            ASSERT_EQ(
+                ::write(client_fd(), request.data(), request.size()),
+                static_cast<ssize_t>(request.size()));
+        }
+
+        void close_client_fd()
+        {
+            if (fds[0] >= 0) {
+                ::close(fds[0]);
+                fds[0] = -1;
+            }
+        }
+    };
 }
 
-TEST(SocketRpcServer, InitializeAndQueryBySpansOverUnixSocket)
+TEST(SocketRpcServer, SendsReadyNotificationAndStopsOnDisconnect)
 {
-    auto const workspace = make_project_workspace();
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
 
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
-    server.start();
-    ASSERT_TRUE(server.wait_until_ready(5s));
+    auto const ready = harness.read_line();
+    ASSERT_FALSE(ready.empty());
+    EXPECT_TRUE(ready.contains(R"("method":"server.ready")")) << ready;
 
-    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    ASSERT_GE(fd, 0) << std::strerror(errno);
+    harness.close_client_fd();
+    harness.server.wait();
+}
 
-    sockaddr_un address {};
-    address.sun_family = AF_UNIX;
-    auto const socket_path = server.socket_path().string();
-    ASSERT_LT(socket_path.size(), sizeof(address.sun_path));
-    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
-    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0) << std::strerror(errno);
-    std::string response_buffer;
+TEST(SocketRpcServer, DispatchesQueryEventAndReturnsSubscriberResult)
+{
+    socket_rpc_test_state.reset();
+    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::LogicalNodeInfo {
+        .id = "node-1",
+        .kind = "TestNode",
+        .source_identity = "src-1",
+        .type_identity = "TestNode",
+    });
+    auto workspace = make_server_workspace();
+    auto harness = SocketRpcHarness(workspace);
 
-    std::string const initialize_request =
-        R"({"jsonrpc":"2.0","id":1,"method":"server.initialize","params":{"workspaceRoot":")" +
-        std::filesystem::weakly_canonical(workspace).generic_string() +
-        R"("}})" "\n";
-    ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
+    ASSERT_FALSE(harness.read_line().empty());
 
-    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
-    EXPECT_TRUE(initialize_response.contains(R"("jsonrpc":"2.0")"));
-    EXPECT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
-    EXPECT_TRUE(initialize_response.contains(R"("moduleRoot":")"));
-    EXPECT_TRUE(initialize_response.contains(R"("getLogicalNode":true)"));
-    EXPECT_TRUE(initialize_response.contains(R"("getLogicalNodes":true)"));
-    EXPECT_TRUE(initialize_response.contains(R"("queryActiveRegions":true)"));
-
+    auto const module_path = (workspace / "module.cpp").generic_string();
     std::string const query_request =
         R"({"jsonrpc":"2.0","id":2,"method":"graph.queryBySpans","params":{"filePath":")" +
-        std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
+        module_path +
         R"(","ranges":[{"start":{"line":7,"column":1},"end":{"line":15,"column":1}}],"match":"intersection"}})" "\n";
-    ASSERT_EQ(::write(fd, query_request.data(), query_request.size()), static_cast<ssize_t>(query_request.size()));
+    harness.write_request(query_request);
 
-    auto const query_response = read_response_for_id(fd, &response_buffer, 2);
+    auto const query_response = harness.read_response(2);
     ASSERT_FALSE(query_response.empty());
-    EXPECT_TRUE(query_response.contains(R"("jsonrpc":"2.0")"));
-    EXPECT_TRUE(query_response.contains(R"("executionEpoch":1)"));
-    EXPECT_TRUE(query_response.contains(R"("nodes":[)"));
-    EXPECT_TRUE(query_response.contains(R"("memberCount":)"));
+    EXPECT_TRUE(query_response.contains(R"("id":"node-1")")) << query_response;
+    EXPECT_TRUE(query_response.contains(R"("kind":"TestNode")")) << query_response;
 
-    std::string const active_regions_request =
-        R"({"jsonrpc":"2.0","id":6,"method":"graph.queryActiveRegions","params":{"filePath":")" +
-        std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
-        R"("}})" "\n";
-    ASSERT_EQ(::write(fd, active_regions_request.data(), active_regions_request.size()), static_cast<ssize_t>(active_regions_request.size()));
-
-    auto const active_regions_response = read_response_for_id(fd, &response_buffer, 6);
-    EXPECT_TRUE(active_regions_response.contains(R"("id":6)"));
-    EXPECT_TRUE(active_regions_response.contains(R"("sourceSpans":[)"));
-
-    std::smatch node_id_match;
-    ASSERT_TRUE(std::regex_search(query_response, node_id_match, std::regex("\"id\":\"([^\"]+)\"")));
-    auto const logical_node_id = node_id_match[1].str();
-
-    std::string const get_logical_node_request =
-        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
-        logical_node_id +
-        R"("}})" "\n";
-    ASSERT_EQ(::write(fd, get_logical_node_request.data(), get_logical_node_request.size()), static_cast<ssize_t>(get_logical_node_request.size()));
-
-    auto const get_logical_node_response = read_response_for_id(fd, &response_buffer, 3);
-    EXPECT_TRUE(get_logical_node_response.contains(R"("id":3)"));
-    EXPECT_TRUE(get_logical_node_response.contains(R"("memberCount":)"));
-
-    std::string const get_logical_nodes_request =
-        R"({"jsonrpc":"2.0","id":4,"method":"graph.getLogicalNodes","params":{"executionEpoch":1,"nodeIds":[")" +
-        logical_node_id +
-        R"("]}})" "\n";
-    ASSERT_EQ(::write(fd, get_logical_nodes_request.data(), get_logical_nodes_request.size()), static_cast<ssize_t>(get_logical_nodes_request.size()));
-
-    auto const get_logical_nodes_response = read_response_for_id(fd, &response_buffer, 4);
-    EXPECT_TRUE(get_logical_nodes_response.contains(R"("id":4)"));
-    EXPECT_TRUE(get_logical_nodes_response.contains(R"([{"id":")"));
-
-    std::string const shutdown_request =
-        R"({"jsonrpc":"2.0","id":5,"method":"server.shutdown","params":{}})" "\n";
-    ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 5);
-    EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
-
-    ::close(fd);
-    server.request_shutdown();
+    ASSERT_EQ(socket_rpc_test_state.graph_query_requests.size(), 1u);
+    auto const& captured = socket_rpc_test_state.graph_query_requests.front();
+    EXPECT_EQ(captured.file_path, module_path);
+    ASSERT_EQ(captured.ranges.size(), 1u);
+    EXPECT_EQ(captured.ranges.front().start.line, 7u);
+    EXPECT_EQ(captured.ranges.front().end.line, 15u);
+    EXPECT_EQ(captured.match_mode, iv::SourceRangeMatchMode::intersection);
 }
 
-TEST(SocketRpcServer, ShutsDownWhenClientDisconnects)
+TEST(SocketRpcServer, DistinguishesOpenAndUpdateLaneViewEvents)
 {
-    auto const workspace = make_project_workspace();
+    socket_rpc_test_state.reset();
+    socket_rpc_test_state.open_lane_view_result.view_id = intern("open-view");
+    socket_rpc_test_state.open_lane_view_result.lanes.start_index = 1;
+    socket_rpc_test_state.update_lane_view_result.view_id = intern("update-view");
+    socket_rpc_test_state.update_lane_view_result.lanes.start_index = 3;
+    auto harness = SocketRpcHarness(make_server_workspace());
 
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
-    server.start();
-    ASSERT_TRUE(server.wait_until_ready(5s));
+    ASSERT_FALSE(harness.read_line().empty());
 
-    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    ASSERT_GE(fd, 0) << std::strerror(errno);
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":3,"method":"timeline.openLaneView","params":{"viewId":"view-a","filter":{"kind":"graphInputs"},"startIndex":1,"visibleLaneCount":2}})"
+        "\n");
+    auto const open_response = harness.read_response(3);
+    EXPECT_TRUE(open_response.contains(R"("viewId":"open-view")")) << open_response;
 
-    sockaddr_un address {};
-    address.sun_family = AF_UNIX;
-    auto const socket_path = server.socket_path().string();
-    ASSERT_LT(socket_path.size(), sizeof(address.sun_path));
-    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
-    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0) << std::strerror(errno);
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":4,"method":"timeline.updateLaneView","params":{"viewId":"view-b","filter":{"kind":"graphInputs"},"startIndex":3,"visibleLaneCount":4}})"
+        "\n");
+    auto const update_response = harness.read_response(4);
+    EXPECT_TRUE(update_response.contains(R"("viewId":"update-view")")) << update_response;
 
-    std::string const initialize_request =
-        R"({"jsonrpc":"2.0","id":1,"method":"server.initialize","params":{"workspaceRoot":")" +
-        std::filesystem::weakly_canonical(workspace).generic_string() +
-        R"("}})" "\n";
-    ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
+    ASSERT_EQ(socket_rpc_test_state.open_lane_view_requests.size(), 1u);
+    EXPECT_EQ(socket_rpc_test_state.open_lane_view_requests.front().view_id.str(), "view-a");
+    EXPECT_EQ(socket_rpc_test_state.open_lane_view_requests.front().start_index, 1u);
 
-    std::string response_buffer;
-    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1, 120s);
-    ASSERT_FALSE(initialize_response.empty());
-
-    ::close(fd);
-    server.wait();
+    ASSERT_EQ(socket_rpc_test_state.update_lane_view_requests.size(), 1u);
+    EXPECT_EQ(socket_rpc_test_state.update_lane_view_requests.front().view_id.str(), "view-b");
+    EXPECT_EQ(socket_rpc_test_state.update_lane_view_requests.front().start_index, 3u);
 }
 
-TEST(SocketRpcServer, SendsBuildNotificationsDuringReload)
+TEST(SocketRpcServer, DispatchesAudioDeviceGetAndSetRequests)
 {
-    auto const workspace = make_project_workspace();
-
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
-    server.start();
-    ASSERT_TRUE(server.wait_until_ready(5s));
-
-    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    ASSERT_GE(fd, 0) << std::strerror(errno);
-
-    sockaddr_un address {};
-    address.sun_family = AF_UNIX;
-    auto const socket_path = server.socket_path().string();
-    ASSERT_LT(socket_path.size(), sizeof(address.sun_path));
-    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
-    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0) << std::strerror(errno);
-    std::string response_buffer;
-
-    std::string const initialize_request =
-        R"({"jsonrpc":"2.0","id":1,"method":"server.initialize","params":{"workspaceRoot":")" +
-        std::filesystem::weakly_canonical(workspace).generic_string() +
-        R"("}})" "\n";
-    ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
-    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
-    ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
-
-    auto module_text = std::filesystem::exists(workspace / "module.cpp")
-        ? std::ifstream(workspace / "module.cpp", std::ios::binary)
-        : std::ifstream();
-    ASSERT_TRUE(static_cast<bool>(module_text));
-    std::string current {
-        std::istreambuf_iterator<char>(module_text),
-        std::istreambuf_iterator<char>()
+    socket_rpc_test_state.reset();
+    socket_rpc_test_state.audio_devices_snapshot.output_devices = {
+        iv::AudioDeviceDescriptor{.device_id = "default", .name = "System Default"},
+        iv::AudioDeviceDescriptor{.device_id = "out-1", .name = "Output 1"},
     };
-    write_text(workspace / "module.cpp", current + "\n");
+    socket_rpc_test_state.audio_devices_snapshot.input_devices = {
+        iv::AudioDeviceDescriptor{.device_id = "default", .name = "System Default"},
+        iv::AudioDeviceDescriptor{.device_id = "in-1", .name = "Input 1"},
+    };
+    socket_rpc_test_state.audio_devices_snapshot.selected_output = iv::AudioDeviceSelectionState{
+        .device_id = std::string("default"),
+        .name = std::string("System Default"),
+        .available = true,
+    };
+    socket_rpc_test_state.audio_devices_snapshot.selected_input = iv::AudioDeviceSelectionState{
+        .device_id = std::string("in-1"),
+        .name = std::string("Input 1"),
+        .available = true,
+    };
+    auto harness = SocketRpcHarness(make_server_workspace());
 
-    bool saw_started = false;
-    bool saw_finished = false;
-    auto const deadline = std::chrono::steady_clock::now() + socket_rpc_rebuild_timeout;
-    while (std::chrono::steady_clock::now() < deadline && (!saw_started || !saw_finished)) {
-        auto const line = read_line_until(fd, &response_buffer, 500ms);
-        if (line.empty()) {
-            continue;
-        }
-        if (line.contains(R"("method":"server.status")") && line.contains(R"("code":"rebuildStarted")")) {
-            saw_started = true;
-        }
-        if (line.contains(R"("method":"server.status")") && line.contains(R"("code":"rebuildFinished")")) {
-            saw_finished = true;
-        }
-    }
+    ASSERT_FALSE(harness.read_line().empty());
 
-    EXPECT_TRUE(saw_started);
-    EXPECT_TRUE(saw_finished);
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":8,"method":"audioDevices.get","params":{}})"
+        "\n");
+    auto const get_response = harness.read_response(8);
+    EXPECT_TRUE(get_response.contains(R"("outputDevices")")) << get_response;
+    EXPECT_TRUE(get_response.contains(R"("deviceId":"out-1")")) << get_response;
+    EXPECT_EQ(socket_rpc_test_state.get_audio_devices_hits, 1);
 
-    std::string const shutdown_request =
-        R"({"jsonrpc":"2.0","id":3,"method":"server.shutdown","params":{}})" "\n";
-    ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 3);
-    EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
-
-    ::close(fd);
-    server.request_shutdown();
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":9,"method":"audioDevices.set","params":{"outputDeviceId":"out-1","inputDeviceId":null}})"
+        "\n");
+    auto const set_response = harness.read_response(9);
+    EXPECT_TRUE(set_response.contains(R"("deviceId":"out-1")")) << set_response;
+    EXPECT_TRUE(set_response.contains(R"("selectedInput")")) << set_response;
+    EXPECT_EQ(socket_rpc_test_state.set_audio_devices_hits, 1);
+    ASSERT_TRUE(socket_rpc_test_state.last_set_audio_devices_request.has_value());
+    ASSERT_TRUE(socket_rpc_test_state.last_set_audio_devices_request->output_device_id.has_value());
+    EXPECT_EQ(*socket_rpc_test_state.last_set_audio_devices_request->output_device_id, "out-1");
+    EXPECT_FALSE(socket_rpc_test_state.last_set_audio_devices_request->input_device_id.has_value());
 }
 
-TEST(SocketRpcServer, ReturnsPolyphonicCallbackLogicalMembersFromSocketApi)
+TEST(SocketRpcServer, AckSubscriberCanFailAndShutdownEventIsInvoked)
 {
-    auto const workspace = make_polyphonic_project_workspace();
+    socket_rpc_test_state.reset();
+    socket_rpc_test_state.close_lane_view_should_fail = true;
+    socket_rpc_test_state.close_lane_view_fail_code = -32077;
+    socket_rpc_test_state.close_lane_view_fail_message = "close failed";
+    auto harness = SocketRpcHarness(make_server_workspace());
 
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
-    server.start();
-    ASSERT_TRUE(server.wait_until_ready(5s));
+    ASSERT_FALSE(harness.read_line().empty());
 
-    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    ASSERT_GE(fd, 0) << std::strerror(errno);
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":5,"method":"timeline.closeLaneView","params":{"viewId":"view-z"}})"
+        "\n");
+    auto const close_response = harness.read_response(5);
+    EXPECT_TRUE(close_response.contains(R"("code":-32000)")) << close_response;
+    EXPECT_TRUE(close_response.contains(R"("message":"close failed")")) << close_response;
+    ASSERT_EQ(socket_rpc_test_state.close_lane_view_requests.size(), 1u);
+    EXPECT_EQ(socket_rpc_test_state.close_lane_view_requests.front(), "view-z");
 
-    sockaddr_un address {};
-    address.sun_family = AF_UNIX;
-    auto const socket_path = server.socket_path().string();
-    ASSERT_LT(socket_path.size(), sizeof(address.sun_path));
-    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
-    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0) << std::strerror(errno);
-    std::string response_buffer;
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":6,"method":"server.shutdown","params":{}})"
+        "\n");
+    auto const shutdown_response = harness.read_response(6);
+    EXPECT_TRUE(shutdown_response.contains(R"("ok":true)")) << shutdown_response;
+    EXPECT_EQ(socket_rpc_test_state.shutdown_hits, 1);
+}
 
-    std::string const initialize_request =
-        R"({"jsonrpc":"2.0","id":1,"method":"server.initialize","params":{"workspaceRoot":")" +
-        std::filesystem::weakly_canonical(workspace).generic_string() +
-        R"("}})" "\n";
-    ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
-    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
-    ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
+TEST(SocketRpcServer, DefersLaneViewNotificationsUntilAfterResponse)
+{
+    socket_rpc_test_state.reset();
+    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::LogicalNodeInfo {
+        .id = "node-2",
+        .kind = "DeferredNode",
+    });
+    socket_rpc_test_state.deferred_lane_view_notification = iv::LaneViewResult {
+        .view_id = intern("deferred-view"),
+        .lanes = iv::LaneQueryResult {
+            .start_index = 0,
+            .visible_lane_count = 1,
+            .total_lane_count = 1,
+        },
+    };
+    auto workspace = make_server_workspace();
+    auto harness = SocketRpcHarness(workspace);
+
+    ASSERT_FALSE(harness.read_line().empty());
 
     std::string const query_request =
-        R"({"jsonrpc":"2.0","id":2,"method":"graph.queryBySpans","params":{"filePath":")" +
-        std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
-        R"(","ranges":[{"start":{"line":13,"column":20},"end":{"line":13,"column":20}}],"match":"intersection"}})" "\n";
-    ASSERT_EQ(::write(fd, query_request.data(), query_request.size()), static_cast<ssize_t>(query_request.size()));
-    auto const query_response = read_response_for_id(fd, &response_buffer, 2);
+        R"({"jsonrpc":"2.0","id":7,"method":"graph.queryBySpans","params":{"filePath":")" +
+        (workspace / "module.cpp").generic_string() +
+        R"(","ranges":[{"start":{"line":1,"column":1},"end":{"line":1,"column":1}}],"match":"intersection"}})" "\n";
+    harness.write_request(query_request);
+
+    auto const query_response = harness.read_response(7);
     ASSERT_FALSE(query_response.empty());
-    EXPECT_TRUE(query_response.contains(R"("kind":"iv::SawOscillator")")) << query_response;
-    EXPECT_TRUE(query_response.contains(R"("memberCount":2)")) << query_response;
-    EXPECT_FALSE(query_response.contains(R"("kind":"Polyphonic")")) << query_response;
-    EXPECT_FALSE(query_response.contains(R"("kind":"PolyphonicVoice")")) << query_response;
+    EXPECT_TRUE(query_response.contains(R"("id":"node-2")")) << query_response;
 
-    std::smatch logical_id_match;
-    ASSERT_TRUE(std::regex_search(
-        query_response,
-        logical_id_match,
-        std::regex("\"id\":\"([^\"]+)\"")
-    )) << query_response;
-    auto const logical_node_id = logical_id_match[1].str();
-
-    std::string const get_logical_node_request =
-        R"({"jsonrpc":"2.0","id":3,"method":"graph.getLogicalNode","params":{"executionEpoch":1,"nodeId":")" +
-        logical_node_id +
-        R"("}})" "\n";
-    ASSERT_EQ(::write(fd, get_logical_node_request.data(), get_logical_node_request.size()), static_cast<ssize_t>(get_logical_node_request.size()));
-    auto const logical_node_response = read_response_for_id(fd, &response_buffer, 3);
-    ASSERT_FALSE(logical_node_response.empty());
-    EXPECT_TRUE(logical_node_response.contains(R"("kind":"iv::SawOscillator")"));
-    EXPECT_TRUE(logical_node_response.contains(R"("sampleInputs":[{"name":"phase_offset")"));
-    EXPECT_TRUE(logical_node_response.contains(R"("name":"frequency")"));
-    EXPECT_TRUE(logical_node_response.contains(R"("name":"dt")"));
-    EXPECT_TRUE(logical_node_response.contains(R"("sampleOutputs":[{"name":"out")"));
-    EXPECT_TRUE(logical_node_response.contains(R"("memberCount":2)"));
-
-    std::string const shutdown_request =
-        R"({"jsonrpc":"2.0","id":4,"method":"server.shutdown","params":{}})" "\n";
-    ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 4);
-    EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
-
-    ::close(fd);
-    server.request_shutdown();
-}
-
-TEST(SocketRpcServer, QueryBySpansKeepsAnnotatedLogicalNodeIdStableOverUnixSocket)
-{
-    auto const workspace = make_annotated_symbol_project_workspace();
-
-    iv::SocketRpcServer server(socket_server_timeline(), workspace, iv::test::repo_root(), {}, make_audio_device_factory());
-    server.start();
-    ASSERT_TRUE(server.wait_until_ready(5s));
-
-    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    ASSERT_GE(fd, 0) << std::strerror(errno);
-
-    sockaddr_un address {};
-    address.sun_family = AF_UNIX;
-    auto const socket_path = server.socket_path().string();
-    ASSERT_LT(socket_path.size(), sizeof(address.sun_path));
-    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
-    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0) << std::strerror(errno);
-    std::string response_buffer;
-
-    std::string const initialize_request =
-        R"({"jsonrpc":"2.0","id":1,"method":"server.initialize","params":{"workspaceRoot":")" +
-        std::filesystem::weakly_canonical(workspace).generic_string() +
-        R"("}})" "\n";
-    ASSERT_EQ(::write(fd, initialize_request.data(), initialize_request.size()), static_cast<ssize_t>(initialize_request.size()));
-    auto const initialize_response = read_response_for_id(fd, &response_buffer, 1);
-    ASSERT_TRUE(initialize_response.contains(R"("executionEpoch":1)"));
-
-    std::string const query_request =
-        R"({"jsonrpc":"2.0","id":2,"method":"graph.queryBySpans","params":{"filePath":")" +
-        std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
-        R"(","ranges":[{"start":{"line":1,"column":1},"end":{"line":16,"column":1}}],"match":"intersection"}})" "\n";
-    ASSERT_EQ(::write(fd, query_request.data(), query_request.size()), static_cast<ssize_t>(query_request.size()));
-    auto const initial_response = read_response_for_id(fd, &response_buffer, 2);
-    ASSERT_FALSE(initial_response.empty());
-    EXPECT_TRUE(initial_response.contains(R"("nodes":[)")) << initial_response;
-    EXPECT_TRUE(initial_response.contains(R"("kind":"iv::ValueSource")")) << initial_response;
-
-    std::smatch initial_id_match;
-    ASSERT_TRUE(std::regex_search(initial_response, initial_id_match, std::regex("\"id\":\"([^\"]+)\""))) << initial_response;
-    auto const initial_id = initial_id_match[1].str();
-    ASSERT_FALSE(initial_id.empty());
-
-    auto module_text = std::ifstream(workspace / "module.cpp", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(module_text));
-    std::string current {
-        std::istreambuf_iterator<char>(module_text),
-        std::istreambuf_iterator<char>()
-    };
-    write_text(workspace / "module.cpp", current + "\n");
-
-    auto const deadline = std::chrono::steady_clock::now() + socket_rpc_rebuild_timeout;
-    bool saw_rebuild_finished = false;
-    while (std::chrono::steady_clock::now() < deadline && !saw_rebuild_finished) {
-        auto const line = read_line_until(fd, &response_buffer, 500ms);
-        if (line.empty()) {
-            continue;
-        }
-        if (line.contains(R"("method":"server.status")") && line.contains(R"("code":"rebuildFinished")")) {
-            saw_rebuild_finished = true;
-        }
-    }
-
-    ASSERT_TRUE(saw_rebuild_finished);
-
-    std::string const reload_query_request =
-        R"({"jsonrpc":"2.0","id":4,"method":"graph.queryBySpans","params":{"filePath":")" +
-        std::filesystem::weakly_canonical(workspace / "module.cpp").generic_string() +
-        R"(","ranges":[{"start":{"line":1,"column":1},"end":{"line":17,"column":1}}],"match":"intersection"}})" "\n";
-    ASSERT_EQ(::write(fd, reload_query_request.data(), reload_query_request.size()), static_cast<ssize_t>(reload_query_request.size()));
-    auto const reloaded_response = read_response_for_id(fd, &response_buffer, 4, 30s);
-
-    ASSERT_FALSE(reloaded_response.empty());
-    EXPECT_TRUE(reloaded_response.contains(R"("kind":"iv::ValueSource")")) << reloaded_response;
-    std::smatch reloaded_id_match;
-    ASSERT_TRUE(std::regex_search(reloaded_response, reloaded_id_match, std::regex("\"id\":\"([^\"]+)\""))) << reloaded_response;
-    EXPECT_EQ(reloaded_id_match[1].str(), initial_id);
-
-    std::string const shutdown_request =
-        R"({"jsonrpc":"2.0","id":3,"method":"server.shutdown","params":{}})" "\n";
-    ASSERT_EQ(::write(fd, shutdown_request.data(), shutdown_request.size()), static_cast<ssize_t>(shutdown_request.size()));
-    auto const shutdown_response = read_response_for_id(fd, &response_buffer, 3);
-    EXPECT_TRUE(shutdown_response.contains(R"("ok":true)"));
-
-    ::close(fd);
-    server.request_shutdown();
+    auto const deferred_notification = harness.read_line(5s);
+    ASSERT_FALSE(deferred_notification.empty());
+    EXPECT_TRUE(deferred_notification.contains(R"("method":"timeline.laneViewUpdated")")) << deferred_notification;
+    EXPECT_TRUE(deferred_notification.contains(R"("viewId":"deferred-view")")) << deferred_notification;
 }

@@ -7,6 +7,7 @@ vsix_path="$client_dir/intravenous-client.vsix"
 
 cd "$client_dir"
 rm -f "$vsix_path"
+npm run build
 vsce package --allow-missing-repository --skip-license --out "$vsix_path"
 codium --install-extension "$vsix_path" --force
 

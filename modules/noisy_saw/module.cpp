@@ -1,10 +1,10 @@
-#include "dsl.h"
-#include "basic_nodes/noise.h"
-#include "basic_nodes/filters.h"
-#include "basic_nodes/shaping.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/midi.h"
-#include "juce/vst_wrapper.h"
+#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/noise.h>
+#include <intravenous/basic_nodes/filters.h>
+#include <intravenous/basic_nodes/shaping.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/midi.h>
+#include <intravenous/juce/vst_wrapper.h>
 
 #include <array>
 #include <iostream>
@@ -14,7 +14,6 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
 {
     using namespace iv;
     auto& g = c.builder();
-    auto const& io = c.target_factory();
     auto dt = g.node<ValueSource>(&c.sample_period());
 
     // auto const sup = juce::vst(g, "ValhallaSupermassive");
@@ -27,10 +26,9 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
     // );
 
     size_t seed = 0;
-    for (size_t channel = 0; channel < c.render_config().num_channels; ++channel) {
-        // auto const sink = io.file(g, channel, "out.wav");
-        auto sink = io.sink(g, channel);
-
+    SamplePortRef left;
+    SamplePortRef right;
+    g.multi_channel<ChannelTypeId::stereo>([&]<auto Ch>() {
         auto voice = polyphonic<16>(g, [&](auto m) {
             // m.connect_event_input("midi", midi);
 
@@ -53,13 +51,18 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
 
             return saw * (m >> "amplitude"_P);
         });
-        voice < "midi"_F << juce::midi_input(g, "V25");
+        // voice < "midi"_F << juce::midi_input(g, "V25");
 
         auto lp = g.node<SimpleIirLowPass>();
-        sink(lp(voice, "dt"_P = dt) * 0.5);
-    }
+        auto const channel_output = lp(voice, "dt"_P = dt) * 0.5;
+        if constexpr (std::same_as<decltype(Ch), decltype(channels::stereo_left)>) {
+            left = channel_output;
+        } else {
+            right = channel_output;
+        }
+    });
 
-    g.outputs();
+    g.outputs(channels::stereo_left = left, channels::stereo_right = right);
 }
 
 IV_EXPORT_MODULE("iv.test.noisy_saw", noisy_saw_project);

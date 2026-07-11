@@ -28,13 +28,12 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     std::filesystem::remove_all(iv::test::runtime_module_workspace_root("iv.test.local_cmake", local_dst));
 
     iv::test::FakeAudioDevice audio_device;
-    iv::Timeline timeline;
-    iv::ModuleLoader loader(timeline, iv::test::repo_root(), { runtime_root });
+    iv::ModuleLoader loader(iv::test::repo_root(), { runtime_root });
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             project_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;
@@ -53,16 +52,16 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 #endif
 
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
-    auto project_needle = std::string("SamplePortRef first_output;");
-    auto project_replacement = std::string("SamplePortRef first_output;\n    // behavior source marker");
+    auto project_needle = std::string("    using namespace iv;");
+    auto project_replacement = std::string("    using namespace iv;\n    // behavior source marker");
     ASSERT_NE(project_source.find(project_needle), std::string::npos);
     project_source.replace(project_source.find(project_needle), project_needle.size(), project_replacement);
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             project_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;
@@ -82,9 +81,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     auto const voice_cache_mid = iv::test::write_time(voice_cache);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             project_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;
@@ -94,9 +93,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     EXPECT_EQ(iv::test::write_time(voice_cache), voice_cache_mid);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             local_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;
@@ -111,9 +110,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
 
     {
-        auto graph = loader.load_root(
+        auto graph = loader.load_root_definition(
             local_dst,
-            iv::test::module_render_config(audio_device),
+            iv::test::module_executor_target(audio_device),
             &audio_device.sample_period()
         );
         (void)graph;

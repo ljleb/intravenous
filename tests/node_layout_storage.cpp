@@ -1,11 +1,10 @@
-#include "node/lifecycle.h"
+#include <intravenous/node/lifecycle.h>
 #include "module_test_utils.h"
-#include "basic_nodes/type_erased.h"
-#include "dsl.h"
-#include "graph/node.h"
-#include "graph/node_wrapper.h"
-#include "devices/channel_buffer_sink.h"
-#include "basic_nodes/buffers.h"
+#include <intravenous/basic_nodes/type_erased.h>
+#include <intravenous/dsl.h>
+#include <intravenous/graph/node.h>
+#include <intravenous/graph/node_wrapper.h>
+#include <intravenous/basic_nodes/buffers.h>
 
 #include <array>
 #include <cstdint>
@@ -18,37 +17,6 @@ namespace {
     inline iv::ResourceContext make_resources()
     {
         return iv::ResourceContext {};
-    }
-
-    inline void require_graph_storage_tree_is_patched(iv::NodeStorage& storage)
-    {
-        auto& root_state = *static_cast<iv::TypeErasedNode::State*>(storage.state_ptr(0));
-        iv::test::require(root_state.nested_node_states.size() == 1, "root type-erased graph should expose one nested graph child");
-        iv::test::require(root_state.nested_node_states[0].data() != nullptr, "graph child state should be patched");
-
-        auto& graph_state = *reinterpret_cast<iv::Graph::State*>(root_state.nested_node_states[0].data());
-        iv::test::require(!graph_state.scc_states.empty(), "graph should expose SCC child states");
-        for (size_t scc_i = 0; scc_i < graph_state.scc_states.size(); ++scc_i) {
-            iv::test::require(graph_state.scc_states[scc_i].data() != nullptr, "graph SCC child state should be patched");
-            auto& scc_state = *reinterpret_cast<iv::GraphSccWrapper::State*>(graph_state.scc_states[scc_i].data());
-            iv::test::require(!scc_state.nested_node_states.empty(), "SCC should expose wrapper child states");
-            for (size_t node_i = 0; node_i < scc_state.nested_node_states.size(); ++node_i) {
-                iv::test::require(scc_state.nested_node_states[node_i].data() != nullptr, "SCC wrapper child state should be patched");
-                auto& wrapper_state = *reinterpret_cast<iv::GraphNodeWrapper::State*>(scc_state.nested_node_states[node_i].data());
-                size_t const executable_child = wrapper_state.inputs.size();
-                iv::test::require(
-                    wrapper_state.nested_node_states.size() == executable_child + 1,
-                    "wrapper should expose one port-data child per input plus one nested executable child"
-                );
-                for (size_t input_i = 0; input_i < wrapper_state.inputs.size(); ++input_i) {
-                    iv::test::require(wrapper_state.nested_node_states[input_i].data() != nullptr, "wrapper port-data child state should be patched");
-                }
-                iv::test::require(wrapper_state.nested_node_states[executable_child].data() != nullptr, "wrapper nested executable child state should be patched");
-                auto& erased_state = *reinterpret_cast<iv::TypeErasedNode::State*>(wrapper_state.nested_node_states[executable_child].data());
-                iv::test::require(erased_state.nested_node_states.size() == 1, "wrapper nested type-erased state should expose one direct child");
-                iv::test::require(erased_state.nested_node_states[0].data() != nullptr, "wrapper concrete child state should be patched");
-            }
-        }
     }
 
     struct Producer {
@@ -611,99 +579,6 @@ int main()
         auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
         iv::test::require(wrapper_state.nested_node_states.size() == 1, "standalone wrapper without inputs should expose one nested executable child");
         iv::test::require(wrapper_state.nested_node_states[0].data() != nullptr, "standalone wrapper nested executable child state should be patched");
-    }
-
-    {
-        iv::GraphNodeWrapper wrapper(
-            iv::TypeErasedNode(iv::AudioDeviceSink{
-                .device_id = 0,
-                .channel = 0,
-            }),
-            {
-                iv::PortBufferPlan {
-                    .connection_max_block_size = 8,
-                    .corrected_latency = 0,
-                    .input_history = 0,
-                    .output_history = 0,
-                }
-            },
-            "standalone_sink",
-            {}
-        );
-
-        iv::NodeLayoutBuilder builder(8);
-        iv::do_declare(wrapper, builder);
-        iv::NodeLayout layout = std::move(builder).build();
-        auto resources = make_resources();
-        iv::NodeStorage storage = layout.create_storage(resources);
-        storage.initialize();
-
-        auto& wrapper_state = *static_cast<iv::GraphNodeWrapper::State*>(storage.state_ptr(0));
-        iv::test::require(wrapper_state.nested_node_states.size() == 2, "standalone sink wrapper should expose one input port-data child and one nested executable child");
-        iv::test::require(wrapper_state.nested_node_states[0].data() != nullptr, "standalone sink wrapper port-data child state should be patched");
-        iv::test::require(wrapper_state.nested_node_states[1].data() != nullptr, "standalone sink wrapper nested executable child state should be patched");
-        auto& erased_state = *reinterpret_cast<iv::TypeErasedNode::State*>(wrapper_state.nested_node_states[1].data());
-        iv::test::require(erased_state.nested_node_states.size() == 1, "standalone sink wrapper nested type-erased state should expose one direct child");
-        iv::test::require(erased_state.nested_node_states[0].data() != nullptr, "standalone sink wrapper concrete child state should be patched");
-
-        iv::do_tick_block(wrapper, {
-            iv::TickContext<iv::GraphNodeWrapper> {
-                .inputs = wrapper_state.inputs,
-                .outputs = wrapper_state.outputs,
-                .event_inputs = {},
-                .event_outputs = {},
-                .buffer = storage.buffer(),
-            },
-            0,
-            8,
-        });
-
-        iv::test::require(erased_state.nested_node_states.size() == 1, "standalone sink wrapper nested type-erased state should survive one tick");
-        iv::test::require(erased_state.nested_node_states[0].data() != nullptr, "standalone sink wrapper concrete child state should survive one tick");
-    }
-
-    {
-        iv::Sample a = 0.25f;
-        iv::Sample b = 0.5f;
-
-        iv::GraphBuilder g;
-        auto const src_a = g.node<iv::ValueSource>(&a);
-        auto const src_b = g.node<iv::ValueSource>(&b);
-        auto const sink_a = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
-            .device_id = 0,
-            .channel = 0,
-        });
-        auto const sink_b = g.node<iv::AudioDeviceSink>(iv::AudioDeviceSink{
-            .device_id = 0,
-            .channel = 0,
-        });
-        sink_a(src_a);
-        sink_b(src_b);
-        g.outputs();
-
-        iv::TypeErasedNode root = iv::TypeErasedNode(g.build());
-        iv::NodeLayoutBuilder builder(8);
-        iv::do_declare(root, builder);
-        iv::NodeLayout layout = std::move(builder).build();
-        auto resources = make_resources();
-        iv::NodeStorage storage = layout.create_storage(resources);
-        storage.initialize();
-
-        require_graph_storage_tree_is_patched(storage);
-
-        root.tick_block({
-            iv::TickContext<iv::TypeErasedNode> {
-                .inputs = {},
-                .outputs = {},
-                .event_inputs = {},
-                .event_outputs = {},
-                .buffer = storage.buffer(),
-            },
-            0,
-            8,
-        });
-
-        require_graph_storage_tree_is_patched(storage);
     }
 
     return 0;

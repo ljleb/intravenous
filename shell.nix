@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> { config.allowUnfreePredicate = pkg: builtins.elem (pkg.pname or "") [ "claude-code" ]; } }:
 
 pkgs.mkShell {
   packages = with pkgs; [
@@ -9,10 +9,12 @@ pkgs.mkShell {
     clang-tools
     llvmPackages_latest.libllvm.dev
     llvmPackages_latest.clang-unwrapped.dev
+    vscode-extensions.vadimcn.vscode-lldb
     python3
     nodejs
     vsce
     juce
+    claude-code
 
     # JUCE/Linux deps
     alsa-lib
@@ -31,6 +33,8 @@ pkgs.mkShell {
     export CXX=clang++
     export JUCE_DIR=${pkgs.juce}
     export IV_VST3_PATH="$HOME/vst"
+
+    export PATH="$HOME/.local/bin:$PATH"
 
     echo "intravenous dev shell ready"
     echo "CC=$CC"

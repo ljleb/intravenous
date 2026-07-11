@@ -1,7 +1,8 @@
 CompileFlags:
   Add:
-    - "/clang:-std=c++23"
     - "-DR123_USE_AES_NI=1"
+    - "-std=c++23"
+    - "-Isrc"
 Diagnostics:
   Suppress:
     - unused-comparison

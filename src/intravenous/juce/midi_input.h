@@ -1,0 +1,90 @@
+#pragma once
+
+#include <intravenous/graph/builder.h>
+#include <intravenous/node/lifecycle.h>
+
+#include <array>
+#include <memory>
+#include <string>
+
+#ifndef IV_ENABLE_JUCE_VST
+#define IV_ENABLE_JUCE_VST 0
+#endif
+
+#if IV_ENABLE_JUCE_VST
+#include <intravenous/local_gamma_time_aligner.h>
+
+#include <optional>
+#endif
+
+namespace iv {
+    namespace details {
+        template<class...>
+        inline constexpr bool dependent_false_v = false;
+    }
+
+    namespace juce {
+#if !IV_ENABLE_JUCE_VST
+        template<typename... Args>
+        auto midi_input(Args&&...)
+        {
+            static_assert(
+                details::dependent_false_v<Args...>,
+                "iv::juce::midi_input(...) requires JUCE support. Configure the project with JUCE available so IV_ENABLE_JUCE_VST=1."
+            );
+            return NodeRef();
+        }
+#endif
+    }
+
+#if IV_ENABLE_JUCE_VST
+    struct JuceMidiInputSpec {
+        std::string device_query;
+    };
+
+    class JuceMidiInputSource {
+        std::shared_ptr<JuceMidiInputSpec const> _spec;
+
+    public:
+        struct State {
+            UniqueResource live_input { nullptr, +[](void*) {} };
+            LocalGammaTimeAligner time_aligner;
+            std::optional<size_t> expected_next_sample;
+        };
+
+        explicit JuceMidiInputSource(JuceMidiInputSpec spec) :
+            _spec(std::make_shared<JuceMidiInputSpec const>(std::move(spec)))
+        {}
+
+        auto inputs() const
+        {
+            return std::array {
+                InputConfig { .name = "dt", .default_value = 1.0 },
+            };
+        }
+
+        auto event_outputs() const
+        {
+            return std::array<EventOutputConfig, 1> {{
+                { .name = "midi", .type = EventTypeId::midi }
+            }};
+        }
+
+        void initialize(InitializationContext<JuceMidiInputSource> const& ctx) const;
+
+        void tick_block(TickBlockContext<JuceMidiInputSource> const& ctx) const;
+    };
+
+    namespace juce {
+        inline auto midi_input(
+            GraphBuilder& g,
+            std::string device_query = {}
+        )
+        {
+            return g.node<JuceMidiInputSource>(JuceMidiInputSpec {
+                .device_query = std::move(device_query),
+            });
+        }
+    }
+#endif
+}

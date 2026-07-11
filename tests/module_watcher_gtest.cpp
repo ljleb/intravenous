@@ -1,5 +1,5 @@
 #include "module_test_utils.h"
-#include "module/watcher.h"
+#include <intravenous/module/watcher.h>
 
 #include <gtest/gtest.h>
 
@@ -19,14 +19,17 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
 
     iv::test::FakeAudioDevice audio_device;
     auto loader = iv::test::make_loader({ runtime_root });
-    auto graph = loader.load_root(
+    auto graph = loader.load_root_definition(
         project_dst,
-        iv::test::module_render_config(audio_device),
+        iv::test::module_executor_target(audio_device),
         &audio_device.sample_period()
     );
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
+    EXPECT_FALSE(watcher.has_changes());
+
+    iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
     EXPECT_FALSE(watcher.has_changes());
 
     auto module_cpp = voice_dst / "module.cpp";

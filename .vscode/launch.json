@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug integration gtest: module reload",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/tests/intravenous_module_loader_reload_tests",
+      "args": [
+        "--gtest_break_on_failure"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "GTEST_COLOR": "1"
+      }
+    }
+  ]
+}

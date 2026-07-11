@@ -1,13 +1,12 @@
-#include "dsl.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/filters.h"
-#include "basic_nodes/shaping.h"
+#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/filters.h>
+#include <intravenous/basic_nodes/shaping.h>
 
 inline void benchmark_constant_filtered(iv::ModuleContext const& context)
 {
     using namespace iv;
     auto& g = context.builder();
-    auto const& io = context.target_factory();
     auto const dt = g.node<ValueSource>(&context.sample_period());
 
     auto const phase = g.node<PhaseIntegrator>();
@@ -25,11 +24,16 @@ inline void benchmark_constant_filtered(iv::ModuleContext const& context)
     high_pass(low_pass, 0.08, dt);
 
     auto const tone = high_pass * 0.12;
-    for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
-        io.sink(g, channel)(tone);
-    }
-
-    g.outputs();
+    SamplePortRef left;
+    SamplePortRef right;
+    g.multi_channel<ChannelTypeId::stereo>([&]<auto Ch>() {
+        if constexpr (std::same_as<decltype(Ch), decltype(channels::stereo_left)>) {
+            left = tone;
+        } else {
+            right = tone;
+        }
+    });
+    g.outputs(channels::stereo_left = left, channels::stereo_right = right);
 }
 
 IV_EXPORT_MODULE("iv.test.benchmark_constant_filtered", benchmark_constant_filtered);

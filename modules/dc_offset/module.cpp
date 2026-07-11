@@ -1,10 +1,10 @@
-#include "dsl.h"
-#include "basic_nodes/noise.h"
-#include "basic_nodes/filters.h"
-#include "basic_nodes/shaping.h"
-#include "basic_nodes/buffers.h"
-#include "basic_nodes/midi.h"
-#include "juce/vst_wrapper.h"
+#include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/noise.h>
+#include <intravenous/basic_nodes/filters.h>
+#include <intravenous/basic_nodes/shaping.h>
+#include <intravenous/basic_nodes/buffers.h>
+#include <intravenous/basic_nodes/midi.h>
+#include <intravenous/juce/vst_wrapper.h>
 
 #include <array>
 #include <iostream>
@@ -14,15 +14,16 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
 {
     using namespace iv;
     GraphBuilder& g = context.builder();
-    auto const& io = context.target_factory();
-
-    for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
-        // auto const sink = io.file(g, channel, "out.wav");
-        auto const sink = io.sink(g, channel);
-        sink(0.01);
-    }
-
-    g.outputs();
+    SamplePortRef left;
+    SamplePortRef right;
+    g.multi_channel<ChannelTypeId::stereo>([&]<auto Ch>() {
+        if constexpr (std::same_as<decltype(Ch), decltype(channels::stereo_left)>) {
+            left = 0.01;
+        } else {
+            right = 0.01;
+        }
+    });
+    g.outputs(channels::stereo_left = left, channels::stereo_right = right);
 }
 
 IV_EXPORT_MODULE("iv.test.dc_offset", noisy_saw_project);

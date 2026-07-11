@@ -1,0 +1,21 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "CommonJS",
+        "moduleResolution": "Node",
+        "strict": false,
+        "noImplicitAny": false,
+        "allowJs": true,
+        "checkJs": false,
+        "esModuleInterop": true,
+        "resolveJsonModule": true,
+        "experimentalDecorators": true,
+        "emitDecoratorMetadata": true,
+        "skipLibCheck": true,
+        "lib": ["ES2022"],
+        "types": ["node", "vscode"]
+    },
+    "include": [
+        "src/**/*.ts"
+    ]
+}

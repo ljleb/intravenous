@@ -2,7 +2,12 @@
 *.wav
 /.cache
 /.codex
-/intravenious
+/.claude
+.intravenous-tooling/
+compile_commands.json
+intravenious
 /scripts/benchmark.txt*
 node_modules
 *.vsix
+vscode/client/dist
+vscode/client/dist-test
