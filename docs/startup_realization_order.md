@@ -22,7 +22,7 @@ realize iv-module definitions or begin audio execution.
    project-domain activity.
 4. Start any local services required so replayed project commands can target
    their owning modules.
-5. Load `project.intravenous` synchronously through the shared mutation
+5. Load `iv_project.jsonl` synchronously through the shared mutation
    surface.
 6. Emit `server.ready`.
 7. Start the iv-module reload/watch thread.

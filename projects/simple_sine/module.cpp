@@ -23,11 +23,11 @@ void simple_sine(iv::ModuleContext const& context)
         NodeRef p;
         if constexpr (c == channels::stereo_left)
         {
-            p = f + d;
+            p = f + d/2;
         }
         else
         {
-            p = f - d;
+            p = f - d/2;
         }
 
         voice(

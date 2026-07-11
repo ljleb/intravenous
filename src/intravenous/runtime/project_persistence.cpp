@@ -288,7 +288,7 @@ ProjectPersistence::ProjectPersistence(
 
 std::filesystem::path ProjectPersistence::project_file_path() const
 {
-    return workspace_root_ / "project.intravenous";
+    return workspace_root_ / "iv_project.jsonl";
 }
 
 void ProjectPersistence::emit_message(std::string level, std::string message) const

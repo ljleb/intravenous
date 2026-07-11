@@ -11,7 +11,7 @@
         "Other"
     ],
     "activationEvents": [
-        "workspaceContains:project.intravenous",
+        "workspaceContains:iv_project.jsonl",
         "onWebviewPanel:intravenous.lanes"
     ],
     "main": "./dist/extension.js",

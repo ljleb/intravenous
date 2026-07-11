@@ -114,7 +114,7 @@ The intended save flow is:
 - project persistence raises its state-collection event into contributors
 - contributors fill the structured builder
 - the builder lowers to the normalized command list
-- project persistence writes `project.intravenous`
+- project persistence writes `iv_project.jsonl`
 
 This keeps serialization cost under control, keeps persistence independent of a
 particular client, and lets app modules mutate live state freely without forcing

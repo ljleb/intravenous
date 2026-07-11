@@ -82,7 +82,7 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeUpdatesTimelineExecution
     auto const workspace = mutable_module_fixture_workspace(
         "socket_rpc_timeline_execution_bridge",
         "local_cmake");
-    write_text(workspace / "project.intravenous", settings_line(16));
+    write_text(workspace / "iv_project.jsonl", settings_line(16));
 
     iv::IvModuleInstances iv_module_instances;
     iv::GraphInputLanes graph_input_lanes;
@@ -125,7 +125,7 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeUpdatesTimelineExecution
     auto const response = parse_json_line(builder.build(1));
     EXPECT_EQ(response["result"]["ok"], true);
     EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 8u);
-    EXPECT_FALSE(read_text(workspace / "project.intravenous").contains(
+    EXPECT_FALSE(read_text(workspace / "iv_project.jsonl").contains(
         "\"compiled_sample_cache_chunk_size_multiplier\":8"));
 
     iv::SocketRpcAckResponseBuilder save_builder;
@@ -135,7 +135,7 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeUpdatesTimelineExecution
         save_builder);
     auto const save_response = parse_json_line(save_builder.build(2));
     EXPECT_EQ(save_response["result"]["ok"], true);
-    EXPECT_TRUE(read_text(workspace / "project.intravenous").contains(
+    EXPECT_TRUE(read_text(workspace / "iv_project.jsonl").contains(
         "\"compiled_sample_cache_chunk_size_multiplier\":8"));
 
     iv::unbind_project_persistence_bridge(persistence);
@@ -150,7 +150,7 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeRejectsZeroMultiplier)
     auto const workspace = mutable_module_fixture_workspace(
         "socket_rpc_timeline_execution_bridge_invalid",
         "local_cmake");
-    write_text(workspace / "project.intravenous", settings_line(16));
+    write_text(workspace / "iv_project.jsonl", settings_line(16));
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
     iv::bind_socket_rpc_timeline_execution_bridge(timeline, execution, workspace);
@@ -168,7 +168,7 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeRejectsZeroMultiplier)
         response["error"]["message"].get<std::string>(),
         "compiled sample cache chunk size multiplier must be > 0");
     EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 16u);
-    EXPECT_TRUE(read_text(workspace / "project.intravenous").contains(
+    EXPECT_TRUE(read_text(workspace / "iv_project.jsonl").contains(
         "\"compiled_sample_cache_chunk_size_multiplier\":16"));
 
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
@@ -186,7 +186,7 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetLaneSampleChannelTypeUpdatesTimel
     auto const workspace = mutable_module_fixture_workspace(
         "socket_rpc_timeline_execution_bridge_lane_channel_type",
         "local_cmake");
-    write_text(workspace / "project.intravenous", settings_line(16));
+    write_text(workspace / "iv_project.jsonl", settings_line(16));
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
     iv::bind_socket_rpc_timeline_execution_bridge(timeline, execution, workspace);
@@ -237,7 +237,7 @@ TEST(SocketRpcTimelineExecutionBridge, LoadAppliesRecognizedOverrideSettingsAndL
         "socket_rpc_timeline_execution_bridge_unknown_override",
         "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "project.overrideSettings"},
             {"args", Json{

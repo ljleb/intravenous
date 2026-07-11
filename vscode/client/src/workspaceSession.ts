@@ -393,7 +393,7 @@ export class WorkspaceSession {
     }
 
     projectMarkerPath(): string {
-        return path.join(this.workspaceRoot(), "project.intravenous");
+        return path.join(this.workspaceRoot(), "iv_project.jsonl");
     }
 
     isIntravenousProject(): boolean {

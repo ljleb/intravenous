@@ -189,7 +189,7 @@ namespace {
     std::filesystem::path make_server_workspace()
     {
         auto const workspace = iv::test::fresh_module_fixture_workspace("socket_rpc_server");
-        std::ofstream marker(workspace / "project.intravenous", std::ios::binary | std::ios::trunc);
+        std::ofstream marker(workspace / "iv_project.jsonl", std::ios::binary | std::ios::trunc);
         EXPECT_TRUE(static_cast<bool>(marker));
         std::ofstream module_cpp(workspace / "module.cpp", std::ios::binary | std::ios::trunc);
         EXPECT_TRUE(static_cast<bool>(module_cpp));

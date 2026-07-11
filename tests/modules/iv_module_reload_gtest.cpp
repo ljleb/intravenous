@@ -178,7 +178,7 @@ TEST_F(IvModuleReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherChan
     iv::test_support::copy_directory(
         iv::test_support::test_modules_root() / "local_cmake",
         workspace);
-    iv::test_support::write_text(workspace / "project.intravenous", "");
+    iv::test_support::write_text(workspace / "iv_project.jsonl", "");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     auto const startup = startup_config.initialize();

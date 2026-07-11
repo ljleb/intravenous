@@ -152,7 +152,7 @@ Examples:
 Project-specific config and replay commands should move into a dedicated
 project-owned file such as:
 
-- `project.intravenous`
+- `iv_project.jsonl`
 
 This file should own:
 
@@ -160,9 +160,10 @@ This file should own:
 - project-owned settings
 - project overrides of installation defaults
 
-### Iv-module `.intravenous`
+### Iv-module `iv_module.json`
 
-The `.intravenous` file should be reserved for iv-module-local settings only.
+The `iv_module.json` manifest should be a single JSON object reserved for
+iv-module-local settings only. An empty manifest is `{}`.
 
 It should not contain:
 
@@ -178,10 +179,10 @@ for the project remain compatible together.
 
 The runtime now uses:
 
-- `project.intravenous` as the project-owned command/settings file
+- `iv_project.jsonl` as the project-owned JSONL command/settings file
 - `.intravenous_defaults` as the installation defaults file
 
-Module-local `.intravenous` files are still reserved for iv-module-local
+Module-local `iv_module.json` manifests are reserved for iv-module-local
 settings, but current project persistence work does not rely on them.
 
 ## One route per purpose

@@ -313,7 +313,7 @@ TEST_F(ProjectPersistenceTest, OverrideParsingAppliesTypedOverridesAcrossOwnersA
     write_text(toolchain_dir / "make", "");
     write_text(toolchain_dir / "juce", "");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "project.overrideSettings"},
             {"args", Json{
@@ -370,7 +370,7 @@ TEST_F(ProjectPersistenceTest, OverrideParsingDefaultAndUnknownOnlyDoNotMutateSt
 {
     auto const workspace = mutable_module_fixture_workspace("project_override_defaults", "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "project.overrideSettings"},
             {"args", Json{
@@ -406,7 +406,7 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLa
 {
     auto const workspace = mutable_module_fixture_workspace("project_override_invalid_then_create", "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "project.overrideSettings"},
             {"args", Json{{"compiled_sample_cache_chunk_size_multiplier", -1}}},
@@ -505,7 +505,7 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogError
             "project_override_invalid_field_" + std::to_string(i),
             "local_cmake");
         write_text(
-            workspace / "project.intravenous",
+            workspace / "iv_project.jsonl",
             Json{
                 {"command", "project.overrideSettings"},
                 {"args", cases[i].args},
@@ -675,7 +675,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRe
 {
     auto const workspace = mutable_module_fixture_workspace("project_replay_partial_failure", "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "ivModuleInstances.setDefaultSilenceTtlSamples"},
             {"args", Json{
@@ -724,7 +724,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
 {
     auto const workspace = mutable_module_fixture_workspace("project_replay_middle_failure", "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "ivModuleInstances.create"},
             {"args", Json{
@@ -779,7 +779,7 @@ TEST_F(ProjectPersistenceTest, UnknownOverrideKeysWarnAndDoNotBlockLaterCommands
 {
     auto const workspace = mutable_module_fixture_workspace("project_override_unknown_then_continue", "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "project.overrideSettings"},
             {"args", Json{
@@ -878,8 +878,8 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     iv::bind_project_persistence_bridge(persistence);
 
     persistence.save();
-    auto const original = read_text(workspace / "project.intravenous");
-    auto const original_commands = parse_project_file(workspace / "project.intravenous");
+    auto const original = read_text(workspace / "iv_project.jsonl");
+    auto const original_commands = parse_project_file(workspace / "iv_project.jsonl");
     EXPECT_TRUE(std::ranges::any_of(original_commands, [](auto const &command) {
         return command["command"] == "timeline.setLaneSampleChannelType"
             && command["args"]["lane_id"] == "lane-b"
@@ -912,7 +912,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     fresh_persistence.load();
     fresh_persistence.save();
 
-    EXPECT_EQ(read_text(workspace / "project.intravenous"), original);
+    EXPECT_EQ(read_text(workspace / "iv_project.jsonl"), original);
     ASSERT_EQ(fresh_instances.list_instances().size(), 1u);
     EXPECT_EQ(fresh_instances.list_instances().front().instance_id, "instance-a");
     EXPECT_EQ(fresh_execution.compiled_sample_cache_chunk_size_multiplier(), 8u);
@@ -1161,7 +1161,7 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersConnectionUntilLa
 {
     auto const workspace = mutable_module_fixture_workspace("project_timeline_connectivity_replay", "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "timeline.connectLanes"},
             {"args", Json{
@@ -1203,7 +1203,7 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersUntilTargetExists
 {
     auto const workspace = mutable_module_fixture_workspace("project_timeline_missing_target", "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "timeline.connectLanes"},
             {"args", Json{
@@ -1258,7 +1258,7 @@ TEST_F(ProjectPersistenceTest, TimelineLaneSampleChannelTypeFailureDoesNotStopLa
 {
     auto const workspace = mutable_module_fixture_workspace("project_timeline_bad_channel_target", "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "timeline.setLaneSampleChannelType"},
             {"args", Json{
@@ -1329,7 +1329,7 @@ TEST_F(ProjectPersistenceTest, ProjectSaveWithNoContributorsWritesEmptyFile)
 
     auto const response = parse_json_line(builder.build(1));
     EXPECT_EQ(response["result"]["ok"], true);
-    EXPECT_EQ(read_text(workspace / "project.intravenous"), "");
+    EXPECT_EQ(read_text(workspace / "iv_project.jsonl"), "");
 
     iv::unbind_project_persistence_bridge(persistence);
 }
@@ -1393,7 +1393,7 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
 
     auto const response = parse_json_line(builder.build(1));
     EXPECT_EQ(response["result"]["ok"], true);
-    auto const commands = parse_project_file(workspace / "project.intravenous");
+    auto const commands = parse_project_file(workspace / "iv_project.jsonl");
 
     auto contains_command = [&](std::string_view command_name) {
         return std::ranges::any_of(commands, [&](auto const &command) {
@@ -1442,8 +1442,8 @@ TEST_F(ProjectPersistenceTest, ProjectSaveContributorExceptionReturnsError)
 TEST_F(ProjectPersistenceTest, ProjectSaveWriteFailureReturnsError)
 {
     auto const workspace = mutable_module_fixture_workspace("project_save_write_failure", "local_cmake");
-    std::filesystem::remove(workspace / "project.intravenous");
-    std::filesystem::create_directory(workspace / "project.intravenous");
+    std::filesystem::remove(workspace / "iv_project.jsonl");
+    std::filesystem::create_directory(workspace / "iv_project.jsonl");
     auto const startup = make_startup(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
     iv::bind_project_persistence_bridge(persistence);
@@ -1477,14 +1477,14 @@ TEST_F(ProjectPersistenceTest, RepeatedProjectSaveIsIdempotent)
         iv::iv_socket_rpc_save_project_event,
         iv::SaveProjectRequest{},
         builder1);
-    auto const first = read_text(workspace / "project.intravenous");
+    auto const first = read_text(workspace / "iv_project.jsonl");
 
     iv::SocketRpcAckResponseBuilder builder2;
     IV_INVOKE_LINKER_EVENT(
         iv::iv_socket_rpc_save_project_event,
         iv::SaveProjectRequest{},
         builder2);
-    EXPECT_EQ(read_text(workspace / "project.intravenous"), first);
+    EXPECT_EQ(read_text(workspace / "iv_project.jsonl"), first);
 
     iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_iv_module_instances_bridge(instances);
@@ -1514,7 +1514,7 @@ TEST_F(ProjectPersistenceTest, SavedIdsAreReusedAcrossLoadAndResave)
 {
     auto const workspace = mutable_module_fixture_workspace("project_saved_ids_reused", "local_cmake");
     write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "audioDevices.setLaneIds"},
             {"args", Json{
@@ -1551,7 +1551,7 @@ TEST_F(ProjectPersistenceTest, SavedIdsAreReusedAcrossLoadAndResave)
     persistence.load();
     persistence.save();
 
-    auto const commands = parse_project_file(workspace / "project.intravenous");
+    auto const commands = parse_project_file(workspace / "iv_project.jsonl");
     auto const lane_id_command = std::ranges::find_if(commands, [](auto const &command) {
         return command["command"] == "audioDevices.setLaneIds";
     });

@@ -24,6 +24,10 @@ and broader UI affordances.
 The VS Code UI will likely grow a richer instance-management surface later, but
 the ownership model should not depend on that UI shape.
 
+In user-facing UI, call these objects **modules**, not "iv-modules". App modules
+are implementation detail and are never a user-managed concept, so the shorter
+term is unambiguous in the product surface.
+
 The intended control flow is:
 
 1. UI webview raises instance-management requests through JSON-RPC
@@ -102,20 +106,39 @@ their module roots, realization/build status, and authored per-instance
 settings. It should support create, select, duplicate, delete, source reveal,
 and retry/rebuild for failed instances.
 
-Module discovery remains server-owned. The server should discover definitions
-from the project-local `modules/` directory by default and from configured
-shared source roots. The creation flow should make a project-local module easy
-to create from the standard source template, then offer to instantiate it.
+The existing live module-port inspector should follow editor navigation. When a
+module source becomes active, its instance dropdown shows only instances of
+that module. Selection is remembered per module definition, so returning to a
+source restores the last selected instance instead of defaulting to the first
+entry. If a module has instances but no remembered selection yet, choose its
+first instance once. An adjacent `Create new instance` action is always
+available; creation selects the new instance immediately.
 
-Duplication needs two explicit policies:
+Module discovery remains server-owned. The server discovers sources only when
+they contain both `iv_module.json` and `module.cpp`:
 
-- ordinary duplicate copies the module reference and per-instance settings but
-  resets port policy, output routing, and lane connections;
-- duplicate with setup copies authored input values and port policies, creates
-  fresh stable ids for owned lanes, and reproduces eligible lane connections.
+- the project-local `<project>/modules/` root is always included;
+- shared source roots come from `IV_MODULE_SEARCH_PATH`;
+- each module lives in its own directory;
+- `iv_module.json` is a module-local JSON manifest, not a duplicate project or
+  toolchain configuration surface.
 
-Output routing should remain excluded by default. A later advanced flow may
-offer inputs only, inputs plus routing, or the full patch explicitly.
+The creation flow writes a project-local module from the standard source and
+manifest templates, then offers to instantiate it.
+
+Duplication has two intended policies:
+
+- ordinary duplicate creates another instance of the same module definition;
+- duplicate with setup also copies the selected instance's authored port state.
+
+Neither policy copies lanes or lane connections. Any lanes newly created for
+the duplicate are disconnected. This keeps routing explicit and avoids
+accidental doubled audio or hidden cross-instance patching.
+
+The first implementation should ship ordinary duplicate only. Duplicate with
+setup can later be implemented by copying the source instance's authored port
+state into a new instance before `GraphInputLanes` observes that instance; it
+should not require special lane or timeline cloning behavior.
 
 When an editor focuses a module definition source file, the live graph sidebar
 should switch to that definition's instances while preserving the selected
@@ -123,5 +146,5 @@ instance when it belongs to the definition. A definition with no instances
 should offer the creation action rather than showing unrelated instance state.
 
 The panel must only use the typed instance mutation surface. Project save
-normalizes those mutations into `project.intravenous`; users should not need to
+normalizes those mutations into `iv_project.jsonl`; users should not need to
 author that file directly outside normal version-control conflict resolution.

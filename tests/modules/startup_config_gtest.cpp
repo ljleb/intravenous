@@ -33,7 +33,7 @@ TEST(StartupConfig, ProjectFileDoesNotAffectStartupDefaults)
 {
     auto const workspace = mutable_module_fixture_workspace("startup_config_project_file_ignored", "local_cmake");
     iv::test_support::write_text(
-        workspace / "project.intravenous",
+        workspace / "iv_project.jsonl",
         Json{
             {"command", "project.overrideSettings"},
             {"args", Json{
