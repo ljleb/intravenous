@@ -60,6 +60,7 @@ namespace {
         unsigned span_begin = 0;
         unsigned span_end = 0;
         std::string declaration_identity;
+        std::string annotation_function;
         bool binding_wrap = false;
 
         bool operator==(WrapSpec const&) const = default;
@@ -160,15 +161,15 @@ namespace {
         return !type.isNull() && type->isReferenceType();
     }
 
-    bool is_source_span_ref_like(clang::QualType type)
+    std::string source_annotation_function(clang::QualType type)
     {
         if (type.isNull()) {
-            return false;
+            return {};
         }
 
         clang::QualType const stripped = type.getNonReferenceType().getUnqualifiedType();
         if (stripped.isNull()) {
-            return false;
+            return {};
         }
 
         auto const* record = stripped->getAsCXXRecordDecl();
@@ -179,13 +180,19 @@ namespace {
             }
         }
         if (!record) {
-            return false;
+            return {};
         }
 
         std::string const qualified_name = record->getQualifiedNameAsString();
-        return qualified_name == "iv::NodeRef"
+        if (qualified_name == "iv::PublicSampleInputRef") {
+            return "iv::_annotate_public_input_source_info";
+        }
+        if (qualified_name == "iv::NodeRef"
             || qualified_name == "iv::TypedNodeRef"
-            || qualified_name == "iv::StructuredNodeRef";
+            || qualified_name == "iv::StructuredNodeRef") {
+            return "iv::_annotate_node_source_info";
+        }
+        return {};
     }
 
     clang::Expr const* strip_trivial_expr_wrappers(clang::Expr const* expr)
@@ -330,6 +337,7 @@ namespace {
             FileRange wrapped,
             FileRange span,
             std::string declaration_identity,
+            std::string annotation_function,
             bool binding_wrap
         )
         {
@@ -347,6 +355,7 @@ namespace {
                 .span_begin = span.begin,
                 .span_end = span.end,
                 .declaration_identity = std::move(declaration_identity),
+                .annotation_function = std::move(annotation_function),
                 .binding_wrap = binding_wrap,
             });
         }
@@ -359,7 +368,12 @@ namespace {
             }
 
             auto const* callee = call->getDirectCallee();
-            return callee && callee->getQualifiedNameAsString() == "iv::_annotate_node_source_info";
+            if (!callee) {
+                return false;
+            }
+            auto const name = callee->getQualifiedNameAsString();
+            return name == "iv::_annotate_node_source_info"
+                || name == "iv::_annotate_public_input_source_info";
         }
 
         bool is_std_move_argument_context(clang::Expr const* expr) const
@@ -466,8 +480,8 @@ namespace {
                 return;
             }
 
-            clang::QualType const expr_type = expr->getType();
-            if (!is_source_span_ref_like(expr_type)) {
+            auto const annotation_function = source_annotation_function(expr->getType());
+            if (annotation_function.empty()) {
                 return;
             }
 
@@ -494,7 +508,7 @@ namespace {
                 return;
             }
 
-            add_wrap(*wrapped_range, *span_range, declaration_identity, false);
+            add_wrap(*wrapped_range, *span_range, declaration_identity, annotation_function, false);
         }
 
         void maybe_add_binding_wrap(clang::VarDecl* decl)
@@ -512,13 +526,14 @@ namespace {
             clang::SourceLocation const init_begin = _source_manager.getSpellingLoc(init->getBeginLoc());
 
             clang::QualType const decl_type = decl->getType();
+            auto const annotation_function = source_annotation_function(decl_type);
             if (
                 !decl->isLocalVarDecl()
                 || !decl->hasInit()
                 || init_begin.isInvalid()
                 || decl_loc == init_begin
                 || is_reference_type(decl_type)
-                || !is_source_span_ref_like(decl_type)
+                || annotation_function.empty()
                 || !is_user_source_location(decl->getLocation())
             ) {
                 return;
@@ -531,7 +546,7 @@ namespace {
                 return;
             }
 
-            add_wrap(*wrapped_range, *span_range, declaration_identity, true);
+            add_wrap(*wrapped_range, *span_range, declaration_identity, annotation_function, true);
         }
 
         void maybe_add_empty_declaration_init(clang::VarDecl* decl)
@@ -545,7 +560,7 @@ namespace {
                 !decl->isLocalVarDecl()
                 || decl->hasInit()
                 || is_reference_type(decl_type)
-                || !is_source_span_ref_like(decl_type)
+                || source_annotation_function(decl_type) != "iv::_annotate_node_source_info"
                 || !is_user_source_location(decl->getLocation())
             ) {
                 return;
@@ -570,8 +585,9 @@ namespace {
             }
 
             clang::QualType const lhs_type = lhs->getType();
+            auto const annotation_function = source_annotation_function(lhs_type);
             if (
-                !is_source_span_ref_like(lhs_type)
+                annotation_function.empty()
                 || !is_user_source_location(lhs->getBeginLoc())
             ) {
                 return;
@@ -584,14 +600,14 @@ namespace {
                 return;
             }
 
-            add_wrap(*wrapped_range, *span_range, declaration_identity, true);
+            add_wrap(*wrapped_range, *span_range, declaration_identity, annotation_function, true);
         }
 
         static void deduplicate_wraps(std::vector<WrapSpec>& wraps)
         {
             std::sort(wraps.begin(), wraps.end(), [](WrapSpec const& a, WrapSpec const& b) {
-                return std::tie(a.wrapped_begin, a.wrapped_end, a.span_begin, a.span_end, a.declaration_identity, a.binding_wrap)
-                    < std::tie(b.wrapped_begin, b.wrapped_end, b.span_begin, b.span_end, b.declaration_identity, b.binding_wrap);
+                return std::tie(a.wrapped_begin, a.wrapped_end, a.span_begin, a.span_end, a.declaration_identity, a.annotation_function, a.binding_wrap)
+                    < std::tie(b.wrapped_begin, b.wrapped_end, b.span_begin, b.span_end, b.declaration_identity, b.annotation_function, b.binding_wrap);
             });
             wraps.erase(std::unique(wraps.begin(), wraps.end()), wraps.end());
         }
@@ -674,7 +690,8 @@ namespace {
                     std::sort(events.begin(), events.end(), begin_order);
                     for (WrapSpec const* wrap : events) {
                         (void)wrap;
-                        output += "iv::_annotate_node_source_info(";
+                        output += wrap->annotation_function;
+                        output += "(";
                     }
                 }
 

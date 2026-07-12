@@ -105,18 +105,24 @@ namespace iv {
         void define_scope_outputs(std::span<OutputRefConfig const> refs);
         void define_scope_event_outputs(std::span<EventOutputRefConfig const> refs);
         std::string node_id(size_t index) const;
-        SamplePortRef input();
-        SamplePortRef input(
+        PublicSampleInputRef input();
+        PublicSampleInputRef input(
             std::string_view name,
             Sample default_value = 0.0,
             std::optional<Sample> min = std::nullopt,
             std::optional<Sample> max = std::nullopt);
-        SamplePortRef input(
+        PublicSampleInputRef input(
             Sample default_value,
             std::optional<Sample> min = std::nullopt,
             std::optional<Sample> max = std::nullopt);
         EventPortRef event_input(std::string_view name, EventTypeId type);
         EventPortRef event_input(EventTypeId type);
+        void annotate_public_sample_input_source_info(
+            PublicSampleInputRef const&,
+            std::string_view declaration_identity,
+            std::string_view file_path,
+            uint32_t begin,
+            uint32_t end);
 
         template<class Config>
         static void validate_output_port_configs(

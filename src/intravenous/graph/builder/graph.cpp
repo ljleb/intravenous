@@ -166,32 +166,67 @@ std::string GraphBuilder::node_id(size_t index) const
     return _identity.child_id(index);
 }
 
-SamplePortRef GraphBuilder::input()
+PublicSampleInputRef GraphBuilder::input()
 {
     return input(Sample{0.0f});
 }
 
-SamplePortRef GraphBuilder::input(
+PublicSampleInputRef GraphBuilder::input(
     std::string_view name,
     Sample default_value,
     std::optional<Sample> min,
     std::optional<Sample> max)
 {
     if (inside_subgraph_scope()) {
-        return _subgraphs.add_scope_sample_input(*this, _topology, name, default_value, min, max, true);
+        return PublicSampleInputRef(_subgraphs.add_scope_sample_input(*this, _topology, name, default_value, min, max, true));
     }
-    return _public_ports.add_sample_input(*this, name, default_value, min, max);
+    return PublicSampleInputRef(_public_ports.add_sample_input(*this, name, default_value, min, max));
 }
 
-SamplePortRef GraphBuilder::input(
+PublicSampleInputRef GraphBuilder::input(
     Sample default_value,
     std::optional<Sample> min,
     std::optional<Sample> max)
 {
     if (inside_subgraph_scope()) {
-        return _subgraphs.add_scope_sample_input(*this, _topology, {}, default_value, min, max, false);
+        return PublicSampleInputRef(_subgraphs.add_scope_sample_input(*this, _topology, {}, default_value, min, max, false));
     }
-    return _public_ports.add_sample_input(*this, {}, default_value, min, max);
+    return PublicSampleInputRef(_public_ports.add_sample_input(*this, {}, default_value, min, max));
+}
+
+void GraphBuilder::annotate_public_sample_input_source_info(
+    PublicSampleInputRef const& ref,
+    std::string_view declaration_identity,
+    std::string_view file_path,
+    uint32_t begin,
+    uint32_t end)
+{
+    if (declaration_identity.empty() || ref.port.graph_builder != this) {
+        return;
+    }
+    // Scoped inputs are represented by placeholder nodes until the enclosing
+    // scope is lowered.  Annotating that placeholder is deliberately the
+    // same path as node annotation: finalization transfers it to the lowered
+    // logical scope, making a `g.input()` inside channel/loop scopes queryable
+    // at the declaration identifier as well.
+    if (ref.port.node_index != GRAPH_ID) {
+        NodeRef(*this, ref.port.node_index)._annotate_source_info(
+            declaration_identity, file_path, begin, end);
+        return;
+    }
+    _public_ports.annotate_sample_input_source_info(
+        ref.port.output_port, declaration_identity, file_path, begin, end);
+}
+
+void PublicSampleInputRef::_annotate_source_info(
+    std::string_view declaration_identity,
+    std::string_view file_path,
+    uint32_t begin,
+    uint32_t end) const
+{
+    if (port.graph_builder != nullptr) {
+        port.graph_builder->annotate_public_sample_input_source_info(*this, declaration_identity, file_path, begin, end);
+    }
 }
 
 EventPortRef GraphBuilder::event_input(std::string_view name, EventTypeId type)

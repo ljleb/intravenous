@@ -140,7 +140,36 @@ SamplePortRef GraphBuilderPublicPorts::add_sample_input(
         .min = min,
         .max = max,
     });
+    _sample_input_source_infos.emplace_back();
     return SamplePortRef(builder, GRAPH_ID, _sample_inputs.size() - 1);
+}
+
+void GraphBuilderPublicPorts::annotate_sample_input_source_info(
+    size_t port_ordinal,
+    std::string_view declaration_identity,
+    std::string_view file_path,
+    uint32_t begin,
+    uint32_t end)
+{
+    if (port_ordinal >= _sample_input_source_infos.size()) {
+        return;
+    }
+    SourceInfo info{
+        .declaration_identity = std::string(declaration_identity),
+        .span = SourceSpan{.file_path = std::string(file_path), .begin = begin, .end = end},
+    };
+    auto& infos = _sample_input_source_infos[port_ordinal];
+    if (std::find(infos.begin(), infos.end(), info) == infos.end()) {
+        infos.push_back(std::move(info));
+    }
+}
+
+std::span<SourceInfo const> GraphBuilderPublicPorts::sample_input_source_infos(size_t port_ordinal) const
+{
+    if (port_ordinal >= _sample_input_source_infos.size()) {
+        return {};
+    }
+    return _sample_input_source_infos[port_ordinal];
 }
 
 EventPortRef GraphBuilderPublicPorts::add_event_input(GraphBuilder& builder, std::string_view name, EventTypeId type)
@@ -265,7 +294,21 @@ std::span<EventOutputConfig const> GraphBuilderPublicPorts::event_outputs() cons
 
 GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_input_families() const
 {
-    return collect_sample_port_families(std::span<InputConfig const>(_sample_inputs), true);
+    auto families = collect_sample_port_families(std::span<InputConfig const>(_sample_inputs), true);
+    for (auto& family : families.families) {
+        for (auto const& channel : family.channels) {
+            if (!channel.port_ordinal.has_value()) {
+                continue;
+            }
+            for (auto const& info : sample_input_source_infos(*channel.port_ordinal)) {
+                if (std::find(family.source_infos.begin(), family.source_infos.end(), info)
+                    == family.source_infos.end()) {
+                    family.source_infos.push_back(info);
+                }
+            }
+        }
+    }
+    return families;
 }
 
 GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_output_families() const

@@ -62,6 +62,12 @@ IV_DEFINE_LINKER_EVENT(
     ProjectSetSampleInputStateRequestedEvent,
     iv_runtime_project_set_sample_input_state_requested_event)
 IV_DEFINE_LINKER_EVENT(
+    ProjectSetPublicSampleInputStateRequestedEvent,
+    iv_runtime_project_set_public_sample_input_state_requested_event)
+IV_DEFINE_LINKER_EVENT(
+    ProjectSetPublicSampleInputValueRequestedEvent,
+    iv_runtime_project_set_public_sample_input_value_requested_event)
+IV_DEFINE_LINKER_EVENT(
     ProjectSetEventInputStateRequestedEvent,
     iv_runtime_project_set_event_input_state_requested_event)
 IV_DEFINE_LINKER_EVENT(

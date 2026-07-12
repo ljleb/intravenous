@@ -29,6 +29,39 @@ namespace iv {
         return std::forward<Ref>(ref);
     }
 
+    inline PublicSampleInputRef&& _annotate_public_input_source_info(
+        PublicSampleInputRef&& ref,
+        std::string_view declaration_identity,
+        std::string_view file_path,
+        uint32_t begin,
+        uint32_t end)
+    {
+        ref._annotate_source_info(declaration_identity, file_path, begin, end);
+        return std::move(ref);
+    }
+
+    inline PublicSampleInputRef& _annotate_public_input_source_info(
+        PublicSampleInputRef& ref,
+        std::string_view declaration_identity,
+        std::string_view file_path,
+        uint32_t begin,
+        uint32_t end)
+    {
+        ref._annotate_source_info(declaration_identity, file_path, begin, end);
+        return ref;
+    }
+
+    inline PublicSampleInputRef const& _annotate_public_input_source_info(
+        PublicSampleInputRef const& ref,
+        std::string_view declaration_identity,
+        std::string_view file_path,
+        uint32_t begin,
+        uint32_t end)
+    {
+        ref._annotate_source_info(declaration_identity, file_path, begin, end);
+        return ref;
+    }
+
     template<class Ref>
     requires SourceInfoAnnotatableRef<Ref>
     Ref&& _annotate_node_source_info(

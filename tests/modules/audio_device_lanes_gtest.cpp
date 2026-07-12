@@ -304,23 +304,14 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
     runner->update_tasks(update);
     iv::bind_timeline_timeline_execution_bridge(timeline, execution);
 
+    output_state->begin_requested_block(0, kBlockSize);
+    ASSERT_TRUE(output_state->wait_until_block_ready_for(2s));
+
     auto const source_task_id = iv::timeline_lane_task_id(iv::LaneId{1000});
-    auto const deadline = std::chrono::steady_clock::now() + 2s;
-    while (std::chrono::steady_clock::now() < deadline) {
-        auto const active_tasks = runner->active_task_ids();
-        if (std::find(active_tasks.begin(), active_tasks.end(), source_task_id)
-            != active_tasks.end()) {
-            break;
-        }
-        std::this_thread::sleep_for(1ms);
-    }
     auto const active_tasks = runner->active_task_ids();
     ASSERT_NE(
         std::find(active_tasks.begin(), active_tasks.end(), source_task_id),
         active_tasks.end());
-
-    output_state->begin_requested_block(0, kBlockSize);
-    ASSERT_TRUE(output_state->wait_until_block_ready_for(2s));
 
     auto const left = output_state->output_block(0);
     auto const right = output_state->output_block(1);

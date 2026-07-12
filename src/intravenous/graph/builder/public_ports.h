@@ -28,6 +28,7 @@ namespace iv {
         OutputConfig output_config {};
         ChannelTypeId channel_type = ChannelTypeId::mono;
         std::vector<GraphBuilderPublicSamplePortChannel> channels {};
+        std::vector<SourceInfo> source_infos {};
     };
 
     struct GraphBuilderPublicSamplePortFamilies {
@@ -97,9 +98,17 @@ namespace iv {
         GraphBuilderPublicSamplePortFamilies sample_output_families() const;
         std::vector<GraphBuilderPublicEventInput> collected_event_inputs() const;
         std::vector<GraphBuilderPublicEventOutput> collected_event_outputs() const;
+        void annotate_sample_input_source_info(
+            size_t port_ordinal,
+            std::string_view declaration_identity,
+            std::string_view file_path,
+            uint32_t begin,
+            uint32_t end);
+        std::span<SourceInfo const> sample_input_source_infos(size_t port_ordinal) const;
 
     private:
         std::vector<InputConfig> _sample_inputs {};
+        std::vector<std::vector<SourceInfo>> _sample_input_source_infos {};
         std::vector<EventInputConfig> _event_inputs {};
         std::vector<OutputConfig> _sample_outputs {};
         std::vector<EventOutputConfig> _event_outputs {};

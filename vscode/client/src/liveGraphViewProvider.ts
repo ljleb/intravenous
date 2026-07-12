@@ -1055,7 +1055,10 @@ export class LiveGraphViewProvider {
                 knobDrag.lastClientX = event.clientX;
                 knobDrag.lastClientY = event.clientY;
             }
-            applyDraggedKnobDelta((deltaX - deltaY) / 180);
+            // Keep the same drag gesture, but make each pixel a smaller
+            // normalized movement so bounded controls have substantially more
+            // usable precision.
+            applyDraggedKnobDelta((deltaX - deltaY) / 720);
         }
 
         document.addEventListener("pointermove", (event) => {
@@ -1134,7 +1137,7 @@ export class LiveGraphViewProvider {
 
             knob.addEventListener("wheel", (event) => {
                 event.preventDefault();
-                const step = event.deltaY < 0 ? 0.02 : -0.02;
+                const step = event.deltaY < 0 ? 0.005 : -0.005;
                 const currentBinding = portRow.__knobDrag;
                 if (currentBinding) {
                     applyPosition(knobPositionForValue(currentBinding.port.currentValue, currentBinding.port) + step);

@@ -8,11 +8,31 @@ namespace iv {
 namespace {
 GraphInputLanes *bound_graph_input_lanes = nullptr;
 
+std::optional<std::pair<std::string, std::string>> public_input_identity(std::string_view node_id)
+{
+    constexpr std::string_view prefix = "iv.public-input:";
+    if (!node_id.starts_with(prefix)) return std::nullopt;
+    auto const rest = node_id.substr(prefix.size());
+    auto const separator = rest.find(':');
+    if (separator == std::string_view::npos) return std::nullopt;
+    return std::pair{
+        std::string(rest.substr(0, separator)),
+        std::string(rest.substr(separator + 1)),
+    };
+}
+
 void handle_set_sample_input_value(
     ProjectSetSampleInputValueRequest const &request,
     ProjectAckBuilder &builder)
 {
     if (bound_graph_input_lanes == nullptr) {
+        return;
+    }
+    if (auto const public_input = public_input_identity(request.node_id)) {
+        bound_graph_input_lanes->set_public_sample_input_value(
+            public_input->first, public_input->second, request.value);
+        builder.succeed();
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
         return;
     }
     bound_graph_input_lanes->set_sample_input_value(request);
@@ -27,7 +47,49 @@ void handle_set_sample_input_state(
     if (bound_graph_input_lanes == nullptr) {
         return;
     }
+    if (auto const public_input = public_input_identity(request.node_id)) {
+        auto state = ProjectPublicSampleInputState::default_;
+        switch (request.state) {
+        case ProjectSampleInputState::default_: state = ProjectPublicSampleInputState::default_; break;
+        case ProjectSampleInputState::overridden: state = ProjectPublicSampleInputState::overridden; break;
+        case ProjectSampleInputState::logical_follow: state = ProjectPublicSampleInputState::logical_follow; break;
+        case ProjectSampleInputState::timeline_lane: state = ProjectPublicSampleInputState::timeline_lane; break;
+        case ProjectSampleInputState::disconnected: state = ProjectPublicSampleInputState::disconnected; break;
+        }
+        bound_graph_input_lanes->set_public_sample_input_state(ProjectSetPublicSampleInputStateRequest{
+            .instance_id = public_input->first,
+            .source_identity = public_input->second,
+            .member_ordinal = request.member_ordinal,
+            .state = state,
+            .lane_id = request.lane_id,
+        });
+        builder.succeed();
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+        return;
+    }
     bound_graph_input_lanes->set_sample_input_state(request);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void handle_set_public_sample_input_state(
+    ProjectSetPublicSampleInputStateRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    if (bound_graph_input_lanes == nullptr) return;
+    bound_graph_input_lanes->set_public_sample_input_state(request);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void handle_set_public_sample_input_value(
+    std::string const &instance_id,
+    std::string const &source_identity,
+    Sample value,
+    ProjectAckBuilder &builder)
+{
+    if (bound_graph_input_lanes == nullptr) return;
+    bound_graph_input_lanes->set_public_sample_input_value(instance_id, source_identity, value);
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
@@ -76,6 +138,14 @@ IV_SUBSCRIBE_LINKER_EVENT(
     ProjectSetSampleInputStateRequestedEvent,
     iv_runtime_project_set_sample_input_state_requested_event,
     handle_set_sample_input_state);
+IV_SUBSCRIBE_LINKER_EVENT(
+    ProjectSetPublicSampleInputStateRequestedEvent,
+    iv_runtime_project_set_public_sample_input_state_requested_event,
+    handle_set_public_sample_input_state);
+IV_SUBSCRIBE_LINKER_EVENT(
+    ProjectSetPublicSampleInputValueRequestedEvent,
+    iv_runtime_project_set_public_sample_input_value_requested_event,
+    handle_set_public_sample_input_value);
 IV_SUBSCRIBE_LINKER_EVENT(
     ProjectSetEventInputStateRequestedEvent,
     iv_runtime_project_set_event_input_state_requested_event,

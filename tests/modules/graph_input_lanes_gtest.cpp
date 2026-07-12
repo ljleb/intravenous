@@ -211,6 +211,7 @@ TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
     iv::GraphBuilder builder;
+    builder.outputs({});
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
@@ -226,6 +227,70 @@ TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
     }
     EXPECT_GE(upsert_count, 1u);
     EXPECT_EQ(removal_count, 0u);
+}
+
+TEST_F(GraphInputLanesTest, AnnotatedPublicInputsGroupRepeatedSourceIntoOneLogicalLane)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
+    builder.outputs({});
+
+    auto first = iv::_annotate_public_input_source_info(
+        builder.input("gain", iv::Sample{1.0f}, iv::Sample{0.0f}, iv::Sample{2.0f}),
+        "public-gain", "/tmp/module/module.cpp", 10, 11);
+    auto second = iv::_annotate_public_input_source_info(
+        builder.input("gain", iv::Sample{1.0f}, iv::Sample{0.0f}, iv::Sample{2.0f}),
+        "public-gain", "/tmp/module/module.cpp", 10, 11);
+    (void)first;
+    (void)second;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+
+    auto const inputs = lanes.public_sample_inputs();
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_EQ(inputs[0].source_identity, "public-gain");
+    EXPECT_EQ(inputs[0].logical_state, "timelineLane");
+    EXPECT_EQ(inputs[0].member_ordinals, (std::vector<size_t>{0, 1}));
+    EXPECT_EQ(inputs[0].default_value, iv::Sample{1.0f});
+    EXPECT_EQ(inputs[0].min, std::optional<iv::Sample>{iv::Sample{0.0f}});
+    EXPECT_EQ(inputs[0].max, std::optional<iv::Sample>{iv::Sample{2.0f}});
+}
+
+TEST_F(GraphInputLanesTest, PublicInputLogicalAndConcreteStatesReconcileIndependently)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
+    builder.outputs({});
+    for (int i = 0; i < 2; ++i) {
+        auto input = iv::_annotate_public_input_source_info(
+            builder.input(iv::Sample{1.0f}),
+            "loop-input", "/tmp/module/module.cpp", 20, 21);
+        (void)input;
+    }
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+
+    lanes.set_public_sample_input_state(iv::ProjectSetPublicSampleInputStateRequest{
+        .instance_id = instance.instance_id,
+        .source_identity = "loop-input",
+        .member_ordinal = 1,
+        .state = iv::ProjectPublicSampleInputState::disconnected,
+    });
+    lanes.set_public_sample_input_state(iv::ProjectSetPublicSampleInputStateRequest{
+        .instance_id = instance.instance_id,
+        .source_identity = "loop-input",
+        .member_ordinal = std::nullopt,
+        .state = iv::ProjectPublicSampleInputState::disconnected,
+    });
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
+
+    EXPECT_FALSE(witness.timeline_batches.empty());
+    EXPECT_FALSE(witness.rebuild_requests.empty());
 }
 
 TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)

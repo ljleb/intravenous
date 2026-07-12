@@ -3,7 +3,10 @@
 #include <intravenous/graph/node.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace iv {
     class GraphBuilder;
@@ -25,6 +28,22 @@ namespace iv {
 
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
         std::string to_string() const;
+    };
+
+    struct PublicSampleInputRef {
+        SamplePortRef port {};
+
+        PublicSampleInputRef() = default;
+        explicit PublicSampleInputRef(SamplePortRef port_) : port(std::move(port_)) {}
+
+        operator SamplePortRef() const { return port; }
+        operator PortId() const { return static_cast<PortId>(port); }
+
+        void _annotate_source_info(
+            std::string_view declaration_identity,
+            std::string_view file_path,
+            uint32_t begin,
+            uint32_t end) const;
     };
 
     struct EventPortRef {

@@ -11,7 +11,18 @@
 namespace iv {
 namespace {
 IvModuleSourceIntrospection *bound_introspection = nullptr;
+GraphInputLanes *bound_graph_input_lanes = nullptr;
 std::function<void()> *bound_shutdown = nullptr;
+
+std::optional<std::pair<std::string, std::string>> parse_public_input_node_id(std::string_view id)
+{
+    constexpr std::string_view prefix = "iv.public-input:";
+    if (!id.starts_with(prefix)) return std::nullopt;
+    auto const rest = id.substr(prefix.size());
+    auto const separator = rest.find(':');
+    if (separator == std::string_view::npos) return std::nullopt;
+    return std::pair{std::string(rest.substr(0, separator)), std::string(rest.substr(separator + 1))};
+}
 
 void notify_updated_node_ids(std::vector<std::string> node_ids)
 {
@@ -37,7 +48,8 @@ void notify_replaced_instances(IvModuleInstanceBuildersChanged const &diff)
     std::vector<std::string> replace_instance_ids;
     std::vector<IvModuleInstanceInfo> instances;
 
-    auto append_instance = [&](IvModuleInstance const *instance) {
+    auto append_instance = [&](IvModuleInstanceBuilderRef const &ref) {
+        auto const *instance = ref.instance;
         if (instance == nullptr) {
             return;
         }
@@ -56,10 +68,10 @@ void notify_replaced_instances(IvModuleInstanceBuildersChanged const &diff)
     };
 
     for (auto const &created : diff.created) {
-        append_instance(created.instance);
+        append_instance(created);
     }
     for (auto const &updated : diff.updated) {
-        append_instance(updated.instance);
+        append_instance(updated);
     }
     for (auto const &deleted_instance_id : diff.deleted_instance_ids) {
         if (std::ranges::find(replace_instance_ids, deleted_instance_id) == replace_instance_ids.end()) {
@@ -72,6 +84,10 @@ void notify_replaced_instances(IvModuleInstanceBuildersChanged const &diff)
     }
 
     try {
+        if (bound_graph_input_lanes != nullptr) {
+            bound_introspection->set_public_sample_inputs(
+                bound_graph_input_lanes->public_sample_inputs());
+        }
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_source_introspection_nodes_updated_event,
             ProjectLogicalNodesNotification{
@@ -196,6 +212,17 @@ void handle_set_sample_input_value(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
+        if (auto const public_input = parse_public_input_node_id(request.node_id)) {
+            ProjectAckBuilder project_builder;
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_set_public_sample_input_value_requested_event,
+                public_input->first,
+                public_input->second,
+                request.value,
+                project_builder);
+            project_builder.build();
+            return;
+        }
         ProjectAckBuilder project_builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_input_value_requested_event,
@@ -218,6 +245,30 @@ void handle_set_sample_input_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
+        if (auto const public_input = parse_public_input_node_id(request.node_id)) {
+            ProjectAckBuilder project_builder;
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_set_public_sample_input_state_requested_event,
+                ProjectSetPublicSampleInputStateRequest{
+                    .instance_id = public_input->first,
+                    .source_identity = public_input->second,
+                    .member_ordinal = request.member_ordinal,
+                    .state = [&] {
+                        auto const state = parse_project_sample_input_state(request.state);
+                        switch (state) {
+                        case ProjectSampleInputState::overridden: return ProjectPublicSampleInputState::overridden;
+                        case ProjectSampleInputState::logical_follow: return ProjectPublicSampleInputState::logical_follow;
+                        case ProjectSampleInputState::timeline_lane: return ProjectPublicSampleInputState::timeline_lane;
+                        case ProjectSampleInputState::disconnected: return ProjectPublicSampleInputState::disconnected;
+                        case ProjectSampleInputState::default_: return ProjectPublicSampleInputState::default_;
+                        }
+                        return ProjectPublicSampleInputState::default_;
+                    }(),
+                },
+                project_builder);
+            project_builder.build();
+            return;
+        }
         ProjectAckBuilder project_builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_set_sample_input_state_requested_event,
@@ -362,7 +413,7 @@ void bind_socket_rpc_iv_module_source_introspection_bridge(
     std::function<void()> *shutdown_callback)
 {
     bound_introspection = &introspection;
-    (void)graph_input_lanes;
+    bound_graph_input_lanes = &graph_input_lanes;
     bound_shutdown = shutdown_callback;
 }
 
@@ -373,7 +424,9 @@ void unbind_socket_rpc_iv_module_source_introspection_bridge(
     if (bound_introspection == &introspection) {
         bound_introspection = nullptr;
     }
-    (void)graph_input_lanes;
+    if (bound_graph_input_lanes == &graph_input_lanes) {
+        bound_graph_input_lanes = nullptr;
+    }
     bound_shutdown = nullptr;
 }
 } // namespace iv

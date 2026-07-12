@@ -74,6 +74,12 @@ public:
         std::optional<ChannelTypeId> sample_channel_type {};
         std::optional<EventTypeId> event_type {};
         Sample default_value = 0.0f;
+        std::optional<Sample> min {};
+        std::optional<Sample> max {};
+        std::vector<SourceInfo> source_infos {};
+        std::string source_identity {};
+        std::optional<int> source_identity_hash {};
+        std::optional<size_t> concrete_member_ordinal {};
         std::vector<DesiredPublicGraphPortChannel> channels {};
     };
 
@@ -136,6 +142,9 @@ private:
     std::unordered_map<std::string, InternedString> concrete_event_input_lane_ids_by_key;
     std::unordered_map<std::string, InternedString> logical_output_lane_ids_by_key;
     std::unordered_map<std::string, InternedString> concrete_output_lane_ids_by_key;
+    std::unordered_map<std::string, ProjectPublicSampleInputState> public_sample_input_states_by_key;
+    std::unordered_map<std::string, InternedString> public_sample_input_lane_ids_by_key;
+    std::unordered_map<std::string, std::unique_ptr<std::atomic<Sample::storage>>> public_sample_input_values;
     std::unordered_set<std::string> pending_rebuild_instance_ids;
     std::vector<TimelineLaneBatchUpdate> pending_timeline_batches;
     std::uint64_t current_update_version_index_ = 1;
@@ -193,6 +202,10 @@ private:
         std::span<DesiredGraphInputPort const> ports,
         DesiredGraphInputPort const &logical_port);
     static std::string public_port_key(DesiredPublicGraphPort const &port);
+    static std::string public_sample_input_state_key(
+        std::string_view instance_id,
+        std::string_view source_identity,
+        std::optional<size_t> member_ordinal);
     static std::string public_port_external_id(DesiredPublicGraphPort const &port);
     static LaneMetadata public_graph_port_metadata(
         DesiredPublicGraphPort const &port,
@@ -241,6 +254,12 @@ private:
     void refresh_desired_public_output_ports_locked();
     void reconcile_public_ports_locked(TimelineLaneBatchUpdate *batch = nullptr);
     LaneId public_graph_port_lane_for(DesiredPublicGraphPort const &port) const;
+    std::optional<LaneId> effective_public_sample_input_lane_locked(
+        DesiredPublicGraphPort const &port) const;
+    std::atomic<Sample::storage>& ensure_public_sample_input_value_locked(
+        std::string const &instance_id,
+        std::string const &source_identity,
+        Sample default_value);
     GraphInputLaneBindings sample_input_bindings(
         std::string const &node_id,
         std::optional<size_t> member_ordinal,
@@ -270,6 +289,13 @@ public:
         ProjectSetSampleInputValueRequest const &request);
     void set_sample_input_state(
         ProjectSetSampleInputStateRequest const &request);
+    void set_public_sample_input_state(
+        ProjectSetPublicSampleInputStateRequest const &request);
+    void set_public_sample_input_value(
+        std::string const &instance_id,
+        std::string const &source_identity,
+        Sample value);
+    std::vector<PublicSampleInputInfo> public_sample_inputs() const;
     void set_event_input_state(
         ProjectSetEventInputStateRequest const &request);
     void set_sample_output_state(

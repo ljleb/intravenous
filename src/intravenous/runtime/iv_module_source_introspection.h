@@ -37,6 +37,7 @@ class IvModuleSourceIntrospection {
     mutable std::unordered_map<std::string, SourceTextLineMap> source_text_cache;
     std::unordered_map<std::string, LoadedGraphIntrospectionIndex> graph_indexes_by_definition_id;
     std::unordered_map<std::string, IvModuleInstanceInfo> realized_instances_by_id;
+    std::unordered_map<std::string, std::vector<PublicSampleInputInfo>> public_inputs_by_instance_id;
 
     SourceTextLineMap const &source_text_for(std::string const &normalized_path) const;
     void invalidate_source_text(std::string const &normalized_path);
@@ -47,6 +48,7 @@ class IvModuleSourceIntrospection {
     LogicalNodeInfo to_logical_node(
         IntrospectionLogicalNode const &node,
         std::string const &instance_id) const;
+    LogicalNodeInfo to_public_sample_input(PublicSampleInputInfo const &input) const;
 
 public:
     IvModuleSourceIntrospection() = default;
@@ -55,6 +57,7 @@ public:
         IvModuleDefinitionsChanged const &diff);
     void handle_iv_module_instances_list_changed(
         std::vector<IvModuleInstanceInfo> const &instances);
+    void set_public_sample_inputs(std::vector<PublicSampleInputInfo> inputs);
     ProjectQueryResult
     query_by_spans(
         std::filesystem::path const &file_path,

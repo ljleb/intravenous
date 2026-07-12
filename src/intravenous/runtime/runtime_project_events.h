@@ -50,7 +50,7 @@ namespace iv {
 
     struct ProjectSetSampleInputValueRequest {
         std::string node_id;
-        std::optional<size_t> member_ordinal;
+        std::optional<size_t> member_ordinal{};
         size_t input_ordinal = 0;
         Sample value = Sample {0.0f};
     };
@@ -124,9 +124,29 @@ namespace iv {
 
     struct ProjectSetSampleInputStateRequest {
         std::string node_id;
-        std::optional<size_t> member_ordinal;
+        std::optional<size_t> member_ordinal{};
         size_t input_ordinal = 0;
         ProjectSampleInputState state = ProjectSampleInputState::default_;
+        std::optional<InternedString> lane_id {};
+    };
+
+    // Public sample inputs are identified by the stable declaration identity
+    // emitted by the source rewriter, rather than by a graph-node id.  An
+    // absent member ordinal addresses the logical input; a present ordinal
+    // addresses one concrete evaluation of that declaration.
+    enum class ProjectPublicSampleInputState {
+        default_,
+        overridden,
+        logical_follow,
+        timeline_lane,
+        disconnected,
+    };
+
+    struct ProjectSetPublicSampleInputStateRequest {
+        std::string instance_id;
+        std::string source_identity;
+        std::optional<size_t> member_ordinal;
+        ProjectPublicSampleInputState state = ProjectPublicSampleInputState::default_;
         std::optional<InternedString> lane_id {};
     };
 
@@ -240,6 +260,10 @@ namespace iv {
         void (*)(ProjectSetSampleInputValueRequest const &, ProjectAckBuilder &);
     using ProjectSetSampleInputStateRequestedEvent =
         void (*)(ProjectSetSampleInputStateRequest const &, ProjectAckBuilder &);
+    using ProjectSetPublicSampleInputStateRequestedEvent =
+        void (*)(ProjectSetPublicSampleInputStateRequest const &, ProjectAckBuilder &);
+    using ProjectSetPublicSampleInputValueRequestedEvent =
+        void (*)(std::string const &, std::string const &, Sample, ProjectAckBuilder &);
     using ProjectSetEventInputStateRequestedEvent =
         void (*)(ProjectSetEventInputStateRequest const &, ProjectAckBuilder &);
     using ProjectSetSampleOutputStateRequestedEvent =
@@ -306,6 +330,12 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(
         ProjectSetSampleInputStateRequestedEvent,
         iv_runtime_project_set_sample_input_state_requested_event);
+    IV_DECLARE_LINKER_EVENT(
+        ProjectSetPublicSampleInputStateRequestedEvent,
+        iv_runtime_project_set_public_sample_input_state_requested_event);
+    IV_DECLARE_LINKER_EVENT(
+        ProjectSetPublicSampleInputValueRequestedEvent,
+        iv_runtime_project_set_public_sample_input_value_requested_event);
     IV_DECLARE_LINKER_EVENT(
         ProjectSetEventInputStateRequestedEvent,
         iv_runtime_project_set_event_input_state_requested_event);

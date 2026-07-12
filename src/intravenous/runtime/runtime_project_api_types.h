@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -61,6 +62,21 @@ namespace iv {
         std::vector<LogicalPortInfo> event_outputs{};
         size_t member_count = 0;
         std::vector<LogicalNodeMemberInfo> members{};
+    };
+
+    // Source-annotated public inputs are not graph nodes, but the source
+    // sidebar presents them using the same logical/member shape.
+    struct PublicSampleInputInfo {
+        std::string instance_id {};
+        std::string source_identity {};
+        std::vector<SourceInfo> source_infos {};
+        std::string name {};
+        Sample default_value = 0.0f;
+        std::optional<Sample> min {};
+        std::optional<Sample> max {};
+        Sample current_value = 0.0f;
+        std::string logical_state {};
+        std::vector<size_t> member_ordinals {};
     };
 
     struct ProjectQueryResult {
