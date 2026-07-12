@@ -5,8 +5,11 @@ IV_DEFINE_LINKER_EVENT(
     LanesVisualizationLaneOutputQueryEvent,
     iv_runtime_lanes_visualization_lane_output_query_event);
 IV_DEFINE_LINKER_EVENT(
-    LanesVisualizationCompiledSampleWindowRequestedEvent,
-    iv_runtime_lanes_visualization_compiled_sample_window_requested_event);
+    LanesVisualizationPlaybackPositionQueryEvent,
+    iv_runtime_lanes_visualization_playback_position_query_event);
+IV_DEFINE_LINKER_EVENT(
+    LanesVisualizationCompiledSampleLevelRequestedEvent,
+    iv_runtime_lanes_visualization_compiled_sample_level_requested_event);
 IV_DEFINE_LINKER_EVENT(
     LanesVisualizationCompiledEventWindowRequestedEvent,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event);

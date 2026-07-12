@@ -13,6 +13,7 @@ struct PauseRequest {};
 struct ResumeRequest {
     size_t start_index = 0;
 };
+struct SeekRequest { size_t sample_index = 0; };
 
 struct TimelineExecutionResumed {
     size_t start_index = 0;
@@ -24,6 +25,7 @@ using PauseEvent =
     void (*)(PauseRequest const &);
 using ResumeEvent =
     void (*)(ResumeRequest const &);
+using SeekEvent = void (*)(SeekRequest const &);
 using TimelineExecutionResumedEvent =
     void (*)(TimelineExecutionResumed const &);
 
@@ -71,6 +73,9 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     ResumeEvent,
     iv_runtime_resume_event);
+IV_DECLARE_LINKER_EVENT(
+    SeekEvent,
+    iv_runtime_seek_event);
 IV_DECLARE_LINKER_EVENT(
     TimelineExecutionResumedEvent,
     iv_runtime_timeline_execution_resumed_event);

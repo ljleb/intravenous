@@ -4,9 +4,18 @@
 
 #include <algorithm>
 #include <unordered_set>
+#include <variant>
 
 namespace iv {
     namespace {
+        LaneDomain lane_domain(LaneOutputConfig const &output)
+        {
+            return std::holds_alternative<CompiledSampleLaneOutputConfig>(output)
+                    || std::holds_alternative<CompiledEventLaneOutputConfig>(output)
+                ? LaneDomain::compiled
+                : LaneDomain::realtime;
+        }
+
         std::string lane_view_filter_name(InternedString view_id)
         {
             return "lane_view." + view_id.str();
@@ -92,6 +101,22 @@ namespace iv {
             });
         }
 
+        if (snapshot->visit_lanes) {
+            std::unordered_map<uint64_t, LaneDomain> domains;
+            snapshot->visit_lanes(
+                requested_output_lanes,
+                [&domains](LaneId lane, TypeErasedLaneNode const &, LaneOutputConfig const &output,
+                           std::optional<ChannelTypeId>, std::vector<LaneInputConnection> const &,
+                           std::vector<std::string> const &) {
+                    domains[lane.value] = lane_domain(output);
+                });
+            for (auto &lane : result.lanes) {
+                if (auto const it = domains.find(lane.runtime_lane.value); it != domains.end()) {
+                    lane.domain = it->second;
+                }
+            }
+        }
+
         if (snapshot->outputs_for_lanes) {
             auto const output_groups = snapshot->outputs_for_lanes(
                 restrict_connections_to_window ? requested_output_lanes : snapshot->lane_ids);
@@ -130,7 +155,12 @@ namespace iv {
                 .query_source = query_source,
             });
         request.query.filter.source = filter_name;
-        return lane_views.open_view(std::move(request));
+        auto result = lane_views.open_view(std::move(request));
+        // Opening a view is itself a visibility change. Publish it immediately
+        // so visualization starts tracking its lanes without waiting for a
+        // later filter or graph mutation.
+        emit_updated(result);
+        return result;
     }
 
     LaneViewResult LaneViews::update_view(LaneViewRequest request)
@@ -144,7 +174,11 @@ namespace iv {
                 .query_source = query_source,
             });
         request.query.filter.source = filter_name;
-        return lane_views.update_view(std::move(request));
+        auto result = lane_views.update_view(std::move(request));
+        // Viewport changes must update the visualization subscription even
+        // when the underlying lane-filter result has not changed.
+        emit_updated(result);
+        return result;
     }
 
     void LaneViews::close_view(std::string const &view_id)

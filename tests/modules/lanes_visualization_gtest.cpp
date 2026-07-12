@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <optional>
 #include <unordered_map>
 
@@ -39,13 +41,12 @@ IV_SUBSCRIBE_LINKER_EVENT(
     });
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LanesVisualizationCompiledSampleWindowRequestedEvent,
-    iv_runtime_lanes_visualization_compiled_sample_window_requested_event,
+    iv::LanesVisualizationCompiledSampleLevelRequestedEvent,
+    iv_runtime_lanes_visualization_compiled_sample_level_requested_event,
     +[](iv::LaneId lane,
         size_t /*first*/,
         size_t /*last*/,
-        size_t /*count*/,
-        iv::LanesVisualizationCompiledSampleWindowBuilder &builder) {
+        iv::LanesVisualizationCompiledSampleLevelBuilder &builder) {
         if (g_state == nullptr) {
             return;
         }
@@ -53,7 +54,11 @@ IV_SUBSCRIBE_LINKER_EVENT(
         if (it == g_state->compiled_samples.end()) {
             return;
         }
-        builder.succeed(it->second);
+        iv::Sample::storage level = 0.0f;
+        for (auto const sample : it->second.samples) {
+            level = std::max(level, std::abs(sample.value));
+        }
+        builder.succeed(level);
     });
 
 IV_SUBSCRIBE_LINKER_EVENT(
@@ -96,7 +101,7 @@ IV_SUBSCRIBE_LINKER_EVENT(
 
 namespace iv {
 
-TEST(LanesVisualizationTest, PublishesCompiledSampleDataForVisibleLanes)
+TEST(LanesVisualizationTest, PublishesOneCompiledSampleLevelForVisibleLane)
 {
     VisualizationTestState state;
     g_state = &state;
@@ -114,7 +119,7 @@ TEST(LanesVisualizationTest, PublishesCompiledSampleDataForVisibleLanes)
         .frame_count = 2,
     };
 
-    LanesVisualization visualization(std::nullopt, 2, 512);
+    LanesVisualization visualization(std::nullopt, 512);
     visualization.handle_lane_views_updated(LaneViewResult{
         .view_id = intern("view-1"),
         .lanes = LaneQueryResult{
@@ -134,14 +139,9 @@ TEST(LanesVisualizationTest, PublishesCompiledSampleDataForVisibleLanes)
     EXPECT_EQ(state.updates.front().view_id.str(), "view-1");
     ASSERT_EQ(state.updates.front().lanes.size(), 1u);
     EXPECT_EQ(state.updates.front().lanes.front().lane_id.str(), "lane-42");
-    EXPECT_EQ(state.updates.front().lanes.front().adapter_type, "samples");
-    ASSERT_TRUE(state.updates.front().lanes.front().sample_channel_type.has_value());
-    EXPECT_EQ(*state.updates.front().lanes.front().sample_channel_type, ChannelTypeId::stereo);
-    EXPECT_EQ(state.updates.front().lanes.front().sample_layout, SampleStreamLayout::planar);
-    EXPECT_EQ(state.updates.front().lanes.front().sample_frame_count, 2u);
-    EXPECT_EQ(
-        state.updates.front().lanes.front().samples,
-        (std::vector<Sample::storage>{ 1.0f, 2.0f, 10.0f, 20.0f }));
+    EXPECT_EQ(state.updates.front().lanes.front().adapter_type, "level");
+    ASSERT_TRUE(state.updates.front().lanes.front().peak_level.has_value());
+    EXPECT_EQ(*state.updates.front().lanes.front().peak_level, 20.0f);
 
     g_state = nullptr;
 }
@@ -159,7 +159,7 @@ TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
         TimedEvent{ .time = 20, .value = TriggerEvent{} },
     };
 
-    LanesVisualization visualization(std::nullopt, 2, 512);
+    LanesVisualization visualization(std::nullopt, 512);
     visualization.handle_lane_views_updated(LaneViewResult{
         .view_id = intern("view-2"),
         .lanes = LaneQueryResult{
@@ -202,7 +202,7 @@ TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
         .frame_count = 1,
     };
 
-    LanesVisualization visualization(std::nullopt, 2, 512);
+    LanesVisualization visualization(std::nullopt, 512);
     visualization.handle_lane_views_updated(LaneViewResult{
         .view_id = intern("view-1"),
         .lanes = LaneQueryResult{
@@ -236,7 +236,7 @@ TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished
         .sample_channel_type = ChannelTypeId::mono,
     };
 
-    LanesVisualization visualization(std::nullopt, 2, 8);
+    LanesVisualization visualization(std::nullopt, 8);
     visualization.handle_lane_views_updated(LaneViewResult{
         .view_id = intern("view-rt"),
         .lanes = LaneQueryResult{
@@ -267,7 +267,7 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
         .sample_channel_type = ChannelTypeId::mono,
     };
 
-    LanesVisualization visualization(std::nullopt, 2, 8);
+    LanesVisualization visualization(std::nullopt, 8);
     visualization.handle_lane_views_updated(LaneViewResult{
         .view_id = intern("view-rt"),
         .lanes = LaneQueryResult{
@@ -302,7 +302,7 @@ TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateT
         .sample_channel_type = ChannelTypeId::mono,
     };
 
-    LanesVisualization visualization(std::nullopt, 2, 8);
+    LanesVisualization visualization(std::nullopt, 8);
     LaneViewResult view{
         .view_id = intern("view-rt"),
         .lanes = LaneQueryResult{
@@ -335,7 +335,7 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
         .sample_channel_type = ChannelTypeId::mono,
     };
 
-    LanesVisualization visualization(std::nullopt, 2, 8);
+    LanesVisualization visualization(std::nullopt, 8);
     LaneViewResult view{
         .view_id = intern("view-rt"),
         .lanes = LaneQueryResult{

@@ -154,6 +154,7 @@ namespace iv {
         SetEventOutputStateRequest,
         PauseRequest,
         ResumeRequest,
+        SeekRequest,
         SaveProjectRequest,
         EnableProjectAutosaveRequest,
         DisableProjectAutosaveRequest,

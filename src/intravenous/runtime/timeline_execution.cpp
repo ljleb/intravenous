@@ -326,6 +326,12 @@ void TimelineExecution::resume(size_t start_index)
     paused_ = false;
 }
 
+void TimelineExecution::seek(size_t sample_index)
+{
+    std::scoped_lock lock(mutex_);
+    current_start_index_ = sample_index;
+}
+
 bool TimelineExecution::is_paused() const
 {
     std::scoped_lock lock(mutex_);
@@ -400,47 +406,28 @@ std::vector<TimedEvent> TimelineExecution::compiled_event_block(LaneId lane, siz
     return ensure_compiled_event_block_locked(lane, start_index);
 }
 
-OwnedSampleBlock TimelineExecution::sparse_compiled_sample_window(
+Sample::storage TimelineExecution::compiled_sample_level(
     LaneId lane,
     size_t first,
-    size_t last,
-    size_t count)
+    size_t last)
 {
-    if (count == 0 || last < first || block_size_ == 0) {
-        return {};
+    if (last < first || block_size_ == 0) {
+        return 0.0f;
     }
     std::scoped_lock lock(mutex_);
-    auto const tracked_it = tracked_lanes_.find(lane);
-    if (tracked_it == tracked_lanes_.end()) {
-        return {};
+    auto const sample_index = first + (last - first) / 2;
+    auto const block_start = (sample_index / block_size_) * block_size_;
+    auto const offset = sample_index - block_start;
+    auto const block = read_compiled_sample_block_locked(lane, block_start);
+    auto const view = block.view();
+    Sample::storage level = 0.0f;
+    if (offset >= view.frames()) {
+        return level;
     }
-    auto const output_layout =
-        sample_output_channel_layout(tracked_it->second.output, tracked_it->second.sample_channel_type);
-    std::vector<Sample> result(sample_storage_size(output_layout, count), Sample {});
-    auto result_view = SampleBlockView<Sample>(result, output_layout, count);
-    auto const range = last - first;
-    for (size_t i = 0; i < count; ++i) {
-        size_t const source_index = (count == 1)
-            ? first
-            : first + static_cast<size_t>(std::llround(
-                static_cast<double>(i) * static_cast<double>(range)
-                / static_cast<double>(count - 1)));
-        size_t const block_start = (source_index / block_size_) * block_size_;
-        size_t const offset = source_index - block_start;
-        auto const block = read_compiled_sample_block_locked(lane, block_start);
-        auto const block_view = block.view();
-        for (size_t channel = 0; channel < result_view.channels(); ++channel) {
-            result_view.set(
-                i,
-                channel,
-                offset < block_view.frames() ? block_view.get(offset, channel) : Sample {});
-        }
+    for (size_t channel = 0; channel < view.channels(); ++channel) {
+        level = std::max(level, std::abs(view.get(offset, channel).value));
     }
-    return OwnedSampleBlock{
-        .samples = std::move(result),
-        .channel_layout = output_layout,
-        .frame_count = count,
-    };
+    return level;
 }
 
 std::vector<TimedEvent> TimelineExecution::compiled_events_in_range(

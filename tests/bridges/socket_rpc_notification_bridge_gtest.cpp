@@ -262,11 +262,9 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
             .lanes = {
                 iv::LaneVisualizationSeries{
                     .lane_id = intern("lane-42"),
-                    .adapter_type = "samples",
+                    .adapter_type = "level",
                     .sample_channel_type = iv::ChannelTypeId::stereo,
-                    .sample_layout = iv::SampleStreamLayout::planar,
-                    .sample_frame_count = 2,
-                    .samples = {1.0f, 2.0f, 3.0f, 4.0f},
+                    .peak_level = 4.0f,
                 },
             },
         });
@@ -278,11 +276,10 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
     EXPECT_EQ(json["params"]["viewId"], "view-1");
     ASSERT_EQ(json["params"]["lanes"].size(), 1u);
     EXPECT_EQ(json["params"]["lanes"][0]["laneId"], "lane-42");
-    EXPECT_EQ(json["params"]["lanes"][0]["adapterType"], "samples");
+    EXPECT_EQ(json["params"]["lanes"][0]["adapterType"], "level");
     EXPECT_EQ(json["params"]["lanes"][0]["sampleChannelType"], "stereo");
-    EXPECT_EQ(json["params"]["lanes"][0]["sampleLayout"], "planar");
-    EXPECT_EQ(json["params"]["lanes"][0]["sampleFrameCount"], 2);
-    EXPECT_EQ(json["params"]["lanes"][0]["samples"][0], 1.0);
+    EXPECT_EQ(json["params"]["lanes"][0]["peakLevel"], 4.0f);
+    EXPECT_FALSE(json["params"]["lanes"][0].contains("samples"));
 
     unbind_socket_rpc_notification_bridge(harness.server);
 }

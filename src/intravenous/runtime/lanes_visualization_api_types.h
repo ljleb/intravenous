@@ -15,16 +15,18 @@
 namespace iv {
 struct LaneVisualizationSeries {
     InternedString lane_id {};
-    std::string adapter_type = "samples"; // "samples" or "events"
+    std::string adapter_type = "level"; // "level", "activity", or "events"
     std::optional<ChannelTypeId> sample_channel_type {};
-    SampleStreamLayout sample_layout = SampleStreamLayout::planar;
-    size_t sample_frame_count = 0;
-    std::vector<Sample::storage> samples {};
+    // Sample lanes contribute exactly one level value per visible lane and UI
+    // refresh. Raw sample buffers are deliberately not part of this API.
+    std::optional<Sample::storage> peak_level {};
+    std::optional<size_t> event_count {};
     std::vector<TimedEvent> events {};
 };
 
 struct LaneViewContentUpdate {
     InternedString view_id {};
+    std::optional<size_t> playback_sample_index {};
     std::vector<LaneVisualizationSeries> lanes {};
 };
 } // namespace iv

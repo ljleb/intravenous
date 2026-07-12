@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/runtime/lane_view_service.h>
-#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/visualization_lane_nodes.h>
 
 #include <chrono>
@@ -19,25 +18,11 @@ namespace iv {
 struct TasksRunnerAfterPass;
 
 class LanesVisualization {
-    struct SampleHistory {
-        ChannelLayout channel_layout {
-            .channel_type = ChannelTypeId::mono,
-            .sample_layout = SampleStreamLayout::planar,
-        };
-        std::vector<Sample::storage> storage {};
-        size_t next_frame = 0;
-        size_t size_frames = 0;
-
-        void append(SampleStorageBlock const& block, size_t history_block_count);
-        [[nodiscard]] SampleStorageBlock snapshot() const;
-    };
-
     struct TrackedRealtimeSampleLane {
         LaneId source_lane {};
         LaneId vis_lane {};
         std::shared_ptr<RealtimeSampleBlockQueue> queue {};
         ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
-        SampleHistory history {};
         bool registered_in_timeline = false;
     };
 
@@ -59,7 +44,7 @@ class LanesVisualization {
         size_t first_sample_index = 0;
         size_t last_sample_index = 0;
         size_t display_sample_count = 0;
-        std::unordered_map<uint64_t, SampleStorageBlock> compiled_sample_data {};
+        std::unordered_map<uint64_t, Sample::storage> compiled_sample_levels {};
         std::unordered_map<uint64_t, std::vector<TimedEvent>> compiled_event_data {};
     };
 
@@ -71,7 +56,6 @@ class LanesVisualization {
     std::vector<std::shared_ptr<RealtimeEventBlockQueue>> draining_event_queues_;
     std::vector<LaneId> pending_timeline_lane_removals_;
     LaneIdAllocator lane_id_allocator_;
-    size_t history_block_count_ = 16;
     size_t block_size_ = 512;
     std::optional<std::jthread> publisher_thread_ {};
     std::chrono::milliseconds publish_interval_ { 33 };
@@ -81,7 +65,6 @@ class LanesVisualization {
 public:
     explicit LanesVisualization(
         std::optional<std::chrono::milliseconds> publish_interval = std::chrono::milliseconds(33),
-        size_t history_block_count = 16,
         size_t block_size = 512);
     ~LanesVisualization() = default;
 

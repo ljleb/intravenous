@@ -121,6 +121,7 @@ public:
         InternedString input_lane_external_id);
     [[nodiscard]] InternedString output_lane_external_id() const;
     [[nodiscard]] InternedString input_lane_external_id() const;
+    void seek_realtime_start_index(size_t sample_index);
 
     void handle_task_runner_before_pass(TasksRunnerBeforePass const &pass);
     void handle_task_runner_after_pass(TasksRunnerAfterPass const &pass);

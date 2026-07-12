@@ -30,6 +30,7 @@ public:
     std::vector<LaneId> realtime_sample_output_lanes() const;
     void pause();
     void resume(size_t start_index);
+    void seek(size_t sample_index);
     [[nodiscard]] bool is_paused() const;
     void set_realtime_start_index(size_t start_index);
     [[nodiscard]] size_t realtime_start_index() const;
@@ -39,7 +40,7 @@ public:
     std::span<TimedEvent const> realtime_event_block(LaneId lane) const;
     OwnedSampleBlock compiled_sample_block(LaneId lane, size_t start_index);
     std::vector<TimedEvent> compiled_event_block(LaneId lane, size_t start_index);
-    OwnedSampleBlock sparse_compiled_sample_window(LaneId lane, size_t first, size_t last, size_t count);
+    Sample::storage compiled_sample_level(LaneId lane, size_t first, size_t last);
     std::vector<TimedEvent> compiled_events_in_range(LaneId lane, size_t first, size_t last);
 
 private:

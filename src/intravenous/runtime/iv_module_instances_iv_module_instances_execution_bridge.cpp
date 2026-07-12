@@ -3,6 +3,7 @@
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/iv_module_instances_execution_events.h>
+#include <intravenous/runtime/audio_device_lanes_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/timeline_execution_events.h>
 
@@ -49,6 +50,18 @@ IV_SUBSCRIBE_LINKER_EVENT(
     IvModuleInstanceBuildersCompletedEvent,
     iv_runtime_iv_module_instance_builders_completed_event,
     handle_iv_module_instance_builders_completed);
+IV_SUBSCRIBE_LINKER_EVENT(
+    AudioDeviceLanesSetRealtimeStartIndexEvent,
+    iv_runtime_audio_device_lanes_set_realtime_start_index_event,
+    +[](size_t start_index) {
+        if (bound_execution) {
+            // During transport playback, module DSP blocks share the audio
+            // device's timeline origin. When transport is paused this event
+            // stops, so module preview execution keeps its own advancing
+            // playhead.
+            bound_execution->resume(start_index);
+        }
+    });
 IV_SUBSCRIBE_LINKER_EVENT(
     TimelineExecutionResumedEvent,
     iv_runtime_timeline_execution_resumed_event,

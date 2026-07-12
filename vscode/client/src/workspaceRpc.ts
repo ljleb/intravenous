@@ -8,7 +8,7 @@ export type SourceQueryRange = {
 
 type LaneViewParams = {
     viewId: string;
-    filter: { kind: string };
+    filter: { query?: string; kind?: string };
     startIndex: number;
     visibleLaneCount: number;
 };
@@ -58,6 +58,10 @@ export class WorkspaceRpc {
         return this.client.request("playback.resume", {
             startIndex,
         });
+    }
+
+    seekPlayback(sampleIndex: number): Promise<void> {
+        return this.client.request("playback.seek", { sampleIndex });
     }
 
     saveProject(): Promise<void> {

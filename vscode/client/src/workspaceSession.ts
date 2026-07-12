@@ -28,6 +28,7 @@ type LaneProviderLike = {
     viewportState(): { startIndex: number; visibleLaneCount: number };
     clear(): void;
     setLanes(result: Record<string, unknown>): void;
+    setLaneContent(result: Record<string, unknown>): void;
 };
 
 type ModulesProviderLike = {
@@ -40,6 +41,11 @@ type ServerStatusNotification = {
     message?: string;
     moduleRoot?: string;
     deletedNodeIds?: string[];
+};
+
+type LaneViewContentNotification = Record<string, unknown> & {
+    viewId?: string;
+    lanes?: Array<Record<string, unknown>>;
 };
 
 type ServerMessageNotification = {
@@ -151,6 +157,12 @@ export class WorkspaceSession {
         this.notifications.subscribe<LaneViewUpdatedNotification>("timeline.laneViewUpdated", (params) => {
             if (params.viewId === this.laneViewId) {
                 this.laneProvider.setLanes(params);
+            }
+        });
+
+        this.notifications.subscribe<LaneViewContentNotification>("timeline.laneViewContentUpdated", (params) => {
+            if (params.viewId === this.laneViewId) {
+                this.laneProvider.setLaneContent(params);
             }
         });
 
@@ -522,7 +534,9 @@ export class WorkspaceSession {
         }
 
         this.client = new JsonRpcSocketClient(rpcStream, (method, params) => {
-            this.outputChannel.appendLine(`Intravenous startup notification: ${method}`);
+            if (method !== "timeline.laneViewContentUpdated") {
+                this.outputChannel.appendLine(`Intravenous startup notification: ${method}`);
+            }
             void this.notifications.dispatch(method, params);
         });
         this.outputChannel.appendLine("Intravenous startup: attaching client RPC socket");
@@ -844,6 +858,11 @@ export class WorkspaceSession {
         await this.rpc.resumePlayback(startIndex);
     }
 
+    async seekPlayback(sampleIndex: number): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        await this.rpc.seekPlayback(sampleIndex);
+    }
+
     async saveProject(): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) {
             return;
@@ -865,11 +884,14 @@ export class WorkspaceSession {
         await this.rpc.disableProjectAutosave();
     }
 
-    private laneViewRequestParams(): { viewId: string; filter: { kind: string }; startIndex: number; visibleLaneCount: number } {
+    private laneViewRequestParams(): { viewId: string; filter: { query: string }; startIndex: number; visibleLaneCount: number } {
         const viewport = this.laneProvider.viewportState();
         return {
             viewId: this.laneViewId,
-            filter: { kind: "graphInputs" },
+            // Keep the initial generic workspace scoped to the lanes the
+            // running DSP graph contributes, without hard-coding one lane
+            // subtype such as graph inputs.
+            filter: { query: "dsp_graph" },
             startIndex: viewport.startIndex,
             visibleLaneCount: viewport.visibleLaneCount,
         };

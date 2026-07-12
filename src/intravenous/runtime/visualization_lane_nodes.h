@@ -2,12 +2,11 @@
 
 #include <intravenous/lane_node/generate.h>
 #include <intravenous/ports.h>
-#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/sample.h>
 
 #include <algorithm>
-#include <array>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <span>
 #include <vector>
@@ -15,64 +14,34 @@
 namespace iv {
 
 struct RealtimeSampleBlockQueue {
-    static constexpr size_t kCapacity = 16;
+    // This crosses the realtime/UI boundary with one scalar, not copied audio
+    // blocks. The latest block peak is sufficient for a sampled level meter.
+    RealtimeSampleBlockQueue(ChannelLayout, size_t) {}
 
-    struct Slot {
-        OwnedSampleBlock block {};
-    };
-
-    std::array<Slot, kCapacity> ring {};
-    alignas(64) std::atomic<size_t> head { 0 };
-    alignas(64) std::atomic<size_t> tail { 0 };
-    ChannelLayout channel_layout {
-        .channel_type = ChannelTypeId::mono,
-        .sample_layout = SampleStreamLayout::planar,
-    };
-    size_t frame_count = 0;
-
-    RealtimeSampleBlockQueue(ChannelLayout layout, size_t block_size) :
-        channel_layout(layout),
-        frame_count(block_size)
-    {
-        for (auto& slot : ring) {
-            slot.block.channel_layout = channel_layout;
-            slot.block.frame_count = frame_count;
-            slot.block.samples.resize(sample_storage_size(channel_layout, frame_count));
-        }
-    }
-
-    // Producer side (task runner thread) — lock-free
+    // Producer side (task runner thread) — lock-free and allocation-free.
     void push(SampleBlockView<Sample const> block)
     {
-        auto const t = tail.load(std::memory_order_relaxed);
-        auto const next = (t + 1) % kCapacity;
-        if (next == head.load(std::memory_order_acquire)) {
-            return; // full — drop
+        Sample::storage peak = 0.0f;
+        for (auto const sample : block.samples()) {
+            peak = std::max(peak, std::abs(sample.value));
         }
-        auto& slot = ring[t];
-        slot.block.channel_layout = block.channel_layout();
-        slot.block.frame_count = block.frames();
-        auto const n = sample_storage_size(slot.block.channel_layout, slot.block.frame_count);
-        if (slot.block.samples.size() != n) {
-            slot.block.samples.resize(n);
-        }
-        std::ranges::copy(block.samples(), slot.block.samples.begin());
-        tail.store(next, std::memory_order_release);
+        peak_level_.store(peak, std::memory_order_release);
     }
 
-    // Consumer side (publisher thread) — lock-free
-    template<typename F>
-    void drain(F&& callback)
+    // Consumer side (publisher thread): one scalar per visible lane per UI
+    // update frame.
+    [[nodiscard]] Sample::storage peak_level() const
     {
-        while (true) {
-            auto const h = head.load(std::memory_order_relaxed);
-            if (h == tail.load(std::memory_order_acquire)) {
-                break;
-            }
-            callback(ring[h].block);
-            head.store((h + 1) % kCapacity, std::memory_order_release);
-        }
+        return peak_level_.load(std::memory_order_acquire);
     }
+
+    void clear()
+    {
+        peak_level_.store(0.0f, std::memory_order_release);
+    }
+
+private:
+    std::atomic<Sample::storage> peak_level_ { 0.0f };
 };
 
 struct RealtimeEventBlockQueue {
@@ -135,6 +104,9 @@ struct VisualizationRealtimeSampleLane {
                 queue->push(block);
             }
         } else {
+            if (queue != nullptr) {
+                queue->clear();
+            }
             auto const out = ctx.out().block_view();
             for (size_t frame = 0; frame < out.frames(); ++frame) {
                 for (size_t channel = 0; channel < out.channels(); ++channel) {

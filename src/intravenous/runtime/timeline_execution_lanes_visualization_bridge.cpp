@@ -7,17 +7,23 @@ namespace iv {
 namespace {
 TimelineExecution *bound_execution = nullptr;
 
-void handle_compiled_sample_window_requested(
+void handle_playback_position_query(LanesVisualizationPlaybackPositionBuilder &builder)
+{
+    if (bound_execution != nullptr) {
+        builder.succeed(bound_execution->realtime_start_index());
+    }
+}
+
+void handle_compiled_sample_level_requested(
     LaneId lane,
     size_t first,
     size_t last,
-    size_t count,
-    LanesVisualizationCompiledSampleWindowBuilder &builder)
+    LanesVisualizationCompiledSampleLevelBuilder &builder)
 {
     if (bound_execution == nullptr) {
         return;
     }
-    builder.succeed(bound_execution->sparse_compiled_sample_window(lane, first, last, count));
+    builder.succeed(bound_execution->compiled_sample_level(lane, first, last));
 }
 
 void handle_compiled_event_window_requested(
@@ -33,9 +39,13 @@ void handle_compiled_event_window_requested(
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    LanesVisualizationCompiledSampleWindowRequestedEvent,
-    iv_runtime_lanes_visualization_compiled_sample_window_requested_event,
-    handle_compiled_sample_window_requested);
+    LanesVisualizationPlaybackPositionQueryEvent,
+    iv_runtime_lanes_visualization_playback_position_query_event,
+    handle_playback_position_query);
+IV_SUBSCRIBE_LINKER_EVENT(
+    LanesVisualizationCompiledSampleLevelRequestedEvent,
+    iv_runtime_lanes_visualization_compiled_sample_level_requested_event,
+    handle_compiled_sample_level_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
     LanesVisualizationCompiledEventWindowRequestedEvent,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event,

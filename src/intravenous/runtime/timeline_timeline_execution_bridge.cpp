@@ -89,6 +89,24 @@ void handle_resume(ResumeRequest const &request)
         });
 }
 
+void handle_seek(SeekRequest const &request)
+{
+    if (!bound_execution) {
+        return;
+    }
+    bound_execution->seek(request.sample_index);
+    // Seeking establishes a new DSP timeline origin, just like resuming at a
+    // position. Dependent graph/module execution must discard state tied to
+    // the previous origin before the next realtime pass.
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_timeline_execution_resumed_event,
+        TimelineExecutionResumed{ .start_index = request.sample_index });
+}
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    SeekEvent,
+    iv_runtime_seek_event,
+    handle_seek);
 IV_SUBSCRIBE_LINKER_EVENT(
     TimelineLanesChangedEvent,
     iv_runtime_timeline_lanes_changed_event,

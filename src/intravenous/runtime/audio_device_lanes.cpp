@@ -482,6 +482,15 @@ AudioDevicesSnapshot AudioDeviceLanes::audio_devices_snapshot() const
     return snapshot;
 }
 
+void AudioDeviceLanes::seek_realtime_start_index(size_t sample_index)
+{
+    std::scoped_lock lock(mutex_);
+    next_realtime_start_index_ = sample_index;
+    output_reservoir_.clear();
+    output_reservoir_read_offset_ = 0;
+    pending_output_request_.reset();
+}
+
 void AudioDeviceLanes::replace_output_device(
     std::shared_ptr<ActiveOutputDevice> output_device)
 {

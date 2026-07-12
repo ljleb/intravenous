@@ -36,18 +36,6 @@ std::string_view channel_type_json(ChannelTypeId type) {
     return "mono";
 }
 
-std::string_view sample_layout_json(SampleStreamLayout layout) {
-    switch (layout) {
-    case SampleStreamLayout::planar:
-        return "planar";
-    case SampleStreamLayout::interleaved:
-        return "interleaved";
-    case SampleStreamLayout::count:
-        break;
-    }
-    return "planar";
-}
-
 std::string jsonrpc_error(int id, int code, std::string const &message) {
     return serialize_json_line(Json{
         {"jsonrpc", "2.0"},
@@ -76,10 +64,6 @@ Json string_array_json(std::vector<std::string> const &values) {
 Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
     Json json_lanes = Json::array();
     for (auto const &lane : update.lanes) {
-        Json json_samples = Json::array();
-        for (auto const sample : lane.samples) {
-            json_samples.push_back(sample);
-        }
         Json json_events = Json::array();
         for (auto const &event : lane.events) {
             Json json_event{
@@ -111,23 +95,31 @@ Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
                 event.value);
             json_events.push_back(std::move(json_event));
         }
-        json_lanes.push_back(Json{
+        Json json_lane{
             {"laneId", lane.lane_id.str()},
             {"adapterType", lane.adapter_type},
             {"sampleChannelType", lane.sample_channel_type.has_value()
                 ? Json(channel_type_json(*lane.sample_channel_type))
                 : Json(nullptr)},
-            {"sampleLayout", std::string(sample_layout_json(lane.sample_layout))},
-            {"sampleFrameCount", lane.sample_frame_count},
-            {"samples", std::move(json_samples)},
             {"events", std::move(json_events)},
-        });
+        };
+        if (lane.peak_level.has_value()) {
+            json_lane["peakLevel"] = *lane.peak_level;
+        }
+        if (lane.event_count.has_value()) {
+            json_lane["eventCount"] = *lane.event_count;
+        }
+        json_lanes.push_back(std::move(json_lane));
     }
 
-    return Json{
+    Json json{
         {"viewId", update.view_id.str()},
         {"lanes", std::move(json_lanes)},
     };
+    if (update.playback_sample_index.has_value()) {
+        json["playbackSampleIndex"] = *update.playback_sample_index;
+    }
+    return json;
 }
 
 Json server_message_json(SocketRpcServerMessage const &notification) {
@@ -363,6 +355,10 @@ void SocketRpcServer::handle_client(int fd) {
                     } else if constexpr (std::same_as<Request, ResumeRequest>) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_resume_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, SeekRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_seek_event, event_request, builder);
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, SaveProjectRequest>) {
                         SocketRpcAckResponseBuilder builder;

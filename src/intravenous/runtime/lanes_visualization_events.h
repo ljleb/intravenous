@@ -3,7 +3,6 @@
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/lane_graph.h>
 #include <intravenous/runtime/lanes_visualization_api_types.h>
-#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/timeline_events.h>
 
 #include <optional>
@@ -36,26 +35,39 @@ public:
 using LanesVisualizationLaneOutputQueryEvent =
     void (*)(LaneId, LanesVisualizationLaneOutputQueryBuilder&);
 
-// ---- Compiled sample window query ----
+// ---- Realtime playback position query ----
 
-class LanesVisualizationCompiledSampleWindowBuilder {
-    OwnedSampleBlock samples_ {};
+class LanesVisualizationPlaybackPositionBuilder {
+    std::optional<size_t> result_ {};
 
 public:
-    void succeed(OwnedSampleBlock samples)
+    void succeed(size_t sample_index) { result_ = sample_index; }
+    [[nodiscard]] std::optional<size_t> build() { return result_; }
+};
+
+using LanesVisualizationPlaybackPositionQueryEvent =
+    void (*)(LanesVisualizationPlaybackPositionBuilder&);
+
+// ---- Compiled sample level query ----
+
+class LanesVisualizationCompiledSampleLevelBuilder {
+    std::optional<Sample::storage> level_ {};
+
+public:
+    void succeed(Sample::storage level)
     {
-        samples_ = std::move(samples);
+        level_ = level;
     }
 
-    [[nodiscard]] OwnedSampleBlock build()
+    [[nodiscard]] std::optional<Sample::storage> build()
     {
-        return std::move(samples_);
+        return level_;
     }
 };
 
-using LanesVisualizationCompiledSampleWindowRequestedEvent =
-    void (*)(LaneId, size_t first, size_t last, size_t count,
-             LanesVisualizationCompiledSampleWindowBuilder&);
+using LanesVisualizationCompiledSampleLevelRequestedEvent =
+    void (*)(LaneId, size_t first, size_t last,
+             LanesVisualizationCompiledSampleLevelBuilder&);
 
 // ---- Compiled event range query ----
 
@@ -92,8 +104,11 @@ IV_DECLARE_LINKER_EVENT(
     LanesVisualizationLaneOutputQueryEvent,
     iv_runtime_lanes_visualization_lane_output_query_event);
 IV_DECLARE_LINKER_EVENT(
-    LanesVisualizationCompiledSampleWindowRequestedEvent,
-    iv_runtime_lanes_visualization_compiled_sample_window_requested_event);
+    LanesVisualizationPlaybackPositionQueryEvent,
+    iv_runtime_lanes_visualization_playback_position_query_event);
+IV_DECLARE_LINKER_EVENT(
+    LanesVisualizationCompiledSampleLevelRequestedEvent,
+    iv_runtime_lanes_visualization_compiled_sample_level_requested_event);
 IV_DECLARE_LINKER_EVENT(
     LanesVisualizationCompiledEventWindowRequestedEvent,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event);

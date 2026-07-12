@@ -48,6 +48,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             outputChannel.appendLine(`Intravenous lane viewport update failed: ${error.message}`);
         });
     });
+    laneProvider.setScrubHandler((sampleIndex) => {
+        session.seekPlayback(sampleIndex).catch((error: Error) => {
+            outputChannel.appendLine(`Intravenous seek playback failed: ${error.message}`);
+        });
+    });
     modulesProvider.setControlHandler((message) => session.dispatchModulesControl(message));
 
     context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.lanes", {

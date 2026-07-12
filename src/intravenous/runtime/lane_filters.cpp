@@ -62,7 +62,8 @@ LaneFilterResult filter_result_from(
     LaneFilters::RegisteredLaneFilter const &filter,
     std::function<LaneMetadata(LaneId)> const &metadata_for_lane,
     std::function<InternedString(LaneId)> const &public_id_for_lane,
-    std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> const &outputs_for_lanes)
+    std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> const &outputs_for_lanes,
+    std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> const &visit_lanes)
 {
     if (filter.error_message.has_value()) {
         return LaneFilterResult{
@@ -86,6 +87,7 @@ LaneFilterResult filter_result_from(
             .metadata_for_lane = metadata_for_lane,
             .public_id_for_lane = public_id_for_lane,
             .outputs_for_lanes = outputs_for_lanes,
+            .visit_lanes = visit_lanes,
         },
     };
 }
@@ -277,7 +279,7 @@ std::vector<LaneFilterResult> LaneFilters::refresh_all_filters_locked()
             continue;
         }
         refresh_filter_locked(it->second, visiting);
-        results.push_back(filter_result_from(it->second, metadata_for_lane, public_id_for_lane, outputs_for_lanes));
+        results.push_back(filter_result_from(it->second, metadata_for_lane, public_id_for_lane, outputs_for_lanes, visit_lanes));
     }
     return results;
 }
@@ -362,6 +364,7 @@ void LaneFilters::handle_timeline_lanes_changed(TimelineLanesChanged const &chan
         metadata_for_lane = change.metadata_for_lane;
         public_id_for_lane = change.public_id_for_lane;
         outputs_for_lanes = change.outputs_for_lanes;
+        visit_lanes = change.visit_lanes;
         last_schema_change = change.schema_change;
 
         for (auto &[_, filter] : filters_by_name) {

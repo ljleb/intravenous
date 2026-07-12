@@ -235,7 +235,6 @@ namespace iv {
             LaneViews lane_views;
             LanesVisualization lanes_visualization(
                 std::chrono::milliseconds(33),
-                16,
                 startup.execution.block_size);
             IvModuleSourceIntrospection introspection;
             IvModuleSources iv_module_sources(

@@ -39,6 +39,7 @@ private:
     std::function<LaneMetadata(LaneId)> metadata_for_lane;
     std::function<InternedString(LaneId)> public_id_for_lane;
     std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes;
+    std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> visit_lanes;
     std::unordered_map<std::string, RegisteredLaneFilter> filters_by_name;
     query::LaneQueryParser parser;
 

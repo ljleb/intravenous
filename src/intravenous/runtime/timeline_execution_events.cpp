@@ -23,6 +23,9 @@ IV_DEFINE_LINKER_EVENT(
     ResumeEvent,
     iv_runtime_resume_event);
 IV_DEFINE_LINKER_EVENT(
+    SeekEvent,
+    iv_runtime_seek_event);
+IV_DEFINE_LINKER_EVENT(
     TimelineExecutionResumedEvent,
     iv_runtime_timeline_execution_resumed_event);
 IV_DEFINE_SINGLETON_EVENT(

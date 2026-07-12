@@ -70,6 +70,21 @@ void handle_resume(
     }
 }
 
+void handle_seek(
+    SeekRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_seek_event, request);
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
+    }
+}
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcSeekEvent,
+    iv_socket_rpc_seek_event,
+    handle_seek);
 IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcSetTimelineCompiledSampleCacheChunkSizeMultiplierEvent,
     iv_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier_event,

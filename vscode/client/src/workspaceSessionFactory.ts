@@ -21,6 +21,7 @@ type LaneViewProviderLike = {
     revive(panel: vscode.WebviewPanel, state: unknown): void;
     setCloseHandler(handler: () => void): void;
     setViewportHandler(handler: () => void): void;
+    setScrubHandler(handler: (sampleIndex: number) => void): void;
     clear(): void;
     setLanes(result: Record<string, unknown>): void;
     viewportState(): { startIndex: number; visibleLaneCount: number };
