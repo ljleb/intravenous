@@ -127,13 +127,19 @@ GraphBuilderPublicSamplePortFamilies collect_sample_port_families(
 }
 } // namespace
 
-SamplePortRef GraphBuilderPublicPorts::add_sample_input(GraphBuilder& builder, std::string_view name, Sample default_value)
+SamplePortRef GraphBuilderPublicPorts::add_sample_input(
+    GraphBuilder& builder,
+    std::string_view name,
+    Sample default_value,
+    std::optional<Sample> min,
+    std::optional<Sample> max)
 {
-    if (!name.empty()) {
-        _sample_inputs.emplace_back(InputConfig{ .name = std::string(name), .default_value = default_value });
-    } else {
-        _sample_inputs.emplace_back(InputConfig{});
-    }
+    _sample_inputs.emplace_back(InputConfig{
+        .name = std::string(name),
+        .default_value = default_value,
+        .min = min,
+        .max = max,
+    });
     return SamplePortRef(builder, GRAPH_ID, _sample_inputs.size() - 1);
 }
 

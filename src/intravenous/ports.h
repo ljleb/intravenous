@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -906,6 +907,8 @@ namespace iv {
         std::string name {};
         size_t history = 0;
         Sample default_value = 0.0;
+        std::optional<Sample> min {};
+        std::optional<Sample> max {};
     };
 
     struct OutputConfig {

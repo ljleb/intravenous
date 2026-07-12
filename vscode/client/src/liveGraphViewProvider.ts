@@ -631,6 +631,94 @@ export class LiveGraphViewProvider {
             return Number(value).toFixed(3).replace(/\.?0+$/, (match) => match === ".000" ? "" : match);
         }
 
+        const unboundedKnobEpsilon = 1e-6;
+
+        function finiteBound(value) {
+            return typeof value === "number" && Number.isFinite(value) ? value : null;
+        }
+
+        function positiveSkew(position) {
+            return position * Math.abs(position) / (1 - position);
+        }
+
+        function inversePositiveSkew(value) {
+            if (!Number.isFinite(value)) {
+                return value > 0 ? 1 : 0;
+            }
+            if (value <= 0) {
+                return 0;
+            }
+            const root = Math.sqrt(value);
+            return 2 * root / (Math.sqrt(value + 4) + root);
+        }
+
+        function centeredSkew(position) {
+            return position / (1 - position * position);
+        }
+
+        function inverseCenteredSkew(value) {
+            if (!Number.isFinite(value)) {
+                return value > 0 ? 1 : -1;
+            }
+            return value / (0.5 + Math.sqrt(value * value + 0.25));
+        }
+
+        function knobPositionLimits(port) {
+            const min = finiteBound(port.minValue);
+            const max = finiteBound(port.maxValue);
+            if (min != null && max != null) {
+                return { min: 0, max: 1 };
+            }
+            if (min != null || max != null) {
+                return { min: 0, max: 1 - unboundedKnobEpsilon };
+            }
+            return { min: unboundedKnobEpsilon, max: 1 - unboundedKnobEpsilon };
+        }
+
+        function clampKnobPosition(position, port) {
+            const limits = knobPositionLimits(port);
+            return clamp(position, limits.min, limits.max);
+        }
+
+        function valueForKnobPosition(position, port) {
+            const x = clampKnobPosition(Number(position) || 0, port);
+            const min = finiteBound(port.minValue);
+            const max = finiteBound(port.maxValue);
+            if (min != null && max != null) {
+                return max > min ? min + x * (max - min) : min;
+            }
+            if (min != null) {
+                return min + positiveSkew(x);
+            }
+            if (max != null) {
+                return max - positiveSkew(x);
+            }
+            const defaultValue = Number(port.defaultValue);
+            const center = Number.isFinite(defaultValue) ? defaultValue : 0;
+            return center + centeredSkew(2 * x - 1);
+        }
+
+        function knobPositionForValue(value, port) {
+            const actual = Number(value);
+            if (Number.isNaN(actual)) {
+                return 0.5;
+            }
+            const min = finiteBound(port.minValue);
+            const max = finiteBound(port.maxValue);
+            if (min != null && max != null) {
+                return clampKnobPosition(max > min ? (actual - min) / (max - min) : 0.5, port);
+            }
+            if (min != null) {
+                return clampKnobPosition(inversePositiveSkew(actual - min), port);
+            }
+            if (max != null) {
+                return clampKnobPosition(inversePositiveSkew(max - actual), port);
+            }
+            const defaultValue = Number(port.defaultValue);
+            const center = Number.isFinite(defaultValue) ? defaultValue : 0;
+            return clampKnobPosition((inverseCenteredSkew(actual - center) + 1) / 2, port);
+        }
+
         function knobSvg(value) {
             const clamped = clamp(value, 0, 1);
             const circumference = 2 * Math.PI * 7;
@@ -760,12 +848,13 @@ export class LiveGraphViewProvider {
             if (!portRow || !portRow.__knobDrag) {
                 return;
             }
-            const currentValue = clamp(Number(value || 0), 0, 1);
+            const currentValue = Number(value);
             portRow.__knobDrag.port.currentValue = currentValue;
-            portRow.__knobDrag.knob.innerHTML = knobSvg(currentValue);
+            const position = knobPositionForValue(currentValue, portRow.__knobDrag.port);
+            portRow.__knobDrag.knob.innerHTML = knobSvg(position);
             portRow.__knobDrag.valueEl.textContent = formatValue(currentValue);
             if (knobDrag.active && knobDrag.active.knob === portRow.__knobDrag.knob) {
-                knobDrag.currentValue = currentValue;
+                knobDrag.currentValue = position;
             }
         }
 
@@ -802,7 +891,7 @@ export class LiveGraphViewProvider {
         }
 
         function applyLocalControlValue(nodeId, memberOrdinal, ordinal, value) {
-            const currentValue = clamp(Number(value || 0), 0, 1);
+            const currentValue = Number(value);
             for (const node of state.nodes) {
                 if (node.id !== nodeId) {
                     continue;
@@ -906,7 +995,7 @@ export class LiveGraphViewProvider {
             }
             event.preventDefault();
             knobDrag.active = { knob, valueEl, nodeId, memberOrdinal, port };
-            knobDrag.currentValue = clamp(Number(port.currentValue || 0), 0, 1);
+            knobDrag.currentValue = knobPositionForValue(port.currentValue, port);
             knobDrag.lastClientX = event.clientX;
             knobDrag.lastClientY = event.clientY;
             knobDrag.pointerLockRequested = false;
@@ -944,10 +1033,11 @@ export class LiveGraphViewProvider {
             if (!knobDrag.active || delta === 0) {
                 return;
             }
-            knobDrag.currentValue = clamp(knobDrag.currentValue + delta, 0, 1);
             const { nodeId, memberOrdinal, port } = knobDrag.active;
-            applyLocalControlValue(nodeId, memberOrdinal, port.ordinal, knobDrag.currentValue);
-            queueControlUpdate(nodeId, memberOrdinal, port.ordinal, knobDrag.currentValue);
+            knobDrag.currentValue = clampKnobPosition(knobDrag.currentValue + delta, port);
+            const value = valueForKnobPosition(knobDrag.currentValue, port);
+            applyLocalControlValue(nodeId, memberOrdinal, port.ordinal, value);
+            queueControlUpdate(nodeId, memberOrdinal, port.ordinal, value);
         }
 
         function applyDraggedKnobEvent(event) {
@@ -1023,30 +1113,42 @@ export class LiveGraphViewProvider {
             beginKnobDrag(portRow, knob, valueEl, nodeId, memberOrdinal, port, event);
         }, true);
 
-        function attachKnobBehavior(knob, valueEl, nodeId, memberOrdinal, port) {
-            let currentValue = clamp(Number(port.currentValue || 0), 0, 1);
-
-            const applyValue = (nextValue) => {
-                currentValue = clamp(nextValue, 0, 1);
-                applyLocalControlValue(nodeId, memberOrdinal, port.ordinal, currentValue);
-                queueControlUpdate(nodeId, memberOrdinal, port.ordinal, currentValue);
+        function attachKnobBehavior(knob, valueEl, portRow) {
+            const applyPosition = (nextPosition) => {
+                const binding = portRow.__knobDrag;
+                if (!binding) {
+                    return;
+                }
+                const position = clampKnobPosition(nextPosition, binding.port);
+                const value = valueForKnobPosition(position, binding.port);
+                applyLocalControlValue(binding.nodeId, binding.memberOrdinal, binding.port.ordinal, value);
+                queueControlUpdate(binding.nodeId, binding.memberOrdinal, binding.port.ordinal, value);
                 if (knobDrag.active && knobDrag.active.knob === knob) {
-                    knobDrag.currentValue = currentValue;
+                    knobDrag.currentValue = position;
                 }
             };
 
-            knob.innerHTML = knobSvg(currentValue);
-            valueEl.textContent = formatValue(currentValue);
+            const binding = portRow.__knobDrag;
+            knob.innerHTML = knobSvg(knobPositionForValue(binding.port.currentValue, binding.port));
+            valueEl.textContent = formatValue(binding.port.currentValue);
 
             knob.addEventListener("wheel", (event) => {
                 event.preventDefault();
                 const step = event.deltaY < 0 ? 0.02 : -0.02;
-                applyValue(currentValue + step);
+                const currentBinding = portRow.__knobDrag;
+                if (currentBinding) {
+                    applyPosition(knobPositionForValue(currentBinding.port.currentValue, currentBinding.port) + step);
+                }
             }, { passive: false });
 
             knob.addEventListener("dblclick", (event) => {
                 event.preventDefault();
-                applyValue(clamp(Number(port.defaultValue || 0), 0, 1));
+                const currentBinding = portRow.__knobDrag;
+                if (currentBinding) {
+                    applyPosition(knobPositionForValue(
+                        currentBinding.port.defaultValue,
+                        currentBinding.port));
+                }
             });
         }
 
@@ -1114,14 +1216,14 @@ export class LiveGraphViewProvider {
                     portRow.appendChild(knobWrap);
                     portRow.__knobWrap = knobWrap;
                     portRow.__knobDrag = { knob, valueEl, nodeId, memberOrdinal, port };
-                    attachKnobBehavior(knob, valueEl, nodeId, memberOrdinal, port);
+                    attachKnobBehavior(knob, valueEl, portRow);
                 } else {
                     portRow.__knobDrag.nodeId = nodeId;
                     portRow.__knobDrag.memberOrdinal = memberOrdinal;
                     portRow.__knobDrag.port = port;
-                    const currentValue = clamp(Number(port.currentValue || 0), 0, 1);
-                    portRow.__knobDrag.knob.innerHTML = knobSvg(currentValue);
-                    portRow.__knobDrag.valueEl.textContent = formatValue(currentValue);
+                    const position = knobPositionForValue(port.currentValue, port);
+                    portRow.__knobDrag.knob.innerHTML = knobSvg(position);
+                    portRow.__knobDrag.valueEl.textContent = formatValue(port.currentValue);
                 }
             } else if (portRow.__knobWrap) {
                 portRow.__knobWrap.remove();

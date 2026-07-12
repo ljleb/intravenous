@@ -5,6 +5,7 @@
 #include <intravenous/graph/builder/topology.h>
 
 #include <concepts>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -40,6 +41,8 @@ namespace iv {
             GraphBuilderTopology&,
             std::string_view name,
             Sample default_value,
+            std::optional<Sample> min,
+            std::optional<Sample> max,
             bool has_name
         );
         EventPortRef add_scope_event_input(

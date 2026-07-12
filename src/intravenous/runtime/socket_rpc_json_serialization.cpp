@@ -132,6 +132,12 @@ SocketRpcJson logical_port_json(LogicalPortInfo const &port)
     json["type"] = port.type;
     json["connectivity"] = std::string(logical_port_connectivity_json(port.connectivity));
     json["defaultValue"] = static_cast<Sample::storage>(port.default_value);
+    json["minValue"] = port.min.has_value()
+        ? SocketRpcJson(static_cast<Sample::storage>(*port.min))
+        : SocketRpcJson(nullptr);
+    json["maxValue"] = port.max.has_value()
+        ? SocketRpcJson(static_cast<Sample::storage>(*port.max))
+        : SocketRpcJson(nullptr);
     json["currentValue"] = static_cast<Sample::storage>(port.current_value);
     json["hasConcreteOverride"] = port.has_concrete_override;
     json["stateValue"] = port.state_value;

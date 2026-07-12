@@ -41,6 +41,8 @@ namespace iv {
                 hash = fnv1a_append(hash, parameter.id);
                 hash = fnv1a_append(hash, parameter.name);
                 hash = fnv1a_append(hash, std::to_string(parameter.default_value));
+                hash = fnv1a_append(hash, std::to_string(parameter.min));
+                hash = fnv1a_append(hash, std::to_string(parameter.max));
             }
             return hash;
         }
@@ -474,6 +476,12 @@ namespace iv {
                 spec.name = spec.id;
             }
             spec.default_value = parameter.getDefaultValue();
+            if (auto* ranged = dynamic_cast<::juce::RangedAudioParameter*>(&parameter)) {
+                auto const& range = ranged->getNormalisableRange();
+                spec.min = range.start;
+                spec.max = range.end;
+                spec.default_value = ranged->convertFrom0to1(parameter.getDefaultValue());
+            }
             return spec;
         }
 
@@ -776,12 +784,17 @@ namespace iv {
 
         size_t const parameter_offset = spec.schema.audio_inputs;
         for (size_t index = 0; index < live_instance.parameter_bindings.size(); ++index) {
-            float value = state.inputs[parameter_offset + index].get();
-            value = std::clamp(value, 0.0f, 1.0f);
+            float const value = state.inputs[parameter_offset + index].get();
             auto& binding = live_instance.parameter_bindings[index];
-            if (binding.last_value != value) {
-                binding.parameter->setValue(value);
-                binding.last_value = value;
+            float normalized_value = value;
+            if (auto* ranged = dynamic_cast<::juce::RangedAudioParameter*>(binding.parameter)) {
+                normalized_value = ranged->convertTo0to1(value);
+            } else {
+                normalized_value = std::clamp(normalized_value, 0.0f, 1.0f);
+            }
+            if (binding.last_value != normalized_value) {
+                binding.parameter->setValue(normalized_value);
+                binding.last_value = normalized_value;
             }
         }
 

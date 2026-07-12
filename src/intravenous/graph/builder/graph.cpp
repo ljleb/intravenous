@@ -168,18 +168,30 @@ std::string GraphBuilder::node_id(size_t index) const
 
 SamplePortRef GraphBuilder::input()
 {
-    if (inside_subgraph_scope()) {
-        return _subgraphs.add_scope_sample_input(*this, _topology, {}, 0.0f, false);
-    }
-    return _public_ports.add_sample_input(*this, {}, 0.0f);
+    return input(Sample{0.0f});
 }
 
-SamplePortRef GraphBuilder::input(std::string_view name, Sample default_value)
+SamplePortRef GraphBuilder::input(
+    std::string_view name,
+    Sample default_value,
+    std::optional<Sample> min,
+    std::optional<Sample> max)
 {
     if (inside_subgraph_scope()) {
-        return _subgraphs.add_scope_sample_input(*this, _topology, name, default_value, true);
+        return _subgraphs.add_scope_sample_input(*this, _topology, name, default_value, min, max, true);
     }
-    return _public_ports.add_sample_input(*this, name, default_value);
+    return _public_ports.add_sample_input(*this, name, default_value, min, max);
+}
+
+SamplePortRef GraphBuilder::input(
+    Sample default_value,
+    std::optional<Sample> min,
+    std::optional<Sample> max)
+{
+    if (inside_subgraph_scope()) {
+        return _subgraphs.add_scope_sample_input(*this, _topology, {}, default_value, min, max, false);
+    }
+    return _public_ports.add_sample_input(*this, {}, default_value, min, max);
 }
 
 EventPortRef GraphBuilder::event_input(std::string_view name, EventTypeId type)

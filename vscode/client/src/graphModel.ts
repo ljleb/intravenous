@@ -25,6 +25,8 @@ export type LogicalPort = {
     type?: string;
     connectivity?: LogicalPortConnectivity | string;
     defaultValue?: number;
+    minValue?: number | null;
+    maxValue?: number | null;
     currentValue?: number;
     hasConcreteOverride?: boolean;
     stateValue?: string;

@@ -37,18 +37,18 @@ SamplePortRef SubgraphScopeManager::add_scope_sample_input(
     GraphBuilderTopology& topology,
     std::string_view name,
     Sample default_value,
+    std::optional<Sample> min,
+    std::optional<Sample> max,
     bool has_name
 )
 {
     auto& scope = current();
-    if (has_name) {
-        scope.input_configs.emplace_back(InputConfig{
-            .name = std::string(name),
-            .default_value = default_value
-        });
-    } else {
-        scope.input_configs.emplace_back(InputConfig{});
-    }
+    scope.input_configs.emplace_back(InputConfig{
+        .name = has_name ? std::string(name) : std::string{},
+        .default_value = default_value,
+        .min = min,
+        .max = max,
+    });
     size_t const placeholder_node = topology.append_placeholder_node(
         std::array<OutputConfig, 1>{ OutputConfig{ .name = has_name ? std::string(name) : std::string{} } },
         {}

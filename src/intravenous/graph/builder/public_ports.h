@@ -46,7 +46,12 @@ namespace iv {
 
     class GraphBuilderPublicPorts {
     public:
-        SamplePortRef add_sample_input(GraphBuilder&, std::string_view name, Sample default_value);
+        SamplePortRef add_sample_input(
+            GraphBuilder&,
+            std::string_view name,
+            Sample default_value,
+            std::optional<Sample> min,
+            std::optional<Sample> max);
         EventPortRef add_event_input(GraphBuilder&, std::string_view name, EventTypeId type);
         bool sample_outputs_defined() const;
         void define_sample_outputs(

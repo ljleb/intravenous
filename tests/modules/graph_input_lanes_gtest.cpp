@@ -848,6 +848,23 @@ TEST_F(GraphInputLanesTest, PublicSampleInputCreatesAutomaticTimelineLaneAndDepe
     EXPECT_NO_THROW((void)builder.build_execution_root_node());
 }
 
+TEST_F(GraphInputLanesTest, PublicSampleInputSupportsUnnamedOptionalBounds)
+{
+    iv::GraphBuilder builder;
+    auto input = builder.input(0.5f, -2.0f, 4.0f);
+    builder.outputs(iv::channels::mono = input);
+
+    auto const families = builder.public_sample_input_families();
+    ASSERT_EQ(families.families.size(), 1u);
+    auto const &config = families.families.front().input_config;
+    EXPECT_TRUE(config.name.empty());
+    EXPECT_FLOAT_EQ(static_cast<float>(config.default_value), 0.5f);
+    ASSERT_TRUE(config.min.has_value());
+    EXPECT_FLOAT_EQ(static_cast<float>(*config.min), -2.0f);
+    ASSERT_TRUE(config.max.has_value());
+    EXPECT_FLOAT_EQ(static_cast<float>(*config.max), 4.0f);
+}
+
 TEST_F(GraphInputLanesTest, PublicEventPortsCreateAutomaticLanesAndDependency)
 {
     iv::GraphInputLanes lanes;

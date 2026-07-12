@@ -106,7 +106,15 @@ namespace iv {
         void define_scope_event_outputs(std::span<EventOutputRefConfig const> refs);
         std::string node_id(size_t index) const;
         SamplePortRef input();
-        SamplePortRef input(std::string_view name, Sample default_value = 0.0);
+        SamplePortRef input(
+            std::string_view name,
+            Sample default_value = 0.0,
+            std::optional<Sample> min = std::nullopt,
+            std::optional<Sample> max = std::nullopt);
+        SamplePortRef input(
+            Sample default_value,
+            std::optional<Sample> min = std::nullopt,
+            std::optional<Sample> max = std::nullopt);
         EventPortRef event_input(std::string_view name, EventTypeId type);
         EventPortRef event_input(EventTypeId type);
 

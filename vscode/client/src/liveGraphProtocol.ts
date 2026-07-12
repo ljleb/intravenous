@@ -15,6 +15,8 @@ export type SerializedLiveGraphPort = {
     connectivity: string;
     ordinal: number;
     defaultValue: number;
+    minValue: number | null;
+    maxValue: number | null;
     currentValue: number;
     hasConcreteOverride: boolean;
     stateValue: string;

@@ -196,6 +196,8 @@ LogicalPortInfo to_live_port(IntrospectionPortInfo const &port)
         .connectivity = port.connectivity,
         .ordinal = port.ordinal,
         .default_value = port.default_value,
+        .min = port.min,
+        .max = port.max,
         .current_value = port.default_value,
         .sample_channel_type = port.sample_channel_type,
     };

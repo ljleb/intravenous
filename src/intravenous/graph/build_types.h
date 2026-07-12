@@ -26,6 +26,8 @@ namespace iv {
         LogicalPortConnectivity connectivity = LogicalPortConnectivity::disconnected;
         size_t ordinal = 0;
         Sample default_value = 0.0f;
+        std::optional<Sample> min {};
+        std::optional<Sample> max {};
         size_t history = 0;
         size_t latency = 0;
         std::optional<ChannelTypeId> sample_channel_type {};
@@ -39,6 +41,8 @@ namespace iv {
         LogicalPortConnectivity connectivity = LogicalPortConnectivity::disconnected;
         size_t ordinal = 0;
         Sample default_value = 0.0f;
+        std::optional<Sample> min {};
+        std::optional<Sample> max {};
         Sample current_value = 0.0f;
         bool has_concrete_override = false;
         std::optional<ChannelTypeId> sample_channel_type {};

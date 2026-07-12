@@ -39,6 +39,8 @@ namespace iv {
         std::string id;
         std::string name;
         Sample default_value = 0.0f;
+        Sample min = 0.0f;
+        Sample max = 1.0f;
     };
 
     struct JuceVstSchema {
@@ -89,6 +91,8 @@ namespace iv {
                 inputs.push_back(InputConfig{
                     .name = parameter.name,
                     .default_value = parameter.default_value,
+                    .min = parameter.min,
+                    .max = parameter.max,
                 });
             }
             return inputs;

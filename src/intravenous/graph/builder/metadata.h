@@ -20,6 +20,8 @@ namespace iv::details {
         size_t history = 0;
         size_t latency = 0;
         Sample default_value = 0.0f;
+        std::optional<Sample> min {};
+        std::optional<Sample> max {};
     };
 
     struct LogicalConcreteNode {
@@ -96,6 +98,8 @@ namespace iv::details {
                 .connectivity = aggregate_connectivity(concrete_ports),
                 .ordinal = i,
                 .default_value = first_ports[i].default_value,
+                .min = first_ports[i].min,
+                .max = first_ports[i].max,
                 .history = first_ports[i].history,
                 .latency = first_ports[i].latency,
             });

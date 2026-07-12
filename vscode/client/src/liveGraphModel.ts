@@ -293,6 +293,8 @@ function serializePort(
         connectivity,
         ordinal: Number.isInteger(port.ordinal) ? Number(port.ordinal) : index,
         defaultValue: typeof port.defaultValue === "number" ? port.defaultValue : 0,
+        minValue: typeof port.minValue === "number" ? port.minValue : null,
+        maxValue: typeof port.maxValue === "number" ? port.maxValue : null,
         currentValue: typeof port.currentValue === "number" ? port.currentValue : 0,
         hasConcreteOverride: Boolean(port.hasConcreteOverride),
         stateValue,

@@ -102,6 +102,8 @@ LogicalMetadataBuildResult build_logical_metadata(
                 .connected = sample_input_connected(node_i, input_i),
                 .history = inputs[input_i].history,
                 .default_value = inputs[input_i].default_value,
+                .min = inputs[input_i].min,
+                .max = inputs[input_i].max,
             });
         }
 
@@ -162,6 +164,8 @@ LogicalMetadataBuildResult build_logical_metadata(
                 .connected = input_i < scope.sample_input_targets.size() && !scope.sample_input_targets[input_i].empty(),
                 .history = scope.sample_inputs[input_i].history,
                 .default_value = scope.sample_inputs[input_i].default_value,
+                .min = scope.sample_inputs[input_i].min,
+                .max = scope.sample_inputs[input_i].max,
             });
         }
 
