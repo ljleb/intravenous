@@ -20,6 +20,7 @@ struct LaneVisualizationSeries {
     // Sample lanes contribute exactly one level value per visible lane and UI
     // refresh. Raw sample buffers are deliberately not part of this API.
     std::optional<Sample::storage> peak_level {};
+    std::optional<Sample::storage> secondary_peak_level {};
     std::optional<size_t> event_count {};
     std::vector<TimedEvent> events {};
 };

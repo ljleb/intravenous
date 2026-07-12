@@ -45,6 +45,8 @@ export class LaneViewProvider {
             this.contentByLaneId[laneId] = {
                 adapterType: String(content?.adapterType || ""),
                 peakLevel: typeof content?.peakLevel === "number" ? content.peakLevel : null,
+                secondaryPeakLevel: typeof content?.secondaryPeakLevel === "number" ? content.secondaryPeakLevel : null,
+                sampleChannelType: typeof content?.sampleChannelType === "string" ? content.sampleChannelType : "",
                 eventCount: typeof content?.eventCount === "number"
                     ? content.eventCount
                     : Array.isArray(content?.events) ? content.events.length : 0,
@@ -266,7 +268,8 @@ export class LaneViewProvider {
         .lane-viewport {
             position: relative;
             flex: 1 1 auto;
-            overflow: auto;
+            overflow-y: auto;
+            overflow-x: hidden;
             min-height: 80px;
         }
 
@@ -342,6 +345,7 @@ export class LaneViewProvider {
             background: var(--vscode-sideBar-background);
             border-right: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
         }
+        .lane-row.realtime .lane-label { display: none; }
 
         .lane-domain {
             flex: 0 0 auto;
@@ -414,6 +418,7 @@ export class LaneViewProvider {
         .large-meter-grid { position: absolute; inset: 0; pointer-events: none; }
         .large-meter-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--vscode-editorWidget-border, rgba(128,128,128,.4)); }
         .large-meter-tick span { position: absolute; top: 2px; left: 3px; color: var(--vscode-descriptionForeground); font-size: .68em; white-space: nowrap; }
+        .large-meter[data-channel]::after { content: attr(data-channel); position: absolute; z-index: 3; left: 3px; bottom: 1px; font-size: .62em; color: var(--vscode-descriptionForeground); }
         .meter-menu { position: fixed; z-index: 20; padding: 3px; min-width: 130px; background: var(--vscode-menu-background); border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); box-shadow: 0 2px 10px rgba(0,0,0,.35); }
         .meter-menu button { display: block; width: 100%; border: 0; padding: 5px 9px; text-align: left; color: var(--vscode-menu-foreground); background: transparent; cursor: pointer; }
         .meter-menu button:hover { background: var(--vscode-menu-selectionBackground); color: var(--vscode-menu-selectionForeground); }
@@ -665,11 +670,6 @@ export class LaneViewProvider {
 
             laneWindow = document.createElement("div");
             laneWindow.className = "lane-window";
-            laneWindow.addEventListener("pointerdown", (event) => {
-                const bounds = laneWindow.getBoundingClientRect();
-                const x = event.clientX - bounds.left - 164;
-                if (x >= 0) scrubToSample(timelineStart() + x * state.samplesPerPixel);
-            });
             viewport.appendChild(laneWindow);
             root.appendChild(viewport);
 
@@ -775,24 +775,19 @@ export class LaneViewProvider {
             const width = Math.max(1, timelineRuler.clientWidth);
             const samplesPerSecond = 48000;
             const pixelsPerSecond = samplesPerSecond / state.samplesPerPixel;
-            const tickPixels = Math.max(1, pixelsPerSecond);
             const start = rulerStart();
-            const firstSecond = Math.max(0, Math.floor(start / samplesPerSecond));
+            const rulerSteps = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1200, 3600];
+            const secondsPerGraduation = rulerSteps.find((step) => step * pixelsPerSecond >= 72)
+                || rulerSteps[rulerSteps.length - 1];
+            const firstSecond = Math.max(0, Math.ceil(start / samplesPerSecond / secondsPerGraduation) * secondsPerGraduation);
             const lastSecond = Math.ceil((start + width * state.samplesPerPixel) / samplesPerSecond);
-            const subdivision = pixelsPerSecond >= 180 ? 4 : pixelsPerSecond >= 72 ? 2 : 1;
-            for (let second = firstSecond; second <= lastSecond; ++second) {
+            for (let second = firstSecond; second <= lastSecond; second += secondsPerGraduation) {
                 const x = (second * samplesPerSecond - start) / state.samplesPerPixel;
                 const tick = document.createElement("div");
                 tick.className = "timeline-tick";
                 tick.style.left = String(x) + "px";
                 tick.textContent = String(second) + " s";
                 timelineRuler.appendChild(tick);
-                for (let division = 1; division < subdivision; ++division) {
-                    const minor = document.createElement("div");
-                    minor.className = "timeline-tick minor";
-                    minor.style.left = String(x + tickPixels * division / subdivision) + "px";
-                    timelineRuler.appendChild(minor);
-                }
             }
             const cursor = document.createElement("div");
             cursor.className = "playhead";
@@ -825,7 +820,9 @@ export class LaneViewProvider {
                 title.className = "title";
                 title.textContent = lane.title;
                 title.title = lane.description || String(lane.laneId);
-                label.appendChild(title);
+                if (lane.domain === "compiled") {
+                    label.appendChild(title);
+                }
 
                 const content = state.contentByLaneId[String(lane.laneId)];
                 const eventCount = Number(content?.eventCount || 0);
@@ -857,6 +854,8 @@ export class LaneViewProvider {
                     staticFace.appendChild(meterName);
                     const meter = document.createElement("div");
                     meter.className = "large-meter";
+                    const isStereo = content?.sampleChannelType === "stereo";
+                    if (isStereo) meter.dataset.channel = "L";
                     const fill = document.createElement("div");
                     fill.className = "large-meter-fill";
                     const linearLevel = peakLevel != null
@@ -896,6 +895,16 @@ export class LaneViewProvider {
                     }
                     meter.appendChild(grid);
                     staticFace.appendChild(meter);
+                    if (isStereo) {
+                        const rightMeter = meter.cloneNode(true);
+                        rightMeter.dataset.channel = "R";
+                        const rightLevel = Math.max(0, Number(content?.secondaryPeakLevel || 0));
+                        const rightPosition = state.meterGrid === "decibel"
+                            ? halfLogPosition(rightLevel)
+                            : Math.min(1, rightLevel);
+                        rightMeter.querySelector(".large-meter-fill").style.width = String(rightPosition * 100) + "%";
+                        staticFace.appendChild(rightMeter);
+                    }
                     staticFace.addEventListener("contextmenu", (event) => showMeterMenu(event));
                     row.appendChild(staticFace);
                     laneWindow.appendChild(row);

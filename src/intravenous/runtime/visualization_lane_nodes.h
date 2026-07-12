@@ -21,11 +21,16 @@ struct RealtimeSampleBlockQueue {
     // Producer side (task runner thread) — lock-free and allocation-free.
     void push(SampleBlockView<Sample const> block)
     {
-        Sample::storage peak = 0.0f;
-        for (auto const sample : block.samples()) {
-            peak = std::max(peak, std::abs(sample.value));
+        Sample::storage primary = 0.0f;
+        Sample::storage secondary = 0.0f;
+        for (size_t frame = 0; frame < block.frames(); ++frame) {
+            primary = std::max(primary, std::abs(block.get(frame, 0).value));
+            if (block.channels() > 1) {
+                secondary = std::max(secondary, std::abs(block.get(frame, 1).value));
+            }
         }
-        peak_level_.store(peak, std::memory_order_release);
+        peak_level_.store(primary, std::memory_order_release);
+        secondary_peak_level_.store(secondary, std::memory_order_release);
     }
 
     // Consumer side (publisher thread): one scalar per visible lane per UI
@@ -35,13 +40,20 @@ struct RealtimeSampleBlockQueue {
         return peak_level_.load(std::memory_order_acquire);
     }
 
+    [[nodiscard]] Sample::storage secondary_peak_level() const
+    {
+        return secondary_peak_level_.load(std::memory_order_acquire);
+    }
+
     void clear()
     {
         peak_level_.store(0.0f, std::memory_order_release);
+        secondary_peak_level_.store(0.0f, std::memory_order_release);
     }
 
 private:
     std::atomic<Sample::storage> peak_level_ { 0.0f };
+    std::atomic<Sample::storage> secondary_peak_level_ { 0.0f };
 };
 
 struct RealtimeEventBlockQueue {

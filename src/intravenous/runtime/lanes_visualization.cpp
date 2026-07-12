@@ -493,6 +493,9 @@ void LanesVisualization::publish_now()
                     .adapter_type = "level",
                     .sample_channel_type = it->second.sample_channel_type,
                     .peak_level = peak,
+                    .secondary_peak_level = it->second.sample_channel_type == ChannelTypeId::stereo
+                        ? std::optional<Sample::storage>{it->second.queue->secondary_peak_level()}
+                        : std::nullopt,
                 });
             }
 

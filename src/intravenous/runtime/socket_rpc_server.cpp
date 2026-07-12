@@ -106,6 +106,9 @@ Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
         if (lane.peak_level.has_value()) {
             json_lane["peakLevel"] = *lane.peak_level;
         }
+        if (lane.secondary_peak_level.has_value()) {
+            json_lane["secondaryPeakLevel"] = *lane.secondary_peak_level;
+        }
         if (lane.event_count.has_value()) {
             json_lane["eventCount"] = *lane.event_count;
         }
