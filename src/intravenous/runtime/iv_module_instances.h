@@ -33,6 +33,7 @@ struct GraphInputLanesRebuildRequested;
 struct IvModuleInstance {
     std::string instance_id{};
     std::string definition_id{};
+    std::string display_name{};
     std::filesystem::path module_root{};
     std::string module_id{};
     GraphIntrospectionMetadata introspection{};
@@ -63,9 +64,18 @@ struct IvModuleInstanceBuildersChanged {
 };
 
 class IvModuleInstances {
+public:
+    struct Update {
+        std::string instance_id{};
+        std::optional<std::string> display_name{};
+        std::optional<size_t> default_silence_ttl_samples{};
+    };
+
+private:
     struct DesiredInstance {
         std::string instance_id{};
         std::string definition_id{};
+        std::string display_name{};
         std::filesystem::path module_root{};
         std::optional<size_t> default_silence_ttl_samples{};
     };
@@ -83,11 +93,13 @@ public:
     std::string create_instance(
         std::string_view definition_id,
         std::filesystem::path module_root,
-        std::optional<std::string> instance_id = std::nullopt);
+        std::optional<std::string> instance_id = std::nullopt,
+        std::optional<std::string> display_name = std::nullopt);
     void remove_instance(std::string const &instance_id);
     void set_default_silence_ttl_samples(
         std::string const &instance_id,
         size_t default_silence_ttl_samples);
+    void update_instances(std::vector<Update> updates);
     void refresh_source_roots(IvModuleSources const &sources);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
 

@@ -239,19 +239,29 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
     auto instances = iv_module_instances_;
     std::ranges::sort(instances, {}, &IvModuleInstanceInfo::instance_id);
     for (auto const &instance : instances) {
+        auto const &display_name =
+            instance.display_name.empty() ? instance.definition_id : instance.display_name;
         commands.push_back(ProjectCommand{
             .command = "ivModuleInstances.create",
             .args = nlohmann::ordered_json{
                 {"instance_id", instance.instance_id},
                 {"module_id", instance.definition_id},
+                {"display_name", display_name != instance.definition_id
+                    ? nlohmann::ordered_json(display_name)
+                    : nlohmann::ordered_json(nullptr)},
             },
         });
         if (instance.default_silence_ttl_samples.has_value()) {
             commands.push_back(ProjectCommand{
-                .command = "ivModuleInstances.setDefaultSilenceTtlSamples",
+                .command = "ivModuleInstances.update",
                 .args = nlohmann::ordered_json{
-                    {"instance_id", instance.instance_id},
-                    {"default_silence_ttl_samples", *instance.default_silence_ttl_samples},
+                    {"updates", nlohmann::ordered_json::array({
+                        nlohmann::ordered_json{
+                            {"instance_id", instance.instance_id},
+                            {"display_name", nullptr},
+                            {"default_silence_ttl_samples", *instance.default_silence_ttl_samples},
+                        },
+                    })},
                 },
             });
         }

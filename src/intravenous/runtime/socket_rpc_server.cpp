@@ -289,10 +289,10 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_delete_iv_module_instance_event, event_request, builder);
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetIvModuleInstanceDefaultSilenceTtlSamplesRequest>) {
+                    } else if constexpr (std::same_as<Request, UpdateIvModuleInstancesRequest>) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event,
+                            iv_socket_rpc_update_iv_module_instances_event,
                             event_request,
                             builder);
                         response = builder.build(request_id);

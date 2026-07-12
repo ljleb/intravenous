@@ -26,8 +26,8 @@ IV_DEFINE_LINKER_EVENT(
     ProjectDeleteIvModuleInstanceRequestedEvent,
     iv_runtime_project_delete_iv_module_instance_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequestedEvent,
-    iv_runtime_project_set_iv_module_instance_default_silence_ttl_samples_requested_event)
+    ProjectUpdateIvModuleInstancesRequestedEvent,
+    iv_runtime_project_update_iv_module_instances_requested_event)
 IV_DEFINE_LINKER_EVENT(
     ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequestedEvent,
     iv_runtime_project_set_timeline_compiled_sample_cache_chunk_size_multiplier_requested_event)

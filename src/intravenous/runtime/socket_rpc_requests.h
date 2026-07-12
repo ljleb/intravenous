@@ -36,6 +36,7 @@ namespace iv {
 
     struct CreateIvModuleInstanceRequest {
         std::string module_id{};
+        std::optional<std::string> display_name{};
     };
 
     struct GetIvModuleSourcesRequest {};
@@ -52,9 +53,14 @@ namespace iv {
         std::string instance_id{};
     };
 
-    struct SetIvModuleInstanceDefaultSilenceTtlSamplesRequest {
+    struct UpdateIvModuleInstance {
         std::string instance_id{};
-        size_t default_silence_ttl_samples = 0;
+        std::optional<std::string> display_name{};
+        std::optional<size_t> default_silence_ttl_samples{};
+    };
+
+    struct UpdateIvModuleInstancesRequest {
+        std::vector<UpdateIvModuleInstance> updates{};
     };
 
     struct SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest {
@@ -134,7 +140,7 @@ namespace iv {
         CreateIvModuleSourceRequest,
         GetIvModuleInstancesRequest,
         DeleteIvModuleInstanceRequest,
-        SetIvModuleInstanceDefaultSilenceTtlSamplesRequest,
+        UpdateIvModuleInstancesRequest,
         SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest,
         SetTimelineLaneSampleChannelTypeRequest,
         GetAudioDevicesRequest,

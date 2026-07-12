@@ -70,6 +70,7 @@ void handle_create_iv_module_instance(
             iv_runtime_project_create_iv_module_instance_requested_event,
             ProjectCreateIvModuleInstanceRequest{
                 .module_id = request.module_id,
+                .display_name = request.display_name,
             },
             project_builder);
         builder.succeed(project_builder.build());
@@ -96,17 +97,25 @@ void handle_delete_iv_module_instance(
     }
 }
 
-void handle_set_iv_module_instance_default_silence_ttl_samples(
-    SetIvModuleInstanceDefaultSilenceTtlSamplesRequest const &request,
+void handle_update_iv_module_instances(
+    UpdateIvModuleInstancesRequest const &request,
     SocketRpcAckResponseBuilder &builder)
 {
     try {
         ProjectAckBuilder project_builder;
+        std::vector<ProjectUpdateIvModuleInstance> updates;
+        updates.reserve(request.updates.size());
+        for (auto const &update : request.updates) {
+            updates.push_back(ProjectUpdateIvModuleInstance{
+                .instance_id = update.instance_id,
+                .display_name = update.display_name,
+                .default_silence_ttl_samples = update.default_silence_ttl_samples,
+            });
+        }
         IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_iv_module_instance_default_silence_ttl_samples_requested_event,
-            ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequest{
-                .instance_id = request.instance_id,
-                .default_silence_ttl_samples = request.default_silence_ttl_samples,
+            iv_runtime_project_update_iv_module_instances_requested_event,
+            ProjectUpdateIvModuleInstancesRequest{
+                .updates = std::move(updates),
             },
             project_builder);
         project_builder.build();
@@ -150,9 +159,9 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_socket_rpc_delete_iv_module_instance_event,
     handle_delete_iv_module_instance);
 IV_SUBSCRIBE_LINKER_EVENT(
-    SocketRpcSetIvModuleInstanceDefaultSilenceTtlSamplesEvent,
-    iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event,
-    handle_set_iv_module_instance_default_silence_ttl_samples);
+    SocketRpcUpdateIvModuleInstancesEvent,
+    iv_socket_rpc_update_iv_module_instances_event,
+    handle_update_iv_module_instances);
 IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcGetIvModuleInstancesEvent,
     iv_socket_rpc_get_iv_module_instances_event,

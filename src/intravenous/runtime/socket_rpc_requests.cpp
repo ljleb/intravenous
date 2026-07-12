@@ -305,6 +305,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             .request_id = request_id,
             .payload = CreateIvModuleInstanceRequest{
                 .module_id = parse_string_param(params, "moduleId"),
+                .display_name = parse_optional_nullable_string_param(params, "displayName"),
             },
         };
     }
@@ -341,15 +342,31 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
-    if (method == "ivModuleInstances.setDefaultSilenceTtlSamples") {
+    if (method == "ivModuleInstances.update") {
+        auto const updates_it = params.find("updates");
+        if (updates_it == params.end() || !updates_it->is_array()) {
+            throw std::runtime_error("socket rpc params are missing array 'updates'");
+        }
+        std::vector<UpdateIvModuleInstance> updates;
+        updates.reserve(updates_it->size());
+        for (auto const &update : *updates_it) {
+            if (!update.is_object()) {
+                throw std::runtime_error("socket rpc update entry must be an object");
+            }
+            updates.push_back(UpdateIvModuleInstance{
+                .instance_id = parse_string_param(update, "instanceId"),
+                .display_name = parse_optional_nullable_string_param(update, "displayName"),
+                .default_silence_ttl_samples = update.contains("defaultSilenceTtlSamples")
+                    ? std::optional<size_t>{static_cast<size_t>(parse_uint64_param(
+                        update,
+                        "defaultSilenceTtlSamples"))}
+                    : std::nullopt,
+            });
+        }
         return ParsedSocketRpcRequest{
             .request_id = request_id,
-            .payload = SetIvModuleInstanceDefaultSilenceTtlSamplesRequest{
-                .instance_id = parse_string_param(params, "instanceId"),
-                .default_silence_ttl_samples =
-                    static_cast<size_t>(parse_uint64_param(
-                        params,
-                        "defaultSilenceTtlSamples")),
+            .payload = UpdateIvModuleInstancesRequest{
+                .updates = std::move(updates),
             },
         };
     }

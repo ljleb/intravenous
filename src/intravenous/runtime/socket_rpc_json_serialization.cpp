@@ -82,9 +82,12 @@ SocketRpcJson live_source_spans_json(std::vector<LiveSourceSpan> const &spans)
 
 SocketRpcJson iv_module_instance_json(IvModuleInstanceInfo const &instance)
 {
+    auto const &display_name =
+        instance.display_name.empty() ? instance.definition_id : instance.display_name;
     SocketRpcJson json{
         {"instanceId", instance.instance_id},
         {"definitionId", instance.definition_id},
+        {"displayName", display_name},
         {"moduleRoot", instance.module_root.generic_string()},
         {"realized", instance.realized},
     };

@@ -687,10 +687,15 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRe
     write_text(
         workspace / "iv_project.jsonl",
         Json{
-            {"command", "ivModuleInstances.setDefaultSilenceTtlSamples"},
+            {"command", "ivModuleInstances.update"},
             {"args", Json{
-                {"instance_id", "missing"},
-                {"default_silence_ttl_samples", 32},
+                {"updates", Json::array({
+                    Json{
+                        {"instance_id", "missing"},
+                        {"display_name", nullptr},
+                        {"default_silence_ttl_samples", 32},
+                    },
+                })},
             }},
         }.dump() + "\n" +
         Json{
@@ -744,10 +749,15 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
             }},
         }.dump() + "\n" +
         Json{
-            {"command", "ivModuleInstances.setDefaultSilenceTtlSamples"},
+            {"command", "ivModuleInstances.update"},
             {"args", Json{
-                {"instance_id", "missing"},
-                {"default_silence_ttl_samples", 32},
+                {"updates", Json::array({
+                    Json{
+                        {"instance_id", "missing"},
+                        {"display_name", nullptr},
+                        {"default_silence_ttl_samples", 32},
+                    },
+                })},
             }},
         }.dump() + "\n" +
         Json{

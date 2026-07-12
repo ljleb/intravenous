@@ -275,20 +275,38 @@ TEST(SocketRpcRequestParser, ParsesPlaybackResumeRequest)
 TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":26,"method":"ivModuleInstances.create","params":{"moduleId":"iv.test.mod"}})");
+        R"({"jsonrpc":"2.0","id":26,"method":"ivModuleInstances.create","params":{"moduleId":"iv.test.mod","displayName":"Bass"}})");
 
     EXPECT_EQ(parsed.request_id, 26);
     auto const *request = std::get_if<iv::CreateIvModuleInstanceRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
     EXPECT_EQ(request->module_id, "iv.test.mod");
+    ASSERT_TRUE(request->display_name.has_value());
+    EXPECT_EQ(*request->display_name, "Bass");
+}
+
+TEST(SocketRpcRequestParser, ParsesUpdateIvModuleInstancesRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":27,"method":"ivModuleInstances.update","params":{"updates":[{"instanceId":"instance:1","displayName":"Lead","defaultSilenceTtlSamples":64}]}})");
+
+    EXPECT_EQ(parsed.request_id, 27);
+    auto const *request = std::get_if<iv::UpdateIvModuleInstancesRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    ASSERT_EQ(request->updates.size(), 1u);
+    EXPECT_EQ(request->updates.front().instance_id, "instance:1");
+    ASSERT_TRUE(request->updates.front().display_name.has_value());
+    EXPECT_EQ(*request->updates.front().display_name, "Lead");
+    ASSERT_TRUE(request->updates.front().default_silence_ttl_samples.has_value());
+    EXPECT_EQ(*request->updates.front().default_silence_ttl_samples, 64u);
 }
 
 TEST(SocketRpcRequestParser, ParsesDeleteIvModuleInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":27,"method":"ivModuleInstances.delete","params":{"instanceId":"instance:1"}})");
+        R"({"jsonrpc":"2.0","id":28,"method":"ivModuleInstances.delete","params":{"instanceId":"instance:1"}})");
 
-    EXPECT_EQ(parsed.request_id, 27);
+    EXPECT_EQ(parsed.request_id, 28);
     auto const *request = std::get_if<iv::DeleteIvModuleInstanceRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
     EXPECT_EQ(request->instance_id, "instance:1");

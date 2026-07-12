@@ -26,7 +26,8 @@ void handle_create_iv_module_instance(
     builder.succeed(bound_iv_module_instances->create_instance(
         source->module_id,
         source->module_root,
-        request.instance_id));
+        request.instance_id,
+        request.display_name));
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
@@ -42,16 +43,23 @@ void handle_delete_iv_module_instance(
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void handle_set_iv_module_instance_default_silence_ttl_samples(
-    ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequest const &request,
+void handle_update_iv_module_instances(
+    ProjectUpdateIvModuleInstancesRequest const &request,
     ProjectAckBuilder &builder)
 {
     if (bound_iv_module_instances == nullptr) {
         return;
     }
-    bound_iv_module_instances->set_default_silence_ttl_samples(
-        request.instance_id,
-        request.default_silence_ttl_samples);
+    std::vector<IvModuleInstances::Update> updates;
+    updates.reserve(request.updates.size());
+    for (auto const &update : request.updates) {
+        updates.push_back(IvModuleInstances::Update{
+            .instance_id = update.instance_id,
+            .display_name = update.display_name,
+            .default_silence_ttl_samples = update.default_silence_ttl_samples,
+        });
+    }
+    bound_iv_module_instances->update_instances(std::move(updates));
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
@@ -65,9 +73,9 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_runtime_project_delete_iv_module_instance_requested_event,
     handle_delete_iv_module_instance);
 IV_SUBSCRIBE_LINKER_EVENT(
-    ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequestedEvent,
-    iv_runtime_project_set_iv_module_instance_default_silence_ttl_samples_requested_event,
-    handle_set_iv_module_instance_default_silence_ttl_samples);
+    ProjectUpdateIvModuleInstancesRequestedEvent,
+    iv_runtime_project_update_iv_module_instances_requested_event,
+    handle_update_iv_module_instances);
 IV_SUBSCRIBE_LINKER_EVENT(
     ProjectPersistenceCollectStateEvent,
     iv_runtime_project_persistence_collect_state_event,

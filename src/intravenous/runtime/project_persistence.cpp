@@ -20,6 +20,18 @@ std::string require_string(Json const &args, std::string const &key)
     return it->get<std::string>();
 }
 
+std::optional<std::string> optional_nullable_string(Json const &args, std::string const &key)
+{
+    auto const it = args.find(key);
+    if (it == args.end() || it->is_null()) {
+        return std::nullopt;
+    }
+    if (!it->is_string()) {
+        throw std::runtime_error("command args key '" + key + "' must be a string or null");
+    }
+    return it->get<std::string>();
+}
+
 std::optional<InternedString> optional_interned_string(Json const &args, std::string const &key)
 {
     auto const it = args.find(key);
@@ -362,19 +374,37 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
             ProjectCreateIvModuleInstanceRequest{
                 .instance_id = require_string(args, "instance_id"),
                 .module_id = require_string(args, "module_id"),
+                .display_name = optional_nullable_string(args, "display_name"),
             },
             builder);
         (void)builder.build();
         return;
     }
 
-    if (command.command == "ivModuleInstances.setDefaultSilenceTtlSamples") {
+    if (command.command == "ivModuleInstances.update") {
+        auto const updates_it = args.find("updates");
+        if (updates_it == args.end() || !updates_it->is_array()) {
+            throw std::runtime_error("command args are missing array key 'updates'");
+        }
+        std::vector<ProjectUpdateIvModuleInstance> updates;
+        updates.reserve(updates_it->size());
+        for (auto const &update : *updates_it) {
+            if (!update.is_object()) {
+                throw std::runtime_error("command update entry must be an object");
+            }
+            updates.push_back(ProjectUpdateIvModuleInstance{
+                .instance_id = require_string(update, "instance_id"),
+                .display_name = optional_nullable_string(update, "display_name"),
+                .default_silence_ttl_samples = update.contains("default_silence_ttl_samples")
+                    ? std::optional<size_t>{require_size(update, "default_silence_ttl_samples")}
+                    : std::nullopt,
+            });
+        }
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_iv_module_instance_default_silence_ttl_samples_requested_event,
-            ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequest{
-                .instance_id = require_string(args, "instance_id"),
-                .default_silence_ttl_samples = require_size(args, "default_silence_ttl_samples"),
+            iv_runtime_project_update_iv_module_instances_requested_event,
+            ProjectUpdateIvModuleInstancesRequest{
+                .updates = std::move(updates),
             },
             builder);
         builder.build();

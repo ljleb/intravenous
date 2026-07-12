@@ -423,6 +423,7 @@ export function serializeLiveGraphNodes(nodes: LogicalNode[]): SerializedLiveGra
 export type LiveGraphInstance = {
     instanceId: string;
     definitionId?: string;
+    displayName?: string;
     moduleId?: string;
     moduleRoot?: string;
     realized?: boolean;
@@ -438,7 +439,7 @@ export function serializeLiveGraphInstances(instances: LiveGraphInstance[]): Ser
             moduleId,
             moduleRoot: instance.moduleRoot || "",
             realized: Boolean(instance.realized),
-            label: moduleId ? `${moduleId} • ${instanceId}` : instanceId,
+            label: instance.displayName || (moduleId ? `${moduleId} • ${instanceId}` : instanceId),
         };
     });
 }

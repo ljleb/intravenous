@@ -20,12 +20,22 @@ export class WorkspaceRpc {
         return this.client.request("ivModuleInstances.get", sourceFilePath ? { sourceFilePath } : {});
     }
 
-    createIvModuleInstance(moduleId: string): Promise<{ instanceId: string }> {
-        return this.client.request("ivModuleInstances.create", { moduleId });
+    createIvModuleInstance(moduleId: string, displayName: string | null = null): Promise<{ instanceId: string }> {
+        const params: Record<string, unknown> = { moduleId };
+        if (displayName != null) {
+            params.displayName = displayName;
+        }
+        return this.client.request("ivModuleInstances.create", params);
     }
 
     deleteIvModuleInstance(instanceId: string): Promise<void> {
         return this.client.request("ivModuleInstances.delete", { instanceId });
+    }
+
+    updateIvModuleInstances(
+        updates: Array<{ instanceId: string; displayName?: string | null; defaultSilenceTtlSamples?: number | null }>,
+    ): Promise<void> {
+        return this.client.request("ivModuleInstances.update", { updates });
     }
 
     getIvModuleSources(): Promise<{ sources?: Array<Record<string, unknown>> }> {

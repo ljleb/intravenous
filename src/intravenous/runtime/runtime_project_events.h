@@ -58,15 +58,21 @@ namespace iv {
     struct ProjectCreateIvModuleInstanceRequest {
         std::optional<std::string> instance_id {};
         std::string module_id {};
+        std::optional<std::string> display_name {};
     };
 
     struct ProjectDeleteIvModuleInstanceRequest {
         std::string instance_id {};
     };
 
-    struct ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequest {
+    struct ProjectUpdateIvModuleInstance {
         std::string instance_id {};
-        size_t default_silence_ttl_samples = 0;
+        std::optional<std::string> display_name {};
+        std::optional<size_t> default_silence_ttl_samples {};
+    };
+
+    struct ProjectUpdateIvModuleInstancesRequest {
+        std::vector<ProjectUpdateIvModuleInstance> updates {};
     };
 
     struct ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequest {
@@ -206,8 +212,8 @@ namespace iv {
         void (*)(ProjectCreateIvModuleInstanceRequest const &, ProjectStringBuilder &);
     using ProjectDeleteIvModuleInstanceRequestedEvent =
         void (*)(ProjectDeleteIvModuleInstanceRequest const &, ProjectAckBuilder &);
-    using ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequestedEvent =
-        void (*)(ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequest const &, ProjectAckBuilder &);
+    using ProjectUpdateIvModuleInstancesRequestedEvent =
+        void (*)(ProjectUpdateIvModuleInstancesRequest const &, ProjectAckBuilder &);
     using ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequestedEvent =
         void (*)(ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &, ProjectAckBuilder &);
     using ProjectSetTimelineLaneSampleChannelTypeRequestedEvent =
@@ -265,8 +271,8 @@ namespace iv {
         ProjectDeleteIvModuleInstanceRequestedEvent,
         iv_runtime_project_delete_iv_module_instance_requested_event);
     IV_DECLARE_LINKER_EVENT(
-        ProjectSetIvModuleInstanceDefaultSilenceTtlSamplesRequestedEvent,
-        iv_runtime_project_set_iv_module_instance_default_silence_ttl_samples_requested_event);
+        ProjectUpdateIvModuleInstancesRequestedEvent,
+        iv_runtime_project_update_iv_module_instances_requested_event);
     IV_DECLARE_LINKER_EVENT(
         ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequestedEvent,
         iv_runtime_project_set_timeline_compiled_sample_cache_chunk_size_multiplier_requested_event);

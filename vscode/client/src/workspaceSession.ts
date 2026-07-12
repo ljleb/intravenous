@@ -55,6 +55,7 @@ type LaneViewUpdatedNotification = Record<string, unknown> & {
 type IvModuleInstanceInfo = {
     instanceId?: string;
     definitionId?: string;
+    displayName?: string;
     moduleId?: string;
     moduleRoot?: string;
     realized?: boolean;
@@ -288,6 +289,9 @@ export class WorkspaceSession {
             return [{
                 instanceId: instance.instanceId,
                 definitionId: instance.definitionId,
+                displayName: typeof instance.displayName === "string" && instance.displayName.length > 0
+                    ? instance.displayName
+                    : instance.definitionId,
                 moduleId: instance.moduleId,
                 moduleRoot: instance.moduleRoot,
                 realized: instance.realized === true,
@@ -580,7 +584,7 @@ export class WorkspaceSession {
                 message.instanceId ?? null,
             );
             this.rememberSelectedInstance();
-            this.provider.setSelectedInstanceId(this.selectedInstanceId);
+            this.syncSelectedInstanceViews();
             await this.refreshActiveEditorSelection();
             return;
 
@@ -691,10 +695,17 @@ export class WorkspaceSession {
             await this.refreshModulesPanel();
             return;
         }
-        case "select":
+        case "open":
             this.selectedInstanceId = message.instanceId;
-            this.provider.setSelectedInstanceId(this.selectedInstanceId);
+            this.syncSelectedInstanceViews();
             await this.revealModuleSource(message.moduleRoot);
+            await this.refreshModulesPanel();
+            return;
+        case "rename":
+            await this.rpc.updateIvModuleInstances([{
+                instanceId: message.instanceId,
+                displayName: message.displayName,
+            }]);
             await this.refreshModulesPanel();
             return;
         case "delete":
@@ -788,7 +799,7 @@ export class WorkspaceSession {
         this.selectedInstanceId = this.resolveSelectedInstanceId(instances, remembered || this.selectedInstanceId);
         this.rememberSelectedInstance();
         this.provider.setInstances(instances);
-        this.provider.setSelectedInstanceId(this.selectedInstanceId);
+        this.syncSelectedInstanceViews();
     }
 
     private rememberSelectedInstance(): void {
@@ -796,6 +807,11 @@ export class WorkspaceSession {
         if (this.activeSourceFilePath && selected?.instanceId) {
             this.selectedInstanceIdBySourceFile.set(this.activeSourceFilePath, selected.instanceId);
         }
+    }
+
+    private syncSelectedInstanceViews(): void {
+        this.provider.setSelectedInstanceId(this.selectedInstanceId);
+        this.refreshModulesPanelState();
     }
 
     async pausePlayback(): Promise<void> {

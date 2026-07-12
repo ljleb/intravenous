@@ -28,11 +28,13 @@ std::filesystem::path normalize_path(std::filesystem::path const &path)
 IvModuleInstance make_instance_from_definition(
     IvModuleDefinition const &definition,
     std::string const &instance_id,
+    std::string const &display_name,
     std::optional<size_t> default_silence_ttl_samples)
 {
     IvModuleInstance instance{};
     instance.instance_id = instance_id;
     instance.definition_id = definition.definition_id;
+    instance.display_name = display_name;
     instance.module_root = definition.module_root;
     instance.module_id = definition.module_id;
     instance.introspection = definition.introspection;
@@ -55,12 +57,17 @@ void emit_debug_message(std::string message)
 std::string IvModuleInstances::create_instance(
     std::string_view definition_id,
     std::filesystem::path module_root,
-    std::optional<std::string> requested_instance_id)
+    std::optional<std::string> requested_instance_id,
+    std::optional<std::string> requested_display_name)
 {
     IvModuleRequiredDefinitionsChanged required_diff{};
     bool list_changed = false;
     auto normalized_root = normalize_path(module_root);
     auto const definition_key = std::string(definition_id);
+    auto display_name = requested_display_name.value_or(definition_key);
+    if (display_name.empty()) {
+        display_name = definition_key;
+    }
     std::string instance_id{};
 
     {
@@ -76,6 +83,7 @@ std::string IvModuleInstances::create_instance(
         desired_instances_by_id.emplace(instance_id, DesiredInstance{
             .instance_id = instance_id,
             .definition_id = definition_key,
+            .display_name = display_name,
             .module_root = normalized_root,
         });
         list_changed = true;
@@ -181,36 +189,86 @@ void IvModuleInstances::set_default_silence_ttl_samples(
     std::string const &instance_id,
     size_t default_silence_ttl_samples)
 {
+    update_instances({Update{
+        .instance_id = instance_id,
+        .default_silence_ttl_samples = default_silence_ttl_samples,
+    }});
+}
+
+void IvModuleInstances::update_instances(std::vector<Update> updates)
+{
+    IvModuleInstancesChanged instance_diff{};
     IvModuleInstanceBuildersChanged builders_diff{};
+    bool list_changed = false;
 
     {
         std::scoped_lock lock(mutex);
-        auto desired = desired_instances_by_id.find(instance_id);
-        if (desired == desired_instances_by_id.end()) {
-            throw std::runtime_error("unknown iv module instance id: " + instance_id);
-        }
+        for (auto const &update : updates) {
+            auto desired = desired_instances_by_id.find(update.instance_id);
+            if (desired == desired_instances_by_id.end()) {
+                throw std::runtime_error("unknown iv module instance id: " + update.instance_id);
+            }
 
-        desired->second.default_silence_ttl_samples = default_silence_ttl_samples;
+            bool realized_changed = false;
+            auto realized = realized_instances_by_id.find(update.instance_id);
 
-        if (auto realized = realized_instances_by_id.find(instance_id);
-            realized != realized_instances_by_id.end()) {
-            realized->second.default_silence_ttl_samples = default_silence_ttl_samples;
-            auto builder_it = realized_builders_by_id.find(instance_id);
-            if (builder_it != realized_builders_by_id.end()) {
-                builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
-                    .instance = &realized->second,
-                    .builder = &builder_it->second,
-                    .module_refs = realized_module_refs_by_id[instance_id],
-                    .default_silence_ttl_samples = default_silence_ttl_samples,
-                });
+            if (update.display_name.has_value()) {
+                auto next_display_name = *update.display_name;
+                if (next_display_name.empty()) {
+                    next_display_name = desired->second.definition_id;
+                }
+                if (desired->second.display_name != next_display_name) {
+                    desired->second.display_name = std::move(next_display_name);
+                    list_changed = true;
+                    if (realized != realized_instances_by_id.end()) {
+                        realized->second.display_name = desired->second.display_name;
+                        realized_changed = true;
+                    }
+                }
+            }
+
+            if (update.default_silence_ttl_samples.has_value()) {
+                desired->second.default_silence_ttl_samples =
+                    update.default_silence_ttl_samples;
+                list_changed = true;
+                if (realized != realized_instances_by_id.end()) {
+                    realized->second.default_silence_ttl_samples =
+                        update.default_silence_ttl_samples;
+                    auto builder_it = realized_builders_by_id.find(update.instance_id);
+                    if (builder_it != realized_builders_by_id.end()) {
+                        builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
+                            .instance = &realized->second,
+                            .builder = &builder_it->second,
+                            .module_refs = realized_module_refs_by_id[update.instance_id],
+                            .default_silence_ttl_samples =
+                                update.default_silence_ttl_samples,
+                        });
+                    }
+                }
+            }
+
+            if (realized_changed && realized != realized_instances_by_id.end()) {
+                instance_diff.updated.push_back(realized->second);
             }
         }
     }
 
+    if (!instance_diff.created.empty() ||
+        !instance_diff.updated.empty() ||
+        !instance_diff.deleted_instance_ids.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instances_changed_event,
+            instance_diff);
+    }
     if (!builders_diff.updated.empty()) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_instance_builders_completed_event,
             builders_diff);
+    }
+    if (list_changed) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instances_list_changed_event,
+            list_instances());
     }
 }
 
@@ -275,6 +333,7 @@ std::vector<IvModuleInstanceInfo> IvModuleInstances::list_instances() const
         auto info = IvModuleInstanceInfo{
             .instance_id = entry.second.instance_id,
             .definition_id = entry.second.definition_id,
+            .display_name = entry.second.display_name,
             .module_root = entry.second.module_root,
             .default_silence_ttl_samples = entry.second.default_silence_ttl_samples,
         };
@@ -310,6 +369,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 auto instance = make_instance_from_definition(
                     definition,
                     entry.second.instance_id,
+                    entry.second.display_name,
                     entry.second.default_silence_ttl_samples);
                 auto &stored_instance = realized_instances_by_id[entry.second.instance_id];
                 stored_instance = instance;
@@ -339,6 +399,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                 auto instance = make_instance_from_definition(
                     definition,
                     entry.second.instance_id,
+                    entry.second.display_name,
                     entry.second.default_silence_ttl_samples);
                 auto &stored_instance = realized_instances_by_id[entry.second.instance_id];
                 stored_instance = instance;

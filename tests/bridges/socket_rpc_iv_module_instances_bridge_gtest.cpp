@@ -118,10 +118,12 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
 
     iv::SocketRpcAckResponseBuilder ttl_builder;
     IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_set_iv_module_instance_default_silence_ttl_samples_event,
-        iv::SetIvModuleInstanceDefaultSilenceTtlSamplesRequest{
-            .instance_id = created_instance_id,
-            .default_silence_ttl_samples = 1234,
+        iv::iv_socket_rpc_update_iv_module_instances_event,
+        iv::UpdateIvModuleInstancesRequest{
+            .updates = {iv::UpdateIvModuleInstance{
+                .instance_id = created_instance_id,
+                .default_silence_ttl_samples = 1234,
+            }},
         },
         ttl_builder);
     auto const ttl_response = parse_json_line(ttl_builder.build(4));
