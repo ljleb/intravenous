@@ -194,6 +194,37 @@ TEST(IvModuleInstancesExecution, ResumeResetsBlockIndexWhileOngoingTicksKeepAdva
     EXPECT_EQ(indices, (std::vector<size_t>{0u, 8u, 64u, 72u}));
 }
 
+TEST(IvModuleInstancesExecution, PausedPreviewIgnoresTransportPlayheadUntilFollowingResumes)
+{
+    iv::IvModuleInstancesExecution execution(8, false);
+    auto instance = make_instance("instance:1");
+    iv::GraphBuilder builder;
+    std::vector<size_t> indices;
+    (void)builder.node<IndexRecordingNode>(&indices);
+    builder.outputs();
+
+    auto update = execution.handle_instance_builders_changed(
+        iv::IvModuleInstanceBuildersChanged {
+            .created = {
+                iv::IvModuleInstanceBuilderRef {
+                    .instance = &instance,
+                    .builder = &builder,
+                },
+            },
+        });
+    auto const callback = update.update.to_create[0].callback;
+    callback.invoke(callback.context);
+
+    execution.synchronize_transport_playhead(128);
+    callback.invoke(callback.context);
+
+    execution.set_follows_transport_playhead(true);
+    execution.synchronize_transport_playhead(128);
+    callback.invoke(callback.context);
+
+    EXPECT_EQ(indices, (std::vector<size_t>{0u, 8u, 128u}));
+}
+
 TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecutorRelease)
 {
     iv::IvModuleInstancesExecution execution(8);

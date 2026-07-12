@@ -165,4 +165,22 @@ void IvModuleInstancesExecution::resume(size_t start_index)
         state.next_block_index = start_index;
     }
 }
+
+void IvModuleInstancesExecution::set_follows_transport_playhead(bool follows)
+{
+    std::scoped_lock lock(mutex_);
+    follows_transport_playhead_ = follows;
+}
+
+void IvModuleInstancesExecution::synchronize_transport_playhead(size_t start_index)
+{
+    std::scoped_lock lock(mutex_);
+    if (!follows_transport_playhead_) {
+        return;
+    }
+    for (auto &[instance_id, state] : instances_by_id_) {
+        (void)instance_id;
+        state.next_block_index = start_index;
+    }
+}
 }

@@ -22,7 +22,8 @@ class TimelineExecution {
 public:
     explicit TimelineExecution(
         size_t block_size,
-        size_t compiled_sample_cache_chunk_size_multiplier = 16);
+        size_t compiled_sample_cache_chunk_size_multiplier = 16,
+        bool initially_paused = false);
 
     VersionedTaskGraphUpdate synchronize_from_graph(LaneGraph const &graph);
     VersionedTaskGraphUpdate handle_timeline_lanes_changed(TimelineLanesChanged const &change);
@@ -31,6 +32,7 @@ public:
     void pause();
     void resume(size_t start_index);
     void seek(size_t sample_index);
+    [[nodiscard]] size_t last_scrubbed_index() const;
     [[nodiscard]] bool is_paused() const;
     void set_realtime_start_index(size_t start_index);
     [[nodiscard]] size_t realtime_start_index() const;
@@ -97,6 +99,7 @@ private:
     std::unordered_map<LaneId, CompiledSampleChunkCache, LaneIdHash> compiled_sample_cache_;
     std::unordered_map<LaneId, CompiledEventCacheEntry, LaneIdHash> compiled_event_cache_;
     size_t current_start_index_ = 0;
+    size_t last_scrubbed_index_ = 0;
     bool paused_ = false;
 
     static void invoke_lane_task(void *context);

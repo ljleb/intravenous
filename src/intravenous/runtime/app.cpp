@@ -206,8 +206,11 @@ namespace iv {
             startup_log("constructing runtime modules");
             TimelineExecution timeline_execution(
                 startup.execution.block_size,
-                startup.execution.compiled_sample_cache_chunk_size_multiplier);
-            IvModuleInstancesExecution iv_module_instances_execution(startup.execution.block_size);
+                startup.execution.compiled_sample_cache_chunk_size_multiplier,
+                true);
+            IvModuleInstancesExecution iv_module_instances_execution(
+                startup.execution.block_size,
+                false);
             AudioDeviceLanes audio_device_lanes(
                 startup.execution.sample_rate,
                 startup.execution.block_size,

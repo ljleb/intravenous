@@ -71,6 +71,7 @@ void handle_pause(PauseRequest const &)
         return;
     }
     bound_execution->pause();
+    bound_execution->seek(bound_execution->last_scrubbed_index());
     emit_debug_message("timeline paused");
 }
 
@@ -79,13 +80,14 @@ void handle_resume(ResumeRequest const &request)
     if (!bound_execution) {
         return;
     }
-    bound_execution->resume(request.start_index);
+    auto const start_index = request.start_index;
+    bound_execution->resume(start_index);
     emit_debug_message(
-        "timeline resumed: startIndex=" + std::to_string(request.start_index));
+        "timeline resumed: startIndex=" + std::to_string(start_index));
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_timeline_execution_resumed_event,
         TimelineExecutionResumed{
-            .start_index = request.start_index,
+            .start_index = start_index,
         });
 }
 
@@ -94,13 +96,16 @@ void handle_seek(SeekRequest const &request)
     if (!bound_execution) {
         return;
     }
+    bool const was_paused = bound_execution->is_paused();
     bound_execution->seek(request.sample_index);
-    // Seeking establishes a new DSP timeline origin, just like resuming at a
-    // position. Dependent graph/module execution must discard state tied to
-    // the previous origin before the next realtime pass.
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_timeline_execution_resumed_event,
-        TimelineExecutionResumed{ .start_index = request.sample_index });
+    if (!was_paused) {
+        // While transport is running, the DSP graph follows its timeline
+        // origin. A paused transport deliberately leaves module preview
+        // execution on its independent playhead until the next resume.
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_timeline_execution_resumed_event,
+            TimelineExecutionResumed{ .start_index = request.sample_index });
+    }
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(

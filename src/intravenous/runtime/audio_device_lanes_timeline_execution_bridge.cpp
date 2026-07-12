@@ -25,6 +25,17 @@ void handle_seek(SeekRequest const &request)
     }
 }
 
+void handle_timeline_resumed(TimelineExecutionResumed const &resumed)
+{
+    if (bound_audio_device_lanes != nullptr) {
+        bound_audio_device_lanes->seek_realtime_start_index(resumed.start_index);
+    }
+}
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    TimelineExecutionResumedEvent,
+    iv_runtime_timeline_execution_resumed_event,
+    handle_timeline_resumed);
 IV_SUBSCRIBE_LINKER_EVENT(
     SeekEvent,
     iv_runtime_seek_event,

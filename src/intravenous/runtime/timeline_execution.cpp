@@ -173,8 +173,10 @@ std::vector<CompiledSupportChunkRange> derive_chunk_ranges(
 
 TimelineExecution::TimelineExecution(
     size_t block_size,
-    size_t compiled_sample_cache_chunk_size_multiplier) :
-    block_size_(block_size)
+    size_t compiled_sample_cache_chunk_size_multiplier,
+    bool initially_paused) :
+    block_size_(block_size),
+    paused_(initially_paused)
 {
     if (block_size_ == 0) {
         throw std::runtime_error("timeline execution block size must be > 0");
@@ -330,6 +332,13 @@ void TimelineExecution::seek(size_t sample_index)
 {
     std::scoped_lock lock(mutex_);
     current_start_index_ = sample_index;
+    last_scrubbed_index_ = sample_index;
+}
+
+size_t TimelineExecution::last_scrubbed_index() const
+{
+    std::scoped_lock lock(mutex_);
+    return last_scrubbed_index_;
 }
 
 bool TimelineExecution::is_paused() const

@@ -106,6 +106,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             outputChannel.appendLine(`Intravenous pause failed: ${error.message}`);
         }
     }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.togglePlayback", async () => {
+        try {
+            await session.togglePlayback();
+        } catch (error) {
+            outputChannel.appendLine(`Intravenous playback toggle failed: ${error.message}`);
+        }
+    }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.saveProject", async () => {
         try {
             await session.saveProject();

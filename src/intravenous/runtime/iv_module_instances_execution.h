@@ -27,6 +27,7 @@ class IvModuleInstancesExecution {
     };
 
     size_t block_size_ = 256;
+    bool follows_transport_playhead_ = true;
     mutable std::mutex mutex_;
     std::unordered_map<std::string, InstanceTaskState> instances_by_id_;
     std::unordered_map<std::string, std::unique_ptr<InstanceTaskContext>> callback_contexts_;
@@ -38,12 +39,17 @@ class IvModuleInstancesExecution {
         std::optional<size_t> default_silence_ttl_samples);
 
 public:
-    explicit IvModuleInstancesExecution(size_t block_size = 256)
-      : block_size_(block_size)
+    explicit IvModuleInstancesExecution(
+        size_t block_size = 256,
+        bool initially_follows_transport_playhead = true)
+      : block_size_(block_size),
+        follows_transport_playhead_(initially_follows_transport_playhead)
     {}
 
     VersionedTaskGraphUpdate handle_instance_builders_changed(
         IvModuleInstanceBuildersChanged const &diff);
     void resume(size_t start_index);
+    void set_follows_transport_playhead(bool follows);
+    void synchronize_transport_playhead(size_t start_index);
 };
 }

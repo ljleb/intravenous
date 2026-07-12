@@ -79,6 +79,10 @@
                 "title": "Intravenous: Pause Playback"
             },
             {
+                "command": "intravenous.togglePlayback",
+                "title": "Intravenous: Toggle Playback"
+            },
+            {
                 "command": "intravenous.saveProject",
                 "title": "Intravenous: Save Project Now"
             },
@@ -89,6 +93,12 @@
             {
                 "command": "intravenous.disableProjectAutosave",
                 "title": "Intravenous: Disable Project Autosave"
+            }
+        ],
+        "keybindings": [
+            {
+                "command": "intravenous.togglePlayback",
+                "key": "shift+space"
             }
         ]
     }

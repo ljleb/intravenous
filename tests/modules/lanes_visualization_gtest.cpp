@@ -1,6 +1,7 @@
 #include <intravenous/runtime/lanes_visualization.h>
 
 #include <intravenous/runtime/lanes_visualization_events.h>
+#include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/task_runner_events.h>
 
 #include <gtest/gtest.h>

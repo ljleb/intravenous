@@ -95,6 +95,8 @@ export class WorkspaceSession {
     private lastTerminalStatusMessage = "";
     private readonly laneViewId = `lanes-${crypto.randomBytes(8).toString("hex")}`;
     private laneViewOpen = false;
+    private playbackPaused = true;
+    private lastScrubbedSampleIndex = 0;
     private serverStdoutLines: string[] = [];
     private serverStderrLines: string[] = [];
     private readonly maxCapturedServerLogLines = 20;
@@ -849,6 +851,7 @@ export class WorkspaceSession {
             return;
         }
         await this.rpc.pausePlayback();
+        this.playbackPaused = true;
     }
 
     async resumePlayback(startIndex = 0): Promise<void> {
@@ -856,11 +859,21 @@ export class WorkspaceSession {
             return;
         }
         await this.rpc.resumePlayback(startIndex);
+        this.playbackPaused = false;
+    }
+
+    async togglePlayback(): Promise<void> {
+        if (this.playbackPaused) {
+            await this.resumePlayback(this.lastScrubbedSampleIndex);
+        } else {
+            await this.pausePlayback();
+        }
     }
 
     async seekPlayback(sampleIndex: number): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
         await this.rpc.seekPlayback(sampleIndex);
+        this.lastScrubbedSampleIndex = sampleIndex;
     }
 
     async saveProject(): Promise<void> {

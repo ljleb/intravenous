@@ -595,6 +595,16 @@ TEST(TimelineExecution, PausePinsRealtimeStartIndexUntilResume)
     EXPECT_EQ(compiled_ticks, 1);
 }
 
+TEST(TimelineExecution, CanBeConstructedPaused)
+{
+    iv::TimelineExecution execution(4, 16, true);
+
+    EXPECT_TRUE(execution.is_paused());
+    execution.resume(24);
+    EXPECT_FALSE(execution.is_paused());
+    EXPECT_EQ(execution.realtime_start_index(), 24u);
+}
+
 TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
 {
     iv::Timeline timeline;

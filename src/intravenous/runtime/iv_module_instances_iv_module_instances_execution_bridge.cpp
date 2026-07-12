@@ -59,7 +59,23 @@ IV_SUBSCRIBE_LINKER_EVENT(
             // device's timeline origin. When transport is paused this event
             // stops, so module preview execution keeps its own advancing
             // playhead.
-            bound_execution->resume(start_index);
+            bound_execution->synchronize_transport_playhead(start_index);
+        }
+    });
+IV_SUBSCRIBE_LINKER_EVENT(
+    PauseEvent,
+    iv_runtime_pause_event,
+    +[](PauseRequest const &) {
+        if (bound_execution) {
+            bound_execution->set_follows_transport_playhead(false);
+        }
+    });
+IV_SUBSCRIBE_LINKER_EVENT(
+    ResumeEvent,
+    iv_runtime_resume_event,
+    +[](ResumeRequest const &) {
+        if (bound_execution) {
+            bound_execution->set_follows_transport_playhead(true);
         }
     });
 IV_SUBSCRIBE_LINKER_EVENT(
