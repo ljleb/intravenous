@@ -187,6 +187,9 @@ namespace {
         if (qualified_name == "iv::PublicSampleInputRef") {
             return "iv::_annotate_public_input_source_info";
         }
+        if (qualified_name == "iv::PublicEventInputRef") {
+            return "iv::_annotate_public_event_input_source_info";
+        }
         if (qualified_name == "iv::NodeRef"
             || qualified_name == "iv::TypedNodeRef"
             || qualified_name == "iv::StructuredNodeRef") {
@@ -373,7 +376,8 @@ namespace {
             }
             auto const name = callee->getQualifiedNameAsString();
             return name == "iv::_annotate_node_source_info"
-                || name == "iv::_annotate_public_input_source_info";
+                || name == "iv::_annotate_public_input_source_info"
+                || name == "iv::_annotate_public_event_input_source_info";
         }
 
         bool is_std_move_argument_context(clang::Expr const* expr) const

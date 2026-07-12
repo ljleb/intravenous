@@ -18,6 +18,7 @@ void simple_sine(iv::ModuleContext const& context)
     {
         auto f = g.node<Constant>(440);
         auto d = g.input(2, 0);
+        auto v = g.event_input(EventTypeId::empty);
         auto const voice = g.node<SawOscillator>();
 
         NodeRef p;

@@ -677,6 +677,22 @@ export class WorkspaceSession {
     }
 
     async dispatchModulesControl(message: ModulesControlMessage): Promise<void> {
+        // Instance selection is client-side presentation state.  In
+        // particular, do not put rapid row clicks behind server readiness or
+        // any RPC work.
+        if (message.type === "select") {
+            const selectedInstanceId = this.resolveSelectedInstanceId(
+                this.visibleInstances(),
+                message.instanceId,
+            );
+            if (selectedInstanceId === this.selectedInstanceId) {
+                return;
+            }
+            this.selectedInstanceId = selectedInstanceId;
+            this.rememberSelectedInstance();
+            this.syncSelectedInstanceViews();
+            return;
+        }
         if (!(await this.ensureReady()) || !this.rpc) return;
         switch (message.type) {
         case "createSource": {

@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace iv {
@@ -134,21 +136,34 @@ namespace iv {
     // emitted by the source rewriter, rather than by a graph-node id.  An
     // absent member ordinal addresses the logical input; a present ordinal
     // addresses one concrete evaluation of that declaration.
-    enum class ProjectPublicSampleInputState {
-        default_,
-        overridden,
-        logical_follow,
-        timeline_lane,
-        disconnected,
-    };
-
     struct ProjectSetPublicSampleInputStateRequest {
         std::string instance_id;
         std::string source_identity;
         std::optional<size_t> member_ordinal;
-        ProjectPublicSampleInputState state = ProjectPublicSampleInputState::default_;
+        ProjectSampleInputState state = ProjectSampleInputState::default_;
         std::optional<InternedString> lane_id {};
     };
+
+    inline std::string public_sample_input_node_id(
+        std::string_view instance_id,
+        std::string_view source_identity)
+    {
+        return "iv.public-input:" + std::string(instance_id) + ":" + std::string(source_identity);
+    }
+
+    inline std::optional<std::pair<std::string, std::string>> parse_public_sample_input_node_id(
+        std::string_view node_id)
+    {
+        constexpr std::string_view prefix = "iv.public-input:";
+        if (!node_id.starts_with(prefix)) return std::nullopt;
+        auto const rest = node_id.substr(prefix.size());
+        auto const separator = rest.find(':');
+        if (separator == std::string_view::npos) return std::nullopt;
+        return std::pair{
+            std::string(rest.substr(0, separator)),
+            std::string(rest.substr(separator + 1)),
+        };
+    }
 
     enum class ProjectEventInputState {
         default_,
@@ -159,7 +174,7 @@ namespace iv {
 
     struct ProjectSetEventInputStateRequest {
         std::string node_id;
-        std::optional<size_t> member_ordinal;
+        std::optional<size_t> member_ordinal{};
         size_t input_ordinal = 0;
         ProjectEventInputState state = ProjectEventInputState::default_;
         std::optional<InternedString> lane_id {};

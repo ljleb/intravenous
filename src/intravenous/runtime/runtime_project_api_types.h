@@ -76,7 +76,22 @@ namespace iv {
         std::optional<Sample> max {};
         Sample current_value = 0.0f;
         std::string logical_state {};
+        bool graph_connected = false;
         std::vector<size_t> member_ordinals {};
+        std::vector<bool> member_graph_connected {};
+    };
+
+    struct PublicEventInputInfo {
+        std::string instance_id {};
+        std::string source_identity {};
+        std::vector<SourceInfo> source_infos {};
+        std::string name {};
+        EventTypeId type = EventTypeId::trigger;
+        std::string logical_state {};
+        bool graph_connected = false;
+        std::vector<size_t> member_ordinals {};
+        std::vector<bool> member_graph_connected {};
+        std::vector<std::string> member_states {};
     };
 
     struct ProjectQueryResult {

@@ -14,14 +14,11 @@ IvModuleSourceIntrospection *bound_introspection = nullptr;
 GraphInputLanes *bound_graph_input_lanes = nullptr;
 std::function<void()> *bound_shutdown = nullptr;
 
-std::optional<std::pair<std::string, std::string>> parse_public_input_node_id(std::string_view id)
+void refresh_public_inputs()
 {
-    constexpr std::string_view prefix = "iv.public-input:";
-    if (!id.starts_with(prefix)) return std::nullopt;
-    auto const rest = id.substr(prefix.size());
-    auto const separator = rest.find(':');
-    if (separator == std::string_view::npos) return std::nullopt;
-    return std::pair{std::string(rest.substr(0, separator)), std::string(rest.substr(separator + 1))};
+    if (bound_introspection == nullptr || bound_graph_input_lanes == nullptr) return;
+    bound_introspection->set_public_sample_inputs(bound_graph_input_lanes->public_sample_inputs());
+    bound_introspection->set_public_event_inputs(bound_graph_input_lanes->public_event_inputs());
 }
 
 void notify_updated_node_ids(std::vector<std::string> node_ids)
@@ -84,9 +81,12 @@ void notify_replaced_instances(IvModuleInstanceBuildersChanged const &diff)
     }
 
     try {
+        bound_introspection->replace_public_input_instances(replace_instance_ids);
         if (bound_graph_input_lanes != nullptr) {
             bound_introspection->set_public_sample_inputs(
                 bound_graph_input_lanes->public_sample_inputs());
+            bound_introspection->set_public_event_inputs(
+                bound_graph_input_lanes->public_event_inputs());
         }
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_source_introspection_nodes_updated_event,
@@ -212,7 +212,7 @@ void handle_set_sample_input_value(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        if (auto const public_input = parse_public_input_node_id(request.node_id)) {
+        if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
             ProjectAckBuilder project_builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_project_set_public_sample_input_value_requested_event,
@@ -221,6 +221,8 @@ void handle_set_sample_input_value(
                 request.value,
                 project_builder);
             project_builder.build();
+            refresh_public_inputs();
+            notify_updated_node_ids({request.node_id});
             return;
         }
         ProjectAckBuilder project_builder;
@@ -234,6 +236,7 @@ void handle_set_sample_input_value(
             },
             project_builder);
         project_builder.build();
+        refresh_public_inputs();
         notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());
@@ -245,7 +248,7 @@ void handle_set_sample_input_state(
     SocketRpcAckResponseBuilder &builder)
 {
     try {
-        if (auto const public_input = parse_public_input_node_id(request.node_id)) {
+        if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
             ProjectAckBuilder project_builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_project_set_public_sample_input_state_requested_event,
@@ -253,20 +256,12 @@ void handle_set_sample_input_state(
                     .instance_id = public_input->first,
                     .source_identity = public_input->second,
                     .member_ordinal = request.member_ordinal,
-                    .state = [&] {
-                        auto const state = parse_project_sample_input_state(request.state);
-                        switch (state) {
-                        case ProjectSampleInputState::overridden: return ProjectPublicSampleInputState::overridden;
-                        case ProjectSampleInputState::logical_follow: return ProjectPublicSampleInputState::logical_follow;
-                        case ProjectSampleInputState::timeline_lane: return ProjectPublicSampleInputState::timeline_lane;
-                        case ProjectSampleInputState::disconnected: return ProjectPublicSampleInputState::disconnected;
-                        case ProjectSampleInputState::default_: return ProjectPublicSampleInputState::default_;
-                        }
-                        return ProjectPublicSampleInputState::default_;
-                    }(),
+                    .state = parse_project_sample_input_state(request.state),
                 },
                 project_builder);
             project_builder.build();
+            refresh_public_inputs();
+            notify_updated_node_ids({request.node_id});
             return;
         }
         ProjectAckBuilder project_builder;
@@ -280,6 +275,7 @@ void handle_set_sample_input_state(
             },
             project_builder);
         project_builder.build();
+        refresh_public_inputs();
         notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());
@@ -302,6 +298,7 @@ void handle_set_event_input_state(
             },
             project_builder);
         project_builder.build();
+        refresh_public_inputs();
         notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());

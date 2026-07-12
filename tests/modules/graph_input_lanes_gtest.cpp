@@ -279,18 +279,44 @@ TEST_F(GraphInputLanesTest, PublicInputLogicalAndConcreteStatesReconcileIndepend
         .instance_id = instance.instance_id,
         .source_identity = "loop-input",
         .member_ordinal = 1,
-        .state = iv::ProjectPublicSampleInputState::disconnected,
+        .state = iv::ProjectSampleInputState::disconnected,
     });
     lanes.set_public_sample_input_state(iv::ProjectSetPublicSampleInputStateRequest{
         .instance_id = instance.instance_id,
         .source_identity = "loop-input",
         .member_ordinal = std::nullopt,
-        .state = iv::ProjectPublicSampleInputState::disconnected,
+        .state = iv::ProjectSampleInputState::disconnected,
     });
     lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     EXPECT_FALSE(witness.timeline_batches.empty());
     EXPECT_FALSE(witness.rebuild_requests.empty());
+}
+
+TEST_F(GraphInputLanesTest, AnnotatedPublicEventInputsShareLogicalTimelineLane)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
+    builder.outputs({});
+    auto first = iv::_annotate_public_event_input_source_info(
+        builder.event_input("trigger", iv::EventTypeId::trigger),
+        "public-trigger", "/tmp/module/module.cpp", 30, 37);
+    auto second = iv::_annotate_public_event_input_source_info(
+        builder.event_input("trigger", iv::EventTypeId::trigger),
+        "public-trigger", "/tmp/module/module.cpp", 30, 37);
+    (void)first;
+    (void)second;
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    auto const inputs = lanes.public_event_inputs();
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_EQ(inputs[0].source_identity, "public-trigger");
+    EXPECT_EQ(inputs[0].logical_state, "timelineLane");
+    EXPECT_EQ(inputs[0].member_ordinals, (std::vector<size_t>{0, 1}));
+    EXPECT_EQ(inputs[0].member_states, (std::vector<std::string>{"logicalFollow", "logicalFollow"}));
 }
 
 TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)

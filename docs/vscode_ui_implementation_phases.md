@@ -76,6 +76,14 @@ that responsibility cleanly before inventing a new one.
 - add reveal/focus actions from lanes
 - add command-palette and shortcut coverage for selected-view actions
 
+## Keyboard-shortcut review milestone
+
+When a representative portion of the UI is implemented, run a deliberate
+keyboard-shortcut and command-palette pass rather than adding shortcuts only
+piecemeal.  This review must happen again after lane views have progressed
+substantially, so the selected/focused-view interactions can be designed from
+the real workflows.
+
 ## Phase 9. Shared toolbar surface
 
 - add the shared Intravenous toolbar surface

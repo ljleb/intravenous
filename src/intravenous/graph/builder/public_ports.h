@@ -105,11 +105,15 @@ namespace iv {
             uint32_t begin,
             uint32_t end);
         std::span<SourceInfo const> sample_input_source_infos(size_t port_ordinal) const;
+        void annotate_event_input_source_info(size_t port_ordinal, std::string_view declaration_identity,
+            std::string_view file_path, uint32_t begin, uint32_t end);
+        std::span<SourceInfo const> event_input_source_infos(size_t port_ordinal) const;
 
     private:
         std::vector<InputConfig> _sample_inputs {};
         std::vector<std::vector<SourceInfo>> _sample_input_source_infos {};
         std::vector<EventInputConfig> _event_inputs {};
+        std::vector<std::vector<SourceInfo>> _event_input_source_infos {};
         std::vector<OutputConfig> _sample_outputs {};
         std::vector<EventOutputConfig> _event_outputs {};
         bool _sample_outputs_defined = false;

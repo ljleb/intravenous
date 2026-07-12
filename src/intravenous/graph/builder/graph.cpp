@@ -229,20 +229,37 @@ void PublicSampleInputRef::_annotate_source_info(
     }
 }
 
-EventPortRef GraphBuilder::event_input(std::string_view name, EventTypeId type)
+PublicEventInputRef GraphBuilder::event_input(std::string_view name, EventTypeId type)
 {
     if (inside_subgraph_scope()) {
-        return _subgraphs.add_scope_event_input(*this, _topology, name, type, true);
+        return PublicEventInputRef(_subgraphs.add_scope_event_input(*this, _topology, name, type, true));
     }
-    return _public_ports.add_event_input(*this, name, type);
+    return PublicEventInputRef(_public_ports.add_event_input(*this, name, type));
 }
 
-EventPortRef GraphBuilder::event_input(EventTypeId type)
+PublicEventInputRef GraphBuilder::event_input(EventTypeId type)
 {
     if (inside_subgraph_scope()) {
-        return _subgraphs.add_scope_event_input(*this, _topology, {}, type, false);
+        return PublicEventInputRef(_subgraphs.add_scope_event_input(*this, _topology, {}, type, false));
     }
-    return _public_ports.add_event_input(*this, {}, type);
+    return PublicEventInputRef(_public_ports.add_event_input(*this, {}, type));
+}
+
+void GraphBuilder::annotate_public_event_input_source_info(PublicEventInputRef const& ref,
+    std::string_view identity, std::string_view file, uint32_t begin, uint32_t end)
+{
+    if (identity.empty() || ref.port.graph_builder != this) return;
+    if (ref.port.node_index != GRAPH_ID) {
+        NodeRef(*this, ref.port.node_index)._annotate_source_info(identity, file, begin, end);
+        return;
+    }
+    _public_ports.annotate_event_input_source_info(ref.port.output_port, identity, file, begin, end);
+}
+
+void PublicEventInputRef::_annotate_source_info(std::string_view identity, std::string_view file,
+    uint32_t begin, uint32_t end) const
+{
+    if (port.graph_builder) port.graph_builder->annotate_public_event_input_source_info(*this, identity, file, begin, end);
 }
 
 NodeRef GraphBuilder::embed_subgraph(GraphBuilder const& child)
@@ -419,9 +436,32 @@ GraphBuilderPublicSamplePortFamilies GraphBuilder::public_sample_input_families(
     return _public_ports.sample_input_families();
 }
 
+bool GraphBuilder::public_sample_input_is_connected(size_t port_ordinal) const
+{
+    bool connected = false;
+    _topology.for_each_sample_edge([&](GraphEdge const &edge) {
+        connected = connected || (edge.source == PortId{GRAPH_ID, port_ordinal});
+    });
+    return connected;
+}
+
 std::vector<GraphBuilderPublicEventInput> GraphBuilder::public_event_inputs() const
 {
     return _public_ports.collected_event_inputs();
+}
+
+bool GraphBuilder::public_event_input_is_connected(size_t port_ordinal) const
+{
+    bool connected = false;
+    _topology.for_each_event_edge([&](GraphEventEdge const &edge) {
+        connected = connected || (edge.source == PortId{GRAPH_ID, port_ordinal});
+    });
+    return connected;
+}
+
+std::span<SourceInfo const> GraphBuilder::public_event_input_source_infos(size_t port_ordinal) const
+{
+    return _public_ports.event_input_source_infos(port_ordinal);
 }
 
 GraphBuilderPublicSamplePortFamilies GraphBuilder::public_sample_output_families() const

@@ -38,6 +38,7 @@ class IvModuleSourceIntrospection {
     std::unordered_map<std::string, LoadedGraphIntrospectionIndex> graph_indexes_by_definition_id;
     std::unordered_map<std::string, IvModuleInstanceInfo> realized_instances_by_id;
     std::unordered_map<std::string, std::vector<PublicSampleInputInfo>> public_inputs_by_instance_id;
+    std::unordered_map<std::string, std::vector<PublicEventInputInfo>> public_event_inputs_by_instance_id;
 
     SourceTextLineMap const &source_text_for(std::string const &normalized_path) const;
     void invalidate_source_text(std::string const &normalized_path);
@@ -49,6 +50,7 @@ class IvModuleSourceIntrospection {
         IntrospectionLogicalNode const &node,
         std::string const &instance_id) const;
     LogicalNodeInfo to_public_sample_input(PublicSampleInputInfo const &input) const;
+    LogicalNodeInfo to_public_event_input(PublicEventInputInfo const &input) const;
 
 public:
     IvModuleSourceIntrospection() = default;
@@ -58,6 +60,8 @@ public:
     void handle_iv_module_instances_list_changed(
         std::vector<IvModuleInstanceInfo> const &instances);
     void set_public_sample_inputs(std::vector<PublicSampleInputInfo> inputs);
+    void set_public_event_inputs(std::vector<PublicEventInputInfo> inputs);
+    void replace_public_input_instances(std::span<std::string const> instance_ids);
     ProjectQueryResult
     query_by_spans(
         std::filesystem::path const &file_path,

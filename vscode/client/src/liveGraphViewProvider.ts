@@ -359,6 +359,10 @@ export class LiveGraphViewProvider {
             user-select: none;
         }
 
+        .port-row .description {
+            display: none;
+        }
+
         .node-children {
             display: block;
         }
@@ -448,6 +452,12 @@ export class LiveGraphViewProvider {
             background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
         }
 
+        .context-menu-separator {
+            height: 1px;
+            margin: 4px 2px;
+            background: var(--vscode-menu-separatorBackground, var(--vscode-widget-border));
+        }
+
         .port-icon {
             width: ${portIconSizePx}px;
             flex: 0 0 ${portIconSizePx}px;
@@ -472,14 +482,50 @@ export class LiveGraphViewProvider {
             transform-origin: center;
         }
 
-        .port-row[data-direction="input"][data-connectivity="connected"] .port-icon,
-        .port-row[data-direction="input"][data-connectivity="mixed"] .port-icon {
+        .port-row[data-direction="input"] .port-icon {
             color: var(--vscode-terminal-ansiYellow);
+            opacity: 0.45;
         }
 
-        .port-row[data-direction="output"][data-connectivity="connected"] .port-icon,
-        .port-row[data-direction="output"][data-connectivity="mixed"] .port-icon {
+        .port-row[data-direction="output"] .port-icon {
             color: var(--vscode-terminal-ansiBlue);
+            opacity: 0.45;
+        }
+
+        .port-row[data-active="true"] .port-icon {
+            opacity: 0.95;
+        }
+
+        .port-state-icon {
+            width: 64px;
+            margin-left: auto;
+            flex: 0 0 64px;
+            display: inline-flex;
+            align-items: center;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .port-state-icon svg {
+            width: 18px;
+            height: 18px;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 1.8;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        .port-row[data-state="timelineLane"] .port-state-icon {
+            color: var(--vscode-errorForeground);
+        }
+
+        .port-row[data-state="logicalFollow"] .port-state-icon,
+        .port-row[data-state="logical"] .port-state-icon {
+            color: var(--vscode-charts-blue);
+        }
+
+        .port-row[data-state="overridden"] .port-state-icon {
+            color: var(--vscode-charts-orange);
         }
 
         .port-connectivity {
@@ -621,6 +667,39 @@ export class LiveGraphViewProvider {
             const el = document.createElement("div");
             el.className = "spacer";
             return el;
+        }
+
+        function stateIconSvg(port) {
+            if (
+                port.tweakable ||
+                port.stateValue === "disconnected" ||
+                port.stateValue === "default"
+            ) {
+                return "";
+            }
+            if (port.stateValue === "timelineLane") {
+                return '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 9h10"/><path d="m10 5 4 4-4 4"/></svg>';
+            }
+            if (port.stateValue === "logicalFollow" || port.stateValue === "logical") {
+                return '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 5.5h7.5a2 2 0 0 1 0 4H7.5a2 2 0 0 0 0 4H15"/><path d="m12.5 3 2.5 2.5-2.5 2.5"/></svg>';
+            }
+            if (port.stateValue === "overridden") {
+                return '<svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="4.5"/><path d="M9 4.5v9M4.5 9h9"/></svg>';
+            }
+            return "";
+        }
+
+        function portIsActive(port) {
+            if (port.connectivity === "connected" || port.connectivity === "mixed") {
+                return true;
+            }
+            if (port.stateValue === "disconnected") {
+                return false;
+            }
+            return port.stateValue === "timelineLane"
+                || port.stateValue === "logicalFollow"
+                || port.stateValue === "logical"
+                || port.stateValue === "overridden";
         }
 
         function clamp(value, min, max) {
@@ -844,6 +923,20 @@ export class LiveGraphViewProvider {
             hideContextMenu();
         }
 
+        function resetKnobValue(portRef) {
+            if (!portRef || !portRef.hasKnob || portRef.stateFamily !== "sampleInput") {
+                return;
+            }
+            const value = Number(portRef.defaultValue);
+            if (!Number.isFinite(value)) {
+                return;
+            }
+            clearPendingUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal);
+            applyLocalControlValue(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal, value);
+            queueControlUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal, value);
+            hideContextMenu();
+        }
+
         function updatePortRowValue(portRow, value) {
             if (!portRow || !portRow.__knobDrag) {
                 return;
@@ -962,12 +1055,33 @@ export class LiveGraphViewProvider {
             setActivePort(portRef);
             contextMenu.textContent = "";
 
-            for (const action of portRef.stateActions) {
+            const appendAction = (action) => {
                 const button = document.createElement("button");
                 button.type = "button";
                 button.textContent = action.label;
                 button.addEventListener("click", () => runPortStateAction(portRef, action));
                 contextMenu.appendChild(button);
+            };
+            const currentStateActions = portRef.stateActions.filter((action) => action.reset);
+            const transitionActions = portRef.stateActions.filter((action) => !action.reset);
+
+            if (portRef.hasKnob) {
+                const resetButton = document.createElement("button");
+                resetButton.type = "button";
+                resetButton.textContent = "Reset knob value";
+                resetButton.addEventListener("click", () => resetKnobValue(portRef));
+                contextMenu.appendChild(resetButton);
+            }
+            for (const action of currentStateActions) {
+                appendAction(action);
+            }
+            if ((portRef.hasKnob || currentStateActions.length > 0) && transitionActions.length > 0) {
+                const separator = document.createElement("div");
+                separator.className = "context-menu-separator";
+                contextMenu.appendChild(separator);
+            }
+            for (const action of transitionActions) {
+                appendAction(action);
             }
 
             contextMenu.classList.remove("hidden");
@@ -994,20 +1108,35 @@ export class LiveGraphViewProvider {
                 return;
             }
             event.preventDefault();
-            knobDrag.active = { knob, valueEl, nodeId, memberOrdinal, port };
+            knobDrag.active = { lockEl, knob, valueEl, nodeId, memberOrdinal, port };
             knobDrag.currentValue = knobPositionForValue(port.currentValue, port);
             knobDrag.lastClientX = event.clientX;
             knobDrag.lastClientY = event.clientY;
             knobDrag.pointerLockRequested = false;
-            document.body.classList.add("knob-dragging");
             try {
-                if (typeof lockEl.requestPointerLock === "function") {
-                    lockEl.requestPointerLock();
-                    knobDrag.pointerLockRequested = true;
-                } else if (typeof lockEl.setPointerCapture === "function" && event.pointerId != null) {
+                if (typeof lockEl.setPointerCapture === "function" && event.pointerId != null) {
                     lockEl.setPointerCapture(event.pointerId);
                 }
             } catch (_) {
+            }
+            // Capture makes the release observable even after pointer lock
+            // engages, so a click/double-click cannot leave the cursor held.
+            requestKnobPointerLock();
+        }
+
+        function requestKnobPointerLock() {
+            if (!knobDrag.active || knobDrag.pointerLockRequested) {
+                return;
+            }
+            const lockEl = knobDrag.active.lockEl;
+            if (!lockEl || typeof lockEl.requestPointerLock !== "function") {
+                return;
+            }
+            knobDrag.pointerLockRequested = true;
+            try {
+                lockEl.requestPointerLock();
+            } catch (_) {
+                knobDrag.pointerLockRequested = false;
             }
         }
 
@@ -1015,9 +1144,10 @@ export class LiveGraphViewProvider {
             if (!knobDrag.active) {
                 return;
             }
+            const lockEl = knobDrag.active.lockEl;
             knobDrag.active = null;
             document.body.classList.remove("knob-dragging");
-            if (document.pointerLockElement) {
+            if (document.pointerLockElement === lockEl) {
                 try {
                     document.exitPointerLock();
                 } catch (_) {
@@ -1045,6 +1175,9 @@ export class LiveGraphViewProvider {
                 return;
             }
             const usePointerLockMovement = document.pointerLockElement != null;
+            if (!usePointerLockMovement && (event.clientX !== knobDrag.lastClientX || event.clientY !== knobDrag.lastClientY)) {
+                requestKnobPointerLock();
+            }
             const deltaX = usePointerLockMovement
                 ? event.movementX
                 : event.clientX - knobDrag.lastClientX;
@@ -1085,8 +1218,14 @@ export class LiveGraphViewProvider {
         });
 
         document.addEventListener("pointerlockchange", () => {
-            if (knobDrag.active && knobDrag.pointerLockRequested && document.pointerLockElement == null) {
-                endKnobDrag();
+            if (!knobDrag.active) {
+                return;
+            }
+            if (document.pointerLockElement === knobDrag.active.lockEl) {
+                document.body.classList.add("knob-dragging");
+            } else {
+                document.body.classList.remove("knob-dragging");
+                knobDrag.pointerLockRequested = false;
             }
         });
 
@@ -1144,13 +1283,23 @@ export class LiveGraphViewProvider {
                 }
             }, { passive: false });
 
-            knob.addEventListener("dblclick", (event) => {
+            knob.addEventListener("pointerdown", (event) => {
+                if (event.button !== 1) {
+                    return;
+                }
                 event.preventDefault();
+                event.stopPropagation();
                 const currentBinding = portRow.__knobDrag;
                 if (currentBinding) {
                     applyPosition(knobPositionForValue(
                         currentBinding.port.defaultValue,
                         currentBinding.port));
+                }
+            });
+
+            knob.addEventListener("auxclick", (event) => {
+                if (event.button === 1) {
+                    event.preventDefault();
                 }
             });
         }
@@ -1183,7 +1332,7 @@ export class LiveGraphViewProvider {
                 descriptionEl.className = "description";
                 portRow.appendChild(descriptionEl);
             }
-            descriptionEl.textContent = portDescription || "";
+            descriptionEl.textContent = "";
 
             portRow.className = "tree-row port-row";
             if (memberOrdinal != null) {
@@ -1197,9 +1346,26 @@ export class LiveGraphViewProvider {
             }
             portRow.dataset.direction = group.direction;
             portRow.dataset.connectivity = port.connectivity;
+            portRow.dataset.state = port.stateValue || port.connectivity || "default";
+            portRow.dataset.active = String(portIsActive(port));
             const icon = portRow.__portIcon;
             icon.className = group.direction === "input" ? "port-icon" : "port-icon mirrored";
             icon.innerHTML = icons.arrowRight;
+
+            const stateIconSvgMarkup = stateIconSvg(port);
+            let stateIcon = portRow.__stateIcon;
+            if (stateIconSvgMarkup) {
+                if (!stateIcon) {
+                    stateIcon = document.createElement("div");
+                    stateIcon.className = "port-state-icon";
+                    portRow.appendChild(stateIcon);
+                    portRow.__stateIcon = stateIcon;
+                }
+                stateIcon.innerHTML = stateIconSvgMarkup;
+            } else if (stateIcon) {
+                stateIcon.remove();
+                portRow.__stateIcon = null;
+            }
 
             if (port.tweakable) {
                 let knobWrap = portRow.__knobWrap;
@@ -1209,7 +1375,7 @@ export class LiveGraphViewProvider {
 
                     const knob = document.createElement("div");
                     knob.className = "knob";
-                    knob.title = "Drag vertically or use the mouse wheel to adjust. Double-click to reset.";
+                    knob.title = "Drag vertically or use the mouse wheel to adjust. Middle-click to reset.";
 
                     const valueEl = document.createElement("div");
                     valueEl.className = "knob-value";
@@ -1253,6 +1419,8 @@ export class LiveGraphViewProvider {
                 portRow.__statePortRef.memberOrdinal = memberOrdinal;
                 portRow.__statePortRef.ordinal = port.ordinal;
                 portRow.__statePortRef.hasConcreteOverride = Boolean(port.hasConcreteOverride);
+                portRow.__statePortRef.hasKnob = Boolean(port.tweakable);
+                portRow.__statePortRef.defaultValue = port.defaultValue;
                 portRow.__statePortRef.stateFamily = port.stateFamily;
                 portRow.__statePortRef.stateActions = Array.isArray(port.stateActions) ? port.stateActions : [];
                 portRow.__statePortRef.resetState = port.resetState || null;

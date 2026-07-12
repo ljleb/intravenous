@@ -179,7 +179,22 @@ EventPortRef GraphBuilderPublicPorts::add_event_input(GraphBuilder& builder, std
     } else {
         _event_inputs.emplace_back(EventInputConfig{ .type = type });
     }
+    _event_input_source_infos.emplace_back();
     return EventPortRef(builder, GRAPH_ID, _event_inputs.size() - 1);
+}
+
+void GraphBuilderPublicPorts::annotate_event_input_source_info(size_t ordinal, std::string_view identity,
+    std::string_view file, uint32_t begin, uint32_t end)
+{
+    if (ordinal >= _event_input_source_infos.size() || identity.empty()) return;
+    SourceInfo info{.declaration_identity = std::string(identity), .span = SourceSpan{.file_path = std::string(file), .begin = begin, .end = end}};
+    auto &infos = _event_input_source_infos[ordinal];
+    if (std::find(infos.begin(), infos.end(), info) == infos.end()) infos.push_back(std::move(info));
+}
+
+std::span<SourceInfo const> GraphBuilderPublicPorts::event_input_source_infos(size_t ordinal) const
+{
+    return ordinal < _event_input_source_infos.size() ? std::span<SourceInfo const>(_event_input_source_infos[ordinal]) : std::span<SourceInfo const>{};
 }
 
 bool GraphBuilderPublicPorts::sample_outputs_defined() const

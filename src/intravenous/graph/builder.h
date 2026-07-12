@@ -115,10 +115,16 @@ namespace iv {
             Sample default_value,
             std::optional<Sample> min = std::nullopt,
             std::optional<Sample> max = std::nullopt);
-        EventPortRef event_input(std::string_view name, EventTypeId type);
-        EventPortRef event_input(EventTypeId type);
+        PublicEventInputRef event_input(std::string_view name, EventTypeId type);
+        PublicEventInputRef event_input(EventTypeId type);
         void annotate_public_sample_input_source_info(
             PublicSampleInputRef const&,
+            std::string_view declaration_identity,
+            std::string_view file_path,
+            uint32_t begin,
+            uint32_t end);
+        void annotate_public_event_input_source_info(
+            PublicEventInputRef const&,
             std::string_view declaration_identity,
             std::string_view file_path,
             uint32_t begin,
@@ -175,7 +181,10 @@ namespace iv {
         LogicalOutputs logical_outputs() const;
         LogicalSampleOutputFamilies logical_sample_output_families() const;
         GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
+        bool public_sample_input_is_connected(size_t port_ordinal) const;
         std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
+        bool public_event_input_is_connected(size_t port_ordinal) const;
+        std::span<SourceInfo const> public_event_input_source_infos(size_t port_ordinal) const;
         GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
         std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
         void connect_sample_input(PortId target, SamplePortRef source);

@@ -80,6 +80,7 @@ public:
         std::string source_identity {};
         std::optional<int> source_identity_hash {};
         std::optional<size_t> concrete_member_ordinal {};
+        bool graph_connected = false;
         std::vector<DesiredPublicGraphPortChannel> channels {};
     };
 
@@ -142,8 +143,10 @@ private:
     std::unordered_map<std::string, InternedString> concrete_event_input_lane_ids_by_key;
     std::unordered_map<std::string, InternedString> logical_output_lane_ids_by_key;
     std::unordered_map<std::string, InternedString> concrete_output_lane_ids_by_key;
-    std::unordered_map<std::string, ProjectPublicSampleInputState> public_sample_input_states_by_key;
+    std::unordered_map<std::string, ProjectSampleInputState> public_sample_input_states_by_key;
     std::unordered_map<std::string, InternedString> public_sample_input_lane_ids_by_key;
+    std::unordered_map<std::string, ProjectEventInputState> public_event_input_states_by_key;
+    std::unordered_map<std::string, InternedString> public_event_input_lane_ids_by_key;
     std::unordered_map<std::string, std::unique_ptr<std::atomic<Sample::storage>>> public_sample_input_values;
     std::unordered_set<std::string> pending_rebuild_instance_ids;
     std::vector<TimelineLaneBatchUpdate> pending_timeline_batches;
@@ -256,6 +259,8 @@ private:
     LaneId public_graph_port_lane_for(DesiredPublicGraphPort const &port) const;
     std::optional<LaneId> effective_public_sample_input_lane_locked(
         DesiredPublicGraphPort const &port) const;
+    std::optional<LaneId> effective_public_event_input_lane_locked(
+        DesiredPublicGraphPort const &port) const;
     std::atomic<Sample::storage>& ensure_public_sample_input_value_locked(
         std::string const &instance_id,
         std::string const &source_identity,
@@ -295,7 +300,14 @@ public:
         std::string const &instance_id,
         std::string const &source_identity,
         Sample value);
+    void set_public_event_input_state(
+        std::string const &instance_id,
+        std::string const &source_identity,
+        std::optional<size_t> member_ordinal,
+        ProjectEventInputState state,
+        std::optional<InternedString> lane_id = std::nullopt);
     std::vector<PublicSampleInputInfo> public_sample_inputs() const;
+    std::vector<PublicEventInputInfo> public_event_inputs() const;
     void set_event_input_state(
         ProjectSetEventInputStateRequest const &request);
     void set_sample_output_state(

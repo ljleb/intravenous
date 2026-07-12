@@ -57,4 +57,15 @@ namespace iv {
 
         std::string to_string() const;
     };
+
+    struct PublicEventInputRef {
+        EventPortRef port {};
+        PublicEventInputRef() = default;
+        explicit PublicEventInputRef(EventPortRef port_) : port(std::move(port_)) {}
+        operator EventPortRef() const { return port; }
+        operator PortId() const { return static_cast<PortId>(port); }
+        void _annotate_source_info(
+            std::string_view declaration_identity, std::string_view file_path,
+            uint32_t begin, uint32_t end) const;
+    };
 }

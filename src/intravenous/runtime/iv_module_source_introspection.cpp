@@ -1,5 +1,7 @@
 #include <intravenous/runtime/iv_module_source_introspection.h>
 
+#include <intravenous/graph/builder/names.h>
+
 #include <intravenous/compat.h>
 #include <intravenous/filesystem_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
@@ -18,7 +20,7 @@ namespace iv {
 namespace {
 std::string public_input_node_id(PublicSampleInputInfo const &input)
 {
-    return "iv.public-input:" + input.instance_id + ":" + input.source_identity;
+    return public_sample_input_node_id(input.instance_id, input.source_identity);
 }
 }
 SourceTextLineMap SourceTextLineMap::from_file(std::filesystem::path const &path)
@@ -53,6 +55,24 @@ void IvModuleSourceIntrospection::set_public_sample_inputs(std::vector<PublicSam
     }
     for (auto &input : inputs) {
         public_inputs_by_instance_id[input.instance_id].push_back(std::move(input));
+    }
+}
+
+void IvModuleSourceIntrospection::set_public_event_inputs(std::vector<PublicEventInputInfo> inputs)
+{
+    std::scoped_lock lock(mutex);
+    std::unordered_set<std::string> instances;
+    for (auto const &input : inputs) instances.insert(input.instance_id);
+    for (auto const &id : instances) public_event_inputs_by_instance_id.erase(id);
+    for (auto &input : inputs) public_event_inputs_by_instance_id[input.instance_id].push_back(std::move(input));
+}
+
+void IvModuleSourceIntrospection::replace_public_input_instances(std::span<std::string const> instance_ids)
+{
+    std::scoped_lock lock(mutex);
+    for (auto const &id : instance_ids) {
+        public_inputs_by_instance_id.erase(id);
+        public_event_inputs_by_instance_id.erase(id);
     }
 }
 
@@ -599,7 +619,9 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_public_sample_input(PublicSample
     node.sample_inputs.push_back(LogicalPortInfo{
         .name = input.name.empty() ? "input" : input.name,
         .type = "sample",
-        .connectivity = LogicalPortConnectivity::connected,
+        .connectivity = input.graph_connected
+            ? LogicalPortConnectivity::connected
+            : LogicalPortConnectivity::disconnected,
         .ordinal = 0,
         .default_value = input.default_value,
         .min = input.min,
@@ -607,7 +629,8 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_public_sample_input(PublicSample
         .current_value = input.current_value,
         .state_value = input.logical_state,
     });
-    for (auto const member_ordinal : input.member_ordinals) {
+    for (size_t i = 0; i < input.member_ordinals.size(); ++i) {
+        auto const member_ordinal = input.member_ordinals[i];
         LogicalNodeMemberInfo member{
             .ordinal = member_ordinal,
             .kind = "Public input member",
@@ -616,13 +639,53 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_public_sample_input(PublicSample
         member.sample_inputs.push_back(LogicalPortInfo{
             .name = input.name.empty() ? "input" : input.name,
             .type = "sample",
-            .connectivity = LogicalPortConnectivity::connected,
+            .connectivity = i < input.member_graph_connected.size()
+                    && input.member_graph_connected[i]
+                ? LogicalPortConnectivity::connected
+                : LogicalPortConnectivity::disconnected,
             .ordinal = 0,
             .default_value = input.default_value,
             .min = input.min,
             .max = input.max,
             .current_value = input.current_value,
             .state_value = "logicalFollow",
+        });
+        node.members.push_back(std::move(member));
+    }
+    return node;
+}
+
+LogicalNodeInfo IvModuleSourceIntrospection::to_public_event_input(PublicEventInputInfo const &input) const
+{
+    LogicalNodeInfo node{
+        .id = public_sample_input_node_id(input.instance_id, input.source_identity),
+        .instance_id = input.instance_id,
+        .kind = "Public event input",
+        .source_identity = input.source_identity,
+        .type_identity = "iv::PublicEventInputRef",
+        .member_count = input.member_ordinals.size(),
+    };
+    for (auto const &info : input.source_infos) node.source_spans.push_back(to_live_span(info.span));
+    node.event_inputs.push_back(LogicalPortInfo{
+        .name = input.name.empty() ? "event" : input.name,
+        .type = details::event_type_name(input.type),
+        .connectivity = input.graph_connected
+            ? LogicalPortConnectivity::connected
+            : LogicalPortConnectivity::disconnected,
+        .ordinal = 0,
+        .state_value = input.logical_state,
+    });
+    for (size_t i = 0; i < input.member_ordinals.size(); ++i) {
+        LogicalNodeMemberInfo member{.ordinal = input.member_ordinals[i], .kind = "Public event input member", .type_identity = "iv::PublicEventInputRef"};
+        member.event_inputs.push_back(LogicalPortInfo{
+            .name = input.name.empty() ? "event" : input.name,
+            .type = details::event_type_name(input.type),
+            .connectivity = i < input.member_graph_connected.size()
+                    && input.member_graph_connected[i]
+                ? LogicalPortConnectivity::connected
+                : LogicalPortConnectivity::disconnected,
+            .ordinal = 0,
+            .state_value = i < input.member_states.size() ? input.member_states[i] : "logicalFollow",
         });
         node.members.push_back(std::move(member));
     }
@@ -851,6 +914,24 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             }
         }
     }
+    for (auto const &[public_instance_id, inputs] : public_event_inputs_by_instance_id) {
+        if (instance_id.has_value() && public_instance_id != *instance_id) continue;
+        for (auto const &input : inputs) {
+            bool matches = requested_ranges.empty();
+            if (!requested_ranges.empty()) {
+                auto touches = [&](auto const &range) {
+                    return std::ranges::any_of(input.source_infos, [&](SourceInfo const &info) {
+                        return normalized_path_string(info.span.file_path) == normalized_file_path
+                            && !(info.span.end < range.first || info.span.begin > range.second);
+                    });
+                };
+                matches = match_mode == SourceRangeMatchMode::union_
+                    ? std::ranges::any_of(requested_ranges, touches)
+                    : std::ranges::all_of(requested_ranges, touches);
+            }
+            if (matches) result.nodes.push_back(to_public_event_input(input));
+        }
+    }
 
     return result;
 }
@@ -903,6 +984,18 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
             }
         }
     }
+    for (auto const &[_, inputs] : public_event_inputs_by_instance_id) {
+        for (auto const &input : inputs) {
+            for (auto const &info : input.source_infos) {
+                if (normalized_path_string(info.span.file_path) != normalized_file_path) continue;
+                auto live_span = to_live_span(info.span);
+                auto const key = live_span.file_path + ":" + std::to_string(live_span.range.start.line) + ":"
+                    + std::to_string(live_span.range.start.column) + ":" + std::to_string(live_span.range.end.line)
+                    + ":" + std::to_string(live_span.range.end.column);
+                if (emitted_spans.insert(key).second) result.source_spans.push_back(std::move(live_span));
+            }
+        }
+    }
 
     return result;
 }
@@ -923,6 +1016,18 @@ bool IvModuleSourceIntrospection::definition_uses_source_file(
 LogicalNodeInfo IvModuleSourceIntrospection::get_logical_node(std::string const &node_id) const
 {
     std::scoped_lock lock(mutex);
+    for (auto const &[_, inputs] : public_inputs_by_instance_id) {
+        for (auto const &input : inputs) {
+            if (public_input_node_id(input) == node_id) return to_public_sample_input(input);
+        }
+    }
+    for (auto const &[_, inputs] : public_event_inputs_by_instance_id) {
+        for (auto const &input : inputs) {
+            if (public_sample_input_node_id(input.instance_id, input.source_identity) == node_id) {
+                return to_public_event_input(input);
+            }
+        }
+    }
     auto const resolved = parse_runtime_node_id(node_id);
     if (!resolved.has_value()) {
         throw std::runtime_error("unknown node id: " + node_id);
@@ -951,6 +1056,28 @@ std::vector<LogicalNodeInfo> IvModuleSourceIntrospection::get_logical_nodes(
     std::vector<LogicalNodeInfo> nodes;
     nodes.reserve(node_ids.size());
     for (auto const &node_id : node_ids) {
+        bool public_node = false;
+        for (auto const &[_, inputs] : public_inputs_by_instance_id) {
+            auto const it = std::find_if(inputs.begin(), inputs.end(), [&](auto const &input) {
+                return public_input_node_id(input) == node_id;
+            });
+            if (it != inputs.end()) {
+                nodes.push_back(to_public_sample_input(*it));
+                public_node = true;
+                break;
+            }
+        }
+        if (!public_node) for (auto const &[_, inputs] : public_event_inputs_by_instance_id) {
+            auto const it = std::find_if(inputs.begin(), inputs.end(), [&](auto const &input) {
+                return public_sample_input_node_id(input.instance_id, input.source_identity) == node_id;
+            });
+            if (it != inputs.end()) {
+                nodes.push_back(to_public_event_input(*it));
+                public_node = true;
+                break;
+            }
+        }
+        if (public_node) continue;
         auto const resolved = parse_runtime_node_id(node_id);
         if (!resolved.has_value()) {
             throw std::runtime_error("unknown node id: " + node_id);
@@ -995,6 +1122,10 @@ std::vector<LogicalNodeInfo> IvModuleSourceIntrospection::get_logical_nodes_for_
             for (auto const &input : public_it->second) {
                 nodes.push_back(to_public_sample_input(input));
             }
+        }
+        if (auto const public_it = public_event_inputs_by_instance_id.find(instance.instance_id);
+            public_it != public_event_inputs_by_instance_id.end()) {
+            for (auto const &input : public_it->second) nodes.push_back(to_public_event_input(input));
         }
     }
     return nodes;
