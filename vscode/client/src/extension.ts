@@ -69,7 +69,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.lanes", {
         async deserializeWebviewPanel(panel, state) {
             laneProvider.revive(panel, state);
-            session.restoreLaneViewId(laneProvider.laneViewId());
+            session.restoreLaneViewId(laneProvider.currentLaneViewId());
             try {
                 await session.openLaneView();
             } catch (error: any) {

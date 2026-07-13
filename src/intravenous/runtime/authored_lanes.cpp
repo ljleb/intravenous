@@ -107,12 +107,16 @@ bool AuthoredLanes::contains(InternedString lane_id) const { return lanes_.conta
 
 void AuthoredLanes::record_connection(AuthoredLaneConnection connection)
 {
-    auto const duplicate = std::ranges::any_of(connections_, [&](AuthoredLaneConnection const& existing) {
+    if (!contains_connection(connection)) connections_.push_back(std::move(connection));
+}
+
+bool AuthoredLanes::contains_connection(AuthoredLaneConnection const& connection) const
+{
+    return std::ranges::any_of(connections_, [&](AuthoredLaneConnection const& existing) {
         return existing.source_lane_id == connection.source_lane_id
             && existing.target_lane_id == connection.target_lane_id
             && existing.input == connection.input;
     });
-    if (!duplicate) connections_.push_back(std::move(connection));
 }
 
 std::vector<AuthoredLaneConnection> AuthoredLanes::connections() const { return connections_; }

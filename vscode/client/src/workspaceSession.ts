@@ -26,7 +26,7 @@ type LiveGraphProviderLike = {
 type LaneProviderLike = {
     viewportState(): { startIndex: number; visibleLaneCount: number };
     clear(): void;
-    setLanes(result: Record<string, unknown>): void;
+    setLanes(result: Record<string, unknown>, preserveViewport?: boolean): void;
     setLaneContent(result: Record<string, unknown>): void;
 };
 
@@ -94,6 +94,7 @@ export class WorkspaceSession {
     private lastTerminalStatusMessage = "";
     private laneViewId = `lanes-${crypto.randomBytes(8).toString("hex")}`;
     private laneViewOpen = false;
+    private laneViewRequestRevision = 0;
     private playbackPaused = true;
     private lastScrubbedSampleIndex = 0;
     private serverStdoutLines: string[] = [];
@@ -164,7 +165,9 @@ export class WorkspaceSession {
 
         this.notifications.subscribe<LaneViewUpdatedNotification>("timeline.laneViewUpdated", (params) => {
             if (params.viewId === this.laneViewId) {
-                this.laneProvider.setLanes(params);
+                // The browser owns its scroll position. Notifications refresh
+                // lane data, but must not rewind a scroll already in progress.
+                this.laneProvider.setLanes(params, true);
             }
         });
 
@@ -953,8 +956,12 @@ export class WorkspaceSession {
         if (!this.laneViewOpen || !(await this.ensureReady()) || !this.rpc) {
             return;
         }
+        const requestRevision = ++this.laneViewRequestRevision;
         const result = await this.rpc.updateLaneView(this.laneViewRequestParams());
-        this.laneProvider.setLanes(result);
+        if (requestRevision !== this.laneViewRequestRevision) {
+            return;
+        }
+        this.laneProvider.setLanes(result, true);
     }
 
     async closeLaneView(): Promise<void> {

@@ -1,6 +1,9 @@
 {"command":"timeline.createAuthoredLane","args":{"lane_id":"4b2118ea-f29d-4e0d-bc48-855a63e1994e","type_id":"iv.timeline.beat-trigger","serialized_state":"{\"beatUnit\":4,\"beatsPerBar\":4,\"bpm\":140.0,\"eventsPerBeat\":1}"}}
 {"command":"audioDevices.setLaneIds","args":{"output_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","input_lane_id":"5c55a6fc-58e4-4d3f-b121-466dcb2cf44a"}}
 {"command":"ivModuleInstances.create","args":{"instance_id":"25436153-288f-4024-b102-2941a6183f45","module_id":"iv.project.simple_sine","display_name":null}}
-{"command":"timeline.openLaneView","args":{"view_id":"lanes-0ce75d452176ff7a","query_source":"lane_view.lanes-0ce75d452176ff7a","start_index":0,"visible_lane_count":5,"first_sample_index":0,"last_sample_index":0,"display_sample_count":0}}
+{"command":"timeline.openLaneView","args":{"view_id":"lanes-0ce75d452176ff7a","query_source":"","start_index":0,"visible_lane_count":8,"first_sample_index":0,"last_sample_index":0,"display_sample_count":0}}
+{"command":"timeline.openLaneView","args":{"view_id":"lanes-27b19f3aaf016f67","query_source":"","start_index":0,"visible_lane_count":5,"first_sample_index":0,"last_sample_index":0,"display_sample_count":0}}
 {"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"5c55a6fc-58e4-4d3f-b121-466dcb2cf44a","sample_channel_type":"stereo"}}
 {"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","sample_channel_type":"stereo"}}
+{"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"iv.public:input:instance:25436153-288f-4024-b102-2941a6183f45:kind:sample:source:1449195397:member:logical:channel:0","sample_channel_type":"mono"}}
+{"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"iv.public:output:instance:25436153-288f-4024-b102-2941a6183f45:kind:sample:ordinal:0:channel:1","sample_channel_type":"stereo"}}

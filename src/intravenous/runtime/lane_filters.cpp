@@ -386,13 +386,19 @@ void LaneFilters::handle_timeline_lanes_changed(TimelineLanesChanged const &chan
     LaneFiltersChanged notification;
     {
         std::scoped_lock lock(mutex);
-        dataset = change.dataset;
-        metadata_for_lane = change.metadata_for_lane;
-        model_type_id_for_lane = change.model_type_id_for_lane;
-        public_id_for_lane = change.public_id_for_lane;
-        outputs_for_lanes = change.outputs_for_lanes;
-        visit_lanes = change.visit_lanes;
-        last_schema_change = change.schema_change;
+        // Some structural notifications (notably visualization-sink churn)
+        // describe a delta but do not carry a replacement query dataset.  A
+        // null dataset means "keep the current snapshot", never "there are
+        // no timeline lanes".
+        if (change.dataset) {
+            dataset = change.dataset;
+            last_schema_change = change.schema_change;
+        }
+        if (change.metadata_for_lane) metadata_for_lane = change.metadata_for_lane;
+        if (change.model_type_id_for_lane) model_type_id_for_lane = change.model_type_id_for_lane;
+        if (change.public_id_for_lane) public_id_for_lane = change.public_id_for_lane;
+        if (change.outputs_for_lanes) outputs_for_lanes = change.outputs_for_lanes;
+        if (change.visit_lanes) visit_lanes = change.visit_lanes;
 
         for (auto &[_, filter] : filters_by_name) {
             if (change.schema_change.changed) {

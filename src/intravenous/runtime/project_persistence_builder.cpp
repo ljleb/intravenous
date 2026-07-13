@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <tuple>
 
 namespace iv {
 namespace {
@@ -88,6 +89,12 @@ void ProjectPersistenceBuilder::add_lane_sample_channel_types(
     std::vector<ProjectSetTimelineLaneSampleChannelTypeRequest> requests)
 {
     lane_sample_channel_types_ = std::move(requests);
+}
+
+void ProjectPersistenceBuilder::add_lane_connections(
+    std::vector<ProjectConnectTimelineLanesRequest> connections)
+{
+    lane_connections_ = std::move(connections);
 }
 
 void ProjectPersistenceBuilder::add_authored_lane_connections(std::vector<AuthoredLaneConnection> connections)
@@ -392,6 +399,24 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
             .args = nlohmann::ordered_json{
                 {"lane_id", request.lane_id.str()},
                 {"sample_channel_type", request.sample_channel_type == ChannelTypeId::mono ? "mono" : "stereo"},
+            },
+        });
+    }
+
+    auto lane_connections = lane_connections_;
+    std::ranges::sort(lane_connections, [](auto const &a, auto const &b) {
+        return std::tie(a.source_lane_id, a.target_lane_id, a.port_domain, a.port_kind, a.port_ordinal)
+            < std::tie(b.source_lane_id, b.target_lane_id, b.port_domain, b.port_kind, b.port_ordinal);
+    });
+    for (auto const &connection : lane_connections) {
+        commands.push_back(ProjectCommand{
+            .command = "timeline.connectLanes",
+            .args = nlohmann::ordered_json{
+                {"source_lane_id", connection.source_lane_id.str()},
+                {"target_lane_id", connection.target_lane_id.str()},
+                {"port_domain", connection.port_domain == LanePortDomain::compiled ? "compiled" : "realtime"},
+                {"port_kind", connection.port_kind == PortKind::sample ? "sample" : "event"},
+                {"port_ordinal", connection.port_ordinal},
             },
         });
     }

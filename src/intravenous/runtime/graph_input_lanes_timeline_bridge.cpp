@@ -185,7 +185,7 @@ void emit_lane_change(
     auto dataset = std::make_shared<TimelineLaneQueryDatasetView>(
         *bound_timeline,
         schema,
-        bound_timeline->lane_ids());
+        bound_timeline->persistent_lane_ids());
     TimelineLanesChanged notification{
         .version_index = version_index,
         .lane_set_changed = lane_set_changed,
@@ -248,7 +248,7 @@ void handle_timeline_batch_requested(
         "graph input timeline batch applied: activeConnections="
         + std::to_string(active.size())
         + " pendingPublicConnections=" + std::to_string(pending.size())
-        + " totalLanes=" + std::to_string(bound_timeline->lane_ids().size()));
+        + " totalLanes=" + std::to_string(bound_timeline->persistent_lane_ids().size()));
 
     std::vector<LaneId> upserted_lanes;
     upserted_lanes.reserve(batch.upserts.size());

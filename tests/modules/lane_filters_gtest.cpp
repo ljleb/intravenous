@@ -244,6 +244,34 @@ TEST_F(LaneFiltersTest, TimelineChangeRefreshesAllStoredFilters)
     ASSERT_EQ(witness.changes.front().results.size(), 2u);
 }
 
+TEST_F(LaneFiltersTest, DeltaWithoutDatasetRetainsTheLastLaneSnapshot)
+{
+    auto const schema = iv::query::LaneQuerySchema::from_entries({
+        {"graph_input", iv::query::LaneQueryValueType::unit},
+    }, 1);
+    auto dataset = std::make_shared<FakeLaneQueryDataset>(
+        schema,
+        std::vector<FakeLaneRecord>{{.lane_id = 11, .unit_values = {{"graph_input", true}}}});
+
+    filters.handle_timeline_lanes_changed(make_change(dataset));
+    filters.store_filter(iv::LaneFilterStoredRequest{
+        .filter_name = "all-graph-inputs",
+        .query_source = "graph_input",
+    });
+    witness.changes.clear();
+
+    auto delta = make_change(nullptr);
+    delta.lane_set_changed = false;
+    filters.handle_timeline_lanes_changed(delta);
+
+    ASSERT_EQ(witness.changes.size(), 1u);
+    ASSERT_EQ(witness.changes.front().results.size(), 1u);
+    auto const *snapshot = std::get_if<iv::FilteredLanesSnapshot>(&witness.changes.front().results.front().outcome);
+    ASSERT_NE(snapshot, nullptr);
+    ASSERT_EQ(snapshot->lane_ids.size(), 1u);
+    EXPECT_EQ(snapshot->lane_ids.front().value, 11u);
+}
+
 TEST_F(LaneFiltersTest, SchemaChangeRebindsStoredFilters)
 {
     auto const old_schema = iv::query::LaneQuerySchema::from_entries({

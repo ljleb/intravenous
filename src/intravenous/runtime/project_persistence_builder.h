@@ -40,6 +40,7 @@ class ProjectPersistenceBuilder {
     std::vector<ProjectSetEventOutputStateRequest> event_output_states_ {};
     std::vector<LaneViewRequest> lane_views_ {};
     std::vector<ProjectSetTimelineLaneSampleChannelTypeRequest> lane_sample_channel_types_ {};
+    std::vector<ProjectConnectTimelineLanesRequest> lane_connections_ {};
     std::vector<AuthoredLaneConnection> authored_lane_connections_ {};
     std::vector<AuthoredLaneRecord> authored_lanes_ {};
 
@@ -67,6 +68,7 @@ public:
     void add_lane_views(std::vector<LaneViewRequest> views);
     void add_lane_sample_channel_types(
         std::vector<ProjectSetTimelineLaneSampleChannelTypeRequest> requests);
+    void add_lane_connections(std::vector<ProjectConnectTimelineLanesRequest> connections);
     void add_authored_lane_connections(std::vector<AuthoredLaneConnection> connections);
     void add_authored_lanes(std::vector<AuthoredLaneRecord> lanes);
 

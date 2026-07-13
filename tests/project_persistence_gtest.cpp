@@ -1200,7 +1200,7 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersConnectionUntilLa
     write_text(
         workspace / "iv_project.jsonl",
         Json{
-            {"command", "timeline.connectAuthoredLanes"},
+            {"command", "timeline.connectLanes"},
             {"args", Json{
                 {"source_lane_id", "lane-a"},
                 {"target_lane_id", "lane-b"},
@@ -1242,7 +1242,7 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersUntilTargetExists
     write_text(
         workspace / "iv_project.jsonl",
         Json{
-            {"command", "timeline.connectAuthoredLanes"},
+            {"command", "timeline.connectLanes"},
             {"args", Json{
                 {"source_lane_id", "lane-a"},
                 {"target_lane_id", "lane-b"},

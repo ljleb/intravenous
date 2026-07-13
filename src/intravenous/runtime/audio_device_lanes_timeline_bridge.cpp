@@ -105,7 +105,7 @@ void emit_lane_change(
     auto dataset = std::make_shared<TimelineLaneQueryDatasetView>(
         *bound_timeline,
         schema,
-        bound_timeline->lane_ids());
+        bound_timeline->persistent_lane_ids());
 
     TimelineLanesChanged notification{
         .version_index = version_index,

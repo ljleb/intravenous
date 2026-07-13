@@ -43,9 +43,11 @@ export class LaneViewProvider {
         this.postState();
     }
 
-    setLanes(result) {
-        this.startIndex = Number(result?.startIndex || 0);
-        this.visibleLaneCount = Number(result?.visibleLaneCount ?? this.visibleLaneCount ?? 24);
+    setLanes(result, preserveViewport = false) {
+        if (!preserveViewport) {
+            this.startIndex = Number(result?.startIndex || 0);
+            this.visibleLaneCount = Number(result?.visibleLaneCount ?? this.visibleLaneCount ?? 24);
+        }
         this.totalLaneCount = Number(result?.totalLaneCount || 0);
         this.lanes = Array.isArray(result?.lanes) ? result.lanes : [];
         this.connections = Array.isArray(result?.connections) ? result.connections : [];
@@ -124,7 +126,7 @@ export class LaneViewProvider {
         if (typeof state.laneViewId === "string") this.laneViewId = state.laneViewId;
     }
 
-    laneViewId() { return this.laneViewId || null; }
+    currentLaneViewId() { return this.laneViewId || null; }
 
     setLaneViewId(viewId) {
         this.laneViewId = viewId;
@@ -561,6 +563,7 @@ export class LaneViewProvider {
         };
         const lanePresentationPlugins = new Map([${lanePluginRegistrations}].map((plugin) => [plugin.typeId, plugin]));
         let viewport = null;
+        let hasAppliedInitialScrollPosition = false;
         let pendingViewportPost = 0;
         let lastPostedStartIndex = -1;
         let lastPostedVisibleLaneCount = -1;
@@ -575,8 +578,12 @@ export class LaneViewProvider {
             if (!viewport) {
                 return;
             }
-            const nextStartIndex = Math.max(0, Math.floor(viewport.scrollTop / laneHeight));
             const nextVisibleLaneCount = Math.max(1, Math.ceil(viewport.clientHeight / laneHeight) + 1);
+            const nextStartIndex = Math.max(
+                0,
+                Math.min(
+                    Math.floor(viewport.scrollTop / laneHeight),
+                    Math.max(0, state.totalLaneCount - nextVisibleLaneCount)));
             state.startIndex = nextStartIndex;
             state.visibleLaneCount = nextVisibleLaneCount;
             if (laneWindow) {
@@ -622,14 +629,16 @@ export class LaneViewProvider {
             scheduleViewportPost();
         }
 
-        function scheduleViewportPost(delayMs = 0) {
+        function scheduleViewportPost() {
             if (pendingViewportPost) {
                 return;
             }
-            pendingViewportPost = requestAnimationFrame(() => {
+            // Scrolling stays entirely local. Batch server window requests so
+            // they cannot compete with the browser's scrollbar animation.
+            pendingViewportPost = window.setTimeout(() => {
                 pendingViewportPost = 0;
                 postViewportState();
-            });
+            }, 50);
         }
 
         function ensureLayout() {
@@ -726,11 +735,9 @@ export class LaneViewProvider {
                     renderLanes();
                     return;
                 }
-                const rowDelta = Math.trunc(event.deltaY / laneHeight) || Math.sign(event.deltaY);
-                if (rowDelta !== 0) {
-                    event.preventDefault();
-                    moveViewport(rowDelta);
-                }
+                // Ordinary wheel scrolling is native so the scrollbar keeps
+                // its normal smooth/inertial behavior. The scroll handler
+                // publishes the resulting viewport separately.
             }, { passive: false });
 
             spacer = document.createElement("div");
@@ -1059,9 +1066,13 @@ export class LaneViewProvider {
                 if (!viewport) {
                     return;
                 }
-                const desiredScrollTop = state.startIndex * laneHeight;
-                if (Math.abs(viewport.scrollTop - desiredScrollTop) >= 1) {
-                    viewport.scrollTop = desiredScrollTop;
+                // Restore only the browser's initial saved position.  After
+                // that, scrollTop belongs exclusively to the browser; server
+                // results may change lane data and the spacer's maximum, but
+                // can never move the scrollbar.
+                if (!hasAppliedInitialScrollPosition) {
+                    viewport.scrollTop = state.startIndex * laneHeight;
+                    hasAppliedInitialScrollPosition = true;
                 }
                 if (lastPostedVisibleLaneCount < 0) {
                     scheduleViewportPost();
@@ -1073,8 +1084,13 @@ export class LaneViewProvider {
             const message = event.data || {};
             if (message.type === "setState") {
                 if (typeof message.laneViewId === "string") state.laneViewId = message.laneViewId;
-                state.startIndex = Number(message.startIndex || 0);
-                state.visibleLaneCount = Number(message.visibleLaneCount || 0);
+                if (!viewport) {
+                    state.startIndex = Number(message.startIndex || 0);
+                    state.visibleLaneCount = Number(message.visibleLaneCount || 0);
+                } else {
+                    state.startIndex = Math.max(0, Math.floor(viewport.scrollTop / laneHeight));
+                    state.visibleLaneCount = Math.max(1, Math.ceil(viewport.clientHeight / laneHeight) + 1);
+                }
                 state.totalLaneCount = Number(message.totalLaneCount || 0);
                 state.lanes = Array.isArray(message.lanes) ? message.lanes : [];
                 state.connections = Array.isArray(message.connections) ? message.connections : [];

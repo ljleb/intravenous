@@ -61,6 +61,7 @@ public:
     [[nodiscard]] std::vector<AuthoredLaneRecord> records() const;
     [[nodiscard]] bool contains(InternedString lane_id) const;
     void record_connection(AuthoredLaneConnection connection);
+    [[nodiscard]] bool contains_connection(AuthoredLaneConnection const& connection) const;
     [[nodiscard]] std::vector<AuthoredLaneConnection> connections() const;
 };
 } // namespace iv

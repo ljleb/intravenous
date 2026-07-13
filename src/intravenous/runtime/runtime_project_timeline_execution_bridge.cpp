@@ -381,6 +381,30 @@ IV_SUBSCRIBE_LINKER_EVENT(
             });
         }
         builder.add_lane_sample_channel_types(std::move(lane_sample_channel_types));
+        std::vector<ProjectConnectTimelineLanesRequest> lane_connections;
+        for (auto const &connection : bound_timeline->lane_connections()) {
+            if (!bound_timeline->lane_is_persistent(connection.source)
+                || !bound_timeline->lane_is_persistent(connection.target)) {
+                continue;
+            }
+            auto const authored_connection = AuthoredLaneConnection{
+                .source_lane_id = bound_timeline->lane_public_id(connection.source),
+                .target_lane_id = bound_timeline->lane_public_id(connection.target),
+                .input = connection.input,
+            };
+            if (bound_authored_lanes != nullptr
+                && bound_authored_lanes->contains_connection(authored_connection)) {
+                continue;
+            }
+            lane_connections.push_back(ProjectConnectTimelineLanesRequest{
+                .source_lane_id = authored_connection.source_lane_id,
+                .target_lane_id = authored_connection.target_lane_id,
+                .port_domain = authored_connection.input.domain,
+                .port_kind = authored_connection.input.kind,
+                .port_ordinal = authored_connection.input.ordinal,
+            });
+        }
+        builder.add_lane_connections(std::move(lane_connections));
         builder.add_authored_lane_connections(bound_authored_lanes == nullptr
             ? std::vector<AuthoredLaneConnection>{} : bound_authored_lanes->connections());
         builder.add_authored_lanes(bound_authored_lanes == nullptr

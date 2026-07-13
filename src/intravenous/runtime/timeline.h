@@ -113,6 +113,20 @@ namespace iv {
             });
         }
 
+        std::vector<LaneId> persistent_lane_ids()
+        {
+            std::scoped_lock lock(_graph_mutex);
+            std::vector<LaneId> ids;
+            _graph.for_each_lane([&](LaneRecord const& lane) {
+                if (auto const it = _lane_lifetimes.find(lane.id);
+                    it != _lane_lifetimes.end()
+                    && it->second == TimelineLaneLifetime::persistent) {
+                    ids.push_back(lane.id);
+                }
+            });
+            return ids;
+        }
+
         std::vector<LaneGraphConnection> lane_connections()
         {
             return with_graph([&](LaneGraph& graph) {

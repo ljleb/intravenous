@@ -631,6 +631,7 @@ TEST(TimelineExecution, LaneChangeInvalidatesCompiledCache)
         .upserts = {
             iv::TimelineLaneUpsert {
                 .lane = compiled_source,
+                .lifetime = iv::TimelineLaneLifetime::ephemeral,
                 .make_node = [] {
                     return iv::TypeErasedLaneNode(TestCompiledSampleSourceLaneNode {});
                 },
