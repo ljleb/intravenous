@@ -90,9 +90,14 @@ void ProjectPersistenceBuilder::add_lane_sample_channel_types(
     lane_sample_channel_types_ = std::move(requests);
 }
 
-void ProjectPersistenceBuilder::add_lane_connections(std::vector<ProjectConnectTimelineLanesRequest> connections)
+void ProjectPersistenceBuilder::add_authored_lane_connections(std::vector<AuthoredLaneConnection> connections)
 {
-    lane_connections_ = std::move(connections);
+    authored_lane_connections_ = std::move(connections);
+}
+
+void ProjectPersistenceBuilder::add_authored_lanes(std::vector<AuthoredLaneRecord> lanes)
+{
+    authored_lanes_ = std::move(lanes);
 }
 
 std::string ProjectPersistenceBuilder::relativize_path(std::filesystem::path const &path) const
@@ -223,6 +228,16 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
         commands.push_back(ProjectCommand{
             .command = "project.overrideSettings",
             .args = settings,
+        });
+    }
+
+    auto authored_lanes = authored_lanes_;
+    std::ranges::sort(authored_lanes, {}, &AuthoredLaneRecord::lane_id);
+    for (auto const& lane : authored_lanes) {
+        commands.push_back(ProjectCommand{
+            .command = "timeline.createAuthoredLane",
+            .args = Json{{"lane_id", lane.lane_id.str()}, {"type_id", lane.type_id},
+                         {"serialized_state", lane.serialized_state}},
         });
     }
 
@@ -381,7 +396,7 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
         });
     }
 
-    auto connections = lane_connections_;
+    auto connections = authored_lane_connections_;
     std::ranges::sort(connections, [](auto const &a, auto const &b) {
         if (a.source_lane_id != b.source_lane_id) {
             return a.source_lane_id < b.source_lane_id;
@@ -389,23 +404,23 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
         if (a.target_lane_id != b.target_lane_id) {
             return a.target_lane_id < b.target_lane_id;
         }
-        if (a.port_domain != b.port_domain) {
-            return static_cast<int>(a.port_domain) < static_cast<int>(b.port_domain);
+        if (a.input.domain != b.input.domain) {
+            return static_cast<int>(a.input.domain) < static_cast<int>(b.input.domain);
         }
-        if (a.port_kind != b.port_kind) {
-            return static_cast<int>(a.port_kind) < static_cast<int>(b.port_kind);
+        if (a.input.kind != b.input.kind) {
+            return static_cast<int>(a.input.kind) < static_cast<int>(b.input.kind);
         }
-        return a.port_ordinal < b.port_ordinal;
+        return a.input.ordinal < b.input.ordinal;
     });
     for (auto const &connection : connections) {
         commands.push_back(ProjectCommand{
-            .command = "timeline.connectLanes",
+            .command = "timeline.connectAuthoredLanes",
             .args = nlohmann::ordered_json{
                 {"source_lane_id", connection.source_lane_id.str()},
                 {"target_lane_id", connection.target_lane_id.str()},
-                {"port_domain", connection.port_domain == LanePortDomain::compiled ? "compiled" : "realtime"},
-                {"port_kind", connection.port_kind == PortKind::sample ? "sample" : "event"},
-                {"port_ordinal", connection.port_ordinal},
+                {"port_domain", connection.input.domain == LanePortDomain::compiled ? "compiled" : "realtime"},
+                {"port_kind", connection.input.kind == PortKind::sample ? "sample" : "event"},
+                {"port_ordinal", connection.input.ordinal},
             },
         });
     }

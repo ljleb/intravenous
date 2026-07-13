@@ -854,6 +854,18 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     iv::ProjectPersistence persistence(workspace, startup);
 
     initialize_two_timeline_lanes(timeline);
+    // This models a lane-visualization sink: it exists only while a view is
+    // open and therefore has no producer-supplied public id to restore.
+    timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate{
+        .upserts = {iv::TimelineLaneUpsert{
+            .lane = iv::LaneId{3},
+            .lifetime = iv::TimelineLaneLifetime::ephemeral,
+            .make_node = [] { return iv::TypeErasedLaneNode(iv::KnobLaneNode{.value = 3.0f}); },
+            .sample_channel_type = iv::ChannelTypeId::stereo,
+        }},
+    });
+    auto const transient_lane_id = timeline.lane_public_id(iv::LaneId{3});
+    EXPECT_FALSE(timeline.lane_is_persistent(iv::LaneId{3}));
     instances.create_instance(local_cmake_module_id, workspace, "instance-a");
     instances.set_default_silence_ttl_samples("instance-a", 123);
     execution.set_compiled_sample_cache_chunk_size_multiplier(8);
@@ -908,6 +920,10 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
         return command["command"] == "timeline.setLaneSampleChannelType"
             && command["args"]["lane_id"] == "lane-b"
             && command["args"]["sample_channel_type"] == "stereo";
+    }));
+    EXPECT_FALSE(std::ranges::any_of(original_commands, [&](auto const &command) {
+        return command["command"] == "timeline.setLaneSampleChannelType"
+            && command["args"]["lane_id"] == transient_lane_id.str();
     }));
 
     iv::unbind_project_persistence_bridge(persistence);
@@ -1000,20 +1016,16 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
             .query = iv::LaneQuery{.filter = iv::LaneQueryFilter{.source = "one"}},
         },
     });
-    builder.add_lane_connections({
-        iv::ProjectConnectTimelineLanesRequest{
+    builder.add_authored_lane_connections({
+        iv::AuthoredLaneConnection{
             .source_lane_id = intern("lane-z"),
             .target_lane_id = intern("lane-a"),
-            .port_domain = iv::LanePortDomain::compiled,
-            .port_kind = iv::PortKind::event,
-            .port_ordinal = 2,
+            .input = iv::LanePortId{.domain = iv::LanePortDomain::compiled, .kind = iv::PortKind::event, .ordinal = 2},
         },
-        iv::ProjectConnectTimelineLanesRequest{
+        iv::AuthoredLaneConnection{
             .source_lane_id = intern("lane-a"),
             .target_lane_id = intern("lane-z"),
-            .port_domain = iv::LanePortDomain::realtime,
-            .port_kind = iv::PortKind::sample,
-            .port_ordinal = 0,
+            .input = iv::LanePortId{.domain = iv::LanePortDomain::realtime, .kind = iv::PortKind::sample, .ordinal = 0},
         },
     });
 
@@ -1036,7 +1048,7 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
             created_instance_ids.push_back(command.args["instance_id"].get<std::string>());
         } else if (command.command == "timeline.openLaneView") {
             view_ids.push_back(command.args["view_id"].get<std::string>());
-        } else if (command.command == "timeline.connectLanes") {
+        } else if (command.command == "timeline.connectAuthoredLanes") {
             connection_order.emplace_back(
                 command.args["source_lane_id"].get<std::string>(),
                 command.args["port_domain"].get<std::string>());
@@ -1188,7 +1200,7 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersConnectionUntilLa
     write_text(
         workspace / "iv_project.jsonl",
         Json{
-            {"command", "timeline.connectLanes"},
+            {"command", "timeline.connectAuthoredLanes"},
             {"args", Json{
                 {"source_lane_id", "lane-a"},
                 {"target_lane_id", "lane-b"},
@@ -1230,7 +1242,7 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersUntilTargetExists
     write_text(
         workspace / "iv_project.jsonl",
         Json{
-            {"command", "timeline.connectLanes"},
+            {"command", "timeline.connectAuthoredLanes"},
             {"args", Json{
                 {"source_lane_id", "lane-a"},
                 {"target_lane_id", "lane-b"},

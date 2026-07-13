@@ -56,6 +56,9 @@ void emit_lane_change(
         .metadata_for_lane = [timeline = bound_timeline](LaneId lane) {
             return timeline->lane_metadata(lane);
         },
+        .model_type_id_for_lane = [timeline = bound_timeline](LaneId lane) {
+            return timeline->lane_model_type_id(lane);
+        },
         .outputs_for_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes) {
             return outputs_for_lanes(*timeline, lanes);
         },
@@ -122,6 +125,18 @@ void handle_lane_output_query(
     }
 }
 
+void handle_lane_ui_state_query(
+    LaneId lane,
+    bool changed_only,
+    LanesVisualizationLaneUiStateBuilder &builder)
+{
+    if (bound_timeline == nullptr) return;
+    auto snapshot = changed_only
+        ? bound_timeline->take_lane_ui_state_update(lane)
+        : bound_timeline->lane_ui_state_snapshot(lane);
+    if (snapshot.has_value()) builder.succeed(std::move(*snapshot));
+}
+
 IV_SUBSCRIBE_LINKER_EVENT(
     LanesVisualizationTimelineBatchRequestedEvent,
     iv_runtime_lanes_visualization_timeline_batch_requested_event,
@@ -130,6 +145,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     LanesVisualizationLaneOutputQueryEvent,
     iv_runtime_lanes_visualization_lane_output_query_event,
     handle_lane_output_query);
+IV_SUBSCRIBE_LINKER_EVENT(
+    LanesVisualizationLaneUiStateQueryEvent,
+    iv_runtime_lanes_visualization_lane_ui_state_query_event,
+    handle_lane_ui_state_query);
 } // namespace
 
 void bind_lanes_visualization_timeline_bridge(

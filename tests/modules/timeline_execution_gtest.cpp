@@ -1098,6 +1098,7 @@ TEST(TimelineExecution, ChannelTypeChangeRebuildsDownstreamConversionState)
         .upserts = {
             iv::TimelineLaneUpsert{
                 .lane = source,
+                .lifetime = iv::TimelineLaneLifetime::ephemeral,
                 .make_node = [] {
                     return iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
                         .layout = iv::SampleStreamLayout::planar,
@@ -1185,6 +1186,7 @@ TEST(TimelineExecution, RealtimeLaneCreationDoesNotInvalidateUntouchedLanePointe
         .upserts = {
             iv::TimelineLaneUpsert{
                 .lane = changed,
+                .lifetime = iv::TimelineLaneLifetime::ephemeral,
                 .make_node = [] {
                     return iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
                         .layout = iv::SampleStreamLayout::planar,
@@ -1195,6 +1197,7 @@ TEST(TimelineExecution, RealtimeLaneCreationDoesNotInvalidateUntouchedLanePointe
             },
             iv::TimelineLaneUpsert{
                 .lane = iv::LaneId{999001},
+                .lifetime = iv::TimelineLaneLifetime::ephemeral,
                 .make_node = [] {
                     return iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode{
                         .layout = iv::SampleStreamLayout::planar,

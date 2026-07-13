@@ -58,6 +58,12 @@ void ProjectLaneViewBuilder::succeed(LaneViewResult value)
     result = std::move(value);
 }
 
+std::vector<CreatableLaneDescriptor> ProjectLaneTypesBuilder::build() const
+{
+    if (!result.has_value()) throw std::runtime_error("runtime project lane type query was not handled");
+    return *result;
+}
+
 LaneViewResult ProjectLaneViewBuilder::build() const
 {
     if (!result.has_value()) {

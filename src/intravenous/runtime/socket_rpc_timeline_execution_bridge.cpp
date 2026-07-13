@@ -44,6 +44,53 @@ void handle_set_timeline_lane_sample_channel_type(
     }
 }
 
+void handle_set_timeline_lane_ui_state(
+    SetTimelineLaneUiStateRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_timeline_lane_ui_state_requested_event,
+            ProjectSetTimelineLaneUiStateRequest{
+                .lane_id = request.lane_id,
+                .expected_revision = request.expected_revision,
+                .serialized_state = request.serialized_state,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &e) {
+        builder.fail(e.what());
+    }
+}
+
+void handle_get_timeline_lane_types(
+    GetTimelineLaneTypesRequest const&, SocketRpcLaneTypesResultBuilder &builder)
+{
+    try {
+        ProjectLaneTypesBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_get_timeline_lane_types_requested_event, project_builder);
+        builder.succeed(project_builder.build());
+    } catch (std::exception const& error) {
+        builder.fail(error.what());
+    }
+}
+
+void handle_create_timeline_lane(
+    CreateTimelineLaneRequest const& request, SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_create_timeline_lane_requested_event,
+            ProjectCreateTimelineLaneRequest{.type_id = request.type_id}, project_builder);
+        project_builder.build();
+    } catch (std::exception const& error) {
+        builder.fail(error.what());
+    }
+}
+
 void handle_pause(
     PauseRequest const &request,
     SocketRpcAckResponseBuilder &builder)
@@ -93,6 +140,18 @@ IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcSetTimelineLaneSampleChannelTypeEvent,
     iv_socket_rpc_set_timeline_lane_sample_channel_type_event,
     handle_set_timeline_lane_sample_channel_type);
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcSetTimelineLaneUiStateEvent,
+    iv_socket_rpc_set_timeline_lane_ui_state_event,
+    handle_set_timeline_lane_ui_state);
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcGetTimelineLaneTypesEvent,
+    iv_socket_rpc_get_timeline_lane_types_event,
+    handle_get_timeline_lane_types);
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcCreateTimelineLaneEvent,
+    iv_socket_rpc_create_timeline_lane_event,
+    handle_create_timeline_lane);
 IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcPauseEvent,
     iv_socket_rpc_pause_event,

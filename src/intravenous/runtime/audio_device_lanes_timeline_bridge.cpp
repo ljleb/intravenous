@@ -115,6 +115,9 @@ void emit_lane_change(
         .metadata_for_lane = [timeline = bound_timeline](LaneId lane) {
             return timeline->lane_metadata(lane);
         },
+        .model_type_id_for_lane = [timeline = bound_timeline](LaneId lane) {
+            return timeline->lane_model_type_id(lane);
+        },
         .public_id_for_lane = [timeline = bound_timeline](LaneId lane) {
             return timeline->lane_public_id(lane);
         },

@@ -61,6 +61,7 @@ public:
 LaneFilterResult filter_result_from(
     LaneFilters::RegisteredLaneFilter const &filter,
     std::function<LaneMetadata(LaneId)> const &metadata_for_lane,
+    std::function<std::optional<std::string>(LaneId)> const &model_type_id_for_lane,
     std::function<InternedString(LaneId)> const &public_id_for_lane,
     std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> const &outputs_for_lanes,
     std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> const &visit_lanes)
@@ -85,6 +86,7 @@ LaneFilterResult filter_result_from(
             .revision = filter.bound_ast.schema_revision,
             .lane_ids = filter.matching_lanes,
             .metadata_for_lane = metadata_for_lane,
+            .model_type_id_for_lane = model_type_id_for_lane,
             .public_id_for_lane = public_id_for_lane,
             .outputs_for_lanes = outputs_for_lanes,
             .visit_lanes = visit_lanes,
@@ -173,7 +175,8 @@ void LaneFilters::rebind_filter_locked(RegisteredLaneFilter &filter)
         filter.bound_ast = {};
         filter.dependencies.clear();
         filter.error_message.reset();
-        filter.dirty = false;
+        // refresh_filter_locked materializes the all-lanes selection.
+        filter.dirty = true;
         return;
     }
     filter.bound_ast = query::bind_lane_query_ast(filter.raw_ast, dataset->schema());
@@ -200,6 +203,23 @@ void LaneFilters::refresh_filter_locked(
         filter.matching_lanes.clear();
         filter.matching_lane_ids.clear();
         filter.error_message = filter.parse_error_message;
+        filter.dirty = false;
+        return;
+    }
+    // The empty query is the lanes-view's explicit all-lanes query.  Do not
+    // hand an empty AST to the query executor: it has no predicate and is not
+    // a useful representation of this intentional selection.
+    if (filter.query_source.empty()) {
+        filter.matching_lanes.clear();
+        filter.matching_lane_ids.clear();
+        filter.matching_lanes.reserve(dataset->lane_count());
+        filter.matching_lane_ids.reserve(dataset->lane_count());
+        for (size_t index = 0; index < dataset->lane_count(); ++index) {
+            const auto lane = LaneId{dataset->lane_id_at(index)};
+            filter.matching_lanes.push_back(lane);
+            filter.matching_lane_ids.insert(lane.value);
+        }
+        filter.error_message.reset();
         filter.dirty = false;
         return;
     }
@@ -279,7 +299,13 @@ std::vector<LaneFilterResult> LaneFilters::refresh_all_filters_locked()
             continue;
         }
         refresh_filter_locked(it->second, visiting);
-        results.push_back(filter_result_from(it->second, metadata_for_lane, public_id_for_lane, outputs_for_lanes, visit_lanes));
+        results.push_back(filter_result_from(
+            it->second,
+            metadata_for_lane,
+            model_type_id_for_lane,
+            public_id_for_lane,
+            outputs_for_lanes,
+            visit_lanes));
     }
     return results;
 }
@@ -362,6 +388,7 @@ void LaneFilters::handle_timeline_lanes_changed(TimelineLanesChanged const &chan
         std::scoped_lock lock(mutex);
         dataset = change.dataset;
         metadata_for_lane = change.metadata_for_lane;
+        model_type_id_for_lane = change.model_type_id_for_lane;
         public_id_for_lane = change.public_id_for_lane;
         outputs_for_lanes = change.outputs_for_lanes;
         visit_lanes = change.visit_lanes;

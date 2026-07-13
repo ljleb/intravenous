@@ -35,6 +35,15 @@ IV_DEFINE_LINKER_EVENT(
     ProjectSetTimelineLaneSampleChannelTypeRequestedEvent,
     iv_runtime_project_set_timeline_lane_sample_channel_type_requested_event)
 IV_DEFINE_LINKER_EVENT(
+    ProjectSetTimelineLaneUiStateRequestedEvent,
+    iv_runtime_project_set_timeline_lane_ui_state_requested_event)
+IV_DEFINE_LINKER_EVENT(
+    ProjectGetTimelineLaneTypesRequestedEvent,
+    iv_runtime_project_get_timeline_lane_types_requested_event)
+IV_DEFINE_LINKER_EVENT(
+    ProjectCreateTimelineLaneRequestedEvent,
+    iv_runtime_project_create_timeline_lane_requested_event)
+IV_DEFINE_LINKER_EVENT(
     ProjectSetAudioDevicesRequestedEvent,
     iv_runtime_project_set_audio_devices_requested_event)
 IV_DEFINE_LINKER_EVENT(

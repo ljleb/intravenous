@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/lane_node/ui_state.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/lane_graph.h>
 #include <intravenous/runtime/lanes_visualization_api_types.h>
@@ -47,6 +48,15 @@ public:
 
 using LanesVisualizationPlaybackPositionQueryEvent =
     void (*)(LanesVisualizationPlaybackPositionBuilder&);
+
+class LanesVisualizationLaneUiStateBuilder {
+    std::optional<LaneUiStateSnapshot> result_ {};
+public:
+    void succeed(LaneUiStateSnapshot snapshot) { result_ = std::move(snapshot); }
+    [[nodiscard]] std::optional<LaneUiStateSnapshot> build() { return std::move(result_); }
+};
+using LanesVisualizationLaneUiStateQueryEvent =
+    void (*)(LaneId, bool changed_only, LanesVisualizationLaneUiStateBuilder&);
 
 // ---- Compiled sample level query ----
 
@@ -106,6 +116,9 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     LanesVisualizationPlaybackPositionQueryEvent,
     iv_runtime_lanes_visualization_playback_position_query_event);
+IV_DECLARE_LINKER_EVENT(
+    LanesVisualizationLaneUiStateQueryEvent,
+    iv_runtime_lanes_visualization_lane_ui_state_query_event);
 IV_DECLARE_LINKER_EVENT(
     LanesVisualizationCompiledSampleLevelRequestedEvent,
     iv_runtime_lanes_visualization_compiled_sample_level_requested_event);

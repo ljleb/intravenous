@@ -22,9 +22,12 @@ type LaneViewProviderLike = {
     setCloseHandler(handler: () => void): void;
     setViewportHandler(handler: () => void): void;
     setScrubHandler(handler: (sampleIndex: number) => void): void;
+    setLaneUiStateHandler(handler: (laneId: string, serializedState: string, expectedRevision?: number) => void): void;
     clear(): void;
     setLanes(result: Record<string, unknown>): void;
+    setModuleInstances(instances: unknown[]): void;
     viewportState(): { startIndex: number; visibleLaneCount: number };
+    setLaneViewId(viewId: string): void;
 };
 
 type ModulesViewProviderLike = Pick<ModulesViewProvider, "setState">;

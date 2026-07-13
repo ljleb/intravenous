@@ -228,6 +228,9 @@ TEST_F(LaneViewsModuleTest, MatchingSnapshotRefreshesOpenView)
                     .query_source = "graph_input",
                     .revision = 1,
                     .lane_ids = {iv::LaneId{42}},
+                    .model_type_id_for_lane = [](iv::LaneId lane) -> std::optional<std::string> {
+                        return lane.value == 42 ? std::optional<std::string>{"test.ui-model"} : std::nullopt;
+                    },
                 },
             },
         },
@@ -237,6 +240,8 @@ TEST_F(LaneViewsModuleTest, MatchingSnapshotRefreshesOpenView)
     EXPECT_EQ(witness.updates.front().view_id.str(), "abc");
     ASSERT_EQ(witness.updates.front().lanes.lanes.size(), 1u);
     EXPECT_EQ(witness.updates.front().lanes.lanes.front().lane_id.str(), "42");
+    ASSERT_TRUE(witness.updates.front().lanes.lanes.front().model_type_id.has_value());
+    EXPECT_EQ(*witness.updates.front().lanes.lanes.front().model_type_id, "test.ui-model");
 }
 
 TEST_F(LaneViewsModuleTest, MatchingFilterErrorRefreshesOpenView)

@@ -9,7 +9,10 @@ import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { WorkspaceSessionFactory } from "./workspaceSessionFactory";
 import { ModulesViewProvider } from "./modulesViewProvider";
 
+let deactivating = false;
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+    deactivating = false;
     const outputChannel = vscode.window.createOutputChannel("Intravenous");
     const provider = new LiveGraphViewProvider(context.extensionUri);
     const laneProvider = new LaneViewProvider();
@@ -39,6 +42,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         highlighter,
     );
     laneProvider.setCloseHandler(() => {
+        // Panel disposal while VS Code/the extension is shutting down is not
+        // an authored deletion.  An ordinary user panel close is.
+        if (deactivating) return;
         session.closeLaneView().catch((error: Error) => {
             outputChannel.appendLine(`Intravenous lane view close failed: ${error.message}`);
         });
@@ -53,11 +59,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             outputChannel.appendLine(`Intravenous seek playback failed: ${error.message}`);
         });
     });
+    laneProvider.setLaneUiStateHandler((laneId, serializedState, expectedRevision) => {
+        session.setTimelineLaneUiState(laneId, serializedState, expectedRevision).catch((error: Error) => {
+            outputChannel.appendLine(`Intravenous lane UI state update failed: ${error.message}`);
+        });
+    });
     modulesProvider.setControlHandler((message) => session.dispatchModulesControl(message));
 
     context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.lanes", {
         async deserializeWebviewPanel(panel, state) {
             laneProvider.revive(panel, state);
+            session.restoreLaneViewId(laneProvider.laneViewId());
             try {
                 await session.openLaneView();
             } catch (error: any) {
@@ -82,6 +94,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             await session.openLaneView();
         } catch (error: any) {
             outputChannel.appendLine(`Intravenous lane query failed: ${error.message}`);
+        }
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.createLane", async () => {
+        let creatableLanes: Array<{ typeId: string; category: string; label: string; description: string }>;
+        try {
+            creatableLanes = await session.getTimelineLaneTypes();
+        } catch (error: any) {
+            outputChannel.appendLine(`Intravenous lane type query failed: ${error.message}`);
+            return;
+        }
+        const items: vscode.QuickPickItem[] = [];
+        let category = "";
+        for (const lane of creatableLanes) {
+            if (lane.category !== category) {
+                category = lane.category;
+                items.push({label: category, kind: vscode.QuickPickItemKind.Separator});
+            }
+            items.push({
+                label: lane.label,
+                description: lane.description,
+                detail: lane.typeId,
+            });
+        }
+        const selected = await vscode.window.showQuickPick(items, {
+            title: "Create Timeline Lane",
+            placeHolder: "Choose a lane type",
+            matchOnDescription: true,
+            matchOnDetail: true,
+        });
+        if (!selected || selected.kind === vscode.QuickPickItemKind.Separator) return;
+        const lane = creatableLanes.find((candidate) => candidate.label === selected.label);
+        if (!lane) return;
+        try {
+            await session.createTimelineLane(lane.typeId);
+            laneProvider.open();
+            await session.openLaneView();
+        } catch (error: any) {
+            outputChannel.appendLine(`Intravenous lane creation failed: ${error.message}`);
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openModules", async () => {
@@ -219,4 +269,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }));
 }
 
-export function deactivate(): void {}
+export function deactivate(): void {
+    deactivating = true;
+}

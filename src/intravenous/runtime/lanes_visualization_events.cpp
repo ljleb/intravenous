@@ -8,6 +8,9 @@ IV_DEFINE_LINKER_EVENT(
     LanesVisualizationPlaybackPositionQueryEvent,
     iv_runtime_lanes_visualization_playback_position_query_event);
 IV_DEFINE_LINKER_EVENT(
+    LanesVisualizationLaneUiStateQueryEvent,
+    iv_runtime_lanes_visualization_lane_ui_state_query_event);
+IV_DEFINE_LINKER_EVENT(
     LanesVisualizationCompiledSampleLevelRequestedEvent,
     iv_runtime_lanes_visualization_compiled_sample_level_requested_event);
 IV_DEFINE_LINKER_EVENT(

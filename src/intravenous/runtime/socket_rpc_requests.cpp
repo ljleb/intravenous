@@ -390,6 +390,25 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
+    if (method == "timeline.setLaneUiState") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = SetTimelineLaneUiStateRequest{
+                .lane_id = InternedString::from_string(parse_string_param(params, "laneId")),
+                .expected_revision = params.contains("expectedRevision")
+                    ? std::optional<std::uint64_t>{parse_uint64_param(params, "expectedRevision")}
+                    : std::nullopt,
+                .serialized_state = parse_string_param(params, "serializedState"),
+            },
+        };
+    }
+    if (method == "timeline.laneTypes") {
+        return ParsedSocketRpcRequest{.request_id = request_id, .payload = GetTimelineLaneTypesRequest{}};
+    }
+    if (method == "timeline.createLane") {
+        return ParsedSocketRpcRequest{.request_id = request_id,
+            .payload = CreateTimelineLaneRequest{.type_id = parse_string_param(params, "typeId")}};
+    }
     if (method == "audioDevices.get") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,

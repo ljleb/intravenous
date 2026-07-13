@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import * as childProcess from "child_process";
-import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -93,7 +92,7 @@ export class WorkspaceSession {
     private lastQuery: QueryShape | null = null;
     private startInFlight: Promise<boolean> | null = null;
     private lastTerminalStatusMessage = "";
-    private readonly laneViewId = `lanes-${crypto.randomBytes(8).toString("hex")}`;
+    private laneViewId = `lanes-${crypto.randomBytes(8).toString("hex")}`;
     private laneViewOpen = false;
     private playbackPaused = true;
     private lastScrubbedSampleIndex = 0;
@@ -127,6 +126,7 @@ export class WorkspaceSession {
         this.outputChannel = outputChannel;
         this.provider = provider;
         this.laneProvider = laneProvider;
+        this.laneProvider.setLaneViewId(this.laneViewId);
         this.modulesProvider = modulesProvider;
         this.highlighter = highlighter;
         this.clangdDatabaseWatcher = vscode.workspace.createFileSystemWatcher(
@@ -135,6 +135,12 @@ export class WorkspaceSession {
         this.clangdDatabaseWatcher.onDidCreate(() => this.restartClangdForCompilationDatabase());
         this.clangdDatabaseWatcher.onDidChange(() => this.restartClangdForCompilationDatabase());
         this.registerNotificationHandlers();
+    }
+
+    restoreLaneViewId(viewId: string | null): void {
+        if (!viewId || !viewId.startsWith("lanes-")) return;
+        this.laneViewId = viewId;
+        this.laneProvider.setLaneViewId(viewId);
     }
 
     private registerNotificationHandlers(): void {
@@ -170,6 +176,7 @@ export class WorkspaceSession {
 
         this.notifications.subscribe<IvModuleInstancesUpdatedNotification>("ivModuleInstances.updated", (params) => {
             this.projectModuleInstances = Array.isArray(params.instances) ? params.instances : [];
+            this.refreshLaneInstanceNames();
             if (this.activeSourceFilePath && this.rpc) {
                 void this.rpc.getIvModuleInstances(this.activeSourceFilePath).then((result) => {
                     this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
@@ -315,6 +322,10 @@ export class WorkspaceSession {
 
     private refreshModulesPanelState(): void {
         this.modulesProvider.setState(this.ivModuleSources, this.modulePanelInstances(), this.selectedInstanceId);
+    }
+
+    private refreshLaneInstanceNames(): void {
+        this.laneProvider.setModuleInstances(this.projectModuleInstances);
     }
 
     private parseSourcePosition(payload: unknown): SourcePosition | null {
@@ -568,6 +579,7 @@ export class WorkspaceSession {
             const result = await this.rpc.getIvModuleInstances();
             this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
             this.projectModuleInstances = this.ivModuleInstances;
+            this.refreshLaneInstanceNames();
             this.refreshVisibleInstances();
             const realizedCount = this.ivModuleInstances.filter((instance) => instance.realized).length;
             this.outputChannel.appendLine(
@@ -689,6 +701,7 @@ export class WorkspaceSession {
         ]);
         this.ivModuleSources = this.parseIvModuleSources(sources.sources);
         this.projectModuleInstances = this.parseIvModuleInstances(instances.instances);
+        this.refreshLaneInstanceNames();
         this.refreshModulesPanelState();
     }
 
@@ -876,6 +889,22 @@ export class WorkspaceSession {
         this.lastScrubbedSampleIndex = sampleIndex;
     }
 
+    async setTimelineLaneUiState(laneId: string, serializedState: string, expectedRevision?: number): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        await this.rpc.setTimelineLaneUiState(laneId, serializedState, expectedRevision);
+    }
+
+    async getTimelineLaneTypes(): Promise<Array<{
+        typeId: string; category: string; label: string; description: string;
+    }>> {
+        return (await this.rpc.getTimelineLaneTypes()).laneTypes ?? [];
+    }
+
+    async createTimelineLane(typeId: string): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        await this.rpc.createTimelineLane(typeId);
+    }
+
     async saveProject(): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) {
             return;
@@ -901,10 +930,9 @@ export class WorkspaceSession {
         const viewport = this.laneProvider.viewportState();
         return {
             viewId: this.laneViewId,
-            // Keep the initial generic workspace scoped to the lanes the
-            // running DSP graph contributes, without hard-coding one lane
-            // subtype such as graph inputs.
-            filter: { query: "dsp_graph" },
+            // The lanes view is an inventory, not a graph-only inspector.
+            // An empty query is the explicit unfiltered/all-lanes query.
+            filter: { query: "" },
             startIndex: viewport.startIndex,
             visibleLaneCount: viewport.visibleLaneCount,
         };
@@ -1168,3 +1196,4 @@ export class WorkspaceSession {
         }
     }
 }
+import * as crypto from "crypto";

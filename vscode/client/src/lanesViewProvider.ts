@@ -1,5 +1,6 @@
 // @ts-nocheck
 import * as vscode from "vscode";
+import { lanePresentationPlugins } from "./lanePlugins";
 
 export class LaneViewProvider {
     constructor() {
@@ -7,13 +8,39 @@ export class LaneViewProvider {
         this.lanes = [];
         this.connections = [];
         this.contentByLaneId = {};
+        this.uiStateByLaneId = {};
         this.playbackSampleIndex = null;
         this.closeHandler = null;
         this.viewportHandler = null;
         this.scrubHandler = null;
+        this.laneUiStateHandler = null;
         this.startIndex = 0;
         this.visibleLaneCount = 24;
         this.totalLaneCount = 0;
+        this.instanceNamesByNumericId = new Map();
+        this.laneViewId = "";
+    }
+
+    setModuleInstances(instances) {
+        this.instanceNamesByNumericId = new Map();
+        if (!Array.isArray(instances)) {
+            this.postState();
+            return;
+        }
+
+        for (const instance of instances) {
+            const instanceId = typeof instance?.instanceId === "string" ? instance.instanceId : "";
+            const displayName = typeof instance?.displayName === "string" && instance.displayName.length > 0
+                ? instance.displayName
+                : typeof instance?.moduleId === "string" && instance.moduleId.length > 0
+                    ? instance.moduleId
+                    : typeof instance?.definitionId === "string" ? instance.definitionId : "";
+            if (!instanceId || !displayName) {
+                continue;
+            }
+            this.instanceNamesByNumericId.set(moduleInstanceNumericId(instanceId), displayName);
+        }
+        this.postState();
     }
 
     setLanes(result) {
@@ -31,15 +58,16 @@ export class LaneViewProvider {
         this.lanes = [];
         this.connections = [];
         this.contentByLaneId = {};
+        this.uiStateByLaneId = {};
         this.playbackSampleIndex = null;
         this.postState();
     }
 
     setLaneContent(update) {
-        if (!update || !Array.isArray(update.lanes)) {
+        if (!update || ( !Array.isArray(update.lanes) && !Array.isArray(update.uiStates))) {
             return;
         }
-        for (const content of update.lanes) {
+        for (const content of (Array.isArray(update.lanes) ? update.lanes : [])) {
             const laneId = String(content?.laneId || "");
             if (!laneId) continue;
             this.contentByLaneId[laneId] = {
@@ -50,6 +78,15 @@ export class LaneViewProvider {
                 eventCount: typeof content?.eventCount === "number"
                     ? content.eventCount
                     : Array.isArray(content?.events) ? content.events.length : 0,
+                events: Array.isArray(content?.events) ? content.events : [],
+            };
+        }
+        for (const state of (Array.isArray(update.uiStates) ? update.uiStates : [])) {
+            const laneId = String(state?.laneId || "");
+            if (!laneId || typeof state?.serializedState !== "string") continue;
+            this.uiStateByLaneId[laneId] = {
+                revision: typeof state?.revision === "number" ? state.revision : 0,
+                serializedState: state.serializedState,
             };
         }
         if (typeof update.playbackSampleIndex === "number") {
@@ -58,6 +95,7 @@ export class LaneViewProvider {
         this.panel?.webview.postMessage({
             type: "setContent",
             contentByLaneId: this.contentByLaneId,
+            uiStateByLaneId: this.uiStateByLaneId,
             playbackSampleIndex: this.playbackSampleIndex,
         });
     }
@@ -75,6 +113,7 @@ export class LaneViewProvider {
     }
 
     setScrubHandler(handler) { this.scrubHandler = handler; }
+    setLaneUiStateHandler(handler) { this.laneUiStateHandler = handler; }
 
     restoreViewportState(state) {
         if (!state || typeof state !== "object") {
@@ -82,6 +121,14 @@ export class LaneViewProvider {
         }
         this.startIndex = Math.max(0, Number(state.startIndex || 0));
         this.visibleLaneCount = Math.max(1, Number(state.visibleLaneCount || this.visibleLaneCount || 24));
+        if (typeof state.laneViewId === "string") this.laneViewId = state.laneViewId;
+    }
+
+    laneViewId() { return this.laneViewId || null; }
+
+    setLaneViewId(viewId) {
+        this.laneViewId = viewId;
+        this.postState();
     }
 
     viewportState() {
@@ -97,7 +144,13 @@ export class LaneViewProvider {
             const has = (key) => Object.prototype.hasOwnProperty.call(metadata, key);
             const type = has("dsp_graph.event") ? "event" : has("dsp_graph.sample") ? "sample" : "lane";
             const direction = has("dsp_graph.graph_output") ? "out" : has("dsp_graph.graph_input") ? "in" : "";
-            const title = (has("dsp_graph.public") ? "public " : "") + type + (direction ? " " + direction : "");
+            const instanceName = has("dsp_graph.public")
+                && type === "sample"
+                && direction === "out"
+                ? this.instanceNamesByNumericId.get(Number(metadata["dsp_graph.module_instance_id"]))
+                : "";
+            const title = (has("dsp_graph.public") ? "public " : "") + type + (direction ? " " + direction : "")
+                + (instanceName ? ` • ${instanceName}` : "");
             const numericMetadata = Object.entries(metadata)
                 .filter(([key, value]) => typeof value === "number" && !key.includes("ordinal"))
                 .map(([key, value]) => `${key.replace(/^dsp_graph\./, "")}=${value}`);
@@ -107,6 +160,7 @@ export class LaneViewProvider {
                 title,
                 description: numericMetadata.join(" • "),
                 metadata,
+                modelTypeId: typeof lane.modelTypeId === "string" ? lane.modelTypeId : "",
             };
         });
     }
@@ -179,6 +233,11 @@ export class LaneViewProvider {
                 this.scrubHandler?.(Math.max(0, Number(message.sampleIndex || 0)));
                 return;
             }
+            if (message.type === "setLaneUiState") {
+                this.laneUiStateHandler?.(String(message.laneId || ""), String(message.serializedState || ""),
+                    typeof message.expectedRevision === "number" ? message.expectedRevision : undefined);
+                return;
+            }
             if (message.type !== "viewportChanged") return;
             const startIndex = Math.max(0, Number(message.startIndex || 0));
             const visibleLaneCount = Math.max(0, Number(message.visibleLaneCount || 0));
@@ -204,18 +263,24 @@ export class LaneViewProvider {
         }
         this.panel.webview.postMessage({
             type: "setState",
+            laneViewId: this.laneViewId,
             startIndex: this.startIndex,
             visibleLaneCount: this.visibleLaneCount,
             totalLaneCount: this.totalLaneCount,
             lanes: this.serializeLanes(),
             connections: this.serializeConnections(),
             contentByLaneId: this.contentByLaneId,
+            uiStateByLaneId: this.uiStateByLaneId,
             playbackSampleIndex: this.playbackSampleIndex,
         });
     }
 
     getHtml() {
         const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const lanePluginCss = lanePresentationPlugins.map((plugin) => plugin.css || "").join("\n");
+        const lanePluginRegistrations = lanePresentationPlugins.map((plugin) =>
+            `{typeId:${JSON.stringify(plugin.typeId)},render:${plugin.render.toString()}}`,
+        ).join(",\n");
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -313,6 +378,7 @@ export class LaneViewProvider {
         }
         .timeline-tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.25)); padding-left: 3px; font-size: .72em; color: var(--vscode-descriptionForeground); }
         .timeline-tick.minor { top: 12px; color: transparent; opacity: .55; }
+        ${lanePluginCss}
 
         .lane-row:hover,
         .connection-row:hover {
@@ -478,12 +544,14 @@ export class LaneViewProvider {
         const laneHeight = 58;
         const restoredState = vscode.getState() || {};
         const state = {
+            laneViewId: typeof restoredState.laneViewId === "string" ? restoredState.laneViewId : "",
             startIndex: Number(restoredState.startIndex || 0),
             visibleLaneCount: Number(restoredState.visibleLaneCount || 0),
             totalLaneCount: 0,
             lanes: [],
             connections: [],
             contentByLaneId: {},
+            uiStateByLaneId: {},
             playbackSampleIndex: null,
             samplesPerPixel: Number(restoredState.samplesPerPixel || 256),
             panSamples: Number(restoredState.panSamples || 0),
@@ -491,6 +559,7 @@ export class LaneViewProvider {
             meterGrid: restoredState.meterGrid === "sample" ? "sample" : "decibel",
             connectionsExpanded: Boolean(restoredState.connectionsExpanded),
         };
+        const lanePresentationPlugins = new Map([${lanePluginRegistrations}].map((plugin) => [plugin.typeId, plugin]));
         let viewport = null;
         let pendingViewportPost = 0;
         let lastPostedStartIndex = -1;
@@ -515,6 +584,7 @@ export class LaneViewProvider {
             }
             renderTimelineChrome();
             vscode.setState({
+                laneViewId: state.laneViewId,
                 startIndex: state.startIndex,
                 visibleLaneCount: state.visibleLaneCount,
                 connectionsExpanded: state.connectionsExpanded,
@@ -910,6 +980,12 @@ export class LaneViewProvider {
                     laneWindow.appendChild(row);
                     continue;
                 }
+                const presentation = lanePresentationPlugins.get(lane.modelTypeId);
+                if (presentation?.render({ lane, content, row, state, laneWindow, timelineStart, scrubToSample,
+                    postLaneUiState: (laneId, serializedState, expectedRevision) => vscode.postMessage({
+                        type: "setLaneUiState", laneId, serializedState, expectedRevision,
+                    }),
+                })) continue;
                 const track = document.createElement("div");
                 track.className = "lane-track";
                 track.style.setProperty("--second-width", String(Math.max(1, 48000 / state.samplesPerPixel)) + "px");
@@ -996,6 +1072,7 @@ export class LaneViewProvider {
         window.addEventListener("message", (event) => {
             const message = event.data || {};
             if (message.type === "setState") {
+                if (typeof message.laneViewId === "string") state.laneViewId = message.laneViewId;
                 state.startIndex = Number(message.startIndex || 0);
                 state.visibleLaneCount = Number(message.visibleLaneCount || 0);
                 state.totalLaneCount = Number(message.totalLaneCount || 0);
@@ -1007,6 +1084,7 @@ export class LaneViewProvider {
                     state.playbackSampleIndex = message.playbackSampleIndex;
                 }
                 vscode.setState({
+                    laneViewId: state.laneViewId,
                     startIndex: state.startIndex,
                     visibleLaneCount: state.visibleLaneCount,
                     connectionsExpanded: state.connectionsExpanded,
@@ -1018,6 +1096,8 @@ export class LaneViewProvider {
             } else if (message.type === "setContent") {
                 state.contentByLaneId = message.contentByLaneId && typeof message.contentByLaneId === "object"
                     ? message.contentByLaneId : state.contentByLaneId;
+                state.uiStateByLaneId = message.uiStateByLaneId && typeof message.uiStateByLaneId === "object"
+                    ? message.uiStateByLaneId : state.uiStateByLaneId;
                 if (typeof message.playbackSampleIndex === "number") {
                     state.playbackSampleIndex = message.playbackSampleIndex;
                 }
@@ -1033,4 +1113,57 @@ export class LaneViewProvider {
 </body>
 </html>`;
     }
+}
+
+// GraphInputLanes stores an instance's trailing numeric id when available;
+// UUID instance ids use libstdc++'s std::hash<string> narrowed to int.
+// Mirror that identity here so lane metadata can be joined with the instance
+// list already supplied by the workspace RPC.
+function moduleInstanceNumericId(instanceId) {
+    const suffix = instanceId.lastIndexOf(":") >= 0 ? instanceId.slice(instanceId.lastIndexOf(":") + 1) : "";
+    if (/^-?\d+$/.test(suffix)) {
+        const numeric = Number(suffix);
+        if (Number.isSafeInteger(numeric)) {
+            return numeric;
+        }
+    }
+    return Number(BigInt.asIntN(32, libstdcxxStringHash(instanceId)));
+}
+
+function libstdcxxStringHash(value) {
+    const bytes = new TextEncoder().encode(value);
+    const mask = (1n << 64n) - 1n;
+    const multiplier = 0xc6a4a7935bd1e995n;
+    let hash = (0xc70f6907n ^ (BigInt(bytes.length) * multiplier)) & mask;
+    let offset = 0;
+
+    while (offset + 8 <= bytes.length) {
+        let word = 0n;
+        for (let byte = 0; byte < 8; ++byte) {
+            word |= BigInt(bytes[offset + byte]) << BigInt(byte * 8);
+        }
+        word = (word * multiplier) & mask;
+        word ^= word >> 47n;
+        word = (word * multiplier) & mask;
+        hash ^= word;
+        hash = (hash * multiplier) & mask;
+        offset += 8;
+    }
+
+    switch (bytes.length - offset) {
+    case 7: hash ^= BigInt(bytes[offset + 6]) << 48n;
+    case 6: hash ^= BigInt(bytes[offset + 5]) << 40n;
+    case 5: hash ^= BigInt(bytes[offset + 4]) << 32n;
+    case 4: hash ^= BigInt(bytes[offset + 3]) << 24n;
+    case 3: hash ^= BigInt(bytes[offset + 2]) << 16n;
+    case 2: hash ^= BigInt(bytes[offset + 1]) << 8n;
+    case 1:
+        hash ^= BigInt(bytes[offset]);
+        hash = (hash * multiplier) & mask;
+    }
+
+    hash ^= hash >> 47n;
+    hash = (hash * multiplier) & mask;
+    hash ^= hash >> 47n;
+    return hash & mask;
 }

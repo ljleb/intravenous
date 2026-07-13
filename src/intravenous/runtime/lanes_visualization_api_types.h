@@ -25,9 +25,16 @@ struct LaneVisualizationSeries {
     std::vector<TimedEvent> events {};
 };
 
+struct LaneUiStateUpdate {
+    InternedString lane_id {};
+    std::uint64_t revision = 0;
+    std::string serialized_state {};
+};
+
 struct LaneViewContentUpdate {
     InternedString view_id {};
     std::optional<size_t> playback_sample_index {};
     std::vector<LaneVisualizationSeries> lanes {};
+    std::vector<LaneUiStateUpdate> ui_states {};
 };
 } // namespace iv

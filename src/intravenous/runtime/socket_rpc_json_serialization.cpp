@@ -225,11 +225,15 @@ SocketRpcJson lane_query_result_json(LaneQueryResult const &result)
 {
     SocketRpcJson json_lanes = SocketRpcJson::array();
     for (auto const &lane : result.lanes) {
-        json_lanes.push_back(SocketRpcJson{
+        auto json_lane = SocketRpcJson{
             {"laneId", lane.lane_id.str()},
             {"domain", std::string(lane_domain_json(lane.domain))},
             {"metadata", lane_metadata_json(lane.metadata)},
-        });
+        };
+        if (lane.model_type_id.has_value()) {
+            json_lane["modelTypeId"] = *lane.model_type_id;
+        }
+        json_lanes.push_back(std::move(json_lane));
     }
 
     SocketRpcJson json_connections = SocketRpcJson::array();

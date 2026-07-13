@@ -453,6 +453,7 @@ TEST(Integration, TimelineRealtimeSinewaveReachesAudioBuffer)
         .upserts = {
             iv::TimelineLaneUpsert{
                 .lane = source_lane,
+                .lifetime = iv::TimelineLaneLifetime::ephemeral,
                 .make_node = [sine_state] {
                     return iv::TypeErasedLaneNode(TestRealtimeSineLaneNode{
                         .state = sine_state,
@@ -463,6 +464,7 @@ TEST(Integration, TimelineRealtimeSinewaveReachesAudioBuffer)
             },
             iv::TimelineLaneUpsert{
                 .lane = sink_lane,
+                .lifetime = iv::TimelineLaneLifetime::ephemeral,
                 .make_node = [capture_state] {
                     return iv::TypeErasedLaneNode(TestAudioBufferSinkLaneNode{
                         .capture = capture_state,
@@ -517,6 +519,7 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
         .upserts = {
             iv::TimelineLaneUpsert{
                 .lane = source_lane,
+                .lifetime = iv::TimelineLaneLifetime::ephemeral,
                 .make_node = [sine_state] {
                     return iv::TypeErasedLaneNode(TestRealtimeSineLaneNode{
                         .state = sine_state,
@@ -527,6 +530,7 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
             },
             iv::TimelineLaneUpsert{
                 .lane = sink_lane,
+                .lifetime = iv::TimelineLaneLifetime::ephemeral,
                 .make_node = [capture_state] {
                     return iv::TypeErasedLaneNode(TestAudioBufferSinkLaneNode{
                         .capture = capture_state,

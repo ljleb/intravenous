@@ -3,6 +3,7 @@
 #include <intravenous/runtime/lanes_visualization_events.h>
 #include <intravenous/runtime/task_runner_events.h>
 
+#include <algorithm>
 #include <thread>
 #include <variant>
 
@@ -87,6 +88,20 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
     std::unordered_map<uint64_t, TrackedRealtimeEventLane> new_event_lanes;
     std::unordered_map<uint64_t, Sample::storage> compiled_sample_levels;
     std::unordered_map<uint64_t, std::vector<TimedEvent>> compiled_events;
+    std::unordered_map<uint64_t, LaneUiStateSnapshot> initial_ui_states;
+
+    for (auto const &info : new_lane_infos) {
+        if (!info.model_type_id.has_value()) continue;
+        LanesVisualizationLaneUiStateBuilder builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_lanes_visualization_lane_ui_state_query_event,
+            info.runtime_lane,
+            false,
+            builder);
+        if (auto snapshot = builder.build()) {
+            initial_ui_states.emplace(info.runtime_lane.value, std::move(*snapshot));
+        }
+    }
 
     for (auto const lane : lanes_to_classify) {
         auto const it = output_descriptors.find(lane.value);
@@ -228,6 +243,14 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
 
         for (auto const &info : new_lane_infos) {
             auto const lane = info.runtime_lane;
+            if (info.model_type_id.has_value()) {
+                view.ui_model_lanes.push_back(lane);
+                if (auto const state = initial_ui_states.find(lane.value);
+                    state != initial_ui_states.end()) {
+                    view.ui_states.emplace(lane.value, state->second);
+                    view.pending_ui_state_lanes.insert(lane.value);
+                }
+            }
             auto const cfg_it = output_descriptors.find(lane.value);
             auto const desired_kind =
                 cfg_it != output_descriptors.end()
@@ -368,6 +391,7 @@ void LanesVisualization::handle_task_runner_after_pass(
         auto const source_lane = add.source_lane;
         batch.upserts.push_back(TimelineLaneUpsert{
             .lane = vis_lane,
+            .lifetime = TimelineLaneLifetime::ephemeral,
             .make_node = [queue_ptr] {
                 return TypeErasedLaneNode(VisualizationRealtimeSampleLane{ .queue = queue_ptr });
             },
@@ -385,6 +409,7 @@ void LanesVisualization::handle_task_runner_after_pass(
         auto const source_lane = add.source_lane;
         batch.upserts.push_back(TimelineLaneUpsert{
             .lane = vis_lane,
+            .lifetime = TimelineLaneLifetime::ephemeral,
             .make_node = [queue_ptr] {
                 return TypeErasedLaneNode(VisualizationRealtimeEventLane{ .queue = queue_ptr });
             },
@@ -412,6 +437,30 @@ void LanesVisualization::publish_now()
         iv_runtime_lanes_visualization_playback_position_query_event,
         playback_position_builder);
     auto const playback_sample_index = playback_position_builder.build();
+
+    // UI model serialization is strictly demand-driven: the lane itself
+    // decides whether its cheap dirty flag warrants a snapshot this frame.
+    std::unordered_set<uint64_t> visible_ui_model_lanes;
+    {
+        std::scoped_lock lock(mutex_);
+        for (auto const &[_, view] : active_views_) {
+            for (auto const lane : view.ui_model_lanes) {
+                visible_ui_model_lanes.insert(lane.value);
+            }
+        }
+    }
+    std::unordered_map<uint64_t, LaneUiStateSnapshot> changed_ui_states;
+    for (auto const lane_value : visible_ui_model_lanes) {
+        LanesVisualizationLaneUiStateBuilder builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_lanes_visualization_lane_ui_state_query_event,
+            LaneId{lane_value},
+            true,
+            builder);
+        if (auto snapshot = builder.build()) {
+            changed_ui_states.emplace(lane_value, std::move(*snapshot));
+        }
+    }
 
     // Snapshot queue shared_ptrs and draining queues under lock (brief)
     struct SampleSnapshot {
@@ -472,13 +521,36 @@ void LanesVisualization::publish_now()
             auto &hist = it->second.history;
             hist.insert(hist.end(), events.begin(), events.end());
         }
+        for (auto &[_, view] : active_views_) {
+            for (auto const &[lane_value, state] : changed_ui_states) {
+                if (std::find(view.ui_model_lanes.begin(), view.ui_model_lanes.end(),
+                              LaneId{lane_value}) == view.ui_model_lanes.end()) {
+                    continue;
+                }
+                view.ui_states[lane_value] = state;
+                view.pending_ui_state_lanes.insert(lane_value);
+            }
+        }
 
         updates.reserve(active_views_.size());
-        for (auto const &[view_id, view] : active_views_) {
+        for (auto &[view_id, view] : active_views_) {
             LaneViewContentUpdate content {
                 .view_id = view_id,
                 .playback_sample_index = playback_sample_index,
             };
+
+            for (auto const lane_value : view.pending_ui_state_lanes) {
+                auto const state = view.ui_states.find(lane_value);
+                auto const public_id = view.public_lane_ids_by_runtime_lane.find(lane_value);
+                if (state == view.ui_states.end()
+                    || public_id == view.public_lane_ids_by_runtime_lane.end()) continue;
+                content.ui_states.push_back(LaneUiStateUpdate{
+                    .lane_id = public_id->second,
+                    .revision = state->second.revision,
+                    .serialized_state = state->second.serialized_state,
+                });
+            }
+            view.pending_ui_state_lanes.clear();
 
             for (auto const lane : view.realtime_sample_lanes) {
                 auto const it = tracked_sample_lanes_.find(lane);

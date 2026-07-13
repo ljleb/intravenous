@@ -328,4 +328,13 @@ std::string SocketRpcLaneViewResultBuilder::build(int request_id) const {
     }
     return jsonrpc_result(request_id, lane_view_result_json(*result));
 }
+
+std::string SocketRpcLaneTypesResultBuilder::build(int request_id) const {
+    if (!error_message.empty()) return jsonrpc_error(request_id, error_code, error_message);
+    if (!result.has_value()) throw_unbuilt_response("SocketRpcLaneTypesResultBuilder");
+    Json types = Json::array();
+    for (auto const& type : *result) types.push_back(Json{{"typeId", type.type_id},
+        {"category", type.category}, {"label", type.label}, {"description", type.description}});
+    return jsonrpc_result(request_id, Json{{"laneTypes", std::move(types)}});
+}
 } // namespace iv

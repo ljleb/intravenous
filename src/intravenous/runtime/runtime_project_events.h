@@ -6,6 +6,7 @@
 #include <intravenous/runtime/graph_input_lane_controller.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
+#include <intravenous/runtime/authored_lane_api.h>
 #include <intravenous/runtime/uuid.h>
 
 #include <filesystem>
@@ -50,6 +51,13 @@ namespace iv {
         [[nodiscard]] LaneViewResult build() const;
     };
 
+    class ProjectLaneTypesBuilder {
+        std::optional<std::vector<CreatableLaneDescriptor>> result;
+    public:
+        void succeed(std::vector<CreatableLaneDescriptor> value) { result = std::move(value); }
+        [[nodiscard]] std::vector<CreatableLaneDescriptor> build() const;
+    };
+
     struct ProjectSetSampleInputValueRequest {
         std::string node_id;
         std::optional<size_t> member_ordinal{};
@@ -84,6 +92,18 @@ namespace iv {
     struct ProjectSetTimelineLaneSampleChannelTypeRequest {
         InternedString lane_id {};
         ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
+    };
+
+    struct ProjectSetTimelineLaneUiStateRequest {
+        InternedString lane_id {};
+        std::optional<std::uint64_t> expected_revision {};
+        std::string serialized_state {};
+    };
+
+    struct ProjectCreateTimelineLaneRequest {
+        std::string type_id {};
+        std::optional<InternedString> lane_id {};
+        std::optional<std::string> serialized_state {};
     };
 
     struct ProjectSetAudioDevicesRequest {
@@ -229,6 +249,7 @@ namespace iv {
         LanePortDomain port_domain = LanePortDomain::realtime;
         PortKind port_kind = PortKind::sample;
         size_t port_ordinal = 0;
+        bool authored = false;
     };
 
     struct ProjectSetAutosaveEnabledRequest {
@@ -253,6 +274,12 @@ namespace iv {
         void (*)(ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &, ProjectAckBuilder &);
     using ProjectSetTimelineLaneSampleChannelTypeRequestedEvent =
         void (*)(ProjectSetTimelineLaneSampleChannelTypeRequest const &, ProjectAckBuilder &);
+    using ProjectSetTimelineLaneUiStateRequestedEvent =
+        void (*)(ProjectSetTimelineLaneUiStateRequest const &, ProjectAckBuilder &);
+    using ProjectGetTimelineLaneTypesRequestedEvent =
+        void (*)(ProjectLaneTypesBuilder &);
+    using ProjectCreateTimelineLaneRequestedEvent =
+        void (*)(ProjectCreateTimelineLaneRequest const &, ProjectAckBuilder &);
     using ProjectSetAudioDevicesRequestedEvent =
         void (*)(ProjectSetAudioDevicesRequest const &, ProjectAudioDevicesBuilder &);
     using ProjectSetAudioDeviceLaneIdsRequestedEvent =
@@ -318,6 +345,15 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(
         ProjectSetTimelineLaneSampleChannelTypeRequestedEvent,
         iv_runtime_project_set_timeline_lane_sample_channel_type_requested_event);
+    IV_DECLARE_LINKER_EVENT(
+        ProjectSetTimelineLaneUiStateRequestedEvent,
+        iv_runtime_project_set_timeline_lane_ui_state_requested_event);
+    IV_DECLARE_LINKER_EVENT(
+        ProjectGetTimelineLaneTypesRequestedEvent,
+        iv_runtime_project_get_timeline_lane_types_requested_event);
+    IV_DECLARE_LINKER_EVENT(
+        ProjectCreateTimelineLaneRequestedEvent,
+        iv_runtime_project_create_timeline_lane_requested_event);
     IV_DECLARE_LINKER_EVENT(
         ProjectSetAudioDevicesRequestedEvent,
         iv_runtime_project_set_audio_devices_requested_event);

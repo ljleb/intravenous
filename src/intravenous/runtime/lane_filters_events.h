@@ -16,6 +16,7 @@ struct FilteredLanesSnapshot {
     std::uint64_t revision = 0;
     std::vector<LaneId> lane_ids {};
     std::function<LaneMetadata(LaneId)> metadata_for_lane {};
+    std::function<std::optional<std::string>(LaneId)> model_type_id_for_lane {};
     std::function<InternedString(LaneId)> public_id_for_lane {};
     std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes {};
     std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> visit_lanes {};

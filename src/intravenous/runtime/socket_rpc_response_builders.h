@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/runtime/authored_lane_api.h>
+
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_sources.h>
@@ -149,6 +151,16 @@ namespace iv {
         void fail(std::string message);
         void fail(int code, std::string message);
 
+        [[nodiscard]] std::string build(int request_id) const;
+    };
+
+    class SocketRpcLaneTypesResultBuilder {
+        int error_code = -32000;
+        std::string error_message;
+        std::optional<std::vector<CreatableLaneDescriptor>> result;
+    public:
+        void succeed(std::vector<CreatableLaneDescriptor> value) { result = std::move(value); }
+        void fail(std::string message) { error_code = -32000; error_message = std::move(message); }
         [[nodiscard]] std::string build(int request_id) const;
     };
 } // namespace iv

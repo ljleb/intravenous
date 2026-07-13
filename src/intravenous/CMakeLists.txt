@@ -298,6 +298,7 @@ target_link_libraries(intravenous_runtime_runtime_project_events PRIVATE
 )
 
 add_library(intravenous_tooling_runtime_objects OBJECT
+    runtime/authored_lanes.cpp
     runtime/audio_device_lanes.cpp
     runtime/audio_device_lanes_timeline_bridge.cpp
     runtime/audio_device_lanes_timeline_execution_bridge.cpp

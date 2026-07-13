@@ -4,6 +4,7 @@
 #include <intravenous/devices/miniaudio_device.h>
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/audio_device_lanes.h>
+#include <intravenous/runtime/authored_lanes.h>
 #include <intravenous/runtime/audio_device_lanes_timeline_bridge.h>
 #include <intravenous/runtime/audio_device_lanes_timeline_execution_bridge.h>
 #include <intravenous/runtime/graph_input_lanes.h>
@@ -202,6 +203,7 @@ namespace iv {
             IvModuleDefinitions iv_module_definitions;
             IvModuleReload iv_module_reload(startup);
             GraphInputLanes graph_input_lanes;
+            AuthoredLanes authored_lanes(LaneCreationContext{.sample_rate = startup.execution.sample_rate});
             TasksRunner task_runner;
             startup_log("constructing runtime modules");
             TimelineExecution timeline_execution(
@@ -256,6 +258,7 @@ namespace iv {
             bind_runtime_project_timeline_execution_bridge(
                 timeline,
                 timeline_execution,
+                authored_lanes,
                 startup.workspace_root);
             bind_iv_module_definitions_builder_bridge(iv_module_definitions);
             bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);

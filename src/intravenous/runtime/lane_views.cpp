@@ -98,6 +98,9 @@ namespace iv {
                 .runtime_lane = runtime_lane,
                 .domain = LaneDomain::realtime,
                 .metadata = snapshot->metadata_for_lane ? snapshot->metadata_for_lane(runtime_lane) : LaneMetadata{},
+                .model_type_id = snapshot->model_type_id_for_lane
+                    ? snapshot->model_type_id_for_lane(runtime_lane)
+                    : std::optional<std::string>{},
             });
         }
 

@@ -37,6 +37,7 @@ private:
     query::LaneQueryDatasetPtr dataset;
     query::LaneQuerySchemaChange last_schema_change {};
     std::function<LaneMetadata(LaneId)> metadata_for_lane;
+    std::function<std::optional<std::string>(LaneId)> model_type_id_for_lane;
     std::function<InternedString(LaneId)> public_id_for_lane;
     std::function<std::vector<TimelineLaneOutputs>(std::vector<LaneId> const &)> outputs_for_lanes;
     std::function<void(std::vector<LaneId> const &, TimelineLaneVisitFn const &)> visit_lanes;

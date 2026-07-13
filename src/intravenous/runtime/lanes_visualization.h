@@ -46,6 +46,9 @@ class LanesVisualization {
         size_t display_sample_count = 0;
         std::unordered_map<uint64_t, Sample::storage> compiled_sample_levels {};
         std::unordered_map<uint64_t, std::vector<TimedEvent>> compiled_event_data {};
+        std::vector<LaneId> ui_model_lanes {};
+        std::unordered_map<uint64_t, LaneUiStateSnapshot> ui_states {};
+        std::unordered_set<uint64_t> pending_ui_state_lanes {};
     };
 
     mutable std::mutex mutex_;

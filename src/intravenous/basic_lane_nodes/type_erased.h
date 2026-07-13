@@ -4,6 +4,9 @@
 #include <intravenous/runtime/lane_graph.h>
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <typeinfo>
 #include <utility>
 #include <vector>
@@ -30,6 +33,10 @@ namespace iv {
         bool _supports_tick_block_realtime = false;
         bool _supports_compiled_support_ranges = false;
         bool _has_on_inputs_changed = false;
+        std::string_view (*_lane_model_type_id_fn)(void const*) = nullptr;
+        bool (*_take_lane_ui_state_dirty_fn)(void*) = nullptr;
+        LaneUiStateSnapshot (*_snapshot_lane_ui_state_fn)(void const*) = nullptr;
+        LaneUiStateApplyResult (*_apply_lane_ui_state_fn)(void*, LaneUiStateWrite const&) = nullptr;
 
     public:
         TypeErasedLaneNode() = default;
@@ -89,6 +96,25 @@ namespace iv {
                 };
                 _has_on_inputs_changed = true;
             }
+            if constexpr (lane_node_details::has_static_lane_model_type_id<LaneNode>
+                || lane_node_details::has_member_lane_model_type_id<LaneNode>) {
+                static_assert(
+                    lane_node_details::has_lane_ui_state<LaneNode>,
+                    "a lane model must define take_lane_ui_state_dirty(), "
+                    "snapshot_lane_ui_state(), and apply_lane_ui_state()");
+                _lane_model_type_id_fn = +[](void const* node_ptr) {
+                    return get_lane_model_type_id(*static_cast<LaneNode const*>(node_ptr));
+                };
+                _take_lane_ui_state_dirty_fn = +[](void* node_ptr) {
+                    return static_cast<LaneNode*>(node_ptr)->take_lane_ui_state_dirty();
+                };
+                _snapshot_lane_ui_state_fn = +[](void const* node_ptr) {
+                    return static_cast<LaneNode const*>(node_ptr)->snapshot_lane_ui_state();
+                };
+                _apply_lane_ui_state_fn = +[](void* node_ptr, LaneUiStateWrite const& write) {
+                    return static_cast<LaneNode*>(node_ptr)->apply_lane_ui_state(write);
+                };
+            }
         }
 
         std::vector<CompiledSampleLaneInputConfig> const& compiled_sample_inputs() const { return _compiled_sample_inputs; }
@@ -101,6 +127,43 @@ namespace iv {
         bool supports_tick_block_realtime() const { return _supports_tick_block_realtime; }
         bool supports_compiled_support_ranges() const { return _supports_compiled_support_ranges; }
         bool has_on_inputs_changed() const { return _has_on_inputs_changed; }
+        bool has_lane_ui_model() const { return _lane_model_type_id_fn != nullptr; }
+
+        std::optional<std::string> lane_model_type_id() const
+        {
+            if (_lane_model_type_id_fn == nullptr) {
+                return std::nullopt;
+            }
+            return std::string(_lane_model_type_id_fn(_node.get()));
+        }
+
+        std::optional<LaneUiStateSnapshot> take_lane_ui_state_update()
+        {
+            if (_take_lane_ui_state_dirty_fn == nullptr
+                || _snapshot_lane_ui_state_fn == nullptr
+                || !_take_lane_ui_state_dirty_fn(_node.get())) {
+                return std::nullopt;
+            }
+            return _snapshot_lane_ui_state_fn(_node.get());
+        }
+
+        std::optional<LaneUiStateSnapshot> lane_ui_state_snapshot() const
+        {
+            if (_snapshot_lane_ui_state_fn == nullptr) {
+                return std::nullopt;
+            }
+            return _snapshot_lane_ui_state_fn(_node.get());
+        }
+
+        LaneUiStateApplyResult apply_lane_ui_state(LaneUiStateWrite const& write)
+        {
+            if (_apply_lane_ui_state_fn == nullptr) {
+                return LaneUiStateApplyResult{
+                    .error_message = "lane does not expose an editable UI model",
+                };
+            }
+            return _apply_lane_ui_state_fn(_node.get(), write);
+        }
 
         template<typename LaneNode>
         LaneNode const* try_as() const

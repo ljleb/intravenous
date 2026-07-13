@@ -284,6 +284,7 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
     batch.version_index = 2;
     batch.upserts.push_back(iv::TimelineLaneUpsert{
         .lane = iv::LaneId{1000},
+        .lifetime = iv::TimelineLaneLifetime::ephemeral,
         .make_node = [] {
             return iv::TypeErasedLaneNode(iv::KnobLaneNode{
                 .value = 0.25f,

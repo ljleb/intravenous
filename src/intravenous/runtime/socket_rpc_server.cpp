@@ -119,6 +119,17 @@ Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
         {"viewId", update.view_id.str()},
         {"lanes", std::move(json_lanes)},
     };
+    Json json_ui_states = Json::array();
+    for (auto const &state : update.ui_states) {
+        json_ui_states.push_back(Json{
+            {"laneId", state.lane_id.str()},
+            {"revision", state.revision},
+            {"serializedState", state.serialized_state},
+        });
+    }
+    if (!json_ui_states.empty()) {
+        json["uiStates"] = std::move(json_ui_states);
+    }
     if (update.playback_sample_index.has_value()) {
         json["playbackSampleIndex"] = *update.playback_sample_index;
     }
@@ -304,6 +315,21 @@ void SocketRpcServer::handle_client(int fd) {
                             iv_socket_rpc_set_timeline_lane_sample_channel_type_event,
                             event_request,
                             builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, SetTimelineLaneUiStateRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_set_timeline_lane_ui_state_event,
+                            event_request,
+                            builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, GetTimelineLaneTypesRequest>) {
+                        SocketRpcLaneTypesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_timeline_lane_types_event, event_request, builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, CreateTimelineLaneRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_timeline_lane_event, event_request, builder);
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetAudioDevicesRequest>) {
                         SocketRpcAudioDevicesResultBuilder builder;

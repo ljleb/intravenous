@@ -550,6 +550,19 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
         return;
     }
 
+    if (command.command == "timeline.createAuthoredLane") {
+        ProjectAckBuilder builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_create_timeline_lane_requested_event,
+            ProjectCreateTimelineLaneRequest{
+                .type_id = require_string(args, "type_id"),
+                .lane_id = InternedString::from_string(require_string(args, "lane_id")),
+                .serialized_state = require_string(args, "serialized_state"),
+            }, builder);
+        builder.build();
+        return;
+    }
+
     if (command.command == "timeline.connectLanes") {
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
@@ -560,6 +573,23 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .port_domain = require_port_domain(args, "port_domain"),
                 .port_kind = require_port_kind(args, "port_kind"),
                 .port_ordinal = require_size(args, "port_ordinal"),
+            },
+            builder);
+        builder.build();
+        return;
+    }
+
+    if (command.command == "timeline.connectAuthoredLanes") {
+        ProjectAckBuilder builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_connect_timeline_lanes_requested_event,
+            ProjectConnectTimelineLanesRequest{
+                .source_lane_id = InternedString::from_string(require_string(args, "source_lane_id")),
+                .target_lane_id = InternedString::from_string(require_string(args, "target_lane_id")),
+                .port_domain = require_port_domain(args, "port_domain"),
+                .port_kind = require_port_kind(args, "port_kind"),
+                .port_ordinal = require_size(args, "port_ordinal"),
+                .authored = true,
             },
             builder);
         builder.build();
@@ -584,7 +614,8 @@ void ProjectPersistence::load()
         } catch (std::exception const &e) {
             emit_message(
                 "error",
-                "project load command failed for '" + command.command + "': " + e.what());
+                "project load command failed for '" + command.command + "' args="
+                    + command.args.dump() + ": " + e.what());
         }
     }
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_loaded_event);

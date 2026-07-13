@@ -35,6 +35,7 @@ namespace iv {
         LaneGraph _graph;
         std::unordered_map<LaneId, InternedString, LaneIdHash> _external_ids_by_lane;
         std::unordered_map<InternedString, LaneId> _lanes_by_external_id;
+        std::unordered_map<LaneId, TimelineLaneLifetime, LaneIdHash> _lane_lifetimes;
         std::vector<PendingPublicConnection> _pending_public_connections;
 
         InternedString ensure_external_id_locked(LaneId lane)
@@ -143,6 +144,50 @@ namespace iv {
             });
         }
 
+        std::optional<std::string> lane_model_type_id(LaneId lane)
+        {
+            return with_graph([&](LaneGraph& graph) {
+                if (!graph.contains(lane)) {
+                    return std::optional<std::string> {};
+                }
+                return graph.lane(lane).node.lane_model_type_id();
+            });
+        }
+
+        std::optional<LaneUiStateSnapshot> take_lane_ui_state_update(LaneId lane)
+        {
+            return with_graph([&](LaneGraph& graph) {
+                if (!graph.contains(lane)) {
+                    return std::optional<LaneUiStateSnapshot> {};
+                }
+                return graph.lane(lane).node.take_lane_ui_state_update();
+            });
+        }
+
+        std::optional<LaneUiStateSnapshot> lane_ui_state_snapshot(LaneId lane)
+        {
+            return with_graph([&](LaneGraph& graph) {
+                if (!graph.contains(lane)) {
+                    return std::optional<LaneUiStateSnapshot> {};
+                }
+                return graph.lane(lane).node.lane_ui_state_snapshot();
+            });
+        }
+
+        LaneUiStateApplyResult apply_lane_ui_state(
+            LaneId lane,
+            LaneUiStateWrite const& write)
+        {
+            return with_graph([&](LaneGraph& graph) {
+                if (!graph.contains(lane)) {
+                    return LaneUiStateApplyResult{
+                        .error_message = "timeline lane not found",
+                    };
+                }
+                return graph.lane(lane).node.apply_lane_ui_state(write);
+            });
+        }
+
         query::LaneQuerySchema lane_query_schema(std::uint64_t revision = 0)
         {
             return with_graph([&](LaneGraph& graph) {
@@ -194,8 +239,14 @@ namespace iv {
                     _lanes_by_external_id.erase(it->second);
                     _external_ids_by_lane.erase(it);
                 }
+                _lane_lifetimes.erase(lane);
             }
             for (auto const &upsert : batch.upserts) {
+                if (upsert.lifetime == TimelineLaneLifetime::persistent
+                    && upsert.external_id.empty()) {
+                    throw std::runtime_error(
+                        "persistent timeline lane upsert requires a stable external id");
+                }
                 if (!upsert.external_id.empty()) {
                     if (auto const existing = _lanes_by_external_id.find(upsert.external_id);
                         existing != _lanes_by_external_id.end() && existing->second != upsert.lane) {
@@ -211,6 +262,7 @@ namespace iv {
                 } else {
                     (void)ensure_external_id_locked(upsert.lane);
                 }
+                _lane_lifetimes[upsert.lane] = upsert.lifetime;
             }
             auto &graph = _graph;
             [&] {
@@ -252,6 +304,7 @@ namespace iv {
                 _lanes_by_external_id.erase(it->second);
                 _external_ids_by_lane.erase(it);
             }
+            _lane_lifetimes.erase(lane);
             _graph.remove_lane(lane);
         }
 
@@ -259,6 +312,15 @@ namespace iv {
         {
             std::scoped_lock lock(_graph_mutex);
             return ensure_external_id_locked(lane);
+        }
+
+        bool lane_is_persistent(LaneId lane)
+        {
+            std::scoped_lock lock(_graph_mutex);
+            if (auto const it = _lane_lifetimes.find(lane); it != _lane_lifetimes.end()) {
+                return it->second == TimelineLaneLifetime::persistent;
+            }
+            return false;
         }
 
         std::optional<LaneId> resolve_public_lane_id(InternedString external_id)

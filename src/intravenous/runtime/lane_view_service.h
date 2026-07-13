@@ -18,6 +18,7 @@ namespace iv {
         LaneId runtime_lane {};
         LaneDomain domain = LaneDomain::realtime;
         LaneMetadata metadata {};
+        std::optional<std::string> model_type_id {};
     };
 
     struct LaneConnectionInfo {

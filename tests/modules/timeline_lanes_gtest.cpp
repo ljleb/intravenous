@@ -1,4 +1,5 @@
 #include <intravenous/basic_lane_nodes/controls.h>
+#include <intravenous/basic_lane_nodes/beat_trigger.h>
 #include <intravenous/runtime/graph_input_lane_controller.h>
 #include <intravenous/basic_lane_nodes/type_erased.h>
 #include <intravenous/lane_node/graph.h>
@@ -11,6 +12,8 @@
 #include <concepts>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <variant>
 
 namespace {
@@ -68,6 +71,58 @@ namespace {
                 iv::LaneOutputView
             >);
             EXPECT_TRUE(std::holds_alternative<iv::RealtimeSampleLaneOutput>(ctx.out()));
+        }
+    };
+
+    struct TestUiModelLaneNode {
+        bool ui_dirty = true;
+        std::uint64_t revision = 3;
+        std::string state = R"({"value":1})";
+
+        static constexpr std::string_view lane_model_type_id()
+        {
+            return "test.ui-model";
+        }
+
+        iv::RealtimeEventLaneOutputConfig output() const
+        {
+            return {
+                .name = "events",
+                .event_type = iv::EventTypeId::trigger,
+            };
+        }
+
+        bool take_lane_ui_state_dirty()
+        {
+            bool const was_dirty = ui_dirty;
+            ui_dirty = false;
+            return was_dirty;
+        }
+
+        iv::LaneUiStateSnapshot snapshot_lane_ui_state() const
+        {
+            return {
+                .revision = revision,
+                .serialized_state = state,
+            };
+        }
+
+        iv::LaneUiStateApplyResult apply_lane_ui_state(iv::LaneUiStateWrite const& write)
+        {
+            if (write.expected_revision.has_value()
+                && *write.expected_revision != revision) {
+                return {
+                    .error_message = "stale revision",
+                };
+            }
+            state = std::string(write.serialized_state);
+            ++revision;
+            ui_dirty = true;
+            return {
+                .accepted = true,
+                .revision = revision,
+                .effect = iv::LaneUiStateEffect::execution_content_changed,
+            };
         }
     };
 
@@ -360,6 +415,119 @@ TEST(Lanes, TypeErasedLaneNodeCarriesCompiledCapabilitiesThroughTraits)
     EXPECT_TRUE(node.supports_tick_block_realtime());
     EXPECT_TRUE(iv::supports_tick_block_compiled(node));
     EXPECT_TRUE(iv::supports_tick_block_realtime(node));
+}
+
+TEST(Lanes, TypeErasedLaneNodeCarriesOptionalUiModelState)
+{
+    iv::TypeErasedLaneNode node = TestUiModelLaneNode {};
+
+    ASSERT_TRUE(node.has_lane_ui_model());
+    ASSERT_TRUE(node.lane_model_type_id().has_value());
+    EXPECT_EQ(*node.lane_model_type_id(), "test.ui-model");
+
+    auto first = node.take_lane_ui_state_update();
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->revision, 3u);
+    EXPECT_EQ(first->serialized_state, R"({"value":1})");
+    EXPECT_FALSE(node.take_lane_ui_state_update().has_value());
+
+    auto const rejected = node.apply_lane_ui_state(iv::LaneUiStateWrite{
+        .expected_revision = 2,
+        .serialized_state = R"({"value":2})",
+    });
+    EXPECT_FALSE(rejected.accepted);
+    EXPECT_EQ(rejected.error_message, "stale revision");
+
+    auto const accepted = node.apply_lane_ui_state(iv::LaneUiStateWrite{
+        .expected_revision = 3,
+        .serialized_state = R"({"value":2})",
+    });
+    EXPECT_TRUE(accepted.accepted);
+    EXPECT_EQ(accepted.revision, 4u);
+    EXPECT_EQ(accepted.effect, iv::LaneUiStateEffect::execution_content_changed);
+
+    auto second = node.take_lane_ui_state_update();
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->revision, 4u);
+    EXPECT_EQ(second->serialized_state, R"({"value":2})");
+}
+
+TEST(Lanes, BeatTriggerEmitsCompiledTriggerEventsAtItsConfiguredRate)
+{
+    iv::BeatTriggerLaneNode node(48000);
+    std::vector<iv::TimedEvent> events;
+    iv::UntypedCompiledLaneTickContext untyped{
+        .request = {.start_index = 0, .end_index = 100000, .sample_count = 100000},
+        .output = iv::CompiledEventLaneOutput{.events = &events},
+    };
+    iv::CompiledLaneTickContext<iv::BeatTriggerLaneNode> context(untyped);
+    node.tick_block_compiled(context);
+
+    ASSERT_GE(events.size(), 5u);
+    // 48 kHz at 140 BPM: one beat is 144000/7 samples. Marker positions are
+    // rounded only at the final sample-index boundary.
+    EXPECT_EQ(events[0].time, 0u);
+    EXPECT_EQ(events[1].time, 20571u);
+    EXPECT_EQ(events[2].time, 41143u);
+    EXPECT_EQ(events[3].time, 61714u);
+
+    auto const applied = node.apply_lane_ui_state(iv::LaneUiStateWrite{
+        .serialized_state = R"({"bpm":120,"beatsPerBar":4,"beatUnit":4,"eventsPerBeat":2})",
+    });
+    ASSERT_TRUE(applied.accepted);
+    std::vector<iv::TimedEvent> subdivided_events;
+    iv::UntypedCompiledLaneTickContext subdivided{
+        .request = {.start_index = 0, .end_index = 50000, .sample_count = 50000},
+        .output = iv::CompiledEventLaneOutput{.events = &subdivided_events},
+    };
+    iv::CompiledLaneTickContext<iv::BeatTriggerLaneNode> subdivided_context(subdivided);
+    node.tick_block_compiled(subdivided_context);
+    ASSERT_GE(subdivided_events.size(), 3u);
+    EXPECT_EQ(subdivided_events[0].time, 0u);
+    EXPECT_EQ(subdivided_events[1].time, 12000u);
+    EXPECT_EQ(subdivided_events[2].time, 24000u);
+}
+
+TEST(Lanes, TimelineForwardsOptionalUiModelStateToTheOwningLane)
+{
+    iv::Timeline timeline;
+    auto const lane = iv::LaneId{42};
+    timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate{
+        .upserts = {
+            iv::TimelineLaneUpsert{
+                .lane = lane,
+                .lifetime = iv::TimelineLaneLifetime::ephemeral,
+                .make_node = [] { return iv::TypeErasedLaneNode(TestUiModelLaneNode {}); },
+            },
+        },
+    });
+
+    ASSERT_TRUE(timeline.lane_model_type_id(lane).has_value());
+    EXPECT_EQ(*timeline.lane_model_type_id(lane), "test.ui-model");
+    ASSERT_TRUE(timeline.lane_ui_state_snapshot(lane).has_value());
+    EXPECT_EQ(timeline.lane_ui_state_snapshot(lane)->revision, 3u);
+    ASSERT_TRUE(timeline.take_lane_ui_state_update(lane).has_value());
+    EXPECT_FALSE(timeline.take_lane_ui_state_update(lane).has_value());
+
+    auto const result = timeline.apply_lane_ui_state(
+        lane,
+        iv::LaneUiStateWrite{.serialized_state = R"({"value":9})"});
+    EXPECT_TRUE(result.accepted);
+    EXPECT_EQ(result.revision, 4u);
+    ASSERT_TRUE(timeline.take_lane_ui_state_update(lane).has_value());
+}
+
+TEST(Lanes, PersistentTimelineLaneRequiresAStableExternalId)
+{
+    iv::Timeline timeline;
+    EXPECT_THROW(
+        timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate{
+            .upserts = {iv::TimelineLaneUpsert{
+                .lane = iv::LaneId{43},
+                .make_node = [] { return iv::TypeErasedLaneNode(TestUiModelLaneNode {}); },
+            }},
+        }),
+        std::runtime_error);
 }
 
 TEST(Lanes, ContextOutputTypeFollowsConcreteOutputConfig)

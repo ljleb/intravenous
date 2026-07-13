@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/lane_node/channels.h>
+#include <intravenous/lane_node/ui_state.h>
 #include <intravenous/ports.h>
 
 #include <array>
@@ -147,6 +148,29 @@ namespace iv {
         concept has_member_output = requires(LaneNode const& node) {
             node.output();
         };
+
+        // An optional, presentation-independent authored model. A lane that
+        // declares a model type id must provide the complete state contract
+        // below; ordinary lanes do not opt in and retain no UI-model overhead.
+        template<typename LaneNode>
+        concept has_static_lane_model_type_id = requires {
+            { LaneNode::lane_model_type_id() } -> std::convertible_to<std::string_view>;
+        };
+
+        template<typename LaneNode>
+        concept has_member_lane_model_type_id = requires(LaneNode const& node) {
+            { node.lane_model_type_id() } -> std::convertible_to<std::string_view>;
+        };
+
+        template<typename LaneNode>
+        concept has_lane_ui_state = requires(
+            LaneNode& node,
+            LaneNode const& const_node,
+            LaneUiStateWrite const& write) {
+            { node.take_lane_ui_state_dirty() } -> std::convertible_to<bool>;
+            { const_node.snapshot_lane_ui_state() } -> std::same_as<LaneUiStateSnapshot>;
+            { node.apply_lane_ui_state(write) } -> std::same_as<LaneUiStateApplyResult>;
+        };
     } // namespace lane_node_details
 
     template<typename LaneNode>
@@ -245,4 +269,17 @@ namespace iv {
 
     template<typename LaneNode>
     using LaneOutputDeclaration = decltype(get_lane_output(std::declval<LaneNode const&>()));
+
+    template<typename LaneNode>
+    std::string_view get_lane_model_type_id(LaneNode const& node)
+    {
+        if constexpr (lane_node_details::has_static_lane_model_type_id<LaneNode>) {
+            return LaneNode::lane_model_type_id();
+        } else {
+            static_assert(
+                lane_node_details::has_member_lane_model_type_id<LaneNode>,
+                "lane model must define lane_model_type_id()");
+            return node.lane_model_type_id();
+        }
+    }
 }

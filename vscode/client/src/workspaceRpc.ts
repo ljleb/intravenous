@@ -133,6 +133,26 @@ export class WorkspaceRpc {
         return this.client.request("graph.setEventOutputState", params);
     }
 
+    setTimelineLaneUiState(
+        laneId: string,
+        serializedState: string,
+        expectedRevision?: number,
+    ): Promise<void> {
+        const params: Record<string, unknown> = { laneId, serializedState };
+        if (expectedRevision != null) params.expectedRevision = expectedRevision;
+        return this.client.request("timeline.setLaneUiState", params);
+    }
+
+    createTimelineLane(typeId: string): Promise<void> {
+        return this.client.request("timeline.createLane", { typeId });
+    }
+
+    getTimelineLaneTypes(): Promise<{ laneTypes?: Array<{
+        typeId: string; category: string; label: string; description: string;
+    }> }> {
+        return this.client.request("timeline.laneTypes", {});
+    }
+
     openLaneView(params: LaneViewParams): Promise<Record<string, unknown>> {
         return this.client.request("timeline.openLaneView", params);
     }
