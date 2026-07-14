@@ -57,13 +57,13 @@ void simple_sine(iv::ModuleContext const& context)
             "frequency"_P = p,
             "phase_offset"_P = phase,
             "dt"_P = dt);
-
+        
         return c = voice * 0.1 * tt;
     });
 
     g.multi_channel<ChannelTypeId::stereo>([&] <auto c>
     {
-        g.outputs(c = saw[c]);
+        g.outputs(c = saw[c], iv::swap_side(c) = saw[c]);
     });
 }
 }

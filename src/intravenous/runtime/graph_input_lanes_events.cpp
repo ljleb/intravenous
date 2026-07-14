@@ -20,6 +20,10 @@ void default_sample_block_requested(LaneId, GraphInputLanesSampleBlockBuilder &)
 void default_event_block_requested(LaneId, GraphInputLanesEventBlockBuilder &)
 {
 }
+
+void default_knob_value_updated(LaneId, Sample)
+{
+}
 }
 
 void GraphInputLanesAckBuilder::succeed()
@@ -60,5 +64,9 @@ IV_DEFINE_SINGLETON_EVENT(
     GraphInputLanesEventBlockRequestedEvent,
     iv_runtime_graph_input_lanes_event_block_requested_event,
     default_event_block_requested);
+IV_DEFINE_SINGLETON_EVENT(
+    GraphInputLanesKnobValueUpdatedEvent,
+    iv_runtime_graph_input_lanes_knob_value_updated_event,
+    default_knob_value_updated);
 
 } // namespace iv

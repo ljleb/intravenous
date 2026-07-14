@@ -62,6 +62,9 @@ struct GraphInputLanesRebuildRequested {
 
 using GraphInputLanesRebuildRequestedEvent =
     void (*)(GraphInputLanesRebuildRequested const &);
+// A knob's value is mutable DSP state.  Updating it must not change graph
+// topology or request an IV module rebuild.
+using GraphInputLanesKnobValueUpdatedEvent = void (*)(LaneId, Sample);
 using GraphInputLanesSampleBlockPublishedEvent =
     void (*)(LaneId, BorrowedSampleBlock const &);
 using GraphInputLanesEventBlockPublishedEvent =
@@ -77,6 +80,9 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     GraphInputLanesRebuildRequestedEvent,
     iv_runtime_graph_input_lanes_rebuild_requested_event);
+IV_DECLARE_SINGLETON_EVENT(
+    GraphInputLanesKnobValueUpdatedEvent,
+    iv_runtime_graph_input_lanes_knob_value_updated_event);
 IV_DECLARE_SINGLETON_EVENT(
     GraphInputLanesSampleBlockPublishedEvent,
     iv_runtime_graph_input_lanes_sample_block_published_event);

@@ -2318,7 +2318,7 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
 void GraphInputLanes::set_sample_input_value(
     ProjectSetSampleInputValueRequest const &request)
 {
-    TimelineLaneBatchUpdate batch;
+    std::optional<LaneId> knob_lane;
     {
         std::scoped_lock lock(mutex);
         if (request.member_ordinal.has_value()) {
@@ -2356,10 +2356,24 @@ void GraphInputLanes::set_sample_input_value(
                 std::nullopt,
                 request.input_ordinal,
                 sample_channel_type));
-            logical_sample_knob_states_by_key[port_key] =
-                LogicalSampleKnobState::overridden;
+            auto const knob_state = logical_sample_knob_states_by_key.find(port_key);
+            bool const timeline_knob = knob_state != logical_sample_knob_states_by_key.end()
+                && knob_state->second == LogicalSampleKnobState::timeline_lane;
+            if (!timeline_knob) {
+                logical_sample_knob_states_by_key[port_key] =
+                    LogicalSampleKnobState::overridden;
+            }
             ensure_live_input_value_locked(request.node_id, request.input_ordinal)
                 .store(request.value.value, std::memory_order_relaxed);
+            if (timeline_knob) {
+                knob_lane = stable_lane_id_for_key(logical_knob_key(DesiredGraphInputPort{
+                    .port = sample_input_descriptor(
+                        request.node_id,
+                        std::nullopt,
+                        request.input_ordinal,
+                        sample_channel_type),
+                }));
+            }
             if (auto it = live_inputs.find(std::string(request.node_id));
                 it != live_inputs.end() && it->second.size() > request.input_ordinal) {
                 for (auto *slot : it->second[request.input_ordinal]) {
@@ -2386,8 +2400,12 @@ void GraphInputLanes::set_sample_input_value(
                     .store(request.value.value, std::memory_order_relaxed);
             }
         }
-        (void)reconcile_ports_locked(&batch);
-        queue_timeline_batch_locked(batch);
+    }
+    if (knob_lane.has_value()) {
+        IV_INVOKE_SINGLETON_EVENT(
+            iv_runtime_graph_input_lanes_knob_value_updated_event,
+            *knob_lane,
+            request.value);
     }
 }
 

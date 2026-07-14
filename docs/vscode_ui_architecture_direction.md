@@ -13,9 +13,8 @@ architecture notes already present under `docs/`.
 
 ## High-level product split
 
-The UI is made of three distinct but coordinated surfaces:
+The UI is made of two distinct but coordinated surfaces:
 
-- a shared Intravenous toolbar surface in the VS Code activity container
 - a live graph sidebar
 - separate lane-view panels
 
@@ -27,23 +26,17 @@ product.
 
 ## Surface responsibilities
 
-### Shared toolbar
+### VS Code-native command and status surfaces
 
-The shared toolbar owns:
+Intravenous should not introduce a shared toolbar webview by default.
 
-- transport controls
-- transport status
-- lane workspace commands
-- workspace switching controls
-- reveal/focus commands when appropriate
+- Transport status belongs in the VS Code status bar.
+- Commands belong primarily in the command palette.
+- Important high-frequency commands may later gain keyboard shortcuts.
+- Native context menus and panel title actions should be used where they fit.
 
-Transport controls should live here primarily rather than being duplicated as
-the main control surface inside every lane panel.
-
-Lane panels still display the transport cursor.
-
-Frequently used actions such as pause/resume should remain obvious visible
-buttons.
+Lane panels still display the transport cursor, but should not duplicate a
+large transport control strip.
 
 ### Live graph sidebar
 
@@ -89,6 +82,12 @@ Each lane view contains:
 - a transport cursor
 - lane-kind-specific content widgets
 - local cable fragments and off-view continuation indicators
+
+Lane views should use one clear default track/header anatomy. The
+visual-settings language must be able to express that default layout exactly;
+it is not a separate advanced mode or a later replacement for the default.
+Per-view settings should be additive refinements of the same coherent anatomy,
+not an unrelated set of alternate layouts.
 
 Lane views are manually maintained project-authored views.
 
@@ -471,6 +470,18 @@ Implementation should follow a dedicated visual design pass covering at least:
 - connection/cable rendering
 - toolbar layout
 - interaction states
+
+Webviews should use VS Code theme CSS variables wherever a matching semantic
+role exists (editor/background surfaces, foreground text, borders, focus,
+inputs, buttons, lists, and status colors). Intravenous-specific colors should
+be limited to semantic track/cable/state accents and remain legible across the
+active VS Code theme rather than assuming a fixed dark palette.
+
+The first design deliverable should define a default live-graph row anatomy:
+node/member/port hierarchy, state/value affordances, lane-backed summary, and
+compact reveal/reset actions. It should also define the default lane-header
+anatomy as an explicit baseline of visual-settings rules, so the same settings
+model can reproduce the default view and add per-view refinements.
 
 The visual design should preserve what already works well about the current
 source-editor integration and live graph panel while giving the lane workspace

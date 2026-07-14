@@ -2,6 +2,7 @@
 
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
+#include <intravenous/basic_lane_nodes/controls.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_events.h>
@@ -265,6 +266,21 @@ void handle_timeline_batch_requested(
     builder.succeed();
 }
 
+void handle_knob_value_updated(LaneId lane, Sample value)
+{
+    if (bound_timeline == nullptr) {
+        return;
+    }
+    bound_timeline->with_graph([&](LaneGraph &graph) {
+        if (!graph.contains(lane)) {
+            return;
+        }
+        if (auto *knob = graph.lane(lane).node.try_as<KnobLaneNode>()) {
+            knob->value = value;
+        }
+    });
+}
+
 void handle_sample_block_published(LaneId lane, BorrowedSampleBlock const &block)
 {
     if (bound_graph_input_lanes == nullptr) {
@@ -305,6 +321,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     GraphInputLanesTimelineBatchRequestedEvent,
     iv_runtime_graph_input_lanes_timeline_batch_requested_event,
     handle_timeline_batch_requested);
+IV_SUBSCRIBE_SINGLETON_EVENT(
+    GraphInputLanesKnobValueUpdatedEvent,
+    iv_runtime_graph_input_lanes_knob_value_updated_event,
+    handle_knob_value_updated);
 IV_SUBSCRIBE_SINGLETON_EVENT(
     GraphInputLanesSampleBlockPublishedEvent,
     iv_runtime_graph_input_lanes_sample_block_published_event,
