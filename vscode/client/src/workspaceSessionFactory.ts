@@ -1,5 +1,4 @@
 import { injectable } from "tsyringe";
-import * as vscode from "vscode";
 
 import { LiveGraphControlHandler } from "./liveGraphProtocol";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
@@ -15,21 +14,6 @@ type LiveGraphProviderLike = {
     setModuleSource(moduleRoot: string | null): void;
 };
 
-type LaneViewProviderLike = {
-    isOpen(): boolean;
-    open(): void;
-    revive(panel: vscode.WebviewPanel, state: unknown): void;
-    setCloseHandler(handler: () => void): void;
-    setViewportHandler(handler: () => void): void;
-    setScrubHandler(handler: (sampleIndex: number) => void): void;
-    setLaneUiStateHandler(handler: (laneId: string, serializedState: string, expectedRevision?: number) => void): void;
-    clear(): void;
-    setLanes(result: Record<string, unknown>, preserveViewport?: boolean): void;
-    setModuleInstances(instances: unknown[]): void;
-    viewportState(): { startIndex: number; visibleLaneCount: number };
-    setLaneViewId(viewId: string): void;
-};
-
 type ModulesViewProviderLike = Pick<ModulesViewProvider, "setState">;
 
 @injectable()
@@ -38,7 +22,6 @@ export class WorkspaceSessionFactory {
         workspaceFolder: vscode.WorkspaceFolder,
         outputChannel: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
-        laneProvider: LaneViewProviderLike,
         modulesProvider: ModulesViewProviderLike,
         highlighter: NodeSpanHighlighter,
     ): WorkspaceSession {
@@ -46,7 +29,6 @@ export class WorkspaceSessionFactory {
             workspaceFolder,
             outputChannel,
             provider,
-            laneProvider,
             modulesProvider,
             highlighter,
         );

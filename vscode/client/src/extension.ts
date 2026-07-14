@@ -15,7 +15,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     deactivating = false;
     const outputChannel = vscode.window.createOutputChannel("Intravenous");
     const provider = new LiveGraphViewProvider(context.extensionUri);
-    const laneProvider = new LaneViewProvider();
     const modulesProvider = new ModulesViewProvider();
     const highlighter = new NodeSpanHighlighter();
     const sessionFactory = container.resolve(WorkspaceSessionFactory);
@@ -37,46 +36,60 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         workspaceFolder,
         outputChannel,
         provider,
-        laneProvider,
         modulesProvider,
         highlighter,
     );
-    laneProvider.setCloseHandler(() => {
-        // Panel disposal while VS Code/the extension is shutting down is not
-        // an authored deletion.  An ordinary user panel close is.
-        if (deactivating) return;
-        session.closeLaneView().catch((error: Error) => {
-            outputChannel.appendLine(`Intravenous lane view close failed: ${error.message}`);
+    const configureLaneProvider = (laneProvider: LaneViewProvider) => {
+        laneProvider.setCloseHandler(() => {
+            // VS Code owns the persisted editor layout. A normal panel close
+            // removes only this runtime view subscription.
+            if (deactivating) return;
+            const viewId = laneProvider.currentLaneViewId();
+            if (!viewId) return;
+            session.closeLaneView(viewId).catch((error: Error) => {
+                outputChannel.appendLine(`Intravenous lane view close failed: ${error.message}`);
+            });
         });
-    });
-    laneProvider.setViewportHandler(() => {
-        session.updateLaneViewVisibleLanes().catch((error: Error) => {
-            outputChannel.appendLine(`Intravenous lane viewport update failed: ${error.message}`);
+        laneProvider.setViewportHandler(() => {
+            const viewId = laneProvider.currentLaneViewId();
+            if (!viewId) return;
+            session.updateLaneViewVisibleLanes(viewId).catch((error: Error) => {
+                outputChannel.appendLine(`Intravenous lane viewport update failed: ${error.message}`);
+            });
         });
-    });
-    laneProvider.setScrubHandler((sampleIndex) => {
-        session.seekPlayback(sampleIndex).catch((error: Error) => {
-            outputChannel.appendLine(`Intravenous seek playback failed: ${error.message}`);
+        laneProvider.setScrubHandler((sampleIndex) => {
+            session.seekPlayback(sampleIndex).catch((error: Error) => {
+                outputChannel.appendLine(`Intravenous seek playback failed: ${error.message}`);
+            });
         });
-    });
-    laneProvider.setLaneUiStateHandler((laneId, serializedState, expectedRevision) => {
-        session.setTimelineLaneUiState(laneId, serializedState, expectedRevision).catch((error: Error) => {
-            outputChannel.appendLine(`Intravenous lane UI state update failed: ${error.message}`);
+        laneProvider.setLaneUiStateHandler((laneId, serializedState, expectedRevision) => {
+            session.setTimelineLaneUiState(laneId, serializedState, expectedRevision).catch((error: Error) => {
+                outputChannel.appendLine(`Intravenous lane UI state update failed: ${error.message}`);
+            });
         });
-    });
-    laneProvider.setDebugHandler((message) => {
-        const field = typeof message.field === "string" ? ` ${message.field}` : "";
-        const detail = typeof message.detail === "string" ? ` ${message.detail}` : "";
-        outputChannel.appendLine(`Intravenous beat pointer${field}: ${String(message.phase || "event")}${detail}`);
-    });
+        laneProvider.setDebugHandler((message) => {
+            const field = typeof message.field === "string" ? ` ${message.field}` : "";
+            const detail = typeof message.detail === "string" ? ` ${message.detail}` : "";
+            outputChannel.appendLine(`Intravenous beat pointer${field}: ${String(message.phase || "event")}${detail}`);
+        });
+    };
+    const openNewLaneView = async () => {
+        const laneProvider = new LaneViewProvider();
+        configureLaneProvider(laneProvider);
+        const viewId = session.registerLaneView(laneProvider);
+        laneProvider.open();
+        await session.openLaneView(viewId);
+    };
     modulesProvider.setControlHandler((message) => session.dispatchModulesControl(message));
 
     context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.lanes", {
         async deserializeWebviewPanel(panel, state) {
+            const laneProvider = new LaneViewProvider();
             laneProvider.revive(panel, state);
-            session.restoreLaneViewId(laneProvider.currentLaneViewId());
+            configureLaneProvider(laneProvider);
+            const viewId = session.registerLaneView(laneProvider, laneProvider.currentLaneViewId());
             try {
-                await session.openLaneView();
+                await session.openLaneView(viewId);
             } catch (error: any) {
                 outputChannel.appendLine(`Intravenous lane view restore failed: ${error.message}`);
             }
@@ -94,9 +107,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openLanes", async () => {
-        laneProvider.open();
         try {
-            await session.openLaneView();
+            await openNewLaneView();
         } catch (error: any) {
             outputChannel.appendLine(`Intravenous lane query failed: ${error.message}`);
         }
@@ -135,8 +147,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (!lane) return;
         try {
             await session.createTimelineLane(lane.typeId);
-            laneProvider.open();
-            await session.openLaneView();
+            await openNewLaneView();
         } catch (error: any) {
             outputChannel.appendLine(`Intravenous lane creation failed: ${error.message}`);
         }
@@ -247,9 +258,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     try {
         await session.start();
-        if (laneProvider.isOpen()) {
-            await session.openLaneView();
-        }
         if (vscode.window.activeTextEditor) {
             const nodes = await session.updateFromEditor(vscode.window.activeTextEditor);
             session.updatePrimaryHighlight(nodes);

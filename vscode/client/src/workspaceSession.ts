@@ -35,10 +35,13 @@ type LaneProviderLike = {
         firstSampleIndex: number;
         lastSampleIndex: number;
         displaySampleCount: number;
+        laneQuery?: string;
     };
     clear(): void;
     setLanes(result: Record<string, unknown>, preserveViewport?: boolean): void;
     setLaneContent(result: Record<string, unknown>): void;
+    setModuleInstances(instances: unknown[]): void;
+    setLaneViewId(viewId: string): void;
 };
 
 type ModulesProviderLike = {
@@ -91,7 +94,11 @@ export class WorkspaceSession {
     private readonly workspaceFolder: vscode.WorkspaceFolder;
     private readonly outputChannel: vscode.OutputChannel;
     readonly provider: LiveGraphProviderLike;
-    private readonly laneProvider: LaneProviderLike;
+    private readonly laneViews = new Map<string, {
+        provider: LaneProviderLike;
+        open: boolean;
+        requestRevision: number;
+    }>();
     private readonly modulesProvider: ModulesProviderLike;
     private readonly highlighter: NodeSpanHighlighter;
     private readonly rebuildStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -104,9 +111,6 @@ export class WorkspaceSession {
     private lastQuery: QueryShape | null = null;
     private startInFlight: Promise<boolean> | null = null;
     private lastTerminalStatusMessage = "";
-    private laneViewId = `lanes-${crypto.randomBytes(8).toString("hex")}`;
-    private laneViewOpen = false;
-    private laneViewRequestRevision = 0;
     private playbackPaused = true;
     private lastScrubbedSampleIndex = 0;
     private serverStdoutLines: string[] = [];
@@ -131,15 +135,12 @@ export class WorkspaceSession {
         workspaceFolder: vscode.WorkspaceFolder,
         outputChannel: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
-        laneProvider: LaneProviderLike,
         modulesProvider: ModulesProviderLike,
         highlighter: NodeSpanHighlighter,
     ) {
         this.workspaceFolder = workspaceFolder;
         this.outputChannel = outputChannel;
         this.provider = provider;
-        this.laneProvider = laneProvider;
-        this.laneProvider.setLaneViewId(this.laneViewId);
         this.modulesProvider = modulesProvider;
         this.highlighter = highlighter;
         this.clangdDatabaseWatcher = vscode.workspace.createFileSystemWatcher(
@@ -150,10 +151,14 @@ export class WorkspaceSession {
         this.registerNotificationHandlers();
     }
 
-    restoreLaneViewId(viewId: string | null): void {
-        if (!viewId || !viewId.startsWith("lanes-")) return;
-        this.laneViewId = viewId;
-        this.laneProvider.setLaneViewId(viewId);
+    registerLaneView(provider: LaneProviderLike, restoredViewId: string | null = null): string {
+        const viewId = restoredViewId && restoredViewId.startsWith("lanes-")
+            ? restoredViewId
+            : `lanes-${crypto.randomBytes(8).toString("hex")}`;
+        provider.setLaneViewId(viewId);
+        provider.setModuleInstances(this.projectModuleInstances);
+        this.laneViews.set(viewId, { provider, open: false, requestRevision: 0 });
+        return viewId;
     }
 
     private registerNotificationHandlers(): void {
@@ -181,16 +186,18 @@ export class WorkspaceSession {
         });
 
         this.notifications.subscribe<LaneViewUpdatedNotification>("timeline.laneViewUpdated", (params) => {
-            if (params.viewId === this.laneViewId) {
+            const view = this.laneViews.get(params.viewId);
+            if (view) {
                 // The browser owns its scroll position. Notifications refresh
                 // lane data, but must not rewind a scroll already in progress.
-                this.laneProvider.setLanes(params, true);
+                view.provider.setLanes(params, true);
             }
         });
 
         this.notifications.subscribe<LaneViewContentNotification>("timeline.laneViewContentUpdated", (params) => {
-            if (params.viewId === this.laneViewId) {
-                this.laneProvider.setLaneContent(params);
+            const view = this.laneViews.get(params.viewId);
+            if (view) {
+                view.provider.setLaneContent(params);
             }
         });
 
@@ -354,7 +361,9 @@ export class WorkspaceSession {
     }
 
     private refreshLaneInstanceNames(): void {
-        this.laneProvider.setModuleInstances(this.projectModuleInstances);
+        for (const view of this.laneViews.values()) {
+            view.provider.setModuleInstances(this.projectModuleInstances);
+        }
     }
 
     private parseSourcePosition(payload: unknown): SourcePosition | null {
@@ -957,7 +966,7 @@ export class WorkspaceSession {
         await this.rpc.disableProjectAutosave();
     }
 
-    private laneViewRequestParams(): {
+    private laneViewRequestParams(viewId: string, provider: LaneProviderLike): {
         viewId: string;
         filter: { query: string };
         startIndex: number;
@@ -966,12 +975,10 @@ export class WorkspaceSession {
         lastSampleIndex: number;
         displaySampleCount: number;
     } {
-        const viewport = this.laneProvider.viewportState();
+        const viewport = provider.viewportState();
         return {
-            viewId: this.laneViewId,
-            // The lanes view is an inventory, not a graph-only inspector.
-            // An empty query is the explicit unfiltered/all-lanes query.
-            filter: { query: "" },
+            viewId,
+            filter: { query: typeof viewport.laneQuery === "string" ? viewport.laneQuery : "" },
             startIndex: viewport.startIndex,
             visibleLaneCount: viewport.visibleLaneCount,
             firstSampleIndex: viewport.firstSampleIndex,
@@ -980,36 +987,44 @@ export class WorkspaceSession {
         };
     }
 
-    async openLaneView(): Promise<void> {
+    async openLaneView(viewId: string): Promise<void> {
+        const view = this.laneViews.get(viewId);
+        if (!view) return;
         if (!(await this.ensureReady()) || !this.rpc) {
-            this.laneProvider.clear();
+            view.provider.clear();
             return;
         }
-        const result = await this.rpc.openLaneView(this.laneViewRequestParams());
-        this.laneViewOpen = true;
-        this.laneProvider.setLanes(result);
-        await this.updateLaneViewVisibleLanes();
+        const result = await this.rpc.openLaneView(this.laneViewRequestParams(viewId, view.provider));
+        view.open = true;
+        view.provider.setLanes(result);
+        await this.updateLaneViewVisibleLanes(viewId);
     }
 
-    async updateLaneViewVisibleLanes(): Promise<void> {
-        if (!this.laneViewOpen || !(await this.ensureReady()) || !this.rpc) {
+    async updateLaneViewVisibleLanes(viewId: string): Promise<void> {
+        const view = this.laneViews.get(viewId);
+        if (!view || !view.open || !(await this.ensureReady()) || !this.rpc) {
             return;
         }
-        const requestRevision = ++this.laneViewRequestRevision;
-        const result = await this.rpc.updateLaneView(this.laneViewRequestParams());
-        if (requestRevision !== this.laneViewRequestRevision) {
+        const requestRevision = ++view.requestRevision;
+        const result = await this.rpc.updateLaneView(this.laneViewRequestParams(viewId, view.provider));
+        if (requestRevision !== view.requestRevision) {
             return;
         }
-        this.laneProvider.setLanes(result, true);
+        view.provider.setLanes(result, true);
     }
 
-    async closeLaneView(): Promise<void> {
-        if (!this.laneViewOpen || !this.rpc) {
+    async closeLaneView(viewId: string): Promise<void> {
+        const view = this.laneViews.get(viewId);
+        if (!view) {
             return;
         }
-        this.laneViewOpen = false;
+        this.laneViews.delete(viewId);
+        if (!view.open || !this.rpc) {
+            return;
+        }
+        view.open = false;
         try {
-            await this.rpc.closeLaneView(this.laneViewId);
+            await this.rpc.closeLaneView(viewId);
         } catch {
         }
     }

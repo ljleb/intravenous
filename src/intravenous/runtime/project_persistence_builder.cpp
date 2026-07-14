@@ -80,11 +80,6 @@ void ProjectPersistenceBuilder::add_graph_input_authored_state(
     event_output_states_ = state.event_output_states;
 }
 
-void ProjectPersistenceBuilder::add_lane_views(std::vector<LaneViewRequest> views)
-{
-    lane_views_ = std::move(views);
-}
-
 void ProjectPersistenceBuilder::add_lane_sample_channel_types(
     std::vector<ProjectSetTimelineLaneSampleChannelTypeRequest> requests)
 {
@@ -367,23 +362,6 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
                 {"lane_id", request.lane_id.has_value()
                     ? nlohmann::ordered_json(request.lane_id->str())
                     : nlohmann::ordered_json(nullptr)},
-            },
-        });
-    }
-
-    auto views = lane_views_;
-    std::ranges::sort(views, {}, &LaneViewRequest::view_id);
-    for (auto const &view : views) {
-        commands.push_back(ProjectCommand{
-            .command = "timeline.openLaneView",
-            .args = nlohmann::ordered_json{
-                {"view_id", view.view_id.str()},
-                {"query_source", view.query.filter.source},
-                {"start_index", view.start_index},
-                {"visible_lane_count", view.visible_lane_count},
-                {"first_sample_index", view.first_sample_index},
-                {"last_sample_index", view.last_sample_index},
-                {"display_sample_count", view.display_sample_count},
             },
         });
     }

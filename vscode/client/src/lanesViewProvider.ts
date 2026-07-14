@@ -23,6 +23,7 @@ export class LaneViewProvider {
         this.totalLaneCount = 0;
         this.instanceNamesByNumericId = new Map();
         this.laneViewId = "";
+        this.laneQuery = "";
     }
 
     setModuleInstances(instances) {
@@ -129,6 +130,7 @@ export class LaneViewProvider {
         this.startIndex = Math.max(0, Number(state.startIndex || 0));
         this.visibleLaneCount = Math.max(1, Number(state.visibleLaneCount || this.visibleLaneCount || 24));
         if (typeof state.laneViewId === "string") this.laneViewId = state.laneViewId;
+        if (typeof state.laneQuery === "string") this.laneQuery = state.laneQuery;
     }
 
     currentLaneViewId() { return this.laneViewId || null; }
@@ -145,6 +147,7 @@ export class LaneViewProvider {
             firstSampleIndex: this.firstSampleIndex,
             lastSampleIndex: this.lastSampleIndex,
             displaySampleCount: this.displaySampleCount,
+            laneQuery: this.laneQuery,
         };
     }
 
@@ -175,6 +178,7 @@ export class LaneViewProvider {
                 description: numericMetadata.join(" • "),
                 metadata,
                 modelTypeId: typeof lane.modelTypeId === "string" ? lane.modelTypeId : "",
+                sampleChannelType: typeof lane.sampleChannelType === "string" ? lane.sampleChannelType : "",
             };
         });
     }
@@ -295,6 +299,7 @@ export class LaneViewProvider {
         this.panel.webview.postMessage({
             type: "setState",
             laneViewId: this.laneViewId,
+            laneQuery: this.laneQuery,
             startIndex: this.startIndex,
             visibleLaneCount: this.visibleLaneCount,
             totalLaneCount: this.totalLaneCount,
@@ -576,6 +581,7 @@ export class LaneViewProvider {
         const restoredState = vscode.getState() || {};
         const state = {
             laneViewId: typeof restoredState.laneViewId === "string" ? restoredState.laneViewId : "",
+            laneQuery: typeof restoredState.laneQuery === "string" ? restoredState.laneQuery : "",
             startIndex: Number(restoredState.startIndex || 0),
             visibleLaneCount: Number(restoredState.visibleLaneCount || 0),
             totalLaneCount: 0,
@@ -643,6 +649,7 @@ export class LaneViewProvider {
             renderTimelineChrome();
             vscode.setState({
                 laneViewId: state.laneViewId,
+                laneQuery: state.laneQuery,
                 startIndex: state.startIndex,
                 visibleLaneCount: state.visibleLaneCount,
                 connectionsExpanded: state.connectionsExpanded,
@@ -1131,7 +1138,7 @@ export class LaneViewProvider {
                     staticFace.appendChild(meterName);
                     const meter = document.createElement("div");
                     meter.className = "large-meter";
-                    const isStereo = content?.sampleChannelType === "stereo";
+                    const isStereo = (content?.sampleChannelType || lane.sampleChannelType) === "stereo";
                     if (isStereo) meter.dataset.channel = "L";
                     const fill = document.createElement("div");
                     fill.className = "large-meter-fill";
@@ -1311,6 +1318,7 @@ export class LaneViewProvider {
                 const connectionsChanged = JSON.stringify(state.connections)
                     !== JSON.stringify(Array.isArray(message.connections) ? message.connections : []);
                 if (typeof message.laneViewId === "string") state.laneViewId = message.laneViewId;
+                if (typeof message.laneQuery === "string") state.laneQuery = message.laneQuery;
                 if (!viewport) {
                     state.startIndex = Number(message.startIndex || 0);
                     state.visibleLaneCount = Number(message.visibleLaneCount || 0);
@@ -1328,6 +1336,7 @@ export class LaneViewProvider {
                 }
                 vscode.setState({
                     laneViewId: state.laneViewId,
+                    laneQuery: state.laneQuery,
                     startIndex: state.startIndex,
                     visibleLaneCount: state.visibleLaneCount,
                     connectionsExpanded: state.connectionsExpanded,

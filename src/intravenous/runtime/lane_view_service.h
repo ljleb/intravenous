@@ -17,6 +17,7 @@ namespace iv {
         InternedString lane_id {};
         LaneId runtime_lane {};
         LaneDomain domain = LaneDomain::realtime;
+        std::optional<ChannelTypeId> sample_channel_type {};
         LaneMetadata metadata {};
         std::optional<std::string> model_type_id {};
     };

@@ -3,7 +3,6 @@
 #include <intravenous/runtime/audio_device_lanes.h>
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
-#include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/startup_config.h>
 #include <intravenous/runtime/timeline_events.h>
 #include <intravenous/runtime/authored_lane_api.h>
@@ -38,7 +37,6 @@ class ProjectPersistenceBuilder {
     std::vector<ProjectSetEventInputStateRequest> event_input_states_ {};
     std::vector<ProjectSetSampleOutputStateRequest> sample_output_states_ {};
     std::vector<ProjectSetEventOutputStateRequest> event_output_states_ {};
-    std::vector<LaneViewRequest> lane_views_ {};
     std::vector<ProjectSetTimelineLaneSampleChannelTypeRequest> lane_sample_channel_types_ {};
     std::vector<ProjectConnectTimelineLanesRequest> lane_connections_ {};
     std::vector<AuthoredLaneConnection> authored_lane_connections_ {};
@@ -65,7 +63,6 @@ public:
         std::string input_lane_id);
     void add_iv_module_instances(std::vector<IvModuleInstanceInfo> instances);
     void add_graph_input_authored_state(GraphInputLanes::AuthoredStateSnapshot const &state);
-    void add_lane_views(std::vector<LaneViewRequest> views);
     void add_lane_sample_channel_types(
         std::vector<ProjectSetTimelineLaneSampleChannelTypeRequest> requests);
     void add_lane_connections(std::vector<ProjectConnectTimelineLanesRequest> connections);

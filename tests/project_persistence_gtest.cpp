@@ -723,10 +723,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRe
 
     persistence.load();
 
-    auto const views = lane_views.active_view_requests();
-    ASSERT_EQ(views.size(), 1u);
-    EXPECT_EQ(views.front().view_id.str(), "view-a");
-    EXPECT_EQ(views.front().start_index, 4u);
+    EXPECT_TRUE(lane_views.active_view_requests().empty());
     ASSERT_EQ(witness.messages.size(), 1u);
     EXPECT_EQ(witness.messages.front().level, "error");
     EXPECT_TRUE(witness.messages.front().message.contains("missing"));
@@ -787,8 +784,7 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
 
     ASSERT_EQ(instances.list_instances().size(), 1u);
     EXPECT_EQ(instances.list_instances().front().instance_id, "instance-a");
-    ASSERT_EQ(lane_views.active_view_requests().size(), 1u);
-    EXPECT_EQ(lane_views.active_view_requests().front().view_id.str(), "view-b");
+    EXPECT_TRUE(lane_views.active_view_requests().empty());
     EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
     EXPECT_TRUE(witness.messages.front().message.contains("missing"));
 
@@ -960,7 +956,7 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     EXPECT_EQ(
         fresh_audio_device_lanes.output_lane_external_id().str(),
         "audio-out");
-    EXPECT_EQ(fresh_lane_views.active_view_requests().size(), 1u);
+    EXPECT_TRUE(fresh_lane_views.active_view_requests().empty());
     ASSERT_TRUE(fresh_reload.toolchain_config().c_compiler.has_value());
     EXPECT_EQ(fresh_timeline.lane_connections().size(), 1u);
     ASSERT_TRUE(fresh_timeline.resolve_public_lane_id(intern("lane-b")).has_value());
@@ -1006,16 +1002,6 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
             .module_root = workspace,
         },
     });
-    builder.add_lane_views({
-        iv::LaneViewRequest{
-            .view_id = intern("view-b"),
-            .query = iv::LaneQuery{.filter = iv::LaneQueryFilter{.source = "two"}},
-        },
-        iv::LaneViewRequest{
-            .view_id = intern("view-a"),
-            .query = iv::LaneQuery{.filter = iv::LaneQueryFilter{.source = "one"}},
-        },
-    });
     builder.add_authored_lane_connections({
         iv::AuthoredLaneConnection{
             .source_lane_id = intern("lane-z"),
@@ -1041,13 +1027,10 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
     EXPECT_FALSE(commands.front().args.contains("output_device_id"));
 
     std::vector<std::string> created_instance_ids;
-    std::vector<std::string> view_ids;
     std::vector<std::pair<std::string, std::string>> connection_order;
     for (auto const &command : commands) {
         if (command.command == "ivModuleInstances.create") {
             created_instance_ids.push_back(command.args["instance_id"].get<std::string>());
-        } else if (command.command == "timeline.openLaneView") {
-            view_ids.push_back(command.args["view_id"].get<std::string>());
         } else if (command.command == "timeline.connectAuthoredLanes") {
             connection_order.emplace_back(
                 command.args["source_lane_id"].get<std::string>(),
@@ -1056,7 +1039,9 @@ TEST(ProjectPersistenceBuilder, NormalizesSettingsPathsAndStableOrdering)
     }
 
     EXPECT_EQ(created_instance_ids, (std::vector<std::string>{"a", "b"}));
-    EXPECT_EQ(view_ids, (std::vector<std::string>{"view-a", "view-b"}));
+    EXPECT_FALSE(std::ranges::any_of(commands, [](auto const &command) {
+        return command.command == "timeline.openLaneView";
+    }));
     EXPECT_EQ(
         connection_order,
         (std::vector<std::pair<std::string, std::string>>{
@@ -1306,8 +1291,7 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersUntilTargetExists
 
     EXPECT_TRUE(timeline.lane_connections().empty());
     ASSERT_EQ(timeline.pending_public_connections().size(), 1u);
-    ASSERT_EQ(lane_views.active_view_requests().size(), 1u);
-    EXPECT_EQ(lane_views.active_view_requests().front().view_id.str(), "view-after-target-failure");
+    EXPECT_TRUE(lane_views.active_view_requests().empty());
     EXPECT_TRUE(witness.messages.empty());
 
     initialize_two_timeline_lanes(timeline);
@@ -1357,8 +1341,7 @@ TEST_F(ProjectPersistenceTest, TimelineLaneSampleChannelTypeFailureDoesNotStopLa
 
     persistence.load();
 
-    ASSERT_EQ(lane_views.active_view_requests().size(), 1u);
-    EXPECT_EQ(lane_views.active_view_requests().front().view_id.str(), "view-after-channel-failure");
+    EXPECT_TRUE(lane_views.active_view_requests().empty());
     ASSERT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
     EXPECT_TRUE(witness.messages.front().message.contains("does not produce samples"));
 
@@ -1471,7 +1454,7 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
     EXPECT_TRUE(contains_command("audioDevices.setLaneIds"));
     EXPECT_TRUE(contains_command("ivModuleInstances.create"));
     EXPECT_TRUE(contains_command("graph.setSampleInputValue"));
-    EXPECT_TRUE(contains_command("timeline.openLaneView"));
+    EXPECT_FALSE(contains_command("timeline.openLaneView"));
     EXPECT_TRUE(std::ranges::any_of(commands, [&](auto const &command) {
         return command["command"] == "graph.setSampleInputValue"
             && command["args"]["node_id"] == graph_runtime_node_id;
@@ -1626,16 +1609,13 @@ TEST_F(ProjectPersistenceTest, SavedIdsAreReusedAcrossLoadAndResave)
     EXPECT_EQ((*lane_id_command)["args"]["output_lane_id"], "audio-out-fixed");
     EXPECT_EQ((*lane_id_command)["args"]["input_lane_id"], "audio-in-fixed");
 
-    auto const view_command = std::ranges::find_if(commands, [](auto const &command) {
+    EXPECT_FALSE(std::ranges::any_of(commands, [](auto const &command) {
         return command["command"] == "timeline.openLaneView";
-    });
-    ASSERT_NE(view_command, commands.end());
-    EXPECT_EQ((*view_command)["args"]["view_id"], "view-fixed");
+    }));
 
     EXPECT_EQ(audio_device_lanes.output_lane_external_id().str(), "audio-out-fixed");
     EXPECT_EQ(audio_device_lanes.input_lane_external_id().str(), "audio-in-fixed");
-    ASSERT_EQ(lane_views.active_view_requests().size(), 1u);
-    EXPECT_EQ(lane_views.active_view_requests().front().view_id.str(), "view-fixed");
+    EXPECT_TRUE(lane_views.active_view_requests().empty());
 
     iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);

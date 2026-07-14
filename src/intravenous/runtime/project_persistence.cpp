@@ -514,26 +514,9 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
     }
 
     if (command.command == "timeline.openLaneView") {
-        ProjectLaneViewBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_open_lane_view_requested_event,
-            ProjectOpenLaneViewRequest{
-                .request = LaneViewRequest{
-                    .view_id = InternedString::from_string(require_string(args, "view_id")),
-                    .query = LaneQuery{
-                        .filter = LaneQueryFilter{
-                            .source = require_string(args, "query_source"),
-                        },
-                    },
-                    .start_index = require_size(args, "start_index"),
-                    .visible_lane_count = require_size(args, "visible_lane_count"),
-                    .first_sample_index = require_size(args, "first_sample_index"),
-                    .last_sample_index = require_size(args, "last_sample_index"),
-                    .display_sample_count = require_size(args, "display_sample_count"),
-                },
-            },
-            builder);
-        (void)builder.build();
+        // Lane views are restored by VS Code's workspace-local webview state.
+        // Accept old project files during migration, but do not recreate their
+        // views or carry them forward on the next save.
         return;
     }
 

@@ -106,16 +106,22 @@ namespace iv {
 
         if (snapshot->visit_lanes) {
             std::unordered_map<uint64_t, LaneDomain> domains;
+            std::unordered_map<uint64_t, std::optional<ChannelTypeId>> sample_channel_types;
             snapshot->visit_lanes(
                 requested_output_lanes,
-                [&domains](LaneId lane, TypeErasedLaneNode const &, LaneOutputConfig const &output,
-                           std::optional<ChannelTypeId>, std::vector<LaneInputConnection> const &,
+                [&domains, &sample_channel_types](LaneId lane, TypeErasedLaneNode const &, LaneOutputConfig const &output,
+                           std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &,
                            std::vector<std::string> const &) {
                     domains[lane.value] = lane_domain(output);
+                    sample_channel_types[lane.value] = sample_channel_type;
                 });
             for (auto &lane : result.lanes) {
                 if (auto const it = domains.find(lane.runtime_lane.value); it != domains.end()) {
                     lane.domain = it->second;
+                }
+                if (auto const it = sample_channel_types.find(lane.runtime_lane.value);
+                    it != sample_channel_types.end()) {
+                    lane.sample_channel_type = it->second;
                 }
             }
         }

@@ -233,6 +233,9 @@ SocketRpcJson lane_query_result_json(LaneQueryResult const &result)
         if (lane.model_type_id.has_value()) {
             json_lane["modelTypeId"] = *lane.model_type_id;
         }
+        if (lane.sample_channel_type.has_value()) {
+            json_lane["sampleChannelType"] = std::string(channel_type_json(*lane.sample_channel_type));
+        }
         json_lanes.push_back(std::move(json_lane));
     }
 

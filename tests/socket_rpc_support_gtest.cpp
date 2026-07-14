@@ -424,6 +424,7 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
                 iv::LaneInfo {
                     .lane_id = intern("42"),
                     .domain = iv::LaneDomain::realtime,
+                    .sample_channel_type = iv::ChannelTypeId::stereo,
                     .metadata = iv::LaneMetadata{
                         .unit_values = {"graph_input"},
                         .int_values = {
@@ -454,6 +455,7 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
     EXPECT_EQ(response["result"]["totalLaneCount"], 5);
     EXPECT_EQ(response["result"]["lanes"][0]["laneId"], "42");
     EXPECT_EQ(response["result"]["lanes"][0]["domain"], "realtime");
+    EXPECT_EQ(response["result"]["lanes"][0]["sampleChannelType"], "stereo");
     EXPECT_TRUE(response["result"]["lanes"][0].contains("metadata"));
     EXPECT_EQ(response["result"]["lanes"][0]["metadata"]["member_ordinal"], 1);
     EXPECT_EQ(response["result"]["connections"][0]["targetLaneId"], "lane-99");
