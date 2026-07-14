@@ -38,6 +38,9 @@ public:
     [[nodiscard]] size_t realtime_start_index() const;
     void set_compiled_sample_cache_chunk_size_multiplier(size_t multiplier);
     size_t compiled_sample_cache_chunk_size_multiplier() const;
+    // Invalidates rendered/queried compiled content without changing the task
+    // graph. This is used for lane UI-model writes that alter a lane's output.
+    void invalidate_compiled_cache(LaneId lane);
     BorrowedSampleBlock realtime_sample_block(LaneId lane) const;
     std::span<TimedEvent const> realtime_event_block(LaneId lane) const;
     OwnedSampleBlock compiled_sample_block(LaneId lane, size_t start_index);

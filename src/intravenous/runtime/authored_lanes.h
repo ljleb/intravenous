@@ -2,6 +2,7 @@
 
 #include <intravenous/runtime/authored_lane_api.h>
 #include <intravenous/basic_lane_nodes/beat_trigger.h>
+#include <intravenous/basic_lane_nodes/audio_file_capture.h>
 #include <intravenous/basic_lane_nodes/type_erased.h>
 #include <intravenous/runtime/lane_graph.h>
 #include <intravenous/runtime/timeline_events.h>
@@ -29,8 +30,9 @@ concept CreatableLane = requires(std::string_view state, LaneCreationContext con
 };
 
 // The list contains types only; descriptors are derived from those types.
-using AuthoredCreatableLaneTypes = std::tuple<BeatTriggerLaneNode>;
+using AuthoredCreatableLaneTypes = std::tuple<BeatTriggerLaneNode, AudioFileCaptureLaneNode>;
 static_assert(CreatableLane<BeatTriggerLaneNode>);
+static_assert(CreatableLane<AudioFileCaptureLaneNode>);
 
 class AuthoredLanes {
     struct StoredLane {

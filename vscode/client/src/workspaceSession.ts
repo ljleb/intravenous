@@ -15,6 +15,11 @@ import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
 import { ModuleInstanceInfo, ModuleSourceInfo, ModulesControlMessage } from "./modulesViewProvider";
 
+declare const __INTRAVENOUS_DEFAULT_DIR__: string;
+
+const packagedDefaultServerDir = typeof __INTRAVENOUS_DEFAULT_DIR__ === "string"
+    ? __INTRAVENOUS_DEFAULT_DIR__ : "";
+
 type LiveGraphProviderLike = {
     setInstances(instances: IvModuleInstanceInfo[]): void;
     setNodes(nodes: LogicalNode[]): void;
@@ -24,7 +29,13 @@ type LiveGraphProviderLike = {
 };
 
 type LaneProviderLike = {
-    viewportState(): { startIndex: number; visibleLaneCount: number };
+    viewportState(): {
+        startIndex: number;
+        visibleLaneCount: number;
+        firstSampleIndex: number;
+        lastSampleIndex: number;
+        displaySampleCount: number;
+    };
     clear(): void;
     setLanes(result: Record<string, unknown>, preserveViewport?: boolean): void;
     setLaneContent(result: Record<string, unknown>): void;
@@ -45,6 +56,7 @@ type ServerStatusNotification = {
 type LaneViewContentNotification = Record<string, unknown> & {
     viewId?: string;
     lanes?: Array<Record<string, unknown>>;
+    uiStates?: Array<Record<string, unknown>>;
 };
 
 type ServerMessageNotification = {
@@ -151,6 +163,11 @@ export class WorkspaceSession {
             }
             const lines = String(params.message).split(/\r?\n/);
             for (const line of lines) {
+                // These are normal high-frequency reconciliation traces, not
+                // useful alongside an interactive pointer diagnostic.
+                if (/^(graph public ports reconciled|graph input lanes |iv module execution tasks changed:|iv instances realized:|graph input timeline batch|timeline execution tasks changed:)/.test(line)) {
+                    continue;
+                }
                 if (line.length > 0) {
                     this.outputChannel.appendLine(line);
                 }
@@ -253,6 +270,29 @@ export class WorkspaceSession {
             };
         }
 
+        // A build-and-install script packages the matching server path into
+        // the extension. It must win over an old workspace setting left by a
+        // previous Debug installation.
+        if (packagedDefaultServerDir) {
+            return {
+                source: "client build default",
+                path: path.join(packagedDefaultServerDir, "intravenous"),
+            };
+        }
+
+        const configured = vscode.workspace
+            .getConfiguration("intravenous", this.workspaceFolder.uri)
+            .get<string>("intravenousDir");
+        if (configured) {
+            if (!path.isAbsolute(configured)) {
+                throw new Error(`intravenous.intravenousDir must be absolute: ${configured}`);
+            }
+            return {
+                source: "intravenous.intravenousDir",
+                path: path.join(configured, "intravenous"),
+            };
+        }
+
         for (const candidate of this.autoDetectedServerDirectories()) {
             if (this.binaryExists(candidate)) {
                 return {
@@ -262,24 +302,10 @@ export class WorkspaceSession {
             }
         }
 
-        const configured = vscode.workspace
-            .getConfiguration("intravenous", this.workspaceFolder.uri)
-            .get<string>("intravenousDir");
-        if (!configured) {
-            throw new Error(
-                "Intravenous executable directory is not configured. " +
-                "Set INTRAVENOUS_DIR or intravenous.intravenousDir, " +
-                "or build the repo so the client can auto-detect build/src/intravenous.");
-        }
-
-        if (!path.isAbsolute(configured)) {
-            throw new Error(`intravenous.intravenousDir must be absolute: ${configured}`);
-        }
-
-        return {
-            source: "intravenous.intravenousDir",
-            path: path.join(configured, "intravenous"),
-        };
+        throw new Error(
+            "Intravenous executable directory is not configured. " +
+            "Set INTRAVENOUS_DIR or intravenous.intravenousDir, " +
+            "or build the repo so the client can auto-detect build/src/intravenous.");
     }
 
     private autoDetectedServerDirectories(): Array<{ source: string; directory: string }> {
@@ -550,9 +576,6 @@ export class WorkspaceSession {
         }
 
         this.client = new JsonRpcSocketClient(rpcStream, (method, params) => {
-            if (method !== "timeline.laneViewContentUpdated") {
-                this.outputChannel.appendLine(`Intravenous startup notification: ${method}`);
-            }
             void this.notifications.dispatch(method, params);
         });
         this.outputChannel.appendLine("Intravenous startup: attaching client RPC socket");
@@ -894,7 +917,12 @@ export class WorkspaceSession {
 
     async setTimelineLaneUiState(laneId: string, serializedState: string, expectedRevision?: number): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.setTimelineLaneUiState(laneId, serializedState, expectedRevision);
+        try {
+            await this.rpc.setTimelineLaneUiState(laneId, serializedState, expectedRevision);
+        } catch (error) {
+            this.outputChannel.appendLine(`Intravenous lane UI debug: state update failed for ${laneId}: ${String(error)}`);
+            throw error;
+        }
     }
 
     async getTimelineLaneTypes(): Promise<Array<{
@@ -929,7 +957,15 @@ export class WorkspaceSession {
         await this.rpc.disableProjectAutosave();
     }
 
-    private laneViewRequestParams(): { viewId: string; filter: { query: string }; startIndex: number; visibleLaneCount: number } {
+    private laneViewRequestParams(): {
+        viewId: string;
+        filter: { query: string };
+        startIndex: number;
+        visibleLaneCount: number;
+        firstSampleIndex: number;
+        lastSampleIndex: number;
+        displaySampleCount: number;
+    } {
         const viewport = this.laneProvider.viewportState();
         return {
             viewId: this.laneViewId,
@@ -938,6 +974,9 @@ export class WorkspaceSession {
             filter: { query: "" },
             startIndex: viewport.startIndex,
             visibleLaneCount: viewport.visibleLaneCount,
+            firstSampleIndex: viewport.firstSampleIndex,
+            lastSampleIndex: viewport.lastSampleIndex,
+            displaySampleCount: viewport.displaySampleCount,
         };
     }
 

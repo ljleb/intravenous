@@ -14,8 +14,12 @@ export class LaneViewProvider {
         this.viewportHandler = null;
         this.scrubHandler = null;
         this.laneUiStateHandler = null;
+        this.debugHandler = null;
         this.startIndex = 0;
         this.visibleLaneCount = 24;
+        this.firstSampleIndex = 0;
+        this.lastSampleIndex = 0;
+        this.displaySampleCount = 0;
         this.totalLaneCount = 0;
         this.instanceNamesByNumericId = new Map();
         this.laneViewId = "";
@@ -116,6 +120,7 @@ export class LaneViewProvider {
 
     setScrubHandler(handler) { this.scrubHandler = handler; }
     setLaneUiStateHandler(handler) { this.laneUiStateHandler = handler; }
+    setDebugHandler(handler) { this.debugHandler = handler; }
 
     restoreViewportState(state) {
         if (!state || typeof state !== "object") {
@@ -137,6 +142,9 @@ export class LaneViewProvider {
         return {
             startIndex: this.startIndex,
             visibleLaneCount: this.visibleLaneCount,
+            firstSampleIndex: this.firstSampleIndex,
+            lastSampleIndex: this.lastSampleIndex,
+            displaySampleCount: this.displaySampleCount,
         };
     }
 
@@ -144,6 +152,8 @@ export class LaneViewProvider {
         return this.lanes.map((lane) => {
             const metadata = lane && typeof lane.metadata === "object" && lane.metadata ? lane.metadata : {};
             const has = (key) => Object.prototype.hasOwnProperty.call(metadata, key);
+            const isAudioOutput = has("audio_output");
+            const isAudioInput = has("audio_input");
             const type = has("dsp_graph.event") ? "event" : has("dsp_graph.sample") ? "sample" : "lane";
             const direction = has("dsp_graph.graph_output") ? "out" : has("dsp_graph.graph_input") ? "in" : "";
             const instanceName = has("dsp_graph.public")
@@ -151,8 +161,10 @@ export class LaneViewProvider {
                 && direction === "out"
                 ? this.instanceNamesByNumericId.get(Number(metadata["dsp_graph.module_instance_id"]))
                 : "";
-            const title = (has("dsp_graph.public") ? "public " : "") + type + (direction ? " " + direction : "")
-                + (instanceName ? ` • ${instanceName}` : "");
+            const title = isAudioOutput ? "Audio device output"
+                : isAudioInput ? "Audio device input"
+                : (has("dsp_graph.public") ? "public " : "") + type + (direction ? " " + direction : "")
+                    + (instanceName ? ` • ${instanceName}` : "");
             const numericMetadata = Object.entries(metadata)
                 .filter(([key, value]) => typeof value === "number" && !key.includes("ordinal"))
                 .map(([key, value]) => `${key.replace(/^dsp_graph\./, "")}=${value}`);
@@ -238,6 +250,23 @@ export class LaneViewProvider {
             if (message.type === "setLaneUiState") {
                 this.laneUiStateHandler?.(String(message.laneId || ""), String(message.serializedState || ""),
                     typeof message.expectedRevision === "number" ? message.expectedRevision : undefined);
+                return;
+            }
+            if (message.type === "beatPointerDebug") {
+                this.debugHandler?.(message);
+                return;
+            }
+            if (message.type === "timelineViewportChanged") {
+                const firstSampleIndex = Math.max(0, Math.floor(Number(message.firstSampleIndex || 0)));
+                const lastSampleIndex = Math.max(firstSampleIndex, Math.floor(Number(message.lastSampleIndex || 0)));
+                const displaySampleCount = Math.max(0, Math.floor(Number(message.displaySampleCount || 0)));
+                if (firstSampleIndex === this.firstSampleIndex
+                    && lastSampleIndex === this.lastSampleIndex
+                    && displaySampleCount === this.displaySampleCount) return;
+                this.firstSampleIndex = firstSampleIndex;
+                this.lastSampleIndex = lastSampleIndex;
+                this.displaySampleCount = displaySampleCount;
+                this.viewportHandler?.(this.viewportState());
                 return;
             }
             if (message.type !== "viewportChanged") return;
@@ -565,6 +594,28 @@ export class LaneViewProvider {
         let viewport = null;
         let hasAppliedInitialScrollPosition = false;
         let pendingViewportPost = 0;
+        let lastTimelineViewport = "";
+        let renderDeferredUntilBeatDragEnd = false;
+        function isEditingBeatControl() {
+            const active = document.activeElement;
+            return active instanceof HTMLInputElement
+                && active.dataset.beatLaneId != null && active.dataset.beatField != null;
+        }
+        function laneStructureKey(lanes, totalLaneCount) {
+            return String(totalLaneCount) + "|" + (Array.isArray(lanes) ? lanes.map((lane) => [
+                lane.laneId, lane.domain, lane.modelTypeId, lane.title, lane.description,
+            ].join("\u0001")).join("\u0002") : "");
+        }
+        function flushDeferredLaneRender() {
+            if (!renderDeferredUntilBeatDragEnd || document.__ivBeatControlDrag?.active || isEditingBeatControl()) return;
+            renderDeferredUntilBeatDragEnd = false;
+            renderTimelineChrome();
+            renderLanes();
+        }
+        document.addEventListener("ivBeatDragEnded", () => {
+            flushDeferredLaneRender();
+        });
+        document.addEventListener("focusout", () => setTimeout(flushDeferredLaneRender, 0));
         let lastPostedStartIndex = -1;
         let lastPostedVisibleLaneCount = -1;
         let summary = null;
@@ -700,6 +751,7 @@ export class LaneViewProvider {
                 state.panSamples = panStartSamples - (event.clientX - panStartX) * state.samplesPerPixel;
                 renderTimelineChrome();
                 renderLanes();
+                postTimelineViewport();
             });
             timelineRuler.addEventListener("pointerup", (event) => {
                 if (scrubPointerId === event.pointerId) {
@@ -725,19 +777,25 @@ export class LaneViewProvider {
                 }
                 if (event.ctrlKey || event.metaKey) {
                     event.preventDefault();
-                    setZoom(state.samplesPerPixel * (event.deltaY > 0 ? 1.25 : 0.8));
+                    setZoomAt(
+                        state.samplesPerPixel * (event.deltaY > 0 ? 1.25 : 0.8),
+                        event.clientX,
+                        viewport.getBoundingClientRect());
                     return;
                 }
-                if (event.shiftKey) {
+                if (event.deltaX !== 0 || event.shiftKey) {
                     event.preventDefault();
-                    state.panSamples += event.deltaY * state.samplesPerPixel;
+                    const horizontalDelta = event.deltaX !== 0 ? event.deltaX : event.deltaY;
+                    state.panSamples += horizontalDelta * state.samplesPerPixel;
+                    vscode.setState({ ...vscode.getState(), panSamples: state.panSamples });
                     renderTimelineChrome();
                     renderLanes();
+                    postTimelineViewport();
                     return;
                 }
-                // Ordinary wheel scrolling is native so the scrollbar keeps
-                // its normal smooth/inertial behavior. The scroll handler
-                // publishes the resulting viewport separately.
+                // Vertical wheel movement is native so the lane list keeps
+                // its normal smooth/inertial scrolling behavior. Horizontal
+                // trackpad movement above pans the timeline instead.
             }, { passive: false });
 
             spacer = document.createElement("div");
@@ -785,6 +843,21 @@ export class LaneViewProvider {
             });
             renderLanes();
             renderTimelineChrome();
+            postTimelineViewport();
+        }
+
+        // Preserve the timeline sample under the pointer while zooming. The
+        // ruler has a pre-zero gutter, so use its coordinate system rather
+        // than the track's left edge.
+        function setZoomAt(samplesPerPixel, clientX, bounds) {
+            const oldSamplesPerPixel = state.samplesPerPixel;
+            const sampleAtPointer = rulerStart()
+                + (clientX - bounds.left) * oldSamplesPerPixel;
+            const nextSamplesPerPixel = Math.max(1, Math.min(65536, Math.round(samplesPerPixel)));
+            state.panSamples = sampleAtPointer
+                - (clientX - bounds.left) * nextSamplesPerPixel
+                + 164 * nextSamplesPerPixel;
+            setZoom(nextSamplesPerPixel);
         }
 
         function setVerticalZoom(height) {
@@ -819,11 +892,16 @@ export class LaneViewProvider {
             menu.style.left = String(event.clientX) + "px";
             menu.style.top = String(event.clientY) + "px";
             document.body.appendChild(menu);
-            setTimeout(() => document.addEventListener("pointerdown", () => menu.remove(), { once: true }), 0);
+            // Do not remove the menu on the button's own pointer-down: doing
+            // so detaches the button before its click handler can apply the
+            // selected meter scale.
+            setTimeout(() => document.addEventListener("pointerdown", (pointerEvent) => {
+                if (!menu.contains(pointerEvent.target)) menu.remove();
+            }, { once: true }), 0);
         }
 
         function timelineStart() {
-            return Math.max(0, Math.round(state.panSamples));
+            return Math.round(state.panSamples);
         }
 
         function playheadX() {
@@ -840,6 +918,20 @@ export class LaneViewProvider {
 
         function rulerStart() {
             return timelineStart() - 164 * state.samplesPerPixel;
+        }
+
+        function postTimelineViewport() {
+            if (!viewport) return;
+            const firstSampleIndex = Math.max(0, Math.floor(rulerStart()));
+            const lastSampleIndex = Math.max(firstSampleIndex,
+                Math.ceil(rulerStart() + viewport.clientWidth * state.samplesPerPixel));
+            // One display sample per horizontal pixel allows the backend to
+            // choose an appropriate compiled visualization resolution.
+            const displaySampleCount = Math.max(1, Math.ceil(viewport.clientWidth));
+            const next = [firstSampleIndex, lastSampleIndex, displaySampleCount].join(":");
+            if (next === lastTimelineViewport) return;
+            lastTimelineViewport = next;
+            vscode.postMessage({ type: "timelineViewportChanged", firstSampleIndex, lastSampleIndex, displaySampleCount });
         }
 
         function renderTimelineChrome() {
@@ -873,7 +965,114 @@ export class LaneViewProvider {
             timelineRuler.appendChild(cursor);
         }
 
+        // Content updates are published continuously while the timeline runs. It
+        // deliberately updates only the pieces whose values came from that
+        // message; recreating every row (and every beat control) here made the
+        // editor needlessly unstable and expensive.
+        function updateDynamicContent() {
+            for (const lane of state.lanes) {
+                const laneId = String(lane.laneId);
+                const row = laneWindow.querySelector('.lane-row[data-lane-id="' + CSS.escape(laneId) + '"]');
+                if (!row) continue;
+                const content = state.contentByLaneId[laneId];
+                const eventCount = Number(content?.eventCount || 0);
+                const peakLevel = content?.peakLevel;
+
+                const labelMeter = row.querySelector(".lane-meter");
+                if (labelMeter) {
+                    labelMeter.classList.toggle("events", eventCount > 0);
+                    labelMeter.title = peakLevel != null
+                        ? "peak " + Number(peakLevel).toFixed(3)
+                        : eventCount > 0 ? String(eventCount) + " events" : "realtime level: 0.000";
+                    const fill = labelMeter.querySelector(".lane-meter-fill");
+                    if (fill) {
+                        const level = peakLevel != null
+                            ? Math.max(0, Math.min(1, Number(peakLevel)))
+                            : Math.min(1, eventCount / 8);
+                        fill.style.width = String(level * 100) + "%";
+                    }
+                }
+
+                const signal = row.querySelector(".lane-signal");
+                if (signal) {
+                    signal.classList.toggle("events", eventCount > 0);
+                    const level = peakLevel != null ? Math.max(0.08, Math.min(1, Number(peakLevel)))
+                        : eventCount > 0 ? 0.65 : 0.16;
+                    signal.style.opacity = String(0.18 + level * 0.8);
+                }
+
+                const largeMeters = row.querySelectorAll(".large-meter");
+                if (largeMeters.length > 0) {
+                    const meterMaximum = state.meterGrid === "decibel" ? Math.pow(10, 4 / 20) : 1;
+                    const meterPosition = (level) => {
+                        const linear = Math.max(0, Number(level || 0));
+                        if (state.meterGrid !== "decibel") return Math.min(1, linear);
+                        const xMin = Math.pow(10, -60 / 20) / meterMaximum;
+                        const s = Math.sqrt(xMin);
+                        const normalized = Math.min(1, Math.max(xMin, linear / meterMaximum));
+                        return Math.log((normalized + s) / (s * (1 + s))) / Math.log(1 / s);
+                    };
+                    for (const meter of largeMeters) {
+                        const level = meter.dataset.channel === "R" ? content?.secondaryPeakLevel : peakLevel;
+                        const fill = meter.querySelector(".large-meter-fill");
+                        if (fill) fill.style.width = String(meterPosition(level) * 100) + "%";
+                    }
+                }
+
+                const beatGrid = row.querySelector(".beat-event-grid");
+                if (beatGrid) {
+                    const fragment = document.createDocumentFragment();
+                    const gridStart = rulerStart();
+                    let previousMarkerX = -Infinity;
+                    for (const event of (content?.events || [])) {
+                        const markerX = (Number(event.time) - gridStart) / state.samplesPerPixel;
+                        if (markerX - previousMarkerX < 12) continue;
+                        previousMarkerX = markerX;
+                        const marker = document.createElement("div");
+                        marker.className = "beat-marker";
+                        marker.style.left = String(markerX) + "px";
+                        marker.title = "trigger at sample " + String(event.time);
+                        fragment.appendChild(marker);
+                    }
+                    beatGrid.replaceChildren(fragment);
+
+                    // Reconcile a server-side state change without disturbing
+                    // the field that the user is presently editing.
+                    const snapshot = state.uiStateByLaneId[laneId];
+                    try {
+                        const settings = snapshot ? JSON.parse(snapshot.serializedState) : null;
+                        if (settings && typeof settings === "object") {
+                            for (const input of row.querySelectorAll("input[data-beat-field]")) {
+                                const value = settings[input.dataset.beatField];
+                                if (value != null && document.activeElement !== input) input.value = String(value);
+                            }
+                        }
+                    } catch (_) {}
+                }
+            }
+            const rulerPlayhead = timelineRuler.querySelector(".playhead");
+            if (rulerPlayhead) {
+                rulerPlayhead.style.left = String(164 + playheadX()) + "px";
+                rulerPlayhead.title = "playback sample " + String(state.playbackSampleIndex ?? 0);
+            }
+            const canvasPlayhead = laneWindow.querySelector(".canvas-playhead");
+            if (canvasPlayhead) {
+                canvasPlayhead.style.left = String(164 + playheadX()) + "px";
+                canvasPlayhead.title = "playback sample " + String(state.playbackSampleIndex ?? 0);
+            }
+        }
+
         function renderLanes() {
+            const activeElement = document.activeElement;
+            const focusedBeatControl = activeElement instanceof HTMLInputElement
+                && activeElement.dataset.beatLaneId && activeElement.dataset.beatField
+                ? {
+                    laneId: activeElement.dataset.beatLaneId,
+                    field: activeElement.dataset.beatField,
+                    selectionStart: activeElement.selectionStart,
+                    selectionEnd: activeElement.selectionEnd,
+                }
+                : null;
             laneWindow.textContent = "";
             spacer.style.height = String(Math.max(0, state.totalLaneCount) * laneHeight) + "px";
             laneWindow.style.transform = "translateY(" + String(state.startIndex * laneHeight) + "px)";
@@ -881,6 +1080,7 @@ export class LaneViewProvider {
             for (const lane of state.lanes) {
                 const row = document.createElement("div");
                 row.className = "lane-row " + lane.domain;
+                row.dataset.laneId = String(lane.laneId);
                 row.style.height = String(lane.domain === "compiled" ? state.compiledLaneHeight : laneHeight) + "px";
                 row.title = "lane " + String(lane.laneId)
                     + (lane.description ? " • " + lane.description : "");
@@ -988,10 +1188,11 @@ export class LaneViewProvider {
                     continue;
                 }
                 const presentation = lanePresentationPlugins.get(lane.modelTypeId);
-                if (presentation?.render({ lane, content, row, state, laneWindow, timelineStart, scrubToSample,
+                if (presentation?.render({ lane, content, row, state, laneWindow, timelineStart, rulerStart, scrubToSample,
                     postLaneUiState: (laneId, serializedState, expectedRevision) => vscode.postMessage({
                         type: "setLaneUiState", laneId, serializedState, expectedRevision,
                     }),
+                    postDebug: (message) => vscode.postMessage(message),
                 })) continue;
                 const track = document.createElement("div");
                 track.className = "lane-track";
@@ -1017,6 +1218,25 @@ export class LaneViewProvider {
                 empty.className = "empty";
                 empty.textContent = state.totalLaneCount > 0 ? "[scrolling]" : "[no lanes]";
                 laneWindow.appendChild(empty);
+            }
+
+            // Content updates replace the event markers, but must not make a
+            // number input lose focus midway through an edit or spinner click.
+            if (focusedBeatControl) {
+                for (const input of laneWindow.querySelectorAll("input[data-beat-lane-id][data-beat-field]")) {
+                    if (input.dataset.beatLaneId !== focusedBeatControl.laneId
+                        || input.dataset.beatField !== focusedBeatControl.field) continue;
+                    input.focus({ preventScroll: true });
+                    if (focusedBeatControl.selectionStart != null && focusedBeatControl.selectionEnd != null) {
+                        try {
+                            input.setSelectionRange(focusedBeatControl.selectionStart, focusedBeatControl.selectionEnd);
+                        } catch (_) {
+                            // Number inputs do not support text selection in
+                            // every webview implementation.
+                        }
+                    }
+                    break;
+                }
             }
         }
 
@@ -1061,6 +1281,7 @@ export class LaneViewProvider {
             renderTimelineChrome();
             renderLanes();
             renderConnections();
+            postTimelineViewport();
 
             requestAnimationFrame(() => {
                 if (!viewport) {
@@ -1083,6 +1304,12 @@ export class LaneViewProvider {
         window.addEventListener("message", (event) => {
             const message = event.data || {};
             if (message.type === "setState") {
+                const nextLanes = Array.isArray(message.lanes) ? message.lanes : [];
+                const nextTotalLaneCount = Number(message.totalLaneCount || 0);
+                const structureChanged = laneStructureKey(state.lanes, state.totalLaneCount)
+                    !== laneStructureKey(nextLanes, nextTotalLaneCount);
+                const connectionsChanged = JSON.stringify(state.connections)
+                    !== JSON.stringify(Array.isArray(message.connections) ? message.connections : []);
                 if (typeof message.laneViewId === "string") state.laneViewId = message.laneViewId;
                 if (!viewport) {
                     state.startIndex = Number(message.startIndex || 0);
@@ -1091,8 +1318,8 @@ export class LaneViewProvider {
                     state.startIndex = Math.max(0, Math.floor(viewport.scrollTop / laneHeight));
                     state.visibleLaneCount = Math.max(1, Math.ceil(viewport.clientHeight / laneHeight) + 1);
                 }
-                state.totalLaneCount = Number(message.totalLaneCount || 0);
-                state.lanes = Array.isArray(message.lanes) ? message.lanes : [];
+                state.totalLaneCount = nextTotalLaneCount;
+                state.lanes = nextLanes;
                 state.connections = Array.isArray(message.connections) ? message.connections : [];
                 state.contentByLaneId = message.contentByLaneId && typeof message.contentByLaneId === "object"
                     ? message.contentByLaneId : state.contentByLaneId;
@@ -1108,6 +1335,23 @@ export class LaneViewProvider {
                 panSamples: state.panSamples,
                 compiledLaneHeight: state.compiledLaneHeight,
                 });
+                // A UI-originated state update commonly produces a
+                // laneViewUpdated notification even though the lane shape did
+                // not change. Its content is already represented locally, so
+                // update only dynamic output instead of replacing controls.
+                if (!structureChanged && viewport) {
+                    updateDynamicContent();
+                    if (connectionsChanged) renderConnections();
+                    return;
+                }
+                // Lane-view refreshes may be emitted while the beat node
+                // recompiles. They are structural messages, but replacing the
+                // input during its pointer-lock gesture makes the browser
+                // release pointer lock before the button is released.
+                if (document.__ivBeatControlDrag?.active || isEditingBeatControl()) {
+                    renderDeferredUntilBeatDragEnd = true;
+                    return;
+                }
                 render();
             } else if (message.type === "setContent") {
                 state.contentByLaneId = message.contentByLaneId && typeof message.contentByLaneId === "object"
@@ -1117,12 +1361,22 @@ export class LaneViewProvider {
                 if (typeof message.playbackSampleIndex === "number") {
                     state.playbackSampleIndex = message.playbackSampleIndex;
                 }
-                renderTimelineChrome();
-                renderLanes();
+                // Content arrives at the visualization publish rate. Replacing
+                // the lane DOM during a pointer-locked control drag destroys
+                // the active numeric field and makes the gesture unreliable.
+                if (document.__ivBeatControlDrag?.active) {
+                    renderDeferredUntilBeatDragEnd = true;
+                    return;
+                }
+                updateDynamicContent();
             }
         });
 
-        new ResizeObserver(scheduleViewportPost).observe(root);
+        new ResizeObserver(() => {
+            scheduleViewportPost();
+            renderTimelineChrome();
+            postTimelineViewport();
+        }).observe(root);
 
         render();
     </script>

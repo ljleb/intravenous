@@ -11,6 +11,9 @@ type LaneViewParams = {
     filter: { query?: string; kind?: string };
     startIndex: number;
     visibleLaneCount: number;
+    firstSampleIndex?: number;
+    lastSampleIndex?: number;
+    displaySampleCount?: number;
 };
 
 export class WorkspaceRpc {

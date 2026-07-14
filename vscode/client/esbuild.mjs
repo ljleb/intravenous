@@ -49,6 +49,7 @@ const context = await esbuild.context({
     },
     define: {
         "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV || "development"),
+        "__INTRAVENOUS_DEFAULT_DIR__": JSON.stringify(process.env.INTRAVENOUS_DEFAULT_DIR || ""),
     },
 });
 

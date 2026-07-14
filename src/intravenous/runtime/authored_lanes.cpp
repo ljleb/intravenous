@@ -19,6 +19,20 @@ TypeErasedLaneNode BeatTriggerLaneNode::from_lane_ui_state(
     return TypeErasedLaneNode(std::move(node));
 }
 
+TypeErasedLaneNode AudioFileCaptureLaneNode::from_lane_ui_state(
+    std::string_view serialized_state,
+    LaneCreationContext const& context)
+{
+    try {
+        auto const json = nlohmann::json::parse(serialized_state);
+        auto const path = json.at("path").get<std::string>();
+        if (path.empty()) throw std::runtime_error("audio-file-capture path must not be empty");
+        return TypeErasedLaneNode(AudioFileCaptureLaneNode(path, context.sample_rate));
+    } catch (std::exception const& error) {
+        throw std::runtime_error("invalid audio-file-capture authored state: " + std::string(error.what()));
+    }
+}
+
 namespace {
 template<CreatableLane T>
 CreatableLaneDescriptor descriptor_for()
@@ -34,7 +48,7 @@ CreatableLaneDescriptor descriptor_for()
 
 std::vector<CreatableLaneDescriptor> AuthoredLanes::creatable_lane_types()
 {
-    return {descriptor_for<BeatTriggerLaneNode>()};
+    return {descriptor_for<BeatTriggerLaneNode>(), descriptor_for<AudioFileCaptureLaneNode>()};
 }
 
 TypeErasedLaneNode AuthoredLanes::make_node(
@@ -45,6 +59,9 @@ TypeErasedLaneNode AuthoredLanes::make_node(
     if (type_id == BeatTriggerLaneNode::lane_model_type_id()) {
         return BeatTriggerLaneNode::from_lane_ui_state(serialized_state, context);
     }
+    if (type_id == AudioFileCaptureLaneNode::lane_model_type_id()) {
+        return AudioFileCaptureLaneNode::from_lane_ui_state(serialized_state, context);
+    }
     throw std::runtime_error("unknown authored lane type: " + std::string(type_id));
 }
 
@@ -53,6 +70,8 @@ TimelineLaneBatchUpdate AuthoredLanes::create(std::string_view type_id, Interned
     std::string state;
     if (type_id == BeatTriggerLaneNode::lane_model_type_id()) {
         state = BeatTriggerLaneNode::default_lane_ui_state();
+    } else if (type_id == AudioFileCaptureLaneNode::lane_model_type_id()) {
+        state = AudioFileCaptureLaneNode::default_lane_ui_state();
     } else {
         throw std::runtime_error("unknown creatable lane type: " + std::string(type_id));
     }

@@ -8,7 +8,6 @@ test("workspaceSession server auto-detection includes parent repo build director
     const directories = autoDetectedServerDirectoriesForWorkspaceRoot(workspaceRoot)
         .map((candidate) => candidate.directory);
 
-    assert.ok(
         directories.includes("/home/abstrack/src/intravenous/build/src/intravenous"),
         "expected repo-level build/src/intravenous to be searched",
     );

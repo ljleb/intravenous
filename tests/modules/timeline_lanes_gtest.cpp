@@ -12,6 +12,7 @@
 #include <concepts>
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -71,6 +72,17 @@ namespace {
                 iv::LaneOutputView
             >);
             EXPECT_TRUE(std::holds_alternative<iv::RealtimeSampleLaneOutput>(ctx.out()));
+        }
+    };
+
+    struct TestPauseFlushLaneNode {
+        std::shared_ptr<size_t> flush_count;
+
+        iv::RealtimeSampleLaneOutputConfig output() const { return {.name = "out"}; }
+
+        void flush_on_pause()
+        {
+            ++*flush_count;
         }
     };
 
@@ -452,6 +464,16 @@ TEST(Lanes, TypeErasedLaneNodeCarriesOptionalUiModelState)
     EXPECT_EQ(second->serialized_state, R"({"value":2})");
 }
 
+TEST(Lanes, TypeErasedLaneNodeFlushesOptionalPauseHook)
+{
+    auto flush_count = std::make_shared<size_t>(0);
+    iv::TypeErasedLaneNode node = TestPauseFlushLaneNode{flush_count};
+
+    node.flush_on_pause();
+
+    EXPECT_EQ(*flush_count, 1u);
+}
+
 TEST(Lanes, BeatTriggerEmitsCompiledTriggerEventsAtItsConfiguredRate)
 {
     iv::BeatTriggerLaneNode node(48000);
@@ -486,6 +508,49 @@ TEST(Lanes, BeatTriggerEmitsCompiledTriggerEventsAtItsConfiguredRate)
     EXPECT_EQ(subdivided_events[0].time, 0u);
     EXPECT_EQ(subdivided_events[1].time, 12000u);
     EXPECT_EQ(subdivided_events[2].time, 24000u);
+}
+
+TEST(Lanes, BeatTriggerUiStateWriteInvalidatesItsCompiledEventOutput)
+{
+    iv::BeatTriggerLaneNode node(48000);
+    EXPECT_TRUE(node.take_lane_ui_state_dirty());
+    EXPECT_FALSE(node.take_lane_ui_state_dirty());
+
+    auto const applied = node.apply_lane_ui_state(iv::LaneUiStateWrite{
+        .serialized_state = R"({"bpm":120,"beatsPerBar":4,"beatUnit":4,"eventsPerBeat":2})",
+    });
+    ASSERT_TRUE(applied.accepted);
+    EXPECT_EQ(applied.effect, iv::LaneUiStateEffect::execution_content_changed);
+    EXPECT_TRUE(node.take_lane_ui_state_dirty());
+
+    std::vector<iv::TimedEvent> events;
+    iv::UntypedCompiledLaneTickContext untyped{
+        .request = {.start_index = 0, .end_index = 25000, .sample_count = 25000},
+        .output = iv::CompiledEventLaneOutput{.events = &events},
+    };
+    iv::CompiledLaneTickContext<iv::BeatTriggerLaneNode> context(untyped);
+    node.tick_block_compiled(context);
+    ASSERT_EQ(events.size(), 3u);
+    EXPECT_EQ(events[0].time, 0u);
+    EXPECT_EQ(events[1].time, 12000u);
+    EXPECT_EQ(events[2].time, 24000u);
+}
+
+TEST(Lanes, AddingLanesDoesNotMoveExistingLaneNodes)
+{
+    iv::LaneGraph graph;
+    auto const compiled = graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
+    auto const realtime = graph.add_lane(iv::TypeErasedLaneNode(TestUiModelLaneNode {}));
+    auto const* compiled_node = &graph.lane(compiled).node;
+    auto const* realtime_node = &graph.lane(realtime).node;
+
+    // TimelineExecution keeps non-owning pointers to these nodes for task
+    // callbacks. Appending an unrelated lane must not invalidate them.
+    (void)graph.add_lane(iv::TypeErasedLaneNode(TestCompiledEventLaneNode {}));
+    (void)graph.add_lane(iv::TypeErasedLaneNode(TestUiModelLaneNode {}));
+
+    EXPECT_EQ(&graph.lane(compiled).node, compiled_node);
+    EXPECT_EQ(&graph.lane(realtime).node, realtime_node);
 }
 
 TEST(Lanes, TimelineForwardsOptionalUiModelStateToTheOwningLane)

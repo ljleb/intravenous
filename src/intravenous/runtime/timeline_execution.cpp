@@ -315,10 +315,21 @@ std::vector<LaneId> TimelineExecution::realtime_sample_output_lanes() const
     return lanes;
 }
 
+void TimelineExecution::invalidate_compiled_cache(LaneId lane)
+{
+    std::scoped_lock lock(mutex_);
+    compiled_sample_cache_.erase(lane);
+    compiled_event_cache_.erase(lane);
+}
+
 void TimelineExecution::pause()
 {
     std::scoped_lock lock(mutex_);
+    if (paused_) return;
     paused_ = true;
+    for (auto const& [_, tracked] : tracked_lanes_) {
+        tracked.node->flush_on_pause();
+    }
 }
 
 void TimelineExecution::resume(size_t start_index)

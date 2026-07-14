@@ -228,6 +228,12 @@ void handle_set_timeline_lane_ui_state(
     }
 
     if (result.effect != LaneUiStateEffect::ui_only) {
+        // Lane-view refresh and execution-cache invalidation are both driven
+        // by the ensuing lane-change event. Invalidate first, so the view can
+        // never query an old compiled event window due to subscriber order.
+        if (bound_timeline_execution != nullptr) {
+            bound_timeline_execution->invalidate_compiled_cache(*lane);
+        }
         emit_lane_ui_model_changed(*lane);
     }
     builder.succeed();
@@ -382,6 +388,16 @@ IV_SUBSCRIBE_LINKER_EVENT(
         }
         builder.add_lane_sample_channel_types(std::move(lane_sample_channel_types));
         std::vector<ProjectConnectTimelineLanesRequest> lane_connections;
+        auto add_connection = [&](ProjectConnectTimelineLanesRequest connection) {
+            auto const duplicate = std::ranges::any_of(lane_connections, [&](auto const& existing) {
+                return existing.source_lane_id == connection.source_lane_id
+                    && existing.target_lane_id == connection.target_lane_id
+                    && existing.port_domain == connection.port_domain
+                    && existing.port_kind == connection.port_kind
+                    && existing.port_ordinal == connection.port_ordinal;
+            });
+            if (!duplicate) lane_connections.push_back(std::move(connection));
+        };
         for (auto const &connection : bound_timeline->lane_connections()) {
             if (!bound_timeline->lane_is_persistent(connection.source)
                 || !bound_timeline->lane_is_persistent(connection.target)) {
@@ -396,12 +412,25 @@ IV_SUBSCRIBE_LINKER_EVENT(
                 && bound_authored_lanes->contains_connection(authored_connection)) {
                 continue;
             }
-            lane_connections.push_back(ProjectConnectTimelineLanesRequest{
+            add_connection(ProjectConnectTimelineLanesRequest{
                 .source_lane_id = authored_connection.source_lane_id,
                 .target_lane_id = authored_connection.target_lane_id,
                 .port_domain = authored_connection.input.domain,
                 .port_kind = authored_connection.input.kind,
                 .port_ordinal = authored_connection.input.ordinal,
+            });
+        }
+        // Graph/module lanes are often created after project replay starts.
+        // A connection that is still pending is nevertheless authored state;
+        // omitting it here made an unrelated save (for example, creating a
+        // capture lane) erase the device-output connection from the project.
+        for (auto const& [source_lane_id, target_lane_id, input] : bound_timeline->pending_public_connections()) {
+            add_connection(ProjectConnectTimelineLanesRequest{
+                .source_lane_id = source_lane_id,
+                .target_lane_id = target_lane_id,
+                .port_domain = input.domain,
+                .port_kind = input.kind,
+                .port_ordinal = input.ordinal,
             });
         }
         builder.add_lane_connections(std::move(lane_connections));

@@ -6,6 +6,7 @@
 #include <intravenous/runtime/lane_graph.h>
 
 #include <algorithm>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <variant>
@@ -187,8 +188,10 @@ namespace iv {
 
     struct LaneGraphLaneStore {
         LaneIdAllocator ids;
-        std::vector<CompiledLaneRecord> compiled;
-        std::vector<RealtimeLaneRecord> realtime;
+        // Task execution keeps non-owning pointers to lane nodes. Deque keeps
+        // existing records at stable addresses when lanes are appended.
+        std::deque<CompiledLaneRecord> compiled;
+        std::deque<RealtimeLaneRecord> realtime;
         std::unordered_map<LaneId, LaneLocation, LaneIdHash> indices;
     };
 
@@ -443,12 +446,12 @@ namespace iv {
             return _lanes.realtime[location.index];
         }
 
-        std::vector<CompiledLaneRecord> const& compiled_lanes() const
+        std::deque<CompiledLaneRecord> const& compiled_lanes() const
         {
             return _lanes.compiled;
         }
 
-        std::vector<RealtimeLaneRecord> const& realtime_lanes() const
+        std::deque<RealtimeLaneRecord> const& realtime_lanes() const
         {
             return _lanes.realtime;
         }

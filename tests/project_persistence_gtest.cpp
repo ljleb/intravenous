@@ -1236,6 +1236,34 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersConnectionUntilLa
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
 }
 
+TEST_F(ProjectPersistenceTest, SavingKeepsPendingTimelineConnections)
+{
+    auto const workspace = mutable_module_fixture_workspace("project_pending_timeline_connection_save", "local_cmake");
+    auto const startup = make_startup(workspace);
+    iv::Timeline timeline;
+    iv::TimelineExecution execution(8, 16);
+    iv::ProjectPersistence persistence(workspace, startup);
+
+    timeline.connect_public_lanes_or_defer(
+        intern("future-source"), intern("future-target"),
+        {.domain = iv::LanePortDomain::realtime, .kind = iv::PortKind::sample, .ordinal = 0});
+    ASSERT_EQ(timeline.pending_public_connections().size(), 1u);
+
+    iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
+    iv::bind_project_persistence_bridge(persistence);
+    persistence.save();
+
+    auto const commands = parse_project_file(workspace / "iv_project.jsonl");
+    EXPECT_TRUE(std::ranges::any_of(commands, [](auto const& command) {
+        return command["command"] == "timeline.connectLanes"
+            && command["args"]["source_lane_id"] == "future-source"
+            && command["args"]["target_lane_id"] == "future-target";
+    }));
+
+    iv::unbind_project_persistence_bridge(persistence);
+    iv::unbind_runtime_project_timeline_execution_bridge(execution);
+}
+
 TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersUntilTargetExistsAndStillRestoresView)
 {
     auto const workspace = mutable_module_fixture_workspace("project_timeline_missing_target", "local_cmake");

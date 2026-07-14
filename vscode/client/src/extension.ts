@@ -64,6 +64,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             outputChannel.appendLine(`Intravenous lane UI state update failed: ${error.message}`);
         });
     });
+    laneProvider.setDebugHandler((message) => {
+        const field = typeof message.field === "string" ? ` ${message.field}` : "";
+        const detail = typeof message.detail === "string" ? ` ${message.detail}` : "";
+        outputChannel.appendLine(`Intravenous beat pointer${field}: ${String(message.phase || "event")}${detail}`);
+    });
     modulesProvider.setControlHandler((message) => session.dispatchModulesControl(message));
 
     context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.lanes", {
@@ -100,6 +105,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         let creatableLanes: Array<{ typeId: string; category: string; label: string; description: string }>;
         try {
             creatableLanes = await session.getTimelineLaneTypes();
+            outputChannel.appendLine("Intravenous create-lane types: "
+                + creatableLanes.map((lane) => lane.typeId).join(", "));
         } catch (error: any) {
             outputChannel.appendLine(`Intravenous lane type query failed: ${error.message}`);
             return;

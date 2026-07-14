@@ -30,6 +30,39 @@ TrackedLaneKind output_lane_kind(LaneOutputConfig const &output)
     }
     return TrackedLaneKind::compiled_event;
 }
+
+void limit_events_to_display_columns(
+    std::vector<TimedEvent> &events,
+    size_t first_sample_index,
+    size_t last_sample_index,
+    size_t display_sample_count)
+{
+    if (display_sample_count == 0 || events.size() <= display_sample_count
+        || last_sample_index < first_sample_index) {
+        return;
+    }
+
+    // At most one marker can be seen in a horizontal display column. Keep the
+    // first event in each column before serializing, rather than shipping (and
+    // creating DOM for) potentially millions of indistinguishable events.
+    auto const window_sample_count = last_sample_index - first_sample_index + 1;
+    std::vector<TimedEvent> reduced;
+    reduced.reserve(display_sample_count);
+    std::optional<size_t> previous_column;
+    for (auto const &event : events) {
+        auto const offset = event.time > first_sample_index
+            ? event.time - first_sample_index : 0;
+        auto const column = std::min(
+            display_sample_count - 1,
+            (offset * display_sample_count) / window_sample_count);
+        if (previous_column.has_value() && *previous_column == column) {
+            continue;
+        }
+        reduced.push_back(event);
+        previous_column = column;
+    }
+    events = std::move(reduced);
+}
 } // namespace
 
 LanesVisualization::LanesVisualization(
@@ -154,7 +187,13 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
                 update.first_sample_index,
                 update.last_sample_index,
                 builder);
-            compiled_events[lane.value] = builder.build();
+            auto events = builder.build();
+            limit_events_to_display_columns(
+                events,
+                update.first_sample_index,
+                update.last_sample_index,
+                update.display_sample_count);
+            compiled_events[lane.value] = std::move(events);
         }
     }
 

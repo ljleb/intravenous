@@ -255,6 +255,9 @@ LaneViewRequest parse_lane_view_request(Json const &params) {
         .query = parse_lane_query(params),
         .start_index = parse_optional_size_param(params, "startIndex", 0),
         .visible_lane_count = parse_optional_size_param(params, "visibleLaneCount", 0),
+        .first_sample_index = parse_optional_size_param(params, "firstSampleIndex", 0),
+        .last_sample_index = parse_optional_size_param(params, "lastSampleIndex", 0),
+        .display_sample_count = parse_optional_size_param(params, "displaySampleCount", 0),
     };
 }
 } // namespace

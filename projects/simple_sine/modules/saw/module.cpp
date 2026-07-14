@@ -39,7 +39,7 @@ void simple_sine(iv::ModuleContext const& context)
 
     auto saw = g.multi_channel<ChannelTypeId::stereo>([&]<auto c>()
     {
-        auto f = g.node<Constant>(440);
+        auto f = g.node<Constant>(220);
         auto d = g.input(2, 0);
         auto const voice = g.node<SawOscillator>();
 

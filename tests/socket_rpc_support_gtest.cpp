@@ -104,6 +104,17 @@ TEST(SocketRpcRequestParser, ParsesLaneViewUpdateRequest)
     EXPECT_EQ(request->request.visible_lane_count, 8u);
 }
 
+TEST(SocketRpcRequestParser, ParsesLaneViewCompiledEventDisplayWindow)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":23,"method":"timeline.updateLaneView","params":{"viewId":"view-a","filter":{"kind":"graphInputs"},"firstSampleIndex":48000,"lastSampleIndex":144000,"displaySampleCount":96000}})");
+    auto const* request = std::get_if<iv::UpdateLaneViewRpcRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->request.first_sample_index, 48000u);
+    EXPECT_EQ(request->request.last_sample_index, 144000u);
+    EXPECT_EQ(request->request.display_sample_count, 96000u);
+}
+
 TEST(SocketRpcRequestParser, ParsesSetSampleInputValueRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
