@@ -648,7 +648,9 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_public_sample_input(PublicSample
             .min = input.min,
             .max = input.max,
             .current_value = input.current_value,
-            .state_value = "logicalFollow",
+            .state_value = i < input.member_states.size()
+                ? input.member_states[i]
+                : "logicalFollow",
         });
         node.members.push_back(std::move(member));
     }

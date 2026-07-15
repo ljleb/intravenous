@@ -29,6 +29,9 @@ namespace iv {
         void set_enabled(bool enabled, TimePoint now = Clock::now());
         [[nodiscard]] bool enabled() const;
         [[nodiscard]] bool take_due_save(TimePoint now = Clock::now());
+        // Claim an outstanding save without waiting for the debounce timer.
+        // Used after the autosave worker has stopped during server teardown.
+        [[nodiscard]] bool take_pending_save();
         void save_succeeded(TimePoint now = Clock::now());
         void save_failed(TimePoint now = Clock::now());
     };

@@ -93,11 +93,13 @@ type GraphNodesUpdatedNotification = {
 export class WorkspaceSession {
     private readonly workspaceFolder: vscode.WorkspaceFolder;
     private readonly outputChannel: vscode.OutputChannel;
+    private readonly laneTopologyDiagnostics: vscode.OutputChannel;
     readonly provider: LiveGraphProviderLike;
     private readonly laneViews = new Map<string, {
         provider: LaneProviderLike;
         open: boolean;
         requestRevision: number;
+        failedLaneQuery: string | null;
     }>();
     private readonly modulesProvider: ModulesProviderLike;
     private readonly highlighter: NodeSpanHighlighter;
@@ -134,12 +136,14 @@ export class WorkspaceSession {
     constructor(
         workspaceFolder: vscode.WorkspaceFolder,
         outputChannel: vscode.OutputChannel,
+        laneTopologyDiagnostics: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
         modulesProvider: ModulesProviderLike,
         highlighter: NodeSpanHighlighter,
     ) {
         this.workspaceFolder = workspaceFolder;
         this.outputChannel = outputChannel;
+        this.laneTopologyDiagnostics = laneTopologyDiagnostics;
         this.provider = provider;
         this.modulesProvider = modulesProvider;
         this.highlighter = highlighter;
@@ -157,7 +161,7 @@ export class WorkspaceSession {
             : `lanes-${crypto.randomBytes(8).toString("hex")}`;
         provider.setLaneViewId(viewId);
         provider.setModuleInstances(this.projectModuleInstances);
-        this.laneViews.set(viewId, { provider, open: false, requestRevision: 0 });
+        this.laneViews.set(viewId, { provider, open: false, requestRevision: 0, failedLaneQuery: null });
         return viewId;
     }
 
@@ -168,6 +172,10 @@ export class WorkspaceSession {
             }
             const lines = String(params.message).split(/\r?\n/);
             for (const line of lines) {
+                if (line.startsWith("lane topology diagnostic:")) {
+                    this.laneTopologyDiagnostics.appendLine(line);
+                    continue;
+                }
                 // These are normal high-frequency reconciliation traces, not
                 // useful alongside an interactive pointer diagnostic.
                 if (/^(graph public ports reconciled|graph input lanes |iv module execution tasks changed:|iv instances realized:|graph input timeline batch|timeline execution tasks changed:)/.test(line)) {
@@ -222,14 +230,14 @@ export class WorkspaceSession {
             const replaceInstanceIds = Array.isArray(params.replaceInstanceIds)
                 ? params.replaceInstanceIds.filter((value): value is string => typeof value === "string")
                 : [];
-            const editor = vscode.window.activeTextEditor;
-            const hasActiveQuery =
-                !!this.lastQuery &&
-                !!editor &&
-                editor.document.uri.scheme === "file" &&
-                editor.document.uri.fsPath === this.lastQuery.filePath;
-            if (hasActiveQuery) {
-                const refreshed = await this.updateFromEditor(editor);
+            // `lastQuery` is the side panel's selected source-span
+            // projection, not merely a property of whichever editor happens
+            // to be focused. A lanes webview can take focus while the graph
+            // side panel remains visible. Applying this full-instance delta
+            // directly in that case replaced the projection with every port
+            // from the instance.
+            if (this.lastQuery && this.rpc) {
+                const refreshed = await this.refreshLastQuery();
                 this.updatePrimaryHighlight(refreshed);
                 return;
             }
@@ -934,6 +942,11 @@ export class WorkspaceSession {
         }
     }
 
+    async setTimelineLaneName(laneId: string, name: string): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        await this.rpc.setTimelineLaneName(laneId, name);
+    }
+
     async getTimelineLaneTypes(): Promise<Array<{
         typeId: string; category: string; label: string; description: string;
     }>> {
@@ -943,6 +956,30 @@ export class WorkspaceSession {
     async createTimelineLane(typeId: string): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
         await this.rpc.createTimelineLane(typeId);
+    }
+
+    async connectTimelineLanes(
+        sourceLaneId: string,
+        targetLaneId: string,
+        portDomain: "realtime" | "compiled",
+        portKind: "sample" | "event",
+        portOrdinal: number,
+    ): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        await this.rpc.connectTimelineLanes(
+            sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal);
+    }
+
+    async disconnectTimelineLanes(
+        sourceLaneId: string,
+        targetLaneId: string,
+        portDomain: "realtime" | "compiled",
+        portKind: "sample" | "event",
+        portOrdinal: number,
+    ): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        await this.rpc.disconnectTimelineLanes(
+            sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal);
     }
 
     async saveProject(): Promise<void> {
@@ -1005,8 +1042,22 @@ export class WorkspaceSession {
         if (!view || !view.open || !(await this.ensureReady()) || !this.rpc) {
             return;
         }
+        const params = this.laneViewRequestParams(viewId, view.provider);
+        if (view.failedLaneQuery === params.filter.query) {
+            return;
+        }
         const requestRevision = ++view.requestRevision;
-        const result = await this.rpc.updateLaneView(this.laneViewRequestParams(viewId, view.provider));
+        let result: Record<string, unknown>;
+        try {
+            result = await this.rpc.updateLaneView(params);
+        } catch (error) {
+            // A malformed expression should report once, not on every scroll
+            // or timeline-content refresh. Editing the query (including
+            // clearing it) changes the source and enables a fresh request.
+            view.failedLaneQuery = params.filter.query;
+            throw error;
+        }
+        view.failedLaneQuery = null;
         if (requestRevision !== view.requestRevision) {
             return;
         }
@@ -1083,15 +1134,31 @@ export class WorkspaceSession {
             ranges,
         };
 
+        return this.refreshLastQuery();
+    }
+
+    // Keep the side panel scoped to the most recently selected source spans
+    // even when focus moves to a webview. Backend node-change notifications
+    // carry instance-wide deltas, so they must be reprojected through this
+    // query before updating the panel.
+    private async refreshLastQuery(): Promise<LogicalNode[]> {
+        if (!this.rpc || !this.lastQuery) {
+            return [];
+        }
+        const query = this.lastQuery;
         const result = await this.rpc.queryNodesBySpans(
-            editor.document.uri.fsPath,
-            ranges,
-            ranges.length > 1 ? "union" : "intersection",
+            query.filePath,
+            query.ranges,
+            query.ranges.length > 1 ? "union" : "intersection",
             this.selectedInstanceId,
         );
-        const activeRegionsResult = await this.rpc.queryActiveRegions(editor.document.uri.fsPath);
+        const activeRegionsResult = await this.rpc.queryActiveRegions(query.filePath);
+        // A newer code selection won while this RPC was in flight.
+        if (this.lastQuery !== query) {
+            return [];
+        }
         this.lastQueryError = "";
-        const nodes = sortNodesByRelevance(this.parseLogicalNodes(result.nodes), this.lastQuery);
+        const nodes = sortNodesByRelevance(this.parseLogicalNodes(result.nodes), query);
         const activeRegions = this.parseSourceSpans(activeRegionsResult.sourceSpans);
         this.provider.setNodes(nodes);
         this.highlighter.setActiveRegions(activeRegions);

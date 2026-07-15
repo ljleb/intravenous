@@ -326,14 +326,18 @@ void LaneFilters::store_filter(LaneFilterStoredRequest const &request)
             filter.matching_lane_ids.clear();
             filter.parse_error_message.reset();
             filter.error_message.reset();
-            try {
-                filter.raw_ast = parser.parse(filter.query_source);
-            } catch (std::exception const &ex) {
-                filter.raw_ast = {};
-                filter.parse_error_message = ex.what();
-                filter.error_message = filter.parse_error_message;
-                filter.dirty = false;
-                parse_failed = true;
+            // An empty lane-view query is the explicit all-lanes filter. It
+            // has no AST and must not go through the expression parser.
+            if (!filter.query_source.empty()) {
+                try {
+                    filter.raw_ast = parser.parse(filter.query_source);
+                } catch (std::exception const &ex) {
+                    filter.raw_ast = {};
+                    filter.parse_error_message = ex.what();
+                    filter.error_message = filter.parse_error_message;
+                    filter.dirty = false;
+                    parse_failed = true;
+                }
             }
             if (!parse_failed) {
                 filter.dirty = true;

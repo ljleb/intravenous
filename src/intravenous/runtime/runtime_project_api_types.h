@@ -79,6 +79,7 @@ namespace iv {
         bool graph_connected = false;
         std::vector<size_t> member_ordinals {};
         std::vector<bool> member_graph_connected {};
+        std::vector<std::string> member_states {};
     };
 
     struct PublicEventInputInfo {

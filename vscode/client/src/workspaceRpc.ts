@@ -146,8 +146,40 @@ export class WorkspaceRpc {
         return this.client.request("timeline.setLaneUiState", params);
     }
 
+    setTimelineLaneName(laneId: string, name: string): Promise<void> {
+        return this.client.request("timeline.setLaneUiState", { laneId, name });
+    }
+
     createTimelineLane(typeId: string): Promise<void> {
         return this.client.request("timeline.createLane", { typeId });
+    }
+
+    connectTimelineLanes(
+        sourceLaneId: string,
+        targetLaneId: string,
+        portDomain: "realtime" | "compiled",
+        portKind: "sample" | "event",
+        portOrdinal: number,
+    ): Promise<void> {
+        return this.client.request("timeline.connectLanes", {
+            sourceLaneId,
+            targetLaneId,
+            portDomain,
+            portKind,
+            portOrdinal,
+        });
+    }
+
+    disconnectTimelineLanes(
+        sourceLaneId: string,
+        targetLaneId: string,
+        portDomain: "realtime" | "compiled",
+        portKind: "sample" | "event",
+        portOrdinal: number,
+    ): Promise<void> {
+        return this.client.request("timeline.disconnectLanes", {
+            sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal,
+        });
     }
 
     getTimelineLaneTypes(): Promise<{ laneTypes?: Array<{

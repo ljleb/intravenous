@@ -13,6 +13,13 @@
 #include <vector>
 
 namespace iv {
+    struct LaneInputInfo {
+        LanePortDomain domain = LanePortDomain::realtime;
+        PortKind kind = PortKind::sample;
+        size_t ordinal = 0;
+        std::string name {};
+    };
+
     struct LaneInfo {
         InternedString lane_id {};
         LaneId runtime_lane {};
@@ -20,11 +27,14 @@ namespace iv {
         std::optional<ChannelTypeId> sample_channel_type {};
         LaneMetadata metadata {};
         std::optional<std::string> model_type_id {};
+        PortKind output_kind = PortKind::sample;
+        std::vector<LaneInputInfo> inputs {};
     };
 
     struct LaneConnectionInfo {
         InternedString source_lane_id {};
         InternedString target_lane_id {};
+        LanePortDomain port_domain = LanePortDomain::realtime;
         PortKind port_kind = PortKind::sample;
         size_t port_ordinal = 0;
     };

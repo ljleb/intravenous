@@ -2599,17 +2599,41 @@ void GraphInputLanes::set_public_sample_input_value(
     if (instance_id.empty() || source_identity.empty()) {
         throw std::runtime_error("public sample input value requires instance and source identities");
     }
-    TimelineLaneBatchUpdate batch;
+    std::vector<LaneId> live_value_lanes;
     {
         std::scoped_lock lock(mutex);
         auto const key = public_sample_input_state_key(instance_id, source_identity, std::nullopt);
         ensure_public_sample_input_value_locked(instance_id, source_identity, Sample{0.0f})
             .store(value.value, std::memory_order_relaxed);
-        public_sample_input_states_by_key[key] = ProjectSampleInputState::overridden;
-        public_sample_input_lane_ids_by_key.erase(key);
-        pending_rebuild_instance_ids.insert(instance_id);
-        reconcile_public_ports_locked(&batch);
-        queue_timeline_batch_locked(batch);
+        auto const state = public_sample_input_states_by_key.find(key);
+        bool const timeline_input = state == public_sample_input_states_by_key.end()
+            || state->second == ProjectSampleInputState::timeline_lane;
+        if (!timeline_input) {
+            public_sample_input_states_by_key[key] = ProjectSampleInputState::overridden;
+            public_sample_input_lane_ids_by_key.erase(key);
+        } else {
+            for (auto const &port : desired_public_input_ports) {
+                if (!port.input || port.port_kind != PortKind::sample
+                    || port.instance_id != instance_id
+                    || port.source_identity != source_identity) {
+                    continue;
+                }
+                auto const member_key = public_sample_input_state_key(
+                    instance_id, source_identity, port.port_ordinal);
+                if (auto const member = public_sample_input_states_by_key.find(member_key);
+                    member != public_sample_input_states_by_key.end()
+                    && member->second == ProjectSampleInputState::timeline_lane) {
+                    continue;
+                }
+                live_value_lanes.push_back(public_graph_port_lane_for(port));
+            }
+        }
+    }
+    for (auto const lane : live_value_lanes) {
+        IV_INVOKE_SINGLETON_EVENT(
+            iv_runtime_graph_input_lanes_knob_value_updated_event,
+            lane,
+            value);
     }
 }
 
@@ -2686,6 +2710,17 @@ std::vector<PublicSampleInputInfo> GraphInputLanes::public_sample_inputs() const
         }
         result[it->second].member_ordinals.push_back(port.port_ordinal);
         result[it->second].member_graph_connected.push_back(port.graph_connected);
+        auto const member_key = public_sample_input_state_key(
+            port.instance_id, port.source_identity, port.port_ordinal);
+        auto const member_state_it = public_sample_input_states_by_key.find(member_key);
+        auto const member_state = member_state_it == public_sample_input_states_by_key.end()
+            ? ProjectSampleInputState::logical_follow
+            : member_state_it->second;
+        result[it->second].member_states.push_back(
+            member_state == ProjectSampleInputState::timeline_lane ? "timelineLane"
+                : member_state == ProjectSampleInputState::disconnected ? "disconnected"
+                    : member_state == ProjectSampleInputState::overridden ? "overridden"
+                        : "logicalFollow");
     }
     return result;
 }
@@ -3029,13 +3064,15 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                         ? port.default_value
                         : Sample{value_it->second->load(std::memory_order_relaxed)},
                 });
-            } else if (state != ProjectSampleInputState::timeline_lane) {
+            }
+            // Persist the choice as well as an overridden value. Replaying
+            // only the value left the default timeline lane active and
+            // reconnected the public input after a window reload.
+            if (state != ProjectSampleInputState::timeline_lane) {
                 snapshot.sample_input_states.push_back(ProjectSetSampleInputStateRequest{
                     .node_id = synthetic_node_id,
                     .input_ordinal = 0,
-                    .state = state == ProjectSampleInputState::disconnected
-                        ? ProjectSampleInputState::disconnected
-                        : ProjectSampleInputState::timeline_lane,
+                    .state = state,
                 });
             }
         }

@@ -42,7 +42,15 @@ void handle_timeline_lanes_changed(TimelineLanesChanged const &changed)
     if (!bound_execution) {
         return;
     }
-    maybe_publish(bound_execution->handle_timeline_lanes_changed(changed));
+    auto const update = bound_execution->handle_timeline_lanes_changed(changed);
+    emit_debug_message(
+        "lane topology diagnostic: execution applied lane change version="
+        + std::to_string(changed.version_index)
+        + " changed=" + std::to_string(changed.changed_lanes.size())
+        + " created=" + std::to_string(changed.created_lanes.size())
+        + " removed=" + std::to_string(changed.removed_lanes.size())
+        + " taskUpdates=" + std::to_string(update.update.to_update.size()));
+    maybe_publish(update);
 }
 
 void handle_realtime_sample_block_requested(

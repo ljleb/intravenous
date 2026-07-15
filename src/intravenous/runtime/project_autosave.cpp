@@ -54,6 +54,20 @@ bool ProjectAutosave::take_due_save(TimePoint now)
     return true;
 }
 
+bool ProjectAutosave::take_pending_save()
+{
+    std::lock_guard lock(mutex_);
+    if (!project_loaded_ || !enabled_ || save_in_flight_
+        || revision_ == saving_revision_) {
+        return false;
+    }
+
+    due_at_.reset();
+    save_in_flight_ = true;
+    saving_revision_ = revision_;
+    return true;
+}
+
 void ProjectAutosave::save_succeeded(TimePoint now)
 {
     std::lock_guard lock(mutex_);

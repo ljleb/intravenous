@@ -8,6 +8,7 @@
 #include <intravenous/runtime/timeline_execution.h>
 
 #include <algorithm>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace iv {
@@ -16,6 +17,24 @@ Timeline *bound_timeline = nullptr;
 TimelineExecution *bound_timeline_execution = nullptr;
 AuthoredLanes *bound_authored_lanes = nullptr;
 std::uint64_t timeline_change_version_index = 1;
+
+void emit_lane_topology_diagnostic(std::string message)
+{
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_notification_event,
+        ProjectNotification(ProjectMessageNotification{
+            .level = "debug",
+            .message = "lane topology diagnostic: " + std::move(message),
+        }));
+}
+
+bool has_connection(
+    std::vector<LaneGraphConnection> const &connections,
+    LaneGraphConnection const &connection)
+{
+    return std::find(connections.begin(), connections.end(), connection)
+        != connections.end();
+}
 
 std::vector<TimelineLaneOutputs> outputs_for_lanes(
     Timeline &timeline,
@@ -90,34 +109,54 @@ void emit_authored_lane_created(LaneId created_lane)
     });
 }
 
-std::vector<LaneId> affected_lanes_from_connection_delta(
+// A cable only changes the input state of its target.  Its source keeps the
+// same output, but every downstream lane can have a derived/compiled cache
+// that depends on the target, so include the target's descendants as well.
+// This is the smallest execution invalidation set for a topology edit.
+std::vector<LaneId> execution_affected_lanes_from_connection_delta(
     std::vector<LaneGraphConnection> const &before,
     std::vector<LaneGraphConnection> const &after)
 {
-    auto contains = [](std::vector<LaneGraphConnection> const &connections, LaneGraphConnection const &candidate) {
-        return std::find(connections.begin(), connections.end(), candidate) != connections.end();
+    auto contains = [](std::vector<LaneGraphConnection> const &connections,
+                       LaneGraphConnection const &candidate) {
+        return std::find(connections.begin(), connections.end(), candidate)
+            != connections.end();
     };
 
-    std::unordered_set<std::uint64_t> lane_values;
+    std::unordered_map<std::uint64_t, std::vector<LaneId>> targets_by_source;
+    for (auto const &connection : after) {
+        targets_by_source[connection.source.value].push_back(connection.target);
+    }
+
+    std::vector<LaneId> affected;
+    std::unordered_set<std::uint64_t> visited;
+    auto include_target_and_descendants = [&](LaneId initial_target) {
+        std::vector<LaneId> pending{initial_target};
+        while (!pending.empty()) {
+            auto const lane = pending.back();
+            pending.pop_back();
+            if (!visited.insert(lane.value).second) {
+                continue;
+            }
+            affected.push_back(lane);
+            if (auto const it = targets_by_source.find(lane.value);
+                it != targets_by_source.end()) {
+                pending.insert(pending.end(), it->second.begin(), it->second.end());
+            }
+        }
+    };
+
     for (auto const &connection : after) {
         if (!contains(before, connection)) {
-            lane_values.insert(connection.source.value);
-            lane_values.insert(connection.target.value);
+            include_target_and_descendants(connection.target);
         }
     }
     for (auto const &connection : before) {
         if (!contains(after, connection)) {
-            lane_values.insert(connection.source.value);
-            lane_values.insert(connection.target.value);
+            include_target_and_descendants(connection.target);
         }
     }
-
-    std::vector<LaneId> lanes;
-    lanes.reserve(lane_values.size());
-    for (auto const value : lane_values) {
-        lanes.push_back(LaneId{value});
-    }
-    return lanes;
+    return affected;
 }
 
 void handle_set_timeline_compiled_sample_cache_chunk_size(
@@ -212,22 +251,31 @@ void handle_set_timeline_lane_ui_state(
     auto const lane = bound_timeline->resolve_public_lane_id(request.lane_id);
     if (!lane.has_value()) throw std::runtime_error("timeline lane not found");
 
-    auto const result = bound_timeline->apply_lane_ui_state(*lane, LaneUiStateWrite{
-        .expected_revision = request.expected_revision,
-        .serialized_state = request.serialized_state,
-    });
-    if (!result.accepted) {
-        throw std::runtime_error(result.error_message.empty()
-            ? "timeline lane rejected UI state" : result.error_message);
+    LaneUiStateApplyResult result{};
+    if (request.serialized_state.has_value()) {
+        result = bound_timeline->apply_lane_ui_state(*lane, LaneUiStateWrite{
+            .expected_revision = request.expected_revision,
+            .serialized_state = *request.serialized_state,
+        });
+        if (!result.accepted) {
+            throw std::runtime_error(result.error_message.empty()
+                ? "timeline lane rejected UI state" : result.error_message);
+        }
+    }
+    if (request.name.has_value()) {
+        bound_timeline->with_graph([&](LaneGraph &graph) {
+            graph.lane(*lane).metadata.set_string("lane.name", *request.name);
+        });
     }
 
-    if (bound_authored_lanes != nullptr && bound_authored_lanes->contains(request.lane_id)) {
+    if (request.serialized_state.has_value()
+        && bound_authored_lanes != nullptr && bound_authored_lanes->contains(request.lane_id)) {
         auto const snapshot = bound_timeline->lane_ui_state_snapshot(*lane);
         if (!snapshot.has_value()) throw std::runtime_error("authored lane did not provide canonical UI state");
         bound_authored_lanes->update_canonical_state(request.lane_id, snapshot->serialized_state);
     }
 
-    if (result.effect != LaneUiStateEffect::ui_only) {
+    if (request.name.has_value() || result.effect != LaneUiStateEffect::ui_only) {
         // Lane-view refresh and execution-cache invalidation are both driven
         // by the ensuing lane-change event. Invalidate first, so the view can
         // never query an old compiled event window due to subscriber order.
@@ -271,6 +319,8 @@ void handle_connect_timeline_lanes(
         return;
     }
 
+    auto const source = bound_timeline->resolve_public_lane_id(request.source_lane_id);
+    auto const target = bound_timeline->resolve_public_lane_id(request.target_lane_id);
     auto const connections_before = bound_timeline->lane_connections();
     bound_timeline->connect_public_lanes_or_defer(
         request.source_lane_id,
@@ -292,7 +342,28 @@ void handle_connect_timeline_lanes(
         });
     }
     auto const connections_after = bound_timeline->lane_connections();
-    auto changed_lanes = affected_lanes_from_connection_delta(connections_before, connections_after);
+    if (source.has_value() && target.has_value()) {
+        LaneGraphConnection const connection{
+            .source = *source,
+            .target = *target,
+            .input = LanePortId{
+                .domain = request.port_domain,
+                .kind = request.port_kind,
+                .ordinal = request.port_ordinal,
+            },
+        };
+        emit_lane_topology_diagnostic(
+            "connect " + request.source_lane_id.str() + " -> "
+            + request.target_lane_id.str() + " before="
+            + (has_connection(connections_before, connection) ? "present" : "absent")
+            + " after="
+            + (has_connection(connections_after, connection) ? "present" : "absent"));
+    } else {
+        emit_lane_topology_diagnostic(
+            "connect deferred because one or both lanes are not realized");
+    }
+    auto changed_lanes = execution_affected_lanes_from_connection_delta(
+        connections_before, connections_after);
     if (!changed_lanes.empty()) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_timeline_lanes_changed_event,
@@ -328,8 +399,80 @@ void handle_connect_timeline_lanes(
                         }
                     });
                 },
-                .changed_lanes = std::move(changed_lanes),
+                // IV_INVOKE_LINKER_EVENT evaluates this aggregate once per
+                // subscriber. Keep the delta reusable so every subscriber,
+                // including TimelineExecution, receives it.
+                .changed_lanes = changed_lanes,
             });
+        emit_lane_topology_diagnostic("connect execution refresh emitted");
+    }
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void handle_disconnect_timeline_lanes(
+    ProjectDisconnectTimelineLanesRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    if (bound_timeline == nullptr) return;
+    auto const source = bound_timeline->resolve_public_lane_id(request.source_lane_id);
+    auto const target = bound_timeline->resolve_public_lane_id(request.target_lane_id);
+    if (!source.has_value() || !target.has_value()) {
+        throw std::runtime_error("timeline lane not found");
+    }
+    const LanePortId input{
+        .domain = request.port_domain,
+        .kind = request.port_kind,
+        .ordinal = request.port_ordinal,
+    };
+    auto const connections_before = bound_timeline->lane_connections();
+    bound_timeline->with_graph([&](LaneGraph &graph) { graph.disconnect(*source, *target, input); });
+    if (bound_authored_lanes != nullptr) {
+        bound_authored_lanes->remove_connection(AuthoredLaneConnection{
+            .source_lane_id = request.source_lane_id,
+            .target_lane_id = request.target_lane_id,
+            .input = input,
+        });
+    }
+    auto const connections_after = bound_timeline->lane_connections();
+    LaneGraphConnection const connection{
+        .source = *source,
+        .target = *target,
+        .input = input,
+    };
+    emit_lane_topology_diagnostic(
+        "disconnect " + request.source_lane_id.str() + " -> "
+        + request.target_lane_id.str() + " before="
+        + (has_connection(connections_before, connection) ? "present" : "absent")
+        + " after="
+        + (has_connection(connections_after, connection) ? "present" : "absent"));
+    auto changed_lanes = execution_affected_lanes_from_connection_delta(
+        connections_before, connections_after);
+    if (!changed_lanes.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_timeline_lanes_changed_event,
+            TimelineLanesChanged{
+                .version_index = timeline_change_version_index++,
+                .lane_set_changed = false,
+                .metadata_for_lane = [timeline = bound_timeline](LaneId lane_id) { return timeline->lane_metadata(lane_id); },
+                .model_type_id_for_lane = [timeline = bound_timeline](LaneId lane_id) { return timeline->lane_model_type_id(lane_id); },
+                .public_id_for_lane = [timeline = bound_timeline](LaneId lane_id) { return timeline->lane_public_id(lane_id); },
+                .outputs_for_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes) { return outputs_for_lanes(*timeline, lanes); },
+                .visit_lanes = [timeline = bound_timeline](std::vector<LaneId> const &lanes, TimelineLaneVisitFn const &visit) {
+                    timeline->with_graph([&](LaneGraph const &graph) {
+                        for (auto const lane_id : lanes) {
+                            if (!graph.contains(lane_id)) continue;
+                            auto const &record = graph.lane(lane_id);
+                            visit(lane_id, record.node, record.output, record.sample_channel_type,
+                                graph.inputs_for(lane_id), record.external_task_dependencies);
+                        }
+                    });
+                },
+                // See the connect path: this must not move from the delta
+                // before the TimelineExecution subscriber receives it.
+                .changed_lanes = changed_lanes,
+            });
+        emit_lane_topology_diagnostic("disconnect execution refresh emitted");
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -359,6 +502,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     ProjectConnectTimelineLanesRequestedEvent,
     iv_runtime_project_connect_timeline_lanes_requested_event,
     handle_connect_timeline_lanes);
+IV_SUBSCRIBE_LINKER_EVENT(
+    ProjectDisconnectTimelineLanesRequestedEvent,
+    iv_runtime_project_disconnect_timeline_lanes_requested_event,
+    handle_disconnect_timeline_lanes);
 IV_SUBSCRIBE_LINKER_EVENT(
     ProjectOverrideSettingsRequestedEvent,
     iv_runtime_project_override_settings_requested_event,

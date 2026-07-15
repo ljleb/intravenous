@@ -173,6 +173,23 @@ namespace iv {
             {
                 request_shutdown();
                 thread_.reset();
+                // Joining first lets an already-started write complete. Then
+                // synchronously drain any debounced revision so a server
+                // shutdown cannot discard the last user action.
+                while (autosave_->take_pending_save()) {
+                    try {
+                        persistence_->save();
+                        autosave_->save_succeeded();
+                    } catch (std::exception const& exception) {
+                        autosave_->save_failed();
+                        persistence_->report_autosave_failure(exception.what());
+                        break;
+                    } catch (...) {
+                        autosave_->save_failed();
+                        persistence_->report_autosave_failure("unknown failure");
+                        break;
+                    }
+                }
             }
         };
 

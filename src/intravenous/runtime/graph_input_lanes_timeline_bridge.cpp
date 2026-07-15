@@ -277,6 +277,8 @@ void handle_knob_value_updated(LaneId lane, Sample value)
         }
         if (auto *knob = graph.lane(lane).node.try_as<KnobLaneNode>()) {
             knob->value = value;
+        } else if (auto *input = graph.lane(lane).node.try_as<GraphSampleInputLaneNode>()) {
+            input->default_value = value;
         }
     });
 }

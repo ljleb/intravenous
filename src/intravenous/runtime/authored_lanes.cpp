@@ -129,6 +129,15 @@ void AuthoredLanes::record_connection(AuthoredLaneConnection connection)
     if (!contains_connection(connection)) connections_.push_back(std::move(connection));
 }
 
+void AuthoredLanes::remove_connection(AuthoredLaneConnection const& connection)
+{
+    std::erase_if(connections_, [&](AuthoredLaneConnection const& existing) {
+        return existing.source_lane_id == connection.source_lane_id
+            && existing.target_lane_id == connection.target_lane_id
+            && existing.input == connection.input;
+    });
+}
+
 bool AuthoredLanes::contains_connection(AuthoredLaneConnection const& connection) const
 {
     return std::ranges::any_of(connections_, [&](AuthoredLaneConnection const& existing) {

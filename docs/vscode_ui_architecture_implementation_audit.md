@@ -74,44 +74,130 @@ replace the intended direction in `vscode_ui_architecture_direction.md`.
 
 ## Priority order
 
-### P0 — Define the stable UI contract before more bespoke UI work
+## Functional-first delivery phase
+
+This phase should deliberately establish the day-to-day lane-view interaction
+model before a React rewrite, saved workspaces, or a comprehensive visual
+settings language. It should have modest UI: a compact, keyboard-accessible
+control region and native/context actions where they are better than permanent
+chrome.
+
+### 1. Collapsible lane-view controls — first
+
+- Add a top-of-panel **View controls** disclosure. When collapsed it occupies
+  only one compact button/row; it must not leave an empty toolbar band.
+- Put the lane query text field in that region. Restore its value with the
+  panel state, submit on explicit Enter/apply and on a short debounced edit,
+  show parse/query errors inline, and keep the last valid results visible on
+  an invalid query.
+- Include a compact matching-lane count and a clear/reset action. These make
+  the query usable without committing to a sophisticated query editor.
+- Reserve the second field in this same region for the visual-settings query,
+  but it may initially be hidden behind an “Advanced view settings” disclosure
+  until there is functional behavior to expose. Do not conflate it with the
+  lane selection query.
+- Preserve the collapsed/expanded state per panel. It is presentation state,
+  rather than a new project-authored view property.
+
+### 2. Lane selection and inspection primitives
+
+- Make a lane row selectable with clear focused/selected state and keyboard
+  navigation. All subsequent actions should operate on that selection.
+- Add a small, non-sticky detail affordance (context menu or temporary
+  inspector/popover) exposing lane ID, type, relevant metadata, and current
+  connections. Avoid permanently expanding every track header.
+- Provide **reveal source** and **reveal in live graph** for a selected lane as
+  soon as the available mapping permits. This is a useful functional action
+  even before bidirectional navigation is fully polished.
+- Add copy actions for lane ID and a query that isolates the selected lane;
+  they are inexpensive but make manual view composition practical.
+
+### 3. Connections — the main functional slice
+
+Start with a connection inspector/list rather than canvas cable editing:
+
+- From a selected source lane, choose **Connect output…**; show only compatible
+  target lane inputs, including port name/index and kind/channel compatibility.
+- From a target input, choose **Connect from…**; show compatible sources.
+- Allow replacing the existing single-input connection only after an explicit
+  confirmation in the chooser, and provide **Disconnect** on an existing
+  connection.
+- Show connection direction, source/target, port, and an unambiguous status in
+  the existing Connections section. Selecting a connection should select or
+  reveal either endpoint locally where possible.
+- If the peer is filtered out, retain a compact endpoint/continuation record;
+  do not silently omit the connection. This is the functional precursor to
+  richer cable fragments.
+- Report rejected/incompatible or stale operations clearly and refresh from the
+  authoritative runtime response/notification rather than maintaining an
+  optimistic project graph indefinitely.
+
+The current client only displays connections returned by a lane-view result;
+it has no connect/disconnect RPC wrapper or webview action. Runtime project
+persistence recognizes `timeline.connectLanes` and
+`timeline.connectAuthoredLanes`, but the current socket request dispatcher does
+not expose corresponding JSON-RPC methods. Therefore this slice needs a small,
+typed mutation contract in addition to UI work. Define it with its response
+and validation data first; do not make the UI infer compatibility from display
+metadata alone.
+
+### 4. Small high-value support actions that fit this phase
+
+- Lane context actions for rename/color, **only if** the project-state mutation
+  model is ready; otherwise defer rather than creating view-local fake state.
+- Native commands for focus next/previous lane, expand/collapse View controls,
+  focus query, and disconnect selected connection. Add keybindings after the
+  behavior settles.
+- A compact panel title/status summary: query match count, selected lane, and
+  playback position. It must not become the rejected large transport strip.
+- Persist query, collapse state, scroll/viewport, and selected lane in VS Code
+  webview state so restored panels resume useful work.
+
+### Explicit exclusions from this phase
+
+- React migration and the broad visual redesign.
+- Named workspaces and desktop-style workspace restoration.
+- Advanced visual-settings semantics (sync groups, peer-view policy, metadata
+  noise suppression) beyond reserving the separate field/model.
+- Canvas-style cable dragging, cross-panel overlays, and elaborate cable art.
+- Bulk routing, multi-select routing, and automatic layout.
+
+## Longer-term priority order
+
+### P0 — Stabilize the model after the functional phase
 
 1. Produce the visual design spec required by the direction document: the
    default live-graph row anatomy and default lane header/track anatomy, with
    theme-token and accessibility rules.
-2. Specify the lane-view model in one typed contract: stable ID, lane query,
-   visual-settings query, viewport, presentation policy, selected lane, and
-   cable continuation data. Confirm which fields existing open/update payloads
-   can carry; enrich those payloads rather than adding routes unless necessary.
-3. Implement the separate lane-query and visual-settings controls against that
-   contract. This is the smallest product slice that makes user-maintained lane
-   views real rather than static snapshots.
+2. Consolidate the functional-phase lane-view state into one typed contract:
+   stable ID, lane query, visual-settings query, viewport, selected lane, and
+   cable continuation data. Enrich existing payloads where possible.
 
 ### P1 — Restore the core navigation and lane workspace loop
 
-4. Add lane-to-source and lane-to-live-graph reveal from lane context actions;
-   make source selection update/filter the focused lane view. Use client-side
-   mapping over existing graph/lane data first.
-5. Render cross-view cable fragments with clear off-view continuation markers.
+3. Complete source-selection filtering for the focused lane view and polish
+   lane-to-source/live-graph reveal. Use client-side mapping over existing
+   graph/lane data first.
+4. Render cross-view cable fragments with clear off-view continuation markers.
    Honor cable-target/peer behavior once the visual-settings model exists.
-6. Add authored lane color and lane context actions, then surface the color
+5. Add authored lane color and lane context actions, then surface the color
    consistently but modestly across views.
 
 ### P2 — Make the implementation architecture match the direction
 
-7. Replace the large hand-written webview HTML scripts with React + TypeScript
+6. Replace the large hand-written webview HTML scripts with React + TypeScript
    applications, separate `esbuild` entrypoints, and explicit typed host/webview
    message contracts. Migrate one surface at a time, starting with lanes.
-8. Extract extension-host services (lane registry, focused-view/reveal service,
+7. Extract extension-host services (lane registry, focused-view/reveal service,
    transport/status coordination) behind injected interfaces; keep React
    components prop/hook driven rather than using a service locator.
-9. Move high-frequency and selected-view actions to native VS Code menus,
+8. Move high-frequency and selected-view actions to native VS Code menus,
    title actions, and keybindings. Add a real transport status indicator to the
    status bar; retain commands as the primary action surface.
 
 ### P3 — Saved working sessions
 
-10. Implement named, ordered lane workspaces, last-active restoration,
+9. Implement named, ordered lane workspaces, last-active restoration,
     dropdown/cycling, and exclusive panel-set switching. Treat broader editor
     context restoration as a best-effort follow-up constrained by VS Code.
 

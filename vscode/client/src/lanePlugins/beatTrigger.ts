@@ -1,17 +1,14 @@
 import { LanePresentationPlugin } from "./protocol";
 
 function renderBeatTriggerLane(context: any): boolean {
-    const { lane, content, row, state, rulerStart, scrubToSample, laneWindow, postDebug } = context;
+    const { lane, content, row, state, timelineStart, scrubToSample, laneWindow, postDebug } = context;
     const pointerDebug = (phase: string, field = "", detail = "") => {
         postDebug({ type: "beatPointerDebug", laneId: String(lane.laneId), field, phase, detail });
     };
-    // This presentation owns the full lane face: its timeline grid includes
-    // the ruler's pre-zero gutter instead of leaving a redundant lane label
-    // and meter beside it.
-    row.querySelector(".lane-label")?.remove();
+    // Keep the compact lane header intact: it owns lane selection and ports.
     const track = document.createElement("div");
     track.className = "beat-track";
-    const gridStart = rulerStart();
+    const gridStart = timelineStart();
     const snapshot = state.uiStateByLaneId[String(lane.laneId)];
     // A usable local model makes the controls responsive even while the
     // initial UI-state notification is still in flight.
@@ -240,6 +237,10 @@ function renderBeatTriggerLane(context: any): boolean {
     track.appendChild(grid);
     let scrubPointer: number | null = null;
     grid.addEventListener("pointerdown", (event) => {
+        // Keep secondary-click available to the lane's default context menu.
+        // Previously it also scrubbed the beat grid before that menu could
+        // open, which made this lane effectively impossible to rename.
+        if (event.button !== 0) return;
         scrubPointer = event.pointerId; grid.setPointerCapture(event.pointerId);
         scrubToSample(gridStart + event.offsetX * state.samplesPerPixel);
     });

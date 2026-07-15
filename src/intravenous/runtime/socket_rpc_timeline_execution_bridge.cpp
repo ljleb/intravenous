@@ -56,11 +56,57 @@ void handle_set_timeline_lane_ui_state(
                 .lane_id = request.lane_id,
                 .expected_revision = request.expected_revision,
                 .serialized_state = request.serialized_state,
+                .name = request.name,
             },
             project_builder);
         project_builder.build();
     } catch (std::exception const &e) {
         builder.fail(e.what());
+    }
+}
+
+void handle_connect_timeline_lanes(
+    ConnectTimelineLanesRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_connect_timeline_lanes_requested_event,
+            ProjectConnectTimelineLanesRequest{
+                .source_lane_id = request.source_lane_id,
+                .target_lane_id = request.target_lane_id,
+                .port_domain = request.port_domain,
+                .port_kind = request.port_kind,
+                .port_ordinal = request.port_ordinal,
+                .authored = true,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void handle_disconnect_timeline_lanes(
+    DisconnectTimelineLanesRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_disconnect_timeline_lanes_requested_event,
+            ProjectDisconnectTimelineLanesRequest{
+                .source_lane_id = request.source_lane_id,
+                .target_lane_id = request.target_lane_id,
+                .port_domain = request.port_domain,
+                .port_kind = request.port_kind,
+                .port_ordinal = request.port_ordinal,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
     }
 }
 
@@ -144,6 +190,14 @@ IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcSetTimelineLaneUiStateEvent,
     iv_socket_rpc_set_timeline_lane_ui_state_event,
     handle_set_timeline_lane_ui_state);
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcConnectTimelineLanesEvent,
+    iv_socket_rpc_connect_timeline_lanes_event,
+    handle_connect_timeline_lanes);
+IV_SUBSCRIBE_LINKER_EVENT(
+    SocketRpcDisconnectTimelineLanesEvent,
+    iv_socket_rpc_disconnect_timeline_lanes_event,
+    handle_disconnect_timeline_lanes);
 IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcGetTimelineLaneTypesEvent,
     iv_socket_rpc_get_timeline_lane_types_event,

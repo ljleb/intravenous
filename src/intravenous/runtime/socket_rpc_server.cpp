@@ -323,6 +323,20 @@ void SocketRpcServer::handle_client(int fd) {
                             event_request,
                             builder);
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, ConnectTimelineLanesRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_connect_timeline_lanes_event,
+                            event_request,
+                            builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, DisconnectTimelineLanesRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_disconnect_timeline_lanes_event,
+                            event_request,
+                            builder);
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetTimelineLaneTypesRequest>) {
                         SocketRpcLaneTypesResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_timeline_lane_types_event, event_request, builder);

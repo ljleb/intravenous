@@ -97,7 +97,8 @@ namespace iv {
     struct ProjectSetTimelineLaneUiStateRequest {
         InternedString lane_id {};
         std::optional<std::uint64_t> expected_revision {};
-        std::string serialized_state {};
+        std::optional<std::string> serialized_state {};
+        std::optional<std::string> name {};
     };
 
     struct ProjectCreateTimelineLaneRequest {
@@ -252,6 +253,14 @@ namespace iv {
         bool authored = false;
     };
 
+    struct ProjectDisconnectTimelineLanesRequest {
+        InternedString source_lane_id {};
+        InternedString target_lane_id {};
+        LanePortDomain port_domain = LanePortDomain::realtime;
+        PortKind port_kind = PortKind::sample;
+        size_t port_ordinal = 0;
+    };
+
     struct ProjectSetAutosaveEnabledRequest {
         bool enabled = true;
     };
@@ -298,6 +307,8 @@ namespace iv {
         void (*)(ProjectCloseLaneViewRequest const &, ProjectAckBuilder &);
     using ProjectConnectTimelineLanesRequestedEvent =
         void (*)(ProjectConnectTimelineLanesRequest const &, ProjectAckBuilder &);
+    using ProjectDisconnectTimelineLanesRequestedEvent =
+        void (*)(ProjectDisconnectTimelineLanesRequest const &, ProjectAckBuilder &);
     using ProjectSetSampleInputValueRequestedEvent =
         void (*)(ProjectSetSampleInputValueRequest const &, ProjectAckBuilder &);
     using ProjectSetSampleInputStateRequestedEvent =
@@ -375,6 +386,9 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(
         ProjectConnectTimelineLanesRequestedEvent,
         iv_runtime_project_connect_timeline_lanes_requested_event);
+    IV_DECLARE_LINKER_EVENT(
+        ProjectDisconnectTimelineLanesRequestedEvent,
+        iv_runtime_project_disconnect_timeline_lanes_requested_event);
     IV_DECLARE_LINKER_EVENT(
         ProjectSetSampleInputValueRequestedEvent,
         iv_runtime_project_set_sample_input_value_requested_event);

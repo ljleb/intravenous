@@ -65,6 +65,9 @@ IV_DEFINE_LINKER_EVENT(
     ProjectConnectTimelineLanesRequestedEvent,
     iv_runtime_project_connect_timeline_lanes_requested_event)
 IV_DEFINE_LINKER_EVENT(
+    ProjectDisconnectTimelineLanesRequestedEvent,
+    iv_runtime_project_disconnect_timeline_lanes_requested_event)
+IV_DEFINE_LINKER_EVENT(
     ProjectSetSampleInputValueRequestedEvent,
     iv_runtime_project_set_sample_input_value_requested_event)
 IV_DEFINE_LINKER_EVENT(

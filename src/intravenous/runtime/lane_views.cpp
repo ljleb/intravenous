@@ -107,13 +107,31 @@ namespace iv {
         if (snapshot->visit_lanes) {
             std::unordered_map<uint64_t, LaneDomain> domains;
             std::unordered_map<uint64_t, std::optional<ChannelTypeId>> sample_channel_types;
+            std::unordered_map<uint64_t, PortKind> output_kinds;
+            std::unordered_map<uint64_t, std::vector<LaneInputInfo>> inputs;
             snapshot->visit_lanes(
                 requested_output_lanes,
-                [&domains, &sample_channel_types](LaneId lane, TypeErasedLaneNode const &, LaneOutputConfig const &output,
+                [&domains, &sample_channel_types, &output_kinds, &inputs](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output,
                            std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &,
                            std::vector<std::string> const &) {
                     domains[lane.value] = lane_domain(output);
                     sample_channel_types[lane.value] = sample_channel_type;
+                    output_kinds[lane.value] = lane_output_kind(output);
+                    auto &lane_inputs = inputs[lane.value];
+                    auto append_inputs = [&lane_inputs](auto const &configs, LanePortDomain domain, PortKind kind) {
+                        for (size_t ordinal = 0; ordinal < configs.size(); ++ordinal) {
+                            lane_inputs.push_back(LaneInputInfo{
+                                .domain = domain,
+                                .kind = kind,
+                                .ordinal = ordinal,
+                                .name = configs[ordinal].name,
+                            });
+                        }
+                    };
+                    append_inputs(node.compiled_sample_inputs(), LanePortDomain::compiled, PortKind::sample);
+                    append_inputs(node.compiled_event_inputs(), LanePortDomain::compiled, PortKind::event);
+                    append_inputs(node.realtime_sample_inputs(), LanePortDomain::realtime, PortKind::sample);
+                    append_inputs(node.realtime_event_inputs(), LanePortDomain::realtime, PortKind::event);
                 });
             for (auto &lane : result.lanes) {
                 if (auto const it = domains.find(lane.runtime_lane.value); it != domains.end()) {
@@ -122,6 +140,12 @@ namespace iv {
                 if (auto const it = sample_channel_types.find(lane.runtime_lane.value);
                     it != sample_channel_types.end()) {
                     lane.sample_channel_type = it->second;
+                }
+                if (auto const it = output_kinds.find(lane.runtime_lane.value); it != output_kinds.end()) {
+                    lane.output_kind = it->second;
+                }
+                if (auto const it = inputs.find(lane.runtime_lane.value); it != inputs.end()) {
+                    lane.inputs = it->second;
                 }
             }
         }
@@ -143,6 +167,7 @@ namespace iv {
                         .target_lane_id = snapshot->public_id_for_lane
                             ? snapshot->public_id_for_lane(output.target)
                             : InternedString::from_string(std::to_string(output.target.value)),
+                        .port_domain = output.input.domain,
                         .port_kind = output.input.kind,
                         .port_ordinal = output.input.ordinal,
                     });

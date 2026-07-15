@@ -73,11 +73,13 @@ namespace iv {
         std::unordered_set<std::string> unit_values {};
         std::unordered_map<std::string, int> int_values {};
         std::unordered_map<std::string, float> float_values {};
+        std::unordered_map<std::string, std::string> string_values {};
 
         void set_unit(std::string key)
         {
             int_values.erase(key);
             float_values.erase(key);
+            string_values.erase(key);
             unit_values.insert(std::move(key));
         }
 
@@ -85,6 +87,7 @@ namespace iv {
         {
             unit_values.erase(key);
             float_values.erase(key);
+            string_values.erase(key);
             int_values[std::move(key)] = value;
         }
 
@@ -92,7 +95,23 @@ namespace iv {
         {
             unit_values.erase(key);
             int_values.erase(key);
+            string_values.erase(key);
             float_values[std::move(key)] = value;
+        }
+
+        void set_string(std::string key, std::string value)
+        {
+            unit_values.erase(key);
+            int_values.erase(key);
+            float_values.erase(key);
+            string_values[std::move(key)] = std::move(value);
+        }
+
+        [[nodiscard]] std::optional<std::string> string_value(std::string_view key) const
+        {
+            auto const it = string_values.find(std::string(key));
+            return it == string_values.end() ? std::nullopt
+                : std::optional<std::string>(it->second);
         }
 
         [[nodiscard]] bool has_unit(std::string_view key) const

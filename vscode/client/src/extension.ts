@@ -14,12 +14,15 @@ let deactivating = false;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     deactivating = false;
     const outputChannel = vscode.window.createOutputChannel("Intravenous");
+    const connectionOutputChannel = vscode.window.createOutputChannel("Intravenous Lane Topology Diagnostics");
+    connectionOutputChannel.clear();
     const provider = new LiveGraphViewProvider(context.extensionUri);
     const modulesProvider = new ModulesViewProvider();
     const highlighter = new NodeSpanHighlighter();
     const sessionFactory = container.resolve(WorkspaceSessionFactory);
 
     context.subscriptions.push(outputChannel);
+    context.subscriptions.push(connectionOutputChannel);
     context.subscriptions.push(highlighter);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider("intravenous.liveGraph", provider, {
         webviewOptions: {
@@ -35,6 +38,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const session = sessionFactory.create(
         workspaceFolder,
         outputChannel,
+        connectionOutputChannel,
         provider,
         modulesProvider,
         highlighter,
@@ -66,6 +70,56 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             session.setTimelineLaneUiState(laneId, serializedState, expectedRevision).catch((error: Error) => {
                 outputChannel.appendLine(`Intravenous lane UI state update failed: ${error.message}`);
             });
+        });
+        laneProvider.setLaneRenameHandler((laneId, name) => {
+            session.setTimelineLaneName(laneId, name).catch((error: Error) => {
+                outputChannel.appendLine(`Intravenous lane rename failed: ${error.message}`);
+            });
+        });
+        laneProvider.setConnectHandler((sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
+            connectionOutputChannel.appendLine(`RPC connect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
+            session.connectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)
+                .then(async () => {
+                    connectionOutputChannel.appendLine("RPC connect acknowledged; refreshing lane view");
+                    const viewId = laneProvider.currentLaneViewId();
+                    if (viewId) await session.updateLaneViewVisibleLanes(viewId);
+                    connectionOutputChannel.appendLine("Lane view refresh completed");
+                })
+                .catch((error: Error) => {
+                    connectionOutputChannel.appendLine(`RPC connect failed: ${error.message}`);
+                });
+        });
+        laneProvider.setDisconnectHandler((sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
+            connectionOutputChannel.appendLine(`RPC disconnect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
+            session.disconnectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)
+                .then(async () => {
+                    connectionOutputChannel.appendLine("RPC disconnect acknowledged; refreshing lane view");
+                    const viewId = laneProvider.currentLaneViewId();
+                    if (viewId) await session.updateLaneViewVisibleLanes(viewId);
+                    connectionOutputChannel.appendLine("Lane view refresh completed");
+                })
+                .catch((error: Error) => {
+                    connectionOutputChannel.appendLine(`RPC disconnect failed: ${error.message}`);
+                });
+        });
+        laneProvider.setRewireHandler((sourceLaneId, oldTargetLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
+            connectionOutputChannel.appendLine(`Rewire ${sourceLaneId}: ${oldTargetLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
+            // The webview emits one semantic state change. This bridge keeps
+            // the existing transport temporarily while the runtime grows an
+            // atomic replace request, avoiding a lost connection on failure.
+            session.connectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)
+                .then(() => session.disconnectTimelineLanes(sourceLaneId, oldTargetLaneId, portDomain, portKind, portOrdinal))
+                .then(async () => {
+                    const viewId = laneProvider.currentLaneViewId();
+                    if (viewId) await session.updateLaneViewVisibleLanes(viewId);
+                    connectionOutputChannel.appendLine("Rewire completed; lane view refresh completed");
+                })
+                .catch((error: Error) => {
+                    connectionOutputChannel.appendLine(`Rewire failed: ${error.message}`);
+                });
+        });
+        laneProvider.setConnectionDebugHandler((message) => {
+            connectionOutputChannel.appendLine(message);
         });
         laneProvider.setDebugHandler((message) => {
             const field = typeof message.field === "string" ? ` ${message.field}` : "";

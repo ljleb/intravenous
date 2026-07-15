@@ -53,6 +53,10 @@ namespace iv {
         void (*)(SetTimelineLaneSampleChannelTypeRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcSetTimelineLaneUiStateEvent =
         void (*)(SetTimelineLaneUiStateRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcConnectTimelineLanesEvent =
+        void (*)(ConnectTimelineLanesRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcDisconnectTimelineLanesEvent =
+        void (*)(DisconnectTimelineLanesRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcGetTimelineLaneTypesEvent =
         void (*)(GetTimelineLaneTypesRequest const &, SocketRpcLaneTypesResultBuilder &);
     using SocketRpcCreateTimelineLaneEvent =
@@ -105,6 +109,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcSetTimelineCompiledSampleCacheChunkSizeMultiplierEvent, iv_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetTimelineLaneSampleChannelTypeEvent, iv_socket_rpc_set_timeline_lane_sample_channel_type_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetTimelineLaneUiStateEvent, iv_socket_rpc_set_timeline_lane_ui_state_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcConnectTimelineLanesEvent, iv_socket_rpc_connect_timeline_lanes_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDisconnectTimelineLanesEvent, iv_socket_rpc_disconnect_timeline_lanes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetTimelineLaneTypesEvent, iv_socket_rpc_get_timeline_lane_types_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateTimelineLaneEvent, iv_socket_rpc_create_timeline_lane_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);

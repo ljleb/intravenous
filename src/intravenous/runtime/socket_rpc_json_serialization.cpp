@@ -218,6 +218,9 @@ SocketRpcJson lane_metadata_json(LaneMetadata const &metadata)
     for (auto const &[key, value] : metadata.float_values) {
         json[key] = value;
     }
+    for (auto const &[key, value] : metadata.string_values) {
+        json[key] = value;
+    }
     return json;
 }
 
@@ -236,6 +239,17 @@ SocketRpcJson lane_query_result_json(LaneQueryResult const &result)
         if (lane.sample_channel_type.has_value()) {
             json_lane["sampleChannelType"] = std::string(channel_type_json(*lane.sample_channel_type));
         }
+        json_lane["outputKind"] = std::string(port_kind_json(lane.output_kind));
+        auto json_inputs = SocketRpcJson::array();
+        for (auto const &input : lane.inputs) {
+            json_inputs.push_back(SocketRpcJson{
+                {"domain", input.domain == LanePortDomain::compiled ? "compiled" : "realtime"},
+                {"kind", std::string(port_kind_json(input.kind))},
+                {"ordinal", input.ordinal},
+                {"name", input.name},
+            });
+        }
+        json_lane["inputs"] = std::move(json_inputs);
         json_lanes.push_back(std::move(json_lane));
     }
 
@@ -244,6 +258,7 @@ SocketRpcJson lane_query_result_json(LaneQueryResult const &result)
         json_connections.push_back(SocketRpcJson{
             {"sourceLaneId", connection.source_lane_id.str()},
             {"targetLaneId", connection.target_lane_id.str()},
+            {"portDomain", connection.port_domain == LanePortDomain::compiled ? "compiled" : "realtime"},
             {"portKind", std::string(port_kind_json(connection.port_kind))},
             {"portOrdinal", connection.port_ordinal},
         });

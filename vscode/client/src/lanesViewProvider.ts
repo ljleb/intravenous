@@ -14,6 +14,11 @@ export class LaneViewProvider {
         this.viewportHandler = null;
         this.scrubHandler = null;
         this.laneUiStateHandler = null;
+        this.laneRenameHandler = null;
+        this.connectHandler = null;
+        this.disconnectHandler = null;
+        this.rewireHandler = null;
+        this.connectionDebugHandler = null;
         this.debugHandler = null;
         this.startIndex = 0;
         this.visibleLaneCount = 24;
@@ -121,6 +126,11 @@ export class LaneViewProvider {
 
     setScrubHandler(handler) { this.scrubHandler = handler; }
     setLaneUiStateHandler(handler) { this.laneUiStateHandler = handler; }
+    setLaneRenameHandler(handler) { this.laneRenameHandler = handler; }
+    setConnectHandler(handler) { this.connectHandler = handler; }
+    setDisconnectHandler(handler) { this.disconnectHandler = handler; }
+    setRewireHandler(handler) { this.rewireHandler = handler; }
+    setConnectionDebugHandler(handler) { this.connectionDebugHandler = handler; }
     setDebugHandler(handler) { this.debugHandler = handler; }
 
     restoreViewportState(state) {
@@ -142,8 +152,11 @@ export class LaneViewProvider {
 
     viewportState() {
         return {
-            startIndex: this.startIndex,
-            visibleLaneCount: this.visibleLaneCount,
+            // Ordering is local to this VS Code lane view.  Keep the filtered
+            // result in the view so it can apply its own order before local
+            // viewport virtualization; filtering itself remains server-side.
+            startIndex: 0,
+            visibleLaneCount: Math.max(this.visibleLaneCount, this.totalLaneCount),
             firstSampleIndex: this.firstSampleIndex,
             lastSampleIndex: this.lastSampleIndex,
             displaySampleCount: this.displaySampleCount,
@@ -164,10 +177,12 @@ export class LaneViewProvider {
                 && direction === "out"
                 ? this.instanceNamesByNumericId.get(Number(metadata["dsp_graph.module_instance_id"]))
                 : "";
-            const title = isAudioOutput ? "Audio device output"
+            const defaultTitle = isAudioOutput ? "Audio device output"
                 : isAudioInput ? "Audio device input"
                 : (has("dsp_graph.public") ? "public " : "") + type + (direction ? " " + direction : "")
                     + (instanceName ? ` • ${instanceName}` : "");
+            const title = typeof metadata["lane.name"] === "string" && metadata["lane.name"].length > 0
+                ? metadata["lane.name"] : defaultTitle;
             const numericMetadata = Object.entries(metadata)
                 .filter(([key, value]) => typeof value === "number" && !key.includes("ordinal"))
                 .map(([key, value]) => `${key.replace(/^dsp_graph\./, "")}=${value}`);
@@ -179,6 +194,15 @@ export class LaneViewProvider {
                 metadata,
                 modelTypeId: typeof lane.modelTypeId === "string" ? lane.modelTypeId : "",
                 sampleChannelType: typeof lane.sampleChannelType === "string" ? lane.sampleChannelType : "",
+                outputKind: lane.outputKind === "event" ? "event" : "sample",
+                inputs: Array.isArray(lane.inputs) ? lane.inputs
+                    .filter((input) => input && typeof input === "object")
+                    .map((input) => ({
+                        domain: input.domain === "compiled" ? "compiled" : "realtime",
+                        kind: input.kind === "event" ? "event" : "sample",
+                        ordinal: Math.max(0, Math.floor(Number(input.ordinal || 0))),
+                        name: typeof input.name === "string" ? input.name : "",
+                    })) : [],
             };
         });
     }
@@ -202,6 +226,7 @@ export class LaneViewProvider {
                 kind: `${connection.portKind || "port"} input ${Number(connection.portOrdinal || 0)}`,
                 state: "active",
                 portKind: connection.portKind || "",
+                portDomain: connection.portDomain === "compiled" ? "compiled" : "realtime",
                 portOrdinal: Number(connection.portOrdinal || 0),
                 sourceLabel,
                 targetLabel,
@@ -256,6 +281,55 @@ export class LaneViewProvider {
                     typeof message.expectedRevision === "number" ? message.expectedRevision : undefined);
                 return;
             }
+            if (message.type === "renameLane") {
+                this.laneRenameHandler?.(String(message.laneId || ""), String(message.name || ""));
+                return;
+            }
+            if (message.type === "connectLanes") {
+                const sourceLaneId = String(message.sourceLaneId || "");
+                const targetLaneId = String(message.targetLaneId || "");
+                const portDomain = message.portDomain === "compiled" ? "compiled" : "realtime";
+                const portKind = message.portKind === "event" ? "event" : "sample";
+                const portOrdinal = Math.max(0, Math.floor(Number(message.portOrdinal || 0)));
+                if (sourceLaneId && targetLaneId && sourceLaneId !== targetLaneId) {
+                    this.connectionDebugHandler?.(`host received connect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
+                    this.connectHandler?.(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal);
+                } else {
+                    this.connectionDebugHandler?.("host rejected malformed connect message");
+                }
+                return;
+            }
+            if (message.type === "connectionDebug") {
+                this.connectionDebugHandler?.(String(message.message || "webview connection event"));
+                return;
+            }
+            if (message.type === "copyLaneDebugInfo") {
+                void vscode.env.clipboard.writeText(String(message.text || ""));
+                return;
+            }
+            if (message.type === "disconnectLanes") {
+                const sourceLaneId = String(message.sourceLaneId || "");
+                const targetLaneId = String(message.targetLaneId || "");
+                const portDomain = message.portDomain === "compiled" ? "compiled" : "realtime";
+                const portKind = message.portKind === "event" ? "event" : "sample";
+                const portOrdinal = Math.max(0, Math.floor(Number(message.portOrdinal || 0)));
+                if (sourceLaneId && targetLaneId) {
+                    this.disconnectHandler?.(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal);
+                }
+                return;
+            }
+            if (message.type === "rewireLaneConnection") {
+                const sourceLaneId = String(message.sourceLaneId || "");
+                const oldTargetLaneId = String(message.oldTargetLaneId || "");
+                const targetLaneId = String(message.targetLaneId || "");
+                const portDomain = message.portDomain === "compiled" ? "compiled" : "realtime";
+                const portKind = message.portKind === "event" ? "event" : "sample";
+                const portOrdinal = Math.max(0, Math.floor(Number(message.portOrdinal || 0)));
+                if (sourceLaneId && oldTargetLaneId && targetLaneId) {
+                    this.rewireHandler?.(sourceLaneId, oldTargetLaneId, targetLaneId, portDomain, portKind, portOrdinal);
+                }
+                return;
+            }
             if (message.type === "beatPointerDebug") {
                 this.debugHandler?.(message);
                 return;
@@ -270,6 +344,16 @@ export class LaneViewProvider {
                 this.firstSampleIndex = firstSampleIndex;
                 this.lastSampleIndex = lastSampleIndex;
                 this.displaySampleCount = displaySampleCount;
+                this.viewportHandler?.(this.viewportState());
+                return;
+            }
+            if (message.type === "laneQueryChanged") {
+                const laneQuery = String(message.laneQuery || "");
+                if (laneQuery === this.laneQuery) return;
+                this.laneQuery = laneQuery;
+                // The query is part of this view's server-side filter. It is
+                // intentionally not project state, but it must refresh the
+                // current view as soon as the compact field is edited.
                 this.viewportHandler?.(this.viewportState());
                 return;
             }
@@ -327,6 +411,7 @@ export class LaneViewProvider {
         body {
             margin: 0;
             padding: 0;
+            --lane-header-width: 96px;
             background: var(--vscode-sideBar-background);
             color: var(--vscode-foreground);
             font-family: var(--vscode-font-family);
@@ -397,6 +482,16 @@ export class LaneViewProvider {
 
         .timeline-toolbar strong { color: var(--vscode-foreground); letter-spacing: .08em; font-size: .78em; }
         .timeline-toolbar .spacer { flex: 1; }
+        .lane-query-toggle {
+            height: 21px; padding: 0 6px; border: 0; border-radius: 3px;
+            color: var(--vscode-foreground); background: var(--vscode-button-secondaryBackground);
+            cursor: pointer; font: inherit; font-size: .78em;
+        }
+        .lane-query-toggle:hover { background: var(--vscode-button-secondaryHoverBackground); }
+        .lane-query-region { display: flex; gap: 6px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); background: var(--vscode-editor-background); }
+        .lane-query-region[hidden] { display: none; }
+        .lane-query-region label { color: var(--vscode-descriptionForeground); font-size: .78em; }
+        .lane-query-input { flex: 1 1 auto; min-width: 0; height: 22px; box-sizing: border-box; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border)); font: inherit; }
         .zoom-button {
             width: 21px; height: 21px; padding: 0; cursor: pointer;
             color: var(--vscode-foreground); background: var(--vscode-button-secondaryBackground);
@@ -430,36 +525,59 @@ export class LaneViewProvider {
 
         .lane-row {
             height: 58px;
+            position: relative;
             display: flex;
             align-items: stretch;
             border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.16));
             box-sizing: border-box;
         }
+        .lane-row.selected { box-shadow: inset 3px 0 var(--vscode-focusBorder); }
+        .lane-connection-button {
+            position: absolute; z-index: 9; left: 0; top: 0;
+            width: 24px; height: 100%; padding: 0; border: 0; border-radius: 0;
+            color: var(--vscode-foreground); background: var(--vscode-button-secondaryBackground);
+            cursor: pointer; font: 600 14px/15px var(--vscode-font-family);
+        }
+        .lane-connection-button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+        .lane-connection-button:disabled { opacity: .35; cursor: default; }
+        .lane-connection-button.selected { background: var(--vscode-button-background); opacity: 1; }
+        .lane-debug-copy-button {
+            position: absolute; z-index: 9; left: calc(var(--lane-header-width) - 21px); top: 50%; transform: translateY(-50%);
+            width: 15px; height: 15px; padding: 0; border: 0; border-radius: 2px;
+            color: var(--vscode-descriptionForeground); background: transparent; cursor: pointer;
+            font: 12px/15px var(--vscode-font-family);
+        }
+        .lane-debug-copy-button.realtime { border: 1px solid var(--vscode-charts-blue); }
+        .lane-debug-copy-button.compiled { border: 1px solid var(--vscode-charts-orange); }
+        .lane-debug-copy-button:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+        .lane-input-wheel {
+            position: fixed; z-index: 30; width: 0; height: 0; pointer-events: none;
+        }
+        .lane-input-wheel-option {
+            position: absolute; width: 78px; min-height: 22px; padding: 2px 5px;
+            transform: translate(-50%, -50%); border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
+            border-radius: 3px; color: var(--vscode-menu-foreground); background: var(--vscode-menu-background);
+            box-shadow: 0 2px 8px rgba(0,0,0,.35); font: inherit; font-size: .82em; cursor: pointer;
+            pointer-events: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .lane-input-wheel-option:hover { background: var(--vscode-menu-selectionBackground); color: var(--vscode-menu-selectionForeground); }
+        .connection-overlay { position: absolute; z-index: 6; inset: 0; overflow: visible; pointer-events: none; }
+        .selected-connection { fill: none; stroke: var(--vscode-charts-blue); stroke-width: 2; pointer-events: none; }
+        .incoming-connection { opacity: .28; stroke-width: 1.5; }
+        .outgoing-connection { opacity: .92; }
         .lane-label {
-            width: 164px;
-            flex: 0 0 164px;
+            width: var(--lane-header-width);
+            flex: 0 0 var(--lane-header-width);
             min-width: 0;
             display: flex;
             align-items: center;
             gap: 6px;
-            padding: 0 8px;
+            padding: 0 28px 0 32px;
             box-sizing: border-box;
             background: var(--vscode-sideBar-background);
             border-right: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
         }
-        .lane-row.realtime .lane-label { display: none; }
-
-        .lane-domain {
-            flex: 0 0 auto;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--vscode-charts-blue);
-        }
-
-        .lane-domain.compiled {
-            background: var(--vscode-charts-orange);
-        }
+        .lane-row.realtime .lane-label { display: flex; }
 
         .lane-meter {
             width: 74px;
@@ -524,6 +642,13 @@ export class LaneViewProvider {
         .meter-menu { position: fixed; z-index: 20; padding: 3px; min-width: 130px; background: var(--vscode-menu-background); border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); box-shadow: 0 2px 10px rgba(0,0,0,.35); }
         .meter-menu button { display: block; width: 100%; border: 0; padding: 5px 9px; text-align: left; color: var(--vscode-menu-foreground); background: transparent; cursor: pointer; }
         .meter-menu button:hover { background: var(--vscode-menu-selectionBackground); color: var(--vscode-menu-selectionForeground); }
+        .lane-rename-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.32); }
+        .lane-rename-dialog { min-width: 260px; padding: 12px; border: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editorWidget-background); box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+        .lane-rename-dialog label { display: block; margin-bottom: 7px; color: var(--vscode-foreground); }
+        .lane-rename-dialog input { box-sizing: border-box; width: 100%; margin-bottom: 10px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border)); }
+        .lane-rename-actions { display: flex; justify-content: flex-end; gap: 6px; }
+        .lane-rename-actions button { border: 0; padding: 4px 9px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); cursor: pointer; }
+        .lane-rename-actions button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
 
         .connection-row {
             padding-left: 16px;
@@ -578,10 +703,14 @@ export class LaneViewProvider {
         const vscode = acquireVsCodeApi();
         const root = document.getElementById("root");
         const laneHeight = 58;
+        const laneHeaderWidth = 96;
         const restoredState = vscode.getState() || {};
         const state = {
             laneViewId: typeof restoredState.laneViewId === "string" ? restoredState.laneViewId : "",
             laneQuery: typeof restoredState.laneQuery === "string" ? restoredState.laneQuery : "",
+            selectedLaneId: typeof restoredState.selectedLaneId === "string" ? restoredState.selectedLaneId : "",
+            laneOrder: Array.isArray(restoredState.laneOrder)
+                ? restoredState.laneOrder.filter((laneId) => typeof laneId === "string") : [],
             startIndex: Number(restoredState.startIndex || 0),
             visibleLaneCount: Number(restoredState.visibleLaneCount || 0),
             totalLaneCount: 0,
@@ -595,6 +724,7 @@ export class LaneViewProvider {
             compiledLaneHeight: Number(restoredState.compiledLaneHeight || 58),
             meterGrid: restoredState.meterGrid === "sample" ? "sample" : "decibel",
             connectionsExpanded: Boolean(restoredState.connectionsExpanded),
+            queryExpanded: Boolean(restoredState.queryExpanded),
         };
         const lanePresentationPlugins = new Map([${lanePluginRegistrations}].map((plugin) => [plugin.typeId, plugin]));
         let viewport = null;
@@ -630,6 +760,196 @@ export class LaneViewProvider {
         let laneWindow = null;
         let connectionToggle = null;
         let connectionList = null;
+        let inputWheel = null;
+        let inputWheelDismiss = null;
+        let renameBackdrop = null;
+        let laneQueryRegion = null;
+        let laneQueryInput = null;
+        let laneQueryToggle = null;
+        let pendingLaneQueryPost = 0;
+        function connectionDebug(message) {
+            vscode.postMessage({ type: "connectionDebug", message });
+        }
+        function closeInputWheel() {
+            inputWheel?.remove();
+            inputWheel = null;
+            if (inputWheelDismiss) {
+                document.removeEventListener("pointerdown", inputWheelDismiss);
+                inputWheelDismiss = null;
+            }
+        }
+        function closeRenameDialog() {
+            renameBackdrop?.remove();
+            renameBackdrop = null;
+        }
+        function showRenameDialog(lane) {
+            closeRenameDialog();
+            const backdrop = document.createElement("div");
+            backdrop.className = "lane-rename-backdrop";
+            const dialog = document.createElement("form");
+            dialog.className = "lane-rename-dialog";
+            const label = document.createElement("label");
+            label.textContent = "Lane name";
+            const input = document.createElement("input");
+            input.type = "text";
+            input.value = typeof lane.metadata?.["lane.name"] === "string"
+                ? lane.metadata["lane.name"] : lane.title;
+            label.appendChild(input);
+            dialog.appendChild(label);
+            const actions = document.createElement("div");
+            actions.className = "lane-rename-actions";
+            const cancel = document.createElement("button");
+            cancel.type = "button";
+            cancel.className = "secondary";
+            cancel.textContent = "Cancel";
+            cancel.addEventListener("click", closeRenameDialog);
+            const apply = document.createElement("button");
+            apply.type = "submit";
+            apply.textContent = "Rename";
+            actions.append(cancel, apply);
+            dialog.appendChild(actions);
+            dialog.addEventListener("submit", (event) => {
+                event.preventDefault();
+                vscode.postMessage({ type: "renameLane", laneId: lane.laneId, name: input.value });
+                closeRenameDialog();
+            });
+            input.addEventListener("keydown", (event) => {
+                // Arrow keys edit the text field; they must never become
+                // lane-navigation commands while this dialog is open.
+                event.stopPropagation();
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeRenameDialog();
+                }
+            });
+            backdrop.addEventListener("pointerdown", (event) => {
+                if (event.target === backdrop) closeRenameDialog();
+            });
+            backdrop.appendChild(dialog);
+            document.body.appendChild(backdrop);
+            renameBackdrop = backdrop;
+            requestAnimationFrame(() => {
+                input.focus();
+                input.select();
+            });
+        }
+        function showInputWheel(anchor, inputs, onSelect) {
+            closeInputWheel();
+            const rect = anchor.getBoundingClientRect();
+            const wheel = document.createElement("div");
+            wheel.className = "lane-input-wheel";
+            wheel.style.left = String(rect.left + rect.width / 2) + "px";
+            wheel.style.top = String(rect.top + rect.height / 2) + "px";
+            const radius = 58;
+            inputs.forEach((input, index) => {
+                // The first compatible input begins directly above the
+                // button; additional inputs continue clockwise.
+                const angle = -Math.PI / 2 + (Math.PI * 2 * index / inputs.length);
+                const option = document.createElement("button");
+                option.type = "button";
+                option.className = "lane-input-wheel-option";
+                option.style.left = String(Math.cos(angle) * radius) + "px";
+                option.style.top = String(Math.sin(angle) * radius) + "px";
+                option.textContent = input.name || input.kind + " " + String(input.ordinal);
+                option.title = "Connect to " + option.textContent;
+                option.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    closeInputWheel();
+                    onSelect(input);
+                });
+                wheel.appendChild(option);
+            });
+            inputWheel = wheel;
+            document.body.appendChild(wheel);
+            setTimeout(() => {
+                inputWheelDismiss = function dismiss(event) {
+                if (wheel.contains(event.target) || event.target === anchor) return;
+                closeInputWheel();
+                };
+                document.addEventListener("pointerdown", inputWheelDismiss);
+            }, 0);
+        }
+        function applyLaneOrder(lanes) {
+            const lanesById = new Map(lanes.map((lane) => [String(lane.laneId), lane]));
+            const ordered = [];
+            // Keep entries that are currently filtered out too, so changing
+            // a filter does not discard the view's manual arrangement.
+            const retainedIds = [...new Set(state.laneOrder)];
+            for (const laneId of state.laneOrder) {
+                const lane = lanesById.get(laneId);
+                if (!lane) continue;
+                ordered.push(lane);
+                lanesById.delete(laneId);
+            }
+            // New filter matches deliberately arrive at the end rather than
+            // disturbing a manually established local order.
+            for (const lane of lanes) {
+                const laneId = String(lane.laneId);
+                if (!lanesById.has(laneId)) continue;
+                ordered.push(lane);
+                retainedIds.push(laneId);
+            }
+            state.laneOrder = retainedIds;
+            return ordered;
+        }
+        function persistLaneViewState(extra = {}) {
+            vscode.setState({ ...vscode.getState(), ...extra,
+                laneOrder: state.laneOrder, queryExpanded: state.queryExpanded });
+        }
+        function syncLaneQueryControl() {
+            if (!laneQueryRegion || !laneQueryInput || !laneQueryToggle) return;
+            laneQueryRegion.hidden = !state.queryExpanded;
+            laneQueryToggle.setAttribute("aria-expanded", String(state.queryExpanded));
+            laneQueryToggle.textContent = state.queryExpanded ? "Hide filter" : "Filter";
+            if (laneQueryInput.value !== state.laneQuery) laneQueryInput.value = state.laneQuery;
+        }
+        function postLaneQuery() {
+            pendingLaneQueryPost = 0;
+            vscode.postMessage({ type: "laneQueryChanged", laneQuery: state.laneQuery });
+        }
+        document.addEventListener("keydown", (event) => {
+            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+            const active = document.activeElement;
+            if (active?.matches?.("input, textarea, select, [contenteditable='true']")
+                || active?.isContentEditable) return;
+            if (!Array.isArray(state.lanes) || state.lanes.length === 0) return;
+
+            const currentIndex = state.lanes.findIndex((lane) =>
+                String(lane.laneId) === state.selectedLaneId);
+            const nextIndex = currentIndex < 0
+                ? (event.key === "ArrowUp" ? state.lanes.length - 1 : 0)
+                : Math.max(0, Math.min(
+                    state.lanes.length - 1,
+                    currentIndex + (event.key === "ArrowUp" ? -1 : 1)));
+            event.preventDefault();
+            if (nextIndex === currentIndex) return;
+            if (event.shiftKey && currentIndex >= 0) {
+                const movingLane = state.lanes[currentIndex];
+                const adjacentLane = state.lanes[nextIndex];
+                state.lanes[currentIndex] = state.lanes[nextIndex];
+                state.lanes[nextIndex] = movingLane;
+                const movingOrderIndex = state.laneOrder.indexOf(String(movingLane.laneId));
+                const adjacentOrderIndex = state.laneOrder.indexOf(String(adjacentLane.laneId));
+                if (movingOrderIndex >= 0 && adjacentOrderIndex >= 0) {
+                    [state.laneOrder[movingOrderIndex], state.laneOrder[adjacentOrderIndex]] =
+                        [state.laneOrder[adjacentOrderIndex], state.laneOrder[movingOrderIndex]];
+                } else {
+                    state.laneOrder = state.lanes.map((lane) => String(lane.laneId));
+                }
+                persistLaneViewState();
+                renderLanes();
+                renderConnections();
+                return;
+            }
+            state.selectedLaneId = String(state.lanes[nextIndex].laneId);
+            persistLaneViewState({ selectedLaneId: state.selectedLaneId });
+            renderLanes();
+            renderConnections();
+            requestAnimationFrame(() => {
+                laneWindow?.querySelector('.lane-row[data-lane-id="'
+                    + CSS.escape(state.selectedLaneId) + '"]')?.scrollIntoView({ block: "nearest" });
+            });
+        });
 
         function postViewportState() {
             if (!viewport) {
@@ -653,6 +973,8 @@ export class LaneViewProvider {
                 startIndex: state.startIndex,
                 visibleLaneCount: state.visibleLaneCount,
                 connectionsExpanded: state.connectionsExpanded,
+                queryExpanded: state.queryExpanded,
+                laneOrder: state.laneOrder,
                 samplesPerPixel: state.samplesPerPixel,
                 panSamples: state.panSamples,
                 compiledLaneHeight: state.compiledLaneHeight,
@@ -713,6 +1035,16 @@ export class LaneViewProvider {
             const range = document.createElement("span");
             range.className = "summary-range";
             summary.appendChild(range);
+            laneQueryToggle = document.createElement("button");
+            laneQueryToggle.type = "button";
+            laneQueryToggle.className = "lane-query-toggle";
+            laneQueryToggle.addEventListener("click", () => {
+                state.queryExpanded = !state.queryExpanded;
+                syncLaneQueryControl();
+                persistLaneViewState();
+                if (state.queryExpanded) requestAnimationFrame(() => laneQueryInput?.focus());
+            });
+            summary.appendChild(laneQueryToggle);
             const toolbarSpacer = document.createElement("div");
             toolbarSpacer.className = "spacer";
             summary.appendChild(toolbarSpacer);
@@ -733,12 +1065,46 @@ export class LaneViewProvider {
             summary.appendChild(zoomIn);
             root.appendChild(summary);
 
+            laneQueryRegion = document.createElement("div");
+            laneQueryRegion.className = "lane-query-region";
+            const queryLabel = document.createElement("label");
+            queryLabel.textContent = "Lane filter";
+            laneQueryInput = document.createElement("input");
+            laneQueryInput.type = "text";
+            laneQueryInput.className = "lane-query-input";
+            laneQueryInput.placeholder = "query, e.g. dsp_graph.graph_input";
+            laneQueryInput.title = "Lane-query expression; leave empty to show all lanes";
+            laneQueryInput.setAttribute("aria-label", "Lane filter query");
+            queryLabel.htmlFor = "lane-query-input";
+            laneQueryInput.id = "lane-query-input";
+            laneQueryInput.addEventListener("input", () => {
+                state.laneQuery = laneQueryInput.value;
+                if (viewport) viewport.scrollTop = 0;
+                state.startIndex = 0;
+                persistLaneViewState();
+                if (pendingLaneQueryPost) clearTimeout(pendingLaneQueryPost);
+                pendingLaneQueryPost = setTimeout(postLaneQuery, 160);
+            });
+            laneQueryInput.addEventListener("keydown", (event) => {
+                event.stopPropagation();
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    state.queryExpanded = false;
+                    syncLaneQueryControl();
+                    persistLaneViewState();
+                }
+            });
+            laneQueryRegion.append(queryLabel, laneQueryInput);
+            root.appendChild(laneQueryRegion);
+            syncLaneQueryControl();
+
             timelineRuler = document.createElement("div");
             timelineRuler.className = "timeline-ruler";
             let panStartX = null;
             let panStartSamples = 0;
             let scrubPointerId = null;
             timelineRuler.addEventListener("pointerdown", (event) => {
+                if (event.button !== 0) return;
                 if (!event.shiftKey) {
                     scrubToSample(rulerStart() + (event.clientX - timelineRuler.getBoundingClientRect().left) * state.samplesPerPixel);
                     scrubPointerId = event.pointerId;
@@ -825,6 +1191,7 @@ export class LaneViewProvider {
                     startIndex: state.startIndex,
                     visibleLaneCount: state.visibleLaneCount,
                     connectionsExpanded: state.connectionsExpanded,
+                    laneOrder: state.laneOrder,
                     samplesPerPixel: state.samplesPerPixel,
                     panSamples: state.panSamples,
                 });
@@ -835,7 +1202,8 @@ export class LaneViewProvider {
             connectionList = document.createElement("div");
             connectionList.className = "connection-list";
             connectionSection.appendChild(connectionList);
-            root.appendChild(connectionSection);
+            // Connections are represented by selected-lane cables only; do
+            // not reserve a bottom panel for the legacy list.
         }
 
         function setZoom(samplesPerPixel) {
@@ -844,6 +1212,8 @@ export class LaneViewProvider {
                 startIndex: state.startIndex,
                 visibleLaneCount: state.visibleLaneCount,
                 connectionsExpanded: state.connectionsExpanded,
+                laneOrder: state.laneOrder,
+                queryExpanded: state.queryExpanded,
                 samplesPerPixel: state.samplesPerPixel,
                 panSamples: state.panSamples,
                 compiledLaneHeight: state.compiledLaneHeight,
@@ -863,7 +1233,7 @@ export class LaneViewProvider {
             const nextSamplesPerPixel = Math.max(1, Math.min(65536, Math.round(samplesPerPixel)));
             state.panSamples = sampleAtPointer
                 - (clientX - bounds.left) * nextSamplesPerPixel
-                + 164 * nextSamplesPerPixel;
+                + laneHeaderWidth * nextSamplesPerPixel;
             setZoom(nextSamplesPerPixel);
         }
 
@@ -873,6 +1243,7 @@ export class LaneViewProvider {
                 startIndex: state.startIndex,
                 visibleLaneCount: state.visibleLaneCount,
                 connectionsExpanded: state.connectionsExpanded,
+                laneOrder: state.laneOrder,
                 samplesPerPixel: state.samplesPerPixel,
                 panSamples: state.panSamples,
                 compiledLaneHeight: state.compiledLaneHeight,
@@ -880,8 +1251,9 @@ export class LaneViewProvider {
             renderLanes();
         }
 
-        function showMeterMenu(event) {
+        function showMeterMenu(event, lane) {
             event.preventDefault();
+            event.stopPropagation();
             document.querySelectorAll(".meter-menu").forEach((menu) => menu.remove());
             const menu = document.createElement("div");
             menu.className = "meter-menu";
@@ -896,6 +1268,13 @@ export class LaneViewProvider {
                 });
                 menu.appendChild(button);
             }
+            const rename = document.createElement("button");
+            rename.textContent = "Rename lane…";
+            rename.addEventListener("click", () => {
+                menu.remove();
+                showRenameDialog(lane);
+            });
+            menu.appendChild(rename);
             menu.style.left = String(event.clientX) + "px";
             menu.style.top = String(event.clientY) + "px";
             document.body.appendChild(menu);
@@ -924,7 +1303,7 @@ export class LaneViewProvider {
         }
 
         function rulerStart() {
-            return timelineStart() - 164 * state.samplesPerPixel;
+            return timelineStart() - laneHeaderWidth * state.samplesPerPixel;
         }
 
         function postTimelineViewport() {
@@ -967,7 +1346,7 @@ export class LaneViewProvider {
             }
             const cursor = document.createElement("div");
             cursor.className = "playhead";
-            cursor.style.left = String(164 + playheadX()) + "px";
+            cursor.style.left = String(laneHeaderWidth + playheadX()) + "px";
             cursor.title = "playback sample " + String(state.playbackSampleIndex ?? 0);
             timelineRuler.appendChild(cursor);
         }
@@ -1059,12 +1438,12 @@ export class LaneViewProvider {
             }
             const rulerPlayhead = timelineRuler.querySelector(".playhead");
             if (rulerPlayhead) {
-                rulerPlayhead.style.left = String(164 + playheadX()) + "px";
+                rulerPlayhead.style.left = String(laneHeaderWidth + playheadX()) + "px";
                 rulerPlayhead.title = "playback sample " + String(state.playbackSampleIndex ?? 0);
             }
             const canvasPlayhead = laneWindow.querySelector(".canvas-playhead");
             if (canvasPlayhead) {
-                canvasPlayhead.style.left = String(164 + playheadX()) + "px";
+                canvasPlayhead.style.left = String(laneHeaderWidth + playheadX()) + "px";
                 canvasPlayhead.title = "playback sample " + String(state.playbackSampleIndex ?? 0);
             }
         }
@@ -1086,32 +1465,152 @@ export class LaneViewProvider {
 
             for (const lane of state.lanes) {
                 const row = document.createElement("div");
-                row.className = "lane-row " + lane.domain;
+                row.className = "lane-row " + lane.domain + (state.selectedLaneId === String(lane.laneId) ? " selected" : "");
                 row.dataset.laneId = String(lane.laneId);
                 row.style.height = String(lane.domain === "compiled" ? state.compiledLaneHeight : laneHeight) + "px";
-                row.title = "lane " + String(lane.laneId)
-                    + (lane.description ? " • " + lane.description : "");
+                row.addEventListener("click", (event) => {
+                    if (event.target.closest(".lane-connection-button")) return;
+                    state.selectedLaneId = String(lane.laneId);
+                    vscode.setState({ ...vscode.getState(), selectedLaneId: state.selectedLaneId });
+                    renderLanes();
+                    renderConnections();
+                });
+                row.addEventListener("contextmenu", (event) => {
+                    event.preventDefault();
+                    showRenameDialog(lane);
+                });
+
+                const connectionButton = document.createElement("button");
+                connectionButton.type = "button";
+                connectionButton.className = "lane-connection-button";
+                if (!state.selectedLaneId) {
+                    connectionButton.textContent = "•";
+                    connectionButton.disabled = true;
+                    connectionButton.title = "Select the lane by clicking its row";
+                } else if (state.selectedLaneId === String(lane.laneId)) {
+                    connectionButton.textContent = "•";
+                    connectionButton.classList.add("selected");
+                    connectionButton.disabled = true;
+                    connectionButton.title = "Selected lane";
+                } else {
+                    const selectedLane = state.lanes.find((candidate) =>
+                        String(candidate.laneId) === state.selectedLaneId);
+                    const existingConnections = (state.connections || []).filter((connection) =>
+                        connection.sourceLaneId === state.selectedLaneId
+                        && connection.targetLaneId === String(lane.laneId));
+                    const compatibleInputs = (lane.inputs || []).filter((input) =>
+                        input.kind === (selectedLane?.outputKind || "sample"));
+                    connectionButton.textContent = existingConnections.length > 0 ? "−" : "+";
+                    connectionButton.disabled = existingConnections.length === 0 && compatibleInputs.length === 0;
+                    connectionButton.title = existingConnections.length > 0
+                        ? "Disconnect selected lane from this lane"
+                        : compatibleInputs.length > 0
+                            ? "Click: connect to " + (compatibleInputs[0].name || compatibleInputs[0].kind)
+                                + (compatibleInputs.length > 1 ? " • hold: choose input" : "")
+                            : "Selected lane has no compatible output for this lane";
+                    const connectToInput = (input) => {
+                        connectionDebug("button connect " + state.selectedLaneId + " -> " + String(lane.laneId)
+                            + " " + input.domain + "/" + input.kind + "[" + String(input.ordinal) + "]");
+                        vscode.postMessage({
+                            type: "connectLanes",
+                            sourceLaneId: state.selectedLaneId,
+                            targetLaneId: String(lane.laneId),
+                            portDomain: input.domain,
+                            portKind: input.kind,
+                            portOrdinal: input.ordinal,
+                        });
+                    };
+                    const disconnect = () => {
+                        const connection = existingConnections[0];
+                        if (!connection) return;
+                        connectionDebug("button disconnect " + connection.sourceLaneId + " -> " + connection.targetLaneId);
+                        vscode.postMessage({
+                            type: "disconnectLanes",
+                            sourceLaneId: connection.sourceLaneId,
+                            targetLaneId: connection.targetLaneId,
+                            portDomain: connection.portDomain,
+                            portKind: connection.portKind,
+                            portOrdinal: connection.portOrdinal,
+                        });
+                    };
+                    let holdTimer = null;
+                    let openedInputWheel = false;
+                    connectionButton.addEventListener("pointerdown", (event) => {
+                        event.stopPropagation();
+                        if (existingConnections.length > 0) {
+                            return;
+                        }
+                        if (compatibleInputs.length < 2) return;
+                        openedInputWheel = false;
+                        holdTimer = setTimeout(() => {
+                            openedInputWheel = true;
+                            showInputWheel(connectionButton, compatibleInputs, connectToInput);
+                        }, 360);
+                    });
+                    connectionButton.addEventListener("pointerup", (event) => {
+                        event.stopPropagation();
+                        if (holdTimer) clearTimeout(holdTimer);
+                        holdTimer = null;
+                        if (openedInputWheel) return;
+                        if (existingConnections.length > 0) disconnect();
+                        else if (compatibleInputs.length > 0) connectToInput(compatibleInputs[0]);
+                    });
+                    connectionButton.addEventListener("pointercancel", () => {
+                        if (holdTimer) clearTimeout(holdTimer);
+                        holdTimer = null;
+                    });
+                    connectionButton.addEventListener("click", (event) => {
+                        // Keyboard activation has no pointer hold; retain the
+                        // ordinary first-input action for accessibility.
+                        event.stopPropagation();
+                        if (event.detail !== 0) return;
+                        if (existingConnections.length > 0) disconnect();
+                        else if (compatibleInputs.length > 0) connectToInput(compatibleInputs[0]);
+                    });
+                }
+                row.appendChild(connectionButton);
+
+                const debugCopy = document.createElement("button");
+                debugCopy.type = "button";
+                debugCopy.className = "lane-debug-copy-button";
+                debugCopy.classList.add(lane.domain);
+                debugCopy.textContent = "⧉";
+                debugCopy.title = "Copy lane debug info";
+                debugCopy.setAttribute("aria-label", "Copy lane debug info");
+                debugCopy.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    const connections = (state.connections || []).filter((connection) =>
+                        connection.sourceLaneId === String(lane.laneId)
+                        || connection.targetLaneId === String(lane.laneId));
+                    vscode.postMessage({
+                        type: "copyLaneDebugInfo",
+                        text: JSON.stringify({
+                            laneId: lane.laneId,
+                            domain: lane.domain,
+                            outputKind: lane.outputKind,
+                            modelTypeId: lane.modelTypeId,
+                            metadata: lane.metadata,
+                            inputs: lane.inputs,
+                            connections,
+                        }, null, 2),
+                    });
+                });
+                row.appendChild(debugCopy);
 
                 const label = document.createElement("div");
                 label.className = "lane-label";
 
-                const domain = document.createElement("div");
-                domain.className = "lane-domain " + lane.domain;
-                domain.title = lane.domain;
-                label.appendChild(domain);
-
                 const title = document.createElement("div");
                 title.className = "title";
                 title.textContent = lane.title;
-                title.title = lane.description || String(lane.laneId);
-                if (lane.domain === "compiled") {
+                if (lane.domain === "compiled" && lane.modelTypeId !== "iv.timeline.beat-trigger") {
                     label.appendChild(title);
                 }
 
                 const content = state.contentByLaneId[String(lane.laneId)];
                 const eventCount = Number(content?.eventCount || 0);
                 const peakLevel = content?.peakLevel;
-                if (lane.domain === "compiled" && content) {
+                if (lane.domain === "compiled" && content && lane.modelTypeId !== "iv.timeline.beat-trigger") {
                     const meter = document.createElement("div");
                     meter.className = "lane-meter" + (eventCount > 0 ? " events" : "");
                     meter.title = peakLevel != null
@@ -1189,7 +1688,7 @@ export class LaneViewProvider {
                         rightMeter.querySelector(".large-meter-fill").style.width = String(rightPosition * 100) + "%";
                         staticFace.appendChild(rightMeter);
                     }
-                    staticFace.addEventListener("contextmenu", (event) => showMeterMenu(event));
+                    staticFace.addEventListener("contextmenu", (event) => showMeterMenu(event, lane));
                     row.appendChild(staticFace);
                     laneWindow.appendChild(row);
                     continue;
@@ -1216,9 +1715,10 @@ export class LaneViewProvider {
 
             const canvasPlayhead = document.createElement("div");
             canvasPlayhead.className = "canvas-playhead";
-            canvasPlayhead.style.left = String(164 + playheadX()) + "px";
+            canvasPlayhead.style.left = String(laneHeaderWidth + playheadX()) + "px";
             canvasPlayhead.title = "playback sample " + String(state.playbackSampleIndex ?? 0);
             laneWindow.appendChild(canvasPlayhead);
+            renderSelectedConnections();
 
             if (!Array.isArray(state.lanes) || state.lanes.length === 0) {
                 const empty = document.createElement("div");
@@ -1245,6 +1745,57 @@ export class LaneViewProvider {
                     break;
                 }
             }
+        }
+
+        function renderSelectedConnections() {
+            if (!state.selectedLaneId) return;
+            const selectedRow = laneWindow.querySelector('.lane-row[data-lane-id="' + CSS.escape(state.selectedLaneId) + '"]');
+            if (!selectedRow) return;
+            const overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            overlay.setAttribute("class", "connection-overlay");
+            overlay.setAttribute("width", "100%");
+            overlay.setAttribute("height", "100%");
+            const windowRect = laneWindow.getBoundingClientRect();
+            const visibleConnections = (state.connections || []).filter((connection) =>
+                connection.sourceLaneId === state.selectedLaneId
+                || connection.targetLaneId === state.selectedLaneId);
+            // Incoming routes are deliberately drawn first: they remain
+            // available as orientation context without competing with the
+            // selected lane's outgoing routes.
+            visibleConnections.sort((left, right) => {
+                const leftIncoming = left.targetLaneId === state.selectedLaneId;
+                const rightIncoming = right.targetLaneId === state.selectedLaneId;
+                return Number(leftIncoming) - Number(rightIncoming);
+            });
+            for (const connection of visibleConnections) {
+                const sourceRow = laneWindow.querySelector('.lane-row[data-lane-id="' + CSS.escape(String(connection.sourceLaneId)) + '"]');
+                const targetRow = laneWindow.querySelector('.lane-row[data-lane-id="' + CSS.escape(String(connection.targetLaneId)) + '"]');
+                if (!sourceRow || !targetRow) continue;
+                const sourcePort = sourceRow.querySelector(".lane-connection-button");
+                const targetPort = targetRow.querySelector(".lane-connection-button");
+                if (!sourcePort) continue;
+                const source = sourcePort.getBoundingClientRect();
+                if (!targetPort) continue;
+                const target = targetPort.getBoundingClientRect();
+                // Both lane controls live on the left edge.  Start just to
+                // the right of the source control, then approach the target
+                // from its right so cables never disappear beneath buttons.
+                const x1 = source.right - windowRect.left + 2;
+                const y1 = source.top + source.height / 2 - windowRect.top;
+                const x2 = target.right - windowRect.left + 2;
+                const y2 = target.top + target.height / 2 - windowRect.top;
+                const curve = Math.max(32, Math.abs(x2 - x1) * .35);
+                const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                path.setAttribute("class", "selected-connection "
+                    + (connection.targetLaneId === state.selectedLaneId
+                        ? "incoming-connection" : "outgoing-connection"));
+                path.setAttribute("d", "M " + x1 + " " + y1
+                    + " C " + (x1 + curve) + " " + y1
+                    + ", " + (x2 + curve) + " " + y2
+                    + ", " + x2 + " " + y2);
+                overlay.appendChild(path);
+            }
+            laneWindow.appendChild(overlay);
         }
 
         function renderConnections() {
@@ -1277,6 +1828,23 @@ export class LaneViewProvider {
                     connectionState.className = "connection-state";
                     connectionState.textContent = connection.state;
                     row.appendChild(connectionState);
+
+                    if (connection.sourceLaneId === state.selectedLaneId || connection.targetLaneId === state.selectedLaneId) {
+                        const disconnect = document.createElement("button");
+                        disconnect.type = "button";
+                        disconnect.className = "zoom-button";
+                        disconnect.textContent = "×";
+                        disconnect.title = "Disconnect";
+                        disconnect.addEventListener("click", () => vscode.postMessage({
+                            type: "disconnectLanes",
+                            sourceLaneId: connection.sourceLaneId,
+                            targetLaneId: connection.targetLaneId,
+                            portDomain: connection.portDomain,
+                            portKind: connection.portKind,
+                            portOrdinal: connection.portOrdinal,
+                        }));
+                        row.appendChild(disconnect);
+                    }
 
                     connectionList.appendChild(row);
                 }
@@ -1311,7 +1879,8 @@ export class LaneViewProvider {
         window.addEventListener("message", (event) => {
             const message = event.data || {};
             if (message.type === "setState") {
-                const nextLanes = Array.isArray(message.lanes) ? message.lanes : [];
+                const suppliedLanes = Array.isArray(message.lanes) ? message.lanes : [];
+                const nextLanes = applyLaneOrder(suppliedLanes);
                 const nextTotalLaneCount = Number(message.totalLaneCount || 0);
                 const structureChanged = laneStructureKey(state.lanes, state.totalLaneCount)
                     !== laneStructureKey(nextLanes, nextTotalLaneCount);
@@ -1329,6 +1898,7 @@ export class LaneViewProvider {
                 state.totalLaneCount = nextTotalLaneCount;
                 state.lanes = nextLanes;
                 state.connections = Array.isArray(message.connections) ? message.connections : [];
+                syncLaneQueryControl();
                 state.contentByLaneId = message.contentByLaneId && typeof message.contentByLaneId === "object"
                     ? message.contentByLaneId : state.contentByLaneId;
                 if (typeof message.playbackSampleIndex === "number") {
@@ -1337,9 +1907,12 @@ export class LaneViewProvider {
                 vscode.setState({
                     laneViewId: state.laneViewId,
                     laneQuery: state.laneQuery,
+                    selectedLaneId: state.selectedLaneId,
                     startIndex: state.startIndex,
                     visibleLaneCount: state.visibleLaneCount,
                     connectionsExpanded: state.connectionsExpanded,
+                    queryExpanded: state.queryExpanded,
+                    laneOrder: state.laneOrder,
                 samplesPerPixel: state.samplesPerPixel,
                 panSamples: state.panSamples,
                 compiledLaneHeight: state.compiledLaneHeight,
@@ -1349,8 +1922,14 @@ export class LaneViewProvider {
                 // not change. Its content is already represented locally, so
                 // update only dynamic output instead of replacing controls.
                 if (!structureChanged && viewport) {
-                    updateDynamicContent();
-                    if (connectionsChanged) renderConnections();
+                    if (connectionsChanged) {
+                        // The connection controls and selected-lane cables
+                        // are part of each row, not the removed bottom panel.
+                        // Rebuild those rows immediately after an RPC result.
+                        renderLanes();
+                    } else {
+                        updateDynamicContent();
+                    }
                     return;
                 }
                 // Lane-view refreshes may be emitted while the beat node

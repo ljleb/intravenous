@@ -75,7 +75,22 @@ namespace iv {
     struct SetTimelineLaneUiStateRequest {
         InternedString lane_id {};
         std::optional<std::uint64_t> expected_revision {};
-        std::string serialized_state {};
+        std::optional<std::string> serialized_state {};
+        std::optional<std::string> name {};
+    };
+    struct ConnectTimelineLanesRequest {
+        InternedString source_lane_id {};
+        InternedString target_lane_id {};
+        LanePortDomain port_domain = LanePortDomain::realtime;
+        PortKind port_kind = PortKind::sample;
+        size_t port_ordinal = 0;
+    };
+    struct DisconnectTimelineLanesRequest {
+        InternedString source_lane_id {};
+        InternedString target_lane_id {};
+        LanePortDomain port_domain = LanePortDomain::realtime;
+        PortKind port_kind = PortKind::sample;
+        size_t port_ordinal = 0;
     };
     struct GetTimelineLaneTypesRequest {};
     struct CreateTimelineLaneRequest { std::string type_id {}; };
@@ -152,6 +167,8 @@ namespace iv {
         SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest,
         SetTimelineLaneSampleChannelTypeRequest,
         SetTimelineLaneUiStateRequest,
+        ConnectTimelineLanesRequest,
+        DisconnectTimelineLanesRequest,
         GetTimelineLaneTypesRequest,
         CreateTimelineLaneRequest,
         GetAudioDevicesRequest,

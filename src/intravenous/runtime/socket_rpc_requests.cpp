@@ -143,6 +143,20 @@ ChannelTypeId parse_channel_type_param(Json const& params, std::string const& ke
     throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'mono' or 'stereo'");
 }
 
+LanePortDomain parse_lane_port_domain_param(Json const& params, std::string const& key) {
+    auto const value = parse_string_param(params, key);
+    if (value == "realtime") return LanePortDomain::realtime;
+    if (value == "compiled") return LanePortDomain::compiled;
+    throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'realtime' or 'compiled'");
+}
+
+PortKind parse_port_kind_param(Json const& params, std::string const& key) {
+    auto const value = parse_string_param(params, key);
+    if (value == "sample") return PortKind::sample;
+    if (value == "event") return PortKind::event;
+    throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'sample' or 'event'");
+}
+
 uint32_t parse_uint32_value(Json const &value, std::string const &context) {
     if (!value.is_number_integer()) {
         throw std::runtime_error(context);
@@ -401,7 +415,36 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
                 .expected_revision = params.contains("expectedRevision")
                     ? std::optional<std::uint64_t>{parse_uint64_param(params, "expectedRevision")}
                     : std::nullopt,
-                .serialized_state = parse_string_param(params, "serializedState"),
+                .serialized_state = params.contains("serializedState")
+                    ? std::optional<std::string>{parse_string_param(params, "serializedState")}
+                    : std::nullopt,
+                .name = params.contains("name")
+                    ? std::optional<std::string>{parse_string_param(params, "name")}
+                    : std::nullopt,
+            },
+        };
+    }
+    if (method == "timeline.connectLanes") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = ConnectTimelineLanesRequest{
+                .source_lane_id = InternedString::from_string(parse_string_param(params, "sourceLaneId")),
+                .target_lane_id = InternedString::from_string(parse_string_param(params, "targetLaneId")),
+                .port_domain = parse_lane_port_domain_param(params, "portDomain"),
+                .port_kind = parse_port_kind_param(params, "portKind"),
+                .port_ordinal = static_cast<size_t>(parse_uint64_param(params, "portOrdinal")),
+            },
+        };
+    }
+    if (method == "timeline.disconnectLanes") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = DisconnectTimelineLanesRequest{
+                .source_lane_id = InternedString::from_string(parse_string_param(params, "sourceLaneId")),
+                .target_lane_id = InternedString::from_string(parse_string_param(params, "targetLaneId")),
+                .port_domain = parse_lane_port_domain_param(params, "portDomain"),
+                .port_kind = parse_port_kind_param(params, "portKind"),
+                .port_ordinal = static_cast<size_t>(parse_uint64_param(params, "portOrdinal")),
             },
         };
     }
