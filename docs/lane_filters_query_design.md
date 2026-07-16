@@ -22,3 +22,11 @@
 - no persistent cached bitmasks yet
 - any lane metadata change invalidates all filter evaluations
 - leave later selective invalidation / cached-mask work as a follow-up optimization
+
+## Query-tooling publication
+
+`LaneQuerySchema` is also the authoritative source for editor completion and
+diagnostics. Its revision and changes must be published through a dedicated
+read-only RPC snapshot/notification path, independently of whether an open
+lane view currently matches a lane whose metadata changed. See
+[`lane_query_tooling_direction.md`](./lane_query_tooling_direction.md).

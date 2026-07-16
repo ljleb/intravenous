@@ -430,6 +430,11 @@ Persist:
 - any additional authored view settings later considered part of reopening the
   project "as it was"
 
+Current practical storage may remain VS Code webview/layout state while the
+application is single-user and VS Code constrains project-layout restoration.
+This is an implementation compromise, not a change to the intended
+project-owned lane-view model; keep the stored shape migration-friendly.
+
 Do not persist:
 
 - resolved query results

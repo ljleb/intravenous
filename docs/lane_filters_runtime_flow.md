@@ -22,6 +22,8 @@
 4. `LaneFilters` emits completed filter results
 5. `LaneViews` consumes those results and updates its own view state
 6. JSON-RPC forwards lane-view updates/errors to UI
+7. independently, a schema snapshot/change publication keeps query editors
+   current even when their view result does not change
 
 ## Important Rules
 
@@ -32,3 +34,5 @@
   - `lane_view.<id>`
 - cyclic filter references are errors
 - filter evaluation errors are first-class runtime state and must propagate downstream
+- replacing a filter source must replace its prior failed binding before any
+  rebind attempt; a failed query must never prevent a later query update

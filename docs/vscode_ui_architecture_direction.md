@@ -108,6 +108,13 @@ feel.
 
 Each lane view has a stable UUID.
 
+Lane views are conceptually project-owned working objects. For the foreseeable
+single-user implementation, their physical persisted state may remain in VS
+Code webview/layout state rather than moving immediately into the project file.
+The persisted shape should nevertheless stay compatible with the project-owned
+model so that migration is an implementation change, not a product-model
+rewrite.
+
 Each lane view owns at least:
 
 - a lane query

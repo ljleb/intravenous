@@ -53,8 +53,10 @@ replace the intended direction in `vscode_ui_architecture_direction.md`.
 - React webview applications, separate webview bundles, typed webview message
   contracts, and typed UI stores/hooks. `lanesViewProvider.ts` currently has
   `// @ts-nocheck`, and both major webviews generate large HTML/DOM scripts.
-- A user-editable lane query UI. A `laneQuery` field is carried in view state,
-  but the panel has no query-bar interaction that changes it.
+- A per-panel editable lane query control, with debounced updates through the
+  lane-view RPC path and VS Code webview-state restoration. It does not yet
+  provide inline errors, match counts, clear/reset, completion, or a separate
+  visual-settings query.
 - The separate visual-settings query/language and all of its policies
   (sync, cable targets/peers, header fields, metadata visibility, and noise
   suppression).
@@ -119,9 +121,9 @@ Start with a connection inspector/list rather than canvas cable editing:
 - From a selected source lane, choose **Connect output…**; show only compatible
   target lane inputs, including port name/index and kind/channel compatibility.
 - From a target input, choose **Connect from…**; show compatible sources.
-- Allow replacing the existing single-input connection only after an explicit
-  confirmation in the chooser, and provide **Disconnect** on an existing
-  connection.
+- Allow adding any compatible contributor and provide **Disconnect** for an
+  existing edge. The lane graph is a DAG: inputs may have multiple
+  contributors and outputs may fan out; only cycles are forbidden.
 - Show connection direction, source/target, port, and an unambiguous status in
   the existing Connections section. Selecting a connection should select or
   reveal either endpoint locally where possible.
