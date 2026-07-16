@@ -153,9 +153,6 @@ LaneFilters::RegisteredLaneFilter &LaneFilters::ensure_filter_locked(std::string
     if (inserted) {
         it->second.name = filter_name;
     }
-    if (it->second.bound_ast.root == nullptr && dataset) {
-        rebind_filter_locked(it->second);
-    }
     return it->second;
 }
 
