@@ -42,6 +42,32 @@ type LaneProviderLike = {
     setLaneContent(result: Record<string, unknown>): void;
     setModuleInstances(instances: unknown[]): void;
     setLaneViewId(viewId: string): void;
+    setLaneQuerySchema(schema: LaneQuerySchemaSnapshot | null): void;
+    setLaneQueryCompletionHandler(handler: (
+        source: string,
+        cursorOffset: number,
+        schemaRevision: number,
+    ) => Promise<Record<string, unknown> | null>): void;
+};
+
+type LaneQuerySchemaValueType = "unit" | "int" | "float";
+
+type LaneQuerySchemaEntry = {
+    key: string;
+    type: LaneQuerySchemaValueType;
+};
+
+type LaneQuerySchemaSnapshot = {
+    revision: number;
+    entries: LaneQuerySchemaEntry[];
+};
+
+type LaneQuerySchemaChangeNotification = {
+    oldRevision?: number;
+    revision?: number;
+    added?: Array<{ key?: string; type?: string }>;
+    removed?: Array<{ key?: string; type?: string }>;
+    retyped?: Array<{ key?: string; oldType?: string; newType?: string }>;
 };
 
 type ModulesProviderLike = {
@@ -132,6 +158,8 @@ export class WorkspaceSession {
     private activeModuleRoot: string | null = null;
     private readonly selectedInstanceIdBySourceFile = new Map<string, string>();
     private clangdRestartTimer: NodeJS.Timeout | null = null;
+    private laneQuerySchema: LaneQuerySchemaSnapshot | null = null;
+    private laneQuerySchemaRefresh: Promise<void> | null = null;
 
     constructor(
         workspaceFolder: vscode.WorkspaceFolder,
@@ -161,6 +189,9 @@ export class WorkspaceSession {
             : `lanes-${crypto.randomBytes(8).toString("hex")}`;
         provider.setLaneViewId(viewId);
         provider.setModuleInstances(this.projectModuleInstances);
+        provider.setLaneQuerySchema(this.laneQuerySchema);
+        provider.setLaneQueryCompletionHandler((source, cursorOffset, schemaRevision) =>
+            this.completeLaneQuery(source, cursorOffset, schemaRevision));
         this.laneViews.set(viewId, { provider, open: false, requestRevision: 0, failedLaneQuery: null });
         return viewId;
     }
@@ -191,6 +222,10 @@ export class WorkspaceSession {
             this.serverReadyReceived = true;
             this.outputChannel.appendLine("Intravenous server ready");
             this.resolveServerReadyWaiters();
+        });
+
+        this.notifications.subscribe<LaneQuerySchemaChangeNotification>("timeline.laneQuerySchemaChanged", (params) => {
+            this.handleLaneQuerySchemaChanged(params);
         });
 
         this.notifications.subscribe<LaneViewUpdatedNotification>("timeline.laneViewUpdated", (params) => {
@@ -372,6 +407,133 @@ export class WorkspaceSession {
         for (const view of this.laneViews.values()) {
             view.provider.setModuleInstances(this.projectModuleInstances);
         }
+    }
+
+    private parseLaneQuerySchemaType(value: unknown): LaneQuerySchemaValueType | null {
+        return value === "unit" || value === "int" || value === "float" ? value : null;
+    }
+
+    private parseLaneQuerySchemaEntry(value: unknown): LaneQuerySchemaEntry | null {
+        if (!value || typeof value !== "object") return null;
+        const entry = value as { key?: unknown; type?: unknown };
+        const type = this.parseLaneQuerySchemaType(entry.type);
+        if (typeof entry.key !== "string" || entry.key.length === 0 || !type) return null;
+        return { key: entry.key, type };
+    }
+
+    private parseLaneQuerySchemaSnapshot(value: unknown): LaneQuerySchemaSnapshot | null {
+        if (!value || typeof value !== "object") return null;
+        const snapshot = value as { revision?: unknown; entries?: unknown };
+        if (!Number.isSafeInteger(snapshot.revision) || (snapshot.revision as number) < 0
+            || !Array.isArray(snapshot.entries)) return null;
+        const entries = snapshot.entries.map((entry) => this.parseLaneQuerySchemaEntry(entry));
+        if (entries.some((entry) => entry === null)) return null;
+        const byKey = new Map<string, LaneQuerySchemaEntry>();
+        for (const entry of entries as LaneQuerySchemaEntry[]) {
+            if (byKey.has(entry.key)) return null;
+            byKey.set(entry.key, entry);
+        }
+        return {
+            revision: snapshot.revision as number,
+            entries: [...byKey.values()].sort((lhs, rhs) => lhs.key.localeCompare(rhs.key)),
+        };
+    }
+
+    private setLaneQuerySchema(snapshot: LaneQuerySchemaSnapshot | null): void {
+        if (snapshot && this.laneQuerySchema && snapshot.revision < this.laneQuerySchema.revision) {
+            return;
+        }
+        this.laneQuerySchema = snapshot;
+        for (const view of this.laneViews.values()) {
+            view.provider.setLaneQuerySchema(snapshot);
+        }
+    }
+
+    private async refreshLaneQuerySchema(): Promise<void> {
+        if (!this.rpc) return;
+        if (this.laneQuerySchemaRefresh) {
+            return await this.laneQuerySchemaRefresh;
+        }
+        this.laneQuerySchemaRefresh = (async () => {
+            const snapshot = this.parseLaneQuerySchemaSnapshot(await this.rpc!.getLaneQuerySchema());
+            if (!snapshot) {
+                throw new Error("server returned an invalid lane query schema snapshot");
+            }
+            this.setLaneQuerySchema(snapshot);
+        })().finally(() => {
+            this.laneQuerySchemaRefresh = null;
+        });
+        return await this.laneQuerySchemaRefresh;
+    }
+
+    private requestLaneQuerySchemaRefresh(): void {
+        void this.refreshLaneQuerySchema().catch((error) => {
+            this.outputChannel.appendLine(`Intravenous lane query schema refresh failed: ${error.message}`);
+        });
+    }
+
+    private async completeLaneQuery(
+        source: string,
+        cursorOffset: number,
+        schemaRevision: number,
+    ): Promise<Record<string, unknown> | null> {
+        if (!this.rpc || !this.laneQuerySchema || this.laneQuerySchema.revision !== schemaRevision) {
+            return null;
+        }
+        const result = await this.rpc.completeLaneQuery(source, cursorOffset, schemaRevision);
+        if (result.schemaRevision !== this.laneQuerySchema.revision) {
+            this.requestLaneQuerySchemaRefresh();
+            return null;
+        }
+        return result;
+    }
+
+    private handleLaneQuerySchemaChanged(change: LaneQuerySchemaChangeNotification): void {
+        const oldRevision = change.oldRevision;
+        const revision = change.revision;
+        if (typeof oldRevision !== "number" || typeof revision !== "number"
+            || !Number.isSafeInteger(oldRevision) || !Number.isSafeInteger(revision)
+            || oldRevision < 0 || revision < 0 || revision <= oldRevision
+            || !this.laneQuerySchema || oldRevision !== this.laneQuerySchema.revision) {
+            this.requestLaneQuerySchemaRefresh();
+            return;
+        }
+
+        const entries = new Map(this.laneQuerySchema.entries.map((entry) => [entry.key, entry]));
+        for (const added of Array.isArray(change.added) ? change.added : []) {
+            const entry = this.parseLaneQuerySchemaEntry(added);
+            if (!entry || entries.has(entry.key)) {
+                this.requestLaneQuerySchemaRefresh();
+                return;
+            }
+            entries.set(entry.key, entry);
+        }
+        for (const removed of Array.isArray(change.removed) ? change.removed : []) {
+            const entry = this.parseLaneQuerySchemaEntry(removed);
+            if (!entry || !entries.delete(entry.key)) {
+                this.requestLaneQuerySchemaRefresh();
+                return;
+            }
+        }
+        for (const retyped of Array.isArray(change.retyped) ? change.retyped : []) {
+            if (!retyped || typeof retyped !== "object") {
+                this.requestLaneQuerySchemaRefresh();
+                return;
+            }
+            const item = retyped as { key?: unknown; oldType?: unknown; newType?: unknown };
+            const oldType = this.parseLaneQuerySchemaType(item.oldType);
+            const newType = this.parseLaneQuerySchemaType(item.newType);
+            const existing = typeof item.key === "string" ? entries.get(item.key) : undefined;
+            if (!existing || !oldType || !newType || existing.type !== oldType) {
+                this.requestLaneQuerySchemaRefresh();
+                return;
+            }
+            entries.set(item.key as string, { key: item.key as string, type: newType });
+        }
+        this.setLaneQuerySchema({
+            revision,
+            entries: [...entries.values()].sort((lhs, rhs) => lhs.key.localeCompare(rhs.key)),
+        });
     }
 
     private parseSourcePosition(payload: unknown): SourcePosition | null {
@@ -619,6 +781,7 @@ export class WorkspaceSession {
         this.outputChannel.appendLine("Intravenous startup: waiting for server.ready");
         await this.waitForServerReady(10000);
         if (this.rpc) {
+            await this.refreshLaneQuerySchema();
             const result = await this.rpc.getIvModuleInstances();
             this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
             this.projectModuleInstances = this.ivModuleInstances;
@@ -1279,6 +1442,7 @@ export class WorkspaceSession {
 
     private resetServerReadyState(): void {
         this.serverReadyReceived = false;
+        this.setLaneQuerySchema(null);
         this.rejectServerReadyWaiters(new Error("Intravenous server startup was restarted"));
     }
 

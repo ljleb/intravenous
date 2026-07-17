@@ -115,6 +115,29 @@ TEST(SocketRpcRequestParser, ParsesLaneViewCompiledEventDisplayWindow)
     EXPECT_EQ(request->request.display_sample_count, 96000u);
 }
 
+TEST(SocketRpcRequestParser, ParsesGetLaneQuerySchemaRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":24,"method":"timeline.getLaneQuerySchema","params":{}})");
+
+    EXPECT_EQ(parsed.request_id, 24);
+    EXPECT_NE(std::get_if<iv::GetLaneQuerySchemaRequest>(&parsed.payload), nullptr);
+}
+
+TEST(SocketRpcRequestParser, ParsesCompleteLaneQueryRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":25,"method":"timeline.completeLaneQuery","params":{"source":"gain=","cursorOffset":5,"schemaRevision":7}})");
+
+    EXPECT_EQ(parsed.request_id, 25);
+    auto const *request = std::get_if<iv::CompleteLaneQueryRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->source, "gain=");
+    EXPECT_EQ(request->cursor_offset, 5u);
+    ASSERT_TRUE(request->schema_revision.has_value());
+    EXPECT_EQ(*request->schema_revision, 7u);
+}
+
 TEST(SocketRpcRequestParser, ParsesSetSampleInputValueRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
@@ -476,6 +499,58 @@ TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewErrorPayload)
     EXPECT_EQ(response["id"], 16);
     EXPECT_EQ(response["result"]["viewId"], "view-1");
     EXPECT_EQ(response["result"]["error"], "bad filter");
+}
+
+TEST(SocketRpcLaneQuerySchemaResultBuilder, SerializesSchemaSnapshot)
+{
+    iv::SocketRpcLaneQuerySchemaResultBuilder builder;
+    builder.succeed(iv::query::LaneQuerySchema::from_entries({
+        {"gain", iv::query::LaneQueryValueType::float_},
+        {"graph_input", iv::query::LaneQueryValueType::unit},
+    }, 7));
+
+    auto const response = parse_json_line(builder.build(17));
+
+    EXPECT_EQ(response["id"], 17);
+    EXPECT_EQ(response["result"]["revision"], 7);
+    ASSERT_EQ(response["result"]["entries"].size(), 2u);
+    EXPECT_EQ(response["result"]["entries"][0]["key"], "gain");
+    EXPECT_EQ(response["result"]["entries"][0]["type"], "float");
+    EXPECT_EQ(response["result"]["entries"][1]["key"], "graph_input");
+    EXPECT_EQ(response["result"]["entries"][1]["type"], "unit");
+}
+
+TEST(SocketRpcLaneQueryCompletionResultBuilder, SerializesCompletionPayload)
+{
+    iv::SocketRpcLaneQueryCompletionResultBuilder builder;
+    builder.succeed(iv::query::LaneQueryCompletionResult{
+        .replacement_range = {.start_offset = 4, .end_offset = 6},
+        .context = iv::query::LaneQueryCompletionContext::value,
+        .candidates = {
+            iv::query::LaneQueryCompletionCandidate{
+                .kind = iv::query::LaneQueryCompletionKind::numeric_range,
+                .label = "0..1",
+                .insert_text = "0..1",
+                .value_type = iv::query::LaneQueryValueType::float_,
+            },
+        },
+        .diagnostics = {
+            iv::query::LaneQueryDiagnostic{
+                .range = {.start_offset = 5, .end_offset = 6},
+                .message = "incomplete value",
+            },
+        },
+    }, 9);
+
+    auto const response = parse_json_line(builder.build(18));
+
+    EXPECT_EQ(response["id"], 18);
+    EXPECT_EQ(response["result"]["schemaRevision"], 9);
+    EXPECT_EQ(response["result"]["replacementRange"]["startOffset"], 4);
+    EXPECT_EQ(response["result"]["context"], "value");
+    EXPECT_EQ(response["result"]["candidates"][0]["kind"], "numericRange");
+    EXPECT_EQ(response["result"]["candidates"][0]["valueType"], "float");
+    EXPECT_EQ(response["result"]["diagnostics"][0]["range"]["endOffset"], 6);
 }
 
 TEST(SocketRpcCreateIvModuleInstanceResultBuilder, SerializesCreatedInstanceId)

@@ -2,6 +2,11 @@
 import * as vscode from "vscode";
 import { lanePresentationPlugins } from "./lanePlugins";
 
+function utf8ByteOffsetForUtf16Offset(source, utf16Offset) {
+    const bounded = Math.max(0, Math.min(source.length, utf16Offset));
+    return Buffer.byteLength(source.slice(0, bounded), "utf8");
+}
+
 export class LaneViewProvider {
     constructor() {
         this.panel = null;
@@ -29,6 +34,8 @@ export class LaneViewProvider {
         this.instanceNamesByNumericId = new Map();
         this.laneViewId = "";
         this.laneQuery = "";
+        this.laneQuerySchema = null;
+        this.laneQueryCompletionHandler = null;
     }
 
     setModuleInstances(instances) {
@@ -148,6 +155,15 @@ export class LaneViewProvider {
     setLaneViewId(viewId) {
         this.laneViewId = viewId;
         this.postState();
+    }
+
+    setLaneQuerySchema(schema) {
+        this.laneQuerySchema = schema && typeof schema === "object" ? schema : null;
+        this.postState();
+    }
+
+    setLaneQueryCompletionHandler(handler) {
+        this.laneQueryCompletionHandler = handler;
     }
 
     viewportState() {
@@ -357,6 +373,23 @@ export class LaneViewProvider {
                 this.viewportHandler?.(this.viewportState());
                 return;
             }
+            if (message.type === "laneQueryCompletionRequested") {
+                const source = String(message.source || "");
+                const cursorOffset = Math.max(0, Math.floor(Number(message.cursorOffset || 0)));
+                const schemaRevision = Math.max(0, Math.floor(Number(message.schemaRevision || 0)));
+                const requestId = Math.max(0, Math.floor(Number(message.requestId || 0)));
+                if (!this.laneQueryCompletionHandler) return;
+                void this.laneQueryCompletionHandler(
+                    source,
+                    utf8ByteOffsetForUtf16Offset(source, cursorOffset),
+                    schemaRevision,
+                ).then((completion) => {
+                    this.panel?.webview.postMessage({ type: "laneQueryCompletion", requestId, completion });
+                }).catch(() => {
+                    this.panel?.webview.postMessage({ type: "laneQueryCompletion", requestId, completion: null });
+                });
+                return;
+            }
             if (message.type !== "viewportChanged") return;
             const startIndex = Math.max(0, Number(message.startIndex || 0));
             const visibleLaneCount = Math.max(0, Number(message.visibleLaneCount || 0));
@@ -384,6 +417,7 @@ export class LaneViewProvider {
             type: "setState",
             laneViewId: this.laneViewId,
             laneQuery: this.laneQuery,
+            laneQuerySchema: this.laneQuerySchema,
             startIndex: this.startIndex,
             visibleLaneCount: this.visibleLaneCount,
             totalLaneCount: this.totalLaneCount,
@@ -488,10 +522,14 @@ export class LaneViewProvider {
             cursor: pointer; font: inherit; font-size: .78em;
         }
         .lane-query-toggle:hover { background: var(--vscode-button-secondaryHoverBackground); }
-        .lane-query-region { display: flex; gap: 6px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); background: var(--vscode-editor-background); }
+        .lane-query-region { position: relative; display: flex; gap: 6px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); background: var(--vscode-editor-background); }
         .lane-query-region[hidden] { display: none; }
         .lane-query-region label { color: var(--vscode-descriptionForeground); font-size: .78em; }
         .lane-query-input { flex: 1 1 auto; min-width: 0; height: 22px; box-sizing: border-box; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border)); font: inherit; }
+        .lane-query-suggestions { position: absolute; z-index: 20; top: calc(100% - 3px); left: 78px; right: 8px; max-height: 170px; overflow: auto; border: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editorWidget-background); box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+        .lane-query-suggestion { display: flex; width: 100%; gap: 8px; border: 0; padding: 4px 7px; color: var(--vscode-editor-foreground); background: transparent; text-align: left; font: inherit; cursor: pointer; }
+        .lane-query-suggestion.active, .lane-query-suggestion:hover { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+        .lane-query-suggestion-type { margin-left: auto; color: var(--vscode-descriptionForeground); font-size: .82em; }
         .zoom-button {
             width: 21px; height: 21px; padding: 0; cursor: pointer;
             color: var(--vscode-foreground); background: var(--vscode-button-secondaryBackground);
@@ -708,6 +746,7 @@ export class LaneViewProvider {
         const state = {
             laneViewId: typeof restoredState.laneViewId === "string" ? restoredState.laneViewId : "",
             laneQuery: typeof restoredState.laneQuery === "string" ? restoredState.laneQuery : "",
+            laneQuerySchema: null,
             selectedLaneId: typeof restoredState.selectedLaneId === "string" ? restoredState.selectedLaneId : "",
             laneOrder: Array.isArray(restoredState.laneOrder)
                 ? restoredState.laneOrder.filter((laneId) => typeof laneId === "string") : [],
@@ -767,6 +806,11 @@ export class LaneViewProvider {
         let laneQueryInput = null;
         let laneQueryToggle = null;
         let pendingLaneQueryPost = 0;
+        let laneQuerySuggestions = null;
+        let pendingLaneQueryCompletion = 0;
+        let laneQueryCompletionRequestId = 0;
+        let activeLaneQuerySuggestion = 0;
+        let laneQueryCompletion = null;
         function connectionDebug(message) {
             vscode.postMessage({ type: "connectionDebug", message });
         }
@@ -906,6 +950,92 @@ export class LaneViewProvider {
         function postLaneQuery() {
             pendingLaneQueryPost = 0;
             vscode.postMessage({ type: "laneQueryChanged", laneQuery: state.laneQuery });
+        }
+        function clearLaneQuerySuggestions() {
+            ++laneQueryCompletionRequestId;
+            laneQueryCompletion = null;
+            activeLaneQuerySuggestion = 0;
+            laneQuerySuggestions?.remove();
+            laneQuerySuggestions = null;
+        }
+        function utf16OffsetForUtf8ByteOffset(source, targetOffset) {
+            let bytes = 0;
+            let index = 0;
+            for (const character of source) {
+                const width = new TextEncoder().encode(character).length;
+                if (bytes + width > targetOffset) return index;
+                bytes += width;
+                index += character.length;
+            }
+            return source.length;
+        }
+        function renderLaneQuerySuggestions() {
+            laneQuerySuggestions?.remove();
+            laneQuerySuggestions = null;
+            const candidates = laneQueryCompletion?.candidates;
+            if (!laneQueryRegion || !Array.isArray(candidates) || candidates.length === 0) return;
+            const list = document.createElement("div");
+            list.className = "lane-query-suggestions";
+            list.setAttribute("role", "listbox");
+            candidates.forEach((candidate, index) => {
+                const item = document.createElement("button");
+                item.type = "button";
+                item.className = "lane-query-suggestion" + (index === activeLaneQuerySuggestion ? " active" : "");
+                item.setAttribute("role", "option");
+                item.setAttribute("aria-selected", String(index === activeLaneQuerySuggestion));
+                const label = document.createElement("span");
+                label.textContent = String(candidate.label || candidate.insertText || "");
+                const type = document.createElement("span");
+                type.className = "lane-query-suggestion-type";
+                type.textContent = String(candidate.valueType || candidate.kind || "");
+                item.append(label, type);
+                item.addEventListener("mousedown", (event) => event.preventDefault());
+                item.addEventListener("click", () => applyLaneQuerySuggestion(index));
+                list.appendChild(item);
+            });
+            laneQueryRegion.appendChild(list);
+            laneQuerySuggestions = list;
+        }
+        function scheduleLaneQueryCompletion() {
+            if (!laneQueryInput || !state.laneQuerySchema || typeof state.laneQuerySchema.revision !== "number") {
+                clearLaneQuerySuggestions();
+                return;
+            }
+            if (pendingLaneQueryCompletion) clearTimeout(pendingLaneQueryCompletion);
+            pendingLaneQueryCompletion = setTimeout(() => {
+                pendingLaneQueryCompletion = 0;
+                const requestId = ++laneQueryCompletionRequestId;
+                vscode.postMessage({
+                    type: "laneQueryCompletionRequested",
+                    requestId,
+                    source: laneQueryInput.value,
+                    cursorOffset: laneQueryInput.selectionStart || 0,
+                    schemaRevision: state.laneQuerySchema.revision,
+                });
+            }, 50);
+        }
+        function updateLaneQueryFromInput() {
+            state.laneQuery = laneQueryInput.value;
+            if (viewport) viewport.scrollTop = 0;
+            state.startIndex = 0;
+            persistLaneViewState();
+            if (pendingLaneQueryPost) clearTimeout(pendingLaneQueryPost);
+            pendingLaneQueryPost = setTimeout(postLaneQuery, 160);
+            scheduleLaneQueryCompletion();
+        }
+        function applyLaneQuerySuggestion(index) {
+            if (!laneQueryInput || !laneQueryCompletion || !Array.isArray(laneQueryCompletion.candidates)) return;
+            const candidate = laneQueryCompletion.candidates[index];
+            const range = laneQueryCompletion.replacementRange;
+            if (!candidate || !range || typeof candidate.insertText !== "string") return;
+            const start = utf16OffsetForUtf8ByteOffset(laneQueryInput.value, Number(range.startOffset || 0));
+            const end = utf16OffsetForUtf8ByteOffset(laneQueryInput.value, Number(range.endOffset || 0));
+            laneQueryInput.value = laneQueryInput.value.slice(0, start) + candidate.insertText
+                + laneQueryInput.value.slice(end);
+            const caret = start + candidate.insertText.length;
+            laneQueryInput.setSelectionRange(caret, caret);
+            clearLaneQuerySuggestions();
+            updateLaneQueryFromInput();
         }
         document.addEventListener("keydown", (event) => {
             if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
@@ -1077,18 +1207,38 @@ export class LaneViewProvider {
             laneQueryInput.setAttribute("aria-label", "Lane filter query");
             queryLabel.htmlFor = "lane-query-input";
             laneQueryInput.id = "lane-query-input";
-            laneQueryInput.addEventListener("input", () => {
-                state.laneQuery = laneQueryInput.value;
-                if (viewport) viewport.scrollTop = 0;
-                state.startIndex = 0;
-                persistLaneViewState();
-                if (pendingLaneQueryPost) clearTimeout(pendingLaneQueryPost);
-                pendingLaneQueryPost = setTimeout(postLaneQuery, 160);
+            laneQueryInput.addEventListener("input", updateLaneQueryFromInput);
+            laneQueryInput.addEventListener("focus", scheduleLaneQueryCompletion);
+            laneQueryInput.addEventListener("click", scheduleLaneQueryCompletion);
+            laneQueryInput.addEventListener("keyup", (event) => {
+                if (!["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(event.key)) {
+                    scheduleLaneQueryCompletion();
+                }
             });
+            laneQueryInput.addEventListener("blur", () => setTimeout(clearLaneQuerySuggestions, 120));
             laneQueryInput.addEventListener("keydown", (event) => {
                 event.stopPropagation();
+                const candidates = laneQueryCompletion?.candidates;
+                if (Array.isArray(candidates) && candidates.length > 0) {
+                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                        event.preventDefault();
+                        activeLaneQuerySuggestion = (activeLaneQuerySuggestion
+                            + (event.key === "ArrowDown" ? 1 : candidates.length - 1)) % candidates.length;
+                        renderLaneQuerySuggestions();
+                        return;
+                    }
+                    if (event.key === "Enter" || event.key === "Tab") {
+                        event.preventDefault();
+                        applyLaneQuerySuggestion(activeLaneQuerySuggestion);
+                        return;
+                    }
+                }
                 if (event.key === "Escape") {
                     event.preventDefault();
+                    if (laneQueryCompletion) {
+                        clearLaneQuerySuggestions();
+                        return;
+                    }
                     state.queryExpanded = false;
                     syncLaneQueryControl();
                     persistLaneViewState();
@@ -1888,6 +2038,15 @@ export class LaneViewProvider {
                     !== JSON.stringify(Array.isArray(message.connections) ? message.connections : []);
                 if (typeof message.laneViewId === "string") state.laneViewId = message.laneViewId;
                 if (typeof message.laneQuery === "string") state.laneQuery = message.laneQuery;
+                if (message.laneQuerySchema === null
+                    || (message.laneQuerySchema && typeof message.laneQuerySchema === "object")) {
+                    const schemaChanged = state.laneQuerySchema?.revision !== message.laneQuerySchema?.revision;
+                    state.laneQuerySchema = message.laneQuerySchema;
+                    if (schemaChanged) {
+                        clearLaneQuerySuggestions();
+                        if (document.activeElement === laneQueryInput) scheduleLaneQueryCompletion();
+                    }
+                }
                 if (!viewport) {
                     state.startIndex = Number(message.startIndex || 0);
                     state.visibleLaneCount = Number(message.visibleLaneCount || 0);
@@ -1941,6 +2100,14 @@ export class LaneViewProvider {
                     return;
                 }
                 render();
+            } else if (message.type === "laneQueryCompletion") {
+                if (Number(message.requestId || 0) !== laneQueryCompletionRequestId
+                    || !laneQueryInput || !message.completion) return;
+                if (typeof message.completion.schemaRevision !== "number"
+                    || message.completion.schemaRevision !== state.laneQuerySchema?.revision) return;
+                laneQueryCompletion = message.completion;
+                activeLaneQuerySuggestion = 0;
+                renderLaneQuerySuggestions();
             } else if (message.type === "setContent") {
                 state.contentByLaneId = message.contentByLaneId && typeof message.contentByLaneId === "object"
                     ? message.contentByLaneId : state.contentByLaneId;

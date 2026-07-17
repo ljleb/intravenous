@@ -2,6 +2,7 @@
 
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/lanes_visualization_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_notification_bridge.h>
@@ -211,6 +212,44 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
     auto const lane_json = parse_json_line(lane_line);
     EXPECT_EQ(lane_json["method"], "timeline.laneViewUpdated");
     EXPECT_EQ(lane_json["params"]["viewId"], "view-1");
+
+    unbind_socket_rpc_notification_bridge(harness.server);
+}
+
+TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneQuerySchemaChanges)
+{
+    auto harness = NotificationServerHarness(
+        iv::test::fresh_module_fixture_workspace("socket_rpc_lane_query_schema_notification_server"));
+    bind_socket_rpc_notification_bridge(harness.server);
+
+    LaneQuerySchemaChanged notification{
+        .change = query::LaneQuerySchemaChange{
+            .changed = true,
+            .old_revision = 3,
+            .new_revision = 4,
+            .added = {
+                query::LaneQuerySchemaChange::Added{
+                    .entry = query::LaneQuerySchemaEntry{
+                        .key = "gain",
+                        .type = query::LaneQueryValueType::float_,
+                    },
+                },
+            },
+        },
+    };
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_lane_query_schema_changed_event,
+        notification);
+
+    auto const line = harness.read_line();
+    ASSERT_FALSE(line.empty());
+    auto const json = parse_json_line(line);
+    EXPECT_EQ(json["method"], "timeline.laneQuerySchemaChanged");
+    EXPECT_EQ(json["params"]["oldRevision"], 3);
+    EXPECT_EQ(json["params"]["revision"], 4);
+    ASSERT_EQ(json["params"]["added"].size(), 1u);
+    EXPECT_EQ(json["params"]["added"][0]["key"], "gain");
+    EXPECT_EQ(json["params"]["added"][0]["type"], "float");
 
     unbind_socket_rpc_notification_bridge(harness.server);
 }

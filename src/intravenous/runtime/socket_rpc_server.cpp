@@ -367,6 +367,20 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcLaneViewResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_update_lane_view_event, event_request.request, builder);
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, GetLaneQuerySchemaRequest>) {
+                        SocketRpcLaneQuerySchemaResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_get_lane_query_schema_event,
+                            event_request,
+                            builder);
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, CompleteLaneQueryRequest>) {
+                        SocketRpcLaneQueryCompletionResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_complete_lane_query_event,
+                            event_request,
+                            builder);
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, std::string>) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_close_lane_view_event, event_request, builder);
@@ -604,6 +618,28 @@ void SocketRpcServer::send_lane_view_content_updated(
         }
     }
 
+    if (!send_message(fd, message)) {
+        std::scoped_lock client_lock(client_mutex);
+        if (client_fd == fd) {
+            client_fd = -1;
+        }
+    }
+}
+
+void SocketRpcServer::send_lane_query_schema_changed(
+    query::LaneQuerySchemaChange const &notification)
+{
+    int fd = -1;
+    {
+        std::scoped_lock client_lock(client_mutex);
+        fd = client_fd;
+    }
+    if (fd < 0) {
+        return;
+    }
+    auto const message = jsonrpc_notification(
+        "timeline.laneQuerySchemaChanged",
+        lane_query_schema_change_json(notification));
     if (!send_message(fd, message)) {
         std::scoped_lock client_lock(client_mutex);
         if (client_fd == fd) {

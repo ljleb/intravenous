@@ -53,6 +53,67 @@ std::string_view lane_domain_json(LaneDomain domain)
     }
     return "realtime";
 }
+
+std::string_view lane_query_value_type_json(query::LaneQueryValueType type)
+{
+    switch (type) {
+    case query::LaneQueryValueType::unit:
+        return "unit";
+    case query::LaneQueryValueType::int_:
+        return "int";
+    case query::LaneQueryValueType::float_:
+        return "float";
+    }
+    return "unit";
+}
+
+SocketRpcJson lane_query_schema_entry_json(query::LaneQuerySchemaEntry const &entry)
+{
+    return SocketRpcJson{
+        {"key", entry.key},
+        {"type", std::string(lane_query_value_type_json(entry.type))},
+    };
+}
+
+std::string_view lane_query_completion_context_json(query::LaneQueryCompletionContext context)
+{
+    switch (context) {
+    case query::LaneQueryCompletionContext::property:
+        return "property";
+    case query::LaneQueryCompletionContext::value:
+        return "value";
+    case query::LaneQueryCompletionContext::projection_selector:
+        return "projectionSelector";
+    case query::LaneQueryCompletionContext::syntax:
+        return "syntax";
+    }
+    return "property";
+}
+
+std::string_view lane_query_completion_kind_json(query::LaneQueryCompletionKind kind)
+{
+    switch (kind) {
+    case query::LaneQueryCompletionKind::property:
+        return "property";
+    case query::LaneQueryCompletionKind::unit_literal:
+        return "unitLiteral";
+    case query::LaneQueryCompletionKind::numeric_literal:
+        return "numericLiteral";
+    case query::LaneQueryCompletionKind::numeric_range:
+        return "numericRange";
+    case query::LaneQueryCompletionKind::syntax:
+        return "syntax";
+    }
+    return "property";
+}
+
+SocketRpcJson lane_query_source_range_json(query::LaneQuerySourceRange const &range)
+{
+    return SocketRpcJson{
+        {"startOffset", range.start_offset},
+        {"endOffset", range.end_offset},
+    };
+}
 } // namespace
 
 SocketRpcJson source_range_json(SourceRange const &range)
@@ -282,5 +343,76 @@ SocketRpcJson lane_view_result_json(LaneViewResult const &result)
     SocketRpcJson json = lane_query_result_json(result.lanes);
     json["viewId"] = result.view_id.str();
     return json;
+}
+
+SocketRpcJson lane_query_schema_json(query::LaneQuerySchema const &schema)
+{
+    SocketRpcJson entries = SocketRpcJson::array();
+    for (auto const &entry : schema.entries()) {
+        entries.push_back(lane_query_schema_entry_json(entry));
+    }
+    return SocketRpcJson{
+        {"revision", schema.revision()},
+        {"entries", std::move(entries)},
+    };
+}
+
+SocketRpcJson lane_query_schema_change_json(query::LaneQuerySchemaChange const &change)
+{
+    SocketRpcJson added = SocketRpcJson::array();
+    for (auto const &item : change.added) {
+        added.push_back(lane_query_schema_entry_json(item.entry));
+    }
+    SocketRpcJson removed = SocketRpcJson::array();
+    for (auto const &item : change.removed) {
+        removed.push_back(lane_query_schema_entry_json(item.entry));
+    }
+    SocketRpcJson retyped = SocketRpcJson::array();
+    for (auto const &item : change.retyped) {
+        retyped.push_back(SocketRpcJson{
+            {"key", item.key},
+            {"oldType", std::string(lane_query_value_type_json(item.old_type))},
+            {"newType", std::string(lane_query_value_type_json(item.new_type))},
+        });
+    }
+    return SocketRpcJson{
+        {"oldRevision", change.old_revision},
+        {"revision", change.new_revision},
+        {"added", std::move(added)},
+        {"removed", std::move(removed)},
+        {"retyped", std::move(retyped)},
+    };
+}
+
+SocketRpcJson lane_query_completion_json(
+    query::LaneQueryCompletionResult const &result,
+    std::uint64_t schema_revision)
+{
+    SocketRpcJson candidates = SocketRpcJson::array();
+    for (auto const &candidate : result.candidates) {
+        SocketRpcJson json{
+            {"kind", std::string(lane_query_completion_kind_json(candidate.kind))},
+            {"label", candidate.label},
+            {"insertText", candidate.insert_text},
+        };
+        if (candidate.value_type.has_value()) {
+            json["valueType"] = std::string(lane_query_value_type_json(*candidate.value_type));
+        }
+        candidates.push_back(std::move(json));
+    }
+    SocketRpcJson diagnostics = SocketRpcJson::array();
+    for (auto const &diagnostic : result.diagnostics) {
+        diagnostics.push_back(SocketRpcJson{
+            {"range", lane_query_source_range_json(diagnostic.range)},
+            {"message", diagnostic.message},
+        });
+    }
+    return SocketRpcJson{
+        {"schemaRevision", schema_revision},
+        {"replacementRange", lane_query_source_range_json(result.replacement_range)},
+        {"context", std::string(lane_query_completion_context_json(result.context))},
+        {"candidates", std::move(candidates)},
+        {"diagnostics", std::move(diagnostics)},
+    };
 }
 } // namespace iv

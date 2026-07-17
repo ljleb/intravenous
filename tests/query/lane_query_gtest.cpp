@@ -1,7 +1,9 @@
 #include <intravenous/query/lane_query_engine.h>
+#include <intravenous/query/lane_query_completion.h>
 #include <intravenous/query/lane_query_parser.h>
 #include <intravenous/query/lane_query_program.h>
 #include <intravenous/query/lane_query_schema.h>
+#include <intravenous/query/lane_query_tokenizer.h>
 
 #include <gtest/gtest.h>
 
@@ -242,4 +244,91 @@ TEST(LaneQuery, FilterPropertyCanBeProjectedAsUnitValue)
     EXPECT_EQ(
         execute("selected=selected:filter.graph_input.default", schema, dataset),
         (std::vector<size_t>{0, 1}));
+}
+
+TEST(LaneQueryCompletion, ReplacesTheCurrentPropertyAtom)
+{
+    auto const schema = iv::query::LaneQuerySchema::from_entries({
+        {"dsp_graph.graph_input", iv::query::LaneQueryValueType::unit},
+        {"gain", iv::query::LaneQueryValueType::float_},
+    });
+
+    auto const result = iv::query::complete_lane_query("dsp_gr", 6, schema);
+
+    EXPECT_EQ(result.context, iv::query::LaneQueryCompletionContext::property);
+    EXPECT_EQ(result.replacement_range.start_offset, 0u);
+    EXPECT_EQ(result.replacement_range.end_offset, 6u);
+    ASSERT_EQ(result.candidates.size(), 1u);
+    EXPECT_EQ(result.candidates[0].label, "dsp_graph.graph_input");
+    EXPECT_EQ(result.candidates[0].insert_text, "dsp_graph.graph_input");
+}
+
+TEST(LaneQueryCompletion, CompletesOnlyTheSegmentAfterADot)
+{
+    auto const schema = iv::query::LaneQuerySchema::from_entries({
+        {"tag.blue", iv::query::LaneQueryValueType::unit},
+        {"tag.red", iv::query::LaneQueryValueType::unit},
+    });
+
+    auto const result = iv::query::complete_lane_query("tag.r", 5, schema);
+
+    EXPECT_EQ(result.context, iv::query::LaneQueryCompletionContext::property);
+    EXPECT_EQ(result.replacement_range.start_offset, 4u);
+    EXPECT_EQ(result.replacement_range.end_offset, 5u);
+    ASSERT_EQ(result.candidates.size(), 1u);
+    EXPECT_EQ(result.candidates[0].label, "tag.red");
+    EXPECT_EQ(result.candidates[0].insert_text, "red");
+}
+
+TEST(LaneQueryCompletion, ConstrainsValueCandidatesByAssignedPropertyType)
+{
+    auto const schema = iv::query::LaneQuerySchema::from_entries({
+        {"enabled", iv::query::LaneQueryValueType::unit},
+        {"gain", iv::query::LaneQueryValueType::float_},
+    });
+
+    auto const unit_result = iv::query::complete_lane_query("enabled=", 8, schema);
+    EXPECT_EQ(unit_result.context, iv::query::LaneQueryCompletionContext::value);
+    ASSERT_EQ(unit_result.candidates.size(), 1u);
+    EXPECT_EQ(unit_result.candidates[0].insert_text, "unit");
+
+    auto const numeric_result = iv::query::complete_lane_query("gain=", 5, schema);
+    EXPECT_EQ(numeric_result.context, iv::query::LaneQueryCompletionContext::value);
+    ASSERT_EQ(numeric_result.candidates.size(), 2u);
+    EXPECT_EQ(numeric_result.candidates[0].insert_text, "0");
+    EXPECT_EQ(numeric_result.candidates[1].insert_text, "0..1");
+}
+
+TEST(LaneQueryCompletion, CompletesProjectionSelectors)
+{
+    auto const schema = iv::query::LaneQuerySchema::from_entries({
+        {"group", iv::query::LaneQueryValueType::unit},
+        {"target", iv::query::LaneQueryValueType::int_},
+    });
+
+    auto const result = iv::query::complete_lane_query("target=group:t", 14, schema);
+
+    EXPECT_EQ(result.context, iv::query::LaneQueryCompletionContext::projection_selector);
+    EXPECT_EQ(result.replacement_range.start_offset, 13u);
+    EXPECT_EQ(result.replacement_range.end_offset, 14u);
+    ASSERT_EQ(result.candidates.size(), 1u);
+    EXPECT_EQ(result.candidates[0].insert_text, "target");
+}
+
+TEST(LaneQueryTokenizer, RetainsUtf8ByteRangesAndToleratesIncompleteEditorText)
+{
+    auto const tokens = iv::query::tokenize_lane_query("gain=1");
+    ASSERT_EQ(tokens.size(), 4u);
+    EXPECT_EQ(tokens[0].start_offset, 0u);
+    EXPECT_EQ(tokens[0].end_offset, 4u);
+    EXPECT_EQ(tokens[1].start_offset, 4u);
+    EXPECT_EQ(tokens[1].end_offset, 5u);
+    EXPECT_EQ(tokens[2].start_offset, 5u);
+    EXPECT_EQ(tokens[2].end_offset, 6u);
+
+    auto const incomplete = iv::query::tokenize_lane_query_tolerant("gain=-");
+    ASSERT_EQ(incomplete.size(), 4u);
+    EXPECT_EQ(incomplete[2].kind, iv::query::LaneQueryToken::Kind::invalid);
+    EXPECT_EQ(incomplete[2].start_offset, 5u);
+    EXPECT_EQ(incomplete[2].end_offset, 6u);
 }

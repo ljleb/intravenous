@@ -20,7 +20,7 @@ bool is_ident_char(char c)
 }
 } // namespace
 
-std::vector<LaneQueryToken> tokenize_lane_query(std::string_view source)
+std::vector<LaneQueryToken> tokenize_impl(std::string_view source, bool tolerant)
 {
     std::vector<LaneQueryToken> tokens;
     for (size_t i = 0; i < source.size();) {
@@ -29,7 +29,12 @@ std::vector<LaneQueryToken> tokenize_lane_query(std::string_view source)
             continue;
         }
         if (source[i] == '.' && i + 1 < source.size() && source[i + 1] == '.') {
-            tokens.push_back(LaneQueryToken{.kind = LaneQueryToken::Kind::range, .text = ".."});
+            tokens.push_back(LaneQueryToken{
+                .kind = LaneQueryToken::Kind::range,
+                .text = "..",
+                .start_offset = i,
+                .end_offset = i + 2,
+            });
             i += 2;
             continue;
         }
@@ -38,7 +43,16 @@ std::vector<LaneQueryToken> tokenize_lane_query(std::string_view source)
             if (source[i] == '-') {
                 ++i;
                 if (i >= source.size() || !is_digit(source[i])) {
-                    throw std::runtime_error("unexpected '-' in lane query");
+                    if (!tolerant) {
+                        throw std::runtime_error("unexpected '-' in lane query");
+                    }
+                    tokens.push_back(LaneQueryToken{
+                        .kind = LaneQueryToken::Kind::invalid,
+                        .text = "-",
+                        .start_offset = start,
+                        .end_offset = i,
+                    });
+                    continue;
                 }
             }
             while (i < source.size() && is_digit(source[i])) {
@@ -49,7 +63,9 @@ std::vector<LaneQueryToken> tokenize_lane_query(std::string_view source)
                 is_float = true;
                 ++i;
                 if (i >= source.size() || !is_digit(source[i])) {
-                    throw std::runtime_error("invalid float literal in lane query");
+                    if (!tolerant) {
+                        throw std::runtime_error("invalid float literal in lane query");
+                    }
                 }
                 while (i < source.size() && is_digit(source[i])) {
                     ++i;
@@ -58,6 +74,8 @@ std::vector<LaneQueryToken> tokenize_lane_query(std::string_view source)
             tokens.push_back(LaneQueryToken{
                 .kind = is_float ? LaneQueryToken::Kind::float_number : LaneQueryToken::Kind::int_number,
                 .text = std::string(source.substr(start, i - start)),
+                .start_offset = start,
+                .end_offset = i,
             });
             continue;
         }
@@ -70,6 +88,8 @@ std::vector<LaneQueryToken> tokenize_lane_query(std::string_view source)
             tokens.push_back(LaneQueryToken{
                 .kind = LaneQueryToken::Kind::ident,
                 .text = std::string(source.substr(start, i - start)),
+                .start_offset = start,
+                .end_offset = i,
             });
             continue;
         }
@@ -84,14 +104,40 @@ std::vector<LaneQueryToken> tokenize_lane_query(std::string_view source)
             tokens.push_back(LaneQueryToken{
                 .kind = LaneQueryToken::Kind::op,
                 .text = std::string(1, source[i]),
+                .start_offset = i,
+                .end_offset = i + 1,
             });
             ++i;
             continue;
         default:
-            throw std::runtime_error("unexpected character in lane query: " + std::string(1, source[i]));
+            if (!tolerant) {
+                throw std::runtime_error("unexpected character in lane query: " + std::string(1, source[i]));
+            }
+            tokens.push_back(LaneQueryToken{
+                .kind = LaneQueryToken::Kind::invalid,
+                .text = std::string(1, source[i]),
+                .start_offset = i,
+                .end_offset = i + 1,
+            });
+            ++i;
+            continue;
         }
     }
-    tokens.push_back(LaneQueryToken{.kind = LaneQueryToken::Kind::end});
+    tokens.push_back(LaneQueryToken{
+        .kind = LaneQueryToken::Kind::end,
+        .start_offset = source.size(),
+        .end_offset = source.size(),
+    });
     return tokens;
+}
+
+std::vector<LaneQueryToken> tokenize_lane_query(std::string_view source)
+{
+    return tokenize_impl(source, false);
+}
+
+std::vector<LaneQueryToken> tokenize_lane_query_tolerant(std::string_view source)
+{
+    return tokenize_impl(source, true);
 }
 } // namespace iv::query

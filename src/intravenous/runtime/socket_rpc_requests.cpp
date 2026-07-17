@@ -526,6 +526,22 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
+    if (method == "timeline.getLaneQuerySchema") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = GetLaneQuerySchemaRequest{},
+        };
+    }
+    if (method == "timeline.completeLaneQuery") {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .payload = CompleteLaneQueryRequest{
+                .source = parse_string_param(params, "source"),
+                .cursor_offset = static_cast<size_t>(parse_uint64_param(params, "cursorOffset")),
+                .schema_revision = parse_optional_uint64_param(params, "schemaRevision"),
+            },
+        };
+    }
     if (method == "timeline.closeLaneView") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,

@@ -110,6 +110,14 @@ namespace iv {
         LaneViewRequest request{};
     };
 
+    struct GetLaneQuerySchemaRequest {};
+
+    struct CompleteLaneQueryRequest {
+        std::string source {};
+        size_t cursor_offset = 0;
+        std::optional<std::uint64_t> schema_revision {};
+    };
+
     struct SetSampleInputValueRequest {
         std::string node_id{};
         size_t input_ordinal = 0;
@@ -175,6 +183,8 @@ namespace iv {
         SetAudioDevicesRequest,
         OpenLaneViewRpcRequest,
         UpdateLaneViewRpcRequest,
+        GetLaneQuerySchemaRequest,
+        CompleteLaneQueryRequest,
         SetSampleInputValueRequest,
         SetSampleInputStateRequest,
         SetEventInputStateRequest,

@@ -329,6 +329,67 @@ std::string SocketRpcLaneViewResultBuilder::build(int request_id) const {
     return jsonrpc_result(request_id, lane_view_result_json(*result));
 }
 
+void SocketRpcLaneQuerySchemaResultBuilder::succeed(query::LaneQuerySchema value)
+{
+    result = std::move(value);
+}
+
+void SocketRpcLaneQuerySchemaResultBuilder::fail(std::string message)
+{
+    error_code = -32000;
+    error_message = std::move(message);
+}
+
+void SocketRpcLaneQuerySchemaResultBuilder::fail(int code, std::string message)
+{
+    error_code = code;
+    error_message = std::move(message);
+}
+
+std::string SocketRpcLaneQuerySchemaResultBuilder::build(int request_id) const
+{
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    if (!result.has_value()) {
+        throw_unbuilt_response("SocketRpcLaneQuerySchemaResultBuilder");
+    }
+    return jsonrpc_result(request_id, lane_query_schema_json(*result));
+}
+
+void SocketRpcLaneQueryCompletionResultBuilder::succeed(
+    query::LaneQueryCompletionResult value,
+    std::uint64_t revision)
+{
+    result = std::move(value);
+    schema_revision = revision;
+}
+
+void SocketRpcLaneQueryCompletionResultBuilder::fail(std::string message)
+{
+    error_code = -32000;
+    error_message = std::move(message);
+}
+
+void SocketRpcLaneQueryCompletionResultBuilder::fail(int code, std::string message)
+{
+    error_code = code;
+    error_message = std::move(message);
+}
+
+std::string SocketRpcLaneQueryCompletionResultBuilder::build(int request_id) const
+{
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    if (!result.has_value()) {
+        throw_unbuilt_response("SocketRpcLaneQueryCompletionResultBuilder");
+    }
+    return jsonrpc_result(
+        request_id,
+        lane_query_completion_json(*result, schema_revision));
+}
+
 std::string SocketRpcLaneTypesResultBuilder::build(int request_id) const {
     if (!error_message.empty()) return jsonrpc_error(request_id, error_code, error_message);
     if (!result.has_value()) throw_unbuilt_response("SocketRpcLaneTypesResultBuilder");

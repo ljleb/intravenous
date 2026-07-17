@@ -27,6 +27,7 @@
 #include <intravenous/runtime/iv_module_reload_iv_module_definitions_bridge.h>
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/lane_filters_lane_views_bridge.h>
+#include <intravenous/runtime/lane_query_schema_service.h>
 #include <intravenous/runtime/lane_views.h>
 #include <intravenous/runtime/lane_views_lanes_visualization_bridge.h>
 #include <intravenous/runtime/lanes_visualization.h>
@@ -47,6 +48,8 @@
 #include <intravenous/runtime/runtime_project_timeline_execution_bridge.h>
 #include <intravenous/runtime/server_options.h>
 #include <intravenous/runtime/socket_rpc_lane_views_bridge.h>
+#include <intravenous/runtime/socket_rpc_lane_query_schema_bridge.h>
+#include <intravenous/runtime/socket_rpc_lane_query_completion_bridge.h>
 #include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_notification_bridge.h>
@@ -63,6 +66,7 @@
 #include <intravenous/runtime/timeline_execution_lanes_visualization_bridge.h>
 #include <intravenous/runtime/timeline_execution_task_runner_bridge.h>
 #include <intravenous/runtime/timeline_lane_filters_bridge.h>
+#include <intravenous/runtime/timeline_lane_query_schema_bridge.h>
 #include <intravenous/runtime/timeline_timeline_execution_bridge.h>
 
 #include <filesystem>
@@ -254,6 +258,7 @@ namespace iv {
                 startup.output_device_id,
                 startup.input_device_id);
             LaneFilters lane_filters;
+            LaneQuerySchemaService lane_query_schema;
             LaneViews lane_views;
             LanesVisualization lanes_visualization(
                 std::chrono::milliseconds(33),
@@ -295,6 +300,7 @@ namespace iv {
             bind_iv_module_reload_iv_module_definitions_bridge(iv_module_definitions);
             bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
             bind_timeline_lane_filters_bridge(lane_filters);
+            bind_timeline_lane_query_schema_bridge(lane_query_schema, timeline);
             bind_lane_filters_lane_views_bridge(lane_filters, lane_views);
             bind_runtime_project_lane_views_bridge(lane_views);
             bind_lane_views_lanes_visualization_bridge(lanes_visualization);
@@ -326,6 +332,8 @@ namespace iv {
             install_shutdown_handlers(request_shutdown);
             startup_log("binding socket rpc bridges");
             bind_socket_rpc_lane_views_bridge(lane_views);
+            bind_socket_rpc_lane_query_schema_bridge(lane_query_schema);
+            bind_socket_rpc_lane_query_completion_bridge(lane_query_schema);
             bind_socket_rpc_audio_device_lanes_bridge(audio_device_lanes);
             bind_socket_rpc_iv_module_instances_bridge(
                 iv_module_instances,
@@ -362,6 +370,8 @@ namespace iv {
             project_autosave_service.stop();
             audio_device_lanes.request_shutdown();
             unbind_socket_rpc_notification_bridge(server);
+            unbind_socket_rpc_lane_query_schema_bridge(lane_query_schema);
+            unbind_socket_rpc_lane_query_completion_bridge(lane_query_schema);
             unbind_socket_rpc_lane_views_bridge(lane_views);
             unbind_socket_rpc_audio_device_lanes_bridge(audio_device_lanes);
             unbind_socket_rpc_iv_module_instances_bridge(
@@ -391,6 +401,7 @@ namespace iv {
             unbind_lanes_visualization_timeline_bridge(lanes_visualization, timeline);
             unbind_lane_views_lanes_visualization_bridge(lanes_visualization);
             unbind_lane_filters_lane_views_bridge(lane_filters, lane_views);
+            unbind_timeline_lane_query_schema_bridge(lane_query_schema, timeline);
             unbind_timeline_lane_filters_bridge(lane_filters);
             unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
             unbind_iv_module_reload_iv_module_definitions_bridge(iv_module_definitions);

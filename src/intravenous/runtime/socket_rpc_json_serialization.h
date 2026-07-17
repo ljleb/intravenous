@@ -4,6 +4,8 @@
 #include <intravenous/runtime/iv_module_sources.h>
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
+#include <intravenous/query/lane_query_schema.h>
+#include <intravenous/query/lane_query_completion.h>
 
 #include <nlohmann/json.hpp>
 
@@ -31,4 +33,9 @@ namespace iv {
     SocketRpcJson lane_metadata_json(LaneMetadata const &metadata);
     SocketRpcJson lane_query_result_json(LaneQueryResult const &result);
     SocketRpcJson lane_view_result_json(LaneViewResult const &result);
+    SocketRpcJson lane_query_schema_json(query::LaneQuerySchema const &schema);
+    SocketRpcJson lane_query_schema_change_json(query::LaneQuerySchemaChange const &change);
+    SocketRpcJson lane_query_completion_json(
+        query::LaneQueryCompletionResult const &result,
+        std::uint64_t schema_revision);
 } // namespace iv

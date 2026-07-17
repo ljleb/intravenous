@@ -199,4 +199,20 @@ export class WorkspaceRpc {
     closeLaneView(viewId: string): Promise<void> {
         return this.client.request("timeline.closeLaneView", { viewId });
     }
+
+    getLaneQuerySchema(): Promise<{ revision?: number; entries?: Array<{ key?: string; type?: string }> }> {
+        return this.client.request("timeline.getLaneQuerySchema", {});
+    }
+
+    completeLaneQuery(
+        source: string,
+        cursorOffset: number,
+        schemaRevision: number,
+    ): Promise<Record<string, unknown>> {
+        return this.client.request("timeline.completeLaneQuery", {
+            source,
+            cursorOffset,
+            schemaRevision,
+        });
+    }
 }

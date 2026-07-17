@@ -6,6 +6,7 @@
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/lanes_visualization_api_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
+#include <intravenous/query/lane_query_schema.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 #include <intravenous/sample.h>
@@ -71,6 +72,10 @@ namespace iv {
         void (*)(LaneViewRequest const &, SocketRpcLaneViewResultBuilder &);
     using SocketRpcCloseLaneViewEvent =
         void (*)(std::string const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcGetLaneQuerySchemaEvent =
+        void (*)(GetLaneQuerySchemaRequest const &, SocketRpcLaneQuerySchemaResultBuilder &);
+    using SocketRpcCompleteLaneQueryEvent =
+        void (*)(CompleteLaneQueryRequest const &, SocketRpcLaneQueryCompletionResultBuilder &);
     using SocketRpcSetSampleInputValueEvent =
         void (*)(SetSampleInputValueRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcSetSampleInputStateEvent =
@@ -118,6 +123,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcOpenLaneViewEvent, iv_socket_rpc_open_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateLaneViewEvent, iv_socket_rpc_update_lane_view_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCloseLaneViewEvent, iv_socket_rpc_close_lane_view_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetLaneQuerySchemaEvent, iv_socket_rpc_get_lane_query_schema_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcCompleteLaneQueryEvent, iv_socket_rpc_complete_lane_query_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleInputValueEvent, iv_socket_rpc_set_sample_input_value_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetSampleInputStateEvent, iv_socket_rpc_set_sample_input_state_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetEventInputStateEvent, iv_socket_rpc_set_event_input_state_event);
@@ -174,6 +181,7 @@ namespace iv {
         void send_server_status(SocketRpcServerStatus const &notification);
         void send_lane_view_updated(LaneViewResult const &notification);
         void send_lane_view_content_updated(LaneViewContentUpdate const &notification);
+        void send_lane_query_schema_changed(query::LaneQuerySchemaChange const &notification);
         void send_iv_module_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
         void send_logical_nodes_updated(

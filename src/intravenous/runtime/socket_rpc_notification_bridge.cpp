@@ -6,6 +6,7 @@
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/lane_views_events.h>
+#include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/lanes_visualization_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -79,6 +80,14 @@ namespace {
         bound_server->send_lane_view_content_updated(update);
     }
 
+    void forward_runtime_lane_query_schema_changed(
+        LaneQuerySchemaChanged const &notification)
+    {
+        if (bound_server != nullptr) {
+            bound_server->send_lane_query_schema_changed(notification.change);
+        }
+    }
+
     void forward_runtime_iv_module_instances_list_changed(
         std::vector<IvModuleInstanceInfo> const &instances)
     {
@@ -104,6 +113,10 @@ namespace {
         LaneViewContentUpdatedEvent,
         iv_runtime_lane_view_content_updated_event,
         forward_runtime_lane_view_content_updated);
+    IV_SUBSCRIBE_LINKER_EVENT(
+        LaneQuerySchemaChangedEvent,
+        iv_runtime_lane_query_schema_changed_event,
+        forward_runtime_lane_query_schema_changed);
     IV_SUBSCRIBE_LINKER_EVENT(
         IvModuleInstancesListChangedEvent,
         iv_runtime_iv_module_instances_list_changed_event,

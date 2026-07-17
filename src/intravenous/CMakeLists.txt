@@ -330,6 +330,8 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/lanes_visualization_timeline_bridge.cpp
     runtime/task_runner_lanes_visualization_bridge.cpp
     runtime/lane_view_service.cpp
+    runtime/lane_query_schema_service.cpp
+    runtime/lane_query_schema_events.cpp
     runtime/iv_module_source_introspection.cpp
     runtime/iv_module_sources.cpp
     runtime/iv_module_source_introspection_events.cpp
@@ -346,6 +348,8 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/runtime_project_lane_views_bridge.cpp
     runtime/runtime_project_timeline_execution_bridge.cpp
     runtime/socket_rpc_lane_views_bridge.cpp
+    runtime/socket_rpc_lane_query_schema_bridge.cpp
+    runtime/socket_rpc_lane_query_completion_bridge.cpp
     runtime/socket_rpc_audio_device_lanes_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_iv_module_instances_bridge.cpp
@@ -367,8 +371,10 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/timeline_execution_lanes_visualization_bridge.cpp
     runtime/timeline_execution_task_runner_bridge.cpp
     runtime/timeline_lane_filters_bridge.cpp
+    runtime/timeline_lane_query_schema_bridge.cpp
     runtime/timeline_timeline_execution_bridge.cpp
     query/lane_query_engine.cpp
+    query/lane_query_completion.cpp
     query/lane_query_parser.cpp
     query/lane_query_program.cpp
     query/lane_query_tokenizer.cpp
