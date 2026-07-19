@@ -52,17 +52,16 @@ void simple_sine(iv::ModuleContext const& context)
     auto saw = g.multi_channel<ChannelTypeId::stereo>([&]<auto c>()
     {
         auto f = g.node<Constant>(220);
-        auto d = g.input(2, 0);
         auto const voice = g.node<SawOscillator>();
 
         NodeRef p;
         if constexpr (c == channels::stereo_left)
         {
-            p = f + d/2;
+            p = f + 2.5;
         }
         else
         {
-            p = f - d/2;
+            p = f - 2.5;
         }
 
         voice(
@@ -75,8 +74,7 @@ void simple_sine(iv::ModuleContext const& context)
 
     g.multi_channel<ChannelTypeId::stereo>([&] <auto c>
     {
-        auto const s = g.input();
-        g.outputs(c = saw[c] + saw[iv::swap_side(c)] * s);
+        g.outputs(c = saw[c] + saw[iv::swap_side(c)]);
     });
 }
 }

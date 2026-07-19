@@ -6,6 +6,7 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Index/USRGeneration.h"
 #include "clang/Lex/Lexer.h"
@@ -14,14 +15,21 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Program.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -40,6 +48,11 @@ namespace {
     llvm::cl::opt<std::string> repo_root_path(
         "repo-root",
         llvm::cl::desc("Project root used to identify core sources (defaults to current working directory)"),
+        llvm::cl::value_desc("path")
+    );
+    llvm::cl::opt<std::string> effective_command_source(
+        "effective-command-source",
+        llvm::cl::desc("Compilation-database source whose wrapper-expanded command is used"),
         llvm::cl::value_desc("path")
     );
 
@@ -246,6 +259,26 @@ namespace {
             return !path.empty() && is_user_source_path(path);
         }
 
+    public:
+        // The AST contains every declaration pulled in by the module DSL and
+        // its third-party dependencies. None of those declarations can be
+        // rewritten: edits are restricted to the main user-authored source
+        // file. Pruning them before RecursiveASTVisitor descends into their
+        // subtrees avoids walking the full header AST on every hot reload.
+        bool TraverseDecl(clang::Decl* decl)
+        {
+            if (!decl || llvm::isa<clang::TranslationUnitDecl>(decl)) {
+                return clang::RecursiveASTVisitor<SourceSpanCollector>::TraverseDecl(decl);
+            }
+
+            if (!is_user_source_location(decl->getLocation())) {
+                return true;
+            }
+
+            return clang::RecursiveASTVisitor<SourceSpanCollector>::TraverseDecl(decl);
+        }
+
+    private:
         std::optional<FileRange> file_range_for_source_range(clang::SourceRange range) const
         {
             clang::SourceLocation const begin_loc = _source_manager.getSpellingLoc(range.getBegin());
@@ -824,8 +857,10 @@ namespace {
             }
 
             clang::SourceManager const& source_manager = _compiler.getSourceManager();
-            llvm::errs() << "rewrote "
-                         << source_manager.getFilename(source_manager.getLocForStartOfFile(source_manager.getMainFileID()))
+            llvm::StringRef const input =
+                source_manager.getFilename(source_manager.getLocForStartOfFile(source_manager.getMainFileID()));
+            llvm::errs() << "rewrote " << input << " -> "
+                         << (output_path.empty() ? input : llvm::StringRef(output_path.getValue()))
                          << "\n";
         }
     };
@@ -840,6 +875,139 @@ namespace {
             return std::make_unique<RewriteConsumer>(compiler);
         }
     };
+
+    std::optional<std::vector<std::string>> wrapper_expanded_cc1_arguments(
+        clang::tooling::CompileCommand const& command,
+        std::string const& input_source
+    )
+    {
+        if (command.CommandLine.empty()) {
+            return std::nullopt;
+        }
+
+        std::filesystem::path const trace_path =
+            std::filesystem::temp_directory_path()
+            / ("iv-source-span-rewriter-" + std::to_string(std::hash<std::string> {}(
+                command.CommandLine.front() + command.Filename
+            )) + ".trace");
+        std::string const trace_path_string = trace_path.string();
+
+        std::vector<llvm::StringRef> args;
+        args.reserve(command.CommandLine.size() + 1);
+        for (std::string const& arg : command.CommandLine) {
+            // The generated source does not exist until this rewriter runs.
+            // Expand the consumer command against the real input source, while
+            // retaining every compile option (including CMake's PCH flags).
+            args.emplace_back(arg == command.Filename ? input_source : arg);
+        }
+        args.emplace_back("-###");
+
+        std::array<std::optional<llvm::StringRef>, 3> redirects {
+            std::nullopt,
+            std::nullopt,
+            llvm::StringRef(trace_path_string),
+        };
+        std::string execution_error;
+        int const exit_code = llvm::sys::ExecuteAndWait(
+            command.CommandLine.front(),
+            args,
+            std::nullopt,
+            redirects,
+            0,
+            0,
+            &execution_error
+        );
+        std::ifstream trace(trace_path);
+        std::string const output((std::istreambuf_iterator<char>(trace)), std::istreambuf_iterator<char>());
+        std::error_code ignored;
+        std::filesystem::remove(trace_path, ignored);
+        if (exit_code != 0) {
+            llvm::errs() << "failed to expand compiler wrapper (exit " << exit_code << "): "
+                         << execution_error << "\n"
+                         << output;
+            return std::nullopt;
+        }
+
+        // Clang's -### output shell-quotes every argument, so look for the
+        // token without assuming surrounding whitespace or quote style.
+        std::string_view const marker = "-cc1";
+        std::size_t const marker_pos = output.rfind(marker);
+        if (marker_pos == std::string::npos) {
+            llvm::errs() << "compiler wrapper did not report a Clang cc1 command:\n" << output;
+            return std::nullopt;
+        }
+        std::size_t const line_begin = output.rfind('\n', marker_pos);
+        llvm::StringRef const line = llvm::StringRef(output).substr(
+            line_begin == std::string::npos ? 0 : line_begin + 1
+        );
+
+        llvm::BumpPtrAllocator allocator;
+        llvm::StringSaver saver(allocator);
+        llvm::SmallVector<char const*, 128> tokens;
+        llvm::cl::TokenizeGNUCommandLine(line, saver, tokens);
+        auto cc1 = std::find_if(tokens.begin(), tokens.end(), [](char const* token) {
+            return std::string_view(token) == "-cc1";
+        });
+        if (cc1 == tokens.end()) {
+            llvm::errs() << "could not parse the Clang cc1 command\n";
+            return std::nullopt;
+        }
+
+        std::vector<std::string> expanded;
+        expanded.reserve(static_cast<std::size_t>(tokens.end() - cc1 - 1));
+        for (++cc1; cc1 != tokens.end(); ++cc1) {
+            expanded.emplace_back(*cc1);
+        }
+        return expanded;
+    }
+
+    int run_with_effective_command(
+        clang::tooling::CompilationDatabase const& database,
+        std::string const& command_source,
+        std::string const& input_source
+    )
+    {
+        auto const commands = database.getCompileCommands(command_source);
+        if (commands.empty()) {
+            llvm::errs() << "no compilation command for " << command_source << "\n";
+            return 1;
+        }
+        auto args = wrapper_expanded_cc1_arguments(commands.front(), input_source);
+        if (!args) {
+            return 1;
+        }
+
+        auto diagnostic_options = std::make_shared<clang::DiagnosticOptions>();
+        clang::DiagnosticsEngine diagnostics(
+            llvm::makeIntrusiveRefCnt<clang::DiagnosticIDs>(),
+            *diagnostic_options
+        );
+        auto invocation = std::make_shared<clang::CompilerInvocation>();
+        std::vector<char const*> arg_pointers;
+        arg_pointers.reserve(args->size());
+        for (std::string const& arg : *args) {
+            arg_pointers.push_back(arg.c_str());
+        }
+        if (!clang::CompilerInvocation::CreateFromArgs(*invocation, arg_pointers, diagnostics)) {
+            return 1;
+        }
+
+        auto& frontend_options = invocation->getFrontendOpts();
+        frontend_options.Inputs.clear();
+        frontend_options.Inputs.emplace_back(input_source, clang::InputKind(clang::Language::CXX));
+        frontend_options.OutputFile.clear();
+        frontend_options.ProgramAction = clang::frontend::ParseSyntaxOnly;
+
+        clang::CompilerInstance compiler(std::move(invocation));
+        compiler.createDiagnostics(*llvm::vfs::getRealFileSystem());
+        if (!compiler.hasDiagnostics()) {
+            return 1;
+        }
+        compiler.createFileManager();
+        compiler.createSourceManager(compiler.getFileManager());
+        RewriteAction action;
+        return compiler.ExecuteAction(action) ? 0 : 1;
+    }
 }
 
 int main(int argc, char** argv)
@@ -852,6 +1020,17 @@ int main(int argc, char** argv)
     }
 
     clang::tooling::CommonOptionsParser& options = expected_parser.get();
+    if (!effective_command_source.empty()) {
+        if (options.getSourcePathList().size() != 1) {
+            llvm::errs() << "--effective-command-source requires exactly one input source\n";
+            return 1;
+        }
+        return run_with_effective_command(
+            options.getCompilations(),
+            effective_command_source,
+            options.getSourcePathList().front()
+        );
+    }
     clang::tooling::ClangTool tool(options.getCompilations(), options.getSourcePathList());
     return tool.run(clang::tooling::newFrontendActionFactory<RewriteAction>().get());
 }

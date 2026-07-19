@@ -163,6 +163,27 @@ function(iv_add_runtime_module target)
     target_compile_features(${target} PRIVATE cxx_std_23)
     target_link_libraries(${target} PRIVATE ${target}__compile_settings)
 
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(IV_MODULE_ENABLE_TIME_TRACE OR IV_MODULE_PROFILE_COMPILATION)
+            # JSON timeline for template parsing/instantiation, optimization,
+            # and code generation. The profile mode below additionally emits
+            # a textual aggregate report into build.trace.log.
+            target_compile_options(${target} PRIVATE -ftime-trace)
+        endif()
+        if(IV_MODULE_PROFILE_COMPILATION)
+            # Clang prints pass/category totals to stderr; ModuleLoader
+            # captures it in the persistent module build trace.
+            target_compile_options(${target} PRIVATE -ftime-report)
+        endif()
+    endif()
+
+    if(IV_MODULE_PROFILE_BUILD_STEPS)
+        # CMake prefixes every compile and link command with this launcher.
+        # Its elapsed time is captured by ModuleLoader's persistent build log.
+        set_property(TARGET ${target} PROPERTY RULE_LAUNCH_COMPILE "${CMAKE_COMMAND} -E time")
+        set_property(TARGET ${target} PROPERTY RULE_LAUNCH_LINK "${CMAKE_COMMAND} -E time")
+    endif()
+
     target_precompile_headers(${target} PRIVATE ${IV_MODULE_PCH_HEADER})
 
     if(TARGET iv_module_shared)

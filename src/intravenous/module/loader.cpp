@@ -393,7 +393,15 @@ namespace iv {
 #endif
         }
 
-        void run_command(std::string const& command, ModuleLoader::LogSink const& log_sink = {})
+        std::string elapsed_milliseconds(std::chrono::steady_clock::duration elapsed)
+        {
+            return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) + " ms";
+        }
+
+        void run_command(
+            std::string const& command,
+            ModuleLoader::LogSink const& log_sink = {},
+            std::string_view phase = "command")
         {
             auto capture_path = []() {
                 auto path = std::filesystem::temp_directory_path() / "intravenous_command_XXXXXX";
@@ -414,8 +422,9 @@ namespace iv {
             };
 
             auto const log_path = capture_path();
+            auto const started = std::chrono::steady_clock::now();
             if (log_sink) {
-                log_sink("running command: " + command);
+                log_sink("[" + std::string(phase) + "] running command: " + command);
             }
             std::string const redirected =
                 command + " > " + quote(log_path) + " 2>&1";
@@ -432,7 +441,11 @@ namespace iv {
             }
             std::error_code ec;
             std::filesystem::remove(log_path, ec);
+            auto const elapsed = elapsed_milliseconds(std::chrono::steady_clock::now() - started);
             if (result != 0) {
+                if (log_sink) {
+                    log_sink("[" + std::string(phase) + "] failed after " + elapsed);
+                }
                 if (!output.empty()) {
                     while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
                         output.pop_back();
@@ -443,6 +456,9 @@ namespace iv {
                 }
 
                 throw std::runtime_error("command failed with exit code " + std::to_string(result) + ": " + command);
+            }
+            if (log_sink) {
+                log_sink("[" + std::string(phase) + "] completed in " + elapsed);
             }
         }
 
@@ -770,7 +786,8 @@ namespace iv {
                 << "juce_dir=" << juce_dir.generic_string() << '\n'
                 << "juce_modules_dir=" << IV_CONFIGURED_JUCE_MODULES_DIR << '\n'
                 << "output_name=" << output_name << '\n'
-                << "output_dir=" << output_dir.generic_string() << '\n';
+                << "output_dir=" << output_dir.generic_string() << '\n'
+                << "build_profiling=always-on-v1\n";
             return sig.str();
         }
 
@@ -952,7 +969,8 @@ namespace iv {
             std::filesystem::path const& configure_source,
             std::string const& output_name,
             std::string const& configure_signature_text,
-            std::string const& generator
+            std::string const& generator,
+            ModuleLoader::LogSink const& command_log
         ) const
         {
             auto const [c_compiler, cxx_compiler] = preferred_module_compilers();
@@ -1007,20 +1025,25 @@ namespace iv {
             if (auto juce_dir = preferred_juce_dir(); !juce_dir.empty()) {
                 configure << " -DJUCE_DIR=" << quote(juce_dir);
             }
-            run_command(configure.str(), log_sink);
+            configure
+                << " -DIV_MODULE_ENABLE_TIME_TRACE=ON"
+                << " -DIV_MODULE_PROFILE_BUILD_STEPS=ON"
+                << " -DIV_MODULE_PROFILE_COMPILATION=ON";
+            run_command(configure.str(), command_log, "configure");
 
             write_text_if_different(workspace.configure_signature_file, configure_signature_text);
             write_text_if_different(workspace.generator_file, generator);
         }
 
-        void build_workspace(BuildWorkspace const& workspace, std::string const&) const
+        void build_workspace(BuildWorkspace const& workspace, std::string const&, ModuleLoader::LogSink const& command_log) const
         {
             std::ostringstream build;
             build
                 << quote(preferred_cmake_program()) << " --build " << quote(workspace.build_dir)
                 << " --config " << active_build_config()
                 << " --parallel";
-            run_command(build.str(), log_sink);
+            build << " --verbose";
+            run_command(build.str(), command_log, "build");
         }
 
         void publish_compile_database(
@@ -1086,6 +1109,23 @@ namespace iv {
             std::filesystem::create_directories(workspace.output_dir);
             std::filesystem::create_directories(workspace.generations_dir);
 
+            std::filesystem::path const trace_path = workspace.root / "build.trace.log";
+            ModuleLoader::LogSink const trace = [trace_path](std::string const& message) {
+                std::ofstream out(trace_path, std::ios::app);
+                if (out) {
+                    out << message;
+                    if (!message.ends_with('\n')) {
+                        out << '\n';
+                    }
+                }
+            };
+            auto const build_started = std::chrono::steady_clock::now();
+            if (log_sink) {
+                log_sink("module build started: " + resolved.id);
+            }
+            trace("module=" + resolved.id);
+            trace("workspace=" + workspace.root.string());
+
             std::filesystem::path configure_source =
                 resolved.has_custom_cmake
                     ? resolved.cmake_dir
@@ -1093,22 +1133,30 @@ namespace iv {
 
             std::string configure_signature_text = configure_signature(resolved, workspace.output_dir, output_name);
             bool should_configure = !std::filesystem::exists(workspace.build_dir / "CMakeCache.txt");
+            std::string configure_reason = should_configure ? "build directory is not configured" : "configuration signature matches";
             if (!should_configure) {
                 should_configure =
                     !std::filesystem::exists(workspace.configure_signature_file) ||
                     read_text(workspace.configure_signature_file) != configure_signature_text;
+                if (should_configure) {
+                    configure_reason = "configuration signature changed";
+                }
             }
 
             std::string generator = choose_generator(workspace, should_configure);
             if (should_configure) {
+                trace("configure=required: " + configure_reason);
                 configure_workspace(
                     workspace,
                     resolved,
                     configure_source,
                     output_name,
                     configure_signature_text,
-                    generator
+                    generator,
+                    trace
                 );
+            } else {
+                trace("configure=skipped: " + configure_reason);
             }
             publish_compile_database(resolved, workspace);
 
@@ -1121,20 +1169,27 @@ namespace iv {
 
             std::string build_signature_text = build_signature(resolved);
             bool should_build = should_configure || !std::filesystem::exists(stable_artifact);
+            std::string build_reason = should_configure ? "configuration ran" : (!std::filesystem::exists(stable_artifact) ? "artifact is missing" : "build signature matches");
             if (!should_build) {
                 should_build =
                     !std::filesystem::exists(workspace.build_signature_file) ||
                     read_text(workspace.build_signature_file) != build_signature_text;
+                if (should_build) {
+                    build_reason = "build signature changed";
+                }
             }
 
             if (should_build) {
-                build_workspace(workspace, generator);
+                trace("build=required: " + build_reason);
+                build_workspace(workspace, generator, trace);
                 write_text_if_different(workspace.build_signature_file, build_signature_text);
                 stable_artifact = workspace.output_dir / shared_library_filename(output_name);
                 config_artifact = workspace.output_dir / active_build_config() / shared_library_filename(output_name);
                 if (!std::filesystem::exists(stable_artifact) && std::filesystem::exists(config_artifact)) {
                     stable_artifact = config_artifact;
                 }
+            } else {
+                trace("build=skipped: " + build_reason);
             }
 
             if (!std::filesystem::exists(stable_artifact)) {
@@ -1148,6 +1203,11 @@ namespace iv {
             std::filesystem::create_directories(generation_dir);
             std::filesystem::path generation_artifact = generation_dir / stable_artifact.filename();
             std::filesystem::copy_file(stable_artifact, generation_artifact, std::filesystem::copy_options::overwrite_existing);
+            auto const elapsed = elapsed_milliseconds(std::chrono::steady_clock::now() - build_started);
+            trace("module build pipeline completed in " + elapsed);
+            if (log_sink) {
+                log_sink("module build completed: " + resolved.id + " (" + elapsed + ")");
+            }
             return generation_artifact;
         }
 
