@@ -34,7 +34,7 @@ struct FunNode
         for (size_t i = 0; i < ctx.block_size; ++i)
         {
             ctx.outputs[0].push(s);
-            s = s * 0.9999;
+            s = s * 0.99999;
         }
     }
 };

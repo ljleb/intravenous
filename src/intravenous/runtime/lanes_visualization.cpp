@@ -92,20 +92,10 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
         return TrackedLaneKind::none;
     };
 
-    // Determine which lanes need output-config classification because they are
-    // new or their tracked realtime classification may have become stale.
-    std::vector<LaneId> lanes_to_classify;
-    {
-        std::scoped_lock lock(mutex_);
-        for (auto const &info : new_lane_infos) {
-            auto const lane = info.runtime_lane;
-            lanes_to_classify.push_back(lane);
-        }
-    }
-
     // Query output configs (no lock — fires linker events)
     std::unordered_map<uint64_t, LaneVisualizationOutputDescriptor> output_descriptors;
-    for (auto const lane : lanes_to_classify) {
+    for (auto const &info : new_lane_infos) {
+        auto const lane = info.runtime_lane;
         LanesVisualizationLaneOutputQueryBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_lanes_visualization_lane_output_query_event,
@@ -136,7 +126,8 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
         }
     }
 
-    for (auto const lane : lanes_to_classify) {
+    for (auto const &info : new_lane_infos) {
+        auto const lane = info.runtime_lane;
         auto const it = output_descriptors.find(lane.value);
         if (it == output_descriptors.end()) {
             continue;
@@ -167,6 +158,9 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
                 .queue = std::move(queue),
             });
         } else if (desired_kind == TrackedLaneKind::compiled_sample) {
+            if (!descriptor.subscribes_to_compiled_output_changes) {
+                continue;
+            }
             if (update.display_sample_count > 0) {
                 LanesVisualizationCompiledSampleLevelBuilder builder;
                 IV_INVOKE_LINKER_EVENT(
@@ -180,6 +174,9 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
                 }
             }
         } else if (desired_kind == TrackedLaneKind::compiled_event) {
+            if (!descriptor.subscribes_to_compiled_output_changes) {
+                continue;
+            }
             LanesVisualizationCompiledEventWindowBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_lanes_visualization_compiled_event_window_requested_event,
@@ -305,12 +302,18 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
                     continue;
                 }
                 if (desired_kind == TrackedLaneKind::compiled_sample) {
+                    if (!cfg_it->second.subscribes_to_compiled_output_changes) {
+                        continue;
+                    }
                     view.compiled_sample_lanes.push_back(lane);
                     auto sit = compiled_sample_levels.find(lane.value);
                     if (sit != compiled_sample_levels.end()) {
                         view.compiled_sample_levels[lane.value] = sit->second;
                     }
                 } else if (desired_kind == TrackedLaneKind::compiled_event) {
+                    if (!cfg_it->second.subscribes_to_compiled_output_changes) {
+                        continue;
+                    }
                     view.compiled_event_lanes.push_back(lane);
                     auto eit = compiled_events.find(lane.value);
                     if (eit != compiled_events.end()) {

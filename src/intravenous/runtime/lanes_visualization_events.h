@@ -14,6 +14,9 @@ namespace iv {
 struct LaneVisualizationOutputDescriptor {
     LaneOutputConfig config {};
     std::optional<ChannelTypeId> sample_channel_type {};
+    // Compiled output is not observed by default. A lane node explicitly
+    // opts in when its presentation needs compiled sample/event changes.
+    bool subscribes_to_compiled_output_changes = false;
 };
 
 // ---- Lane output config query ----

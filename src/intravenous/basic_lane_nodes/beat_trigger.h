@@ -104,11 +104,17 @@ public:
 
     LaneUiStateSnapshot snapshot_lane_ui_state() const
     {
+        // This is the only execution-derived value the beat presentation
+        // needs. Keeping it in the UI snapshot lets the client reconstruct
+        // the regular event sequence without subscribing to event changes.
+        auto const samples_per_event =
+            (static_cast<double>(sample_rate_) * 60.0) / (settings_.bpm * settings_.events_per_beat);
         return {.revision = revision_, .serialized_state = nlohmann::json{
             {"bpm", settings_.bpm},
             {"beatsPerBar", settings_.beats_per_bar},
             {"beatUnit", settings_.beat_unit},
             {"eventsPerBeat", settings_.events_per_beat},
+            {"eventIntervalSamples", samples_per_event},
         }.dump()};
     }
 

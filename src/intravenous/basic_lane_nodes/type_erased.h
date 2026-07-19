@@ -21,6 +21,7 @@ namespace iv {
         std::vector<RealtimeSampleLaneInputConfig> _realtime_sample_inputs;
         std::vector<RealtimeEventLaneInputConfig> _realtime_event_inputs;
         LaneOutputConfig _output {};
+        bool _subscribes_to_compiled_output_changes = false;
         char const* _type_name = "<unknown>";
         std::type_info const* _type_info = &typeid(void);
         void const* (*_const_ptr_fn)(void const*) = +[](void const*) -> void const* { return nullptr; };
@@ -58,6 +59,15 @@ namespace iv {
             _realtime_sample_inputs.assign(realtime_sample_inputs.begin(), realtime_sample_inputs.end());
             _realtime_event_inputs.assign(realtime_event_inputs.begin(), realtime_event_inputs.end());
             _output = normalize_lane_output(get_lane_output(node));
+            if constexpr (requires { LaneNode::subscribes_to_compiled_output_changes(); }) {
+                _subscribes_to_compiled_output_changes =
+                    LaneNode::subscribes_to_compiled_output_changes();
+            } else if constexpr (requires(LaneNode const& lane_node) {
+                lane_node.subscribes_to_compiled_output_changes();
+            }) {
+                _subscribes_to_compiled_output_changes =
+                    node.subscribes_to_compiled_output_changes();
+            }
             _type_name = typeid(LaneNode).name();
             _type_info = &typeid(LaneNode);
             _node = NodeStoragePtr(
@@ -128,6 +138,10 @@ namespace iv {
         std::vector<RealtimeSampleLaneInputConfig> const& realtime_sample_inputs() const { return _realtime_sample_inputs; }
         std::vector<RealtimeEventLaneInputConfig> const& realtime_event_inputs() const { return _realtime_event_inputs; }
         LaneOutputConfig const& output() const { return _output; }
+        bool subscribes_to_compiled_output_changes() const
+        {
+            return _subscribes_to_compiled_output_changes;
+        }
         char const* type_name() const { return _type_name; }
         bool supports_tick_block_compiled() const { return _supports_tick_block_compiled; }
         bool supports_tick_block_realtime() const { return _supports_tick_block_realtime; }

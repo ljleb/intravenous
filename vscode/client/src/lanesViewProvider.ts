@@ -1250,76 +1250,14 @@ export class LaneViewProvider {
 
             timelineRuler = document.createElement("div");
             timelineRuler.className = "timeline-ruler";
-            let panStartX = null;
-            let panStartSamples = 0;
-            let scrubPointerId = null;
-            timelineRuler.addEventListener("pointerdown", (event) => {
-                if (event.button !== 0) return;
-                if (!event.shiftKey) {
-                    scrubToSample(rulerStart() + (event.clientX - timelineRuler.getBoundingClientRect().left) * state.samplesPerPixel);
-                    scrubPointerId = event.pointerId;
-                    timelineRuler.setPointerCapture(event.pointerId);
-                    return;
-                }
-                panStartX = event.clientX;
-                panStartSamples = state.panSamples;
-                timelineRuler.setPointerCapture(event.pointerId);
-            });
-            timelineRuler.addEventListener("pointermove", (event) => {
-                if (scrubPointerId === event.pointerId) {
-                    scrubToSample(rulerStart() + (event.clientX - timelineRuler.getBoundingClientRect().left) * state.samplesPerPixel);
-                    return;
-                }
-                if (panStartX == null) return;
-                state.panSamples = panStartSamples - (event.clientX - panStartX) * state.samplesPerPixel;
-                renderTimelineChrome();
-                renderLanes();
-                postTimelineViewport();
-            });
-            timelineRuler.addEventListener("pointerup", (event) => {
-                if (scrubPointerId === event.pointerId) {
-                    scrubPointerId = null;
-                    timelineRuler.releasePointerCapture(event.pointerId);
-                    return;
-                }
-                if (panStartX == null) return;
-                panStartX = null;
-                timelineRuler.releasePointerCapture(event.pointerId);
-                vscode.setState({ ...vscode.getState(), panSamples: state.panSamples });
-            });
+            installTimelineControls(timelineRuler, () => rulerStart(), true);
             root.appendChild(timelineRuler);
 
             viewport = document.createElement("div");
             viewport.className = "lane-viewport";
             viewport.addEventListener("scroll", scheduleViewportPost);
-            viewport.addEventListener("wheel", (event) => {
-                if (event.altKey) {
-                    event.preventDefault();
-                    setVerticalZoom(state.compiledLaneHeight * (event.deltaY > 0 ? 0.85 : 1.18));
-                    return;
-                }
-                if (event.ctrlKey || event.metaKey) {
-                    event.preventDefault();
-                    setZoomAt(
-                        state.samplesPerPixel * (event.deltaY > 0 ? 1.25 : 0.8),
-                        event.clientX,
-                        viewport.getBoundingClientRect());
-                    return;
-                }
-                if (event.deltaX !== 0 || event.shiftKey) {
-                    event.preventDefault();
-                    const horizontalDelta = event.deltaX !== 0 ? event.deltaX : event.deltaY;
-                    state.panSamples += horizontalDelta * state.samplesPerPixel;
-                    vscode.setState({ ...vscode.getState(), panSamples: state.panSamples });
-                    renderTimelineChrome();
-                    renderLanes();
-                    postTimelineViewport();
-                    return;
-                }
-                // Vertical wheel movement is native so the lane list keeps
-                // its normal smooth/inertial scrolling behavior. Horizontal
-                // trackpad movement above pans the timeline instead.
-            }, { passive: false });
+            // Preserve native vertical scrolling for the lane list. Rulers
+            // themselves install the full timeline-control wheel behavior.
 
             spacer = document.createElement("div");
             spacer.className = "lane-spacer";
@@ -1373,18 +1311,87 @@ export class LaneViewProvider {
             postTimelineViewport();
         }
 
-        // Preserve the timeline sample under the pointer while zooming. The
-        // ruler has a pre-zero gutter, so use its coordinate system rather
-        // than the track's left edge.
-        function setZoomAt(samplesPerPixel, clientX, bounds) {
+        // Preserve the timeline sample under the pointer while zooming. A
+        // ruler may start at the pre-zero gutter or at the timeline origin.
+        function setZoomAt(samplesPerPixel, clientX, bounds, sampleAtLeft, includesLaneHeader) {
             const oldSamplesPerPixel = state.samplesPerPixel;
-            const sampleAtPointer = rulerStart()
+            const sampleAtPointer = sampleAtLeft
                 + (clientX - bounds.left) * oldSamplesPerPixel;
             const nextSamplesPerPixel = Math.max(1, Math.min(65536, Math.round(samplesPerPixel)));
             state.panSamples = sampleAtPointer
                 - (clientX - bounds.left) * nextSamplesPerPixel
-                + laneHeaderWidth * nextSamplesPerPixel;
+                + (includesLaneHeader ? laneHeaderWidth * nextSamplesPerPixel : 0);
             setZoom(nextSamplesPerPixel);
+        }
+
+        function installTimelineControls(element, sampleAtLeft, includesLaneHeader) {
+            let panStartX = null;
+            let panStartSamples = 0;
+            let scrubPointerId = null;
+            const sampleAtEvent = (event) => sampleAtLeft()
+                + (event.clientX - element.getBoundingClientRect().left) * state.samplesPerPixel;
+            const finishPointer = (event) => {
+                if (scrubPointerId === event.pointerId) scrubPointerId = null;
+                let wasPanning = false;
+                if (panStartX != null) {
+                    panStartX = null;
+                    wasPanning = true;
+                    vscode.setState({ ...vscode.getState(), panSamples: state.panSamples });
+                }
+                try { element.releasePointerCapture(event.pointerId); } catch (_) {}
+                // A beat-grid pan keeps its captured element alive while the
+                // pointer moves. Rebuild every lane only after that gesture
+                // finishes, once pointer capture is no longer needed.
+                if (wasPanning) renderLanes();
+            };
+            element.addEventListener("pointerdown", (event) => {
+                if (event.button !== 0) return;
+                element.setPointerCapture(event.pointerId);
+                if (!event.shiftKey) {
+                    scrubPointerId = event.pointerId;
+                    scrubToSample(sampleAtEvent(event));
+                    return;
+                }
+                panStartX = event.clientX;
+                panStartSamples = state.panSamples;
+            });
+            element.addEventListener("pointermove", (event) => {
+                if (scrubPointerId === event.pointerId) {
+                    scrubToSample(sampleAtEvent(event));
+                    return;
+                }
+                if (panStartX == null) return;
+                state.panSamples = panStartSamples - (event.clientX - panStartX) * state.samplesPerPixel;
+                renderTimelineChrome();
+                for (const grid of laneWindow.querySelectorAll(".beat-event-grid")) {
+                    grid.__ivRefreshBeats?.();
+                }
+                postTimelineViewport();
+            });
+            element.addEventListener("pointerup", finishPointer);
+            element.addEventListener("pointercancel", finishPointer);
+            element.addEventListener("wheel", (event) => {
+                if (event.altKey) {
+                    event.preventDefault();
+                    setVerticalZoom(state.compiledLaneHeight * (event.deltaY > 0 ? 0.85 : 1.18));
+                } else if (event.ctrlKey || event.metaKey) {
+                    event.preventDefault();
+                    setZoomAt(
+                        state.samplesPerPixel * (event.deltaY > 0 ? 1.25 : 0.8),
+                        event.clientX,
+                        element.getBoundingClientRect(),
+                        sampleAtLeft(),
+                        includesLaneHeader);
+                } else if (event.deltaX !== 0 || event.shiftKey) {
+                    event.preventDefault();
+                    const horizontalDelta = event.deltaX !== 0 ? event.deltaX : event.deltaY;
+                    state.panSamples += horizontalDelta * state.samplesPerPixel;
+                    vscode.setState({ ...vscode.getState(), panSamples: state.panSamples });
+                    renderTimelineChrome();
+                    renderLanes();
+                    postTimelineViewport();
+                }
+            }, { passive: false });
         }
 
         function setVerticalZoom(height) {
@@ -1449,7 +1456,10 @@ export class LaneViewProvider {
             state.playbackSampleIndex = sampleIndex;
             vscode.postMessage({ type: "scrubPlayback", sampleIndex });
             renderTimelineChrome();
-            renderLanes();
+            // Do not replace rows while a ruler owns pointer capture. In
+            // particular, a beat-grid scrub must retain its grid through the
+            // whole drag so every pointer move can update the playhead.
+            updateDynamicContent();
         }
 
         function rulerStart() {
@@ -1557,21 +1567,6 @@ export class LaneViewProvider {
 
                 const beatGrid = row.querySelector(".beat-event-grid");
                 if (beatGrid) {
-                    const fragment = document.createDocumentFragment();
-                    const gridStart = rulerStart();
-                    let previousMarkerX = -Infinity;
-                    for (const event of (content?.events || [])) {
-                        const markerX = (Number(event.time) - gridStart) / state.samplesPerPixel;
-                        if (markerX - previousMarkerX < 12) continue;
-                        previousMarkerX = markerX;
-                        const marker = document.createElement("div");
-                        marker.className = "beat-marker";
-                        marker.style.left = String(markerX) + "px";
-                        marker.title = "trigger at sample " + String(event.time);
-                        fragment.appendChild(marker);
-                    }
-                    beatGrid.replaceChildren(fragment);
-
                     // Reconcile a server-side state change without disturbing
                     // the field that the user is presently editing.
                     const snapshot = state.uiStateByLaneId[laneId];
@@ -1582,8 +1577,10 @@ export class LaneViewProvider {
                                 const value = settings[input.dataset.beatField];
                                 if (value != null && document.activeElement !== input) input.value = String(value);
                             }
+                            beatGrid.__ivApplyBeatSettings?.(settings);
                         }
                     } catch (_) {}
+                    beatGrid.__ivRefreshBeats?.();
                 }
             }
             const rulerPlayhead = timelineRuler.querySelector(".playhead");
@@ -1845,6 +1842,7 @@ export class LaneViewProvider {
                 }
                 const presentation = lanePresentationPlugins.get(lane.modelTypeId);
                 if (presentation?.render({ lane, content, row, state, laneWindow, timelineStart, rulerStart, scrubToSample,
+                    installTimelineControls,
                     postLaneUiState: (laneId, serializedState, expectedRevision) => vscode.postMessage({
                         type: "setLaneUiState", laneId, serializedState, expectedRevision,
                     }),

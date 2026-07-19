@@ -1,14 +1,13 @@
 import { LanePresentationPlugin } from "./protocol";
 
 function renderBeatTriggerLane(context: any): boolean {
-    const { lane, content, row, state, timelineStart, scrubToSample, laneWindow, postDebug } = context;
+    const { lane, content, row, state, timelineStart, laneWindow, postDebug, installTimelineControls } = context;
     const pointerDebug = (phase: string, field = "", detail = "") => {
         postDebug({ type: "beatPointerDebug", laneId: String(lane.laneId), field, phase, detail });
     };
     // Keep the compact lane header intact: it owns lane selection and ports.
     const track = document.createElement("div");
     track.className = "beat-track";
-    const gridStart = timelineStart();
     const snapshot = state.uiStateByLaneId[String(lane.laneId)];
     // A usable local model makes the controls responsive even while the
     // initial UI-state notification is still in flight.
@@ -17,6 +16,8 @@ function renderBeatTriggerLane(context: any): boolean {
         const parsed = snapshot ? JSON.parse(snapshot.serializedState) : null;
         if (parsed && typeof parsed === "object") settings = { ...settings, ...parsed };
     } catch (_) {}
+    let samplesPerMinute = Number(settings.eventIntervalSamples) * Number(settings.bpm)
+        * Number(settings.eventsPerBeat);
     let publishTimer: ReturnType<typeof setTimeout> | undefined;
     const settingsAreValid = () => Number.isFinite(settings.bpm) && settings.bpm >= 1 && settings.bpm <= 1000
         && Number.isInteger(settings.beatsPerBar) && settings.beatsPerBar >= 1 && settings.beatsPerBar <= 32
@@ -28,7 +29,12 @@ function renderBeatTriggerLane(context: any): boolean {
         if (!settingsAreValid()) return;
         // Do not retain an old revision while rapidly editing a number. The
         // backend's canonical snapshot returns the new revision afterward.
-        context.postLaneUiState(lane.laneId, JSON.stringify(settings));
+        context.postLaneUiState(lane.laneId, JSON.stringify({
+            bpm: settings.bpm,
+            beatsPerBar: settings.beatsPerBar,
+            beatUnit: settings.beatUnit,
+            eventsPerBeat: settings.eventsPerBeat,
+        }));
     };
     const schedulePublish = () => {
         if (publishTimer !== undefined) clearTimeout(publishTimer);
@@ -141,6 +147,7 @@ function renderBeatTriggerLane(context: any): boolean {
             input.addEventListener("input", () => {
                 settings[key] = Number(input.value);
                 input.classList.toggle("invalid", !settingsAreValid());
+                refreshBeatGrid();
                 schedulePublish();
             });
             input.addEventListener("change", () => {
@@ -219,44 +226,68 @@ function renderBeatTriggerLane(context: any): boolean {
 
     const grid = document.createElement("div");
     grid.className = "beat-event-grid";
+    const refreshBeatGrid = () => {
+        const interval = Number.isFinite(samplesPerMinute)
+            ? samplesPerMinute / (Number(settings.bpm) * Number(settings.eventsPerBeat))
+            : Number(settings.eventIntervalSamples);
+        const samplesPerPixel = Number(state.samplesPerPixel);
+        if (!(interval > 0) || !Number.isFinite(interval) || !(samplesPerPixel > 0)) return;
 
-    // The backend supplies this lane's compiled event output for the visible
-    // window.  Do not measure clientWidth here: rows are rendered detached,
-    // and doing so previously discarded almost every marker.
-    let previousMarkerX = -Infinity;
-    for (const event of (content?.events || [])) {
-        const x = (Number(event.time) - gridStart) / state.samplesPerPixel;
-        // Like ruler graduations, do not draw marks that are too close to be
-        // independently useful at this zoom level.
-        if (x - previousMarkerX < 12) continue;
-        previousMarkerX = x;
-        const marker = document.createElement("div"); marker.className = "beat-marker";
-        marker.style.left = String(x) + "px"; marker.title = "trigger at sample " + String(event.time);
-        grid.appendChild(marker);
-    }
+        const gridStart = timelineStart();
+        const periodPixels = interval / samplesPerPixel;
+        // When markers are dense, a repeating gradient is one GPU-painted
+        // texture rather than a DOM node per beat.  It is intentionally used
+        // only below the visual-resolution threshold; at readable zoom levels
+        // the DOM path below exactly matches the engine's round(n * interval).
+        if (periodPixels < 12) {
+            const phase = ((-gridStart / samplesPerPixel) % periodPixels + periodPixels) % periodPixels;
+            grid.replaceChildren();
+            grid.classList.add("compressed");
+            grid.style.setProperty("--beat-period", String(periodPixels) + "px");
+            grid.style.setProperty("--beat-phase", String(phase) + "px");
+            return;
+        }
+
+        grid.classList.remove("compressed");
+        grid.style.removeProperty("--beat-period");
+        grid.style.removeProperty("--beat-phase");
+        const eventTime = (eventIndex: number) => Math.round(eventIndex * interval);
+        let eventIndex = Math.max(0, Math.ceil(gridStart / interval));
+        while (eventIndex > 0 && eventTime(eventIndex - 1) >= gridStart) --eventIndex;
+        while (eventTime(eventIndex) < gridStart) ++eventIndex;
+        const end = gridStart + grid.clientWidth * samplesPerPixel;
+        const markers = document.createDocumentFragment();
+        for (; eventTime(eventIndex) <= end; ++eventIndex) {
+            const time = eventTime(eventIndex);
+            const marker = document.createElement("div");
+            marker.className = "beat-marker";
+            marker.style.left = String((time - gridStart) / samplesPerPixel) + "px";
+            marker.title = "trigger at sample " + String(time);
+            markers.appendChild(marker);
+        }
+        grid.replaceChildren(markers);
+    };
+    (grid as any).__ivRefreshBeats = refreshBeatGrid;
+    (grid as any).__ivApplyBeatSettings = (nextSettings: any) => {
+        if (!nextSettings || typeof nextSettings !== "object") return;
+        settings = { ...settings, ...nextSettings };
+        const nextSamplesPerMinute = Number(settings.eventIntervalSamples) * Number(settings.bpm)
+            * Number(settings.eventsPerBeat);
+        if (Number.isFinite(nextSamplesPerMinute)) samplesPerMinute = nextSamplesPerMinute;
+        refreshBeatGrid();
+    };
     track.appendChild(grid);
-    let scrubPointer: number | null = null;
-    grid.addEventListener("pointerdown", (event) => {
-        // Keep secondary-click available to the lane's default context menu.
-        // Previously it also scrubbed the beat grid before that menu could
-        // open, which made this lane effectively impossible to rename.
-        if (event.button !== 0) return;
-        scrubPointer = event.pointerId; grid.setPointerCapture(event.pointerId);
-        scrubToSample(gridStart + event.offsetX * state.samplesPerPixel);
-    });
-    grid.addEventListener("pointermove", (event) => {
-        if (scrubPointer === event.pointerId) scrubToSample(gridStart + event.offsetX * state.samplesPerPixel);
-    });
-    grid.addEventListener("pointerup", (event) => {
-        if (scrubPointer === event.pointerId) { scrubPointer = null; grid.releasePointerCapture(event.pointerId); }
-    });
+    installTimelineControls?.(grid, timelineStart, false);
     row.appendChild(track); laneWindow.appendChild(row);
+    // Rows are initially assembled detached, so clientWidth becomes usable on
+    // the next frame for the precise, sparse-marker path.
+    requestAnimationFrame(refreshBeatGrid);
     return true;
 }
 
 const beatTriggerLanePlugin: LanePresentationPlugin = {
     typeId: "iv.timeline.beat-trigger",
-    css: ".beat-track{position:relative;display:flex;flex:1 1 auto;min-width:180px;min-height:0;flex-direction:column;overflow:hidden;background:var(--vscode-editor-background)}.beat-controls{display:flex;flex:0 0 auto;gap:8px;padding:2px 4px;align-items:center;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,rgba(128,128,128,.18));position:relative;z-index:2;width:max-content}.beat-control{display:flex;align-items:center;gap:3px;color:var(--vscode-descriptionForeground);font-size:.82em;white-space:nowrap}.beat-control-separator{font-size:1.25em;color:var(--vscode-foreground);line-height:1}.beat-control-suffix{font-size:.9em}.beat-controls input{width:48px;font:inherit;color:inherit;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border,transparent);cursor:ns-resize}.beat-controls input:focus{cursor:text}.beat-controls input.invalid{border-color:var(--vscode-inputValidation-errorBorder,var(--vscode-errorForeground))}.beat-event-grid{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;cursor:default;background:var(--vscode-editor-background)}.beat-marker{position:absolute;top:0;bottom:0;width:1px;background:var(--vscode-editorWidget-border,rgba(220,220,220,.55));opacity:.9;pointer-events:none}",
+    css: ".beat-track{position:relative;display:flex;flex:1 1 auto;min-width:180px;min-height:0;flex-direction:column;overflow:hidden;background:var(--vscode-editor-background)}.beat-controls{display:flex;flex:0 0 auto;gap:8px;padding:2px 4px;align-items:center;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,rgba(128,128,128,.18));position:relative;z-index:2;width:max-content}.beat-control{display:flex;align-items:center;gap:3px;color:var(--vscode-descriptionForeground);font-size:.82em;white-space:nowrap}.beat-control-separator{font-size:1.25em;color:var(--vscode-foreground);line-height:1}.beat-control-suffix{font-size:.9em}.beat-controls input{width:48px;font:inherit;color:inherit;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border,transparent);cursor:ns-resize}.beat-controls input:focus{cursor:text}.beat-controls input.invalid{border-color:var(--vscode-inputValidation-errorBorder,var(--vscode-errorForeground))}.beat-event-grid{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;cursor:default;background:var(--vscode-editor-background)}.beat-event-grid.compressed{background-image:linear-gradient(90deg,var(--vscode-editorWidget-border,rgba(220,220,220,.55)) 0 1px,transparent 1px 100%);background-size:var(--beat-period) 100%;background-position:var(--beat-phase) 0}.beat-marker{position:absolute;top:0;bottom:0;width:1px;background:var(--vscode-editorWidget-border,rgba(220,220,220,.55));opacity:.9;pointer-events:none}",
     render: renderBeatTriggerLane,
 };
 

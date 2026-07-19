@@ -117,6 +117,8 @@ void handle_lane_output_query(
         descriptor = LaneVisualizationOutputDescriptor{
             .config = graph.lane(lane).output,
             .sample_channel_type = graph.lane(lane).sample_channel_type,
+            .subscribes_to_compiled_output_changes =
+                graph.lane(lane).node.subscribes_to_compiled_output_changes(),
         };
         found = true;
     });

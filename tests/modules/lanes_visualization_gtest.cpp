@@ -110,6 +110,7 @@ TEST(LanesVisualizationTest, PublishesOneCompiledSampleLevelForVisibleLane)
     state.output_descriptors[42] = LaneVisualizationOutputDescriptor{
         .config = CompiledSampleLaneOutputConfig{ .name = "test", .sample_layout = SampleStreamLayout::interleaved },
         .sample_channel_type = ChannelTypeId::stereo,
+        .subscribes_to_compiled_output_changes = true,
     };
     state.compiled_samples[42] = OwnedSampleBlock{
         .samples = { Sample{ 1.0f }, Sample{ 10.0f }, Sample{ 2.0f }, Sample{ 20.0f } },
@@ -154,6 +155,7 @@ TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
 
     state.output_descriptors[7] = LaneVisualizationOutputDescriptor{
         .config = CompiledEventLaneOutputConfig{ .name = "test" },
+        .subscribes_to_compiled_output_changes = true,
     };
     state.compiled_events[7] = {
         TimedEvent{ .time = 10, .value = TriggerEvent{} },
@@ -193,6 +195,7 @@ TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
     state.output_descriptors[42] = LaneVisualizationOutputDescriptor{
         .config = CompiledSampleLaneOutputConfig{ .name = "test" },
         .sample_channel_type = ChannelTypeId::mono,
+        .subscribes_to_compiled_output_changes = true,
     };
     state.compiled_samples[42] = OwnedSampleBlock{
         .samples = { Sample{ 1.0f } },
