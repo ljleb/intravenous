@@ -1567,17 +1567,13 @@ export class LaneViewProvider {
 
                 const beatGrid = row.querySelector(".beat-event-grid");
                 if (beatGrid) {
-                    // Reconcile a server-side state change without disturbing
-                    // the field that the user is presently editing.
+                    // Apply authoritative output to the grid only. The beat
+                    // controls retain their independent user-input state.
                     const snapshot = state.uiStateByLaneId[laneId];
                     try {
                         const settings = snapshot ? JSON.parse(snapshot.serializedState) : null;
                         if (settings && typeof settings === "object") {
-                            for (const input of row.querySelectorAll("input[data-beat-field]")) {
-                                const value = settings[input.dataset.beatField];
-                                if (value != null && document.activeElement !== input) input.value = String(value);
-                            }
-                            beatGrid.__ivApplyBeatSettings?.(settings);
+                            beatGrid.__ivApplyBeatSettings?.(settings, snapshot.revision);
                         }
                     } catch (_) {}
                     beatGrid.__ivRefreshBeats?.();
@@ -1616,7 +1612,10 @@ export class LaneViewProvider {
                 row.dataset.laneId = String(lane.laneId);
                 row.style.height = String(lane.domain === "compiled" ? state.compiledLaneHeight : laneHeight) + "px";
                 row.addEventListener("click", (event) => {
-                    if (event.target.closest(".lane-connection-button")) return;
+                    // Interactive lane presentations must not trigger row
+                    // selection/rebuilds. Native number steppers otherwise
+                    // change once and are immediately recreated at defaults.
+                    if (event.target.closest(".lane-connection-button, input, button, select, textarea, label")) return;
                     state.selectedLaneId = String(lane.laneId);
                     vscode.setState({ ...vscode.getState(), selectedLaneId: state.selectedLaneId });
                     renderLanes();

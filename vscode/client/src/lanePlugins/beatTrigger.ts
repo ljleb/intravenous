@@ -1,113 +1,54 @@
 import { LanePresentationPlugin } from "./protocol";
 
 function renderBeatTriggerLane(context: any): boolean {
-    const { lane, content, row, state, timelineStart, laneWindow, postDebug, installTimelineControls } = context;
-    const pointerDebug = (phase: string, field = "", detail = "") => {
-        postDebug({ type: "beatPointerDebug", laneId: String(lane.laneId), field, phase, detail });
-    };
+    const { lane, content, row, state, timelineStart, laneWindow, installTimelineControls } = context;
     // Keep the compact lane header intact: it owns lane selection and ports.
     const track = document.createElement("div");
     track.className = "beat-track";
     const snapshot = state.uiStateByLaneId[String(lane.laneId)];
-    // A usable local model makes the controls responsive even while the
-    // initial UI-state notification is still in flight.
-    let settings: any = { bpm: 140, beatsPerBar: 4, beatUnit: 4, eventsPerBeat: 1 };
+    // Controls keep an independent requested state. They write that state to
+    // the backend, but never accept backend snapshots back into their fields.
+    // The grid is the sole consumer of server-confirmed output.
+    const defaults: any = { bpm: 140, beatsPerBar: 4, beatUnit: 4, eventsPerBeat: 1 };
+    let inputSettings: any = { ...defaults };
+    let outputSettings: any = { ...defaults };
     try {
         const parsed = snapshot ? JSON.parse(snapshot.serializedState) : null;
-        if (parsed && typeof parsed === "object") settings = { ...settings, ...parsed };
+        if (parsed && typeof parsed === "object") {
+            // Seed a newly created lane view from its current canonical
+            // state. Subsequent state notifications update output only.
+            inputSettings = { ...inputSettings, ...parsed };
+            outputSettings = { ...outputSettings, ...parsed };
+        }
     } catch (_) {}
-    let samplesPerMinute = Number(settings.eventIntervalSamples) * Number(settings.bpm)
-        * Number(settings.eventsPerBeat);
+    let outputRevision = Number(snapshot?.revision || 0);
+    let outputStateSignature = JSON.stringify(outputSettings);
+    const locallyEditedFields = new Set<string>();
+    const inputsByField = new Map<string, HTMLInputElement>();
     let publishTimer: ReturnType<typeof setTimeout> | undefined;
-    const settingsAreValid = () => Number.isFinite(settings.bpm) && settings.bpm >= 1 && settings.bpm <= 1000
-        && Number.isInteger(settings.beatsPerBar) && settings.beatsPerBar >= 1 && settings.beatsPerBar <= 32
-        && Number.isInteger(settings.beatUnit) && settings.beatUnit >= 1 && settings.beatUnit <= 64
-        && (settings.beatUnit & (settings.beatUnit - 1)) === 0
-        && Number.isInteger(settings.eventsPerBeat) && settings.eventsPerBeat >= 1 && settings.eventsPerBeat <= 64;
-    const publishSettings = () => {
+    const inputSettingsAreValid = () => Number.isFinite(inputSettings.bpm)
+        && inputSettings.bpm >= 1 && inputSettings.bpm <= 1000
+        && Number.isInteger(inputSettings.beatsPerBar)
+        && inputSettings.beatsPerBar >= 1 && inputSettings.beatsPerBar <= 32
+        && Number.isInteger(inputSettings.beatUnit)
+        && inputSettings.beatUnit >= 1 && inputSettings.beatUnit <= 64
+        && (inputSettings.beatUnit & (inputSettings.beatUnit - 1)) === 0
+        && Number.isInteger(inputSettings.eventsPerBeat)
+        && inputSettings.eventsPerBeat >= 1 && inputSettings.eventsPerBeat <= 64;
+    const publishInputSettings = () => {
         publishTimer = undefined;
-        if (!settingsAreValid()) return;
-        // Do not retain an old revision while rapidly editing a number. The
-        // backend's canonical snapshot returns the new revision afterward.
+        if (!inputSettingsAreValid()) return;
         context.postLaneUiState(lane.laneId, JSON.stringify({
-            bpm: settings.bpm,
-            beatsPerBar: settings.beatsPerBar,
-            beatUnit: settings.beatUnit,
-            eventsPerBeat: settings.eventsPerBeat,
+            bpm: inputSettings.bpm,
+            beatsPerBar: inputSettings.beatsPerBar,
+            beatUnit: inputSettings.beatUnit,
+            eventsPerBeat: inputSettings.eventsPerBeat,
         }));
     };
-    const schedulePublish = () => {
+    const scheduleInputPublish = () => {
         if (publishTimer !== undefined) clearTimeout(publishTimer);
-        publishTimer = setTimeout(publishSettings, 120);
+        publishTimer = setTimeout(publishInputSettings, 120);
     };
-    const documentWithBeatDrag = document as any;
-    const beatDrag = documentWithBeatDrag.__ivBeatControlDrag || (documentWithBeatDrag.__ivBeatControlDrag = {
-        active: null,
-        installed: false,
-    });
-    if (!beatDrag.installed) {
-        beatDrag.installed = true;
-        const applyMovement = (event: MouseEvent | PointerEvent) => {
-            const drag = beatDrag.active;
-            if (!drag) return;
-            const locked = document.pointerLockElement === drag.lockElement;
-            if (!locked && (event.clientY !== drag.lastClientY)) {
-                requestPointerLock(drag);
-            }
-            const deltaY = locked ? event.movementY : event.clientY - drag.lastClientY;
-            if (!locked) drag.lastClientY = event.clientY;
-            if (deltaY !== 0) {
-                drag.apply(deltaY);
-                const now = Date.now();
-                if (now - drag.lastDebugAt >= 100) {
-                    drag.lastDebugAt = now;
-                    drag.debug("move", "deltaY=" + String(deltaY) + " " + (locked ? "locked" : "unlocked")
-                        + " value=" + String(drag.input.value));
-                }
-            }
-        };
-        const requestPointerLock = (drag: any) => {
-            if (drag.pointerLockRequested || typeof drag.lockElement.requestPointerLock !== "function") return;
-            drag.pointerLockRequested = true;
-            drag.debug("lock-request", "pointer=" + String(drag.pointerId));
-            try { drag.lockElement.requestPointerLock(); } catch (_) {
-                drag.pointerLockRequested = false;
-                drag.debug("lock-error");
-            }
-        };
-        document.addEventListener("pointermove", applyMovement);
-        document.addEventListener("mousemove", (event) => {
-            // Pointer events cover the unlocked case. This fallback is only
-            // for pointer-locked movement (or browsers without PointerEvent),
-            // so one physical move cannot be applied twice.
-            if (window.PointerEvent && document.pointerLockElement == null) return;
-            applyMovement(event);
-        });
-        const finishDrag = (event?: PointerEvent | MouseEvent) => {
-            const drag = beatDrag.active;
-            if (!drag) return;
-            const isPointerEvent = typeof PointerEvent !== "undefined" && event instanceof PointerEvent;
-            if (isPointerEvent && (event as PointerEvent).pointerId !== drag.pointerId) return;
-            if (event instanceof MouseEvent && !isPointerEvent && window.PointerEvent) return;
-            drag.debug("end", "pointer=" + String(drag.pointerId) + " value=" + String(drag.input.value));
-            beatDrag.active = null;
-            try { drag.lockElement.releasePointerCapture(drag.pointerId); } catch (_) {}
-            if (document.pointerLockElement === drag.lockElement) {
-                try { document.exitPointerLock(); } catch (_) {}
-            }
-            drag.finish();
-            document.dispatchEvent(new Event("ivBeatDragEnded"));
-        };
-        document.addEventListener("pointerup", finishDrag);
-        document.addEventListener("mouseup", finishDrag);
-        document.addEventListener("pointercancel", finishDrag);
-        document.addEventListener("pointerlockchange", () => {
-            const drag = beatDrag.active;
-            if (!drag) return;
-            drag.debug(document.pointerLockElement === drag.lockElement ? "lock-acquired" : "lock-released");
-            if (document.pointerLockElement !== drag.lockElement) drag.pointerLockRequested = false;
-        });
-    }
     const controls = document.createElement("div");
     controls.className = "beat-controls";
     controls.addEventListener("pointerdown", (event) => event.stopPropagation());
@@ -143,74 +84,17 @@ function renderBeatTriggerLane(context: any): boolean {
             };
             input.min = String(limits[key][0]); input.max = String(limits[key][1]);
             input.step = key === "bpm" ? "any" : "1";
-            input.value = settings && settings[key] != null ? String(settings[key]) : "";
+            input.value = inputSettings && inputSettings[key] != null ? String(inputSettings[key]) : "";
+            inputsByField.set(key, input);
             input.addEventListener("input", () => {
-                settings[key] = Number(input.value);
-                input.classList.toggle("invalid", !settingsAreValid());
-                refreshBeatGrid();
-                schedulePublish();
+                inputSettings[key] = Number(input.value);
+                locallyEditedFields.add(key);
+                input.classList.toggle("invalid", !inputSettingsAreValid());
+                scheduleInputPublish();
             });
             input.addEventListener("change", () => {
                 if (publishTimer !== undefined) clearTimeout(publishTimer);
-                publishSettings();
-            });
-            input.addEventListener("pointerdown", (event) => {
-                if (event.button !== 0) return;
-                // Do not prevent the native click: releasing without a drag
-                // must leave this number input focused so it can be typed.
-                const startValue = Number(input.value) || 0;
-                let totalDeltaY = 0;
-                let dragging = false;
-                const sequences: Record<string, number[]> = {
-                    beatsPerBar: Array.from({ length: 32 }, (_, value) => value + 1),
-                    beatUnit: [1, 2, 4, 8, 16, 32, 64],
-                    eventsPerBeat: Array.from({ length: 64 }, (_, value) => value + 1),
-                };
-                const sequence = sequences[key];
-                const initialSequenceIndex = sequence
-                    ? Math.max(0, sequence.indexOf(startValue)) : 0;
-                const apply = (deltaY: number) => {
-                    totalDeltaY += deltaY;
-                    // Ignore the tiny movement that commonly accompanies a
-                    // click. Once this threshold is crossed it is a drag.
-                    if (!dragging && Math.abs(totalDeltaY) < 3) return;
-                    dragging = true;
-                    let value: number;
-                    if (key === "bpm") {
-                        value = Math.round(startValue - totalDeltaY);
-                    } else if (sequence) {
-                        // Time-signature fields (and event density) advance
-                        // through a discrete, precomputed sequence. Deriving
-                        // the index from total motion prevents small pointer
-                        // events from cancelling one another.
-                        const index = initialSequenceIndex - Math.round(totalDeltaY / 6);
-                        value = sequence[Math.max(0, Math.min(sequence.length - 1, index))];
-                    } else {
-                        value = Math.round(startValue - totalDeltaY / 6);
-                    }
-                    const [minimum, maximum] = limits[key];
-                    const nextValue = String(Math.max(minimum, Math.min(maximum, value)));
-                    if (input.value !== nextValue) {
-                        input.value = nextValue;
-                        input.dispatchEvent(new Event("input"));
-                    }
-                };
-                beatDrag.active = {
-                    lockElement: input,
-                    pointerId: event.pointerId,
-                    lastClientY: event.clientY,
-                    lastDebugAt: 0,
-                    pointerLockRequested: false,
-                    input,
-                    debug: (phase: string, detail = "") => pointerDebug(phase, key, detail),
-                    apply,
-                    finish: () => {
-                        if (dragging) input.dispatchEvent(new Event("change"));
-                    },
-                };
-                pointerDebug("down", key, "pointer=" + String(event.pointerId) + " value=" + String(input.value));
-                try { input.setPointerCapture(event.pointerId); } catch (_) {}
-                requestPointerLock(beatDrag.active);
+                publishInputSettings();
             });
             control.appendChild(input);
         });
@@ -227,32 +111,29 @@ function renderBeatTriggerLane(context: any): boolean {
     const grid = document.createElement("div");
     grid.className = "beat-event-grid";
     const refreshBeatGrid = () => {
-        const interval = Number.isFinite(samplesPerMinute)
-            ? samplesPerMinute / (Number(settings.bpm) * Number(settings.eventsPerBeat))
-            : Number(settings.eventIntervalSamples);
+        const interval = Number(outputSettings.eventIntervalSamples);
         const samplesPerPixel = Number(state.samplesPerPixel);
         if (!(interval > 0) || !Number.isFinite(interval) || !(samplesPerPixel > 0)) return;
 
         const gridStart = timelineStart();
         const periodPixels = interval / samplesPerPixel;
-        // When markers are dense, a repeating gradient is one GPU-painted
-        // texture rather than a DOM node per beat.  It is intentionally used
-        // only below the visual-resolution threshold; at readable zoom levels
-        // the DOM path below exactly matches the engine's round(n * interval).
-        if (periodPixels < 12) {
-            const phase = ((-gridStart / samplesPerPixel) % periodPixels + periodPixels) % periodPixels;
-            grid.replaceChildren();
-            grid.classList.add("compressed");
-            grid.style.setProperty("--beat-period", String(periodPixels) + "px");
-            grid.style.setProperty("--beat-phase", String(phase) + "px");
-            return;
+        const eventsPerBeat = Number(outputSettings.eventsPerBeat);
+        const eventsPerBar = Number(outputSettings.eventsPerBeat) * Number(outputSettings.beatsPerBar);
+        // Show every event while it is readable. Once it is not, retain bar
+        // boundaries and recursively remove every other bar. The bar length
+        // comes from the lane's time signature, rather than from an arbitrary
+        // fixed number of beats.
+        let eventStride = 1;
+        if (periodPixels < 12 && Number.isInteger(eventsPerBar) && eventsPerBar > 0) {
+            eventStride = eventsPerBar;
+            while (periodPixels * eventStride < 12) eventStride *= 2;
         }
 
-        grid.classList.remove("compressed");
         grid.style.removeProperty("--beat-period");
         grid.style.removeProperty("--beat-phase");
-        const eventTime = (eventIndex: number) => Math.round(eventIndex * interval);
-        let eventIndex = Math.max(0, Math.ceil(gridStart / interval));
+        grid.style.removeProperty("--beat-first-event-x");
+        const eventTime = (markerIndex: number) => Math.round(markerIndex * eventStride * interval);
+        let eventIndex = Math.max(0, Math.ceil(gridStart / (eventStride * interval)));
         while (eventIndex > 0 && eventTime(eventIndex - 1) >= gridStart) --eventIndex;
         while (eventTime(eventIndex) < gridStart) ++eventIndex;
         const end = gridStart + grid.clientWidth * samplesPerPixel;
@@ -261,6 +142,14 @@ function renderBeatTriggerLane(context: any): boolean {
             const time = eventTime(eventIndex);
             const marker = document.createElement("div");
             marker.className = "beat-marker";
+            const sourceEventIndex = eventIndex * eventStride;
+            if (sourceEventIndex % eventsPerBar === 0) {
+                marker.classList.add("bar");
+            } else if (sourceEventIndex % eventsPerBeat === 0) {
+                marker.classList.add("beat");
+            } else {
+                marker.classList.add("subdivision");
+            }
             marker.style.left = String((time - gridStart) / samplesPerPixel) + "px";
             marker.title = "trigger at sample " + String(time);
             markers.appendChild(marker);
@@ -268,13 +157,35 @@ function renderBeatTriggerLane(context: any): boolean {
         grid.replaceChildren(markers);
     };
     (grid as any).__ivRefreshBeats = refreshBeatGrid;
-    (grid as any).__ivApplyBeatSettings = (nextSettings: any) => {
+    (grid as any).__ivApplyBeatSettings = (nextSettings: any, revision: unknown) => {
         if (!nextSettings || typeof nextSettings !== "object") return;
-        settings = { ...settings, ...nextSettings };
-        const nextSamplesPerMinute = Number(settings.eventIntervalSamples) * Number(settings.bpm)
-            * Number(settings.eventsPerBeat);
-        if (Number.isFinite(nextSamplesPerMinute)) samplesPerMinute = nextSamplesPerMinute;
+        const nextRevision = Number(revision);
+        const nextSignature = JSON.stringify(nextSettings);
+        if (Number.isFinite(nextRevision)) {
+            if (nextRevision < outputRevision) return false;
+            if (nextRevision === outputRevision && nextSignature === outputStateSignature) return false;
+            outputRevision = Math.max(outputRevision, nextRevision);
+        }
+        outputSettings = { ...outputSettings, ...nextSettings };
+        outputStateSignature = nextSignature;
+        // A server notification is shared by every open lane view. Mirror it
+        // into untouched fields, while leaving the originating view's local
+        // edit in place until the notification acknowledges that exact value.
+        for (const [field, input] of inputsByField) {
+            const nextValue = nextSettings[field];
+            if (nextValue == null) continue;
+            if (locallyEditedFields.has(field)) {
+                if (Number(nextValue) === Number(inputSettings[field])) {
+                    locallyEditedFields.delete(field);
+                }
+                continue;
+            }
+            inputSettings[field] = nextValue;
+            input.value = String(nextValue);
+            input.classList.remove("invalid");
+        }
         refreshBeatGrid();
+        return true;
     };
     track.appendChild(grid);
     installTimelineControls?.(grid, timelineStart, false);
@@ -287,7 +198,7 @@ function renderBeatTriggerLane(context: any): boolean {
 
 const beatTriggerLanePlugin: LanePresentationPlugin = {
     typeId: "iv.timeline.beat-trigger",
-    css: ".beat-track{position:relative;display:flex;flex:1 1 auto;min-width:180px;min-height:0;flex-direction:column;overflow:hidden;background:var(--vscode-editor-background)}.beat-controls{display:flex;flex:0 0 auto;gap:8px;padding:2px 4px;align-items:center;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,rgba(128,128,128,.18));position:relative;z-index:2;width:max-content}.beat-control{display:flex;align-items:center;gap:3px;color:var(--vscode-descriptionForeground);font-size:.82em;white-space:nowrap}.beat-control-separator{font-size:1.25em;color:var(--vscode-foreground);line-height:1}.beat-control-suffix{font-size:.9em}.beat-controls input{width:48px;font:inherit;color:inherit;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border,transparent);cursor:ns-resize}.beat-controls input:focus{cursor:text}.beat-controls input.invalid{border-color:var(--vscode-inputValidation-errorBorder,var(--vscode-errorForeground))}.beat-event-grid{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;cursor:default;background:var(--vscode-editor-background)}.beat-event-grid.compressed{background-image:linear-gradient(90deg,var(--vscode-editorWidget-border,rgba(220,220,220,.55)) 0 1px,transparent 1px 100%);background-size:var(--beat-period) 100%;background-position:var(--beat-phase) 0}.beat-marker{position:absolute;top:0;bottom:0;width:1px;background:var(--vscode-editorWidget-border,rgba(220,220,220,.55));opacity:.9;pointer-events:none}",
+    css: ".beat-track{position:relative;display:flex;flex:1 1 auto;min-width:180px;min-height:0;flex-direction:column;overflow:hidden;background:var(--vscode-editor-background)}.beat-controls{display:flex;flex:0 0 auto;gap:8px;padding:2px 4px;align-items:center;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,rgba(128,128,128,.18));position:relative;z-index:2;width:max-content}.beat-control{display:flex;align-items:center;gap:3px;color:var(--vscode-descriptionForeground);font-size:.82em;white-space:nowrap}.beat-control-separator{font-size:1.25em;color:var(--vscode-foreground);line-height:1}.beat-control-suffix{font-size:.9em}.beat-controls input{width:48px;font:inherit;color:inherit;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border,transparent);cursor:ns-resize}.beat-controls input:focus{cursor:text}.beat-controls input.invalid{border-color:var(--vscode-inputValidation-errorBorder,var(--vscode-errorForeground))}.beat-event-grid{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;cursor:default;background:var(--vscode-editor-background)}.beat-marker{position:absolute;top:0;bottom:0;width:1px;background:var(--vscode-editorWidget-border,rgba(220,220,220,.55));pointer-events:none}.beat-marker.bar{width:3px;opacity:1}.beat-marker.beat{opacity:.9}.beat-marker.subdivision{opacity:.42}",
     render: renderBeatTriggerLane,
 };
 
