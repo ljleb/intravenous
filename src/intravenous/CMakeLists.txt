@@ -34,6 +34,9 @@ function(iv_apply_common_cxx_settings target defs_visibility)
             -Wpedantic
             -Wno-deprecated-declarations
         )
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(${target} PRIVATE -Wno-c2y-extensions)
+        endif()
     endif()
 endfunction()
 

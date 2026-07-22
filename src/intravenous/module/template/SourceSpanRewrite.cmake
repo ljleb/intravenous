@@ -2,7 +2,7 @@ include_guard(GLOBAL)
 
 function(iv_rewrite_sources_to_build_dir out_var)
     set(options)
-    set(oneValueArgs TARGET COMPILE_SETTINGS_TARGET)
+    set(oneValueArgs TARGET COMPILE_SETTINGS_TARGET PCH_HEADER)
     set(multiValueArgs SOURCES)
     cmake_parse_arguments(IVSSR "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -26,6 +26,13 @@ function(iv_rewrite_sources_to_build_dir out_var)
 
     if(IVSSR_COMPILE_SETTINGS_TARGET)
         target_link_libraries(${_iv_compile_db_target} PRIVATE ${IVSSR_COMPILE_SETTINGS_TARGET})
+    endif()
+
+    # Give the database-only target its own PCH. The rewriter uses the
+    # resulting compile command, so parsing benefits from the PCH without
+    # making rewritten sources depend on the consuming target's PCH.
+    if(IVSSR_PCH_HEADER)
+        target_precompile_headers(${_iv_compile_db_target} PRIVATE "${IVSSR_PCH_HEADER}")
     endif()
 
     # These options are irrelevant to the database-only object itself, but
@@ -65,11 +72,10 @@ function(iv_rewrite_sources_to_build_dir out_var)
     set(_iv_rewritten_sources "")
     set(_iv_rewriter_extra_args "")
     set(_iv_rewriter_root_args "")
-    set(_iv_rewriter_pch_args "")
     set(_iv_rewriter_pch_dependency "")
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        set(_iv_rewriter_pch_dir "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${IVSSR_TARGET}.dir")
-        set(_iv_rewriter_pch "${_iv_rewriter_pch_dir}/cmake_pch.hxx.pch")
+    if(IVSSR_PCH_HEADER AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set(_iv_rewriter_pch
+            "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${_iv_compile_db_target}.dir/cmake_pch.hxx.pch")
         list(APPEND _iv_rewriter_pch_dependency "${_iv_rewriter_pch}")
     endif()
     if(DEFINED IV_INCLUDE_DIR AND NOT IV_INCLUDE_DIR STREQUAL "")
@@ -116,8 +122,10 @@ function(iv_rewrite_sources_to_build_dir out_var)
                 -p "${CMAKE_BINARY_DIR}"
                 ${_iv_rewriter_root_args}
                 ${_iv_rewriter_extra_args}
-                ${_iv_rewriter_pch_args}
-                --effective-command-source "${_iv_rewritten_source}"
+                # The database-only target records the original source without
+                # a PCH. Using the consuming target's rewritten source would
+                # require that PCH first, creating a Ninja dependency cycle.
+                --effective-command-source "${_iv_source_abs}"
                 --output "${_iv_rewritten_source}"
                 "${_iv_source_abs}"
             DEPENDS

@@ -588,7 +588,7 @@ namespace iv {
 
         Impl()
         {
-            format_manager.addDefaultFormats();
+            ::juce::addHeadlessDefaultFormatsToManager(format_manager);
         }
     };
 
@@ -655,7 +655,7 @@ namespace iv {
         request.plugin_path = resolve_plugin_path(request.plugin_path);
 
         ::juce::AudioPluginFormatManager format_manager;
-        format_manager.addDefaultFormats();
+        ::juce::addHeadlessDefaultFormatsToManager(format_manager);
 
         ::juce::PluginDescription const description = resolve_plugin_description(format_manager, request);
         auto instance = create_plugin_instance(format_manager, request, 48000.0, 512);

@@ -477,11 +477,25 @@ namespace iv::test {
     inline void write_text_advancing_timestamp(
         std::filesystem::path const& path,
         std::string const& text,
-        std::chrono::seconds delta = std::chrono::seconds(2)
+        std::chrono::seconds /*delta*/ = std::chrono::seconds(2)
     )
     {
         write_text(path, text);
-        advance_write_time(path, delta);
+        // Do not stamp inputs into the future. Ninja keeps regenerating its
+        // manifest while any CMake input remains newer than build.ninja.
+        // The write itself changes the timestamp; setting it to the current
+        // filesystem clock handles coarse timestamp resolutions as well.
+        std::error_code ec;
+        std::filesystem::last_write_time(
+            path,
+            std::filesystem::file_time_type::clock::now(),
+            ec
+        );
+        if (ec) {
+            std::cerr << "failed to update timestamp for '" << path.string()
+                      << "': " << ec.message() << '\n';
+            std::exit(1);
+        }
     }
 
     inline std::filesystem::file_time_type write_time(std::filesystem::path const& path)

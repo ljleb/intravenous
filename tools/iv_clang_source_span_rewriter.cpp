@@ -999,12 +999,12 @@ namespace {
         frontend_options.ProgramAction = clang::frontend::ParseSyntaxOnly;
 
         clang::CompilerInstance compiler(std::move(invocation));
-        compiler.createDiagnostics(*llvm::vfs::getRealFileSystem());
+        compiler.createDiagnostics();
         if (!compiler.hasDiagnostics()) {
             return 1;
         }
         compiler.createFileManager();
-        compiler.createSourceManager(compiler.getFileManager());
+        compiler.createSourceManager();
         RewriteAction action;
         return compiler.ExecuteAction(action) ? 0 : 1;
     }

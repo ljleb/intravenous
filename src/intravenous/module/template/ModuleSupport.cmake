@@ -74,6 +74,7 @@ function(iv_add_runtime_module target)
         if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             target_compile_options(${target}__compile_settings INTERFACE
                 -Wno-unused-comparison
+                -Wno-c2y-extensions
             )
         endif()
     endif()
@@ -138,6 +139,7 @@ function(iv_add_runtime_module target)
         iv_runtime_module_user_sources
         TARGET ${target}
         COMPILE_SETTINGS_TARGET ${target}__compile_settings
+        PCH_HEADER "${IV_MODULE_PCH_HEADER}"
         SOURCES ${iv_runtime_module_user_sources}
     )
 

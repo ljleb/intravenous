@@ -54,9 +54,12 @@
 
 #define IV_INVOKE_LINKER_EVENT(event_name, ...) \
     do { \
-        for (auto const subscriber : event_name##_subscribers()) { \
-            subscriber(__VA_ARGS__); \
-        } \
+        auto iv_linker_event_invoke = [&](auto&&... iv_linker_event_args) { \
+            for (auto const subscriber : event_name##_subscribers()) { \
+                subscriber(iv_linker_event_args...); \
+            } \
+        }; \
+        iv_linker_event_invoke(__VA_ARGS__); \
     } while (false)
 
 #define IV_INVOKE_SINGLETON_EVENT(event_name, ...) \
