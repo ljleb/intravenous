@@ -42,6 +42,9 @@ function(add_iv_gtest target source)
         target_compile_options(${target} PRIVATE /W4 /permissive-)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(${target} PRIVATE -Wno-c2y-extensions)
+        endif()
     endif()
 
     target_link_libraries(${target} PRIVATE

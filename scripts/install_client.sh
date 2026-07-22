@@ -13,6 +13,7 @@ fi
 
 cd "$client_dir"
 rm -f "$vsix_path"
+npm ci
 INTRAVENOUS_DEFAULT_DIR="$backend_dir" npm run build
 vsce package --allow-missing-repository --skip-license --out "$vsix_path"
 codium --install-extension "$vsix_path" --force

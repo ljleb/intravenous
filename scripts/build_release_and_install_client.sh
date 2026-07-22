@@ -4,4 +4,5 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$repo_root"
-nix-shell --run 'cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DJUCE_DIR="$JUCE_DIR" && cmake --build build-release --target intravenous iv_module_shared iv_clang_source_span_rewriter --parallel 8 && ./scripts/install_client.sh "$PWD/build-release/src/intravenous"'
+cmake --build build-release --target intravenous iv_module_shared iv_clang_source_span_rewriter --parallel 8
+./scripts/install_client.sh "$PWD/build-release/src/intravenous"
