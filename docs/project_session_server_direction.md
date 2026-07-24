@@ -137,8 +137,28 @@ session protocol; it does not need a public control port.
 An audio consumer holds a lease. The first valid lease starts the virtual sink
 and relay; the final released or expired lease tears them down. The temporary
 device choice is a session-scoped override and must not silently replace the
-project's persisted audio-device selection. The server records and restores the
+project’s persisted audio-device selection. The server records and restores the
 previous output device when monitoring ends.
+
+The relay must apply configurable silence suppression before network
+transmission. When the captured monitor level remains below a configured
+threshold for the configured hold duration, it sends no audio media packets to
+that consumer. This is stronger than merely reducing the codec bitrate and is
+important for metered links. The receiver treats the absence of packets as
+silence after its normal jitter-buffer timeout. The relay should use short
+attack/release hysteresis so quiet passages do not repeatedly start and stop
+the stream. Opus discontinuous transmission may be enabled as an additional
+optimization, but it does not replace server-side silence suppression.
+
+Audio encoding is a consumer preference, not one global project setting. An
+audio lease includes concrete requested Opus settings, beginning with target
+`bitrate_bps` and later, when useful, frame duration, in-band FEC, discontinuous
+transmission, and expected packet-loss percentage. The server validates each
+setting against configured safety limits and passes the accepted parameters to
+the relay. Because different consumers can request different bitrates, the
+initial implementation encodes a stream independently per consumer. Sharing one
+encoded stream is an optional later optimization and must not remove per-client
+encoding choice.
 
 This permits later additions such as:
 
@@ -165,6 +185,8 @@ machine and immediately produce audio while monitoring it on the local machine.
 4. Add a VS Code webview receiver using browser WebRTC and Web Audio.
 5. Carry offer/answer/ICE signaling through ordinary extension-to-webview
    messages, which Remote SSH already transports as control traffic.
+6. Include silence threshold/hold settings and concrete client-requested Opus
+   encoding settings, including bitrate, in the audio lease from the beginning.
 
 For this stage, one client and one audio lease are sufficient as a product
 constraint, but the request/response shape must already identify the client and
@@ -191,9 +213,11 @@ the host machine:
 
 There remains one authoritative audio engine and one authoritative project
 state. Each client receives synchronized state notifications and, if permitted,
-an individual audio stream. The server may share a captured monitor source and
-encode separately per consumer when necessary; optimization to share an encoded
-stream is a later concern.
+an individual audio stream. The server shares the captured monitor source but
+encodes separately per consumer so each client can choose its own bitrate and
+other encoding settings and receive no packets during remote silence.
+Optimization to share an encoded stream is a later concern and cannot replace
+those semantics.
 
 Source-file synchronization is a separate concern from project-runtime state.
 A collaboration tool, shared filesystem, or other mechanism keeps text files
