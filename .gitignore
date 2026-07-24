@@ -2,6 +2,7 @@
 .cache
 *.wav
 /.cache
+/.direnv
 /.codex
 /.claude
 .intravenous-tooling/
