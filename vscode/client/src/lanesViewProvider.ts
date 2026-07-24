@@ -569,6 +569,8 @@ export class LaneViewProvider {
             border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.16));
             box-sizing: border-box;
         }
+        /* Cover the playhead through the row separator as well as the meter. */
+        .lane-row.realtime { z-index: 6; background: var(--vscode-sideBar-background); }
         .lane-row.selected { box-shadow: inset 3px 0 var(--vscode-focusBorder); }
         .lane-connection-button {
             position: absolute; z-index: 9; left: 0; top: 0;
@@ -667,6 +669,8 @@ export class LaneViewProvider {
         .playhead { position: absolute; z-index: 3; top: 0; bottom: 0; width: 2px; background: var(--vscode-editorCursor-foreground, var(--vscode-charts-orange)); box-shadow: 0 0 5px var(--vscode-editorCursor-foreground, var(--vscode-charts-orange)); pointer-events: none; }
         .canvas-playhead { position: absolute; z-index: 5; top: 0; bottom: 0; width: 2px; background: var(--vscode-editorCursor-foreground, var(--vscode-charts-orange)); box-shadow: 0 0 5px var(--vscode-editorCursor-foreground, var(--vscode-charts-orange)); pointer-events: none; }
         .realtime-face {
+            /* The canvas playhead describes compiled timeline samples, so
+               realtime meter faces deliberately cover it. */
             flex: 1 1 auto; position: relative; display: flex; flex-direction: column; gap: 3px; padding: 5px 14px;
             background: var(--vscode-sideBar-background);
         }
