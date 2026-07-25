@@ -89,6 +89,7 @@ type LaneViewContentNotification = Record<string, unknown> & {
 };
 
 type ServerMessageNotification = {
+    level?: string;
     message?: string;
 };
 
@@ -203,17 +204,14 @@ export class WorkspaceSession {
             }
             const lines = String(params.message).split(/\r?\n/);
             for (const line of lines) {
-                if (line.startsWith("lane topology diagnostic:")) {
-                    this.laneTopologyDiagnostics.appendLine(line);
-                    continue;
-                }
                 // These are normal high-frequency reconciliation traces, not
                 // useful alongside an interactive pointer diagnostic.
                 if (/^(graph public ports reconciled|graph input lanes |iv module execution tasks changed:|iv instances realized:|graph input timeline batch|timeline execution tasks changed:)/.test(line)) {
                     continue;
                 }
                 if (line.length > 0) {
-                    this.outputChannel.appendLine(line);
+                    this.outputChannel.appendLine(params.level === "debug"
+                        ? `[debug]: ${line}` : line);
                 }
             }
         });
@@ -1119,6 +1117,11 @@ export class WorkspaceSession {
     async createTimelineLane(typeId: string): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
         await this.rpc.createTimelineLane(typeId);
+    }
+
+    async deleteTimelineLane(laneId: string): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        await this.rpc.deleteTimelineLane(laneId);
     }
 
     async connectTimelineLanes(

@@ -315,8 +315,13 @@ namespace iv::test {
     {
         auto const workspace = shared_test_fixtures_root() / sanitize_test_token(fixture_name);
         auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(fixture_name) + ".lock"));
-        std::filesystem::remove_all(workspace);
-        copy_directory(test_modules_root() / fixture_name, workspace);
+        // Shared fixtures are consumed concurrently by separate test processes.
+        // Initialize once instead of refreshing on every request: after this
+        // function returns, callers may be compiling or canonicalizing files in
+        // the workspace, so deleting it would race those readers.
+        if (!std::filesystem::exists(workspace)) {
+            copy_directory(test_modules_root() / fixture_name, workspace);
+        }
         return workspace;
     }
 
@@ -326,7 +331,10 @@ namespace iv::test {
         auto const lock = ScopedFileLock(
             shared_test_fixtures_root() /
             (sanitize_test_token(fixture_name) + ".project.lock"));
-        write_text(workspace / "iv_project.jsonl", "");
+        auto const project_file = workspace / "iv_project.jsonl";
+        if (!std::filesystem::exists(project_file)) {
+            write_text(project_file, "");
+        }
         return workspace;
     }
 

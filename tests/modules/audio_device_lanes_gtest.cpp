@@ -220,6 +220,19 @@ std::optional<iv::LaneId> find_lane_with_unit(iv::Timeline &timeline, std::strin
     });
 }
 
+template<typename Predicate>
+bool wait_until(Predicate &&predicate, std::chrono::milliseconds timeout = 2s)
+{
+    auto const deadline = std::chrono::steady_clock::now() + timeout;
+    while (!predicate()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    return true;
+}
+
 TEST(AudioInputSynchronizer, PullsRateTowardTargetBufferDepth)
 {
     iv::AudioInputSynchronizer too_full(48000, 64, 48000, 128);
@@ -273,7 +286,6 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
 
     iv::bind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
     iv::bind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, execution);
-    iv::bind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
 
     audio_device_lanes.bind();
 
@@ -305,10 +317,18 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
     runner->update_tasks(update);
     iv::bind_timeline_timeline_execution_bridge(timeline, execution);
 
+    auto const source_task_id = iv::timeline_lane_task_id(iv::LaneId{1000});
+    auto const output_task_id = iv::timeline_lane_task_id(*output_lane);
+    ASSERT_TRUE(wait_until([&] {
+        auto const active_tasks = runner->active_task_ids();
+        return std::ranges::find(active_tasks, source_task_id) != active_tasks.end()
+            && std::ranges::find(active_tasks, output_task_id) != active_tasks.end();
+    })) << "expected the timeline task graph to become active before requesting audio";
+
+    iv::bind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
     output_state->begin_requested_block(0, kBlockSize);
     ASSERT_TRUE(output_state->wait_until_block_ready_for(2s));
 
-    auto const source_task_id = iv::timeline_lane_task_id(iv::LaneId{1000});
     auto const active_tasks = runner->active_task_ids();
     ASSERT_NE(
         std::find(active_tasks.begin(), active_tasks.end(), source_task_id),

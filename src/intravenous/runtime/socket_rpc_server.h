@@ -62,6 +62,8 @@ namespace iv {
         void (*)(GetTimelineLaneTypesRequest const &, SocketRpcLaneTypesResultBuilder &);
     using SocketRpcCreateTimelineLaneEvent =
         void (*)(CreateTimelineLaneRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcDeleteTimelineLaneEvent =
+        void (*)(DeleteTimelineLaneRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcGetAudioDevicesEvent =
         void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
     using SocketRpcSetAudioDevicesEvent =
@@ -118,6 +120,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcDisconnectTimelineLanesEvent, iv_socket_rpc_disconnect_timeline_lanes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetTimelineLaneTypesEvent, iv_socket_rpc_get_timeline_lane_types_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateTimelineLaneEvent, iv_socket_rpc_create_timeline_lane_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDeleteTimelineLaneEvent, iv_socket_rpc_delete_timeline_lane_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcOpenLaneViewEvent, iv_socket_rpc_open_lane_view_event);

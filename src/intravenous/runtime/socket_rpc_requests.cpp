@@ -455,6 +455,10 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
         return ParsedSocketRpcRequest{.request_id = request_id,
             .payload = CreateTimelineLaneRequest{.type_id = parse_string_param(params, "typeId")}};
     }
+    if (method == "timeline.deleteLane") {
+        return ParsedSocketRpcRequest{.request_id = request_id,
+            .payload = DeleteTimelineLaneRequest{.lane_id = InternedString::from_string(parse_string_param(params, "laneId"))}};
+    }
     if (method == "audioDevices.get") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,

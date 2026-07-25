@@ -345,6 +345,10 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_timeline_lane_event, event_request, builder);
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, DeleteTimelineLaneRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_delete_timeline_lane_event, event_request, builder);
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetAudioDevicesRequest>) {
                         SocketRpcAudioDevicesResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(

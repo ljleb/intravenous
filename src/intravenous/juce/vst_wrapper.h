@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/graph/builder.h>
-#include <intravenous/juce/midi_input.h>
 #include <intravenous/node/lifecycle.h>
 
 #include <cstdint>
@@ -18,6 +17,11 @@
 #endif
 
 namespace iv {
+    namespace details {
+        template<class...>
+        inline constexpr bool dependent_false_v = false;
+    }
+
     namespace juce {
 #if !IV_ENABLE_JUCE_VST
         template<typename... Args>

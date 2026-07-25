@@ -154,6 +154,10 @@ export class WorkspaceRpc {
         return this.client.request("timeline.createLane", { typeId });
     }
 
+    deleteTimelineLane(laneId: string): Promise<void> {
+        return this.client.request("timeline.deleteLane", { laneId });
+    }
+
     connectTimelineLanes(
         sourceLaneId: string,
         targetLaneId: string,

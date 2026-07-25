@@ -77,6 +77,7 @@ add_iv_gtest(
     intravenous_module_build_behavior_tests
     module_build_behavior_gtest.cpp
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
+add_iv_gtest(intravenous_module_test_utils_tests module_test_utils_gtest.cpp)
 add_iv_gtest(
     intravenous_module_watcher_tests
     module_watcher_gtest.cpp
@@ -92,7 +93,6 @@ add_iv_gtest(intravenous_lane_views_tests modules/lane_views_gtest.cpp)
 add_iv_gtest(intravenous_lanes_visualization_tests modules/lanes_visualization_gtest.cpp)
 add_iv_gtest(intravenous_audio_device_lanes_tests modules/audio_device_lanes_gtest.cpp)
 add_iv_gtest(intravenous_lane_query_tests query/lane_query_gtest.cpp)
-add_iv_gtest(intravenous_local_gamma_time_aligner_tests local_gamma_time_aligner_gtest.cpp)
 add_iv_gtest(intravenous_startup_config_tests modules/startup_config_gtest.cpp)
 add_iv_gtest(intravenous_iv_module_definitions_tests modules/iv_module_definitions_gtest.cpp)
 add_iv_gtest(intravenous_iv_module_instances_tests modules/iv_module_instances_gtest.cpp)

@@ -20,6 +20,7 @@ export class LaneViewProvider {
         this.scrubHandler = null;
         this.laneUiStateHandler = null;
         this.laneRenameHandler = null;
+        this.laneDeleteHandler = null;
         this.connectHandler = null;
         this.disconnectHandler = null;
         this.rewireHandler = null;
@@ -134,6 +135,7 @@ export class LaneViewProvider {
     setScrubHandler(handler) { this.scrubHandler = handler; }
     setLaneUiStateHandler(handler) { this.laneUiStateHandler = handler; }
     setLaneRenameHandler(handler) { this.laneRenameHandler = handler; }
+    setLaneDeleteHandler(handler) { this.laneDeleteHandler = handler; }
     setConnectHandler(handler) { this.connectHandler = handler; }
     setDisconnectHandler(handler) { this.disconnectHandler = handler; }
     setRewireHandler(handler) { this.rewireHandler = handler; }
@@ -299,6 +301,15 @@ export class LaneViewProvider {
             }
             if (message.type === "renameLane") {
                 this.laneRenameHandler?.(String(message.laneId || ""), String(message.name || ""));
+                return;
+            }
+            if (message.type === "deleteLane") {
+                const laneId = String(message.laneId || "");
+                this.connectionDebugHandler?.(
+                    `host received delete laneId=${laneId || "<empty>"} handler=${this.laneDeleteHandler ? "installed" : "missing"}`);
+                if (laneId && this.laneDeleteHandler) {
+                    this.laneDeleteHandler(laneId);
+                }
                 return;
             }
             if (message.type === "connectLanes") {
@@ -590,6 +601,13 @@ export class LaneViewProvider {
         .lane-debug-copy-button.realtime { border: 1px solid var(--vscode-charts-blue); }
         .lane-debug-copy-button.compiled { border: 1px solid var(--vscode-charts-orange); }
         .lane-debug-copy-button:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+        .lane-delete-button {
+            position: absolute; z-index: 9; left: calc(var(--lane-header-width) - 40px); top: 50%; transform: translateY(-50%);
+            width: 15px; height: 15px; padding: 0; border: 0; border-radius: 2px;
+            color: var(--vscode-descriptionForeground); background: transparent; cursor: pointer;
+            font: 14px/15px var(--vscode-font-family);
+        }
+        .lane-delete-button:hover { color: var(--vscode-errorForeground); background: var(--vscode-toolbar-hoverBackground); }
         .lane-input-wheel {
             position: fixed; z-index: 30; width: 0; height: 0; pointer-events: none;
         }
@@ -814,6 +832,15 @@ export class LaneViewProvider {
         let pendingLaneQueryCompletion = 0;
         let laneQueryCompletionRequestId = 0;
         let activeLaneQuerySuggestion = 0;
+        function isAuthoredLane(lane) {
+            return Boolean(lane?.modelTypeId);
+        }
+        function requestLaneDeletion(laneIds) {
+            for (const laneId of laneIds) {
+                connectionDebug("webview posting delete laneId=" + laneId);
+                vscode.postMessage({ type: "deleteLane", laneId });
+            }
+        }
         let laneQueryCompletion = null;
         function connectionDebug(message) {
             vscode.postMessage({ type: "connectionDebug", message });
@@ -1042,10 +1069,18 @@ export class LaneViewProvider {
             updateLaneQueryFromInput();
         }
         document.addEventListener("keydown", (event) => {
-            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
             const active = document.activeElement;
             if (active?.matches?.("input, textarea, select, [contenteditable='true']")
                 || active?.isContentEditable) return;
+            if (event.key === "Delete" && state.selectedLaneId) {
+                const selected = state.lanes.find((lane) => String(lane.laneId) === state.selectedLaneId);
+                if (isAuthoredLane(selected)) {
+                    event.preventDefault();
+                    requestLaneDeletion([state.selectedLaneId]);
+                }
+                return;
+            }
+            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
             if (!Array.isArray(state.lanes) || state.lanes.length === 0) return;
 
             const currentIndex = state.lanes.findIndex((lane) =>
@@ -1447,6 +1482,37 @@ export class LaneViewProvider {
             }, { once: true }), 0);
         }
 
+        function showLaneContextMenu(event, lane) {
+            event.preventDefault();
+            event.stopPropagation();
+            document.querySelectorAll(".meter-menu").forEach((menu) => menu.remove());
+            const menu = document.createElement("div");
+            menu.className = "meter-menu";
+            const rename = document.createElement("button");
+            rename.textContent = "Rename lane…";
+            rename.addEventListener("click", () => {
+                menu.remove();
+                showRenameDialog(lane);
+            });
+            menu.appendChild(rename);
+            if (isAuthoredLane(lane)) {
+                const remove = document.createElement("button");
+                remove.textContent = "Delete lane";
+                remove.addEventListener("click", () => {
+                    connectionDebug("webview context-menu delete clicked laneId=" + lane.laneId);
+                    menu.remove();
+                    requestLaneDeletion([String(lane.laneId)]);
+                });
+                menu.appendChild(remove);
+            }
+            menu.style.left = String(event.clientX) + "px";
+            menu.style.top = String(event.clientY) + "px";
+            document.body.appendChild(menu);
+            setTimeout(() => document.addEventListener("pointerdown", (pointerEvent) => {
+                if (!menu.contains(pointerEvent.target)) menu.remove();
+            }, { once: true }), 0);
+        }
+
         function timelineStart() {
             return Math.round(state.panSamples);
         }
@@ -1626,8 +1692,7 @@ export class LaneViewProvider {
                     renderConnections();
                 });
                 row.addEventListener("contextmenu", (event) => {
-                    event.preventDefault();
-                    showRenameDialog(lane);
+                    showLaneContextMenu(event, lane);
                 });
 
                 const connectionButton = document.createElement("button");
@@ -1746,6 +1811,21 @@ export class LaneViewProvider {
                     });
                 });
                 row.appendChild(debugCopy);
+
+                if (lane.modelTypeId) {
+                    const deleteButton = document.createElement("button");
+                    deleteButton.type = "button";
+                    deleteButton.className = "lane-delete-button";
+                    deleteButton.textContent = "×";
+                    deleteButton.title = "Delete authored lane";
+                    deleteButton.setAttribute("aria-label", "Delete authored lane");
+                    deleteButton.addEventListener("click", (event) => {
+                        event.stopPropagation();
+                        connectionDebug("webview delete-button clicked laneId=" + lane.laneId);
+                        requestLaneDeletion([String(lane.laneId)]);
+                    });
+                    row.appendChild(deleteButton);
+                }
 
                 const label = document.createElement("div");
                 label.className = "lane-label";

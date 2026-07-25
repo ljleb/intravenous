@@ -235,12 +235,23 @@ TEST(SocketRpcRequestParser, ParsesSetTimelineLaneSampleChannelTypeRequest)
     EXPECT_EQ(request->sample_channel_type, iv::ChannelTypeId::mono);
 }
 
+TEST(SocketRpcRequestParser, ParsesDeleteTimelineLaneRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":30,"method":"timeline.deleteLane","params":{"laneId":"lane-42"}})");
+
+    EXPECT_EQ(parsed.request_id, 30);
+    auto const* request = std::get_if<iv::DeleteTimelineLaneRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->lane_id.str(), "lane-42");
+}
+
 TEST(SocketRpcRequestParser, ParsesGetAudioDevicesRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":30,"method":"audioDevices.get","params":{}})");
+        R"({"jsonrpc":"2.0","id":31,"method":"audioDevices.get","params":{}})");
 
-    EXPECT_EQ(parsed.request_id, 30);
+    EXPECT_EQ(parsed.request_id, 31);
     auto const *request = std::get_if<iv::GetAudioDevicesRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
 }
@@ -248,9 +259,9 @@ TEST(SocketRpcRequestParser, ParsesGetAudioDevicesRequest)
 TEST(SocketRpcRequestParser, ParsesSetAudioDevicesRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":31,"method":"audioDevices.set","params":{"outputDeviceId":"default","inputDeviceId":null}})");
+        R"({"jsonrpc":"2.0","id":32,"method":"audioDevices.set","params":{"outputDeviceId":"default","inputDeviceId":null}})");
 
-    EXPECT_EQ(parsed.request_id, 31);
+    EXPECT_EQ(parsed.request_id, 32);
     auto const *request = std::get_if<iv::SetAudioDevicesRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
     ASSERT_TRUE(request->output_device_id.has_value());

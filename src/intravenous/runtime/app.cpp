@@ -66,6 +66,7 @@
 #include <intravenous/runtime/timeline_execution_lanes_visualization_bridge.h>
 #include <intravenous/runtime/timeline_execution_task_runner_bridge.h>
 #include <intravenous/runtime/timeline_lane_filters_bridge.h>
+#include <intravenous/runtime/timeline_lane_batch_bridge.h>
 #include <intravenous/runtime/timeline_lane_query_schema_bridge.h>
 #include <intravenous/runtime/timeline_timeline_execution_bridge.h>
 
@@ -268,6 +269,7 @@ namespace iv {
                 startup.workspace_root,
                 parse_search_path_env());
             startup_log("binding runtime bridges");
+            bind_timeline_lane_batch_bridge(timeline);
             bind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
             bind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, timeline_execution);
             bind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
@@ -396,6 +398,7 @@ namespace iv {
             unbind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
             unbind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, timeline_execution);
             unbind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
+            unbind_timeline_lane_batch_bridge(timeline);
             unbind_timeline_execution_lanes_visualization_bridge(timeline_execution);
             unbind_task_runner_lanes_visualization_bridge(lanes_visualization);
             unbind_lanes_visualization_timeline_bridge(lanes_visualization, timeline);

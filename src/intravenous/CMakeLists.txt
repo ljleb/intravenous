@@ -374,6 +374,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/timeline_execution_lanes_visualization_bridge.cpp
     runtime/timeline_execution_task_runner_bridge.cpp
     runtime/timeline_lane_filters_bridge.cpp
+    runtime/timeline_lane_batch_bridge.cpp
     runtime/timeline_lane_query_schema_bridge.cpp
     runtime/timeline_timeline_execution_bridge.cpp
     query/lane_query_engine.cpp

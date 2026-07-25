@@ -114,6 +114,18 @@ void AuthoredLanes::update_canonical_state(InternedString lane_id, std::string s
     it->second.record.serialized_state = std::move(serialized_state);
 }
 
+std::optional<LaneId> AuthoredLanes::erase(InternedString lane_id)
+{
+    auto const it = lanes_.find(lane_id);
+    if (it == lanes_.end()) return std::nullopt;
+    auto const runtime_lane = it->second.runtime_lane;
+    lanes_.erase(it);
+    std::erase_if(connections_, [&](AuthoredLaneConnection const& connection) {
+        return connection.source_lane_id == lane_id || connection.target_lane_id == lane_id;
+    });
+    return runtime_lane;
+}
+
 std::vector<AuthoredLaneRecord> AuthoredLanes::records() const
 {
     std::vector<AuthoredLaneRecord> result;

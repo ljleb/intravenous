@@ -75,10 +75,18 @@ namespace iv {
         std::vector<LaneId> changed_lanes {};
     };
 
+    // Lane owners submit structural changes to Timeline. Timeline is the
+    // single owner of graph mutation and of the resulting lane-set snapshot.
+    using TimelineLaneBatchRequestedEvent =
+        void (*)(TimelineLaneBatchUpdate const &);
+
     using TimelineLanesChangedEvent =
         void (*)(TimelineLanesChanged const &);
 
     IV_DECLARE_LINKER_EVENT(
         TimelineLanesChangedEvent,
         iv_runtime_timeline_lanes_changed_event);
+    IV_DECLARE_LINKER_EVENT(
+        TimelineLaneBatchRequestedEvent,
+        iv_runtime_timeline_lane_batch_requested_event);
 } // namespace iv

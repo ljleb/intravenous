@@ -1,16 +1,23 @@
 #include <intravenous/basic_lane_nodes/controls.h>
 #include <intravenous/basic_lane_nodes/beat_trigger.h>
 #include <intravenous/runtime/graph_input_lane_controller.h>
+#include <intravenous/runtime/authored_lanes.h>
 #include <intravenous/basic_lane_nodes/type_erased.h>
+#include <intravenous/linker_event.h>
 #include <intravenous/lane_node/graph.h>
 #include <intravenous/runtime/lane_graph.h>
+#include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/runtime_project_timeline_execution_bridge.h>
 #include <intravenous/runtime/timeline.h>
+#include <intravenous/runtime/timeline_execution.h>
+#include <intravenous/runtime/timeline_lane_batch_bridge.h>
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <concepts>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <memory>
 #include <stdexcept>
@@ -18,6 +25,31 @@
 #include <variant>
 
 namespace {
+    struct TimelineBatchWitness {
+        std::vector<iv::TimelineLanesChanged> changes {};
+        std::vector<iv::TimelineLaneBatchUpdate> batches {};
+    };
+
+    TimelineBatchWitness *g_timeline_batch_witness = nullptr;
+
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::TimelineLanesChangedEvent,
+        iv_runtime_timeline_lanes_changed_event,
+        +[](iv::TimelineLanesChanged const &change) {
+            if (g_timeline_batch_witness != nullptr) {
+                g_timeline_batch_witness->changes.push_back(change);
+            }
+        });
+
+    IV_SUBSCRIBE_LINKER_EVENT(
+        iv::TimelineLaneBatchRequestedEvent,
+        iv_runtime_timeline_lane_batch_requested_event,
+        +[](iv::TimelineLaneBatchUpdate const &batch) {
+            if (g_timeline_batch_witness != nullptr) {
+                g_timeline_batch_witness->batches.push_back(batch);
+            }
+        });
+
     struct TestCompiledEventLaneNode {
         std::array<iv::CompiledEventLaneInputConfig, 1> compiled_event_inputs() const
         {
@@ -942,4 +974,93 @@ TEST(Lanes, LaneGraphRemoveLaneDisconnectsDanglingConnections)
     EXPECT_TRUE(graph.outputs_for(middle).empty());
     EXPECT_TRUE(graph.outputs_for(source).empty());
     EXPECT_TRUE(graph.inputs_for(target).empty());
+}
+
+TEST(Lanes, AuthoredLanesEraseRemovesTheRecordAndItsConnections)
+{
+    iv::AuthoredLanes lanes(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const lane_id = iv::InternedString::from_string("authored-lane");
+    auto const batch = lanes.create("iv.timeline.beat-trigger", lane_id);
+    ASSERT_EQ(batch.upserts.size(), 1u);
+    auto const runtime_lane = batch.upserts.front().lane;
+    lanes.record_connection(iv::AuthoredLaneConnection{
+        .source_lane_id = lane_id,
+        .target_lane_id = iv::InternedString::from_string("other-lane"),
+        .input = {},
+    });
+
+    EXPECT_EQ(lanes.erase(lane_id), runtime_lane);
+    EXPECT_FALSE(lanes.contains(lane_id));
+    EXPECT_TRUE(lanes.records().empty());
+    EXPECT_TRUE(lanes.connections().empty());
+    EXPECT_FALSE(lanes.erase(lane_id).has_value());
+}
+
+TEST(TimelineLaneBatchBridge, RemovalMutatesTimelineAndPublishesFreshLaneSet)
+{
+    iv::Timeline timeline;
+    iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const public_id = iv::InternedString::from_string("authored-lane");
+    auto const create_batch = authored.create("iv.timeline.beat-trigger", public_id);
+    ASSERT_EQ(create_batch.upserts.size(), 1u);
+    auto const runtime_lane = create_batch.upserts.front().lane;
+
+    TimelineBatchWitness witness;
+    g_timeline_batch_witness = &witness;
+    iv::bind_timeline_lane_batch_bridge(timeline);
+    IV_INVOKE_LINKER_EVENT(iv::iv_runtime_timeline_lane_batch_requested_event, create_batch);
+    ASSERT_TRUE(timeline.contains_lane(runtime_lane));
+    ASSERT_FALSE(witness.changes.empty());
+
+    witness.changes.clear();
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_runtime_timeline_lane_batch_requested_event,
+        iv::TimelineLaneBatchUpdate{.removals = {runtime_lane}});
+
+    EXPECT_FALSE(timeline.contains_lane(runtime_lane));
+    ASSERT_EQ(witness.changes.size(), 1u);
+    auto const &change = witness.changes.front();
+    EXPECT_TRUE(change.lane_set_changed);
+    ASSERT_EQ(change.removed_lanes, std::vector<iv::LaneId>{runtime_lane});
+    ASSERT_NE(change.dataset, nullptr);
+    EXPECT_EQ(change.dataset->lane_count(), 0u);
+
+    iv::unbind_timeline_lane_batch_bridge(timeline);
+    g_timeline_batch_witness = nullptr;
+}
+
+TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndForwardsTimelineRemovalBatch)
+{
+    iv::Timeline timeline;
+    iv::TimelineExecution execution(8, 16);
+    iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const public_id = iv::InternedString::from_string("authored-lane");
+    auto const create_batch = authored.create("iv.timeline.beat-trigger", public_id);
+    ASSERT_EQ(create_batch.upserts.size(), 1u);
+    auto const runtime_lane = create_batch.upserts.front().lane;
+    authored.record_connection(iv::AuthoredLaneConnection{
+        .source_lane_id = public_id,
+        .target_lane_id = iv::InternedString::from_string("other-lane"),
+        .input = {},
+    });
+
+    TimelineBatchWitness witness;
+    g_timeline_batch_witness = &witness;
+    iv::bind_runtime_project_timeline_execution_bridge(
+        timeline, execution, authored, std::filesystem::path{});
+    iv::ProjectAckBuilder builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_runtime_project_delete_timeline_lane_requested_event,
+        iv::ProjectDeleteTimelineLaneRequest{.lane_id = public_id},
+        builder);
+    EXPECT_NO_THROW(builder.build());
+
+    EXPECT_FALSE(authored.contains(public_id));
+    EXPECT_TRUE(authored.connections().empty());
+    ASSERT_EQ(witness.batches.size(), 1u);
+    EXPECT_EQ(witness.batches.front().removals, std::vector<iv::LaneId>{runtime_lane});
+    EXPECT_TRUE(witness.batches.front().upserts.empty());
+
+    iv::unbind_runtime_project_timeline_execution_bridge(execution);
+    g_timeline_batch_witness = nullptr;
 }

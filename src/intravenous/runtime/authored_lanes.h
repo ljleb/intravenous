@@ -11,6 +11,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -60,6 +61,7 @@ public:
     [[nodiscard]] TimelineLaneBatchUpdate create(std::string_view type_id, InternedString public_id = {});
     [[nodiscard]] TimelineLaneBatchUpdate reload(AuthoredLaneRecord record);
     void update_canonical_state(InternedString lane_id, std::string serialized_state);
+    [[nodiscard]] std::optional<LaneId> erase(InternedString lane_id);
     [[nodiscard]] std::vector<AuthoredLaneRecord> records() const;
     [[nodiscard]] bool contains(InternedString lane_id) const;
     void record_connection(AuthoredLaneConnection connection);

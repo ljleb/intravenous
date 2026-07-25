@@ -87,28 +87,6 @@ void emit_lane_ui_model_changed(LaneId changed_lane)
         });
 }
 
-void emit_authored_lane_created(LaneId created_lane)
-{
-    if (bound_timeline == nullptr) return;
-    IV_INVOKE_LINKER_EVENT(iv_runtime_timeline_lanes_changed_event, TimelineLanesChanged{
-        .version_index = timeline_change_version_index++, .lane_set_changed = true,
-        .metadata_for_lane = [timeline = bound_timeline](LaneId lane) { return timeline->lane_metadata(lane); },
-        .model_type_id_for_lane = [timeline = bound_timeline](LaneId lane) { return timeline->lane_model_type_id(lane); },
-        .public_id_for_lane = [timeline = bound_timeline](LaneId lane) { return timeline->lane_public_id(lane); },
-        .outputs_for_lanes = [timeline = bound_timeline](std::vector<LaneId> const& lanes) { return outputs_for_lanes(*timeline, lanes); },
-        .visit_lanes = [timeline = bound_timeline](std::vector<LaneId> const& lanes, TimelineLaneVisitFn const& visit) {
-            timeline->with_graph([&](LaneGraph const& graph) {
-                for (auto const lane : lanes) if (graph.contains(lane)) {
-                    auto const& record = graph.lane(lane);
-                    visit(lane, record.node, record.output, record.sample_channel_type,
-                        graph.inputs_for(lane), record.external_task_dependencies);
-                }
-            });
-        },
-        .created_lanes = {created_lane},
-    });
-}
-
 // A cable only changes the input state of its target.  Its source keeps the
 // same output, but every downstream lane can have a derived/compiled cache
 // that depends on the target, so include the target's descendants as well.
@@ -304,9 +282,28 @@ void handle_create_timeline_lane(ProjectCreateTimelineLaneRequest const& request
             .serialized_state = request.serialized_state.value_or("")})
         : bound_authored_lanes->create(request.type_id);
     if (batch.upserts.size() != 1) throw std::runtime_error("authored lane creation did not produce one lane");
-    auto const lane = batch.upserts.front().lane;
-    bound_timeline->apply_lane_batch(batch);
-    emit_authored_lane_created(lane);
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_timeline_lane_batch_requested_event,
+        batch);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void handle_delete_timeline_lane(ProjectDeleteTimelineLaneRequest const& request, ProjectAckBuilder &builder)
+{
+    if (bound_timeline == nullptr || bound_authored_lanes == nullptr) return;
+    emit_lane_topology_diagnostic(
+        "delete request lane=" + request.lane_id.str());
+    auto const lane = bound_authored_lanes->erase(request.lane_id);
+    if (!lane.has_value()) throw std::runtime_error("authored timeline lane not found");
+    emit_lane_topology_diagnostic(
+        "delete authored state removed lane=" + request.lane_id.str()
+        + " runtimeLane=" + std::to_string(lane->value));
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_timeline_lane_batch_requested_event,
+        TimelineLaneBatchUpdate{.removals = {*lane}});
+    emit_lane_topology_diagnostic(
+        "delete timeline batch dispatched runtimeLane=" + std::to_string(lane->value));
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
@@ -498,6 +495,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     ProjectCreateTimelineLaneRequestedEvent,
     iv_runtime_project_create_timeline_lane_requested_event,
     handle_create_timeline_lane);
+IV_SUBSCRIBE_LINKER_EVENT(
+    ProjectDeleteTimelineLaneRequestedEvent,
+    iv_runtime_project_delete_timeline_lane_requested_event,
+    handle_delete_timeline_lane);
 IV_SUBSCRIBE_LINKER_EVENT(
     ProjectConnectTimelineLanesRequestedEvent,
     iv_runtime_project_connect_timeline_lanes_requested_event,

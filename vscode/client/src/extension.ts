@@ -14,15 +14,12 @@ let deactivating = false;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     deactivating = false;
     const outputChannel = vscode.window.createOutputChannel("Intravenous");
-    const connectionOutputChannel = vscode.window.createOutputChannel("Intravenous Lane Topology Diagnostics");
-    connectionOutputChannel.clear();
     const provider = new LiveGraphViewProvider(context.extensionUri);
     const modulesProvider = new ModulesViewProvider();
     const highlighter = new NodeSpanHighlighter();
     const sessionFactory = container.resolve(WorkspaceSessionFactory);
 
     context.subscriptions.push(outputChannel);
-    context.subscriptions.push(connectionOutputChannel);
     context.subscriptions.push(highlighter);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider("intravenous.liveGraph", provider, {
         webviewOptions: {
@@ -38,7 +35,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const session = sessionFactory.create(
         workspaceFolder,
         outputChannel,
-        connectionOutputChannel,
+        outputChannel,
         provider,
         modulesProvider,
         highlighter,
@@ -76,34 +73,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 outputChannel.appendLine(`Intravenous lane rename failed: ${error.message}`);
             });
         });
-        laneProvider.setConnectHandler((sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
-            connectionOutputChannel.appendLine(`RPC connect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
-            session.connectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)
-                .then(async () => {
-                    connectionOutputChannel.appendLine("RPC connect acknowledged; refreshing lane view");
-                    const viewId = laneProvider.currentLaneViewId();
-                    if (viewId) await session.updateLaneViewVisibleLanes(viewId);
-                    connectionOutputChannel.appendLine("Lane view refresh completed");
+        laneProvider.setLaneDeleteHandler((laneId) => {
+            outputChannel.appendLine(`[debug]: Intravenous lane deletion requested: ${laneId}`);
+            session.deleteTimelineLane(laneId)
+                .then(() => {
+                    outputChannel.appendLine(`[debug]: Intravenous lane deletion acknowledged: ${laneId}`);
                 })
                 .catch((error: Error) => {
-                    connectionOutputChannel.appendLine(`RPC connect failed: ${error.message}`);
+                    outputChannel.appendLine(`Intravenous lane deletion failed: ${error.message}`);
+                });
+        });
+        laneProvider.setConnectHandler((sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
+            outputChannel.appendLine(`[debug]: RPC connect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
+            session.connectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)
+                .then(async () => {
+                    outputChannel.appendLine("[debug]: RPC connect acknowledged; refreshing lane view");
+                    const viewId = laneProvider.currentLaneViewId();
+                    if (viewId) await session.updateLaneViewVisibleLanes(viewId);
+                    outputChannel.appendLine("[debug]: Lane view refresh completed");
+                })
+                .catch((error: Error) => {
+                    outputChannel.appendLine(`[debug]: RPC connect failed: ${error.message}`);
                 });
         });
         laneProvider.setDisconnectHandler((sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
-            connectionOutputChannel.appendLine(`RPC disconnect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
+            outputChannel.appendLine(`[debug]: RPC disconnect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
             session.disconnectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)
                 .then(async () => {
-                    connectionOutputChannel.appendLine("RPC disconnect acknowledged; refreshing lane view");
+                    outputChannel.appendLine("[debug]: RPC disconnect acknowledged; refreshing lane view");
                     const viewId = laneProvider.currentLaneViewId();
                     if (viewId) await session.updateLaneViewVisibleLanes(viewId);
-                    connectionOutputChannel.appendLine("Lane view refresh completed");
+                    outputChannel.appendLine("[debug]: Lane view refresh completed");
                 })
                 .catch((error: Error) => {
-                    connectionOutputChannel.appendLine(`RPC disconnect failed: ${error.message}`);
+                    outputChannel.appendLine(`[debug]: RPC disconnect failed: ${error.message}`);
                 });
         });
         laneProvider.setRewireHandler((sourceLaneId, oldTargetLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
-            connectionOutputChannel.appendLine(`Rewire ${sourceLaneId}: ${oldTargetLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
+            outputChannel.appendLine(`[debug]: Rewire ${sourceLaneId}: ${oldTargetLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
             // The webview emits one semantic state change. This bridge keeps
             // the existing transport temporarily while the runtime grows an
             // atomic replace request, avoiding a lost connection on failure.
@@ -112,14 +119,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 .then(async () => {
                     const viewId = laneProvider.currentLaneViewId();
                     if (viewId) await session.updateLaneViewVisibleLanes(viewId);
-                    connectionOutputChannel.appendLine("Rewire completed; lane view refresh completed");
+                    outputChannel.appendLine("[debug]: Rewire completed; lane view refresh completed");
                 })
                 .catch((error: Error) => {
-                    connectionOutputChannel.appendLine(`Rewire failed: ${error.message}`);
+                    outputChannel.appendLine(`[debug]: Rewire failed: ${error.message}`);
                 });
         });
         laneProvider.setConnectionDebugHandler((message) => {
-            connectionOutputChannel.appendLine(message);
+            outputChannel.appendLine(`[debug]: ${message}`);
         });
         laneProvider.setDebugHandler((message) => {
             const field = typeof message.field === "string" ? ` ${message.field}` : "";
@@ -201,7 +208,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (!lane) return;
         try {
             await session.createTimelineLane(lane.typeId);
-            await openNewLaneView();
+            const viewId = laneProvider.currentLaneViewId();
+            if (viewId) await session.updateLaneViewVisibleLanes(viewId);
         } catch (error: any) {
             outputChannel.appendLine(`Intravenous lane creation failed: ${error.message}`);
         }
