@@ -623,8 +623,6 @@ export class LaneViewProvider {
             color: var(--vscode-descriptionForeground); background: transparent; cursor: pointer;
             font: 12px/15px var(--vscode-font-family);
         }
-        .lane-debug-copy-button.realtime { border: 1px solid var(--vscode-charts-blue); }
-        .lane-debug-copy-button.compiled { border: 1px solid var(--vscode-charts-orange); }
         .lane-debug-copy-button:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
         .lane-input-wheel {
             position: fixed; z-index: 30; width: 0; height: 0; pointer-events: none;
@@ -697,13 +695,6 @@ export class LaneViewProvider {
         }
         .lane-track::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .5; background-image: repeating-linear-gradient(90deg, transparent 0, transparent calc(var(--second-width) - 1px), var(--vscode-editorWidget-border, rgba(128,128,128,.2)) calc(var(--second-width) - 1px), var(--vscode-editorWidget-border, rgba(128,128,128,.2)) var(--second-width)); }
         .lane-track.capture-track::before { display: none; }
-        .lane-signal {
-            position: absolute; left: 0; right: 0; top: 27px; height: 3px;
-            background: var(--vscode-charts-blue);
-            opacity: .55;
-        }
-        .lane-signal.compiled { background: var(--vscode-charts-orange); }
-        .lane-signal.events { height: 10px; top: 23px; opacity: .8; background: repeating-linear-gradient(90deg, var(--vscode-charts-purple) 0 2px, transparent 2px 18px); }
         .compiled-waveform { position: absolute; z-index: 1; inset: 1px 0; width: 100%; height: calc(100% - 2px); pointer-events: none; }
         .capture-range-boundary { position: absolute; z-index: 2; top: 1px; bottom: 1px; width: 1px; background: var(--vscode-charts-orange); opacity: .78; pointer-events: none; }
         .capture-range-boundary.end { background: var(--vscode-charts-blue); }
@@ -1870,14 +1861,6 @@ export class LaneViewProvider {
                     }
                 }
 
-                const signal = row.querySelector(".lane-signal");
-                if (signal) {
-                    signal.classList.toggle("events", eventCount > 0);
-                    const level = peakLevel != null ? Math.max(0.08, Math.min(1, Number(peakLevel)))
-                        : eventCount > 0 ? 0.65 : 0.16;
-                    signal.style.opacity = String(0.18 + level * 0.8);
-                }
-
                 const waveform = row.querySelector(".compiled-waveform");
                 if (waveform) {
                     drawCompiledWaveform(waveform, content?.samples || [], content?.secondarySamples || [],
@@ -2203,11 +2186,6 @@ export class LaneViewProvider {
                 track.className = "lane-track";
                 if (isCaptureLane) track.classList.add("capture-track");
                 track.style.setProperty("--second-width", String(Math.max(1, 48000 / state.samplesPerPixel)) + "px");
-                const signal = document.createElement("div");
-                signal.className = "lane-signal " + lane.domain + (eventCount > 0 ? " events" : "");
-                const level = peakLevel != null ? Math.max(0.08, Math.min(1, Number(peakLevel))) : eventCount > 0 ? 0.65 : 0.16;
-                signal.style.opacity = String(0.18 + level * 0.8);
-                track.appendChild(signal);
                 if (lane.domain === "compiled") {
                     const waveform = document.createElement("canvas");
                     waveform.className = "compiled-waveform";
