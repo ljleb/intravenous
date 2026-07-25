@@ -47,6 +47,9 @@ IV_DEFINE_LINKER_EVENT(
     ProjectDeleteTimelineLaneRequestedEvent,
     iv_runtime_project_delete_timeline_lane_requested_event)
 IV_DEFINE_LINKER_EVENT(
+    ProjectDuplicateTimelineLaneRequestedEvent,
+    iv_runtime_project_duplicate_timeline_lane_requested_event)
+IV_DEFINE_LINKER_EVENT(
     ProjectSetAudioDevicesRequestedEvent,
     iv_runtime_project_set_audio_devices_requested_event)
 IV_DEFINE_LINKER_EVENT(

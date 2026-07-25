@@ -308,6 +308,22 @@ void handle_delete_timeline_lane(ProjectDeleteTimelineLaneRequest const& request
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
+void handle_duplicate_timeline_lane(ProjectDuplicateTimelineLaneRequest const& request, ProjectAckBuilder &builder)
+{
+    if (bound_timeline == nullptr || bound_authored_lanes == nullptr) return;
+    auto const records = bound_authored_lanes->records();
+    auto const source = std::ranges::find(records, request.lane_id, &AuthoredLaneRecord::lane_id);
+    if (source == records.end()) throw std::runtime_error("authored timeline lane not found");
+    auto batch = bound_authored_lanes->reload(AuthoredLaneRecord{
+        .lane_id = generate_uuid_v4(),
+        .type_id = source->type_id,
+        .serialized_state = source->serialized_state,
+    });
+    IV_INVOKE_LINKER_EVENT(iv_runtime_timeline_lane_batch_requested_event, batch);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
 void handle_connect_timeline_lanes(
     ProjectConnectTimelineLanesRequest const &request,
     ProjectAckBuilder &builder)
@@ -499,6 +515,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     ProjectDeleteTimelineLaneRequestedEvent,
     iv_runtime_project_delete_timeline_lane_requested_event,
     handle_delete_timeline_lane);
+IV_SUBSCRIBE_LINKER_EVENT(
+    ProjectDuplicateTimelineLaneRequestedEvent,
+    iv_runtime_project_duplicate_timeline_lane_requested_event,
+    handle_duplicate_timeline_lane);
 IV_SUBSCRIBE_LINKER_EVENT(
     ProjectConnectTimelineLanesRequestedEvent,
     iv_runtime_project_connect_timeline_lanes_requested_event,

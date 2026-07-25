@@ -107,6 +107,7 @@ namespace iv {
         std::optional<std::string> serialized_state {};
     };
     struct ProjectDeleteTimelineLaneRequest { InternedString lane_id {}; };
+    struct ProjectDuplicateTimelineLaneRequest { InternedString lane_id {}; };
 
     struct ProjectSetAudioDevicesRequest {
         std::optional<std::string> output_device_id {};
@@ -292,6 +293,8 @@ namespace iv {
         void (*)(ProjectCreateTimelineLaneRequest const &, ProjectAckBuilder &);
     using ProjectDeleteTimelineLaneRequestedEvent =
         void (*)(ProjectDeleteTimelineLaneRequest const &, ProjectAckBuilder &);
+    using ProjectDuplicateTimelineLaneRequestedEvent =
+        void (*)(ProjectDuplicateTimelineLaneRequest const &, ProjectAckBuilder &);
     using ProjectSetAudioDevicesRequestedEvent =
         void (*)(ProjectSetAudioDevicesRequest const &, ProjectAudioDevicesBuilder &);
     using ProjectSetAudioDeviceLaneIdsRequestedEvent =
@@ -371,6 +374,9 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(
         ProjectDeleteTimelineLaneRequestedEvent,
         iv_runtime_project_delete_timeline_lane_requested_event);
+    IV_DECLARE_LINKER_EVENT(
+        ProjectDuplicateTimelineLaneRequestedEvent,
+        iv_runtime_project_duplicate_timeline_lane_requested_event);
     IV_DECLARE_LINKER_EVENT(
         ProjectSetAudioDevicesRequestedEvent,
         iv_runtime_project_set_audio_devices_requested_event);

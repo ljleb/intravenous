@@ -1095,3 +1095,40 @@ TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndForwardsTimelineRemoval
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
     g_timeline_batch_witness = nullptr;
 }
+
+TEST(ProjectTimelineLaneDuplication, ClonesCanonicalAuthoredStateIntoOneNewTimelineLane)
+{
+    iv::Timeline timeline;
+    iv::TimelineExecution execution(8, 16);
+    iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const source_id = iv::InternedString::from_string("authored-lane");
+    auto const create_batch = authored.create("iv.timeline.beat-trigger", source_id);
+    ASSERT_EQ(create_batch.upserts.size(), 1u);
+    auto const source_state = authored.records().front().serialized_state;
+
+    TimelineBatchWitness witness;
+    g_timeline_batch_witness = &witness;
+    iv::bind_runtime_project_timeline_execution_bridge(
+        timeline, execution, authored, std::filesystem::path{});
+    iv::ProjectAckBuilder builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_runtime_project_duplicate_timeline_lane_requested_event,
+        iv::ProjectDuplicateTimelineLaneRequest{.lane_id = source_id},
+        builder);
+    EXPECT_NO_THROW(builder.build());
+
+    auto const records = authored.records();
+    ASSERT_EQ(records.size(), 2u);
+    auto const duplicate = std::ranges::find_if(records, [&](iv::AuthoredLaneRecord const& record) {
+        return record.lane_id != source_id;
+    });
+    ASSERT_NE(duplicate, records.end());
+    EXPECT_EQ(duplicate->type_id, "iv.timeline.beat-trigger");
+    EXPECT_EQ(duplicate->serialized_state, source_state);
+    ASSERT_EQ(witness.batches.size(), 1u);
+    ASSERT_EQ(witness.batches.front().upserts.size(), 1u);
+    EXPECT_NE(witness.batches.front().upserts.front().external_id, source_id);
+
+    iv::unbind_runtime_project_timeline_execution_bridge(execution);
+    g_timeline_batch_witness = nullptr;
+}

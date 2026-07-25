@@ -144,6 +144,7 @@ export class LaneViewProvider {
     setLaneUiStateHandler(handler) { this.laneUiStateHandler = handler; }
     setLaneRenameHandler(handler) { this.laneRenameHandler = handler; }
     setLaneDeleteHandler(handler) { this.laneDeleteHandler = handler; }
+    setLaneDuplicateHandler(handler) { this.laneDuplicateHandler = handler; }
     setCaptureFilePickerHandler(handler) { this.captureFilePickerHandler = handler; }
     setConnectHandler(handler) { this.connectHandler = handler; }
     setDisconnectHandler(handler) { this.disconnectHandler = handler; }
@@ -319,6 +320,11 @@ export class LaneViewProvider {
                 if (laneId && this.laneDeleteHandler) {
                     this.laneDeleteHandler(laneId);
                 }
+                return;
+            }
+            if (message.type === "duplicateLane") {
+                const laneId = String(message.laneId || "");
+                if (laneId && this.laneDuplicateHandler) this.laneDuplicateHandler(laneId);
                 return;
             }
             if (message.type === "chooseCaptureFile") {
@@ -1738,6 +1744,13 @@ export class LaneViewProvider {
             });
             menu.appendChild(rename);
             if (isAuthoredLane(lane)) {
+                const duplicate = document.createElement("button");
+                duplicate.textContent = "Duplicate lane";
+                duplicate.addEventListener("click", () => {
+                    menu.remove();
+                    vscode.postMessage({ type: "duplicateLane", laneId: lane.laneId });
+                });
+                menu.appendChild(duplicate);
                 const remove = document.createElement("button");
                 remove.textContent = "Delete lane";
                 remove.addEventListener("click", () => {

@@ -95,6 +95,7 @@ namespace iv {
     struct GetTimelineLaneTypesRequest {};
     struct CreateTimelineLaneRequest { std::string type_id {}; };
     struct DeleteTimelineLaneRequest { InternedString lane_id {}; };
+    struct DuplicateTimelineLaneRequest { InternedString lane_id {}; };
 
     struct GetAudioDevicesRequest {};
 
@@ -181,6 +182,7 @@ namespace iv {
         GetTimelineLaneTypesRequest,
         CreateTimelineLaneRequest,
         DeleteTimelineLaneRequest,
+        DuplicateTimelineLaneRequest,
         GetAudioDevicesRequest,
         SetAudioDevicesRequest,
         OpenLaneViewRpcRequest,

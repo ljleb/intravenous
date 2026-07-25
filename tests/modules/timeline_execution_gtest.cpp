@@ -600,6 +600,7 @@ TEST(TimelineExecution, AudioCapturePlaysRecordedOutputWithoutLiveInput)
         harness.apply(execution.synchronize_from_graph(graph));
     });
     harness.run_once();
+    execution.pause();
 
     timeline.with_graph([&](iv::LaneGraph& graph) {
         graph.disconnect(source, capture, iv::realtime_sample_input());

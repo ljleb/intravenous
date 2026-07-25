@@ -83,6 +83,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     outputChannel.appendLine(`Intravenous lane deletion failed: ${error.message}`);
                 });
         });
+        laneProvider.setLaneDuplicateHandler((laneId) => {
+            session.duplicateTimelineLane(laneId).catch((error: Error) => {
+                outputChannel.appendLine(`Intravenous lane duplication failed: ${error.message}`);
+            });
+        });
         laneProvider.setCaptureFilePickerHandler(async (laneId, currentPath, expectedRevision) => {
             const defaultUri = currentPath && (currentPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(currentPath))
                 ? vscode.Uri.file(currentPath)

@@ -246,6 +246,17 @@ TEST(SocketRpcRequestParser, ParsesDeleteTimelineLaneRequest)
     EXPECT_EQ(request->lane_id.str(), "lane-42");
 }
 
+TEST(SocketRpcRequestParser, ParsesDuplicateTimelineLaneRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":31,"method":"timeline.duplicateLane","params":{"laneId":"lane-42"}})");
+
+    EXPECT_EQ(parsed.request_id, 31);
+    auto const* request = std::get_if<iv::DuplicateTimelineLaneRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->lane_id.str(), "lane-42");
+}
+
 TEST(SocketRpcRequestParser, ParsesGetAudioDevicesRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(

@@ -1124,6 +1124,11 @@ export class WorkspaceSession {
         await this.rpc.deleteTimelineLane(laneId);
     }
 
+    async duplicateTimelineLane(laneId: string): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) return;
+        await this.rpc.duplicateTimelineLane(laneId);
+    }
+
     async connectTimelineLanes(
         sourceLaneId: string,
         targetLaneId: string,
