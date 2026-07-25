@@ -27,7 +27,10 @@ TypeErasedLaneNode AudioFileCaptureLaneNode::from_lane_ui_state(
         auto const json = nlohmann::json::parse(serialized_state);
         auto const path = json.at("path").get<std::string>();
         if (path.empty()) throw std::runtime_error("audio-file-capture path must not be empty");
-        return TypeErasedLaneNode(AudioFileCaptureLaneNode(path, context.sample_rate));
+        AudioFileCaptureLaneNode node(path, context.sample_rate);
+        auto const result = node.apply_lane_ui_state(LaneUiStateWrite{.serialized_state = serialized_state});
+        if (!result.accepted) throw std::runtime_error(result.error_message);
+        return TypeErasedLaneNode(std::move(node));
     } catch (std::exception const& error) {
         throw std::runtime_error("invalid audio-file-capture authored state: " + std::string(error.what()));
     }

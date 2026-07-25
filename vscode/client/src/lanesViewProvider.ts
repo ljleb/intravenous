@@ -947,6 +947,24 @@ export class LaneViewProvider {
             picker.appendChild(choose);
             picker.appendChild(pathLabel);
             container.appendChild(picker);
+            const mode = document.createElement("select");
+            mode.className = "capture-recording-mode";
+            let recordingMode = "reset";
+            try { recordingMode = JSON.parse(snapshot?.serializedState || "{}").recordingMode || "reset"; } catch (_) {}
+            for (const [value, label] of [["reset", "Reset"], ["overwrite", "Overwrite"], ["insert", "Insert"], ["append", "Append"]]) {
+                const option = document.createElement("option"); option.value = value; option.textContent = label; mode.appendChild(option);
+            }
+            mode.value = recordingMode;
+            mode.title = "Recording mode";
+            mode.addEventListener("change", (event) => {
+                event.stopPropagation();
+                let next = {};
+                try { next = JSON.parse(snapshot?.serializedState || "{}"); } catch (_) {}
+                next.recordingMode = mode.value;
+                vscode.postMessage({ type: "setLaneUiState", laneId: lane.laneId,
+                    serializedState: JSON.stringify(next), expectedRevision: Number(snapshot?.revision || 0) || undefined });
+            });
+            container.appendChild(mode);
         }
         function appendCaptureRangeMarkers(track, lane) {
             const snapshot = state.uiStateByLaneId[String(lane.laneId)];
