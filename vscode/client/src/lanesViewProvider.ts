@@ -8,7 +8,11 @@ function utf8ByteOffsetForUtf16Offset(source, utf16Offset) {
 }
 
 export class LaneViewProvider {
+    static instances = new Set();
+    static sharedSelection = { laneIds: [], primaryLaneId: "", anchorLaneId: "", anchorViewId: "" };
+
     constructor() {
+        LaneViewProvider.instances.add(this);
         this.panel = null;
         this.lanes = [];
         this.connections = [];
@@ -292,12 +296,25 @@ export class LaneViewProvider {
         };
         this.panel.onDidDispose(() => {
             this.panel = null;
+            LaneViewProvider.instances.delete(this);
             if (this.closeHandler) {
                 this.closeHandler();
             }
         });
         this.panel.webview.onDidReceiveMessage((message) => {
             if (!message) {
+                return;
+            }
+            if (message.type === "laneSelectionChanged") {
+                const laneIds = Array.isArray(message.laneIds)
+                    ? [...new Set(message.laneIds.filter((laneId) => typeof laneId === "string" && laneId))] : [];
+                LaneViewProvider.sharedSelection = {
+                    laneIds,
+                    primaryLaneId: typeof message.primaryLaneId === "string" ? message.primaryLaneId : "",
+                    anchorLaneId: typeof message.anchorLaneId === "string" ? message.anchorLaneId : "",
+                    anchorViewId: typeof message.anchorViewId === "string" ? message.anchorViewId : "",
+                };
+                for (const provider of LaneViewProvider.instances) provider.postSelection();
                 return;
             }
             if (message.type === "scrubPlayback") {
@@ -462,7 +479,12 @@ export class LaneViewProvider {
             contentByLaneId: this.contentByLaneId,
             uiStateByLaneId: this.uiStateByLaneId,
             playbackSampleIndex: this.playbackSampleIndex,
+            selection: LaneViewProvider.sharedSelection,
         });
+    }
+
+    postSelection() {
+        this.panel?.webview.postMessage({ type: "setSelection", selection: LaneViewProvider.sharedSelection });
     }
 
     getHtml() {
@@ -807,6 +829,8 @@ export class LaneViewProvider {
                     ? [restoredState.selectedLaneId] : [])),
             selectionAnchorLaneId: typeof restoredState.selectionAnchorLaneId === "string"
                 ? restoredState.selectionAnchorLaneId : "",
+            selectionAnchorViewId: typeof restoredState.selectionAnchorViewId === "string"
+                ? restoredState.selectionAnchorViewId : "",
             laneOrder: Array.isArray(restoredState.laneOrder)
                 ? restoredState.laneOrder.filter((laneId) => typeof laneId === "string") : [],
             startIndex: Number(restoredState.startIndex || 0),
@@ -1039,7 +1063,10 @@ export class LaneViewProvider {
             }
         }
         function selectedLaneIds() {
-            return [...state.selectedLaneIds].filter((laneId) =>
+            return [...state.selectedLaneIds];
+        }
+        function visibleSelectedLaneIds() {
+            return selectedLaneIds().filter((laneId) =>
                 state.lanes.some((lane) => String(lane.laneId) === laneId));
         }
         function persistSelection() {
@@ -1047,12 +1074,19 @@ export class LaneViewProvider {
                 selectedLaneId: state.selectedLaneId,
                 selectedLaneIds: selectedLaneIds(),
                 selectionAnchorLaneId: state.selectionAnchorLaneId,
+                selectionAnchorViewId: state.selectionAnchorViewId,
             });
+            vscode.postMessage({ type: "laneSelectionChanged", laneIds: selectedLaneIds(),
+                primaryLaneId: state.selectedLaneId, anchorLaneId: state.selectionAnchorLaneId,
+                anchorViewId: state.selectionAnchorViewId || state.laneViewId });
         }
         function selectLane(laneId, event) {
             const orderedIds = state.lanes.map((lane) => String(lane.laneId));
-            if (event?.shiftKey && state.selectionAnchorLaneId) {
-                const anchorIndex = orderedIds.indexOf(state.selectionAnchorLaneId);
+            const rangeAnchorLaneId = orderedIds.includes(state.selectionAnchorLaneId)
+                ? state.selectionAnchorLaneId
+                : orderedIds.includes(state.selectedLaneId) ? state.selectedLaneId : "";
+            if (event?.shiftKey && rangeAnchorLaneId) {
+                const anchorIndex = orderedIds.indexOf(rangeAnchorLaneId);
                 const laneIndex = orderedIds.indexOf(laneId);
                 if (anchorIndex >= 0 && laneIndex >= 0) {
                     state.selectedLaneIds = new Set(orderedIds.slice(
@@ -1062,9 +1096,11 @@ export class LaneViewProvider {
                 if (state.selectedLaneIds.has(laneId)) state.selectedLaneIds.delete(laneId);
                 else state.selectedLaneIds.add(laneId);
                 state.selectionAnchorLaneId = laneId;
+                state.selectionAnchorViewId = state.laneViewId;
             } else {
                 state.selectedLaneIds = new Set([laneId]);
                 state.selectionAnchorLaneId = laneId;
+                state.selectionAnchorViewId = state.laneViewId;
             }
             state.selectedLaneId = state.selectedLaneIds.has(laneId)
                 ? laneId : (selectedLaneIds()[0] || "");
@@ -1305,7 +1341,7 @@ export class LaneViewProvider {
             if (active?.matches?.("input, textarea, select, [contenteditable='true']")
                 || active?.isContentEditable) return;
             if (event.key === "Delete" && state.selectedLaneIds.size > 0) {
-                const authoredIds = selectedLaneIds().filter((laneId) =>
+                const authoredIds = visibleSelectedLaneIds().filter((laneId) =>
                     isAuthoredLane(state.lanes.find((lane) => String(lane.laneId) === laneId)));
                 if (authoredIds.length > 0) {
                     event.preventDefault();
@@ -1350,6 +1386,7 @@ export class LaneViewProvider {
             state.selectedLaneId = String(state.lanes[nextIndex].laneId);
             state.selectedLaneIds = new Set([state.selectedLaneId]);
             state.selectionAnchorLaneId = state.selectedLaneId;
+            state.selectionAnchorViewId = state.laneViewId;
             persistSelection();
             renderLanes();
             renderConnections();
@@ -1797,7 +1834,7 @@ export class LaneViewProvider {
             menu.appendChild(rename);
             if (isAuthoredLane(lane)) {
                 const duplicate = document.createElement("button");
-                const selectedAuthoredIds = selectedLaneIds().filter((laneId) =>
+                const selectedAuthoredIds = visibleSelectedLaneIds().filter((laneId) =>
                     isAuthoredLane(state.lanes.find((candidate) => String(candidate.laneId) === laneId)));
                 duplicate.textContent = selectedAuthoredIds.length > 1 ? "Duplicate selected lanes" : "Duplicate lane";
                 duplicate.addEventListener("click", () => {
@@ -2044,7 +2081,7 @@ export class LaneViewProvider {
                     connectionButton.disabled = true;
                     connectionButton.title = state.selectedLaneIds.size === 1 ? "Selected lane" : "Selected lane (batch source)";
                 } else {
-                    const sources = selectedLaneIds().map((laneId) => state.lanes.find((candidate) =>
+                    const sources = visibleSelectedLaneIds().map((laneId) => state.lanes.find((candidate) =>
                         String(candidate.laneId) === laneId)).filter(Boolean);
                     const targetLaneId = String(lane.laneId);
                     const existingConnections = (state.connections || []).filter((connection) =>
@@ -2446,6 +2483,18 @@ export class LaneViewProvider {
 
         window.addEventListener("message", (event) => {
             const message = event.data || {};
+            if (message.type === "setSelection") {
+                const selection = message.selection || {};
+                state.selectedLaneIds = new Set(Array.isArray(selection.laneIds)
+                    ? selection.laneIds.filter((laneId) => typeof laneId === "string") : []);
+                state.selectedLaneId = typeof selection.primaryLaneId === "string" ? selection.primaryLaneId : "";
+                state.selectionAnchorLaneId = typeof selection.anchorLaneId === "string" ? selection.anchorLaneId : "";
+                state.selectionAnchorViewId = typeof selection.anchorViewId === "string" ? selection.anchorViewId : "";
+                persistLaneViewState();
+                renderLanes();
+                renderConnections();
+                return;
+            }
             if (message.type === "setState") {
                 const suppliedLanes = Array.isArray(message.lanes) ? message.lanes : [];
                 const nextLanes = applyLaneOrder(suppliedLanes);
@@ -2455,6 +2504,16 @@ export class LaneViewProvider {
                 const connectionsChanged = JSON.stringify(state.connections)
                     !== JSON.stringify(Array.isArray(message.connections) ? message.connections : []);
                 if (typeof message.laneViewId === "string") state.laneViewId = message.laneViewId;
+                if (message.selection && typeof message.selection === "object") {
+                    state.selectedLaneIds = new Set(Array.isArray(message.selection.laneIds)
+                        ? message.selection.laneIds.filter((laneId) => typeof laneId === "string") : []);
+                    state.selectedLaneId = typeof message.selection.primaryLaneId === "string"
+                        ? message.selection.primaryLaneId : "";
+                    state.selectionAnchorLaneId = typeof message.selection.anchorLaneId === "string"
+                        ? message.selection.anchorLaneId : "";
+                    state.selectionAnchorViewId = typeof message.selection.anchorViewId === "string"
+                        ? message.selection.anchorViewId : "";
+                }
                 if (typeof message.laneQuery === "string") state.laneQuery = message.laneQuery;
                 if (message.laneQuerySchema === null
                     || (message.laneQuerySchema && typeof message.laneQuerySchema === "object")) {
@@ -2471,14 +2530,6 @@ export class LaneViewProvider {
                 }
                 state.totalLaneCount = nextTotalLaneCount;
                 state.lanes = nextLanes;
-                const availableLaneIds = new Set(nextLanes.map((lane) => String(lane.laneId)));
-                state.selectedLaneIds = new Set([...state.selectedLaneIds].filter((laneId) => availableLaneIds.has(laneId)));
-                if (!state.selectedLaneIds.has(state.selectedLaneId)) {
-                    state.selectedLaneId = selectedLaneIds()[0] || "";
-                }
-                if (!state.selectedLaneIds.has(state.selectionAnchorLaneId)) {
-                    state.selectionAnchorLaneId = state.selectedLaneId;
-                }
                 if (viewport) {
                     state.startIndex = laneIndexAtVerticalOffset(viewport.scrollTop);
                     state.visibleLaneCount = visibleLaneCountAtVerticalOffset(viewport.scrollTop, viewport.clientHeight);
