@@ -61,26 +61,26 @@ public:
 using LanesVisualizationLaneUiStateQueryEvent =
     void (*)(LaneId, bool changed_only, LanesVisualizationLaneUiStateBuilder&);
 
-// ---- Compiled sample level query ----
+// ---- Compiled sample window query ----
 
-class LanesVisualizationCompiledSampleLevelBuilder {
-    std::optional<Sample::storage> level_ {};
+class LanesVisualizationCompiledSampleWindowBuilder {
+    std::optional<CompiledSampleWindow> window_ {};
 
 public:
-    void succeed(Sample::storage level)
+    void succeed(CompiledSampleWindow window)
     {
-        level_ = level;
+        window_ = std::move(window);
     }
 
-    [[nodiscard]] std::optional<Sample::storage> build()
+    [[nodiscard]] std::optional<CompiledSampleWindow> build()
     {
-        return level_;
+        return std::move(window_);
     }
 };
 
-using LanesVisualizationCompiledSampleLevelRequestedEvent =
-    void (*)(LaneId, size_t first, size_t last,
-             LanesVisualizationCompiledSampleLevelBuilder&);
+using LanesVisualizationCompiledSampleWindowRequestedEvent =
+    void (*)(LaneId, size_t first, size_t last, size_t point_count,
+             LanesVisualizationCompiledSampleWindowBuilder&);
 
 // ---- Compiled event range query ----
 
@@ -123,8 +123,8 @@ IV_DECLARE_LINKER_EVENT(
     LanesVisualizationLaneUiStateQueryEvent,
     iv_runtime_lanes_visualization_lane_ui_state_query_event);
 IV_DECLARE_LINKER_EVENT(
-    LanesVisualizationCompiledSampleLevelRequestedEvent,
-    iv_runtime_lanes_visualization_compiled_sample_level_requested_event);
+    LanesVisualizationCompiledSampleWindowRequestedEvent,
+    iv_runtime_lanes_visualization_compiled_sample_window_requested_event);
 IV_DECLARE_LINKER_EVENT(
     LanesVisualizationCompiledEventWindowRequestedEvent,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event);

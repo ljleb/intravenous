@@ -5,6 +5,7 @@
 #include <intravenous/runtime/task_ids.h>
 #include <intravenous/runtime/task_runner.h>
 #include <intravenous/runtime/timeline_events.h>
+#include <intravenous/runtime/lanes_visualization_api_types.h>
 
 #include <memory>
 #include <mutex>
@@ -45,7 +46,8 @@ public:
     std::span<TimedEvent const> realtime_event_block(LaneId lane) const;
     OwnedSampleBlock compiled_sample_block(LaneId lane, size_t start_index);
     std::vector<TimedEvent> compiled_event_block(LaneId lane, size_t start_index);
-    Sample::storage compiled_sample_level(LaneId lane, size_t first, size_t last);
+    CompiledSampleWindow compiled_sample_window(
+        LaneId lane, size_t first, size_t last, size_t point_count);
     std::vector<TimedEvent> compiled_events_in_range(LaneId lane, size_t first, size_t last);
 
 private:
@@ -117,7 +119,7 @@ private:
     std::span<CompiledSupportRange const> compiled_support_ranges_locked(LaneId lane) const;
     std::span<CompiledSupportChunkRange const> compiled_support_chunk_ranges_locked(LaneId lane) const;
     bool compiled_support_intersects_request_locked(LaneId lane, size_t start_index, size_t sample_count) const;
-    size_t compiled_sample_cache_chunk_size_locked() const;
+    size_t compiled_sample_cache_chunk_size_locked(LaneId lane) const;
     void execute_compiled_sample_chunk_locked(LaneId lane, size_t chunk_index);
     OwnedSampleBlock read_compiled_sample_block_locked(LaneId lane, size_t start_index);
     std::vector<TimedEvent> const& ensure_compiled_event_block_locked(LaneId lane, size_t start_index);

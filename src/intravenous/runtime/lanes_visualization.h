@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/lane_view_service.h>
+#include <intravenous/runtime/lanes_visualization_api_types.h>
 #include <intravenous/runtime/visualization_lane_nodes.h>
 
 #include <chrono>
@@ -44,7 +45,7 @@ class LanesVisualization {
         size_t first_sample_index = 0;
         size_t last_sample_index = 0;
         size_t display_sample_count = 0;
-        std::unordered_map<uint64_t, Sample::storage> compiled_sample_levels {};
+        std::unordered_map<uint64_t, CompiledSampleWindow> compiled_sample_windows {};
         std::unordered_map<uint64_t, std::vector<TimedEvent>> compiled_event_data {};
         std::vector<LaneId> ui_model_lanes {};
         std::unordered_map<uint64_t, LaneUiStateSnapshot> ui_states {};

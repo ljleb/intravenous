@@ -1,12 +1,15 @@
 #include <intravenous/basic_lane_nodes/controls.h>
+#include <intravenous/basic_lane_nodes/audio_file_capture.h>
 #include <intravenous/basic_lane_nodes/type_erased.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
+#include <intravenous/wav.h>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <queue>
 #include <string>
@@ -520,6 +523,129 @@ TEST(TimelineExecution, ReadsCompiledSampleStorageIntoRealtimeSampleInputs)
     execution.set_realtime_start_index(8);
     harness.run_once();
     EXPECT_EQ(compiled_ticks, 1);
+
+    execution.pause();
+    harness.run_once();
+    EXPECT_EQ(sample_values(execution.realtime_sample_block(realtime_target)),
+        (std::vector<iv::Sample> { 8.0f, 8.0f, 8.0f, 8.0f }));
+}
+
+TEST(TimelineExecution, CompiledSampleWindowSamplesInclusiveEndpoints)
+{
+    iv::Timeline timeline;
+    iv::LaneId compiled_source {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        compiled_source = graph.add_lane(
+            iv::TypeErasedLaneNode(TestCompiledSampleSourceLaneNode {}),
+            {}, iv::ChannelTypeId::mono);
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    auto const window = execution.compiled_sample_window(compiled_source, 8, 16, 5);
+    EXPECT_EQ(window.primary, (std::vector<iv::Sample::storage>{8.0f, 10.0f, 12.0f, 14.0f, 16.0f}));
+    EXPECT_TRUE(window.secondary.empty());
+
+    auto const one_point = execution.compiled_sample_window(compiled_source, 8, 16, 1);
+    EXPECT_EQ(one_point.primary, (std::vector<iv::Sample::storage>{12.0f}));
+}
+
+TEST(TimelineExecution, RealtimeInputCanFeedCompiledAudioCaptureOutput)
+{
+    iv::Timeline timeline;
+    iv::LaneId capture {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        auto const source = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode {}),
+            {}, iv::ChannelTypeId::mono);
+        capture = graph.add_lane(
+            iv::TypeErasedLaneNode(iv::AudioFileCaptureLaneNode {}),
+            {}, iv::ChannelTypeId::mono);
+        graph.connect(source, capture, iv::realtime_sample_input());
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+    harness.run_once();
+
+    auto const output = execution.compiled_sample_block(capture, 0);
+    EXPECT_EQ(sample_values(output), (std::vector<iv::Sample>{1.0f, 2.0f, 3.0f, 4.0f}));
+}
+
+TEST(TimelineExecution, AudioCapturePlaysRecordedOutputWithoutLiveInput)
+{
+    iv::Timeline timeline;
+    iv::LaneId source {};
+    iv::LaneId capture {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        source = graph.add_lane(
+            iv::TypeErasedLaneNode(TestPatternRealtimeSampleLaneNode {}),
+            {}, iv::ChannelTypeId::mono);
+        capture = graph.add_lane(
+            iv::TypeErasedLaneNode(iv::AudioFileCaptureLaneNode {}),
+            {}, iv::ChannelTypeId::mono);
+        graph.connect(source, capture, iv::realtime_sample_input());
+    });
+
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+    harness.run_once();
+
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        graph.disconnect(source, capture, iv::realtime_sample_input());
+    });
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    auto const output = execution.compiled_sample_block(capture, 0);
+    EXPECT_EQ(sample_values(output), (std::vector<iv::Sample>{1.0f, 2.0f, 3.0f, 4.0f}));
+}
+
+TEST(TimelineExecution, AudioCaptureLoadsExistingWavForPlayback)
+{
+    auto const path = std::filesystem::path("/tmp/intravenous_audio_capture_reload_test.wav");
+    std::filesystem::remove(path);
+    std::vector<iv::Sample> const samples {0.25f, -0.5f, 0.75f, -1.0f, 0.5f, -0.25f, 1.0f, -0.75f};
+    iv::write_wav(path.string(), std::span<iv::Sample const>(samples), std::span<iv::Sample const>(samples), 48000);
+
+    iv::Timeline timeline;
+    iv::LaneId capture {};
+    timeline.with_graph([&](iv::LaneGraph& graph) {
+        capture = graph.add_lane(
+            iv::TypeErasedLaneNode(iv::AudioFileCaptureLaneNode(path.string(), 48000)),
+            {}, iv::ChannelTypeId::stereo);
+    });
+    iv::TimelineExecution execution(4);
+    TaskGraphHarness harness;
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        harness.apply(execution.synchronize_from_graph(graph));
+    });
+
+    auto const output = execution.compiled_sample_block(capture, 0);
+    ASSERT_EQ(output.frame_count, 4u);
+    for (size_t frame = 0; frame < output.frame_count; ++frame) {
+        EXPECT_NEAR(output.view().get(frame, 0), samples[frame], 1.0f / 32768.0f);
+        EXPECT_NEAR(output.view().get(frame, 1), samples[frame], 1.0f / 32768.0f);
+    }
+    // A disconnected capture is file-backed playback, so a viewport/read
+    // away from the current realtime index must materialize its own block.
+    auto const later = execution.compiled_sample_block(capture, 4);
+    for (size_t frame = 0; frame < later.frame_count; ++frame) {
+        EXPECT_NEAR(later.view().get(frame, 0), samples[frame + 4], 1.0f / 32768.0f);
+        EXPECT_NEAR(later.view().get(frame, 1), samples[frame + 4], 1.0f / 32768.0f);
+    }
+    std::filesystem::remove(path);
 }
 
 TEST(TimelineExecution, ReadsCompiledEventStorageIntoRealtimeEventInputs)
@@ -584,7 +710,7 @@ TEST(TimelineExecution, PausePinsRealtimeStartIndexUntilResume)
     harness.run_once();
     EXPECT_EQ(execution.realtime_start_index(), 8u);
     EXPECT_EQ(sample_values(execution.realtime_sample_block(realtime_target)),
-        (std::vector<iv::Sample>{8.0f, 9.0f, 10.0f, 11.0f}));
+        (std::vector<iv::Sample>{8.0f, 8.0f, 8.0f, 8.0f}));
 
     execution.resume(32);
     EXPECT_FALSE(execution.is_paused());

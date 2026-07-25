@@ -3,13 +3,16 @@
 #include <intravenous/sample.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -46,6 +49,24 @@ namespace iv {
                 return -32768;
             }
             return static_cast<std::int16_t>(x * 32767.0f);
+        }
+
+        inline std::optional<std::uint16_t> read_u16_le(std::istream& is)
+        {
+            std::array<unsigned char, 2> bytes {};
+            if (!is.read(reinterpret_cast<char*>(bytes.data()), bytes.size())) return std::nullopt;
+            return static_cast<std::uint16_t>(bytes[0])
+                | (static_cast<std::uint16_t>(bytes[1]) << 8);
+        }
+
+        inline std::optional<std::uint32_t> read_u32_le(std::istream& is)
+        {
+            std::array<unsigned char, 4> bytes {};
+            if (!is.read(reinterpret_cast<char*>(bytes.data()), bytes.size())) return std::nullopt;
+            return static_cast<std::uint32_t>(bytes[0])
+                | (static_cast<std::uint32_t>(bytes[1]) << 8)
+                | (static_cast<std::uint32_t>(bytes[2]) << 16)
+                | (static_cast<std::uint32_t>(bytes[3]) << 24);
         }
 
         template<typename SampleAt>
@@ -158,5 +179,72 @@ namespace iv {
                 return channel == 0 ? left[frame] : right[frame];
             }
         );
+    }
+
+    struct DecodedWav {
+        std::uint32_t sample_rate = 0;
+        std::vector<std::vector<Sample>> channels {};
+    };
+
+    // Deliberately small reader for the PCM-16 WAV files written above. It
+    // accepts ordinary RIFF chunk ordering and ignores unrelated chunks.
+    inline std::optional<DecodedWav> read_pcm16_wav(std::string const& path)
+    {
+        std::ifstream is(path, std::ios::binary);
+        if (!is) return std::nullopt;
+        std::array<char, 4> tag {};
+        if (!is.read(tag.data(), tag.size()) || std::string_view(tag.data(), 4) != "RIFF") return std::nullopt;
+        if (!details::read_u32_le(is).has_value()) return std::nullopt;
+        if (!is.read(tag.data(), tag.size()) || std::string_view(tag.data(), 4) != "WAVE") return std::nullopt;
+
+        std::uint16_t format = 0;
+        std::uint16_t channel_count = 0;
+        std::uint16_t bits_per_sample = 0;
+        std::uint16_t block_align = 0;
+        std::uint32_t sample_rate = 0;
+        std::vector<char> data;
+        while (is.read(tag.data(), tag.size())) {
+            auto const chunk_size = details::read_u32_le(is);
+            if (!chunk_size.has_value()) return std::nullopt;
+            if (std::string_view(tag.data(), 4) == "fmt ") {
+                auto const audio_format = details::read_u16_le(is);
+                auto const channels = details::read_u16_le(is);
+                auto const rate = details::read_u32_le(is);
+                if (!audio_format || !channels || !rate) return std::nullopt;
+                format = *audio_format;
+                channel_count = *channels;
+                sample_rate = *rate;
+                if (!details::read_u32_le(is)) return std::nullopt; // byte rate
+                auto const align = details::read_u16_le(is);
+                auto const bits = details::read_u16_le(is);
+                if (!align || !bits || *chunk_size < 16) return std::nullopt;
+                block_align = *align;
+                bits_per_sample = *bits;
+                is.seekg(static_cast<std::streamoff>(*chunk_size - 16), std::ios::cur);
+            } else if (std::string_view(tag.data(), 4) == "data") {
+                data.resize(*chunk_size);
+                if (!is.read(data.data(), static_cast<std::streamsize>(data.size()))) return std::nullopt;
+            } else {
+                is.seekg(static_cast<std::streamoff>(*chunk_size), std::ios::cur);
+            }
+            if (*chunk_size & 1u) is.seekg(1, std::ios::cur);
+            if (!is) return std::nullopt;
+        }
+        if (format != 1 || channel_count == 0 || bits_per_sample != 16
+            || block_align != channel_count * sizeof(std::int16_t) || data.empty()) return std::nullopt;
+
+        auto const frame_count = data.size() / block_align;
+        DecodedWav result{.sample_rate = sample_rate, .channels = std::vector<std::vector<Sample>>(channel_count)};
+        for (auto& channel : result.channels) channel.resize(frame_count);
+        for (size_t frame = 0; frame < frame_count; ++frame) {
+            for (size_t channel = 0; channel < channel_count; ++channel) {
+                auto const offset = frame * block_align + channel * sizeof(std::int16_t);
+                auto const low = static_cast<unsigned char>(data[offset]);
+                auto const high = static_cast<unsigned char>(data[offset + 1]);
+                auto const value = static_cast<std::int16_t>(low | (static_cast<std::uint16_t>(high) << 8));
+                result.channels[channel][frame] = static_cast<Sample>(value / 32768.0f);
+            }
+        }
+        return result;
     }
 }

@@ -291,6 +291,39 @@ namespace iv {
             return node.realtime_event_inputs().size();
         }
 
+        bool would_create_cycle(LaneId source, LaneId target) const
+        {
+            if (source == target) {
+                return true;
+            }
+            std::deque<LaneId> pending {target};
+            std::unordered_set<LaneId, LaneIdHash> visited;
+            while (!pending.empty()) {
+                auto const lane = pending.front();
+                pending.pop_front();
+                if (!visited.insert(lane).second) {
+                    continue;
+                }
+                if (lane == source) {
+                    return true;
+                }
+                auto append_targets = [&](LaneGraphDomainConnections const& connections) {
+                    auto const it = connections.outputs_by_source.find(lane);
+                    if (it == connections.outputs_by_source.end()) {
+                        return;
+                    }
+                    for (auto const& connection : it->second) {
+                        pending.push_back(connection.target);
+                    }
+                };
+                // A compiled output may feed a realtime input, so cycle
+                // detection must traverse both connection domains.
+                append_targets(_connections.compiled);
+                append_targets(_connections.realtime);
+            }
+            return false;
+        }
+
         void validate_connection(LaneId source, LaneId target, LanePortId input) const
         {
             auto const& source_record = lane(source);
@@ -306,6 +339,9 @@ namespace iv {
             }
             if (input.ordinal >= input_count(target_record.node, input)) {
                 throw std::runtime_error("lane connection target input ordinal out of range");
+            }
+            if (would_create_cycle(source, target)) {
+                throw std::runtime_error("lane connection would create a cycle");
             }
         }
 
@@ -565,6 +601,7 @@ namespace iv {
 
         void connect_exclusive(LaneId source, LaneId target, LanePortId input)
         {
+            validate_connection(source, target, input);
             disconnect_input(target, input);
             connect(source, target, input);
         }
@@ -700,30 +737,35 @@ namespace iv {
 
         }
 
-        std::vector<LaneInputConnection> const& inputs_for(LaneId target) const
+        std::vector<LaneInputConnection> inputs_for(LaneId target) const
         {
-            if (auto const it = _connections.realtime.inputs_by_target.find(target);
-                it != _connections.realtime.inputs_by_target.end()
-            ) {
-                return it->second;
-            }
-            auto const it = _connections.compiled.inputs_by_target.find(target);
-            return it == _connections.compiled.inputs_by_target.end() ? empty_inputs() : it->second;
+            std::vector<LaneInputConnection> result;
+            auto append = [&](LaneGraphDomainConnections const& connections) {
+                if (auto const it = connections.inputs_by_target.find(target);
+                    it != connections.inputs_by_target.end()) {
+                    result.insert(result.end(), it->second.begin(), it->second.end());
+                }
+            };
+            append(_connections.compiled);
+            append(_connections.realtime);
+            return result;
         }
 
-        std::vector<LaneOutputConnection> const& outputs_for(LaneId source) const
+        std::vector<LaneOutputConnection> outputs_for(LaneId source) const
         {
             if (!contains(source)) {
-                return empty_outputs();
+                return {};
             }
-            LanePortDomain const domain = lane_output_domain(lane(source).output);
-            auto const& connections = connections_for_domain(
-                domain,
-                _connections.compiled,
-                _connections.realtime
-            );
-            auto const it = connections.outputs_by_source.find(source);
-            return it == connections.outputs_by_source.end() ? empty_outputs() : it->second;
+            std::vector<LaneOutputConnection> result;
+            auto append = [&](LaneGraphDomainConnections const& connections) {
+                if (auto const it = connections.outputs_by_source.find(source);
+                    it != connections.outputs_by_source.end()) {
+                    result.insert(result.end(), it->second.begin(), it->second.end());
+                }
+            };
+            append(_connections.compiled);
+            append(_connections.realtime);
+            return result;
         }
 
         std::vector<LaneInputConnection> const& compiled_inputs_for(LaneId target) const

@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -20,9 +21,9 @@ namespace iv {
 struct LaneCreationContext;
 class TypeErasedLaneNode;
 
-// A transparent realtime sink used to capture the exact samples travelling
-// through a lane. Capturing is cheap copying during transport; disk I/O is
-// deliberately deferred to TimelineExecution::pause().
+// A compiled audio clip which optionally records a live realtime input. While
+// recording, input is monitored through the compiled output; otherwise that
+// output plays the captured timeline back without requiring an input edge.
 class AudioFileCaptureLaneNode {
     std::string path_ = "timeline-capture.wav";
     size_t sample_rate_ = 48000;
@@ -30,11 +31,26 @@ class AudioFileCaptureLaneNode {
     bool ui_dirty_ = true;
     mutable std::vector<std::vector<Sample>> channels_;
     mutable bool capture_active_ = false;
+    mutable size_t capture_start_index_ = 0;
+
+    void load_existing_capture()
+    {
+        auto const decoded = read_pcm16_wav(path_);
+        if (!decoded.has_value()) return;
+        channels_ = decoded->channels;
+        capture_start_index_ = 0;
+    }
 
 public:
-    explicit AudioFileCaptureLaneNode(size_t sample_rate = 48000) : sample_rate_(sample_rate) {}
+    explicit AudioFileCaptureLaneNode(size_t sample_rate = 48000) : sample_rate_(sample_rate)
+    {
+        load_existing_capture();
+    }
     AudioFileCaptureLaneNode(std::string path, size_t sample_rate) :
-        path_(std::move(path)), sample_rate_(sample_rate) {}
+        path_(std::move(path)), sample_rate_(sample_rate)
+    {
+        load_existing_capture();
+    }
 
     static constexpr std::string_view lane_model_type_id() { return "iv.timeline.audio-file-capture"; }
     static constexpr std::string_view lane_creation_category() { return "Audio"; }
@@ -58,29 +74,61 @@ public:
         return {{{.name = "audio"}}};
     }
 
-    static RealtimeSampleLaneOutputConfig output() { return {.name = "audio"}; }
+    static CompiledSampleLaneOutputConfig output() { return {.name = "audio"}; }
 
-    void tick_block_realtime(RealtimeLaneTickContext<AudioFileCaptureLaneNode>& ctx) const
+    std::vector<CompiledSupportRange> compiled_support_ranges(
+        CompiledSupportContext<AudioFileCaptureLaneNode>&) const
     {
-        auto const input = ctx.realtime_sample_input(0).block_view();
-        ctx.out().write_block(input);
+        return {{.start_index = 0, .end_index = std::numeric_limits<size_t>::max()}};
+    }
+
+    void tick_block_compiled(CompiledLaneTickContext<AudioFileCaptureLaneNode>& ctx) const
+    {
+        auto const &input_port = ctx.compiled_sample_input(0);
+        auto const input = input_port.block_view();
+        auto const recording = ctx.transport_playing() && input_port.connected();
+        if (!recording) {
+            auto const output_layout = ctx.out().channel_layout;
+            auto const frame_count = ctx.sample_count();
+            std::vector<Sample> playback(sample_storage_size(output_layout, frame_count), Sample {});
+            SampleBlockView<Sample> playback_view(playback, output_layout, frame_count);
+            if (!channels_.empty() && ctx.start_index() >= capture_start_index_) {
+                auto const capture_offset = ctx.start_index() - capture_start_index_;
+                for (size_t frame = 0; frame < frame_count; ++frame) {
+                    auto const captured_frame = capture_offset + frame;
+                    for (size_t channel = 0; channel < playback_view.channels(); ++channel) {
+                        if (channel < channels_.size() && captured_frame < channels_[channel].size()) {
+                            playback_view.set(frame, channel, channels_[channel][captured_frame]);
+                        }
+                    }
+                }
+            }
+            ctx.out().write_block(ctx.start_index(), SampleBlockView<Sample const>(
+                std::span<Sample const>(playback), output_layout, frame_count));
+            return;
+        }
         if (!capture_active_) {
             channels_.clear();
             channels_.resize(input.channels());
             capture_active_ = true;
+            capture_start_index_ = ctx.start_index();
         }
         if (channels_.size() != input.channels()) {
             channels_.clear();
             channels_.resize(input.channels());
+            capture_start_index_ = ctx.start_index();
         }
+        ctx.out().write_block(ctx.start_index(), input);
+        auto const capture_offset = ctx.start_index() - capture_start_index_;
         for (size_t channel = 0; channel < input.channels(); ++channel) {
             auto& captured = channels_[channel];
-            auto const required = captured.size() + input.frames();
+            auto const required = capture_offset + input.frames();
             if (captured.capacity() < required) {
                 captured.reserve(std::max(required, std::max<size_t>(input.frames(), captured.capacity() * 2)));
             }
+            if (captured.size() < required) captured.resize(required, Sample {});
             for (size_t frame = 0; frame < input.frames(); ++frame) {
-                captured.push_back(input.get(frame, channel));
+                captured[capture_offset + frame] = input.get(frame, channel);
             }
         }
     }
@@ -115,6 +163,9 @@ public:
             auto const path = nlohmann::json::parse(write.serialized_state).at("path").get<std::string>();
             if (path.empty()) return {.error_message = "audio-file-capture path must not be empty"};
             path_ = path;
+            channels_.clear();
+            capture_start_index_ = 0;
+            load_existing_capture();
             ++revision_;
             ui_dirty_ = true;
             return {.accepted = true, .revision = revision_};

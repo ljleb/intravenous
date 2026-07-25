@@ -1,5 +1,5 @@
 {"command":"timeline.createAuthoredLane","args":{"lane_id":"784dac96-9c61-49f5-a196-ef9d83578b24","type_id":"iv.timeline.beat-trigger","serialized_state":"{\"beatUnit\":4,\"beatsPerBar\":4,\"bpm\":140.0,\"eventIntervalSamples\":20571.428571428572,\"eventsPerBeat\":1}"}}
-{"command":"timeline.createAuthoredLane","args":{"lane_id":"7d10b7c2-e63b-46b6-9c4c-9a7c9738ad89","type_id":"iv.timeline.audio-file-capture","serialized_state":"{\"path\":\"timeline-capture.wav\"}"}}
+{"command":"timeline.createAuthoredLane","args":{"lane_id":"7d10b7c2-e63b-46b6-9c4c-9a7c9738ad89","type_id":"iv.timeline.audio-file-capture","serialized_state":"{\"path\":\"/home/ljleb/src/intravenous/projects/simple_sine/out.wav\"}"}}
 {"command":"audioDevices.setLaneIds","args":{"output_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","input_lane_id":"5c55a6fc-58e4-4d3f-b121-466dcb2cf44a"}}
 {"command":"ivModuleInstances.create","args":{"instance_id":"acd7fefe-220c-41e9-a1ea-4acbb2d54941","module_id":"iv.project.simple_sine","display_name":null}}
 {"command":"graph.setSampleInputValue","args":{"node_id":"acd7fefe-220c-41e9-a1ea-4acbb2d54941\u001flogical:c:module.cpp@1297@aN@F@simple_sine#&1$@N@iv@S@ModuleContext#@Sa@FT@>1#N operator()#S2_#1@p#type:375d6e89dab8558d","member_ordinal":null,"input_ordinal":0,"value":0.0}}
@@ -8,5 +8,5 @@
 {"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","sample_channel_type":"stereo"}}
 {"command":"timeline.setLaneSampleChannelType","args":{"lane_id":"iv.public:output:instance:acd7fefe-220c-41e9-a1ea-4acbb2d54941:kind:sample:ordinal:0:channel:1","sample_channel_type":"stereo"}}
 {"command":"timeline.connectLanes","args":{"source_lane_id":"iv.public:output:instance:25436153-288f-4024-b102-2941a6183f45:kind:sample:ordinal:0:channel:1","target_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","port_domain":"realtime","port_kind":"sample","port_ordinal":0}}
+{"command":"timeline.connectAuthoredLanes","args":{"source_lane_id":"7d10b7c2-e63b-46b6-9c4c-9a7c9738ad89","target_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","port_domain":"realtime","port_kind":"sample","port_ordinal":0}}
 {"command":"timeline.connectAuthoredLanes","args":{"source_lane_id":"iv.public:output:instance:25436153-288f-4024-b102-2941a6183f45:kind:sample:ordinal:0:channel:1","target_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","port_domain":"realtime","port_kind":"sample","port_ordinal":0}}
-{"command":"timeline.connectAuthoredLanes","args":{"source_lane_id":"iv.public:output:instance:acd7fefe-220c-41e9-a1ea-4acbb2d54941:kind:sample:ordinal:0:channel:1","target_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","port_domain":"realtime","port_kind":"sample","port_ordinal":0}}

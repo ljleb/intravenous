@@ -531,11 +531,13 @@ namespace iv {
         size_t start_index = 0;
         size_t end_index = 0;
         size_t sample_count = 0;
+        bool transport_playing = false;
     };
 
     struct RealtimeLaneTickRequest {
         size_t start_index = 0;
         size_t sample_count = 0;
+        bool transport_playing = false;
     };
 
     struct CompiledSupportRange {
@@ -604,6 +606,7 @@ namespace iv {
         size_t start_index() const { return _untyped.request.start_index; }
         size_t end_index() const { return _untyped.request.end_index; }
         size_t sample_count() const { return _untyped.request.sample_count; }
+        bool transport_playing() const { return _untyped.request.transport_playing; }
         std::span<CompiledSampleLaneInput> compiled_sample_inputs() const { return _untyped.compiled_sample_inputs; }
         std::span<CompiledEventLaneInput> compiled_event_inputs() const { return _untyped.compiled_event_inputs; }
         CompiledSampleLaneInput& compiled_sample_input(size_t index) const { return _untyped.compiled_sample_inputs[index]; }
@@ -673,6 +676,7 @@ namespace iv {
 
         size_t start_index() const { return _untyped.request.start_index; }
         size_t sample_count() const { return _untyped.request.sample_count; }
+        bool transport_playing() const { return _untyped.request.transport_playing; }
         std::span<CompiledSampleLaneInput> compiled_sample_inputs() const { return _untyped.compiled_sample_inputs; }
         std::span<CompiledEventLaneInput> compiled_event_inputs() const { return _untyped.compiled_event_inputs; }
         std::span<RealtimeSampleLaneInput> realtime_sample_inputs() const { return _untyped.realtime_sample_inputs; }
@@ -741,13 +745,21 @@ namespace iv {
             auto const compiled_sample_decls = get_compiled_sample_lane_inputs(node);
             auto const compiled_event_decls = get_compiled_event_lane_inputs(node);
             std::vector<CompiledSampleLaneInput> compiled_sample_inputs_storage;
-            compiled_sample_inputs_storage.resize(compiled_sample_decls.size());
-            for (size_t i = 0; i < compiled_sample_decls.size(); ++i) {
-                compiled_sample_inputs_storage[i].default_value = compiled_sample_decls[i].default_value;
+            auto const realtime_sample_decls = get_realtime_sample_lane_inputs(node);
+            compiled_sample_inputs_storage.resize(std::max(
+                compiled_sample_decls.size(), realtime_sample_decls.size()));
+            for (size_t i = 0; i < compiled_sample_inputs_storage.size(); ++i) {
+                auto const default_value = i < compiled_sample_decls.size()
+                    ? compiled_sample_decls[i].default_value
+                    : realtime_sample_decls[i].default_value;
+                auto const sample_layout = i < compiled_sample_decls.size()
+                    ? compiled_sample_decls[i].sample_layout
+                    : realtime_sample_decls[i].sample_layout;
+                compiled_sample_inputs_storage[i].default_value = default_value;
                 auto const out_layout = output_channel_layout(ctx.out());
                 compiled_sample_inputs_storage[i].channel_layout = ChannelLayout {
                     .channel_type = out_layout.channel_type,
-                    .sample_layout = compiled_sample_decls[i].sample_layout,
+                    .sample_layout = sample_layout,
                 };
                 compiled_sample_inputs_storage[i].frame_count = ctx.sample_count();
             }

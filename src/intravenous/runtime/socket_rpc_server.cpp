@@ -112,6 +112,17 @@ Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
         if (lane.event_count.has_value()) {
             json_lane["eventCount"] = *lane.event_count;
         }
+        if (lane.compiled_sample_window.has_value()) {
+            json_lane["samples"] = lane.compiled_sample_window->primary;
+            if (lane.compiled_window_first_sample_index.has_value()
+                && lane.compiled_window_last_sample_index.has_value()) {
+                json_lane["sampleWindowFirstIndex"] = *lane.compiled_window_first_sample_index;
+                json_lane["sampleWindowLastIndex"] = *lane.compiled_window_last_sample_index;
+            }
+            if (!lane.compiled_sample_window->secondary.empty()) {
+                json_lane["secondarySamples"] = lane.compiled_sample_window->secondary;
+            }
+        }
         json_lanes.push_back(std::move(json_lane));
     }
 

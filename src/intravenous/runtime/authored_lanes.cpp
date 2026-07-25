@@ -44,6 +44,17 @@ CreatableLaneDescriptor descriptor_for()
         .description = std::string(T::lane_creation_description()),
     };
 }
+
+LaneMetadata metadata_for_type(std::string_view type_id)
+{
+    LaneMetadata metadata;
+    if (type_id == BeatTriggerLaneNode::lane_model_type_id()) {
+        metadata.set_string("lane.name", std::string(BeatTriggerLaneNode::lane_creation_label()));
+    } else if (type_id == AudioFileCaptureLaneNode::lane_model_type_id()) {
+        metadata.set_string("lane.name", std::string(AudioFileCaptureLaneNode::lane_creation_label()));
+    }
+    return metadata;
+}
 } // namespace
 
 std::vector<CreatableLaneDescriptor> AuthoredLanes::creatable_lane_types()
@@ -87,6 +98,7 @@ TimelineLaneBatchUpdate AuthoredLanes::create(std::string_view type_id, Interned
         .make_node = [record, context = context_] {
             return make_node(record.type_id, record.serialized_state, context);
         },
+        .metadata = metadata_for_type(type_id),
     }}};
 }
 
@@ -98,12 +110,14 @@ TimelineLaneBatchUpdate AuthoredLanes::reload(AuthoredLaneRecord record)
     (void)make_node(record.type_id, record.serialized_state, context_);
     auto const lane = LaneId{next_runtime_lane_id_++};
     auto const id = record.lane_id;
+    auto metadata = metadata_for_type(record.type_id);
     lanes_.emplace(id, StoredLane{lane, record});
     return TimelineLaneBatchUpdate{.upserts = {TimelineLaneUpsert{
         .lane = lane, .external_id = id,
         .make_node = [record = std::move(record), context = context_] {
             return make_node(record.type_id, record.serialized_state, context);
         },
+        .metadata = std::move(metadata),
     }}};
 }
 

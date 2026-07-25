@@ -28,6 +28,24 @@ bool is_compiled_event_output(LaneOutputConfig const &output)
     return std::holds_alternative<CompiledEventLaneOutputConfig>(output);
 }
 
+std::vector<Sample> hold_compiled_sample_at_current_index(
+    SampleBlockView<Sample const> source,
+    ChannelLayout target_layout,
+    size_t frame_count)
+{
+    std::vector<Sample> held(sample_storage_size(target_layout, frame_count), Sample {});
+    if (source.frames() == 0) return held;
+    SampleBlockView<Sample> destination(held, target_layout, frame_count);
+    for (size_t frame = 0; frame < frame_count; ++frame) {
+        for (size_t channel = 0; channel < destination.channels(); ++channel) {
+            if (channel < source.channels()) {
+                destination.set(frame, channel, source.get(0, channel));
+            }
+        }
+    }
+    return held;
+}
+
 SampleStreamLayout sample_output_layout(LaneOutputConfig const& output)
 {
     return std::visit([](auto const& config) -> SampleStreamLayout {
@@ -336,6 +354,18 @@ void TimelineExecution::resume(size_t start_index)
 {
     std::scoped_lock lock(mutex_);
     current_start_index_ = start_index;
+    // A capture lane with an attached realtime source is recording again, so
+    // it must observe fresh live blocks. A disconnected capture is playback:
+    // retain its compiled cache so its recorded audio remains available.
+    for (auto const &[lane, tracked] : tracked_lanes_) {
+        auto const has_live_sample_source = std::ranges::any_of(tracked.inputs, [](auto const& input) {
+            return input.input.domain == LanePortDomain::realtime
+                && input.input.kind == PortKind::sample;
+        });
+        if (!tracked.node->realtime_sample_inputs().empty() && has_live_sample_source) {
+            compiled_sample_cache_.erase(lane);
+        }
+    }
     paused_ = false;
 }
 
@@ -426,28 +456,42 @@ std::vector<TimedEvent> TimelineExecution::compiled_event_block(LaneId lane, siz
     return ensure_compiled_event_block_locked(lane, start_index);
 }
 
-Sample::storage TimelineExecution::compiled_sample_level(
+CompiledSampleWindow TimelineExecution::compiled_sample_window(
     LaneId lane,
     size_t first,
-    size_t last)
+    size_t last,
+    size_t point_count)
 {
-    if (last < first || block_size_ == 0) {
-        return 0.0f;
+    CompiledSampleWindow result;
+    if (last < first || block_size_ == 0 || point_count == 0) {
+        return result;
     }
     std::scoped_lock lock(mutex_);
-    auto const sample_index = first + (last - first) / 2;
-    auto const block_start = (sample_index / block_size_) * block_size_;
-    auto const offset = sample_index - block_start;
-    auto const block = read_compiled_sample_block_locked(lane, block_start);
-    auto const view = block.view();
-    Sample::storage level = 0.0f;
-    if (offset >= view.frames()) {
-        return level;
+
+    result.primary.reserve(point_count);
+    std::optional<bool> has_secondary;
+    for (size_t point = 0; point < point_count; ++point) {
+        // The window endpoints are inclusive. Use integer arithmetic so the
+        // first and last visual columns always retrieve those exact samples.
+        auto const sample_index = point_count == 1
+            ? first + (last - first) / 2
+            : first + ((last - first) * point + (point_count - 1) / 2) / (point_count - 1);
+        auto const block_start = (sample_index / block_size_) * block_size_;
+        auto const offset = sample_index - block_start;
+        auto const block = read_compiled_sample_block_locked(lane, block_start);
+        auto const view = block.view();
+        result.primary.push_back(offset < view.frames() && view.channels() > 0
+            ? view.get(offset, 0).value : 0.0f);
+        if (!has_secondary.has_value()) {
+            has_secondary = view.channels() > 1;
+            if (*has_secondary) result.secondary.reserve(point_count);
+        }
+        if (*has_secondary) {
+            result.secondary.push_back(offset < view.frames() && view.channels() > 1
+                ? view.get(offset, 1).value : 0.0f);
+        }
     }
-    for (size_t channel = 0; channel < view.channels(); ++channel) {
-        level = std::max(level, std::abs(view.get(offset, channel).value));
-    }
-    return level;
+    return result;
 }
 
 std::vector<TimedEvent> TimelineExecution::compiled_events_in_range(
@@ -570,7 +614,7 @@ void TimelineExecution::rebuild_compiled_support_and_notify_locked()
             sort_and_merge_ranges(ranges);
             auto chunk_ranges = derive_chunk_ranges(
                 ranges,
-                compiled_sample_cache_chunk_size_locked());
+                compiled_sample_cache_chunk_size_locked(lane));
             compiled_support_by_lane_[lane] = CompiledSupportState {
                 .sample_ranges = std::move(ranges),
                 .chunk_ranges = std::move(chunk_ranges),
@@ -797,7 +841,13 @@ void TimelineExecution::execute_lane_locked(LaneId lane, size_t start_index)
             } else if (is_compiled_sample_output(source.output)) {
                 auto source_block = read_compiled_sample_block_locked(connection.source, start_index);
                 auto source_view = source_block.view();
-                if (source_view.channel_layout() != target_layout) {
+                if (paused_) {
+                    compiled_sample_input_blocks.push_back(
+                        hold_compiled_sample_at_current_index(source_view, target_layout, block_size_));
+                    realtime_sample_inputs[connection.input.ordinal].sources.push_back(
+                        SampleBlockView<Sample const>(
+                            compiled_sample_input_blocks.back(), target_layout, block_size_));
+                } else if (source_view.channel_layout() != target_layout) {
                     compiled_sample_input_blocks.push_back(convert_sample_block(source_view, target_layout));
                     realtime_sample_inputs[connection.input.ordinal].sources.push_back(
                         SampleBlockView<Sample const>(
@@ -870,11 +920,13 @@ void TimelineExecution::execute_lane_locked(LaneId lane, size_t start_index)
         .request = RealtimeLaneTickRequest {
             .start_index = start_index,
             .sample_count = block_size_,
+            .transport_playing = !paused_,
         },
         .compiled_fallback_tick_window = CompiledLaneTickRequest {
             .start_index = start_index,
             .end_index = start_index + block_size_,
             .sample_count = block_size_,
+            .transport_playing = !paused_,
         },
         .compiled_sample_inputs = compiled_sample_inputs,
         .compiled_event_inputs = compiled_event_inputs,
@@ -947,8 +999,15 @@ bool TimelineExecution::compiled_support_intersects_request_locked(
     return ranges_intersect(ranges, start_index, start_index + sample_count);
 }
 
-size_t TimelineExecution::compiled_sample_cache_chunk_size_locked() const
+size_t TimelineExecution::compiled_sample_cache_chunk_size_locked(LaneId lane) const
 {
+    // Realtime-input compiled lanes are materialized only by their live task.
+    // A larger speculative chunk would otherwise repeat the current realtime
+    // block across a future timeline interval.
+    if (auto const it = tracked_lanes_.find(lane); it != tracked_lanes_.end()
+        && !it->second.node->realtime_sample_inputs().empty()) {
+        return block_size_;
+    }
     return block_size_ * compiled_sample_cache_chunk_size_multiplier_;
 }
 
@@ -971,7 +1030,7 @@ void TimelineExecution::execute_compiled_sample_chunk_locked(LaneId lane, size_t
     realtime_sample_inputs.resize(tracked.node->realtime_sample_inputs().size());
     realtime_event_inputs.resize(tracked.node->realtime_event_inputs().size());
 
-    auto const chunk_size = compiled_sample_cache_chunk_size_locked();
+    auto const chunk_size = compiled_sample_cache_chunk_size_locked(lane);
     auto const chunk_start = chunk_start_index(chunk_index, chunk_size);
 
     auto input_layout_for = [&](LanePortId input) {
@@ -1082,11 +1141,13 @@ void TimelineExecution::execute_compiled_sample_chunk_locked(LaneId lane, size_t
         .request = RealtimeLaneTickRequest {
             .start_index = chunk_start,
             .sample_count = block_size_,
+            .transport_playing = !paused_,
         },
         .compiled_fallback_tick_window = CompiledLaneTickRequest {
             .start_index = chunk_start,
             .end_index = chunk_start + chunk_size,
             .sample_count = chunk_size,
+            .transport_playing = !paused_,
         },
         .compiled_sample_inputs = compiled_sample_inputs,
         .compiled_event_inputs = compiled_event_inputs,
@@ -1119,9 +1180,14 @@ OwnedSampleBlock TimelineExecution::read_compiled_sample_block_locked(LaneId lan
     }
 
     auto& cache = compiled_sample_cache_[lane];
+    auto const has_live_realtime_sample_source = std::ranges::any_of(
+        tracked_it->second.inputs, [](auto const& input) {
+            return input.input.domain == LanePortDomain::realtime
+                && input.input.kind == PortKind::sample;
+        });
     size_t const request_start = start_index;
     size_t const request_end = start_index + block_size_;
-    auto const chunk_size = compiled_sample_cache_chunk_size_locked();
+    auto const chunk_size = compiled_sample_cache_chunk_size_locked(lane);
     auto const request_start_chunk_index =
         chunk_index_for_sample(request_start, chunk_size);
     auto const request_end_chunk_index =
@@ -1140,7 +1206,13 @@ OwnedSampleBlock TimelineExecution::read_compiled_sample_block_locked(LaneId lan
         auto const last_chunk_index =
             std::min(chunk_range.end_chunk_index, request_end_chunk_index);
         for (; chunk_index < last_chunk_index; ++chunk_index) {
-            if (!cache.chunks.contains(chunk_index)) {
+            // A realtime input has no value away from the live task's current
+            // block. Viewport reads may retrieve recorded cache blocks, but
+            // must not render a missing historical/future block using today's
+            // realtime input.
+            if (!cache.chunks.contains(chunk_index)
+                && (!has_live_realtime_sample_source
+                    || chunk_start_index(chunk_index, chunk_size) == current_start_index_)) {
                 execute_compiled_sample_chunk_locked(lane, chunk_index);
             }
             auto const chunk_it = cache.chunks.find(chunk_index);

@@ -106,10 +106,10 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
         }
     }
 
-    // Allocate realtime level sinks; reduce compiled windows to one scalar.
+    // Allocate realtime level sinks and sample visible compiled windows.
     std::unordered_map<uint64_t, TrackedRealtimeSampleLane> new_sample_lanes;
     std::unordered_map<uint64_t, TrackedRealtimeEventLane> new_event_lanes;
-    std::unordered_map<uint64_t, Sample::storage> compiled_sample_levels;
+    std::unordered_map<uint64_t, CompiledSampleWindow> compiled_sample_windows;
     std::unordered_map<uint64_t, std::vector<TimedEvent>> compiled_events;
     std::unordered_map<uint64_t, LaneUiStateSnapshot> initial_ui_states;
 
@@ -158,19 +158,17 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
                 .queue = std::move(queue),
             });
         } else if (desired_kind == TrackedLaneKind::compiled_sample) {
-            if (!descriptor.subscribes_to_compiled_output_changes) {
-                continue;
-            }
             if (update.display_sample_count > 0) {
-                LanesVisualizationCompiledSampleLevelBuilder builder;
+                LanesVisualizationCompiledSampleWindowBuilder builder;
                 IV_INVOKE_LINKER_EVENT(
-                    iv_runtime_lanes_visualization_compiled_sample_level_requested_event,
+                    iv_runtime_lanes_visualization_compiled_sample_window_requested_event,
                     lane,
                     update.first_sample_index,
                     update.last_sample_index,
+                    update.display_sample_count,
                     builder);
-                if (auto const level = builder.build()) {
-                    compiled_sample_levels[lane.value] = *level;
+                if (auto window = builder.build()) {
+                    compiled_sample_windows.emplace(lane.value, std::move(*window));
                 }
             }
         } else if (desired_kind == TrackedLaneKind::compiled_event) {
@@ -302,13 +300,10 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
                     continue;
                 }
                 if (desired_kind == TrackedLaneKind::compiled_sample) {
-                    if (!cfg_it->second.subscribes_to_compiled_output_changes) {
-                        continue;
-                    }
                     view.compiled_sample_lanes.push_back(lane);
-                    auto sit = compiled_sample_levels.find(lane.value);
-                    if (sit != compiled_sample_levels.end()) {
-                        view.compiled_sample_levels[lane.value] = sit->second;
+                    auto sit = compiled_sample_windows.find(lane.value);
+                    if (sit != compiled_sample_windows.end()) {
+                        view.compiled_sample_windows.emplace(lane.value, std::move(sit->second));
                     }
                 } else if (desired_kind == TrackedLaneKind::compiled_event) {
                     if (!cfg_it->second.subscribes_to_compiled_output_changes) {
@@ -630,14 +625,16 @@ void LanesVisualization::publish_now()
             }
 
             for (auto const lane : view.compiled_sample_lanes) {
-                auto const dit = view.compiled_sample_levels.find(lane.value);
-                if (dit == view.compiled_sample_levels.end()) {
+                auto const dit = view.compiled_sample_windows.find(lane.value);
+                if (dit == view.compiled_sample_windows.end()) {
                     continue;
                 }
                 content.lanes.push_back(LaneVisualizationSeries{
                     .lane_id = view.public_lane_ids_by_runtime_lane.at(lane.value),
-                    .adapter_type = "level",
-                    .peak_level = dit->second,
+                    .adapter_type = "samples",
+                    .compiled_sample_window = dit->second,
+                    .compiled_window_first_sample_index = view.first_sample_index,
+                    .compiled_window_last_sample_index = view.last_sample_index,
                 });
             }
 

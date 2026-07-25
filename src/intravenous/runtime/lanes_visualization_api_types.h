@@ -13,6 +13,11 @@
 #include <intravenous/runtime/uuid.h>
 
 namespace iv {
+struct CompiledSampleWindow {
+    std::vector<Sample::storage> primary {};
+    std::vector<Sample::storage> secondary {};
+};
+
 struct LaneVisualizationSeries {
     InternedString lane_id {};
     std::string adapter_type = "level"; // "level", "activity", or "events"
@@ -21,6 +26,11 @@ struct LaneVisualizationSeries {
     // refresh. Raw sample buffers are deliberately not part of this API.
     std::optional<Sample::storage> peak_level {};
     std::optional<Sample::storage> secondary_peak_level {};
+    // Exact sample values resampled to the visible display columns. The first
+    // and last entries correspond to the inclusive requested bounds.
+    std::optional<CompiledSampleWindow> compiled_sample_window {};
+    std::optional<size_t> compiled_window_first_sample_index {};
+    std::optional<size_t> compiled_window_last_sample_index {};
     std::optional<size_t> event_count {};
     std::vector<TimedEvent> events {};
 };

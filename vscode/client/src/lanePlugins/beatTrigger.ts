@@ -1,10 +1,15 @@
 import { LanePresentationPlugin } from "./protocol";
 
 function renderBeatTriggerLane(context: any): boolean {
-    const { lane, content, row, state, timelineStart, laneWindow, installTimelineControls } = context;
+    const { lane, content, row, state, timelineStart, laneWindow, timelineNavigation, settingsContainer, usesSettingsPanel } = context;
     // Keep the compact lane header intact: it owns lane selection and ports.
     const track = document.createElement("div");
     track.className = "beat-track";
+    const title = document.createElement("div");
+    title.className = "compiled-lane-title";
+    title.textContent = lane.title;
+    title.title = lane.title;
+    track.appendChild(title);
     const snapshot = state.uiStateByLaneId[String(lane.laneId)];
     // Controls keep an independent requested state. They write that state to
     // the backend, but never accept backend snapshots back into their fields.
@@ -106,7 +111,8 @@ function renderBeatTriggerLane(context: any): boolean {
         }
         controls.appendChild(control);
     }
-    track.appendChild(controls);
+    if (settingsContainer) settingsContainer.appendChild(controls);
+    else if (!usesSettingsPanel) track.appendChild(controls);
 
     const grid = document.createElement("div");
     grid.className = "beat-event-grid";
@@ -188,7 +194,7 @@ function renderBeatTriggerLane(context: any): boolean {
         return true;
     };
     track.appendChild(grid);
-    installTimelineControls?.(grid, timelineStart, false);
+    timelineNavigation?.install(grid, "lane");
     row.appendChild(track); laneWindow.appendChild(row);
     // Rows are initially assembled detached, so clientWidth becomes usable on
     // the next frame for the precise, sparse-marker path.
@@ -198,7 +204,7 @@ function renderBeatTriggerLane(context: any): boolean {
 
 const beatTriggerLanePlugin: LanePresentationPlugin = {
     typeId: "iv.timeline.beat-trigger",
-    css: ".beat-track{position:relative;display:flex;flex:1 1 auto;min-width:180px;min-height:0;flex-direction:column;overflow:hidden;background:var(--vscode-editor-background)}.beat-controls{display:flex;flex:0 0 auto;gap:8px;padding:2px 4px;align-items:center;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,rgba(128,128,128,.18));position:relative;z-index:2;width:max-content}.beat-control{display:flex;align-items:center;gap:3px;color:var(--vscode-descriptionForeground);font-size:.82em;white-space:nowrap}.beat-control-separator{font-size:1.25em;color:var(--vscode-foreground);line-height:1}.beat-control-suffix{font-size:.9em}.beat-controls input{width:48px;font:inherit;color:inherit;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border,transparent);cursor:ns-resize}.beat-controls input:focus{cursor:text}.beat-controls input.invalid{border-color:var(--vscode-inputValidation-errorBorder,var(--vscode-errorForeground))}.beat-event-grid{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;cursor:default;background:var(--vscode-editor-background)}.beat-marker{position:absolute;top:0;bottom:0;width:1px;background:var(--vscode-editorWidget-border,rgba(220,220,220,.55));pointer-events:none}.beat-marker.bar{width:3px;opacity:1}.beat-marker.beat{opacity:.9}.beat-marker.subdivision{opacity:.42}",
+    css: ".beat-track{position:relative;display:flex;flex:1 1 auto;min-width:180px;min-height:0;flex-direction:column;overflow:hidden;background:var(--vscode-editor-background)}.beat-controls{display:flex;flex:0 0 auto;gap:8px;align-items:center;width:max-content}.beat-control{display:flex;align-items:center;gap:3px;color:var(--vscode-descriptionForeground);font-size:.82em;white-space:nowrap}.beat-control-separator{font-size:1.25em;color:var(--vscode-foreground);line-height:1}.beat-control-suffix{font-size:.9em}.beat-controls input{width:48px;font:inherit;color:inherit;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border,transparent);cursor:ns-resize}.beat-controls input:focus{cursor:text}.beat-controls input.invalid{border-color:var(--vscode-inputValidation-errorBorder,var(--vscode-errorForeground))}.beat-event-grid{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;cursor:default;background:var(--vscode-editor-background)}.beat-marker{position:absolute;top:0;bottom:0;width:1px;background:var(--vscode-editorWidget-border,rgba(220,220,220,.55));pointer-events:none}.beat-marker.bar{width:3px;opacity:1}.beat-marker.beat{opacity:.9}.beat-marker.subdivision{opacity:.42}",
     render: renderBeatTriggerLane,
 };
 

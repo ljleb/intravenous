@@ -11,8 +11,8 @@ IV_DEFINE_LINKER_EVENT(
     LanesVisualizationLaneUiStateQueryEvent,
     iv_runtime_lanes_visualization_lane_ui_state_query_event);
 IV_DEFINE_LINKER_EVENT(
-    LanesVisualizationCompiledSampleLevelRequestedEvent,
-    iv_runtime_lanes_visualization_compiled_sample_level_requested_event);
+    LanesVisualizationCompiledSampleWindowRequestedEvent,
+    iv_runtime_lanes_visualization_compiled_sample_window_requested_event);
 IV_DEFINE_LINKER_EVENT(
     LanesVisualizationCompiledEventWindowRequestedEvent,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event);

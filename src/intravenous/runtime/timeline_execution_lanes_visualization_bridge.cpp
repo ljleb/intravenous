@@ -14,16 +14,17 @@ void handle_playback_position_query(LanesVisualizationPlaybackPositionBuilder &b
     }
 }
 
-void handle_compiled_sample_level_requested(
+void handle_compiled_sample_window_requested(
     LaneId lane,
     size_t first,
     size_t last,
-    LanesVisualizationCompiledSampleLevelBuilder &builder)
+    size_t point_count,
+    LanesVisualizationCompiledSampleWindowBuilder &builder)
 {
     if (bound_execution == nullptr) {
         return;
     }
-    builder.succeed(bound_execution->compiled_sample_level(lane, first, last));
+    builder.succeed(bound_execution->compiled_sample_window(lane, first, last, point_count));
 }
 
 void handle_compiled_event_window_requested(
@@ -43,9 +44,9 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_runtime_lanes_visualization_playback_position_query_event,
     handle_playback_position_query);
 IV_SUBSCRIBE_LINKER_EVENT(
-    LanesVisualizationCompiledSampleLevelRequestedEvent,
-    iv_runtime_lanes_visualization_compiled_sample_level_requested_event,
-    handle_compiled_sample_level_requested);
+    LanesVisualizationCompiledSampleWindowRequestedEvent,
+    iv_runtime_lanes_visualization_compiled_sample_window_requested_event,
+    handle_compiled_sample_window_requested);
 IV_SUBSCRIBE_LINKER_EVENT(
     LanesVisualizationCompiledEventWindowRequestedEvent,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event,

@@ -118,6 +118,18 @@ namespace {
         }
     };
 
+    struct TestRealtimePassthroughLaneNode {
+        std::array<iv::RealtimeSampleLaneInputConfig, 1> realtime_sample_inputs() const
+        {
+            return {{{.name = "in"}}};
+        }
+        iv::RealtimeSampleLaneOutputConfig output() const { return {.name = "out"}; }
+        void tick_block_realtime(iv::RealtimeLaneTickContext<TestRealtimePassthroughLaneNode>& ctx)
+        {
+            ctx.out().write_block(ctx.realtime_sample_input(0).block_view());
+        }
+    };
+
     struct TestUiModelLaneNode {
         bool ui_dirty = true;
         std::uint64_t revision = 3;
@@ -938,6 +950,21 @@ TEST(Lanes, LaneGraphRejectsInvalidConnections)
     );
 }
 
+TEST(Lanes, LaneGraphRejectsCycleWithoutMutatingConnections)
+{
+    iv::LaneGraph graph;
+    auto const first = graph.add_lane(iv::TypeErasedLaneNode(TestRealtimePassthroughLaneNode {}));
+    auto const second = graph.add_lane(iv::TypeErasedLaneNode(TestRealtimePassthroughLaneNode {}));
+    graph.connect(first, second, iv::realtime_sample_input());
+
+    EXPECT_THROW(graph.connect(second, first, iv::realtime_sample_input()), std::runtime_error);
+    auto const first_inputs = graph.realtime_inputs_for(first);
+    auto const second_inputs = graph.realtime_inputs_for(second);
+    EXPECT_TRUE(first_inputs.empty());
+    ASSERT_EQ(second_inputs.size(), 1u);
+    EXPECT_EQ(second_inputs.front().source, first);
+}
+
 TEST(Lanes, LaneGraphAllowsCompiledOutputsToFeedRealtimeInputs)
 {
     iv::LaneGraph graph;
@@ -951,6 +978,10 @@ TEST(Lanes, LaneGraphAllowsCompiledOutputsToFeedRealtimeInputs)
             .ordinal = 0,
         })
     );
+    ASSERT_EQ(graph.outputs_for(event_source).size(), 1u);
+    EXPECT_EQ(graph.outputs_for(event_source).front().target, realtime_target);
+    ASSERT_EQ(graph.inputs_for(realtime_target).size(), 1u);
+    EXPECT_EQ(graph.inputs_for(realtime_target).front().source, event_source);
 }
 
 TEST(Lanes, LaneGraphRemoveLaneDisconnectsDanglingConnections)

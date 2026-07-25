@@ -21,6 +21,7 @@ export class LaneViewProvider {
         this.laneUiStateHandler = null;
         this.laneRenameHandler = null;
         this.laneDeleteHandler = null;
+        this.captureFilePickerHandler = null;
         this.connectHandler = null;
         this.disconnectHandler = null;
         this.rewireHandler = null;
@@ -95,6 +96,13 @@ export class LaneViewProvider {
                 peakLevel: typeof content?.peakLevel === "number" ? content.peakLevel : null,
                 secondaryPeakLevel: typeof content?.secondaryPeakLevel === "number" ? content.secondaryPeakLevel : null,
                 sampleChannelType: typeof content?.sampleChannelType === "string" ? content.sampleChannelType : "",
+                samples: Array.isArray(content?.samples) ? content.samples.filter((value) => typeof value === "number") : [],
+                secondarySamples: Array.isArray(content?.secondarySamples)
+                    ? content.secondarySamples.filter((value) => typeof value === "number") : [],
+                sampleWindowFirstIndex: Number.isFinite(Number(content?.sampleWindowFirstIndex))
+                    ? Number(content.sampleWindowFirstIndex) : null,
+                sampleWindowLastIndex: Number.isFinite(Number(content?.sampleWindowLastIndex))
+                    ? Number(content.sampleWindowLastIndex) : null,
                 eventCount: typeof content?.eventCount === "number"
                     ? content.eventCount
                     : Array.isArray(content?.events) ? content.events.length : 0,
@@ -136,6 +144,7 @@ export class LaneViewProvider {
     setLaneUiStateHandler(handler) { this.laneUiStateHandler = handler; }
     setLaneRenameHandler(handler) { this.laneRenameHandler = handler; }
     setLaneDeleteHandler(handler) { this.laneDeleteHandler = handler; }
+    setCaptureFilePickerHandler(handler) { this.captureFilePickerHandler = handler; }
     setConnectHandler(handler) { this.connectHandler = handler; }
     setDisconnectHandler(handler) { this.disconnectHandler = handler; }
     setRewireHandler(handler) { this.rewireHandler = handler; }
@@ -309,6 +318,16 @@ export class LaneViewProvider {
                     `host received delete laneId=${laneId || "<empty>"} handler=${this.laneDeleteHandler ? "installed" : "missing"}`);
                 if (laneId && this.laneDeleteHandler) {
                     this.laneDeleteHandler(laneId);
+                }
+                return;
+            }
+            if (message.type === "chooseCaptureFile") {
+                const laneId = String(message.laneId || "");
+                if (laneId && this.captureFilePickerHandler) {
+                    this.captureFilePickerHandler(
+                        laneId,
+                        String(message.currentPath || ""),
+                        typeof message.expectedRevision === "number" ? message.expectedRevision : undefined);
                 }
                 return;
             }
@@ -577,7 +596,7 @@ export class LaneViewProvider {
             position: relative;
             display: flex;
             align-items: stretch;
-            border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.16));
+            border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.38));
             box-sizing: border-box;
         }
         /* Cover the playhead through the row separator as well as the meter. */
@@ -585,7 +604,7 @@ export class LaneViewProvider {
         .lane-row.selected { box-shadow: inset 3px 0 var(--vscode-focusBorder); }
         .lane-connection-button {
             position: absolute; z-index: 9; left: 0; top: 0;
-            width: 24px; height: 100%; padding: 0; border: 0; border-radius: 0;
+            width: 24px; height: calc(var(--lane-content-height) - 1px); padding: 0; border: 0; border-radius: 0;
             color: var(--vscode-foreground); background: var(--vscode-button-secondaryBackground);
             cursor: pointer; font: 600 14px/15px var(--vscode-font-family);
         }
@@ -593,7 +612,7 @@ export class LaneViewProvider {
         .lane-connection-button:disabled { opacity: .35; cursor: default; }
         .lane-connection-button.selected { background: var(--vscode-button-background); opacity: 1; }
         .lane-debug-copy-button {
-            position: absolute; z-index: 9; left: calc(var(--lane-header-width) - 21px); top: 50%; transform: translateY(-50%);
+            position: absolute; z-index: 9; left: calc(var(--lane-header-width) - 21px); top: calc(var(--lane-content-height) / 2); transform: translateY(-50%);
             width: 15px; height: 15px; padding: 0; border: 0; border-radius: 2px;
             color: var(--vscode-descriptionForeground); background: transparent; cursor: pointer;
             font: 12px/15px var(--vscode-font-family);
@@ -601,13 +620,6 @@ export class LaneViewProvider {
         .lane-debug-copy-button.realtime { border: 1px solid var(--vscode-charts-blue); }
         .lane-debug-copy-button.compiled { border: 1px solid var(--vscode-charts-orange); }
         .lane-debug-copy-button:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
-        .lane-delete-button {
-            position: absolute; z-index: 9; left: calc(var(--lane-header-width) - 40px); top: 50%; transform: translateY(-50%);
-            width: 15px; height: 15px; padding: 0; border: 0; border-radius: 2px;
-            color: var(--vscode-descriptionForeground); background: transparent; cursor: pointer;
-            font: 14px/15px var(--vscode-font-family);
-        }
-        .lane-delete-button:hover { color: var(--vscode-errorForeground); background: var(--vscode-toolbar-hoverBackground); }
         .lane-input-wheel {
             position: fixed; z-index: 30; width: 0; height: 0; pointer-events: none;
         }
@@ -636,6 +648,7 @@ export class LaneViewProvider {
             border-right: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
         }
         .lane-row.realtime .lane-label { display: flex; }
+        .lane-row > .lane-label, .lane-row > .lane-track, .lane-row > .realtime-face, .lane-row > .beat-track { height: calc(var(--lane-content-height) - 1px); align-self: flex-start; box-sizing: border-box; }
 
         .lane-meter {
             width: 74px;
@@ -684,21 +697,38 @@ export class LaneViewProvider {
         }
         .lane-signal.compiled { background: var(--vscode-charts-orange); }
         .lane-signal.events { height: 10px; top: 23px; opacity: .8; background: repeating-linear-gradient(90deg, var(--vscode-charts-purple) 0 2px, transparent 2px 18px); }
+        .compiled-waveform { position: absolute; z-index: 1; inset: 1px 0; width: 100%; height: calc(100% - 2px); pointer-events: none; }
+        .compiled-lane-title { position: absolute; z-index: 2; top: 5px; left: 5px; right: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-foreground); font-size: .78em; font-weight: 600; line-height: 1; opacity: .7; pointer-events: none; text-shadow: 0 1px 1px var(--vscode-editor-background); }
+        .lane-settings-toggle { position: absolute; z-index: 9; left: calc(var(--lane-header-width) - 40px); top: calc(var(--lane-content-height) / 2); transform: translateY(-50%); width: 15px; height: 15px; padding: 0; border: 0; border-radius: 2px; color: var(--vscode-descriptionForeground); background: transparent; font: 12px/15px var(--vscode-font-family); cursor: pointer; }
+        .lane-settings-toggle:hover, .lane-settings-toggle[aria-expanded="true"] { background: var(--vscode-toolbar-hoverBackground); }
+        .lane-row.settings-open { z-index: 20; }
+        .lane-settings-panel { position: absolute; z-index: 20; top: var(--lane-content-height); left: var(--lane-header-width); right: 0; height: 32px; display: flex; align-items: center; gap: 6px; padding: 5px 7px; box-sizing: border-box; border: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.35)); background: var(--vscode-editorWidget-background); box-shadow: 0 3px 8px rgba(0,0,0,.28); }
         .playhead { position: absolute; z-index: 3; top: 0; bottom: 0; width: 2px; background: var(--vscode-editorCursor-foreground, var(--vscode-charts-orange)); box-shadow: 0 0 5px var(--vscode-editorCursor-foreground, var(--vscode-charts-orange)); pointer-events: none; }
         .canvas-playhead { position: absolute; z-index: 5; top: 0; bottom: 0; width: 2px; background: var(--vscode-editorCursor-foreground, var(--vscode-charts-orange)); box-shadow: 0 0 5px var(--vscode-editorCursor-foreground, var(--vscode-charts-orange)); pointer-events: none; }
         .realtime-face {
             /* The canvas playhead describes compiled timeline samples, so
                realtime meter faces deliberately cover it. */
-            flex: 1 1 auto; position: relative; display: flex; flex-direction: column; gap: 3px; padding: 5px 14px;
+            flex: 1 1 auto; min-width: 0; position: relative; display: flex; flex-direction: column; gap: 3px; padding: 5px 3px 3px;
             background: var(--vscode-sideBar-background);
         }
-        .realtime-meter-name { color: var(--vscode-foreground); font-size: .78em; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .large-meter { position: relative; height: 12px; flex: 0 0 12px; overflow: hidden; border: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.3)); background: var(--vscode-editor-background); }
+        .realtime-meter-name { min-width: 0; color: var(--vscode-foreground); font-size: .78em; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .realtime-lane-parameter { min-width: 0; color: var(--vscode-descriptionForeground); font-size: .76em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .capture-header { min-width: 0; display: flex; flex-direction: column; gap: 0; }
+        /* Keep capture titles visually identical to every other realtime lane.
+           The compact picker row, not the title, yields the required space. */
+        .capture-kind { min-width: 0; height: 15px; line-height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-foreground); font-size: .78em; font-weight: 600; }
+        .capture-file-picker { min-width: 0; display: flex; align-items: center; gap: 6px; flex: 1 1 auto; }
+        .capture-file-button { flex: 0 0 auto; height: 21px; padding: 0 6px; border: 0; border-radius: 2px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); font: .78em var(--vscode-font-family); cursor: pointer; }
+        .capture-file-label { min-width: 0; line-height: 21px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); font: .78em var(--vscode-editor-font-family); }
+        .realtime-meter-scale { position: relative; height: 8px; color: var(--vscode-descriptionForeground); font-size: .62em; line-height: 8px; }
+        .realtime-meter-scale span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+        .realtime-meter-stack { display: flex; flex-direction: column; gap: 0; }
+        .realtime-meter-region { margin-top: auto; }
+        .large-meter { position: relative; height: 5px; flex: 0 0 5px; overflow: hidden; border: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.3)); border-width: 0 1px 1px; background: var(--vscode-editor-background); }
         .large-meter-fill { position: absolute; top: 0; bottom: 0; left: 0; background: var(--vscode-charts-green); }
         .large-meter-grid { position: absolute; inset: 0; pointer-events: none; }
         .large-meter-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--vscode-editorWidget-border, rgba(128,128,128,.4)); }
         .large-meter-tick span { position: absolute; top: 2px; left: 3px; color: var(--vscode-descriptionForeground); font-size: .68em; white-space: nowrap; }
-        .large-meter[data-channel]::after { content: attr(data-channel); position: absolute; z-index: 3; left: 3px; bottom: 1px; font-size: .62em; color: var(--vscode-descriptionForeground); }
         .meter-menu { position: fixed; z-index: 20; padding: 3px; min-width: 130px; background: var(--vscode-menu-background); border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); box-shadow: 0 2px 10px rgba(0,0,0,.35); }
         .meter-menu button { display: block; width: 100%; border: 0; padding: 5px 9px; text-align: left; color: var(--vscode-menu-foreground); background: transparent; cursor: pointer; }
         .meter-menu button:hover { background: var(--vscode-menu-selectionBackground); color: var(--vscode-menu-selectionForeground); }
@@ -763,6 +793,7 @@ export class LaneViewProvider {
         const vscode = acquireVsCodeApi();
         const root = document.getElementById("root");
         const laneHeight = 58;
+        const laneSettingsPanelHeight = 32;
         const laneHeaderWidth = 96;
         const restoredState = vscode.getState() || {};
         const state = {
@@ -786,8 +817,134 @@ export class LaneViewProvider {
             meterGrid: restoredState.meterGrid === "sample" ? "sample" : "decibel",
             connectionsExpanded: Boolean(restoredState.connectionsExpanded),
             queryExpanded: Boolean(restoredState.queryExpanded),
+            expandedLaneSettingsIds: new Set(
+                Array.isArray(restoredState.expandedLaneSettingsIds)
+                    ? restoredState.expandedLaneSettingsIds.filter((laneId) => typeof laneId === "string")
+                    : typeof restoredState.expandedLaneSettingsId === "string"
+                        ? [restoredState.expandedLaneSettingsId] : []),
         };
         const lanePresentationPlugins = new Map([${lanePluginRegistrations}].map((plugin) => [plugin.typeId, plugin]));
+        function realtimeMeterPosition(level) {
+            const linear = Math.max(0, Number(level || 0));
+            if (state.meterGrid !== "decibel") return Math.min(1, linear);
+            const meterMaximum = Math.pow(10, 4 / 20);
+            const xMin = Math.pow(10, -60 / 20) / meterMaximum;
+            const s = Math.sqrt(xMin);
+            const normalized = Math.min(1, Math.max(xMin, linear / meterMaximum));
+            return Math.log((normalized + s) / (s * (1 + s))) / Math.log(1 / s);
+        }
+        function appendRealtimeMeters(face, lane, content) {
+            const eventCount = Number(content?.eventCount || 0);
+            const peakLevel = content?.peakLevel;
+            const isStereo = (content?.sampleChannelType || lane.sampleChannelType) === "stereo";
+            const createMeter = (channel, level) => {
+                const meter = document.createElement("div");
+                meter.className = "large-meter";
+                meter.dataset.meterChannel = channel;
+                const fill = document.createElement("div");
+                fill.className = "large-meter-fill";
+                fill.style.width = String(realtimeMeterPosition(level) * 100) + "%";
+                meter.appendChild(fill);
+                const grid = document.createElement("div");
+                grid.className = "large-meter-grid";
+                const tickValues = state.meterGrid === "decibel"
+                    ? Array.from({ length: 22 }, (_, index) => -60 + index * 3)
+                    : [0, .25, .5, .75, 1];
+                for (const value of tickValues) {
+                    const tick = document.createElement("div");
+                    tick.className = "large-meter-tick";
+                    tick.style.left = String((state.meterGrid === "decibel"
+                        ? realtimeMeterPosition(Math.pow(10, value / 20)) : value) * 100) + "%";
+                    grid.appendChild(tick);
+                }
+                meter.appendChild(grid);
+                return meter;
+            };
+            const scale = document.createElement("div");
+            scale.className = "realtime-meter-scale";
+            const scaleValues = state.meterGrid === "decibel"
+                ? [-30, -24, -18, -12, -6, 0] : [0, .25, .5, .75, 1];
+            for (const value of scaleValues) {
+                const label = document.createElement("span");
+                label.style.left = String((state.meterGrid === "decibel"
+                    ? realtimeMeterPosition(Math.pow(10, value / 20)) : value) * 100) + "%";
+                label.textContent = state.meterGrid === "decibel"
+                    ? (value > 0 ? "+" : "") + String(value) + " dB" : String(value);
+                scale.appendChild(label);
+            }
+            const region = document.createElement("div");
+            region.className = "realtime-meter-region";
+            region.appendChild(scale);
+            const stack = document.createElement("div");
+            stack.className = "realtime-meter-stack";
+            stack.appendChild(createMeter("left", peakLevel != null ? peakLevel : eventCount / 8));
+            if (isStereo) stack.appendChild(createMeter("right", content?.secondaryPeakLevel || 0));
+            region.appendChild(stack);
+            face.appendChild(region);
+        }
+        function drawCompiledWaveform(canvas, samples, secondarySamples, firstSampleIndex, lastSampleIndex) {
+            const width = Math.max(1, canvas.clientWidth);
+            const height = Math.max(1, canvas.clientHeight);
+            const ratio = window.devicePixelRatio || 1;
+            canvas.width = Math.round(width * ratio);
+            canvas.height = Math.round(height * ratio);
+            const context = canvas.getContext("2d");
+            if (!context) return;
+            context.scale(ratio, ratio);
+            context.clearRect(0, 0, width, height);
+            const styles = getComputedStyle(document.documentElement);
+            const windowFirst = Number(firstSampleIndex);
+            const windowLast = Number(lastSampleIndex);
+            if (!Number.isFinite(windowFirst) || !Number.isFinite(windowLast) || windowLast < windowFirst) return;
+            const xStart = (windowFirst - timelineStart()) / state.samplesPerPixel;
+            const xSpan = (windowLast - windowFirst) / state.samplesPerPixel;
+            const draw = (values, colour) => {
+                if (!Array.isArray(values) || values.length === 0) return;
+                const middle = height / 2;
+                const amplitude = Math.max(1, middle - 1);
+                context.beginPath();
+                for (let i = 0; i < values.length; ++i) {
+                    const x = values.length === 1 ? xStart : xStart + i * xSpan / (values.length - 1);
+                    const y = middle - Math.max(-1, Math.min(1, Number(values[i]) || 0)) * amplitude;
+                    if (i === 0) context.moveTo(x, y); else context.lineTo(x, y);
+                }
+                context.strokeStyle = colour;
+                context.lineWidth = 1;
+                context.stroke();
+            };
+            draw(samples, styles.getPropertyValue("--vscode-charts-blue").trim() || "#3794ff");
+            draw(secondarySamples, styles.getPropertyValue("--vscode-charts-orange").trim() || "#d18616");
+        }
+        function appendCaptureFilePicker(container, lane) {
+            const snapshot = state.uiStateByLaneId[String(lane.laneId)];
+            let path = "timeline-capture.wav";
+            try {
+                const parsed = snapshot ? JSON.parse(snapshot.serializedState) : null;
+                if (typeof parsed?.path === "string" && parsed.path.length > 0) path = parsed.path;
+            } catch (_) {}
+            const picker = document.createElement("div");
+            picker.className = "capture-file-picker";
+            const choose = document.createElement("button");
+            choose.type = "button";
+            choose.className = "capture-file-button";
+            choose.textContent = "Choose file…";
+            choose.addEventListener("click", (event) => {
+                event.stopPropagation();
+                vscode.postMessage({
+                    type: "chooseCaptureFile",
+                    laneId: lane.laneId,
+                    currentPath: path,
+                    expectedRevision: Number(snapshot?.revision || 0) || undefined,
+                });
+            });
+            const pathLabel = document.createElement("div");
+            pathLabel.className = "capture-file-label";
+            pathLabel.textContent = path;
+            pathLabel.title = path;
+            picker.appendChild(choose);
+            picker.appendChild(pathLabel);
+            container.appendChild(picker);
+        }
         let viewport = null;
         let hasAppliedInitialScrollPosition = false;
         let pendingViewportPost = 0;
@@ -1120,20 +1277,54 @@ export class LaneViewProvider {
             });
         });
 
+        function laneBaseHeight(lane) {
+            return lane?.domain === "compiled" ? state.compiledLaneHeight : laneHeight;
+        }
+        function laneRenderedHeight(lane) {
+            return laneBaseHeight(lane)
+                + (state.expandedLaneSettingsIds.has(String(lane?.laneId)) ? laneSettingsPanelHeight : 0);
+        }
+        function laneVerticalOffset(index) {
+            let offset = 0;
+            for (let i = 0; i < Math.min(index, state.lanes.length); ++i) offset += laneRenderedHeight(state.lanes[i]);
+            return offset;
+        }
+        function laneIndexAtVerticalOffset(offset) {
+            const position = Math.max(0, Number(offset) || 0);
+            let cursor = 0;
+            for (let i = 0; i < state.lanes.length; ++i) {
+                const next = cursor + laneRenderedHeight(state.lanes[i]);
+                if (position < next) return i;
+                cursor = next;
+            }
+            return Math.max(0, state.lanes.length - 1);
+        }
+        function visibleLaneCountAtVerticalOffset(offset, height) {
+            const first = laneIndexAtVerticalOffset(offset);
+            const limit = Math.max(0, Number(offset) || 0) + Math.max(1, Number(height) || 1);
+            let cursor = laneVerticalOffset(first);
+            let count = 0;
+            for (let i = first; i < state.lanes.length && cursor < limit; ++i) {
+                cursor += laneRenderedHeight(state.lanes[i]);
+                ++count;
+            }
+            return Math.max(1, count + 1);
+        }
+        function totalLanesHeight() {
+            return state.lanes.reduce((height, lane) => height + laneRenderedHeight(lane), 0)
+                + Math.max(0, state.totalLaneCount - state.lanes.length) * laneHeight;
+        }
+
         function postViewportState() {
             if (!viewport) {
                 return;
             }
-            const nextVisibleLaneCount = Math.max(1, Math.ceil(viewport.clientHeight / laneHeight) + 1);
-            const nextStartIndex = Math.max(
-                0,
-                Math.min(
-                    Math.floor(viewport.scrollTop / laneHeight),
-                    Math.max(0, state.totalLaneCount - nextVisibleLaneCount)));
+            const nextStartIndex = laneIndexAtVerticalOffset(viewport.scrollTop);
+            const nextVisibleLaneCount = visibleLaneCountAtVerticalOffset(viewport.scrollTop, viewport.clientHeight);
             state.startIndex = nextStartIndex;
             state.visibleLaneCount = nextVisibleLaneCount;
             if (laneWindow) {
-                laneWindow.style.transform = "translateY(" + String(state.startIndex * laneHeight) + "px)";
+                laneWindow.style.transform = "translateY(" + String(laneVerticalOffset(state.startIndex)) + "px)";
             }
             renderTimelineChrome();
             vscode.setState({
@@ -1172,9 +1363,9 @@ export class LaneViewProvider {
             if (!viewport || deltaRows === 0) {
                 return;
             }
-            const currentStartIndex = Math.floor(viewport.scrollTop / laneHeight);
+            const currentStartIndex = laneIndexAtVerticalOffset(viewport.scrollTop);
             const nextStartIndex = clampStartIndex(currentStartIndex + deltaRows);
-            viewport.scrollTop = nextStartIndex * laneHeight;
+            viewport.scrollTop = laneVerticalOffset(nextStartIndex);
             scheduleViewportPost();
         }
 
@@ -1289,7 +1480,7 @@ export class LaneViewProvider {
 
             timelineRuler = document.createElement("div");
             timelineRuler.className = "timeline-ruler";
-            installTimelineControls(timelineRuler, () => rulerStart(), true);
+            timelineNavigation.install(timelineRuler, "ruler");
             root.appendChild(timelineRuler);
 
             viewport = document.createElement("div");
@@ -1300,7 +1491,7 @@ export class LaneViewProvider {
 
             spacer = document.createElement("div");
             spacer.className = "lane-spacer";
-            spacer.style.height = String(Math.max(0, state.totalLaneCount) * laneHeight) + "px";
+            spacer.style.height = String(totalLanesHeight()) + "px";
             viewport.appendChild(spacer);
 
             laneWindow = document.createElement("div");
@@ -1433,6 +1624,20 @@ export class LaneViewProvider {
             }, { passive: false });
         }
 
+        // One navigation surface for the ruler and every compiled lane. Lane
+        // presentations only choose their coordinate origin; scrubbing,
+        // panning, horizontal zoom and vertical zoom remain identical.
+        const timelineNavigation = {
+            install(element, origin) {
+                const isRuler = origin === "ruler";
+                installTimelineControls(element,
+                    () => isRuler ? rulerStart() : timelineStart(), isRuler);
+            },
+            timelineStart,
+            rulerStart,
+            scrubToSample,
+        };
+
         function setVerticalZoom(height) {
             state.compiledLaneHeight = Math.max(34, Math.min(220, Math.round(height)));
             vscode.setState({
@@ -1538,12 +1743,18 @@ export class LaneViewProvider {
 
         function postTimelineViewport() {
             if (!viewport) return;
-            const firstSampleIndex = Math.max(0, Math.floor(rulerStart()));
-            const lastSampleIndex = Math.max(firstSampleIndex,
-                Math.ceil(rulerStart() + viewport.clientWidth * state.samplesPerPixel));
-            // One display sample per horizontal pixel allows the backend to
-            // choose an appropriate compiled visualization resolution.
-            const displaySampleCount = Math.max(1, Math.ceil(viewport.clientWidth));
+            // Lane content begins after the fixed header. Request only that
+            // region so the sample-window origin and every lane canvas agree.
+            const trackWidth = Math.max(1, viewport.clientWidth - laneHeaderWidth);
+            const visibleFirstSampleIndex = Math.floor(timelineStart());
+            const visibleLastSampleIndex = Math.ceil(timelineStart() + trackWidth * state.samplesPerPixel);
+            const firstSampleIndex = Math.max(0, visibleFirstSampleIndex);
+            const lastSampleIndex = Math.max(firstSampleIndex, visibleLastSampleIndex);
+            // A negative pan has a pre-zero gutter. Sample only the portion
+            // that intersects the timeline; drawing uses the returned bounds
+            // to place that portion at its real x coordinate.
+            const displaySampleCount = Math.max(1, Math.ceil(
+                Math.max(0, visibleLastSampleIndex - firstSampleIndex) / state.samplesPerPixel));
             const next = [firstSampleIndex, lastSampleIndex, displaySampleCount].join(":");
             if (next === lastTimelineViewport) return;
             lastTimelineViewport = next;
@@ -1617,21 +1828,18 @@ export class LaneViewProvider {
                     signal.style.opacity = String(0.18 + level * 0.8);
                 }
 
+                const waveform = row.querySelector(".compiled-waveform");
+                if (waveform) {
+                    drawCompiledWaveform(waveform, content?.samples || [], content?.secondarySamples || [],
+                        content?.sampleWindowFirstIndex, content?.sampleWindowLastIndex);
+                }
+
                 const largeMeters = row.querySelectorAll(".large-meter");
                 if (largeMeters.length > 0) {
-                    const meterMaximum = state.meterGrid === "decibel" ? Math.pow(10, 4 / 20) : 1;
-                    const meterPosition = (level) => {
-                        const linear = Math.max(0, Number(level || 0));
-                        if (state.meterGrid !== "decibel") return Math.min(1, linear);
-                        const xMin = Math.pow(10, -60 / 20) / meterMaximum;
-                        const s = Math.sqrt(xMin);
-                        const normalized = Math.min(1, Math.max(xMin, linear / meterMaximum));
-                        return Math.log((normalized + s) / (s * (1 + s))) / Math.log(1 / s);
-                    };
                     for (const meter of largeMeters) {
-                        const level = meter.dataset.channel === "R" ? content?.secondaryPeakLevel : peakLevel;
+                        const level = meter.dataset.meterChannel === "right" ? content?.secondaryPeakLevel : peakLevel;
                         const fill = meter.querySelector(".large-meter-fill");
-                        if (fill) fill.style.width = String(meterPosition(level) * 100) + "%";
+                        if (fill) fill.style.width = String(realtimeMeterPosition(level) * 100) + "%";
                     }
                 }
 
@@ -1661,6 +1869,34 @@ export class LaneViewProvider {
             }
         }
 
+        // The server remains the authority for graph validation. This mirrors
+        // its lane-level reachability check so the connection control does not
+        // offer an edge that can only close a directed cycle.
+        function wouldCreateLaneCycle(sourceLaneId, targetLaneId) {
+            if (sourceLaneId === targetLaneId) return true;
+            const outputsByLaneId = new Map();
+            for (const connection of state.connections || []) {
+                const source = String(connection.sourceLaneId);
+                const target = String(connection.targetLaneId);
+                let outputs = outputsByLaneId.get(source);
+                if (!outputs) {
+                    outputs = [];
+                    outputsByLaneId.set(source, outputs);
+                }
+                outputs.push(target);
+            }
+            const pending = [String(targetLaneId)];
+            const visited = new Set();
+            while (pending.length > 0) {
+                const current = pending.pop();
+                if (current === String(sourceLaneId)) return true;
+                if (visited.has(current)) continue;
+                visited.add(current);
+                for (const next of outputsByLaneId.get(current) || []) pending.push(next);
+            }
+            return false;
+        }
+
         function renderLanes() {
             const activeElement = document.activeElement;
             const focusedBeatControl = activeElement instanceof HTMLInputElement
@@ -1673,14 +1909,17 @@ export class LaneViewProvider {
                 }
                 : null;
             laneWindow.textContent = "";
-            spacer.style.height = String(Math.max(0, state.totalLaneCount) * laneHeight) + "px";
-            laneWindow.style.transform = "translateY(" + String(state.startIndex * laneHeight) + "px)";
+            spacer.style.height = String(totalLanesHeight()) + "px";
+            laneWindow.style.transform = "translateY(" + String(laneVerticalOffset(state.startIndex)) + "px)";
 
             for (const lane of state.lanes) {
                 const row = document.createElement("div");
                 row.className = "lane-row " + lane.domain + (state.selectedLaneId === String(lane.laneId) ? " selected" : "");
                 row.dataset.laneId = String(lane.laneId);
-                row.style.height = String(lane.domain === "compiled" ? state.compiledLaneHeight : laneHeight) + "px";
+                const baseHeight = laneBaseHeight(lane);
+                row.style.setProperty("--lane-content-height", String(baseHeight) + "px");
+                row.style.height = String(baseHeight
+                    + (state.expandedLaneSettingsIds.has(String(lane.laneId)) ? laneSettingsPanelHeight : 0)) + "px";
                 row.addEventListener("click", (event) => {
                     // Interactive lane presentations must not trigger row
                     // selection/rebuilds. Native number steppers otherwise
@@ -1715,14 +1954,18 @@ export class LaneViewProvider {
                         && connection.targetLaneId === String(lane.laneId));
                     const compatibleInputs = (lane.inputs || []).filter((input) =>
                         input.kind === (selectedLane?.outputKind || "sample"));
+                    const cycleFreeInputs = compatibleInputs.filter(() =>
+                        !wouldCreateLaneCycle(state.selectedLaneId, String(lane.laneId)));
                     connectionButton.textContent = existingConnections.length > 0 ? "−" : "+";
-                    connectionButton.disabled = existingConnections.length === 0 && compatibleInputs.length === 0;
+                    connectionButton.disabled = existingConnections.length === 0 && cycleFreeInputs.length === 0;
                     connectionButton.title = existingConnections.length > 0
                         ? "Disconnect selected lane from this lane"
-                        : compatibleInputs.length > 0
-                            ? "Click: connect to " + (compatibleInputs[0].name || compatibleInputs[0].kind)
-                                + (compatibleInputs.length > 1 ? " • hold: choose input" : "")
-                            : "Selected lane has no compatible output for this lane";
+                        : cycleFreeInputs.length > 0
+                            ? "Click: connect to " + (cycleFreeInputs[0].name || cycleFreeInputs[0].kind)
+                                + (cycleFreeInputs.length > 1 ? " • hold: choose input" : "")
+                            : compatibleInputs.length > 0
+                                ? "Connecting these lanes would create a cycle"
+                                : "Selected lane has no compatible output for this lane";
                     const connectToInput = (input) => {
                         connectionDebug("button connect " + state.selectedLaneId + " -> " + String(lane.laneId)
                             + " " + input.domain + "/" + input.kind + "[" + String(input.ordinal) + "]");
@@ -1755,11 +1998,11 @@ export class LaneViewProvider {
                         if (existingConnections.length > 0) {
                             return;
                         }
-                        if (compatibleInputs.length < 2) return;
+                        if (cycleFreeInputs.length < 2) return;
                         openedInputWheel = false;
                         holdTimer = setTimeout(() => {
                             openedInputWheel = true;
-                            showInputWheel(connectionButton, compatibleInputs, connectToInput);
+                            showInputWheel(connectionButton, cycleFreeInputs, connectToInput);
                         }, 360);
                     });
                     connectionButton.addEventListener("pointerup", (event) => {
@@ -1768,7 +2011,7 @@ export class LaneViewProvider {
                         holdTimer = null;
                         if (openedInputWheel) return;
                         if (existingConnections.length > 0) disconnect();
-                        else if (compatibleInputs.length > 0) connectToInput(compatibleInputs[0]);
+                        else if (cycleFreeInputs.length > 0) connectToInput(cycleFreeInputs[0]);
                     });
                     connectionButton.addEventListener("pointercancel", () => {
                         if (holdTimer) clearTimeout(holdTimer);
@@ -1780,7 +2023,7 @@ export class LaneViewProvider {
                         event.stopPropagation();
                         if (event.detail !== 0) return;
                         if (existingConnections.length > 0) disconnect();
-                        else if (compatibleInputs.length > 0) connectToInput(compatibleInputs[0]);
+                        else if (cycleFreeInputs.length > 0) connectToInput(cycleFreeInputs[0]);
                     });
                 }
                 row.appendChild(connectionButton);
@@ -1812,35 +2055,25 @@ export class LaneViewProvider {
                 });
                 row.appendChild(debugCopy);
 
-                if (lane.modelTypeId) {
-                    const deleteButton = document.createElement("button");
-                    deleteButton.type = "button";
-                    deleteButton.className = "lane-delete-button";
-                    deleteButton.textContent = "×";
-                    deleteButton.title = "Delete authored lane";
-                    deleteButton.setAttribute("aria-label", "Delete authored lane");
-                    deleteButton.addEventListener("click", (event) => {
-                        event.stopPropagation();
-                        connectionDebug("webview delete-button clicked laneId=" + lane.laneId);
-                        requestLaneDeletion([String(lane.laneId)]);
-                    });
-                    row.appendChild(deleteButton);
-                }
-
                 const label = document.createElement("div");
                 label.className = "lane-label";
+                const isCaptureLane = lane.modelTypeId === "iv.timeline.audio-file-capture";
+                const isBeatTriggerLane = lane.modelTypeId === "iv.timeline.beat-trigger";
+                const hasLaneSettings = isCaptureLane || isBeatTriggerLane;
+                const settingsAreOpen = state.expandedLaneSettingsIds.has(String(lane.laneId));
+                if (settingsAreOpen) row.classList.add("settings-open");
 
                 const title = document.createElement("div");
                 title.className = "title";
                 title.textContent = lane.title;
-                if (lane.domain === "compiled" && lane.modelTypeId !== "iv.timeline.beat-trigger") {
-                    label.appendChild(title);
-                }
+                // Compiled lanes put their title directly over their timeline
+                // presentation. Realtime lanes retain the title in their
+                // realtime face, where it shares the meter layout.
 
                 const content = state.contentByLaneId[String(lane.laneId)];
                 const eventCount = Number(content?.eventCount || 0);
                 const peakLevel = content?.peakLevel;
-                if (lane.domain === "compiled" && content && lane.modelTypeId !== "iv.timeline.beat-trigger") {
+                if (lane.domain === "compiled" && content && lane.modelTypeId !== "iv.timeline.beat-trigger" && !isCaptureLane) {
                     const meter = document.createElement("div");
                     meter.className = "lane-meter" + (eventCount > 0 ? " events" : "");
                     meter.title = peakLevel != null
@@ -1857,67 +2090,50 @@ export class LaneViewProvider {
                 }
 
                 row.appendChild(label);
+                let settingsPanel = null;
+                if (hasLaneSettings) {
+                    const settingsToggle = document.createElement("button");
+                    settingsToggle.type = "button";
+                    settingsToggle.className = "lane-settings-toggle";
+                    settingsToggle.textContent = settingsAreOpen ? "▴" : "▾";
+                    settingsToggle.setAttribute("aria-expanded", String(settingsAreOpen));
+                    settingsToggle.title = settingsAreOpen ? "Hide lane settings" : "Show lane settings";
+                    settingsToggle.addEventListener("click", (event) => {
+                        event.stopPropagation();
+                        const laneId = String(lane.laneId);
+                        if (settingsAreOpen) state.expandedLaneSettingsIds.delete(laneId);
+                        else state.expandedLaneSettingsIds.add(laneId);
+                        persistLaneViewState({ expandedLaneSettingsIds: [...state.expandedLaneSettingsIds] });
+                        renderLanes();
+                    });
+                    row.appendChild(settingsToggle);
+                }
+                if (hasLaneSettings && settingsAreOpen) {
+                    settingsPanel = document.createElement("div");
+                    settingsPanel.className = "lane-settings-panel";
+                    if (isCaptureLane) appendCaptureFilePicker(settingsPanel, lane);
+                    row.appendChild(settingsPanel);
+                }
                 if (lane.domain !== "compiled") {
                     const staticFace = document.createElement("div");
                     staticFace.className = "realtime-face";
                     staticFace.title = "Right-click to choose decibel or sample-value scale";
-                    const meterName = document.createElement("div");
-                    meterName.className = "realtime-meter-name";
-                    meterName.textContent = lane.title;
-                    staticFace.appendChild(meterName);
-                    const meter = document.createElement("div");
-                    meter.className = "large-meter";
-                    const isStereo = (content?.sampleChannelType || lane.sampleChannelType) === "stereo";
-                    if (isStereo) meter.dataset.channel = "L";
-                    const fill = document.createElement("div");
-                    fill.className = "large-meter-fill";
-                    const linearLevel = peakLevel != null
-                        ? Math.max(0, Number(peakLevel))
-                        : Math.min(1, eventCount / 8);
-                    const meterMaximum = state.meterGrid === "decibel"
-                        ? Math.pow(10, 4 / 20) : 1;
-                    const halfLogPosition = (value) => {
-                        const xMin = Math.pow(10, -60 / 20) / meterMaximum;
-                        const s = Math.sqrt(xMin);
-                        const normalized = Math.min(1, Math.max(xMin, value / meterMaximum));
-                        return Math.log((normalized + s) / (s * (1 + s))) / Math.log(1 / s);
-                    };
-                    const meterPosition = state.meterGrid === "decibel"
-                        ? halfLogPosition(linearLevel)
-                        : Math.min(1, linearLevel);
-                    fill.style.width = String(meterPosition * 100) + "%";
-                    meter.appendChild(fill);
-                    const grid = document.createElement("div");
-                    grid.className = "large-meter-grid";
-                    const ticks = state.meterGrid === "decibel"
-                        ? Array.from({ length: 22 }, (_, index) => {
-                            const db = -60 + index * 3;
-                            return [halfLogPosition(Math.pow(10, db / 20)), db >= -30 && db % 6 === 0
-                                ? (db > 0 ? "+" : "") + String(db) + " dB"
-                                : ""];
-                        })
-                        : [[0, "0"], [.25, ".25"], [.5, ".5"], [.75, ".75"], [1, "1"]];
-                    for (const [position, text] of ticks) {
-                        const tick = document.createElement("div");
-                        tick.className = "large-meter-tick";
-                        tick.style.left = String(position * 100) + "%";
-                        const labelText = document.createElement("span");
-                        labelText.textContent = text;
-                        tick.appendChild(labelText);
-                        grid.appendChild(tick);
+                    if (isCaptureLane) {
+                        const header = document.createElement("div");
+                        header.className = "capture-header";
+                        const kind = document.createElement("span");
+                        kind.className = "capture-kind";
+                        kind.textContent = lane.title;
+                        header.appendChild(kind);
+                        appendCaptureFilePicker(header, lane);
+                        staticFace.appendChild(header);
+                    } else {
+                        const meterName = document.createElement("div");
+                        meterName.className = "realtime-meter-name";
+                        meterName.textContent = lane.title;
+                        staticFace.appendChild(meterName);
                     }
-                    meter.appendChild(grid);
-                    staticFace.appendChild(meter);
-                    if (isStereo) {
-                        const rightMeter = meter.cloneNode(true);
-                        rightMeter.dataset.channel = "R";
-                        const rightLevel = Math.max(0, Number(content?.secondaryPeakLevel || 0));
-                        const rightPosition = state.meterGrid === "decibel"
-                            ? halfLogPosition(rightLevel)
-                            : Math.min(1, rightLevel);
-                        rightMeter.querySelector(".large-meter-fill").style.width = String(rightPosition * 100) + "%";
-                        staticFace.appendChild(rightMeter);
-                    }
+                    appendRealtimeMeters(staticFace, lane, content);
                     staticFace.addEventListener("contextmenu", (event) => showMeterMenu(event, lane));
                     row.appendChild(staticFace);
                     laneWindow.appendChild(row);
@@ -1925,7 +2141,9 @@ export class LaneViewProvider {
                 }
                 const presentation = lanePresentationPlugins.get(lane.modelTypeId);
                 if (presentation?.render({ lane, content, row, state, laneWindow, timelineStart, rulerStart, scrubToSample,
-                    installTimelineControls,
+                    timelineNavigation,
+                    settingsContainer: settingsPanel,
+                    usesSettingsPanel: hasLaneSettings,
                     postLaneUiState: (laneId, serializedState, expectedRevision) => vscode.postMessage({
                         type: "setLaneUiState", laneId, serializedState, expectedRevision,
                     }),
@@ -1939,7 +2157,23 @@ export class LaneViewProvider {
                 const level = peakLevel != null ? Math.max(0.08, Math.min(1, Number(peakLevel))) : eventCount > 0 ? 0.65 : 0.16;
                 signal.style.opacity = String(0.18 + level * 0.8);
                 track.appendChild(signal);
+                if (lane.domain === "compiled") {
+                    const waveform = document.createElement("canvas");
+                    waveform.className = "compiled-waveform";
+                    track.appendChild(waveform);
+                    requestAnimationFrame(() => drawCompiledWaveform(
+                        waveform, content?.samples || [], content?.secondarySamples || [],
+                        content?.sampleWindowFirstIndex, content?.sampleWindowLastIndex));
+                }
+                if (lane.domain === "compiled") {
+                    const trackTitle = document.createElement("div");
+                    trackTitle.className = "compiled-lane-title";
+                    trackTitle.textContent = lane.title;
+                    trackTitle.title = lane.title;
+                    track.appendChild(trackTitle);
+                }
                 row.appendChild(track);
+                timelineNavigation.install(track, "lane");
 
                 laneWindow.appendChild(row);
             }
@@ -2098,7 +2332,7 @@ export class LaneViewProvider {
                 // results may change lane data and the spacer's maximum, but
                 // can never move the scrollbar.
                 if (!hasAppliedInitialScrollPosition) {
-                    viewport.scrollTop = state.startIndex * laneHeight;
+                    viewport.scrollTop = laneVerticalOffset(state.startIndex);
                     hasAppliedInitialScrollPosition = true;
                 }
                 if (lastPostedVisibleLaneCount < 0) {
@@ -2131,12 +2365,13 @@ export class LaneViewProvider {
                 if (!viewport) {
                     state.startIndex = Number(message.startIndex || 0);
                     state.visibleLaneCount = Number(message.visibleLaneCount || 0);
-                } else {
-                    state.startIndex = Math.max(0, Math.floor(viewport.scrollTop / laneHeight));
-                    state.visibleLaneCount = Math.max(1, Math.ceil(viewport.clientHeight / laneHeight) + 1);
                 }
                 state.totalLaneCount = nextTotalLaneCount;
                 state.lanes = nextLanes;
+                if (viewport) {
+                    state.startIndex = laneIndexAtVerticalOffset(viewport.scrollTop);
+                    state.visibleLaneCount = visibleLaneCountAtVerticalOffset(viewport.scrollTop, viewport.clientHeight);
+                }
                 state.connections = Array.isArray(message.connections) ? message.connections : [];
                 syncLaneQueryControl();
                 state.contentByLaneId = message.contentByLaneId && typeof message.contentByLaneId === "object"
@@ -2152,6 +2387,7 @@ export class LaneViewProvider {
                     visibleLaneCount: state.visibleLaneCount,
                     connectionsExpanded: state.connectionsExpanded,
                     queryExpanded: state.queryExpanded,
+                expandedLaneSettingsIds: [...state.expandedLaneSettingsIds],
                     laneOrder: state.laneOrder,
                 samplesPerPixel: state.samplesPerPixel,
                 panSamples: state.panSamples,
@@ -2192,8 +2428,15 @@ export class LaneViewProvider {
             } else if (message.type === "setContent") {
                 state.contentByLaneId = message.contentByLaneId && typeof message.contentByLaneId === "object"
                     ? message.contentByLaneId : state.contentByLaneId;
-                state.uiStateByLaneId = message.uiStateByLaneId && typeof message.uiStateByLaneId === "object"
+                const nextUiStates = message.uiStateByLaneId && typeof message.uiStateByLaneId === "object"
                     ? message.uiStateByLaneId : state.uiStateByLaneId;
+                const captureUiStateChanged = state.lanes.some((lane) => {
+                    if (lane.modelTypeId !== "iv.timeline.audio-file-capture") return false;
+                    const laneId = String(lane.laneId);
+                    return state.uiStateByLaneId[laneId]?.serializedState
+                        !== nextUiStates[laneId]?.serializedState;
+                });
+                state.uiStateByLaneId = nextUiStates;
                 if (typeof message.playbackSampleIndex === "number") {
                     state.playbackSampleIndex = message.playbackSampleIndex;
                 }
@@ -2202,6 +2445,10 @@ export class LaneViewProvider {
                 // the active numeric field and makes the gesture unreliable.
                 if (document.__ivBeatControlDrag?.active) {
                     renderDeferredUntilBeatDragEnd = true;
+                    return;
+                }
+                if (captureUiStateChanged) {
+                    renderLanes();
                     return;
                 }
                 updateDynamicContent();

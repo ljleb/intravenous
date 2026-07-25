@@ -42,12 +42,13 @@ IV_SUBSCRIBE_LINKER_EVENT(
     });
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LanesVisualizationCompiledSampleLevelRequestedEvent,
-    iv_runtime_lanes_visualization_compiled_sample_level_requested_event,
+    iv::LanesVisualizationCompiledSampleWindowRequestedEvent,
+    iv_runtime_lanes_visualization_compiled_sample_window_requested_event,
     +[](iv::LaneId lane,
         size_t /*first*/,
         size_t /*last*/,
-        iv::LanesVisualizationCompiledSampleLevelBuilder &builder) {
+        size_t point_count,
+        iv::LanesVisualizationCompiledSampleWindowBuilder &builder) {
         if (g_state == nullptr) {
             return;
         }
@@ -55,11 +56,11 @@ IV_SUBSCRIBE_LINKER_EVENT(
         if (it == g_state->compiled_samples.end()) {
             return;
         }
-        iv::Sample::storage level = 0.0f;
-        for (auto const sample : it->second.samples) {
-            level = std::max(level, std::abs(sample.value));
+        iv::CompiledSampleWindow window;
+        for (size_t i = 0; i < point_count; ++i) {
+            window.primary.push_back(it->second.samples[i % it->second.samples.size()].value);
         }
-        builder.succeed(level);
+        builder.succeed(std::move(window));
     });
 
 IV_SUBSCRIBE_LINKER_EVENT(
@@ -102,7 +103,7 @@ IV_SUBSCRIBE_LINKER_EVENT(
 
 namespace iv {
 
-TEST(LanesVisualizationTest, PublishesOneCompiledSampleLevelForVisibleLane)
+TEST(LanesVisualizationTest, PublishesExactCompiledSampleWindowForVisibleLane)
 {
     VisualizationTestState state;
     g_state = &state;
@@ -141,9 +142,13 @@ TEST(LanesVisualizationTest, PublishesOneCompiledSampleLevelForVisibleLane)
     EXPECT_EQ(state.updates.front().view_id.str(), "view-1");
     ASSERT_EQ(state.updates.front().lanes.size(), 1u);
     EXPECT_EQ(state.updates.front().lanes.front().lane_id.str(), "lane-42");
-    EXPECT_EQ(state.updates.front().lanes.front().adapter_type, "level");
-    ASSERT_TRUE(state.updates.front().lanes.front().peak_level.has_value());
-    EXPECT_EQ(*state.updates.front().lanes.front().peak_level, 20.0f);
+    EXPECT_EQ(state.updates.front().lanes.front().adapter_type, "samples");
+    ASSERT_TRUE(state.updates.front().lanes.front().compiled_sample_window.has_value());
+    EXPECT_EQ(state.updates.front().lanes.front().compiled_sample_window->primary.size(), 3u);
+    EXPECT_EQ(state.updates.front().lanes.front().compiled_sample_window->primary[0], 1.0f);
+    EXPECT_EQ(state.updates.front().lanes.front().compiled_sample_window->primary[2], 2.0f);
+    EXPECT_EQ(state.updates.front().lanes.front().compiled_window_first_sample_index, 0u);
+    EXPECT_EQ(state.updates.front().lanes.front().compiled_window_last_sample_index, 100u);
 
     g_state = nullptr;
 }

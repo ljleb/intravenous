@@ -83,6 +83,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     outputChannel.appendLine(`Intravenous lane deletion failed: ${error.message}`);
                 });
         });
+        laneProvider.setCaptureFilePickerHandler(async (laneId, currentPath, expectedRevision) => {
+            const defaultUri = currentPath && (currentPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(currentPath))
+                ? vscode.Uri.file(currentPath)
+                : vscode.Uri.joinPath(workspaceFolder.uri, currentPath || "timeline-capture.wav");
+            const selected = await vscode.window.showSaveDialog({
+                defaultUri,
+                filters: { "Wave audio": ["wav"] },
+                saveLabel: "Select capture destination",
+                title: "Select audio capture destination",
+            });
+            if (!selected) return;
+            session.setTimelineLaneUiState(
+                laneId,
+                JSON.stringify({ path: selected.fsPath }),
+                expectedRevision,
+            ).catch((error: Error) => {
+                outputChannel.appendLine(`Intravenous capture destination update failed: ${error.message}`);
+            });
+        });
         laneProvider.setConnectHandler((sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
             outputChannel.appendLine(`[debug]: RPC connect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
             session.connectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)

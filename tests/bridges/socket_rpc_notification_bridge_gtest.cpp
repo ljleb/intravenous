@@ -323,4 +323,38 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
     unbind_socket_rpc_notification_bridge(harness.server);
 }
 
+TEST(SocketRpcNotificationBridge, LaneViewContentSerializesCompiledSampleWindows)
+{
+    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_compiled_sample_window_notification_server"));
+    bind_socket_rpc_notification_bridge(harness.server);
+
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_runtime_lane_view_content_updated_event,
+        iv::LaneViewContentUpdate{
+            .view_id = intern("view-1"),
+            .lanes = {
+                iv::LaneVisualizationSeries{
+                    .lane_id = intern("lane-42"),
+                    .adapter_type = "samples",
+                    .compiled_sample_window = iv::CompiledSampleWindow{
+                        .primary = {1.0f, 2.0f, 3.0f},
+                        .secondary = {10.0f, 20.0f, 30.0f},
+                    },
+                    .compiled_window_first_sample_index = 100,
+                    .compiled_window_last_sample_index = 300,
+                },
+            },
+        });
+
+    auto const json = parse_json_line(harness.read_line());
+    auto const& lane = json["params"]["lanes"][0];
+    EXPECT_EQ(lane["adapterType"], "samples");
+    EXPECT_EQ(lane["samples"], nlohmann::json::array({1.0f, 2.0f, 3.0f}));
+    EXPECT_EQ(lane["secondarySamples"], nlohmann::json::array({10.0f, 20.0f, 30.0f}));
+    EXPECT_EQ(lane["sampleWindowFirstIndex"], 100);
+    EXPECT_EQ(lane["sampleWindowLastIndex"], 300);
+
+    unbind_socket_rpc_notification_bridge(harness.server);
+}
+
 } // namespace iv
