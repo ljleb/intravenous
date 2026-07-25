@@ -690,6 +690,7 @@ export class LaneViewProvider {
             background-color: var(--vscode-editor-background);
         }
         .lane-track::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .5; background-image: repeating-linear-gradient(90deg, transparent 0, transparent calc(var(--second-width) - 1px), var(--vscode-editorWidget-border, rgba(128,128,128,.2)) calc(var(--second-width) - 1px), var(--vscode-editorWidget-border, rgba(128,128,128,.2)) var(--second-width)); }
+        .lane-track.capture-track::before { display: none; }
         .lane-signal {
             position: absolute; left: 0; right: 0; top: 27px; height: 3px;
             background: var(--vscode-charts-blue);
@@ -698,6 +699,8 @@ export class LaneViewProvider {
         .lane-signal.compiled { background: var(--vscode-charts-orange); }
         .lane-signal.events { height: 10px; top: 23px; opacity: .8; background: repeating-linear-gradient(90deg, var(--vscode-charts-purple) 0 2px, transparent 2px 18px); }
         .compiled-waveform { position: absolute; z-index: 1; inset: 1px 0; width: 100%; height: calc(100% - 2px); pointer-events: none; }
+        .capture-range-boundary { position: absolute; z-index: 2; top: 1px; bottom: 1px; width: 1px; background: var(--vscode-charts-orange); opacity: .78; pointer-events: none; }
+        .capture-range-boundary.end { background: var(--vscode-charts-blue); }
         .compiled-lane-title { position: absolute; z-index: 2; top: 5px; left: 5px; right: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-foreground); font-size: .78em; font-weight: 600; line-height: 1; opacity: .7; pointer-events: none; text-shadow: 0 1px 1px var(--vscode-editor-background); }
         .lane-settings-toggle { position: absolute; z-index: 9; left: calc(var(--lane-header-width) - 40px); top: calc(var(--lane-content-height) / 2); transform: translateY(-50%); width: 15px; height: 15px; padding: 0; border: 0; border-radius: 2px; color: var(--vscode-descriptionForeground); background: transparent; font: 12px/15px var(--vscode-font-family); cursor: pointer; }
         .lane-settings-toggle:hover, .lane-settings-toggle[aria-expanded="true"] { background: var(--vscode-toolbar-hoverBackground); }
@@ -944,6 +947,22 @@ export class LaneViewProvider {
             picker.appendChild(choose);
             picker.appendChild(pathLabel);
             container.appendChild(picker);
+        }
+        function appendCaptureRangeMarkers(track, lane) {
+            const snapshot = state.uiStateByLaneId[String(lane.laneId)];
+            try {
+                const parsed = snapshot ? JSON.parse(snapshot.serializedState) : null;
+                const start = Number(parsed?.captureStartIndex);
+                const frames = Number(parsed?.captureFrameCount);
+                if (!Number.isFinite(start) || !(frames > 0)) return;
+                for (const [kind, sampleIndex] of [["start", start], ["end", start + frames]]) {
+                    const marker = document.createElement("div");
+                    marker.className = "capture-range-boundary " + kind;
+                    marker.style.left = String((sampleIndex - timelineStart()) / state.samplesPerPixel) + "px";
+                    marker.title = "Capture " + kind + " at sample " + String(sampleIndex);
+                    track.appendChild(marker);
+                }
+            } catch (_) {}
         }
         let viewport = null;
         let hasAppliedInitialScrollPosition = false;
@@ -2151,6 +2170,7 @@ export class LaneViewProvider {
                 })) continue;
                 const track = document.createElement("div");
                 track.className = "lane-track";
+                if (isCaptureLane) track.classList.add("capture-track");
                 track.style.setProperty("--second-width", String(Math.max(1, 48000 / state.samplesPerPixel)) + "px");
                 const signal = document.createElement("div");
                 signal.className = "lane-signal " + lane.domain + (eventCount > 0 ? " events" : "");
@@ -2167,6 +2187,7 @@ export class LaneViewProvider {
                 }
                 if (lane.domain === "compiled") {
                     const trackTitle = document.createElement("div");
+                    if (isCaptureLane) appendCaptureRangeMarkers(track, lane);
                     trackTitle.className = "compiled-lane-title";
                     trackTitle.textContent = lane.title;
                     trackTitle.title = lane.title;
