@@ -24,12 +24,22 @@ namespace iv {
 
     struct GraphEdge {
         PortId source, target;
+        ChannelConversionPlan conversion;
 
-        GraphEdge(PortId source = {}, PortId target = {}) :
-            source(source), target(target)
+        GraphEdge(
+            PortId source = {},
+            PortId target = {},
+            ChannelConversionPlan conversion = {}
+        ) :
+            source(source), target(target), conversion(std::move(conversion))
         {}
 
-        bool operator==(GraphEdge const&) const = default;
+        // Edge identity is its topology. The conversion is derived metadata
+        // populated after lowering, and must not affect rewiring/erasure.
+        bool operator==(GraphEdge const& other) const
+        {
+            return source == other.source && target == other.target;
+        }
     };
 
     struct GraphEventEdge {
@@ -52,6 +62,16 @@ namespace iv {
         EventConversionPlan conversion;
 
         bool operator==(EventOutputBinding const&) const = default;
+    };
+
+    struct SampleOutputBinding {
+        std::string target;
+        ChannelConversionPlan conversion;
+
+        bool operator==(SampleOutputBinding const& other) const
+        {
+            return target == other.target;
+        }
     };
 
     struct DetachedInfo {

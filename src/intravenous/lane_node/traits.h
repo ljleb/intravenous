@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/lane_node/channels.h>
+#include <intravenous/channel_layout.h>
 #include <intravenous/lane_node/ui_state.h>
 #include <intravenous/ports.h>
 

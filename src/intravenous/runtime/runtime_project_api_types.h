@@ -95,6 +95,31 @@ namespace iv {
         std::vector<std::string> member_states {};
     };
 
+    struct PublicSampleOutputInfo {
+        std::string instance_id {};
+        std::string source_identity {};
+        std::vector<SourceInfo> source_infos {};
+        std::string name {};
+        std::string logical_state {};
+        bool graph_connected = false;
+        std::vector<size_t> member_ordinals {};
+        std::vector<bool> member_graph_connected {};
+        std::vector<std::string> member_states {};
+    };
+
+    struct PublicEventOutputInfo {
+        std::string instance_id {};
+        std::string source_identity {};
+        std::vector<SourceInfo> source_infos {};
+        std::string name {};
+        EventTypeId type = EventTypeId::trigger;
+        std::string logical_state {};
+        bool graph_connected = false;
+        std::vector<size_t> member_ordinals {};
+        std::vector<bool> member_graph_connected {};
+        std::vector<std::string> member_states {};
+    };
+
     struct ProjectQueryResult {
         std::vector<LogicalNodeInfo> nodes{};
     };

@@ -438,7 +438,7 @@ GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
     prepared.add_placeholder_default_edges();
     prepared.copy_detach_info();
 
-    details::expand_hyperedge_ports(prepared.graph, identity.value);
+    details::expand_hyperedge_ports(prepared.graph, public_ports.sample_outputs(), identity.value);
     details::stub_dangling_ports(prepared.graph, public_ports.sample_inputs().size(), identity.value);
     details::validate_graph(
         prepared.graph,

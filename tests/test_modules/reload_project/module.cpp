@@ -17,13 +17,13 @@ inline void reload_project(iv::ModuleContext const& context)
     left_phase(0.0);
     right_phase(0.0);
     g.outputs(
-        channels::stereo_left = left_voice(
+        "main"_P[stereo::left] = left_voice(
             "amplitude"_P = 0.25,
             "frequency"_P = 220.0,
             "phase_offset"_P = left_phase,
             "dt"_P = dt
         ),
-        channels::stereo_right = right_voice(
+        "main"_P[stereo::right] = right_voice(
             "amplitude"_P = 0.25,
             "frequency"_P = 330.0,
             "phase_offset"_P = right_phase,

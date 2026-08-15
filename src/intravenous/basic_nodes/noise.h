@@ -42,7 +42,7 @@ namespace iv {
         , _seed(seed.has_value() ? seed.value() : std::random_device{}())
         {}
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -94,7 +94,7 @@ namespace iv {
                   static_cast<std::uint64_t>(std::random_device{}())))
         {}
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
                 InputConfig { .name = "min", .default_value = -1.0 },
@@ -102,7 +102,7 @@ namespace iv {
             };
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -163,7 +163,7 @@ namespace iv {
         #endif
         }
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
                 InputConfig { .name = "min", .default_value = -1.0 },
@@ -171,7 +171,7 @@ namespace iv {
             };
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -221,12 +221,12 @@ namespace iv {
         , _gamma(gamma)
         {}
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 1>{};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -256,12 +256,12 @@ namespace iv {
         , _lambda(lambda)
         {}
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 1>{};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -324,12 +324,12 @@ namespace iv {
         , _std(std)
         {}
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 1>{};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -397,7 +397,7 @@ namespace iv {
         #endif
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }

@@ -24,12 +24,12 @@ namespace iv {
     public:
         static_assert(NumInputs >= 1, "FixedBinaryOpNode requires at least one input");
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, NumInputs>{};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -55,12 +55,12 @@ namespace iv {
         BinaryOp _binary_op;
 
     public:
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 2>{};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -74,8 +74,44 @@ namespace iv {
         }
     };
 
-    template<size_t NumInputs>
-    using Sum = FixedBinaryOpNode<std::plus<Sample>, NumInputs>;
+    template<class ChannelType, SampleStreamLayout Layout, size_t NumInputs>
+    class Sum {
+    public:
+        static_assert(NumInputs >= 1, "Sum requires at least one input");
+
+        static constexpr auto inputs()
+        {
+            auto configs = std::array<InputConfig, NumInputs>{};
+            for (auto& config : configs) {
+                config.channel_layout = ChannelLayout{
+                    .channel_type = ChannelTypeTraits<ChannelType>::id,
+                    .sample_layout = Layout,
+                };
+            }
+            return configs;
+        }
+
+        static constexpr auto outputs()
+        {
+            return std::array<OutputConfig, 1>{OutputConfig{
+                .channel_layout = ChannelLayout{
+                    .channel_type = ChannelTypeTraits<ChannelType>::id,
+                    .sample_layout = Layout,
+                },
+            }};
+        }
+
+        void tick(TickSampleContext<Sum> const& ctx) const
+        {
+            for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
+                Sample result = 0.0f;
+                for (auto const& input : ctx.inputs) {
+                    result = result + input.get(0, channel);
+                }
+                ctx.outputs[0].write_frame(0, channel, result);
+            }
+        }
+    };
 
     using Subtract = BinaryOpNode<std::minus<Sample>>;
 
@@ -85,12 +121,12 @@ namespace iv {
     using Quotient = BinaryOpNode<std::divides<Sample>>;
 
     struct Invert {
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 1>{};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -102,12 +138,12 @@ namespace iv {
     };
 
     struct Power {
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 2>{};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }

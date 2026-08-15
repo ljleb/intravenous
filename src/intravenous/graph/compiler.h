@@ -34,6 +34,7 @@ namespace iv::details {
         throw std::logic_error(msg);
     }
 
+    template<class ChannelType, SampleStreamLayout Layout>
     inline TypeErasedNode make_sum_node(size_t arity)
     {
         if (arity == 0 || arity > 64) {
@@ -43,11 +44,45 @@ namespace iv::details {
         std::optional<TypeErasedNode> result;
         [&]<size_t... I>(std::index_sequence<I...>) {
             ((arity == (I + 1)
-                ? (void)(result.emplace(Sum<I + 1>{}))
+                ? (void)(result.emplace(Sum<ChannelType, Layout, I + 1>{}))
                 : (void)0), ...);
         }(std::make_index_sequence<64>{});
 
         IV_ASSERT(result.has_value(), "sum node instantiation must succeed for supported arities");
+        return std::move(*result);
+    }
+
+    inline TypeErasedNode make_sum_node(size_t arity, ChannelLayout layout)
+    {
+        switch (layout.channel_type) {
+        case ChannelTypeId::mono:
+            return layout.sample_layout == SampleStreamLayout::planar
+                ? make_sum_node<mono, SampleStreamLayout::planar>(arity)
+                : make_sum_node<mono, SampleStreamLayout::interleaved>(arity);
+        case ChannelTypeId::stereo:
+            return layout.sample_layout == SampleStreamLayout::planar
+                ? make_sum_node<stereo, SampleStreamLayout::planar>(arity)
+                : make_sum_node<stereo, SampleStreamLayout::interleaved>(arity);
+        case ChannelTypeId::count:
+            break;
+        }
+        error("unsupported channel layout for generated sum node");
+    }
+
+    inline TypeErasedNode make_broadcast_node(size_t arity)
+    {
+        if (arity == 0 || arity > 64) {
+            error("broadcast node arity must be between 1 and 64; got " + std::to_string(arity));
+        }
+
+        std::optional<TypeErasedNode> result;
+        [&]<size_t... I>(std::index_sequence<I...>) {
+            ((arity == (I + 1)
+                ? (void)(result.emplace(Broadcast<I + 1>{}))
+                : (void)0), ...);
+        }(std::make_index_sequence<64>{});
+
+        IV_ASSERT(result.has_value(), "broadcast node instantiation must succeed for supported arities");
         return std::move(*result);
     }
 
@@ -332,7 +367,10 @@ namespace iv::details {
         return lowered_subgraphs;
     }
 
-    inline void expand_hyperedge_ports(PreparedGraph& g, std::string_view builder_id)
+    inline void expand_hyperedge_ports(
+        PreparedGraph& g,
+        std::span<OutputConfig const> public_outputs,
+        std::string_view builder_id)
     {
         std::unordered_map<PortId, std::vector<GraphEdge>> reverse_edges_map;
         for (GraphEdge const& edge : g.edges)
@@ -358,7 +396,9 @@ namespace iv::details {
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
-                g.nodes.push_back(make_sum_node(port_arity));
+                g.nodes.push_back(make_sum_node(
+                    port_arity,
+                    effective_channel_layout(g.nodes[node].inputs()[in_port])));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_logical_ids.emplace_back();
@@ -374,6 +414,34 @@ namespace iv::details {
                 }
                 g.edges.insert(GraphEdge{ { sum_node, 0 }, { node, in_port } });
             }
+        }
+
+        for (size_t output_port = 0; output_port < public_outputs.size(); ++output_port)
+        {
+            auto it = reverse_edges_map.find({ GRAPH_ID, output_port });
+            if (it == reverse_edges_map.end()) continue;
+
+            auto const& edges_to_expand = it->second;
+            size_t const port_arity = edges_to_expand.size();
+            if (port_arity <= 1) continue;
+
+            g.nodes.push_back(make_sum_node(
+                port_arity,
+                effective_channel_layout(public_outputs[output_port])));
+            g.explicit_ttl_samples.push_back(std::nullopt);
+            g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
+            g.node_logical_ids.emplace_back();
+            g.node_source_infos.emplace_back();
+            g.node_construction_order.push_back(next_construction_order(g));
+            size_t const sum_node = g.nodes.size() - 1;
+
+            for (size_t input_port = 0; input_port < edges_to_expand.size(); ++input_port)
+            {
+                GraphEdge const& to_rewire = edges_to_expand[input_port];
+                g.edges.erase(to_rewire);
+                g.edges.insert(GraphEdge{ to_rewire.source, { sum_node, input_port } });
+            }
+            g.edges.insert(GraphEdge{ { sum_node, 0 }, { GRAPH_ID, output_port } });
         }
 
         nodes_size = g.nodes.size();
@@ -436,7 +504,7 @@ namespace iv::details {
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
-                g.nodes.emplace_back(Broadcast(port_arity));
+                g.nodes.push_back(make_broadcast_node(port_arity));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_logical_ids.emplace_back();
@@ -1178,6 +1246,30 @@ namespace iv::details {
         std::vector<DormancyGroup> dormancy_groups
     )
     {
+        // Lowering and hyperedge expansion can introduce replacement edges.
+        // Resolve conversion metadata here, after topology is final, rather
+        // than relying on every topology transform to preserve it.
+        std::unordered_set<GraphEdge> resolved_edges;
+        resolved_edges.reserve(edges.size());
+        auto output_layout_for = [&](PortId port) {
+            return port.node == GRAPH_ID
+                ? effective_channel_layout(public_inputs[port.port])
+                : effective_channel_layout(nodes[port.node].outputs()[port.port]);
+        };
+        auto input_layout_for = [&](PortId port) {
+            return port.node == GRAPH_ID
+                ? effective_channel_layout(public_outputs[port.port])
+                : effective_channel_layout(nodes[port.node].inputs()[port.port]);
+        };
+        for (GraphEdge const& edge : edges) {
+            resolved_edges.emplace(
+                edge.source,
+                edge.target,
+                ChannelConversionRegistry::plan(output_layout_for(edge.source), input_layout_for(edge.target))
+            );
+        }
+        edges = std::move(resolved_edges);
+
         auto [source_of, target_of] = [&] {
             std::unordered_map<PortId, PortId> source_of_;
             std::unordered_map<PortId, PortId> target_of_;
@@ -1188,8 +1280,14 @@ namespace iv::details {
             return std::make_tuple(std::move(source_of_), std::move(target_of_));
         }();
 
-        std::vector<InputConfig> private_input_configs(public_outputs.size());
-        OutputConfig private_outputs_config;
+        std::vector<InputConfig> private_input_configs;
+        private_input_configs.reserve(public_outputs.size());
+        for (auto const& output : public_outputs) {
+            private_input_configs.push_back(InputConfig{
+                .name = output.name,
+                .channel_layout = output.channel_layout,
+            });
+        }
         LatencyAccumulator latency_accumulator;
         std::vector<std::vector<PortBufferPlan>> node_input_buffer_plans(nodes.size());
         std::vector<PortBufferPlan> public_output_buffer_plans(public_outputs.size());
@@ -1206,7 +1304,10 @@ namespace iv::details {
                         size_t const output_node_i = it->second.node;
                         size_t const output_port_i = it->second.port;
                         OutputConfig const output_config = (output_node_i == GRAPH_ID)
-                            ? private_outputs_config
+                            ? OutputConfig{
+                                .name = public_inputs[output_port_i].name,
+                                .channel_layout = public_inputs[output_port_i].channel_layout,
+                            }
                             : nodes[output_node_i].outputs()[output_port_i];
                         size_t const corrected_latency = latency_accumulator.delay_input(this_input, output_config.latency);
                         node_input_buffer_plans[node_i].push_back({
@@ -1225,7 +1326,7 @@ namespace iv::details {
                     }
                 }
             } else {
-                std::vector<InputConfig> input_configs(public_outputs.size());
+                std::vector<InputConfig> input_configs = private_input_configs;
 
                 for (size_t input_i = 0; input_i < input_configs.size(); ++input_i) {
                     PortId const this_input { GRAPH_ID, input_i };
@@ -1233,7 +1334,10 @@ namespace iv::details {
                         size_t const output_node_i = it->second.node;
                         size_t const output_port_i = it->second.port;
                         OutputConfig const output_config = (output_node_i == GRAPH_ID)
-                            ? private_outputs_config
+                            ? OutputConfig{
+                                .name = public_inputs[output_port_i].name,
+                                .channel_layout = public_inputs[output_port_i].channel_layout,
+                            }
                             : nodes[output_node_i].outputs()[output_port_i];
                         size_t const corrected_latency = latency_accumulator.delay_input(this_input, output_config.latency);
                         public_output_buffer_plans[input_i] = {
@@ -1318,7 +1422,7 @@ namespace iv::details {
             region_global_node_indices.reserve(region.execution_order.size());
 
             for (size_t global_i : region.execution_order) {
-                std::vector<std::string> output_targets;
+                std::vector<SampleOutputBinding> output_targets;
                 std::vector<EventOutputBinding> event_output_targets;
                 auto outputs = nodes[global_i].outputs();
                 auto event_inputs = nodes[global_i].event_inputs();
@@ -1329,22 +1433,28 @@ namespace iv::details {
                     auto it = target_of.find({ global_i, output_i });
                     if (it != target_of.end()) {
                         if (it->second.node == GRAPH_ID) {
-                            output_targets.push_back(
-                                graph_port_data_export_id(
+                            output_targets.push_back(SampleOutputBinding{
+                                .target = graph_port_data_export_id(
                                     artifact.graph_id,
                                     it->second.port
-                                )
-                            );
+                                ),
+                                .conversion = std::find_if(artifact.edges.begin(), artifact.edges.end(), [&](GraphEdge const& edge) {
+                                    return edge.source == PortId{ global_i, output_i };
+                                })->conversion,
+                            });
                         } else {
-                            output_targets.push_back(
-                                port_data_export_id(
+                            output_targets.push_back(SampleOutputBinding{
+                                .target = port_data_export_id(
                                     artifact.node_ids[it->second.node],
                                     it->second.port
-                                )
-                            );
+                                ),
+                                .conversion = std::find_if(artifact.edges.begin(), artifact.edges.end(), [&](GraphEdge const& edge) {
+                                    return edge.source == PortId{ global_i, output_i };
+                                })->conversion,
+                            });
                         }
                     } else {
-                        output_targets.push_back({});
+                        output_targets.push_back(SampleOutputBinding{});
                     }
                 }
                 for (size_t output_i = 0; output_i < event_outputs.size(); ++output_i) {

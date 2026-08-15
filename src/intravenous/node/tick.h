@@ -2,6 +2,7 @@
 
 #include <intravenous/node/traits.h>
 #include <intravenous/node/resources.h>
+#include <intravenous/node/static_port_access.h>
 
 #include <sstream>
 #include <memory>
@@ -28,6 +29,28 @@ namespace iv {
         size_t index;
 
         TickSampleContext(TickContext<Node> base, size_t index);
+
+        template<fixed_string Name>
+        auto input() const
+        requires details::has_constexpr_sample_port_configs<Node>
+        {
+            constexpr auto layout = details::static_input_port_layout<Node, Name>();
+            constexpr auto port_index = details::static_input_port_index<Node, Name>();
+            IV_ASSERT(port_index < this->inputs.size(), "static input port is absent from execution context");
+            IV_ASSERT(this->inputs[port_index].channel_layout() == layout, "static input port layout does not match execution context");
+            return details::StaticInputSamplePortAccess<layout.channel_type>(this->inputs[port_index]);
+        }
+
+        template<fixed_string Name>
+        auto output() const
+        requires details::has_constexpr_sample_port_configs<Node>
+        {
+            constexpr auto layout = details::static_output_port_layout<Node, Name>();
+            constexpr auto port_index = details::static_output_port_index<Node, Name>();
+            IV_ASSERT(port_index < this->outputs.size(), "static output port is absent from execution context");
+            IV_ASSERT(this->outputs[port_index].channel_layout() == layout, "static output port layout does not match execution context");
+            return details::StaticOutputSamplePortAccess<layout.channel_type>(this->outputs[port_index]);
+        }
     };
 
     template<typename Node>
@@ -40,6 +63,30 @@ namespace iv {
             size_t index,
             size_t block_size
         );
+
+        template<fixed_string Name>
+        auto input() const
+        requires details::has_constexpr_sample_port_configs<Node>
+        {
+            constexpr auto layout = details::static_input_port_layout<Node, Name>();
+            constexpr auto port_index = details::static_input_port_index<Node, Name>();
+            IV_ASSERT(port_index < this->inputs.size(), "static input port is absent from execution context");
+            IV_ASSERT(this->inputs[port_index].channel_layout() == layout, "static input port layout does not match execution context");
+            return details::StaticInputBlockPortAccess<layout.channel_type, layout.sample_layout>(
+                this->inputs[port_index], this->block_size);
+        }
+
+        template<fixed_string Name>
+        auto output() const
+        requires details::has_constexpr_sample_port_configs<Node>
+        {
+            constexpr auto layout = details::static_output_port_layout<Node, Name>();
+            constexpr auto port_index = details::static_output_port_index<Node, Name>();
+            IV_ASSERT(port_index < this->outputs.size(), "static output port is absent from execution context");
+            IV_ASSERT(this->outputs[port_index].channel_layout() == layout, "static output port layout does not match execution context");
+            return details::StaticOutputBlockPortAccess<layout.channel_type, layout.sample_layout>(
+                this->outputs[port_index], this->block_size);
+        }
     };
 
     template<typename Node>
@@ -144,6 +191,9 @@ namespace iv {
         if constexpr (details::has_tick<Node>)
         {
             node.tick(ctx);
+            for (auto& output : ctx.outputs) {
+                output.finish_direct_write(1);
+            }
             advance_inputs(ctx.inputs, 1);
         }
         else if constexpr (details::has_tick_block<Node>)
@@ -171,6 +221,9 @@ namespace iv {
         if constexpr (details::has_tick_block<Node>)
         {
             node.tick_block(ctx);
+            for (auto& output : ctx.outputs) {
+                output.finish_direct_write(ctx.block_size);
+            }
             advance_inputs(ctx.inputs, ctx.block_size);
         }
         else

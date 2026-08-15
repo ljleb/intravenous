@@ -22,6 +22,12 @@ std::string public_input_node_id(PublicSampleInputInfo const &input)
 {
     return public_sample_input_node_id(input.instance_id, input.source_identity);
 }
+
+template<class Port>
+std::string public_output_node_id(Port const& output)
+{
+    return iv::public_output_node_id(output.instance_id, output.source_identity);
+}
 }
 SourceTextLineMap SourceTextLineMap::from_file(std::filesystem::path const &path)
 {
@@ -67,12 +73,32 @@ void IvModuleSourceIntrospection::set_public_event_inputs(std::vector<PublicEven
     for (auto &input : inputs) public_event_inputs_by_instance_id[input.instance_id].push_back(std::move(input));
 }
 
+void IvModuleSourceIntrospection::set_public_sample_outputs(std::vector<PublicSampleOutputInfo> outputs)
+{
+    std::scoped_lock lock(mutex);
+    std::unordered_set<std::string> instances;
+    for (auto const& output : outputs) instances.insert(output.instance_id);
+    for (auto const& id : instances) public_outputs_by_instance_id.erase(id);
+    for (auto& output : outputs) public_outputs_by_instance_id[output.instance_id].push_back(std::move(output));
+}
+
+void IvModuleSourceIntrospection::set_public_event_outputs(std::vector<PublicEventOutputInfo> outputs)
+{
+    std::scoped_lock lock(mutex);
+    std::unordered_set<std::string> instances;
+    for (auto const& output : outputs) instances.insert(output.instance_id);
+    for (auto const& id : instances) public_event_outputs_by_instance_id.erase(id);
+    for (auto& output : outputs) public_event_outputs_by_instance_id[output.instance_id].push_back(std::move(output));
+}
+
 void IvModuleSourceIntrospection::replace_public_input_instances(std::span<std::string const> instance_ids)
 {
     std::scoped_lock lock(mutex);
     for (auto const &id : instance_ids) {
         public_inputs_by_instance_id.erase(id);
         public_event_inputs_by_instance_id.erase(id);
+        public_outputs_by_instance_id.erase(id);
+        public_event_outputs_by_instance_id.erase(id);
     }
 }
 
@@ -694,6 +720,56 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_public_event_input(PublicEventIn
     return node;
 }
 
+LogicalNodeInfo IvModuleSourceIntrospection::to_public_sample_output(PublicSampleOutputInfo const& output) const
+{
+    LogicalNodeInfo node{
+        .id = public_output_node_id(output), .instance_id = output.instance_id,
+        .kind = "Public output", .source_identity = output.source_identity,
+        .type_identity = "iv::GraphBuilder::outputs",
+    };
+    for (auto const& info : output.source_infos) node.source_spans.push_back(to_live_span(info.span));
+    node.sample_outputs.push_back(LogicalPortInfo{
+        .name = output.name.empty() ? "output" : output.name, .type = "sample",
+        .connectivity = output.graph_connected ? LogicalPortConnectivity::connected : LogicalPortConnectivity::disconnected,
+        .ordinal = 0, .state_value = output.logical_state,
+    });
+    for (size_t i = 0; i < output.member_ordinals.size(); ++i) {
+        LogicalNodeMemberInfo member{.ordinal = output.member_ordinals[i], .kind = "Public output member", .type_identity = "iv::GraphBuilder::outputs"};
+        member.sample_outputs.push_back(LogicalPortInfo{
+            .name = output.name.empty() ? "output" : output.name, .type = "sample",
+            .connectivity = i < output.member_graph_connected.size() && output.member_graph_connected[i]
+                ? LogicalPortConnectivity::connected : LogicalPortConnectivity::disconnected,
+            .ordinal = 0, .state_value = i < output.member_states.size() ? output.member_states[i] : "logicalFollow",
+        });
+        node.members.push_back(std::move(member));
+    }
+    return node;
+}
+
+LogicalNodeInfo IvModuleSourceIntrospection::to_public_event_output(PublicEventOutputInfo const& output) const
+{
+    LogicalNodeInfo node{
+        .id = public_output_node_id(output), .instance_id = output.instance_id,
+        .kind = "Public event output", .source_identity = output.source_identity,
+        .type_identity = "iv::GraphBuilder::event_outputs",
+    };
+    for (auto const& info : output.source_infos) node.source_spans.push_back(to_live_span(info.span));
+    node.event_outputs.push_back(LogicalPortInfo{ .name = output.name.empty() ? "event" : output.name,
+        .type = details::event_type_name(output.type),
+        .connectivity = output.graph_connected ? LogicalPortConnectivity::connected : LogicalPortConnectivity::disconnected,
+        .ordinal = 0, .state_value = output.logical_state });
+    for (size_t i = 0; i < output.member_ordinals.size(); ++i) {
+        LogicalNodeMemberInfo member{.ordinal = output.member_ordinals[i], .kind = "Public event output member", .type_identity = "iv::GraphBuilder::event_outputs"};
+        member.event_outputs.push_back(LogicalPortInfo{.name = output.name.empty() ? "event" : output.name,
+            .type = details::event_type_name(output.type),
+            .connectivity = i < output.member_graph_connected.size() && output.member_graph_connected[i]
+                ? LogicalPortConnectivity::connected : LogicalPortConnectivity::disconnected,
+            .ordinal = 0, .state_value = i < output.member_states.size() ? output.member_states[i] : "logicalFollow"});
+        node.members.push_back(std::move(member));
+    }
+    return node;
+}
+
 void IvModuleSourceIntrospection::handle_iv_module_definitions_changed(
     IvModuleDefinitionsChanged const &diff)
 {
@@ -934,6 +1010,30 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             if (matches) result.nodes.push_back(to_public_event_input(input));
         }
     }
+    for (auto const &[public_instance_id, outputs] : public_outputs_by_instance_id) {
+        if (instance_id.has_value() && public_instance_id != *instance_id) continue;
+        for (auto const& output : outputs) {
+            auto const matches = requested_ranges.empty() || std::ranges::any_of(output.source_infos, [&](SourceInfo const& info) {
+                return std::ranges::any_of(requested_ranges, [&](auto const& range) {
+                    return normalized_path_string(info.span.file_path) == normalized_file_path
+                        && !(info.span.end < range.first || info.span.begin > range.second);
+                });
+            });
+            if (matches) result.nodes.push_back(to_public_sample_output(output));
+        }
+    }
+    for (auto const &[public_instance_id, outputs] : public_event_outputs_by_instance_id) {
+        if (instance_id.has_value() && public_instance_id != *instance_id) continue;
+        for (auto const& output : outputs) {
+            auto const matches = requested_ranges.empty() || std::ranges::any_of(output.source_infos, [&](SourceInfo const& info) {
+                return std::ranges::any_of(requested_ranges, [&](auto const& range) {
+                    return normalized_path_string(info.span.file_path) == normalized_file_path
+                        && !(info.span.end < range.first || info.span.begin > range.second);
+                });
+            });
+            if (matches) result.nodes.push_back(to_public_event_output(output));
+        }
+    }
 
     return result;
 }
@@ -998,6 +1098,26 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
             }
         }
     }
+    for (auto const &[_, outputs] : public_outputs_by_instance_id) {
+        for (auto const& output : outputs) for (auto const& info : output.source_infos) {
+            if (normalized_path_string(info.span.file_path) != normalized_file_path) continue;
+            auto live_span = to_live_span(info.span);
+            auto const key = live_span.file_path + ":" + std::to_string(live_span.range.start.line) + ":"
+                + std::to_string(live_span.range.start.column) + ":" + std::to_string(live_span.range.end.line)
+                + ":" + std::to_string(live_span.range.end.column);
+            if (emitted_spans.insert(key).second) result.source_spans.push_back(std::move(live_span));
+        }
+    }
+    for (auto const &[_, outputs] : public_event_outputs_by_instance_id) {
+        for (auto const& output : outputs) for (auto const& info : output.source_infos) {
+            if (normalized_path_string(info.span.file_path) != normalized_file_path) continue;
+            auto live_span = to_live_span(info.span);
+            auto const key = live_span.file_path + ":" + std::to_string(live_span.range.start.line) + ":"
+                + std::to_string(live_span.range.start.column) + ":" + std::to_string(live_span.range.end.line)
+                + ":" + std::to_string(live_span.range.end.column);
+            if (emitted_spans.insert(key).second) result.source_spans.push_back(std::move(live_span));
+        }
+    }
 
     return result;
 }
@@ -1029,6 +1149,12 @@ LogicalNodeInfo IvModuleSourceIntrospection::get_logical_node(std::string const 
                 return to_public_event_input(input);
             }
         }
+    }
+    for (auto const &[_, outputs] : public_outputs_by_instance_id) {
+        for (auto const& output : outputs) if (public_output_node_id(output) == node_id) return to_public_sample_output(output);
+    }
+    for (auto const &[_, outputs] : public_event_outputs_by_instance_id) {
+        for (auto const& output : outputs) if (public_output_node_id(output) == node_id) return to_public_event_output(output);
     }
     auto const resolved = parse_runtime_node_id(node_id);
     if (!resolved.has_value()) {
@@ -1080,6 +1206,15 @@ std::vector<LogicalNodeInfo> IvModuleSourceIntrospection::get_logical_nodes(
             }
         }
         if (public_node) continue;
+        for (auto const &[_, outputs] : public_outputs_by_instance_id) {
+            auto const it = std::find_if(outputs.begin(), outputs.end(), [&](auto const& output) { return public_output_node_id(output) == node_id; });
+            if (it != outputs.end()) { nodes.push_back(to_public_sample_output(*it)); public_node = true; break; }
+        }
+        if (!public_node) for (auto const &[_, outputs] : public_event_outputs_by_instance_id) {
+            auto const it = std::find_if(outputs.begin(), outputs.end(), [&](auto const& output) { return public_output_node_id(output) == node_id; });
+            if (it != outputs.end()) { nodes.push_back(to_public_event_output(*it)); public_node = true; break; }
+        }
+        if (public_node) continue;
         auto const resolved = parse_runtime_node_id(node_id);
         if (!resolved.has_value()) {
             throw std::runtime_error("unknown node id: " + node_id);
@@ -1128,6 +1263,14 @@ std::vector<LogicalNodeInfo> IvModuleSourceIntrospection::get_logical_nodes_for_
         if (auto const public_it = public_event_inputs_by_instance_id.find(instance.instance_id);
             public_it != public_event_inputs_by_instance_id.end()) {
             for (auto const &input : public_it->second) nodes.push_back(to_public_event_input(input));
+        }
+        if (auto const public_it = public_outputs_by_instance_id.find(instance.instance_id);
+            public_it != public_outputs_by_instance_id.end()) {
+            for (auto const& output : public_it->second) nodes.push_back(to_public_sample_output(output));
+        }
+        if (auto const public_it = public_event_outputs_by_instance_id.find(instance.instance_id);
+            public_it != public_event_outputs_by_instance_id.end()) {
+            for (auto const& output : public_it->second) nodes.push_back(to_public_event_output(output));
         }
     }
     return nodes;

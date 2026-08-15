@@ -37,8 +37,6 @@ namespace iv {
     }
 
 #if IV_ENABLE_JUCE_VST
-    class JuceVstWrapper;
-
     struct JuceVstParameterSpec {
         std::string id;
         std::string name;
@@ -70,81 +68,15 @@ namespace iv {
 
     JuceVstWrapperSpec probe_juce_vst(JuceVstPluginConfig request);
 
-    class JuceVstWrapper {
-        std::shared_ptr<JuceVstWrapperSpec const> _spec;
-
-    public:
-        struct State {
-            UniqueResource plugin_instance { nullptr, +[](void*) {} };
-        };
-
-        explicit JuceVstWrapper(JuceVstWrapperSpec spec) :
-            _spec(std::make_shared<JuceVstWrapperSpec const>(std::move(spec)))
-        {}
-
-        std::vector<InputConfig> inputs() const
-        {
-            std::vector<InputConfig> inputs;
-            inputs.reserve(_spec->schema.audio_inputs + _spec->schema.parameters.size());
-            for (size_t channel = 0; channel < _spec->schema.audio_inputs; ++channel) {
-                inputs.push_back(InputConfig{
-                    .name = _spec->schema.audio_input_names[channel],
-                });
-            }
-            for (auto const& parameter : _spec->schema.parameters) {
-                inputs.push_back(InputConfig{
-                    .name = parameter.name,
-                    .default_value = parameter.default_value,
-                    .min = parameter.min,
-                    .max = parameter.max,
-                });
-            }
-            return inputs;
-        }
-
-        auto event_inputs() const
-        {
-            return std::array<EventInputConfig, 1> {{
-                { .name = "midi", .type = EventTypeId::midi }
-            }};
-        }
-
-        std::vector<OutputConfig> outputs() const
-        {
-            std::vector<OutputConfig> outputs;
-            outputs.reserve(_spec->schema.audio_outputs);
-            for (size_t channel = 0; channel < _spec->schema.audio_outputs; ++channel) {
-                outputs.push_back(OutputConfig{
-                    .name = _spec->schema.audio_output_names[channel],
-                });
-            }
-            return outputs;
-        }
-
-        void initialize(InitializationContext<JuceVstWrapper> const& ctx) const
-        {
-            auto& state = ctx.state();
-            state.plugin_instance = ctx.resources.vst.create(*_spec);
-        }
-
-        void tick_block(TickBlockContext<JuceVstWrapper> const& ctx) const;
-    };
-
     namespace juce {
-        inline auto vst(
-            GraphBuilder& g,
-            std::filesystem::path plugin_path,
-            std::string plugin_identifier = {},
-            size_t preferred_audio_input_streams = 1,
-            size_t preferred_audio_output_streams = 1
-        )
+        template<typename... Args>
+        auto vst(Args&&...)
         {
-            return g.node<JuceVstWrapper>(probe_juce_vst(JuceVstPluginConfig{
-                .plugin_path = std::move(plugin_path),
-                .plugin_identifier = std::move(plugin_identifier),
-                .preferred_audio_input_streams = preferred_audio_input_streams,
-                .preferred_audio_output_streams = preferred_audio_output_streams,
-            }));
+            static_assert(
+                details::dependent_false_v<Args...>,
+                "iv::juce::vst(...) is temporarily unavailable while VST discovery-generated node types are introduced."
+            );
+            return NodeRef();
         }
     }
 #endif

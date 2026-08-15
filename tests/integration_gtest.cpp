@@ -15,6 +15,7 @@
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/lane_filters_lane_views_bridge.h>
 #include <intravenous/runtime/lane_views.h>
+#include <intravenous/runtime/lane_views_events.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/startup_config.h>
 #include <intravenous/runtime/task_runner.h>
@@ -34,6 +35,8 @@
 #include <mutex>
 #include <numbers>
 #include <thread>
+#include <unordered_set>
+#include <variant>
 
 namespace {
 using iv::test_support::read_only_module_fixture_workspace;
@@ -61,6 +64,7 @@ struct IntegrationPassFinishedAction {
 };
 
 IntegrationPassFinishedAction *g_integration_pass_finished_action = nullptr;
+std::vector<iv::LaneViewResult> *g_integration_lane_view_updates = nullptr;
 
 IV_SUBSCRIBE_LINKER_EVENT(
     iv::IvModuleReloadResultsEvent,
@@ -85,6 +89,15 @@ IV_SUBSCRIBE_LINKER_EVENT(
         }
         if (fn) {
             fn(finished);
+        }
+    });
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    iv::LaneViewsUpdatedEvent,
+    iv_runtime_lane_views_updated_event,
+    +[](iv::LaneViewResult const &update) {
+        if (g_integration_lane_view_updates != nullptr) {
+            g_integration_lane_view_updates->push_back(update);
         }
     });
 
@@ -285,16 +298,18 @@ namespace {
         using namespace iv;
         auto& g = context.builder();
         auto const dt = g.node<ValueSource>(&context.sample_period());
-        auto const voices = iv::polyphonic<2>(g, [&](auto m) {
-            auto const saw = g.node<SawOscillator>();
-            saw(
+        g.multi_channel<stereo>([&]<auto channel>() {
+            auto const voice = g.node<SawOscillator>();
+            voice(
                 "phase_offset"_P = 0.0,
                 "frequency"_P = 440.0,
                 "dt"_P = dt
             );
-            return saw * ("amplitude"_P << m);
+            auto const contribution = voice * 0.1;
+            g.outputs(
+                "main"_P[channel] = contribution,
+                "main"_P[swap_side(channel)] = contribution);
         });
-        g.outputs(channels::mono = voices);
     }
 }
 
@@ -344,25 +359,75 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
         loaded_definitions.front().introspection.logical_nodes.begin(),
         loaded_definitions.front().introspection.logical_nodes.end(),
         [](auto const &node) {
-            return !node.sample_inputs.empty();
+            return node.kind.contains("SawOscillator");
         });
     ASSERT_NE(logical_node_it, loaded_definitions.front().introspection.logical_nodes.end());
+    auto const frequency_input_it = std::find_if(
+        logical_node_it->sample_inputs.begin(), logical_node_it->sample_inputs.end(),
+        [](auto const &input) { return input.name == "frequency"; });
+    ASSERT_NE(frequency_input_it, logical_node_it->sample_inputs.end());
+
+    // Begin in the normal knob-controlled state. The user then changes this
+    // exact logical port to a timeline lane while the unfiltered view is open.
+    graph_input_lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
+        .node_id = runtime_node_id(created, logical_node_it->id),
+        .member_ordinal = std::nullopt,
+        .input_ordinal = frequency_input_it->ordinal,
+        .state = iv::ProjectSampleInputState::overridden,
+    });
+    graph_input_lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
+
+    // The real UI normally has its unfiltered lane view open before a user
+    // chooses "Connect lane". Its update must be pushed when the new graph
+    // input lane is realized, rather than requiring the user to reopen it.
+    std::vector<iv::LaneViewResult> lane_view_updates;
+    g_integration_lane_view_updates = &lane_view_updates;
+    auto const initially_open_view = lane_views.open_view(iv::LaneViewRequest{
+        .view_id = intern("view"),
+        .query = iv::LaneQuery{.filter = iv::LaneQueryFilter{}},
+    });
+    auto const initial_lane_count = initially_open_view.lanes.total_lane_count;
+    EXPECT_EQ(initial_lane_count, 1u);
+    lane_view_updates.clear();
 
     graph_input_lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
         .node_id = runtime_node_id(created, logical_node_it->id),
         .member_ordinal = std::nullopt,
-        .input_ordinal = 0,
+        .input_ordinal = frequency_input_it->ordinal,
         .state = iv::ProjectSampleInputState::timeline_lane,
     });
     graph_input_lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
-    auto const view = lane_views.open_view(iv::LaneViewRequest{
-        .view_id = intern("view"),
-        .query = iv::LaneQuery{
-            .filter = iv::LaneQueryFilter{.source = "dsp_graph.graph_input"},
-        },
+    auto const visible_update = std::find_if(
+        lane_view_updates.rbegin(), lane_view_updates.rend(), [&](auto const &update) {
+            return update.view_id == intern("view")
+                && update.lanes.total_lane_count > initial_lane_count;
+        });
+    ASSERT_NE(visible_update, lane_view_updates.rend());
+    // Each stereo channel receives two contributors across the two generic
+    // instantiations, but all four contributions aggregate into one `main`
+    // public-output lane. The newly exposed logical input is a second lane.
+    auto const &visible_view = *visible_update;
+    EXPECT_GE(visible_view.lanes.total_lane_count, initial_lane_count + 1);
+    size_t public_main_lane_count = 0;
+    for (auto const &lane : visible_view.lanes.lanes) {
+        if (lane.metadata.has_unit("dsp_graph.public_output")
+            && lane.sample_channel_type == iv::ChannelTypeId::stereo) {
+            ++public_main_lane_count;
+        }
+    }
+    EXPECT_EQ(public_main_lane_count, 1u);
+    std::unordered_set<std::string> lane_names;
+    timeline.with_graph([&](iv::LaneGraph const &graph) {
+        for (auto const &lane : visible_view.lanes.lanes) {
+            lane_names.insert(std::visit(
+                [](auto const &output) { return output.name; },
+                graph.lane(lane.runtime_lane).output));
+        }
     });
-    EXPECT_GT(view.lanes.total_lane_count, 0u);
+    EXPECT_TRUE(lane_names.contains("main"));
+    EXPECT_TRUE(lane_names.contains("frequency"));
+    g_integration_lane_view_updates = nullptr;
 
     iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
     iv::unbind_iv_module_reload_iv_module_definitions_bridge(definitions);
@@ -387,16 +452,16 @@ void polyphonic_module(iv::ModuleContext const& context)
     using namespace iv;
     auto& g = context.builder();
     auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto const voices = iv::polyphonic<2>(g, [&](auto m) {
+    iv::polyphonic<2>(g, [&]<size_t Voice>(auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
             "phase_offset"_P = 0.0,
             "frequency"_P = 440.0,
             "dt"_P = dt
         );
-        return saw * ("amplitude"_P << m);
+        (void)Voice;
+        g.outputs("main"_P = saw * ("amplitude"_P << m));
     });
-    g.outputs(channels::mono = voices);
 }
 
 IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);

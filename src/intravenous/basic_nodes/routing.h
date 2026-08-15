@@ -7,6 +7,62 @@
 #include <vector>
 
 namespace iv {
+    template<class ChannelType>
+    class ChannelPack {
+    public:
+        static constexpr auto inputs()
+        {
+            return std::array<InputConfig, ChannelType::channel_count>{};
+        }
+
+        static constexpr auto outputs()
+        {
+            return std::array<OutputConfig, 1>{OutputConfig{
+                .name = "out",
+                .channel_layout = ChannelLayout{
+                    .channel_type = ChannelTypeTraits<ChannelType>::id,
+                    .sample_layout = SampleStreamLayout::planar,
+                },
+            }};
+        }
+
+        void tick_block(TickBlockContext<ChannelPack> const& ctx) const
+        {
+            for_each_channel_port<ChannelType>([&]<auto channel>() {
+                ctx.template output<"out">()[channel].write_block(
+                    ctx.inputs[port_index(channel)].get_block(ctx.block_size));
+            });
+        }
+    };
+
+    template<class ChannelType>
+    class ChannelUnpack {
+    public:
+        static constexpr auto inputs()
+        {
+            return std::array<InputConfig, 1>{InputConfig{
+                .name = "in",
+                .channel_layout = ChannelLayout{
+                    .channel_type = ChannelTypeTraits<ChannelType>::id,
+                    .sample_layout = SampleStreamLayout::planar,
+                },
+            }};
+        }
+
+        static constexpr auto outputs()
+        {
+            return std::array<OutputConfig, ChannelType::channel_count>{};
+        }
+
+        void tick(TickSampleContext<ChannelUnpack> const& ctx) const
+        {
+            for_each_channel_port<ChannelType>([&]<auto channel>() {
+                ctx.outputs[port_index(channel)].push(
+                    ctx.inputs[0].get(0, port_index(channel)));
+            });
+        }
+    };
+
     struct DetachArrayId {
         size_t id;
 
@@ -17,30 +73,22 @@ namespace iv {
         }
     };
 
+    template<size_t NumOutputs>
     class Broadcast {
-        size_t _num_outputs;
-
     public:
-        explicit Broadcast(size_t num_outputs) :
-            _num_outputs(num_outputs)
-        {}
+        static_assert(NumOutputs >= 1, "Broadcast requires at least one output");
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 1>{};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
-            return std::vector<OutputConfig>(_num_outputs);
+            return std::array<OutputConfig, NumOutputs>{};
         }
 
-        auto num_outputs() const
-        {
-            return _num_outputs;
-        }
-
-        void tick(TickSampleContext<Broadcast> const& state) const
+        void tick(TickSampleContext<Broadcast<NumOutputs>> const& state) const
         {
             Sample sample = state.inputs[0].get();
             for (auto& out : state.outputs) {
@@ -153,113 +201,6 @@ namespace iv {
         }
     };
 
-    class PolyphonicMix {
-        size_t _arity;
-        std::vector<OutputConfig> _outputs;
-        std::vector<EventOutputConfig> _event_outputs;
-
-    private:
-        size_t sample_input_index(size_t output_port, size_t lane) const
-        {
-            return output_port * _arity + lane;
-        }
-
-        size_t event_input_index(size_t output_port, size_t lane) const
-        {
-            return output_port * _arity + lane;
-        }
-
-    public:
-        struct State {
-            std::span<size_t> cursors;
-        };
-
-        PolyphonicMix(
-            size_t arity,
-            std::vector<OutputConfig> outputs,
-            std::vector<EventOutputConfig> event_outputs
-        ) :
-            _arity(arity),
-            _outputs(std::move(outputs)),
-            _event_outputs(std::move(event_outputs))
-        {}
-
-        auto inputs() const
-        {
-            return std::vector<InputConfig>(_outputs.size() * _arity);
-        }
-
-        auto event_inputs() const
-        {
-            std::vector<EventInputConfig> inputs;
-            inputs.reserve(_event_outputs.size() * _arity);
-            for (auto const& output : _event_outputs) {
-                for (size_t lane = 0; lane < _arity; ++lane) {
-                    (void)lane;
-                    inputs.push_back(EventInputConfig{
-                        .type = output.type,
-                    });
-                }
-            }
-            return inputs;
-        }
-
-        std::vector<OutputConfig> const& outputs() const
-        {
-            return _outputs;
-        }
-
-        std::vector<EventOutputConfig> const& event_outputs() const
-        {
-            return _event_outputs;
-        }
-
-        void declare(DeclarationContext<PolyphonicMix> const& ctx) const
-        {
-            auto const& state = ctx.state();
-            ctx.local_array(state.cursors, _arity);
-        }
-
-        void tick_block(TickBlockContext<PolyphonicMix> const& ctx) const
-        {
-            for (size_t output_port = 0; output_port < _outputs.size(); ++output_port) {
-                auto& output = ctx.outputs[output_port];
-                output.push_silence(ctx.block_size);
-                for (size_t lane = 0; lane < _arity; ++lane) {
-                    output.accumulate_block(ctx.inputs[sample_input_index(output_port, lane)].get_block(ctx.block_size));
-                }
-            }
-
-            auto& state = ctx.state();
-            for (size_t output_port = 0; output_port < _event_outputs.size(); ++output_port) {
-                std::ranges::fill(state.cursors, 0);
-
-                while (true) {
-                    size_t selected_lane = _arity;
-                    TimedEvent selected_event {};
-                    for (size_t lane = 0; lane < _arity; ++lane) {
-                        auto const block = ctx.event_inputs[event_input_index(output_port, lane)].get_block(ctx.index, ctx.block_size);
-                        if (state.cursors[lane] >= block.size()) {
-                            continue;
-                        }
-                        TimedEvent const event = block[state.cursors[lane]];
-                        if (selected_lane == _arity || event.time < selected_event.time) {
-                            selected_lane = lane;
-                            selected_event = event;
-                        }
-                    }
-
-                    if (selected_lane == _arity) {
-                        break;
-                    }
-
-                    ctx.event_outputs[output_port].push(selected_event);
-                    ++state.cursors[selected_lane];
-                }
-            }
-        }
-    };
-
     struct DetachWriterNode {
         DetachArrayId id;
         size_t loop_extra_latency = 1;
@@ -268,7 +209,7 @@ namespace iv {
             std::span<Sample> samples;
         };
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 1>{};
         }
@@ -304,7 +245,7 @@ namespace iv {
             std::span<Sample> samples;
         };
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -332,7 +273,7 @@ namespace iv {
     };
 
     struct DummySink {
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 1>{};
         }

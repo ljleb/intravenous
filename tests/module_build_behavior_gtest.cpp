@@ -71,8 +71,8 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     EXPECT_EQ(iv::test::write_time(voice_cache), voice_cache_before);
 
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
-    auto voice_needle = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);");
-    auto voice_replacement = std::string("auto const amplitude = g.input(\"amplitude\", 0.1);/* behavior dependency marker*/");
+    auto voice_needle = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);");
+    auto voice_replacement = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);/* behavior dependency marker*/");
     ASSERT_NE(voice_source.find(voice_needle), std::string::npos);
     voice_source.replace(voice_source.find(voice_needle), voice_needle.size(), voice_replacement);
     iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);

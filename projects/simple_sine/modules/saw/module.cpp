@@ -1,5 +1,5 @@
 #include "intravenous/channel_ports.h"
-#include "intravenous/lane_node/channels.h"
+#include "intravenous/channel_layout.h"
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
@@ -10,7 +10,7 @@ using namespace iv;
 
 struct FunNode
 {
-    auto outputs() const
+    static constexpr auto outputs()
     {
         return std::array<OutputConfig, 1>
         {
@@ -49,13 +49,13 @@ void simple_sine(iv::ModuleContext const& context)
     auto const phase = g.node<PhaseIntegrator>();
     auto const tt = g.node<FunNode>();
 
-    auto saw = g.multi_channel<ChannelTypeId::stereo>([&]<auto c>()
+    g.multi_channel<stereo>([&]<auto c>()
     {
         auto f = g.node<Constant>(220);
         auto const voice = g.node<SawOscillator>();
 
         NodeRef p;
-        if constexpr (c == channels::stereo_left)
+        if constexpr (c == stereo::left)
         {
             p = f + 2.5;
         }
@@ -69,13 +69,12 @@ void simple_sine(iv::ModuleContext const& context)
             "phase_offset"_P = phase,
             "dt"_P = dt);
 
-        return c = voice * 0.1 * tt;
+        auto const res = voice * 0.1 * tt;
+        auto const res_k = "main1"_P;
+        g.outputs(res_k[c] = res, res_k[swap_side(c)] = res);
     });
 
-    g.multi_channel<ChannelTypeId::stereo>([&] <auto c>
-    {
-        g.outputs(c = saw[c] + saw[iv::swap_side(c)]);
-    });
+    g.outputs();
 }
 }
 

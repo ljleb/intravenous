@@ -67,6 +67,30 @@ namespace iv {
             std::end(node.inputs());
         };
 
+        template<typename Node>
+        concept has_static_sample_port_config_members =
+            (!has_inputs<Node> || requires { Node::inputs(); })
+            && (!has_outputs<Node> || requires { Node::outputs(); });
+
+        template<typename Node>
+        consteval bool constexpr_sample_port_configs_available()
+        {
+            if constexpr (requires { Node::inputs(); }) {
+                (void)Node::inputs();
+            }
+            if constexpr (requires { Node::outputs(); }) {
+                (void)Node::outputs();
+            }
+            return true;
+        }
+
+        template<typename Node>
+        concept has_constexpr_sample_port_configs =
+            has_static_sample_port_config_members<Node>
+            && requires {
+                std::bool_constant<constexpr_sample_port_configs_available<Node>()>{};
+            };
+
         template <typename Node>
         concept has_event_outputs = requires(Node const& node)
         {

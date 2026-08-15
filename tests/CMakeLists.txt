@@ -84,6 +84,7 @@ add_iv_gtest(
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_channels_tests channels_gtest.cpp)
+add_iv_gtest(intravenous_predictors_tests predictors_gtest.cpp)
 add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)
 add_iv_gtest(intravenous_block_node_executor_tests node_block_executor_gtest.cpp)
 add_iv_gtest(intravenous_timeline_lanes_tests modules/timeline_lanes_gtest.cpp)

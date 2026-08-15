@@ -171,7 +171,7 @@ PublicSampleInputRef GraphBuilder::input()
     return input(Sample{0.0f});
 }
 
-PublicSampleInputRef GraphBuilder::input(
+PublicSampleInputRef GraphBuilder::input_named(
     std::string_view name,
     Sample default_value,
     std::optional<Sample> min,
@@ -229,7 +229,7 @@ void PublicSampleInputRef::_annotate_source_info(
     }
 }
 
-PublicEventInputRef GraphBuilder::event_input(std::string_view name, EventTypeId type)
+PublicEventInputRef GraphBuilder::event_input_named(std::string_view name, EventTypeId type)
 {
     if (inside_subgraph_scope()) {
         return PublicEventInputRef(_subgraphs.add_scope_event_input(*this, _topology, name, type, true));
@@ -262,6 +262,16 @@ void PublicEventInputRef::_annotate_source_info(std::string_view identity, std::
     if (port.graph_builder) port.graph_builder->annotate_public_event_input_source_info(*this, identity, file, begin, end);
 }
 
+void GraphBuilder::annotate_public_sample_output_source_info(std::span<SourceInfo const> infos)
+{
+    for (size_t i = 0; i < infos.size(); ++i) _public_ports.annotate_sample_output_source_info(i, infos[i]);
+}
+
+void GraphBuilder::annotate_public_event_output_source_info(std::span<SourceInfo const> infos)
+{
+    for (size_t i = 0; i < infos.size(); ++i) _public_ports.annotate_event_output_source_info(i, infos[i]);
+}
+
 NodeRef GraphBuilder::embed_subgraph(GraphBuilder const& child)
 {
     if (!child._public_ports.sample_outputs_defined()) {
@@ -284,28 +294,11 @@ NodeRef GraphBuilder::embed_subgraph(GraphBuilder const& child)
 
 void GraphBuilder::event_outputs(std::span<EventOutputRefConfig const> refs)
 {
-    if (inside_subgraph_scope()) {
-        define_scope_event_outputs(refs);
-        return;
-    }
     _public_ports.define_event_outputs(*this, _topology, _identity, refs);
 }
 
 void GraphBuilder::outputs(std::initializer_list<NamedRef> refs)
 {
-    if (inside_subgraph_scope()) {
-        _subgraphs.define_sample_outputs_from_named_refs(
-            *this,
-            _topology,
-            _identity,
-            [&](auto&& value) {
-                return lift_to_sample_port(std::forward<decltype(value)>(value));
-            },
-            std::span<NamedRef const>(refs.begin(), refs.size())
-        );
-        return;
-    }
-
     _public_ports.define_sample_outputs_from_named_refs(
         *this,
         _topology,
@@ -319,29 +312,49 @@ void GraphBuilder::outputs(std::initializer_list<NamedRef> refs)
 
 void GraphBuilder::outputs(std::span<OutputRefConfig const> refs)
 {
-    if (inside_subgraph_scope()) {
-        define_scope_outputs(refs);
-        return;
-    }
     _public_ports.define_sample_outputs(*this, _topology, _identity, refs);
 }
 
 void GraphBuilder::outputs(std::span<NamedRef const> refs)
 {
-    if (inside_subgraph_scope()) {
-        _subgraphs.define_sample_outputs_from_named_refs(
-            *this,
-            _topology,
-            _identity,
-            [&](auto&& value) {
-                return lift_to_sample_port(std::forward<decltype(value)>(value));
-            },
-            refs
-        );
-        return;
-    }
-
     _public_ports.define_sample_outputs_from_named_refs(
+        *this,
+        _topology,
+        _identity,
+        [&](auto&& value) {
+            return lift_to_sample_port(std::forward<decltype(value)>(value));
+        },
+        refs
+    );
+}
+
+void GraphBuilder::subgraph_event_outputs(std::span<EventOutputRefConfig const> refs)
+{
+    if (!inside_subgraph_scope()) {
+        details::error("g.subgraph_event_outputs(...) is only valid inside g.subgraph(...)");
+    }
+    define_scope_event_outputs(refs);
+}
+
+void GraphBuilder::subgraph_outputs(std::initializer_list<NamedRef> refs)
+{
+    subgraph_outputs(std::span<NamedRef const>(refs.begin(), refs.size()));
+}
+
+void GraphBuilder::subgraph_outputs(std::span<OutputRefConfig const> refs)
+{
+    if (!inside_subgraph_scope()) {
+        details::error("g.subgraph_outputs(...) is only valid inside g.subgraph(...)");
+    }
+    define_scope_outputs(refs);
+}
+
+void GraphBuilder::subgraph_outputs(std::span<NamedRef const> refs)
+{
+    if (!inside_subgraph_scope()) {
+        details::error("g.subgraph_outputs(...) is only valid inside g.subgraph(...)");
+    }
+    _subgraphs.define_sample_outputs_from_named_refs(
         *this,
         _topology,
         _identity,

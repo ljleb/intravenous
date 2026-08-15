@@ -29,11 +29,54 @@
 #include <Windows.h>
 #else
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 #endif
 
 namespace iv {
     namespace {
+        // The module cache is intentionally shared by independent runtime
+        // processes.  The in-process mutex below is therefore insufficient:
+        // two CTest workers (or two servers) can otherwise configure and
+        // rebuild the same workspace concurrently.
+        class WorkspaceBuildLock {
+#if !defined(_WIN32)
+            int fd_ = -1;
+#endif
+
+        public:
+            explicit WorkspaceBuildLock(std::filesystem::path const& workspace_root)
+            {
+#if !defined(_WIN32)
+                std::filesystem::create_directories(workspace_root);
+                auto const path = workspace_root / ".build.lock";
+                fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0666);
+                if (fd_ < 0 || ::flock(fd_, LOCK_EX) != 0) {
+                    if (fd_ >= 0) {
+                        ::close(fd_);
+                    }
+                    throw std::runtime_error("failed to lock module build workspace '" + workspace_root.string() + "'");
+                }
+#else
+                (void)workspace_root;
+#endif
+            }
+
+            ~WorkspaceBuildLock()
+            {
+#if !defined(_WIN32)
+                if (fd_ >= 0) {
+                    ::flock(fd_, LOCK_UN);
+                    ::close(fd_);
+                }
+#endif
+            }
+
+            WorkspaceBuildLock(WorkspaceBuildLock const&) = delete;
+            WorkspaceBuildLock& operator=(WorkspaceBuildLock const&) = delete;
+        };
+
         struct DynamicLibrary {
 #if defined(_WIN32)
             HMODULE handle = nullptr;
@@ -1106,6 +1149,7 @@ namespace iv {
 
             std::string output_name = sanitize_identifier(resolved.id);
             BuildWorkspace workspace = build_workspace_for(resolved);
+            WorkspaceBuildLock const workspace_lock(workspace.root);
             std::filesystem::create_directories(workspace.output_dir);
             std::filesystem::create_directories(workspace.generations_dir);
 

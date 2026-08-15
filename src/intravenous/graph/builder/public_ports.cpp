@@ -3,92 +3,39 @@
 #include <intravenous/graph/builder/topology.h>
 
 #include <algorithm>
-#include <charconv>
-#include <optional>
-#include <system_error>
+#include <limits>
 #include <type_traits>
 
 namespace iv {
 namespace {
-struct ParsedChannelPortName {
-    ChannelTypeId channel_type = ChannelTypeId::mono;
-    size_t family_ordinal = 0;
-    size_t channel_ordinal = 0;
-};
-
-std::optional<ParsedChannelPortName> parse_channel_port_name(std::string const& name)
-{
-    auto const mono_prefix = std::string_view("__mono_center_");
-    auto const stereo_left_prefix = std::string_view("__stereo_left_");
-    auto const stereo_right_prefix = std::string_view("__stereo_right_");
-    auto const parse_suffix = [&](std::string_view prefix) -> std::optional<size_t> {
-        if (!std::string_view(name).starts_with(prefix)) {
-            return std::nullopt;
-        }
-        size_t value = 0;
-        auto const suffix = std::string_view(name).substr(prefix.size());
-        auto const [ptr, ec] =
-            std::from_chars(suffix.data(), suffix.data() + suffix.size(), value);
-        if (ec != std::errc{} || ptr != suffix.data() + suffix.size()) {
-            return std::nullopt;
-        }
-        return value;
-    };
-
-    if (auto const family_ordinal = parse_suffix(mono_prefix)) {
-        return ParsedChannelPortName{
-            .channel_type = ChannelTypeId::mono,
-            .family_ordinal = *family_ordinal,
-            .channel_ordinal = 0,
-        };
-    }
-    if (auto const family_ordinal = parse_suffix(stereo_left_prefix)) {
-        return ParsedChannelPortName{
-            .channel_type = ChannelTypeId::stereo,
-            .family_ordinal = *family_ordinal,
-            .channel_ordinal = 0,
-        };
-    }
-    if (auto const family_ordinal = parse_suffix(stereo_right_prefix)) {
-        return ParsedChannelPortName{
-            .channel_type = ChannelTypeId::stereo,
-            .family_ordinal = *family_ordinal,
-            .channel_ordinal = 1,
-        };
-    }
-    return std::nullopt;
-}
-
 template<class Config>
 GraphBuilderPublicSamplePortFamilies collect_sample_port_families(
     std::span<Config const> configs,
+    std::span<PublicSamplePortMember const> members,
     bool input)
 {
+    IV_ASSERT(configs.size() == members.size(), "public sample port metadata must align with configs");
     GraphBuilderPublicSamplePortFamilies result;
     result.families.reserve(configs.size());
 
     for (size_t port_ordinal = 0; port_ordinal < configs.size(); ++port_ordinal) {
         auto const& config = configs[port_ordinal];
-        auto const parsed = parse_channel_port_name(config.name);
-        auto const channel_type =
-            parsed.has_value() ? parsed->channel_type : ChannelTypeId::mono;
-        auto const family_ordinal =
-            parsed.has_value() ? parsed->family_ordinal : port_ordinal;
-        auto const channel_ordinal =
-            parsed.has_value() ? parsed->channel_ordinal : size_t{0};
+        auto const& member = members[port_ordinal];
+        auto const channel_type = member.channel_type;
+        auto const family_ordinal = port_ordinal;
+        auto const channel_index = member.channel_index;
 
         auto family_it = std::find_if(
             result.families.begin(),
             result.families.end(),
             [&](GraphBuilderPublicSamplePortFamily const& family) {
-                return family.family_ordinal == family_ordinal;
+                return !member.family_name.empty()
+                    && family.family_name == member.family_name;
             });
         if (family_it == result.families.end()) {
             GraphBuilderPublicSamplePortFamily family{
                 .family_ordinal = family_ordinal,
-                .family_name = parsed.has_value()
-                    ? "channel_" + std::to_string(family_ordinal)
-                    : config.name,
+                .family_name = member.family_name.empty() ? config.name : member.family_name,
                 .channel_type = channel_type,
                 .channels = std::vector<GraphBuilderPublicSamplePortChannel>(
                     channel_count(channel_type)),
@@ -104,23 +51,30 @@ GraphBuilderPublicSamplePortFamilies collect_sample_port_families(
 
         if (family_it->channel_type != channel_type) {
             details::error(
-                input
-                    ? "conflicting public sample input channel families"
-                    : "conflicting public sample output channel families");
+                (input
+                    ? "conflicting public sample input channel types for '"
+                    : "conflicting public sample output channel types for '")
+                + config.name + "'");
         }
-        if (channel_ordinal >= family_it->channels.size()) {
+        if (member.whole_stream) {
+            for (auto& channel : family_it->channels) {
+                channel.port_ordinals.push_back(port_ordinal);
+            }
+            continue;
+        }
+        if (channel_index >= family_it->channels.size()) {
             details::error(
                 input
                     ? "public sample input channel ordinal out of bounds"
                     : "public sample output channel ordinal out of bounds");
         }
-        if (family_it->channels[channel_ordinal].port_ordinal.has_value()) {
+        if (input && !family_it->channels[channel_index].port_ordinals.empty()) {
             details::error(
                 input
                     ? "duplicate public sample input channel contributor"
                     : "duplicate public sample output channel contributor");
         }
-        family_it->channels[channel_ordinal].port_ordinal = port_ordinal;
+        family_it->channels[channel_index].port_ordinals.push_back(port_ordinal);
     }
 
     return result;
@@ -137,8 +91,8 @@ SamplePortRef GraphBuilderPublicPorts::add_sample_input(
     _sample_inputs.emplace_back(InputConfig{
         .name = std::string(name),
         .default_value = default_value,
-        .min = min,
-        .max = max,
+        .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
+        .max = max.value_or(std::numeric_limits<Sample::storage>::infinity()),
     });
     _sample_input_source_infos.emplace_back();
     return SamplePortRef(builder, GRAPH_ID, _sample_inputs.size() - 1);
@@ -209,8 +163,7 @@ void GraphBuilderPublicPorts::define_sample_outputs(
     std::span<OutputRefConfig const> refs
 )
 {
-    size_t const first_output_ordinal = _sample_outputs.size();
-    _sample_outputs.reserve(first_output_ordinal + refs.size());
+    _last_sample_output_port_ordinals.clear();
     bool const require_names = refs.size() > 1;
 
     for (size_t i = 0; i < refs.size(); ++i) {
@@ -233,11 +186,27 @@ void GraphBuilderPublicPorts::define_sample_outputs(
             );
         }
 
+        auto const existing = !refs[i].public_member.family_name.empty()
+            ? std::find_if(_sample_output_members.begin(), _sample_output_members.end(), [&](PublicSamplePortMember const& candidate) {
+                return candidate.family_name == refs[i].public_member.family_name
+                    && candidate.channel_type == refs[i].public_member.channel_type
+                    && candidate.channel_index == refs[i].public_member.channel_index
+                    && candidate.whole_stream == refs[i].public_member.whole_stream;
+            })
+            : _sample_output_members.end();
+        auto const output_ordinal = existing == _sample_output_members.end()
+            ? _sample_outputs.size()
+            : static_cast<size_t>(existing - _sample_output_members.begin());
         topology.add_sample_edge(GraphEdge{
             PortId{ ref.node_index, ref.output_port },
-            PortId{ GRAPH_ID, first_output_ordinal + i },
+            PortId{ GRAPH_ID, output_ordinal },
         });
-        _sample_outputs.push_back(config);
+        if (existing == _sample_output_members.end()) {
+            _sample_outputs.push_back(config);
+            _sample_output_members.push_back(refs[i].public_member);
+            _sample_output_source_infos.emplace_back();
+        }
+        _last_sample_output_port_ordinals.push_back(output_ordinal);
     }
 
     _sample_outputs_defined = true;
@@ -252,6 +221,7 @@ void GraphBuilderPublicPorts::define_event_outputs(
 {
     _event_outputs.clear();
     _event_outputs.reserve(refs.size());
+    _event_output_source_infos.resize(refs.size());
     bool const require_names = refs.size() > 1;
 
     for (size_t i = 0; i < refs.size(); ++i) {
@@ -309,18 +279,24 @@ std::span<EventOutputConfig const> GraphBuilderPublicPorts::event_outputs() cons
 
 GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_input_families() const
 {
-    auto families = collect_sample_port_families(std::span<InputConfig const>(_sample_inputs), true);
+    std::vector<PublicSamplePortMember> members;
+    members.reserve(_sample_inputs.size());
+    for (auto const& config : _sample_inputs) {
+        members.push_back(PublicSamplePortMember{
+            .channel_type = config.channel_layout.channel_type,
+        });
+    }
+    auto families = collect_sample_port_families(
+        std::span<InputConfig const>(_sample_inputs), members, true);
     for (auto& family : families.families) {
-        for (auto const& channel : family.channels) {
-            if (!channel.port_ordinal.has_value()) {
-                continue;
-            }
-            for (auto const& info : sample_input_source_infos(*channel.port_ordinal)) {
+        for (auto& channel : family.channels) {
+            for (auto const port_ordinal : channel.port_ordinals) {
+            for (auto const& info : sample_input_source_infos(port_ordinal)) {
                 if (std::find(family.source_infos.begin(), family.source_infos.end(), info)
                     == family.source_infos.end()) {
                     family.source_infos.push_back(info);
                 }
-            }
+            }}
         }
     }
     return families;
@@ -328,7 +304,23 @@ GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_input_famil
 
 GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_output_families() const
 {
-    return collect_sample_port_families(std::span<OutputConfig const>(_sample_outputs), false);
+    auto families = collect_sample_port_families(
+        std::span<OutputConfig const>(_sample_outputs), _sample_output_members, false);
+    for (auto& family : families.families) {
+        for (auto& channel : family.channels) {
+            for (auto const port_ordinal : channel.port_ordinals) {
+            for (auto const& info : _sample_output_source_infos[port_ordinal]) {
+                if (std::find(channel.source_infos.begin(), channel.source_infos.end(), info)
+                    == channel.source_infos.end()) {
+                    channel.source_infos.push_back(info);
+                }
+                if (std::find(family.source_infos.begin(), family.source_infos.end(), info) == family.source_infos.end()) {
+                    family.source_infos.push_back(info);
+                }
+            }}
+        }
+    }
+    return families;
 }
 
 std::vector<GraphBuilderPublicEventInput> GraphBuilderPublicPorts::collected_event_inputs() const
@@ -352,8 +344,25 @@ std::vector<GraphBuilderPublicEventOutput> GraphBuilderPublicPorts::collected_ev
         result.push_back(GraphBuilderPublicEventOutput{
             .port_ordinal = port_ordinal,
             .config = _event_outputs[port_ordinal],
+            .source_infos = port_ordinal < _event_output_source_infos.size()
+                ? _event_output_source_infos[port_ordinal]
+                : std::vector<SourceInfo>{},
         });
     }
     return result;
+}
+
+void GraphBuilderPublicPorts::annotate_sample_output_source_info(size_t port_ordinal, SourceInfo info)
+{
+    if (port_ordinal >= _last_sample_output_port_ordinals.size()) return;
+    auto& infos = _sample_output_source_infos[_last_sample_output_port_ordinals[port_ordinal]];
+    if (std::find(infos.begin(), infos.end(), info) == infos.end()) infos.push_back(std::move(info));
+}
+
+void GraphBuilderPublicPorts::annotate_event_output_source_info(size_t port_ordinal, SourceInfo info)
+{
+    if (port_ordinal >= _event_output_source_infos.size()) return;
+    auto& infos = _event_output_source_infos[port_ordinal];
+    if (std::find(infos.begin(), infos.end(), info) == infos.end()) infos.push_back(std::move(info));
 }
 }

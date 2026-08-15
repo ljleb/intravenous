@@ -23,6 +23,24 @@ namespace iv::details {
     template<class T>
     inline constexpr bool is_named_arg_v = is_named_arg<std::remove_cvref_t<T>>::value;
 
+    template<class T>
+    struct is_channel_named_arg : std::false_type {};
+
+    template<fixed_string Name, class ChannelType, size_t ChannelOrdinal, class T>
+    struct is_channel_named_arg<ChannelNamedArg<Name, ChannelType, ChannelOrdinal, T>> : std::true_type {};
+
+    template<class T>
+    inline constexpr bool is_channel_named_arg_v = is_channel_named_arg<std::remove_cvref_t<T>>::value;
+
+    template<class T>
+    struct is_default_channel_named_arg : std::false_type {};
+
+    template<class ChannelType, size_t ChannelOrdinal, class T>
+    struct is_default_channel_named_arg<DefaultChannelNamedArg<ChannelType, ChannelOrdinal, T>> : std::true_type {};
+
+    template<class T>
+    inline constexpr bool is_default_channel_named_arg_v = is_default_channel_named_arg<std::remove_cvref_t<T>>::value;
+
     template<class... Args>
     consteval bool named_args_follow_positionals_only()
     {
@@ -83,7 +101,11 @@ namespace iv::details {
     template<class... Args>
     inline constexpr bool valid_node_call_args_v =
         named_args_follow_positionals_only_v<Args...>
-        && unique_named_args_v<Args...>;
+        && unique_named_args_v<Args...>
+        // Channel qualification is a public graph-port feature. Keeping it
+        // out of node calls makes the current mono node-port contract explicit.
+        && (!is_channel_named_arg_v<Args> && ...)
+        && (!is_default_channel_named_arg_v<Args> && ...);
 
     template<class Node, class... Args>
     concept node_call_enabled =

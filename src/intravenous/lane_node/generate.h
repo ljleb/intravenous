@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/lane_node/traits.h>
+#include <intravenous/sample_block_view.h>
 
 #include <algorithm>
 #include <array>
@@ -13,126 +14,6 @@
 #include <vector>
 
 namespace iv {
-    template<typename T>
-    class SampleBlockView {
-        std::span<T> _samples {};
-        ChannelLayout _layout {
-            .channel_type = ChannelTypeId::mono,
-            .sample_layout = SampleStreamLayout::planar,
-        };
-        size_t _frame_count = 0;
-
-        static constexpr size_t sample_offset(
-            SampleStreamLayout layout,
-            size_t frame,
-            size_t channel,
-            size_t frame_count,
-            size_t channel_count_value) noexcept
-        {
-            if (layout == SampleStreamLayout::planar) {
-                return channel * frame_count + frame;
-            }
-            return frame * channel_count_value + channel;
-        }
-
-    public:
-        using value_type = std::remove_cv_t<T>;
-
-        SampleBlockView() = default;
-
-        explicit SampleBlockView(
-            std::span<T> samples,
-            ChannelLayout layout = {},
-            size_t frame_count = 0) :
-            _samples(samples),
-            _layout(layout),
-            _frame_count(frame_count == 0 ? samples.size() / channel_count(layout) : frame_count)
-        {}
-
-        std::span<T> samples() const
-        {
-            return _samples;
-        }
-
-        ChannelLayout channel_layout() const
-        {
-            return _layout;
-        }
-
-        ChannelTypeId channel_type() const
-        {
-            return _layout.channel_type;
-        }
-
-        SampleStreamLayout sample_layout() const
-        {
-            return _layout.sample_layout;
-        }
-
-        size_t channels() const
-        {
-            return channel_count(_layout);
-        }
-
-        size_t frames() const
-        {
-            return _frame_count;
-        }
-
-        size_t size() const
-        {
-            return _samples.size();
-        }
-
-        bool empty() const
-        {
-            return _samples.empty();
-        }
-
-        Sample get(size_t frame, size_t channel) const
-        {
-            if (frame >= frames() || channel >= channels()) {
-                return Sample {};
-            }
-            return _samples[sample_offset(
-                _layout.sample_layout,
-                frame,
-                channel,
-                frames(),
-                channels())];
-        }
-
-        template<typename U = T>
-        requires (!std::is_const_v<U>)
-        void set(size_t frame, size_t channel, Sample value) const
-        {
-            if (frame >= frames() || channel >= channels()) {
-                return;
-            }
-            _samples[sample_offset(
-                _layout.sample_layout,
-                frame,
-                channel,
-                frames(),
-                channels())] = value;
-        }
-
-        std::span<T> channel_span(size_t channel) const
-        {
-            if (_layout.sample_layout != SampleStreamLayout::planar || channel >= channels()) {
-                return {};
-            }
-            return _samples.subspan(channel * frames(), frames());
-        }
-
-        T* interleaved_frame_ptr(size_t frame) const
-        {
-            if (_layout.sample_layout != SampleStreamLayout::interleaved || frame >= frames()) {
-                return nullptr;
-            }
-            return _samples.data() + frame * channels();
-        }
-    };
 
     template<SampleStreamLayout Layout, typename T>
     class LayoutSpecializedSampleBlockView {

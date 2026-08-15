@@ -2,7 +2,7 @@
 
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/port_refs.h>
-#include <intravenous/lane_node/channels.h>
+#include <intravenous/channel_layout.h>
 
 #include <optional>
 #include <span>

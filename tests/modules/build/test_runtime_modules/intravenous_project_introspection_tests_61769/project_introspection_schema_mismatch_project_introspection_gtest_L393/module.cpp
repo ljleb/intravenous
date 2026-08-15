@@ -6,7 +6,7 @@ namespace {
     template<size_t Inputs>
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
-        return g.node<iv::Sum<Inputs>>().node_ref();
+        return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>().node_ref();
     }
 
     void schema_mismatch_module(iv::ModuleContext const& context)

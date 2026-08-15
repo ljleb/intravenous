@@ -29,12 +29,12 @@ IvModuleReloadWitness *g_iv_module_reload_witness = nullptr;
 struct SampleCapture {
     iv::Sample *observed = nullptr;
 
-    auto inputs() const
+    static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 1>{{}};
     }
 
-    auto outputs() const
+    static constexpr auto outputs()
     {
         return std::array<iv::OutputConfig, 0>{};
     }

@@ -114,6 +114,10 @@ namespace iv {
     details::node_ref_for_t<Node> GraphBuilderTopology::insert_node(GraphBuilder& builder, Args&&... args)
     {
         using StoredNode = std::remove_cvref_t<Node>;
+        static_assert(
+            details::has_constexpr_sample_port_configs<StoredNode>,
+            "concrete DSP nodes must provide constexpr static inputs()/outputs() configurations"
+        );
         StoredNode node_value(std::forward<Args>(args)...);
         auto inputs = get_inputs(node_value);
         auto outputs = get_outputs(node_value);

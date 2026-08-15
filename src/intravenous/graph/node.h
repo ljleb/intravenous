@@ -40,7 +40,7 @@ namespace iv {
             _scc_wrappers(std::move(artifact.scc_wrappers)),
             _egress_port_data_nodes(make_egress_port_data_nodes(
                 _graph_id,
-                artifact.public_outputs.size(),
+                artifact.public_outputs,
                 artifact.public_output_buffer_plans
             )),
             _egress_event_port_data_nodes(make_egress_event_port_data_nodes(
@@ -174,18 +174,21 @@ namespace iv {
 
         static std::vector<GraphPortDataNode> make_egress_port_data_nodes(
             std::string const& graph_id,
-            size_t num_outputs,
+            std::span<OutputConfig const> outputs,
             std::span<PortBufferPlan const> output_buffer_plans
         )
         {
-            IV_ASSERT(num_outputs == output_buffer_plans.size(), "graph egress port data must have one buffer plan per output");
+            IV_ASSERT(outputs.size() == output_buffer_plans.size(), "graph egress port data must have one buffer plan per output");
 
             std::vector<GraphPortDataNode> port_data_nodes;
-            port_data_nodes.reserve(num_outputs);
-            for (size_t output_i = 0; output_i < num_outputs; ++output_i) {
+            port_data_nodes.reserve(outputs.size());
+            for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
                 port_data_nodes.emplace_back(
                     graph_port_data_export_id(graph_id, output_i),
-                    InputConfig{},
+                    InputConfig{
+                        .name = outputs[output_i].name,
+                        .channel_layout = outputs[output_i].channel_layout,
+                    },
                     output_buffer_plans[output_i]
                 );
             }
@@ -378,7 +381,13 @@ namespace iv {
                         ingress_target_export_id(edge.target)
                     );
                     IV_ASSERT(!consumer_port_data.empty(), "graph ingress wiring must resolve the requested SharedPortData entry");
-                    std::construct_at(&state.ingress_outputs[edge.source.port], const_cast<SharedPortData&>(consumer_port_data[0]), 0);
+                    std::construct_at(
+                        &state.ingress_outputs[edge.source.port],
+                        const_cast<SharedPortData&>(consumer_port_data[0]),
+                        0,
+                        effective_channel_layout(_public_inputs[edge.source.port]),
+                        edge.conversion
+                    );
                 }
             }
             for (GraphEventEdge const& edge : _event_edges) {

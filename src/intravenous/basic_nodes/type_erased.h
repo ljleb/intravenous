@@ -16,7 +16,7 @@ namespace iv {
     struct Constant {
         Sample _value;
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }

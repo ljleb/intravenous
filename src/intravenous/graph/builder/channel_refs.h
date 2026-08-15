@@ -7,30 +7,21 @@
 #include <cstddef>
 
 namespace iv {
-    template<ChannelTypeId Type>
+    template<class Type>
     class ChannelRefs {
-        static_assert(Type != ChannelTypeId::count);
-
-        std::array<SamplePortRef, channel_count(Type)> refs_ {};
-
-        template<auto Tag, size_t Index>
-        static consteval size_t channel_slot()
-        {
-            (void)Index;
-            return ChannelPortTraits<Type>::template channel_ordinal<Tag>();
-        }
+        std::array<SamplePortRef, Type::channel_count> refs_ {};
 
     public:
-        template<auto Tag, size_t Index>
-        SamplePortRef &operator[](ChannelPortId<Type, Tag, Index>)
+        template<class Tag>
+        SamplePortRef &operator[](ChannelPortId<Type, Tag>)
         {
-            return refs_[channel_slot<Tag, Index>()];
+            return refs_[ChannelMember<Type, Tag>::channel_ordinal];
         }
 
-        template<auto Tag, size_t Index>
-        SamplePortRef const &operator[](ChannelPortId<Type, Tag, Index>) const
+        template<class Tag>
+        SamplePortRef const &operator[](ChannelPortId<Type, Tag>) const
         {
-            return refs_[channel_slot<Tag, Index>()];
+            return refs_[ChannelMember<Type, Tag>::channel_ordinal];
         }
     };
 }

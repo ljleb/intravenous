@@ -50,7 +50,9 @@ namespace iv {
         auto lanes = query_lanes(
             request.query.filter,
             request.start_index,
-            request.visible_lane_count
+            request.visible_lane_count == 0
+                ? std::optional<size_t>{}
+                : std::optional<size_t>{request.visible_lane_count}
         );
         _active_views[request.view_id] = ActiveView {
             .filter = request.query.filter,
@@ -79,7 +81,9 @@ namespace iv {
         auto lanes = query_lanes(
             request.query.filter,
             request.start_index,
-            request.visible_lane_count
+            request.visible_lane_count == 0
+                ? std::optional<size_t>{}
+                : std::optional<size_t>{request.visible_lane_count}
         );
         _active_views[request.view_id] = ActiveView {
             .filter = request.query.filter,
@@ -154,7 +158,9 @@ namespace iv {
             auto lanes = query_lanes(
                 view.filter,
                 view.start_index,
-                view.visible_lane_count
+                view.visible_lane_count == 0
+                    ? std::optional<size_t>{}
+                    : std::optional<size_t>{view.visible_lane_count}
             );
             view_it->second.visible_lane_ids = visible_lane_ids(lanes);
             if (_update_sink) {

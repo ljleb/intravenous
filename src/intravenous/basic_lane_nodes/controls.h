@@ -5,10 +5,12 @@
 #include <intravenous/runtime/lane_graph.h>
 
 #include <array>
+#include <string>
 
 namespace iv {
     struct KnobLaneNode {
         Sample value = 0.0f;
+        std::string name {"value"};
 
         std::array<RealtimeSampleLaneInputConfig, 1> realtime_sample_inputs() const
         {
@@ -22,7 +24,7 @@ namespace iv {
         RealtimeSampleLaneOutputConfig output() const
         {
             return RealtimeSampleLaneOutputConfig {
-                .name = "value",
+                .name = name,
             };
         }
 
@@ -43,6 +45,7 @@ namespace iv {
 
     struct GraphSampleInputLaneNode {
         Sample default_value = 0.0f;
+        std::string name {"value"};
 
         std::array<RealtimeSampleLaneInputConfig, 1> realtime_sample_inputs() const
         {
@@ -57,7 +60,7 @@ namespace iv {
         RealtimeSampleLaneOutputConfig output() const
         {
             return RealtimeSampleLaneOutputConfig {
-                .name = "value",
+                .name = name,
             };
         }
 
@@ -117,11 +120,12 @@ namespace iv {
 
     struct GraphSampleOutputLaneNode {
         LaneId lane {};
+        std::string name {"value"};
 
         RealtimeSampleLaneOutputConfig output() const
         {
             return RealtimeSampleLaneOutputConfig {
-                .name = "value",
+                .name = name,
             };
         }
 

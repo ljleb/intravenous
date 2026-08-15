@@ -231,6 +231,32 @@ namespace iv {
         >;
     }
 
+    template<fixed_string Name, class ChannelType, size_t ChannelOrdinal>
+    template<class T>
+    constexpr auto ChannelPortName<Name, ChannelType, ChannelOrdinal>::operator=(T&& value) const
+    {
+        using Value = std::remove_cvref_t<T>;
+        if constexpr (std::same_as<Value, SamplePortRef>) {
+            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, SamplePortRef>{
+                .value = static_cast<SamplePortRef>(std::forward<T>(value)),
+            };
+        } else if constexpr (std::same_as<Value, EventPortRef>) {
+            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, EventPortRef>{
+                .value = value.graph_builder
+                    ? EventPortRef(*value.graph_builder, value.node_index, value.output_port)
+                    : EventPortRef{},
+            };
+        } else if constexpr (requires(Value const& ref) { ref.node_ref(); }) {
+            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, NodeRef>{
+                .value = value.node_ref(),
+            };
+        } else {
+            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, Value>{
+                .value = std::forward<T>(value),
+            };
+        }
+    }
+
     template<fixed_string Name, NamedPortKind Kind>
     template<class T>
     constexpr auto PortName<Name, Kind>::operator=(T&& value) const

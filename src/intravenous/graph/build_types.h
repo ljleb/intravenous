@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/lane_node/channels.h>
+#include <intravenous/channel_layout.h>
 #include <intravenous/graph/scc_wrapper.h>
 #include <intravenous/graph/types.h>
 #include <intravenous/graph/wiring.h>

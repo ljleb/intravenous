@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/compat.h>
+#include <intravenous/channel_layout.h>
 #include <intravenous/sample.h>
 
 #include <algorithm>
@@ -423,14 +424,22 @@ namespace iv {
         validate_block_size(block_size, message);
     }
 
-    template<typename A>
+    inline constexpr ChannelLayout mono_planar_channel_layout {
+        .channel_type = ChannelTypeId::mono,
+        .sample_layout = SampleStreamLayout::planar,
+    };
+
+    // The default preserves the scalar ring-buffer view. Multi-channel block
+    // access is intentionally expressed through the layout-aware port views;
+    // callers cannot accidentally treat interleaved storage as scalar samples.
+    template<typename A, ChannelLayout Layout = mono_planar_channel_layout>
     struct BlockView {
         std::span<A> first {};
         std::span<A> second {};
 
         template<typename B = A>
             requires (!std::is_const_v<B>)
-        constexpr operator BlockView<std::add_const_t<B>>() const
+        constexpr operator BlockView<std::add_const_t<B>, Layout>() const
         {
             return {
                 std::span<std::add_const_t<B>>(first),
@@ -512,7 +521,7 @@ namespace iv {
         }
 
         template<typename Dst>
-        IV_FORCEINLINE constexpr void copy_to(BlockView<Dst> dst) const
+        IV_FORCEINLINE constexpr void copy_to(BlockView<Dst, Layout> dst) const
         {
             IV_ASSERT(size() == dst.size(), "BlockView::copy_to requires matching block sizes");
 
@@ -535,13 +544,14 @@ namespace iv {
         }
     };
 
-    template<typename A>
-    IV_FORCEINLINE constexpr BlockView<A> make_block_view(
+    template<ChannelLayout Layout = mono_planar_channel_layout, typename A>
+    IV_FORCEINLINE constexpr BlockView<A, Layout> make_block_view(
         std::span<A> buffer,
         size_t start,
         size_t count
     )
     {
+        static_assert(channel_count(Layout) == 1, "multi-channel BlockView must be obtained from a layout-aware port accessor");
         if (count == 0) {
             return {};
         }
@@ -556,14 +566,40 @@ namespace iv {
     struct SharedPortData {
         std::span<Sample> buffer;
         size_t latency;
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
+        // Ring positions are frame positions. Storage is frame_capacity times
+        // the layout's channel count.
+        size_t frame_capacity = 0;
 
         constexpr explicit SharedPortData(
             std::span<Sample> buffer = {},
-            size_t latency = 0
+            size_t latency = 0,
+            ChannelLayout channel_layout = {
+                .channel_type = ChannelTypeId::mono,
+                .sample_layout = SampleStreamLayout::planar,
+            },
+            size_t frame_capacity = 0
         ) :
             buffer(buffer),
-            latency(latency)
-        {}
+            latency(latency),
+            channel_layout(channel_layout),
+            frame_capacity(frame_capacity == 0 ? buffer.size() / channel_count(channel_layout) : frame_capacity)
+        {
+            IV_ASSERT(buffer.size() == sample_storage_size(channel_layout, this->frame_capacity), "port buffer storage does not match channel layout");
+            IV_ASSERT(this->frame_capacity == 0 || is_power_of_2(this->frame_capacity), "port buffer frame capacity should be a power of 2");
+        }
+
+        constexpr size_t sample_index(size_t frame, size_t channel) const
+        {
+            IV_ASSERT(frame < frame_capacity, "port frame index out of bounds");
+            IV_ASSERT(channel < channel_count(channel_layout), "port channel index out of bounds");
+            return channel_layout.sample_layout == SampleStreamLayout::planar
+                ? channel * frame_capacity + frame
+                : frame * channel_count(channel_layout) + channel;
+        }
     };
 
     class InputPort {
@@ -593,14 +629,20 @@ namespace iv {
             _shared_data(shared_data),
             _history(history)
         {
-            IV_ASSERT(is_power_of_2(_shared_data.buffer.size()), "buffer size should be a power of 2");
+            IV_ASSERT(is_power_of_2(_shared_data.frame_capacity), "buffer frame capacity should be a power of 2");
         }
 
-        IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const
+        IV_FORCEINLINE constexpr Sample get(size_t offset = 0, size_t channel = 0) const
         {
             if (offset > _history) return 0.0f;
             size_t const idx = (current_read_position() + buffer_size() - offset) & (buffer_size() - 1);
-            return _shared_data.buffer[idx];
+            return _shared_data.buffer[_shared_data.sample_index(idx, channel)];
+        }
+
+        IV_FORCEINLINE constexpr Sample get_frame(size_t frame_offset, size_t channel = 0) const
+        {
+            size_t const frame = (current_read_position() + frame_offset) & (buffer_size() - 1);
+            return _shared_data.buffer[_shared_data.sample_index(frame, channel)];
         }
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
@@ -620,7 +662,12 @@ namespace iv {
 
         IV_FORCEINLINE constexpr size_t buffer_size() const
         {
-            return _shared_data.buffer.size();
+            return _shared_data.frame_capacity;
+        }
+
+        IV_FORCEINLINE constexpr ChannelLayout channel_layout() const
+        {
+            return _shared_data.channel_layout;
         }
     };
 
@@ -628,22 +675,83 @@ namespace iv {
         SharedPortData& _shared_data;
         size_t _history;
         size_t _position = 0;
+        size_t _direct_write_extent = 0;
+        ChannelLayout _source_layout;
+        ChannelConversionPlan _conversion;
+
+        IV_FORCEINLINE constexpr void write_target_frame(std::span<Sample const> values, size_t frame_offset)
+        {
+            IV_ASSERT(values.size() == channel_count(_shared_data.channel_layout), "output frame does not match target channel layout");
+            size_t const frame = (_position + _shared_data.latency + frame_offset) & (buffer_size() - 1);
+            for (size_t channel = 0; channel < values.size(); ++channel) {
+                _shared_data.buffer[_shared_data.sample_index(frame, channel)] = values[channel];
+            }
+        }
 
     public:
         explicit OutputPort(SharedPortData& shared_data, size_t history) :
             _shared_data(shared_data),
             _history(history)
+            , _source_layout(shared_data.channel_layout)
         {
-            IV_ASSERT(is_power_of_2(_shared_data.buffer.size()), "buffer size should be a power of 2");
+            IV_ASSERT(is_power_of_2(_shared_data.frame_capacity), "buffer frame capacity should be a power of 2");
         }
 
-        IV_FORCEINLINE constexpr Sample get(size_t offset = 0) const
+        explicit OutputPort(
+            SharedPortData& shared_data,
+            size_t history,
+            ChannelLayout source_layout,
+            ChannelConversionPlan conversion
+        ) :
+            _shared_data(shared_data),
+            _history(history),
+            _source_layout(source_layout),
+            _conversion(conversion)
+        {
+            IV_ASSERT(is_power_of_2(_shared_data.frame_capacity), "buffer frame capacity should be a power of 2");
+            IV_ASSERT(_conversion && _conversion.source == _source_layout, "sample edge conversion source layout does not match output layout");
+            IV_ASSERT(_conversion.target == _shared_data.channel_layout, "sample edge conversion target layout does not match output buffer layout");
+        }
+
+        IV_FORCEINLINE constexpr Sample get(size_t offset = 0, size_t channel = 0) const
         {
             if (offset > _shared_data.latency + _history) return 0.0f;
             size_t const idx = (
                 _position + _shared_data.latency + buffer_size() - 1 - offset
             ) & (buffer_size() - 1);
-            return _shared_data.buffer[idx];
+            return _shared_data.buffer[_shared_data.sample_index(idx, channel)];
+        }
+
+        IV_FORCEINLINE constexpr void write_frame(size_t frame_offset, size_t channel, Sample value)
+        {
+            IV_ASSERT(_source_layout == _shared_data.channel_layout, "direct frame writes require matching source and target channel layouts");
+            size_t const frame = (_position + _shared_data.latency + frame_offset) & (buffer_size() - 1);
+            _shared_data.buffer[_shared_data.sample_index(frame, channel)] = value;
+            _direct_write_extent = std::max(_direct_write_extent, frame_offset + 1);
+        }
+
+        IV_FORCEINLINE constexpr void write_block(
+            size_t frame_offset,
+            size_t channel,
+            BlockView<Sample const> const& source
+        )
+        {
+            IV_ASSERT(_source_layout == _shared_data.channel_layout, "direct block writes require matching source and target channel layouts");
+            IV_ASSERT(channel < channel_count(_shared_data.channel_layout), "output channel index out of bounds");
+            IV_ASSERT(frame_offset + source.size() <= buffer_size(), "direct output block write exceeds buffer capacity");
+            for (size_t frame = 0; frame < source.size(); ++frame) {
+                write_frame(frame_offset + frame, channel, source[frame]);
+            }
+        }
+
+        IV_FORCEINLINE constexpr void finish_direct_write(size_t frame_count)
+        {
+            if (_direct_write_extent == 0) {
+                return;
+            }
+            IV_ASSERT(_direct_write_extent <= frame_count, "direct port write exceeded context block size");
+            _position = (_position + frame_count) & (buffer_size() - 1);
+            _direct_write_extent = 0;
         }
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
@@ -659,30 +767,39 @@ namespace iv {
 
         IV_FORCEINLINE constexpr void push(Sample value)
         {
-            size_t const idx = (_position + _shared_data.latency) & (buffer_size() - 1);
-            _shared_data.buffer[idx] = value;
+            IV_ASSERT(channel_count(_source_layout) == 1, "push(Sample) requires a mono source output port");
+            Sample source[] { value };
+            push_frame(source);
+        }
+
+        IV_FORCEINLINE constexpr void push_frame(std::span<Sample const> source)
+        {
+            IV_ASSERT(source.size() == channel_count(_source_layout), "output frame does not match source channel layout");
+            Sample converted[2] {};
+            if (_conversion) {
+                _conversion.convert(source.data(), converted, 1);
+                write_target_frame(std::span<Sample const>(converted, channel_count(_shared_data.channel_layout)), 0);
+            } else {
+                IV_ASSERT(_source_layout == _shared_data.channel_layout, "sample output requires a channel conversion plan");
+                write_target_frame(source, 0);
+            }
             _position = (_position + 1) & (buffer_size() - 1);
         }
 
         IV_FORCEINLINE constexpr void push_block(std::span<Sample const> samples)
         {
-            size_t const start = (_position + _shared_data.latency) & (buffer_size() - 1);
-            size_t const n = samples.size();
-
-            size_t const first_count = std::min(n, _shared_data.buffer.size() - start);
-            std::copy_n(samples.data(), first_count, _shared_data.buffer.data() + start);
-
-            size_t const second_count = n - first_count;
-            std::copy_n(samples.data() + first_count, second_count, _shared_data.buffer.data());
-
-            _position = (_position + n) & (buffer_size() - 1);
+            IV_ASSERT(channel_count(_source_layout) == 1, "push_block(samples) requires a mono source output port");
+            for (Sample sample : samples) {
+                push(sample);
+            }
         }
 
         IV_FORCEINLINE constexpr void push_block(BlockView<Sample const> samples)
         {
-            size_t const start = (_position + _shared_data.latency) & (buffer_size() - 1);
-            samples.copy_to(make_block_view(_shared_data.buffer, start, samples.size()));
-            _position = (_position + samples.size()) & (buffer_size() - 1);
+            IV_ASSERT(channel_count(_source_layout) == 1, "push_block(samples) requires a mono source output port");
+            for (Sample sample : samples) {
+                push(sample);
+            }
         }
 
         IV_FORCEINLINE constexpr void accumulate_block(std::span<Sample const> samples)
@@ -737,7 +854,17 @@ namespace iv {
 
         IV_FORCEINLINE constexpr size_t buffer_size() const
         {
-            return _shared_data.buffer.size();
+            return _shared_data.frame_capacity;
+        }
+
+        IV_FORCEINLINE constexpr ChannelLayout channel_layout() const
+        {
+            return _shared_data.channel_layout;
+        }
+
+        IV_FORCEINLINE constexpr ChannelLayout source_layout() const
+        {
+            return _source_layout;
         }
     };
 
@@ -905,17 +1032,35 @@ namespace iv {
 
     struct InputConfig {
         std::string name {};
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
         size_t history = 0;
         Sample default_value = 0.0;
-        std::optional<Sample> min {};
-        std::optional<Sample> max {};
+        Sample min = -std::numeric_limits<Sample::storage>::infinity();
+        Sample max = std::numeric_limits<Sample::storage>::infinity();
     };
 
     struct OutputConfig {
         std::string name {};
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
         size_t latency = 0;
         size_t history = 0;
     };
+
+    constexpr ChannelLayout effective_channel_layout(InputConfig const& config)
+    {
+        return config.channel_layout;
+    }
+
+    constexpr ChannelLayout effective_channel_layout(OutputConfig const& config)
+    {
+        return config.channel_layout;
+    }
 
     struct EventInputConfig {
         std::string name {};

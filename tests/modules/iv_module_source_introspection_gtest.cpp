@@ -187,7 +187,7 @@ namespace {
         auto const a = make_value<0>(g, context);
         auto const b = make_value<1>(g, context);
         auto const sink = a + b;
-        g.outputs(channels::mono = sink);
+        g.outputs("main"_P = sink);
     }
 }
 
@@ -214,6 +214,50 @@ IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
     EXPECT_EQ(value_source_count, 2u);
 }
 
+TEST(IvModuleSourceIntrospection, GenericChannelOutputArgumentsArePublicOutputSourceSpans)
+{
+    auto const workspace = make_inline_module_workspace(
+        "iv_module_source_introspection_generic_channel_outputs",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    void generic_channel_outputs(iv::ModuleContext const& context)
+    {
+        using namespace iv;
+        auto& g = context.builder();
+        auto const source = g.node<Constant>(0.25f);
+        g.multi_channel<stereo>([&]<auto channel>() {
+            g.outputs("main"_P[channel] = source, "main"_P[swap_side(channel)] = source);
+        });
+    }
+}
+
+IV_EXPORT_MODULE("iv.test.generic_channel_outputs", generic_channel_outputs);
+)");
+
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    app.initialize();
+    app.introspection.set_public_sample_outputs(app.graph_input_lanes.public_sample_outputs());
+    auto const result = app.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        {{.start = {.line = 1, .column = 1}, .end = {.line = 16, .column = 1}}});
+    std::vector<iv::LogicalNodeInfo const*> outputs;
+    for (auto const& node : result.nodes) if (node.kind == "Public output") outputs.push_back(&node);
+    ASSERT_EQ(outputs.size(), 2u);
+    for (auto const* output : outputs) {
+        ASSERT_FALSE(output->source_spans.empty());
+        ASSERT_EQ(output->sample_outputs.size(), 1u);
+        EXPECT_EQ(output->sample_outputs.front().connectivity, iv::LogicalPortConnectivity::connected);
+        EXPECT_EQ(output->sample_outputs.front().state_value, "timelineLane");
+        ASSERT_EQ(output->members.size(), 2u);
+        for (auto const& member : output->members) {
+            ASSERT_EQ(member.sample_outputs.size(), 1u);
+            EXPECT_EQ(member.sample_outputs.front().state_value, "logicalFollow");
+            EXPECT_EQ(member.sample_outputs.front().connectivity, iv::LogicalPortConnectivity::connected);
+        }
+    }
+}
+
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedLogicalNodeIdStableAcrossReload)
 {
     auto const workspace = make_inline_module_workspace(
@@ -231,7 +275,7 @@ namespace {
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
-        g.outputs(channels::mono = sink);
+        g.outputs("main"_P = sink);
     }
 }
 
@@ -290,7 +334,7 @@ namespace {
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
-        g.outputs(channels::mono = sink);
+        g.outputs("main"_P = sink);
     }
 }
 
@@ -328,7 +372,7 @@ namespace {
         NodeRef x;
         x = g.node<ValueSource>(&context.sample_period()).node_ref();
         auto const& sink = x;
-        g.outputs(channels::mono = sink);
+        g.outputs("main"_P = sink);
     }
 }
 
@@ -366,7 +410,7 @@ namespace {
         x = g.node<ValueSource>(&context.sample_period()).node_ref();
         x = g.node<ValueSource>(&context.sample_period()).node_ref();
         auto const& sink = x;
-        g.outputs(channels::mono = sink);
+        g.outputs("main"_P = sink);
     }
 }
 
@@ -398,7 +442,7 @@ namespace {
     template<size_t Inputs>
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
-        return g.node<iv::Sum<Inputs>>().node_ref();
+        return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>().node_ref();
     }
 
     void schema_mismatch_module(iv::ModuleContext const& context)
@@ -408,7 +452,7 @@ namespace {
         auto const a = make_sum<2>(g);
         auto const b = make_sum<3>(g);
         auto const sink = a + b;
-        g.outputs(channels::mono = sink);
+        g.outputs("main"_P = sink);
     }
 }
 
@@ -424,7 +468,7 @@ IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
 
     size_t singleton_sum_count = 0;
     for (auto const &node : result.nodes) {
-        if (node.member_count == 1 && node.kind.contains("BinaryOpNode") &&
+        if (node.member_count == 1 && node.kind.contains("Sum<") &&
             (node.sample_inputs.size() == 2 || node.sample_inputs.size() == 3)) {
             ++singleton_sum_count;
         }
@@ -446,7 +490,7 @@ namespace {
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         (void)I;
-        return g.node<iv::Sum<1>>().node_ref();
+        return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref();
     }
 
     void mixed_connectivity_module(iv::ModuleContext const& context)
@@ -458,7 +502,7 @@ namespace {
         auto const b = make_sum<1>(g);
         a(value);
         auto const sink = a + b;
-        g.outputs(channels::mono = sink);
+        g.outputs("main"_P = sink);
     }
 }
 
@@ -475,7 +519,7 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
     size_t connected_sum_count = 0;
     size_t disconnected_sum_count = 0;
     for (auto const &node : result.nodes) {
-        if (!node.kind.contains("BinaryOpNode") || node.sample_inputs.size() != 1) {
+        if (!node.kind.contains("Sum<") || node.sample_inputs.size() != 1) {
             continue;
         }
         EXPECT_EQ(node.member_count, 1u);
@@ -610,16 +654,16 @@ void polyphonic_module(iv::ModuleContext const& context)
     using namespace iv;
     auto& g = context.builder();
     auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto const voices = iv::polyphonic<2>(g, [&](auto m) {
+    iv::polyphonic<2>(g, [&]<size_t Voice>(auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
             "phase_offset"_P = 0.0,
             "frequency"_P = 440.0,
             "dt"_P = dt
         );
-        return saw * ("amplitude"_P << m);
+        (void)Voice;
+        g.outputs("main"_P = saw * ("amplitude"_P << m));
     });
-    g.outputs(channels::mono = voices);
 }
 
 IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
@@ -714,16 +758,16 @@ void polyphonic_module(iv::ModuleContext const& context)
     using namespace iv;
     auto& g = context.builder();
     auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto const voices = iv::polyphonic<2>(g, [&](auto m) {
+    iv::polyphonic<2>(g, [&]<size_t Voice>(auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
             "phase_offset"_P = 0.0,
             "frequency"_P = 440.0,
             "dt"_P = dt
         );
-        return saw * ("amplitude"_P << m);
+        (void)Voice;
+        g.outputs("main"_P = saw * ("amplitude"_P << m));
     });
-    g.outputs(channels::mono = voices);
 }
 
 IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
@@ -745,50 +789,6 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_TRUE(std::ranges::none_of(result.nodes, [](auto const &node) {
         return node.kind == "PolyphonicVoice";
     }));
-}
-
-TEST(IvModuleSourceIntrospection, QueryBySpansReturnsPolyphonicOuterLogicalIdentityAtDeclarationSpan)
-{
-    auto const workspace = shared_inline_module_workspace(
-        "iv_module_source_introspection_polyphonic_outer_identity",
-        R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
-#include <intravenous/basic_nodes/shaping.h>
-
-void polyphonic_module(iv::ModuleContext const& context)
-{
-    using namespace iv;
-    auto& g = context.builder();
-    auto const dt = g.node<ValueSource>(&context.sample_period());
-    auto voice = iv::polyphonic<2>(g, [&](auto m) {
-        auto const saw = g.node<SawOscillator>();
-        saw(
-            "phase_offset"_P = 0.0,
-            "frequency"_P = 440.0,
-            "dt"_P = dt
-        );
-        return saw * ("amplitude"_P << m);
-    });
-    auto x = std::move(voice);
-    g.outputs(channels::mono = x);
-}
-
-IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
-)");
-
-    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
-    app.initialize();
-
-    auto const result = app.query_by_spans(
-        module_cpp,
-        {{.start = {.line = 10, .column = 10}, .end = {.line = 10, .column = 14}}});
-
-    ASSERT_FALSE(result.nodes.empty());
-    EXPECT_EQ(result.nodes.front().kind, "Polyphonic");
-    EXPECT_FALSE(result.nodes.front().source_identity.empty());
-    EXPECT_TRUE(result.nodes.front().source_identity.contains("@voice"))
-        << result.nodes.front().source_identity;
 }
 
 TEST(IvModuleSourceIntrospection, ReloadKeepsLogicalNodeIdsAddressable)

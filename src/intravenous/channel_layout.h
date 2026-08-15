@@ -1,6 +1,8 @@
 #pragma once
 
-#include <intravenous/ports.h>
+#include <intravenous/channel_type.h>
+#include <intravenous/compat.h>
+#include <intravenous/sample.h>
 
 #include <array>
 #include <cstddef>
@@ -8,34 +10,6 @@
 #include <stdexcept>
 
 namespace iv {
-    enum class ChannelTypeId : std::uint8_t {
-        mono,
-        stereo,
-        count,
-    };
-
-    template<ChannelTypeId Type>
-    struct ChannelTypeTraits;
-
-    template<>
-    struct ChannelTypeTraits<ChannelTypeId::mono> {
-        static constexpr size_t count = 1;
-    };
-
-    template<>
-    struct ChannelTypeTraits<ChannelTypeId::stereo> {
-        static constexpr size_t count = 2;
-    };
-
-    template<ChannelTypeId... Types>
-    struct ChannelTypeList {};
-
-    // Register each supported layout once. Consumers use this registry instead
-    // of maintaining their own mono/stereo dispatch switches.
-    using SupportedChannelTypes = ChannelTypeList<
-        ChannelTypeId::mono,
-        ChannelTypeId::stereo>;
-
     enum class SampleStreamLayout : std::uint8_t {
         planar,
         interleaved,
@@ -59,12 +33,12 @@ namespace iv {
         return static_cast<size_t>(layout) < static_cast<size_t>(SampleStreamLayout::count);
     }
 
-    template<ChannelTypeId... Types>
+    template<class... Types>
     constexpr size_t channel_count(ChannelTypeId type, ChannelTypeList<Types...>)
     {
         size_t count = 0;
-        auto const found = ((type == Types
-                ? (count = ChannelTypeTraits<Types>::count, true)
+        auto const found = ((type == ChannelTypeTraits<Types>::id
+                ? (count = Types::channel_count, true)
                 : false)
             || ...);
         if (!found) {

@@ -4,6 +4,8 @@
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_call.h>
 #include <intravenous/graph/builder/output_refs.h>
+#include <intravenous/graph/builder/topology.h>
+#include <intravenous/basic_nodes/routing.h>
 
 #include <optional>
 #include <span>
@@ -15,10 +17,13 @@
 
 namespace iv {
     class GraphBuilder;
-    class GraphBuilderTopology;
+
+    template<class ChannelType>
+    SamplePortRef make_channel_pack(GraphBuilder&, size_t channel, SamplePortRef source);
 
     struct GraphBuilderPublicSamplePortChannel {
-        std::optional<size_t> port_ordinal {};
+        std::vector<size_t> port_ordinals {};
+        std::vector<SourceInfo> source_infos {};
     };
 
     struct GraphBuilderPublicSamplePortFamily {
@@ -43,6 +48,7 @@ namespace iv {
     struct GraphBuilderPublicEventOutput {
         size_t port_ordinal = 0;
         EventOutputConfig config {};
+        std::vector<SourceInfo> source_infos {};
     };
 
     class GraphBuilderPublicPorts {
@@ -108,6 +114,8 @@ namespace iv {
         void annotate_event_input_source_info(size_t port_ordinal, std::string_view declaration_identity,
             std::string_view file_path, uint32_t begin, uint32_t end);
         std::span<SourceInfo const> event_input_source_infos(size_t port_ordinal) const;
+        void annotate_sample_output_source_info(size_t port_ordinal, SourceInfo info);
+        void annotate_event_output_source_info(size_t port_ordinal, SourceInfo info);
 
     private:
         std::vector<InputConfig> _sample_inputs {};
@@ -115,7 +123,13 @@ namespace iv {
         std::vector<EventInputConfig> _event_inputs {};
         std::vector<std::vector<SourceInfo>> _event_input_source_infos {};
         std::vector<OutputConfig> _sample_outputs {};
+        // Index-aligned with _sample_outputs. This is public-declaration
+        // metadata, not a property of a concrete port configuration.
+        std::vector<PublicSamplePortMember> _sample_output_members {};
+        std::vector<size_t> _last_sample_output_port_ordinals {};
+        std::vector<std::vector<SourceInfo>> _sample_output_source_infos {};
         std::vector<EventOutputConfig> _event_outputs {};
+        std::vector<std::vector<SourceInfo>> _event_output_source_infos {};
         bool _sample_outputs_defined = false;
     };
 
@@ -131,12 +145,78 @@ namespace iv {
         std::vector<OutputRefConfig> output_refs;
         output_refs.reserve(sizeof...(Refs));
         constexpr bool require_names = (sizeof...(Refs) > 1);
+        auto const source_config = [&](SamplePortRef const& source) {
+            if (source.node_index == GRAPH_ID) {
+                return OutputConfig{};
+            }
+            return topology.node(source.node_index).outputs()[source.output_port];
+        };
+        auto const public_output_config = [&](SamplePortRef const& source, std::string_view name) {
+            auto config = source_config(source);
+            config.name = std::string(name);
+            // Public graph outputs use the canonical lane-facing layout.
+            // Contributors in another layout are adapted by their edge plan.
+            config.channel_layout.sample_layout = SampleStreamLayout::planar;
+            return config;
+        };
         auto const append_ref = [&](auto&& ref) {
             using RefT = std::remove_cvref_t<decltype(ref)>;
-            if constexpr (details::is_named_arg_v<RefT>) {
+            if constexpr (details::is_channel_named_arg_v<RefT>) {
+                using ChannelType = typename RefT::channel_type;
+                auto packed = make_channel_pack<ChannelType>(
+                    builder, RefT::channel_ordinal, lift_sample(ref.value));
                 output_refs.push_back(OutputRefConfig{
-                    .ref = lift_sample(ref.value),
-                    .config = OutputConfig{ .name = std::string(RefT::name.view()) },
+                    .ref = packed,
+                    .config = OutputConfig{
+                        .name = std::string(RefT::name.view()),
+                        .channel_layout = ChannelLayout{
+                            .channel_type = ChannelTypeTraits<ChannelType>::id,
+                            .sample_layout = SampleStreamLayout::planar,
+                        },
+                    },
+                    .public_member = PublicSamplePortMember{
+                        .family_name = std::string(RefT::name.view()),
+                        .channel_type = ChannelTypeTraits<ChannelType>::id,
+                        .whole_stream = true,
+                    },
+                });
+            } else if constexpr (details::is_default_channel_named_arg_v<RefT>) {
+                using ChannelType = typename RefT::channel_type;
+                auto packed = make_channel_pack<ChannelType>(
+                    builder, RefT::channel_ordinal, lift_sample(ref.value));
+                output_refs.push_back(OutputRefConfig{
+                    .ref = packed,
+                    .config = OutputConfig{
+                        .name = "main",
+                        .channel_layout = ChannelLayout{
+                            .channel_type = ChannelTypeTraits<ChannelType>::id,
+                            .sample_layout = SampleStreamLayout::planar,
+                        },
+                    },
+                    .public_member = PublicSamplePortMember{
+                        .family_name = "main",
+                        .channel_type = ChannelTypeTraits<ChannelType>::id,
+                        .whole_stream = true,
+                    },
+                });
+            } else if constexpr (details::is_named_arg_v<RefT>) {
+                if constexpr (RefT::name.view().starts_with("__")) {
+                    details::error(
+                        "builder " + identity.value
+                        + ": generated channel assignments are not public outputs; use \"name\"_P[channel] = value"
+                    );
+                }
+                auto source = lift_sample(ref.value);
+                auto config = public_output_config(source, RefT::name.view());
+                auto const channel_type = config.channel_layout.channel_type;
+                output_refs.push_back(OutputRefConfig{
+                    .ref = source,
+                    .config = std::move(config),
+                    .public_member = PublicSamplePortMember{
+                        .family_name = std::string(RefT::name.view()),
+                        .channel_type = channel_type,
+                        .whole_stream = true,
+                    },
                 });
             } else {
                 if constexpr (require_names) {
@@ -145,9 +225,10 @@ namespace iv {
                         + ": outputs(...) requires names when exposing more than one sample output"
                     );
                 } else {
+                    auto source = lift_sample(std::forward<decltype(ref)>(ref));
                     output_refs.push_back(OutputRefConfig{
-                        .ref = lift_sample(std::forward<decltype(ref)>(ref)),
-                        .config = OutputConfig{},
+                        .ref = source,
+                        .config = public_output_config(source, {}),
                     });
                 }
             }
@@ -175,10 +256,13 @@ namespace iv {
                     + ": outputs(...) requires names when exposing more than one sample output"
                 );
             }
-            output_refs.push_back(OutputRefConfig{
-                .ref = lift_sample(ref),
-                .config = OutputConfig{ .name = std::string(ref.name) },
-            });
+            auto source = lift_sample(ref);
+            auto config = source.node_index == GRAPH_ID
+                ? OutputConfig{}
+                : topology.node(source.node_index).outputs()[source.output_port];
+            config.name = std::string(ref.name);
+            config.channel_layout.sample_layout = SampleStreamLayout::planar;
+            output_refs.push_back(OutputRefConfig{ .ref = source, .config = std::move(config) });
         }
         define_sample_outputs(builder, topology, identity, std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
     }

@@ -78,7 +78,7 @@ namespace iv {
             }};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1> {{
                 { .name = "frequency" }
@@ -179,7 +179,7 @@ namespace iv {
             }};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1> {{
                 { .name = "gate" }
@@ -300,7 +300,7 @@ namespace iv {
             }};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 2> {{
                 { .name = "amplitude" },

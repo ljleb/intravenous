@@ -44,12 +44,10 @@ namespace iv {
     namespace details {
         template<class T>
         concept sample_channel_assignment =
-            is_named_arg_v<T>
+            (is_named_arg_v<T> || is_default_channel_named_arg_v<T>)
             && requires {
                 typename std::remove_cvref_t<T>::value_type;
-                { std::remove_cvref_t<T>::kind } -> std::convertible_to<NamedPortKind>;
-            }
-            && std::remove_cvref_t<T>::kind == NamedPortKind::sample;
+            };
 
         template<class T>
         concept sample_port_channel_assignment =
@@ -59,14 +57,14 @@ namespace iv {
                 SamplePortRef>;
 
         template<class Fn, class... PortIds>
-        consteval bool all_channel_results_void(ChannelPortIdList<PortIds...>)
+        consteval bool all_channel_results_void(ChannelMemberList<PortIds...>)
         {
             return (... && std::is_void_v<decltype(
                 std::declval<Fn&>().template operator()<PortIds{}>())>);
         }
 
         template<class Fn, class... PortIds>
-        consteval bool all_channel_results_are_sample_assignments(ChannelPortIdList<PortIds...>)
+        consteval bool all_channel_results_are_sample_assignments(ChannelMemberList<PortIds...>)
         {
             return (... && [] {
                 using Result = std::remove_cvref_t<decltype(
@@ -95,6 +93,12 @@ namespace iv {
         GraphBuilderAnnotations _annotations;
 
         explicit GraphBuilder(GraphBuilderIdentity identity);
+        PublicSampleInputRef input_named(
+            std::string_view name,
+            Sample default_value,
+            std::optional<Sample> min,
+            std::optional<Sample> max);
+        PublicEventInputRef event_input_named(std::string_view name, EventTypeId type);
 
     public:
         GraphBuilder();
@@ -106,16 +110,23 @@ namespace iv {
         void define_scope_event_outputs(std::span<EventOutputRefConfig const> refs);
         std::string node_id(size_t index) const;
         PublicSampleInputRef input();
+        template<fixed_string Name>
         PublicSampleInputRef input(
-            std::string_view name,
             Sample default_value = 0.0,
             std::optional<Sample> min = std::nullopt,
-            std::optional<Sample> max = std::nullopt);
+            std::optional<Sample> max = std::nullopt)
+        {
+            return input_named(Name.view(), default_value, min, max);
+        }
         PublicSampleInputRef input(
             Sample default_value,
             std::optional<Sample> min = std::nullopt,
             std::optional<Sample> max = std::nullopt);
-        PublicEventInputRef event_input(std::string_view name, EventTypeId type);
+        template<fixed_string Name>
+        PublicEventInputRef event_input(EventTypeId type)
+        {
+            return event_input_named(Name.view(), type);
+        }
         PublicEventInputRef event_input(EventTypeId type);
         void annotate_public_sample_input_source_info(
             PublicSampleInputRef const&,
@@ -129,6 +140,8 @@ namespace iv {
             std::string_view file_path,
             uint32_t begin,
             uint32_t end);
+        void annotate_public_sample_output_source_info(std::span<SourceInfo const> infos);
+        void annotate_public_event_output_source_info(std::span<SourceInfo const> infos);
 
         template<class Config>
         static void validate_output_port_configs(
@@ -147,16 +160,27 @@ namespace iv {
 
         void event_outputs(std::span<EventOutputRefConfig const> refs);
 
+        template<class... Refs>
+        void subgraph_event_outputs(Refs&&... refs);
+
+        void subgraph_event_outputs(std::span<EventOutputRefConfig const> refs);
+
         template<class Fn>
         NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph");
 
         template<class... Refs>
-        requires details::valid_node_call_args_v<Refs...>
         void outputs(Refs&&... refs);
 
         void outputs(std::initializer_list<NamedRef> refs);
         void outputs(std::span<OutputRefConfig const> refs);
         void outputs(std::span<NamedRef const> refs);
+
+        template<class... Refs>
+        void subgraph_outputs(Refs&&... refs);
+
+        void subgraph_outputs(std::initializer_list<NamedRef> refs);
+        void subgraph_outputs(std::span<OutputRefConfig const> refs);
+        void subgraph_outputs(std::span<NamedRef const> refs);
 
         using VacantSampleInput = GraphBuilderVacantSampleInput;
         using VacantEventInput = GraphBuilderVacantEventInput;
@@ -195,7 +219,7 @@ namespace iv {
         RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
         RootNodeBuildResult build_execution_root_node(size_t detach_id_offset = 0) const;
 
-        template<ChannelTypeId Type, class Fn>
+        template<class Type, class Fn>
         auto multi_channel(Fn&& fn);
 
     private:
@@ -214,6 +238,14 @@ namespace iv {
         SamplePortRef lift_to_sample_port(NamedRef const& ref);
 
     };
+
+    template<class ChannelType>
+    SamplePortRef make_channel_pack(GraphBuilder& builder, size_t channel, SamplePortRef source)
+    {
+        auto pack = builder.template node<ChannelPack<ChannelType>>();
+        pack.connect_input(channel, source);
+        return static_cast<SamplePortRef>(pack);
+    }
 
     template<class Config>
     void GraphBuilder::validate_output_port_configs(
@@ -234,7 +266,16 @@ namespace iv {
     template<class... Refs>
     void GraphBuilder::event_outputs(Refs&&... refs)
     {
-        if (inside_subgraph_scope()) {
+        _public_ports.define_event_outputs_from_args(*this, _topology, _identity, std::forward<Refs>(refs)...);
+    }
+
+    template<class... Refs>
+    void GraphBuilder::subgraph_event_outputs(Refs&&... refs)
+    {
+        if (!inside_subgraph_scope()) {
+            details::error("g.subgraph_event_outputs(...) is only valid inside g.subgraph(...)");
+        }
+        {
             std::vector<EventOutputRefConfig> output_refs;
             output_refs.reserve(sizeof...(Refs));
             constexpr bool require_names = (sizeof...(Refs) > 1);
@@ -261,9 +302,7 @@ namespace iv {
             };
             (append_ref(std::forward<Refs>(refs)), ...);
             define_scope_event_outputs(std::span<EventOutputRefConfig const>(output_refs.data(), output_refs.size()));
-            return;
         }
-        _public_ports.define_event_outputs_from_args(*this, _topology, _identity, std::forward<Refs>(refs)...);
     }
 
     template<class Fn>
@@ -273,19 +312,79 @@ namespace iv {
     }
 
     template<class... Refs>
-    requires details::valid_node_call_args_v<Refs...>
     void GraphBuilder::outputs(Refs&&... refs)
     {
-        if (inside_subgraph_scope()) {
+        _public_ports.define_sample_outputs_from_args(
+            *this,
+            _topology,
+            _identity,
+            [&](auto&& value) {
+                return lift_to_sample_port(std::forward<decltype(value)>(value));
+            },
+            std::forward<Refs>(refs)...
+        );
+    }
+
+    template<class... Refs>
+    void GraphBuilder::subgraph_outputs(Refs&&... refs)
+    {
+        if (!inside_subgraph_scope()) {
+            details::error("g.subgraph_outputs(...) is only valid inside g.subgraph(...)");
+        }
+        {
             std::vector<OutputRefConfig> output_refs;
             output_refs.reserve(sizeof...(Refs));
             constexpr bool require_names = (sizeof...(Refs) > 1);
             auto const append_ref = [&](auto&& ref) {
                 using RefT = std::remove_cvref_t<decltype(ref)>;
-                if constexpr (details::is_named_arg_v<RefT>) {
+                if constexpr (details::is_channel_named_arg_v<RefT>) {
                     output_refs.push_back(OutputRefConfig{
                         .ref = lift_to_sample_port(ref.value),
-                        .config = OutputConfig{ .name = std::string(RefT::name.view()) },
+                        .config = OutputConfig{
+                            .name = std::string(RefT::name.view()),
+                            .channel_layout = ChannelLayout{
+                                .channel_type = ChannelTypeTraits<typename RefT::channel_type>::id,
+                                .sample_layout = SampleStreamLayout::planar,
+                            },
+                        },
+                        .public_member = PublicSamplePortMember{
+                            .family_name = std::string(RefT::name.view()),
+                            .channel_type = ChannelTypeTraits<typename RefT::channel_type>::id,
+                            .channel_index = RefT::channel_ordinal,
+                        },
+                    });
+                } else if constexpr (details::is_default_channel_named_arg_v<RefT>) {
+                    output_refs.push_back(OutputRefConfig{
+                        .ref = lift_to_sample_port(ref.value),
+                        .config = OutputConfig{
+                            .name = "main",
+                            .channel_layout = ChannelLayout{
+                                .channel_type = ChannelTypeTraits<typename RefT::channel_type>::id,
+                                .sample_layout = SampleStreamLayout::planar,
+                            },
+                        },
+                        .public_member = PublicSamplePortMember{
+                            .family_name = "main",
+                            .channel_type = ChannelTypeTraits<typename RefT::channel_type>::id,
+                            .channel_index = RefT::channel_ordinal,
+                        },
+                    });
+                } else if constexpr (details::is_named_arg_v<RefT>) {
+                    if constexpr (RefT::name.view().starts_with("__")) {
+                        details::error(
+                            "builder " + _identity.value
+                            + ": generated channel assignments are not public outputs; use \"name\"_P[channel] = value"
+                        );
+                    }
+                    output_refs.push_back(OutputRefConfig{
+                        .ref = lift_to_sample_port(ref.value),
+                        .config = OutputConfig{
+                            .name = std::string(RefT::name.view()),
+                            .channel_layout = mono_planar_channel_layout,
+                        },
+                        .public_member = PublicSamplePortMember{
+                            .family_name = std::string(RefT::name.view()),
+                        },
                     });
                 } else {
                     if constexpr (require_names) {
@@ -303,24 +402,13 @@ namespace iv {
             };
             (append_ref(std::forward<Refs>(refs)), ...);
             define_scope_outputs(std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
-            return;
         }
-        _public_ports.define_sample_outputs_from_args(
-            *this,
-            _topology,
-            _identity,
-            [&](auto&& value) {
-                return lift_to_sample_port(std::forward<decltype(value)>(value));
-            },
-            std::forward<Refs>(refs)...
-        );
     }
 
-    template<ChannelTypeId Type, class Fn>
+    template<class Type, class Fn>
     auto GraphBuilder::multi_channel(Fn&& fn)
     {
-        static_assert(Type != ChannelTypeId::count);
-        using PortIds = typename ChannelPortIds<Type>::type;
+        using PortIds = typename Type::members;
 
         if constexpr (details::all_channel_results_void<Fn>(PortIds{})) {
             for_each_channel_port<Type>(std::forward<Fn>(fn));

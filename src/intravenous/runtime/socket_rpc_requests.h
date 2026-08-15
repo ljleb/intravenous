@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/lane_node/channels.h>
+#include <intravenous/channel_layout.h>
 #include <intravenous/runtime/lane_view_service.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/runtime/timeline_execution_events.h>

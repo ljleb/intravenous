@@ -16,6 +16,8 @@
 #include <vector>
 
 namespace {
+using iv::operator""_P;
+
 iv::BorrowedSampleBlock mono_block(std::span<iv::Sample const> samples)
 {
     return iv::BorrowedSampleBlock {
@@ -52,6 +54,11 @@ std::string runtime_node_id(std::string_view instance_id, std::string_view logic
     return std::string(instance_id) + "\x1flogical:" + std::string(logical_node_id);
 }
 
+std::string lane_output_name(iv::TypeErasedLaneNode const &node)
+{
+    return std::visit([](auto const &output) { return output.name; }, node.output());
+}
+
 struct TestEventSink {
     auto event_inputs() const
     {
@@ -60,7 +67,7 @@ struct TestEventSink {
         }};
     }
 
-    auto outputs() const
+    static constexpr auto outputs()
     {
         return std::array<iv::OutputConfig, 1>{};
     }
@@ -237,10 +244,10 @@ TEST_F(GraphInputLanesTest, AnnotatedPublicInputsGroupRepeatedSourceIntoOneLogic
     builder.outputs({});
 
     auto first = iv::_annotate_public_input_source_info(
-        builder.input("gain", iv::Sample{1.0f}, iv::Sample{0.0f}, iv::Sample{2.0f}),
+        builder.input<"gain">(iv::Sample{1.0f}, iv::Sample{0.0f}, iv::Sample{2.0f}),
         "public-gain", "/tmp/module/module.cpp", 10, 11);
     auto second = iv::_annotate_public_input_source_info(
-        builder.input("gain", iv::Sample{1.0f}, iv::Sample{0.0f}, iv::Sample{2.0f}),
+        builder.input<"gain">(iv::Sample{1.0f}, iv::Sample{0.0f}, iv::Sample{2.0f}),
         "public-gain", "/tmp/module/module.cpp", 10, 11);
     (void)first;
     (void)second;
@@ -300,10 +307,10 @@ TEST_F(GraphInputLanesTest, AnnotatedPublicEventInputsShareLogicalTimelineLane)
     iv::GraphBuilder builder;
     builder.outputs({});
     auto first = iv::_annotate_public_event_input_source_info(
-        builder.event_input("trigger", iv::EventTypeId::trigger),
+        builder.event_input<"trigger">(iv::EventTypeId::trigger),
         "public-trigger", "/tmp/module/module.cpp", 30, 37);
     auto second = iv::_annotate_public_event_input_source_info(
-        builder.event_input("trigger", iv::EventTypeId::trigger),
+        builder.event_input<"trigger">(iv::EventTypeId::trigger),
         "public-trigger", "/tmp/module/module.cpp", 30, 37);
     (void)first;
     (void)second;
@@ -395,7 +402,7 @@ TEST_F(GraphInputLanesTest, SampleValueChangesDoNotQueueRebuilds)
     iv::GraphBuilder builder;
 
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -422,7 +429,7 @@ TEST_F(GraphInputLanesTest, VacantSampleInputsDefaultToLogicalFollowWithoutTimel
     iv::GraphBuilder builder;
 
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -442,7 +449,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDepe
     iv::GraphBuilder builder;
 
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -463,10 +470,23 @@ TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDepe
     lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     ASSERT_EQ(witness.timeline_batches.size(), 1u);
+    iv::TimelineLaneUpsert const *created_lane = nullptr;
+    for (auto const &upsert : witness.timeline_batches.front().upserts) {
+        if (upsert.metadata.has_unit("dsp_graph.graph_input")
+            && upsert.metadata.has_unit("dsp_graph.knob")
+            && upsert.metadata.has_unit("dsp_graph.logical")
+            && upsert.metadata.has_unit("dsp_graph.sample")) {
+            created_lane = &upsert;
+            break;
+        }
+    }
+    ASSERT_NE(created_lane, nullptr);
+    auto const created_lane_id = created_lane->lane;
+    EXPECT_EQ(lane_output_name(created_lane->make_node()), "graph input");
 
     iv::GraphBuilder rebuilt;
     auto rebuilt_node = iv::_annotate_node_source_info(
-        rebuilt.node<iv::Sum<1>>().node_ref(),
+        rebuilt.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)rebuilt_node;
 
@@ -477,6 +497,21 @@ TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDepe
     ASSERT_EQ(
         ack.prerequisite_lanes_for("instance:1").value_or(std::vector<iv::LaneId>{}).size(),
         1u);
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 2});
+
+    auto const bindings = lanes.graph_input_lane_bindings(iv::ProjectGraphInputLaneBindingsRequest{
+        .ports = {iv::GraphInputPortDescriptor{
+            .logical_node_id = runtime_node_id(instance.instance_id, "node-1"),
+            .port_kind = iv::PortKind::sample,
+            .port_ordinal = 0,
+            .sample_channel_type = iv::ChannelTypeId::mono,
+        }},
+    });
+    ASSERT_EQ(bindings.logical_sample_knobs.size(), 1u);
+    EXPECT_EQ(bindings.logical_sample_knobs.front().knob_lane, created_lane_id);
+    for (auto const &batch : witness.timeline_batches) {
+        EXPECT_EQ(std::find(batch.removals.begin(), batch.removals.end(), created_lane_id), batch.removals.end());
+    }
 }
 
 TEST_F(GraphInputLanesTest, ConcreteSampleInputOverrideDoesNotPublishTimelineBatchByDefault)
@@ -486,7 +521,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputOverrideDoesNotPublishTimelineBat
     iv::GraphBuilder builder;
 
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -512,7 +547,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputTimelineStatePublishesTimelineDep
     iv::GraphBuilder builder;
 
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -536,7 +571,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputTimelineStatePublishesTimelineDep
 
     iv::GraphBuilder rebuilt;
     auto rebuilt_node = iv::_annotate_node_source_info(
-        rebuilt.node<iv::Sum<1>>().node_ref(),
+        rebuilt.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)rebuilt_node;
 
@@ -556,7 +591,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
     iv::GraphBuilder builder;
 
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -588,7 +623,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
 
     iv::GraphBuilder rebuilt;
     auto rebuilt_node = iv::_annotate_node_source_info(
-        rebuilt.node<iv::Sum<1>>().node_ref(),
+        rebuilt.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)rebuilt_node;
 
@@ -779,7 +814,7 @@ TEST_F(GraphInputLanesTest, LogicalOutputsDoNotAutoCreateTimelineLanesWithoutExp
     auto instance = make_instance_with_output_ports();
     iv::GraphBuilder builder;
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -814,6 +849,58 @@ TEST_F(GraphInputLanesTest, PublicSampleOutputCreatesAutomaticTimelineLaneAndExe
     }
     EXPECT_TRUE(saw_public_output);
     EXPECT_NO_THROW((void)builder.build_execution_root_node());
+}
+
+TEST_F(GraphInputLanesTest, NamedPublicSampleOutputUsesItsDeclaredNameForTheLane)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
+    builder.outputs("main"_P = 0.25f);
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
+
+    iv::TimelineLaneUpsert const *public_output = nullptr;
+    for (auto const &batch : witness.timeline_batches) {
+        for (auto const &upsert : batch.upserts) {
+            if (upsert.metadata.has_unit("dsp_graph.public_output")
+                && upsert.metadata.has_unit("dsp_graph.sample")) {
+                public_output = &upsert;
+                break;
+            }
+        }
+    }
+    ASSERT_NE(public_output, nullptr);
+    EXPECT_EQ(lane_output_name(public_output->make_node()), "main");
+}
+
+TEST_F(GraphInputLanesTest, PublicStereoOutputContributorsShareOneTimelineLane)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
+    auto const source_a = iv::SourceInfo{.declaration_identity = "output-a", .span = {.file_path = "test.cpp", .begin = 1, .end = 2}};
+    auto const source_b = iv::SourceInfo{.declaration_identity = "output-b", .span = {.file_path = "test.cpp", .begin = 3, .end = 4}};
+    auto const sources = std::array{source_a, source_b};
+    builder.outputs("main"_P[iv::stereo::left] = 0.25f, "main"_P[iv::stereo::right] = 0.25f);
+    builder.annotate_public_sample_output_source_info(sources);
+    builder.outputs("main"_P[iv::stereo::left] = 0.5f, "main"_P[iv::stereo::right] = 0.5f);
+    builder.annotate_public_sample_output_source_info(sources);
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
+
+    size_t public_stereo_lane_count = 0;
+    for (auto const& batch : witness.timeline_batches) for (auto const& upsert : batch.upserts) {
+        if (upsert.metadata.has_unit("dsp_graph.public_output")
+            && upsert.sample_channel_type == iv::ChannelTypeId::stereo) ++public_stereo_lane_count;
+    }
+    EXPECT_EQ(public_stereo_lane_count, 1u);
 }
 
 TEST_F(GraphInputLanesTest, UpdatingBuilderDoesNotRemoveExistingPublicSampleOutputLane)
@@ -864,7 +951,7 @@ TEST_F(GraphInputLanesTest, UpdatingPublicSampleOutputFromMonoToStereoPreservesI
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
     iv::GraphBuilder mono_builder;
-    mono_builder.outputs(iv::channels::mono = 0.25f);
+    mono_builder.outputs("main"_P = 0.25f);
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &mono_builder}},
@@ -887,8 +974,8 @@ TEST_F(GraphInputLanesTest, UpdatingPublicSampleOutputFromMonoToStereoPreservesI
 
     iv::GraphBuilder stereo_builder;
     stereo_builder.outputs(
-        iv::channels::stereo_left = 0.25f,
-        iv::channels::stereo_right = 0.25f);
+        "main"_P[iv::stereo::left] = 0.25f,
+        "main"_P[iv::stereo::right] = 0.25f);
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &stereo_builder}},
     });
@@ -909,14 +996,61 @@ TEST_F(GraphInputLanesTest, UpdatingPublicSampleOutputFromMonoToStereoPreservesI
     EXPECT_TRUE(saw_preserved_stereo_lane);
 }
 
+TEST_F(GraphInputLanesTest, RenamingPublicSampleOutputCreatesANewLane)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder initial_builder;
+    initial_builder.outputs("main"_P = 0.25f);
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &initial_builder}},
+    });
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
+
+    std::optional<iv::LaneId> initial_lane;
+    std::optional<iv::InternedString> initial_external_id;
+    for (auto const& batch : witness.timeline_batches) for (auto const& upsert : batch.upserts) {
+        if (upsert.metadata.has_unit("dsp_graph.public_output")) {
+            initial_lane = upsert.lane;
+            initial_external_id = upsert.external_id;
+        }
+    }
+    ASSERT_TRUE(initial_lane.has_value());
+    ASSERT_TRUE(initial_external_id.has_value());
+    witness.timeline_batches.clear();
+
+    iv::GraphBuilder renamed_builder;
+    renamed_builder.outputs("main1"_P = 0.25f);
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &renamed_builder}},
+    });
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
+
+    bool removed_old = false;
+    bool added_new = false;
+    bool assigned_new_external_id = false;
+    for (auto const& batch : witness.timeline_batches) {
+        removed_old = removed_old || std::ranges::contains(batch.removals, *initial_lane);
+        for (auto const& upsert : batch.upserts) {
+            if (upsert.lane != *initial_lane) {
+                added_new = true;
+                assigned_new_external_id = assigned_new_external_id || upsert.external_id != *initial_external_id;
+            }
+        }
+    }
+    EXPECT_TRUE(removed_old);
+    EXPECT_TRUE(added_new);
+    EXPECT_TRUE(assigned_new_external_id);
+}
+
 TEST_F(GraphInputLanesTest, PublicSampleInputCreatesAutomaticTimelineLaneAndDependency)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
     iv::GraphBuilder builder;
-    auto input = builder.input("frequency", 0.5f);
+    auto input = builder.input<"frequency">(0.5f);
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>()(input).node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>()(input).node_ref(),
         "node-1");
     (void)node;
     builder.outputs({});
@@ -939,21 +1073,19 @@ TEST_F(GraphInputLanesTest, PublicSampleInputCreatesAutomaticTimelineLaneAndDepe
     EXPECT_NO_THROW((void)builder.build_execution_root_node());
 }
 
-TEST_F(GraphInputLanesTest, PublicSampleInputSupportsUnnamedOptionalBounds)
+TEST_F(GraphInputLanesTest, PublicSampleInputLowersOptionalBoundsToConcreteConfigValues)
 {
     iv::GraphBuilder builder;
     auto input = builder.input(0.5f, -2.0f, 4.0f);
-    builder.outputs(iv::channels::mono = input);
+    builder.outputs("main"_P = input);
 
     auto const families = builder.public_sample_input_families();
     ASSERT_EQ(families.families.size(), 1u);
     auto const &config = families.families.front().input_config;
     EXPECT_TRUE(config.name.empty());
     EXPECT_FLOAT_EQ(static_cast<float>(config.default_value), 0.5f);
-    ASSERT_TRUE(config.min.has_value());
-    EXPECT_FLOAT_EQ(static_cast<float>(*config.min), -2.0f);
-    ASSERT_TRUE(config.max.has_value());
-    EXPECT_FLOAT_EQ(static_cast<float>(*config.max), 4.0f);
+    EXPECT_FLOAT_EQ(static_cast<float>(config.min), -2.0f);
+    EXPECT_FLOAT_EQ(static_cast<float>(config.max), 4.0f);
 }
 
 TEST_F(GraphInputLanesTest, PublicEventPortsCreateAutomaticLanesAndDependency)
@@ -961,7 +1093,7 @@ TEST_F(GraphInputLanesTest, PublicEventPortsCreateAutomaticLanesAndDependency)
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
     iv::GraphBuilder builder;
-    auto trigger = builder.event_input("trigger", iv::EventTypeId::trigger);
+    auto trigger = builder.event_input<"trigger">(iv::EventTypeId::trigger);
     auto node = iv::_annotate_node_source_info(
         builder.node<TestEventSink>().connect_event_input(0, trigger).node_ref(),
         "node-1");
@@ -997,7 +1129,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleOutputTimelineStateCreatesAggregationLa
     auto instance = make_instance_with_output_ports();
     iv::GraphBuilder builder;
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -1024,7 +1156,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleOutputTimelineStateCreatesAggregationLa
 
     iv::GraphBuilder rebuilt;
     auto rebuilt_node = iv::_annotate_node_source_info(
-        rebuilt.node<iv::Sum<1>>().node_ref(),
+        rebuilt.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)rebuilt_node;
 
@@ -1044,7 +1176,7 @@ TEST_F(GraphInputLanesTest, SettingSampleOutputStateMarksInstanceRebuild)
     auto instance = make_instance_with_output_ports();
     iv::GraphBuilder builder;
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -1073,7 +1205,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLan
     auto instance = make_instance_with_member_output_ports();
     iv::GraphBuilder builder;
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -1100,7 +1232,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLan
 
     iv::GraphBuilder rebuilt;
     auto rebuilt_node = iv::_annotate_node_source_info(
-        rebuilt.node<iv::Sum<1>>().node_ref(),
+        rebuilt.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)rebuilt_node;
 
@@ -1120,7 +1252,7 @@ TEST_F(GraphInputLanesTest, TogglingSampleOutputBackToDisconnectedRemovesLane)
     auto instance = make_instance_with_output_ports();
     iv::GraphBuilder builder;
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -1163,7 +1295,7 @@ TEST_F(GraphInputLanesTest, SampleOutputLanesRemainMonoAcrossRebuild)
     auto instance = make_instance_with_output_ports();
     iv::GraphBuilder builder;
     auto node = iv::_annotate_node_source_info(
-        builder.node<iv::Sum<1>>().node_ref(),
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)node;
 
@@ -1194,7 +1326,7 @@ TEST_F(GraphInputLanesTest, SampleOutputLanesRemainMonoAcrossRebuild)
     witness.timeline_batches.clear();
     iv::GraphBuilder rebuilt;
     auto rebuilt_node = iv::_annotate_node_source_info(
-        rebuilt.node<iv::Sum<1>>().node_ref(),
+        rebuilt.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
         "node-1");
     (void)rebuilt_node;
 
@@ -1203,15 +1335,12 @@ TEST_F(GraphInputLanesTest, SampleOutputLanesRemainMonoAcrossRebuild)
     });
     lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 2});
 
-    iv::TimelineLaneUpsert const *rebuilt_upsert = nullptr;
+    // An unchanged builder has no topology delta to publish.  The existing
+    // lane is retained; in particular it must not be removed and recreated
+    // with a different channel layout.
     for (auto const &batch : witness.timeline_batches) {
-        if (batch_has_output_lane(batch, "dsp_graph.logical", &rebuilt_upsert)) {
-            break;
-        }
+        EXPECT_EQ(std::find(batch.removals.begin(), batch.removals.end(), created->lane), batch.removals.end());
     }
-    ASSERT_NE(rebuilt_upsert, nullptr);
-    ASSERT_TRUE(rebuilt_upsert->sample_channel_type.has_value());
-    EXPECT_EQ(*rebuilt_upsert->sample_channel_type, iv::ChannelTypeId::mono);
 }
 
 TEST_F(GraphInputLanesTest, SampleOutputBlockRoundTripsThroughGraphInputLanesStorage)

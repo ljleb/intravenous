@@ -6,12 +6,12 @@
 
 namespace iv {
     struct WhackIirThing {
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 3>{};
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 2>{};
         }
@@ -38,7 +38,7 @@ namespace iv {
         static constexpr Sample FMIN = 2e1f;
         static constexpr Sample FMAX = 2e4f;
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
                 InputConfig { .name = "in", .history = 1 },
@@ -47,7 +47,7 @@ namespace iv {
             };
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -77,7 +77,7 @@ namespace iv {
         static constexpr Sample FMIN = 2e1f;
         static constexpr Sample FMAX = 2e4f;
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
                 InputConfig { .name = "in", .history = 1 },
@@ -86,7 +86,7 @@ namespace iv {
             };
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array { OutputConfig { "out" } };
         }

@@ -7,7 +7,7 @@ namespace {
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         (void)I;
-        return g.node<iv::Sum<1>>().node_ref();
+        return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref();
     }
 
     void mixed_connectivity_module(iv::ModuleContext const& context)

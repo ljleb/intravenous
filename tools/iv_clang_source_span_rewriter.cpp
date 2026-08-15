@@ -236,6 +236,7 @@ namespace {
         std::optional<std::filesystem::path> _core_source_dir;
         std::vector<WrapSpec> _wraps;
         std::vector<InsertSpec> _insertions;
+        std::unordered_map<std::string, clang::VarDecl const*> _graph_local_bindings;
 
         bool is_user_source_path(llvm::StringRef path) const
         {
@@ -344,12 +345,83 @@ namespace {
                 return {};
             }
 
+            // Clang USRs for local variables include their source offset.
+            // They are useful for compiler identity, but not for authored
+            // graph controls: inserting a line before `voice` would otherwise
+            // replace its timeline lane and drop its connections on reload.
+            if (auto const* variable = llvm::dyn_cast<clang::VarDecl>(decl);
+                variable && variable->isLocalVarDecl() && !variable->getName().empty()) {
+                auto const* context = variable->getDeclContext();
+                clang::FunctionDecl const* function = nullptr;
+                while (context != nullptr) {
+                    if (auto const* candidate = llvm::dyn_cast<clang::FunctionDecl>(context);
+                        candidate != nullptr
+                        && !(llvm::isa<clang::CXXMethodDecl>(candidate)
+                            && llvm::cast<clang::CXXMethodDecl>(candidate)->getParent()->isLambda())) {
+                        function = candidate;
+                        break;
+                    }
+                    context = context->getParent();
+                }
+                if (function != nullptr) {
+                    llvm::SmallString<256> function_usr;
+                    if (!clang::index::generateUSRForDecl(
+                            function->getCanonicalDecl(), function_usr, _lang_options)) {
+                        return std::string(function_usr.str()) + "@" + variable->getName().str();
+                    }
+                }
+            }
+
             llvm::SmallString<256> usr;
             auto const* canonical = decl->getCanonicalDecl();
             if (clang::index::generateUSRForDecl(canonical, usr, _lang_options)) {
                 return {};
             }
             return std::string(usr.str());
+        }
+
+        clang::FunctionDecl const* enclosing_named_function(clang::VarDecl const& variable) const
+        {
+            auto const* context = variable.getDeclContext();
+            while (context != nullptr) {
+                if (auto const* candidate = llvm::dyn_cast<clang::FunctionDecl>(context);
+                    candidate != nullptr
+                    && !(llvm::isa<clang::CXXMethodDecl>(candidate)
+                        && llvm::cast<clang::CXXMethodDecl>(candidate)->getParent()->isLambda())) {
+                    return candidate;
+                }
+                context = context->getParent();
+            }
+            return nullptr;
+        }
+
+        void validate_unique_graph_local_binding(clang::VarDecl const* decl)
+        {
+            if (!decl || !decl->isLocalVarDecl() || decl->getName().empty()
+                || is_reference_type(decl->getType())
+                || source_annotation_function(decl->getType()).empty()
+                || !is_user_source_location(decl->getLocation())) {
+                return;
+            }
+            auto const* function = enclosing_named_function(*decl);
+            if (function == nullptr) {
+                return;
+            }
+            llvm::SmallString<256> function_usr;
+            if (clang::index::generateUSRForDecl(
+                    function->getCanonicalDecl(), function_usr, _lang_options)) {
+                return;
+            }
+            auto const key = std::string(function_usr.str()) + "\x1f" + decl->getName().str();
+            auto const [it, inserted] = _graph_local_bindings.emplace(key, decl);
+            if (inserted || it->second == decl) {
+                return;
+            }
+            unsigned const id = _context.getDiagnostics().getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "graph-significant local '%0' is already declared in this function; "
+                "use a unique local name");
+            _context.getDiagnostics().Report(decl->getLocation(), id) << decl->getName();
         }
 
         std::string declaration_identity_for_named_expr(clang::Expr const* expr) const
@@ -411,6 +483,151 @@ namespace {
             return name == "iv::_annotate_node_source_info"
                 || name == "iv::_annotate_public_input_source_info"
                 || name == "iv::_annotate_public_event_input_source_info";
+        }
+
+        std::string public_input_annotation_function(clang::CallExpr const* call) const
+        {
+            if (!call) return {};
+            auto const* callee = call->getDirectCallee();
+            if (!callee) return {};
+            auto const name = callee->getQualifiedNameAsString();
+            if (name == "iv::GraphBuilder::input") return "iv::_annotate_public_input_source_info";
+            if (name == "iv::GraphBuilder::event_input") return "iv::_annotate_public_event_input_source_info";
+            return {};
+        }
+
+        std::optional<std::string> explicit_public_input_name(clang::CallExpr const* call) const
+        {
+            if (!call) return std::nullopt;
+            auto const callee_range = file_range_for_source_range(call->getCallee()->getSourceRange());
+            if (!callee_range.has_value()) return std::nullopt;
+            bool invalid = false;
+            auto const buffer = _source_manager.getBufferData(_main_file_id, &invalid);
+            if (invalid || callee_range->end > buffer.size()) return std::nullopt;
+            std::string_view const text(buffer.data() + callee_range->begin, callee_range->length());
+            auto const open = text.rfind('<');
+            auto const close = text.rfind('>');
+            if (open == std::string_view::npos || close == std::string_view::npos || close <= open + 2) return std::nullopt;
+            std::string_view const argument = text.substr(open + 1, close - open - 1);
+            if (argument.front() != '"' || argument.back() != '"') return std::nullopt;
+            return std::string(argument.substr(1, argument.size() - 2));
+        }
+
+        clang::VarDecl const* local_initializer_declaration(clang::Expr const* expr) const
+        {
+            clang::Stmt const* current = expr;
+            while (current) {
+                auto const parents = _context.getParents(*current);
+                if (parents.empty()) return nullptr;
+                if (auto const* decl = parents[0].get<clang::VarDecl>()) {
+                    return decl->isLocalVarDecl() && decl->getInit() ? decl : nullptr;
+                }
+                auto const* parent = parents[0].get<clang::Stmt>();
+                if (!parent || !llvm::isa<clang::Expr>(parent)) return nullptr;
+                current = parent;
+            }
+            return nullptr;
+        }
+
+        void maybe_add_public_input_call_wrap(clang::CallExpr* call)
+        {
+            auto const annotation_function = public_input_annotation_function(call);
+            if (annotation_function.empty() || !is_user_source_location(call->getBeginLoc())) return;
+
+            auto const explicit_name = explicit_public_input_name(call);
+            auto const* binding = local_initializer_declaration(call);
+            std::string identity;
+            if (explicit_name.has_value()) {
+                identity = *explicit_name;
+            } else if (binding) {
+                identity = declaration_identity_for(binding);
+            } else {
+                unsigned const id = _context.getDiagnostics().getCustomDiagID(
+                    clang::DiagnosticsEngine::Error,
+                    "public graph input requires a local binding or an explicit template name");
+                _context.getDiagnostics().Report(call->getBeginLoc(), id);
+                return;
+            }
+            auto const wrapped = file_range_for_source_range(call->getSourceRange());
+            if (!wrapped.has_value() || identity.empty()) return;
+            add_wrap(*wrapped, *wrapped, std::move(identity), annotation_function, true);
+        }
+
+        void maybe_add_public_output_call_wrap(clang::CallExpr* call)
+        {
+            if (!call || !is_user_source_location(call->getBeginLoc())) return;
+            clang::Stmt const* current = call;
+            while (true) {
+                auto const parents = _context.getParents(*current);
+                if (parents.empty()) break;
+                auto const* parent = parents[0].get<clang::Stmt>();
+                if (!parent) break;
+                if (auto const* parent_call = llvm::dyn_cast<clang::CallExpr>(parent)) {
+                    if (auto const* parent_callee = parent_call->getDirectCallee()) {
+                        auto const parent_name = parent_callee->getQualifiedNameAsString();
+                        if (parent_name == "iv::_define_public_sample_outputs_with_source_info"
+                            || parent_name == "iv::_define_public_event_outputs_with_source_info") return;
+                    }
+                }
+                current = parent;
+            }
+            std::string helper;
+            auto const* direct_callee = call->getDirectCallee();
+            auto const* member = llvm::dyn_cast<clang::MemberExpr>(strip_trivial_expr_wrappers(call->getCallee()));
+            auto const* dependent_member = llvm::dyn_cast<clang::CXXDependentScopeMemberExpr>(
+                strip_trivial_expr_wrappers(call->getCallee()));
+            auto const* unresolved_member = llvm::dyn_cast<clang::UnresolvedMemberExpr>(
+                strip_trivial_expr_wrappers(call->getCallee()));
+            std::string name;
+            if (direct_callee) {
+                name = direct_callee->getQualifiedNameAsString();
+            } else if (member) {
+                name = member->getMemberNameInfo().getAsString();
+            } else if (dependent_member) {
+                name = dependent_member->getMember().getAsString();
+            } else if (unresolved_member) {
+                name = unresolved_member->getMemberName().getAsString();
+            } else {
+                return;
+            }
+            if (name == "iv::GraphBuilder::outputs" || name == "outputs") {
+                helper = "iv::_define_public_sample_outputs_with_source_info";
+            } else if (name == "iv::GraphBuilder::event_outputs" || name == "event_outputs") {
+                helper = "iv::_define_public_event_outputs_with_source_info";
+            } else {
+                return;
+            }
+
+            auto const* base_expr = member
+                ? member->getBase()
+                : dependent_member ? dependent_member->getBase()
+                : unresolved_member ? unresolved_member->getBase() : nullptr;
+            if (!base_expr) return;
+            auto const* base = llvm::dyn_cast<clang::DeclRefExpr>(strip_trivial_expr_wrappers(base_expr));
+            if (!base) return; // Do not duplicate evaluation of a non-local builder expression.
+            auto const base_range = file_range_for_source_range(base->getSourceRange());
+            auto const call_range = file_range_for_source_range(call->getSourceRange());
+            if (!base_range.has_value() || !call_range.has_value()) return;
+
+            bool invalid = false;
+            auto const buffer = _source_manager.getBufferData(_main_file_id, &invalid);
+            if (invalid || base_range->end > buffer.size()) return;
+            std::string const base_text(buffer.data() + base_range->begin, base_range->length());
+            llvm::StringRef const path = _source_manager.getFilename(call->getBeginLoc());
+            if (path.empty()) return;
+            std::string const file = cxx_string_literal(normalized_path(std::filesystem::path(path.str())));
+
+            std::string prefix = helper + "(" + base_text + ", {";
+            for (unsigned i = 0; i < call->getNumArgs(); ++i) {
+                auto const arg_range = file_range_for_source_range(call->getArg(i)->getSourceRange());
+                if (!arg_range.has_value()) return;
+                if (i != 0) prefix += ", ";
+                prefix += "iv::PublicOutputSourceSpan{" + file + ", "
+                    + std::to_string(arg_range->begin) + ", " + std::to_string(arg_range->end) + "}";
+            }
+            prefix += "}, [&] { ";
+            _insertions.push_back(InsertSpec{ .offset = call_range->begin, .text = std::move(prefix) });
+            _insertions.push_back(InsertSpec{ .offset = call_range->end, .text = "; })" });
         }
 
         bool is_std_move_argument_context(clang::Expr const* expr) const
@@ -556,6 +773,10 @@ namespace {
 
             clang::Expr const* init = decl->getInit();
             if (!init) {
+                return;
+            }
+
+            if (public_input_annotation_function(llvm::dyn_cast<clang::CallExpr>(strip_trivial_expr_wrappers(init))).size() != 0) {
                 return;
             }
 
@@ -762,8 +983,16 @@ namespace {
 
         bool VisitVarDecl(clang::VarDecl* decl)
         {
+            validate_unique_graph_local_binding(decl);
             maybe_add_binding_wrap(decl);
             maybe_add_empty_declaration_init(decl);
+            return true;
+        }
+
+        bool VisitCallExpr(clang::CallExpr* call)
+        {
+            maybe_add_public_input_call_wrap(call);
+            maybe_add_public_output_call_wrap(call);
             return true;
         }
 

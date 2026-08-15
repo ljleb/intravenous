@@ -17,7 +17,7 @@ It does not yet extend DSP nodes or DSP graph ports. Those remain mono for now.
 
 The channel/type conversion vocabulary should live in a dedicated sibling header:
 
-- [channels.h](/home/abstrack/src/intravenous/src/intravenous/lane_node/channels.h)
+- [channel_layout.h](/home/ljleb/src/intravenous/src/intravenous/channel_layout.h)
 
 This header should own:
 

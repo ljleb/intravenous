@@ -26,14 +26,14 @@ inline void benchmark_constant_filtered(iv::ModuleContext const& context)
     auto const tone = high_pass * 0.12;
     SamplePortRef left;
     SamplePortRef right;
-    g.multi_channel<ChannelTypeId::stereo>([&]<auto Ch>() {
-        if constexpr (std::same_as<decltype(Ch), decltype(channels::stereo_left)>) {
+    g.multi_channel<stereo>([&]<auto Ch>() {
+        if constexpr (std::same_as<decltype(Ch), decltype(stereo::left)>) {
             left = tone;
         } else {
             right = tone;
         }
     });
-    g.outputs(channels::stereo_left = left, channels::stereo_right = right);
+    g.outputs("main"_P[stereo::left] = left, "main"_P[stereo::right] = right);
 }
 
 IV_EXPORT_MODULE("iv.test.benchmark_constant_filtered", benchmark_constant_filtered);

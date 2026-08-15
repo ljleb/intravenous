@@ -20,7 +20,7 @@ inline void behavior_project(iv::ModuleContext const& context)
         "dt"_P = dt
     );
 
-    g.outputs(channels::stereo_left = tone, channels::stereo_right = tone);
+    g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
 
 IV_EXPORT_MODULE("iv.test.behavior_project", behavior_project);

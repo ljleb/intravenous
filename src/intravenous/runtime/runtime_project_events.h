@@ -188,6 +188,24 @@ namespace iv {
         };
     }
 
+    inline std::string public_output_node_id(
+        std::string_view instance_id,
+        std::string_view source_identity)
+    {
+        return "public-output:" + std::string(instance_id) + ":" + std::string(source_identity);
+    }
+
+    inline std::optional<std::pair<std::string, std::string>> parse_public_output_node_id(
+        std::string_view node_id)
+    {
+        constexpr std::string_view prefix = "public-output:";
+        if (!node_id.starts_with(prefix)) return std::nullopt;
+        auto const rest = node_id.substr(prefix.size());
+        auto const separator = rest.find(':');
+        if (separator == std::string_view::npos) return std::nullopt;
+        return std::pair{std::string(rest.substr(0, separator)), std::string(rest.substr(separator + 1))};
+    }
+
     enum class ProjectEventInputState {
         default_,
         logical_follow,

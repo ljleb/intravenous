@@ -47,11 +47,6 @@ namespace iv {
 
     private:
         friend class JuceVstRuntimeSupport;
-        friend void tick_juce_vst_wrapper(
-            JuceVstWrapperSpec const& spec,
-            void* live_instance,
-            TickBlockContext<JuceVstWrapper> const& state
-        );
         std::unique_ptr<Impl> _impl;
         std::mutex _mutex;
     };
@@ -59,12 +54,6 @@ namespace iv {
     // Builds the process-wide VST search cache once.
     // Subsequent probes reuse the cached index.
     void warmup_juce_vst_scan_cache();
-
-    void tick_juce_vst_wrapper(
-        JuceVstWrapperSpec const& spec,
-        void* live_instance,
-        TickBlockContext<JuceVstWrapper> const& state
-    );
 
 #endif
 }

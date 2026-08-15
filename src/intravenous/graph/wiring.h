@@ -148,7 +148,15 @@ namespace iv {
     )
     {
         for (size_t i = 0; i < public_inputs.size(); ++i) {
-            private_outputs[i].push_block(public_inputs[i].get_block(block_size));
+            auto const source_layout = public_inputs[i].channel_layout();
+            IV_ASSERT(private_outputs[i].source_layout() == source_layout, "graph ingress output source layout does not match public input layout");
+            Sample frame[2] {};
+            for (size_t sample_i = 0; sample_i < block_size; ++sample_i) {
+                for (size_t channel = 0; channel < channel_count(source_layout); ++channel) {
+                    frame[channel] = public_inputs[i].get_frame(sample_i, channel);
+                }
+                private_outputs[i].push_frame(std::span<Sample const>(frame, channel_count(source_layout)));
+            }
         }
     }
 
@@ -159,7 +167,15 @@ namespace iv {
     )
     {
         for (size_t i = 0; i < public_outputs.size(); ++i) {
-            public_outputs[i].push_block(private_inputs[i].get_block(block_size));
+            auto const source_layout = private_inputs[i].channel_layout();
+            IV_ASSERT(public_outputs[i].source_layout() == source_layout, "graph egress output source layout does not match private input layout");
+            Sample frame[2] {};
+            for (size_t sample_i = 0; sample_i < block_size; ++sample_i) {
+                for (size_t channel = 0; channel < channel_count(source_layout); ++channel) {
+                    frame[channel] = private_inputs[i].get_frame(sample_i, channel);
+                }
+                public_outputs[i].push_frame(std::span<Sample const>(frame, channel_count(source_layout)));
+            }
             advance_input(private_inputs[i], block_size);
         }
     }

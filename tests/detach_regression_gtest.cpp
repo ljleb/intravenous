@@ -27,7 +27,7 @@ namespace {
         iv::Sample* destination;
         size_t size;
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<iv::InputConfig, 1>{};
         }
@@ -53,7 +53,7 @@ namespace {
 
         integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
         warper(integrator + noise);
-        g.outputs("out"_P = (warper["anti_aliased"] * amplitude));
+        g.subgraph_outputs("out"_P = (warper["anti_aliased"] * amplitude));
     }
 }
 
@@ -104,7 +104,7 @@ TEST(DetachRegression, NestedFeedbackWithoutDetachStillFailsAfterFlattening)
     auto const recursive = graph.subgraph([&] {
         auto const integrator = graph.node<iv::PhaseIntegrator>();
         integrator(integrator);
-        graph.outputs("phase"_P = integrator);
+        graph.subgraph_outputs("phase"_P = integrator);
     });
     (void)recursive;
     graph.outputs();

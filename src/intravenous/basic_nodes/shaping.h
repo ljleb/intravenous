@@ -8,7 +8,7 @@
 
 namespace iv {
     struct Warper {
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
                 InputConfig { .name = "in", .history = 1 },
@@ -16,7 +16,7 @@ namespace iv {
             };
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array {
                 OutputConfig { .name = "anti_aliased", .latency = 1 },
@@ -53,12 +53,12 @@ namespace iv {
     };
 
     struct PhaseIntegrator {
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array { InputConfig { .name = "delta" } };
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array { OutputConfig { .name = "phase", .history = 1 } };
         }
@@ -81,7 +81,7 @@ namespace iv {
             Sample phase = 0.0f;
         };
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
                 InputConfig { .name = "phase_offset", .history = 1 },
@@ -90,7 +90,7 @@ namespace iv {
             };
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array {
                 OutputConfig { .name = "out", .latency = 1 },
@@ -137,7 +137,7 @@ namespace iv {
             _latency(latency)
         {}
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
                 InputConfig { "f" },
@@ -145,7 +145,7 @@ namespace iv {
             };
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array { OutputConfig { "offset" } };
         }
@@ -160,7 +160,7 @@ namespace iv {
     };
 
     struct Interpolation {
-        auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
                 InputConfig { "a" },
@@ -169,7 +169,7 @@ namespace iv {
             };
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array { OutputConfig { "out" } };
         }

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/basic_lane_nodes/type_erased.h>
-#include <intravenous/lane_node/channels.h>
+#include <intravenous/channel_layout.h>
 #include <intravenous/query/lane_query_schema.h>
 #include <intravenous/runtime/lane_graph.h>
 

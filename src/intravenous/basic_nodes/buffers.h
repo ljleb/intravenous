@@ -30,7 +30,7 @@ namespace iv {
             IV_ASSERT(_atomic_value, "ValueSource requires a non-null atomic value pointer");
         }
 
-        constexpr auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array { OutputConfig { .name = "value" } };
         }
@@ -59,7 +59,7 @@ namespace iv {
             IV_ASSERT(_size >= 1, "BufferSource requires at least one sample");
         }
 
-        auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }
@@ -98,7 +98,7 @@ namespace iv {
             _identity(nominal_identity(lane, channel_index))
         {}
 
-        constexpr auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array { OutputConfig { .name = "value" } };
         }
@@ -169,9 +169,9 @@ namespace iv {
         }
     };
 
+    template<ChannelTypeId ChannelType>
     class GraphSampleOutputSink {
         LaneId _lane {};
-        ChannelTypeId _channel_type = ChannelTypeId::mono;
         std::string _identity;
 
     public:
@@ -180,15 +180,14 @@ namespace iv {
             return "graph-output-sample-sink:" + std::to_string(lane.value);
         }
 
-        explicit GraphSampleOutputSink(LaneId lane, ChannelTypeId channel_type = ChannelTypeId::mono) :
+        explicit GraphSampleOutputSink(LaneId lane) :
             _lane(lane),
-            _channel_type(channel_type),
             _identity(nominal_identity(lane))
         {}
 
-        auto inputs() const
+        static constexpr auto inputs()
         {
-            return std::vector<InputConfig>(channel_count(_channel_type));
+            return std::array<InputConfig, channel_count(ChannelType)>{};
         }
 
         std::string identity() const
@@ -196,10 +195,10 @@ namespace iv {
             return _identity;
         }
 
-        void tick_block(TickBlockContext<GraphSampleOutputSink> const& ctx) const
+        void tick_block(TickBlockContext<GraphSampleOutputSink<ChannelType>> const& ctx) const
         {
-            std::vector<Sample> samples(channel_count(_channel_type) * ctx.block_size);
-            for (size_t channel = 0; channel < channel_count(_channel_type); ++channel) {
+            std::vector<Sample> samples(channel_count(ChannelType) * ctx.block_size);
+            for (size_t channel = 0; channel < channel_count(ChannelType); ++channel) {
                 auto const block = ctx.inputs[channel].get_block(ctx.block_size);
                 for (size_t i = 0; i < ctx.block_size; ++i) {
                     samples[channel * ctx.block_size + i] =
@@ -209,7 +208,7 @@ namespace iv {
             auto published = BorrowedSampleBlock{
                 .samples = samples,
                 .channel_layout = ChannelLayout{
-                    .channel_type = _channel_type,
+                    .channel_type = ChannelType,
                     .sample_layout = SampleStreamLayout::planar,
                 },
                 .frame_count = ctx.block_size,

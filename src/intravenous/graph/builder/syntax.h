@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <ranges>
 #include <string_view>
+#include <type_traits>
 
 namespace iv {
     template<size_t N>
@@ -42,9 +43,42 @@ namespace iv {
         T value;
     };
 
+    // A public-port argument whose name and channel are separate pieces of
+    // identity. It intentionally is not a NamedArg: node calls remain mono.
+    template<fixed_string Name, class ChannelType, size_t ChannelOrdinal, class T>
+    struct ChannelNamedArg {
+        using value_type = T;
+        static constexpr auto name = Name;
+        using channel_type = ChannelType;
+        static constexpr size_t channel_ordinal = ChannelOrdinal;
+
+        T value;
+    };
+
+    template<fixed_string Name, class ChannelType, size_t ChannelOrdinal>
+    struct ChannelPortName {
+        template<class T>
+        constexpr auto operator=(T&& value) const;
+    };
+
     template<fixed_string Name, NamedPortKind Kind = NamedPortKind::sample>
     struct PortName {
         template<class T>
         constexpr auto operator=(T&& value) const;
+
+        template<class Channel>
+        constexpr auto operator[](Channel) const
+        {
+            using ChannelT = std::remove_cvref_t<Channel>;
+            return ChannelPortName<Name, typename ChannelT::channel_type, ChannelT::channel_ordinal>{};
+        }
+    };
+
+    template<class ChannelType, size_t ChannelOrdinal, class T>
+    struct DefaultChannelNamedArg {
+        using value_type = T;
+        using channel_type = ChannelType;
+        static constexpr size_t channel_ordinal = ChannelOrdinal;
+        T value;
     };
 }

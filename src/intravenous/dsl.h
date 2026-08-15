@@ -9,6 +9,43 @@
 #include <intravenous/module/module.h>
 
 namespace iv {
+    struct PublicOutputSourceSpan {
+        std::string_view file_path;
+        uint32_t begin;
+        uint32_t end;
+    };
+
+    inline SourceInfo _public_output_source_info(PublicOutputSourceSpan span)
+    {
+        return SourceInfo{
+            .declaration_identity = "public-output:" + std::string(span.file_path) + ":"
+                + std::to_string(span.begin) + ":" + std::to_string(span.end),
+            .span = SourceSpan{ .file_path = std::string(span.file_path), .begin = span.begin, .end = span.end },
+        };
+    }
+
+    template<class Fn>
+    void _define_public_sample_outputs_with_source_info(
+        GraphBuilder& builder, std::initializer_list<PublicOutputSourceSpan> spans, Fn&& define)
+    {
+        std::forward<Fn>(define)();
+        std::vector<SourceInfo> infos;
+        infos.reserve(spans.size());
+        for (auto span : spans) infos.push_back(_public_output_source_info(span));
+        builder.annotate_public_sample_output_source_info(infos);
+    }
+
+    template<class Fn>
+    void _define_public_event_outputs_with_source_info(
+        GraphBuilder& builder, std::initializer_list<PublicOutputSourceSpan> spans, Fn&& define)
+    {
+        std::forward<Fn>(define)();
+        std::vector<SourceInfo> infos;
+        infos.reserve(spans.size());
+        for (auto span : spans) infos.push_back(_public_output_source_info(span));
+        builder.annotate_public_event_output_source_info(infos);
+    }
+
     template<class Ref>
     concept SourceInfoAnnotatableRef =
         requires(std::remove_cvref_t<Ref>& ref, std::string_view declaration_identity) {
@@ -212,7 +249,7 @@ namespace iv {
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     NodeRef operator+(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Sum<2>>(
+        return make_binary_op<Sum<mono, SampleStreamLayout::planar, 2>>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator+"
@@ -439,134 +476,27 @@ namespace iv {
     }
 
     template<size_t voice_count, class Fn>
-    NodeRef polyphonic(GraphBuilder& g, Fn&& make_voice)
+    void polyphonic(GraphBuilder& g, Fn&& make_voice)
     {
         static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
 
-        return g.subgraph([&] {
-            auto const midi = g.event_input("midi", EventTypeId::midi);
-            std::vector<OutputConfig> output_configs;
-            std::vector<EventOutputConfig> event_output_configs;
-            NodeRef mix;
+        auto const midi = g.event_input<"midi">(EventTypeId::midi);
+        auto process_lane = [&]<size_t VoiceIndex>() {
+            auto voice = g.subgraph([&] {
+                auto const voice_midi = g.event_input<"midi">(EventTypeId::midi);
+                auto midi_driver = g.node<MidiVoiceAllocator<VoiceIndex, voice_count>>();
+                midi_driver.connect_event_input("midi", voice_midi);
+                static_assert(requires {
+                    make_voice.template operator()<VoiceIndex>(std::move(midi_driver));
+                }, "iv::polyphonic callback must accept a compile-time voice index and its MIDI driver");
+                make_voice.template operator()<VoiceIndex>(std::move(midi_driver));
+            }, "PolyphonicVoice");
+            voice.connect_event_input("midi", midi);
+        };
 
-            auto const same_output_config = [](OutputConfig const& a, OutputConfig const& b) {
-                return a.name == b.name
-                    && a.latency == b.latency
-                    && a.history == b.history;
-            };
-            auto const same_event_output_config = [](EventOutputConfig const& a, EventOutputConfig const& b) {
-                return a.name == b.name
-                    && a.type == b.type;
-            };
-
-            auto connect_lane_outputs = [&](auto voice_index_c, NodeRef const& voice) {
-                constexpr size_t voice_index = decltype(voice_index_c)::value;
-
-                for (size_t output_port = 0; output_port < output_configs.size(); ++output_port) {
-                    mix.connect_input(output_port * voice_count + voice_index, voice[output_port]);
-                }
-
-                for (size_t output_port = 0; output_port < event_output_configs.size(); ++output_port) {
-                    mix.connect_event_input(
-                        output_port * voice_count + voice_index,
-                        voice.node_ref().event_port(output_port)
-                    );
-                }
-            };
-
-            auto process_lane = [&](auto voice_index_c) {
-                constexpr size_t voice_index = decltype(voice_index_c)::value;
-
-                NodeRef voice = g.subgraph([&] {
-                    auto const voice_midi = g.event_input("midi", EventTypeId::midi);
-                    auto midi_driver = g.node<MidiVoiceAllocator<voice_index, voice_count>>();
-                    midi_driver.connect_event_input("midi", voice_midi);
-                    NodeRef voice_node = make_voice(std::move(midi_driver)).node_ref();
-                    auto const& voice_impl = voice_node.node();
-                    std::vector<OutputRefConfig> voice_outputs;
-                    voice_outputs.reserve(voice_impl.outputs().size());
-                    for (size_t output_port = 0; output_port < voice_impl.outputs().size(); ++output_port) {
-                        voice_outputs.push_back(OutputRefConfig {
-                            .ref = voice_node[output_port],
-                            .config = voice_impl.outputs()[output_port],
-                        });
-                    }
-                    g.outputs(std::span<OutputRefConfig const>(voice_outputs.data(), voice_outputs.size()));
-
-                    std::vector<EventOutputRefConfig> voice_event_outputs;
-                    voice_event_outputs.reserve(voice_impl.event_outputs().size());
-                    for (size_t output_port = 0; output_port < voice_impl.event_outputs().size(); ++output_port) {
-                        voice_event_outputs.push_back(EventOutputRefConfig {
-                            .ref = voice_node.event_port(output_port),
-                            .config = voice_impl.event_outputs()[output_port],
-                        });
-                    }
-                    g.event_outputs(std::span<EventOutputRefConfig const>(voice_event_outputs.data(), voice_event_outputs.size()));
-                }, "PolyphonicVoice");
-                voice.connect_event_input("midi", midi);
-                auto const& voice_node = voice.node();
-                if (
-                    voice_node.materialization.is_placeholder()
-                    && !voice_node.lowered_subgraph.active()
-                ) {
-                    details::error("iv::polyphonic callback must return a materialized node or subgraph node");
-                }
-
-                if constexpr (voice_index == 0) {
-                    output_configs = voice_node.outputs();
-                    event_output_configs = voice_node.event_outputs();
-                    mix = g.node<PolyphonicMix>(
-                        voice_count,
-                        output_configs,
-                        event_output_configs
-                    ).node_ref();
-                } else {
-                    if (voice_node.outputs().size() != output_configs.size()) {
-                        details::error("iv::polyphonic voice lanes must expose the same number of sample outputs");
-                    }
-                    for (size_t i = 0; i < output_configs.size(); ++i) {
-                        if (!same_output_config(voice_node.outputs()[i], output_configs[i])) {
-                            details::error("iv::polyphonic voice lanes must expose matching sample output configs");
-                        }
-                    }
-
-                    if (voice_node.event_outputs().size() != event_output_configs.size()) {
-                        details::error("iv::polyphonic voice lanes must expose the same number of event outputs");
-                    }
-                    for (size_t i = 0; i < event_output_configs.size(); ++i) {
-                        if (!same_event_output_config(voice_node.event_outputs()[i], event_output_configs[i])) {
-                            details::error("iv::polyphonic voice lanes must expose matching event output configs");
-                        }
-                    }
-                }
-
-                connect_lane_outputs(voice_index_c, voice);
-            };
-
-            [&]<size_t... VoiceIndices>(std::index_sequence<VoiceIndices...>) {
-                (process_lane(std::integral_constant<size_t, VoiceIndices>{}), ...);
-            }(std::make_index_sequence<voice_count>{});
-
-            std::vector<OutputRefConfig> outputs;
-            outputs.reserve(output_configs.size());
-            for (size_t output_port = 0; output_port < output_configs.size(); ++output_port) {
-                outputs.push_back(OutputRefConfig {
-                    .ref = mix[output_port],
-                    .config = output_configs[output_port],
-                });
-            }
-            g.outputs(std::span<OutputRefConfig const>(outputs.data(), outputs.size()));
-
-            std::vector<EventOutputRefConfig> event_outputs;
-            event_outputs.reserve(event_output_configs.size());
-            for (size_t output_port = 0; output_port < event_output_configs.size(); ++output_port) {
-                event_outputs.push_back(EventOutputRefConfig {
-                    .ref = mix.event_port(output_port),
-                    .config = event_output_configs[output_port],
-                });
-            }
-            g.event_outputs(std::span<EventOutputRefConfig const>(event_outputs.data(), event_outputs.size()));
-        }, "Polyphonic");
+        [&]<size_t... VoiceIndices>(std::index_sequence<VoiceIndices...>) {
+            (process_lane.template operator()<VoiceIndices>(), ...);
+        }(std::make_index_sequence<voice_count>{});
     }
 }
 

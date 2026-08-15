@@ -20,7 +20,7 @@ namespace iv {
         TypeErasedNode _node;
         std::optional<size_t> _ttl_samples;
         std::string _node_id;
-        std::vector<std::string> _output_targets;
+        std::vector<SampleOutputBinding> _output_targets;
         std::vector<EventOutputBinding> _event_output_targets;
         std::vector<GraphPortDataNode> _input_port_data_nodes;
         std::vector<GraphEventPortDataNode> _input_event_port_data_nodes;
@@ -31,7 +31,7 @@ namespace iv {
             std::vector<PortBufferPlan> input_buffer_plans,
             std::vector<EventInputConfig> input_event_configs,
             std::string node_id,
-            std::vector<std::string> output_targets,
+            std::vector<SampleOutputBinding> output_targets,
             std::vector<EventOutputBinding> event_output_targets
         )
         : _node(std::move(node))
@@ -48,7 +48,7 @@ namespace iv {
             std::optional<size_t> ttl_samples,
             std::vector<PortBufferPlan> input_buffer_plans,
             std::string node_id,
-            std::vector<std::string> output_targets
+            std::vector<SampleOutputBinding> output_targets
         ) :
             GraphNodeWrapper(
                 std::move(node),
@@ -65,7 +65,7 @@ namespace iv {
             TypeErasedNode node,
             std::vector<PortBufferPlan> input_buffer_plans,
             std::string node_id,
-            std::vector<std::string> output_targets
+            std::vector<SampleOutputBinding> output_targets
         ) :
             GraphNodeWrapper(
                 std::move(node),
@@ -183,8 +183,8 @@ namespace iv {
                 ctx.require_export_array<EventSharedPortData>(event_port_data_export_id(_node_id, input_i));
             }
             for (auto const& target : _output_targets) {
-                if (!target.empty()) {
-                    ctx.require_export_array<SharedPortData>(target);
+                if (!target.target.empty()) {
+                    ctx.require_export_array<SharedPortData>(target.target);
                 }
             }
             for (auto const& target : _event_output_targets) {
@@ -219,25 +219,27 @@ namespace iv {
 
             for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
                 auto const& target = _output_targets[output_i];
-                if (target.empty()) {
+                if (target.target.empty()) {
                     throw std::logic_error(
                         "graph node wrapper output wiring is missing for node '" + _node_id +
                         "' output " + std::to_string(output_i) + "'"
                     );
                 }
-                auto target_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(target);
+                auto target_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(target.target);
                 if (target_port_data.empty()) {
                     throw std::logic_error(
                         "graph output target wiring is unresolved for node '" + _node_id +
                         "' output " + std::to_string(output_i) +
-                        " -> '" + target +
+                        " -> '" + target.target +
                         "', resolved size = " + std::to_string(target_port_data.size())
                     );
                 }
                 std::construct_at(
                     &state.outputs[output_i],
                     const_cast<SharedPortData&>(target_port_data[0]),
-                    outputs[output_i].history
+                    outputs[output_i].history,
+                    effective_channel_layout(outputs[output_i]),
+                    target.conversion
                 );
             }
             for (size_t output_i = 0; output_i < event_outputs.size(); ++output_i) {

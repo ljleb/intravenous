@@ -28,8 +28,9 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
     size_t seed = 0;
     SamplePortRef left;
     SamplePortRef right;
-    g.multi_channel<ChannelTypeId::stereo>([&]<auto Ch>() {
-        auto voice = polyphonic<16>(g, [&](auto m) {
+    g.multi_channel<stereo>([&]<auto Ch>() {
+        auto lp = g.node<SimpleIirLowPass>();
+        polyphonic<16>(g, [&]<size_t Voice>(auto m) {
             // m.connect_event_input("midi", midi);
 
             auto saw = g.node<SawOscillator>();
@@ -49,18 +50,18 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
             lo_pass(u_to_n, 0.0, dt);
             u_to_n < generator;
 
-            return saw * (m >> "amplitude"_P);
+            (void)Voice;
+            lp.connect_input("in", saw * (m >> "amplitude"_P));
         });
-        auto lp = g.node<SimpleIirLowPass>();
-        auto const channel_output = lp(voice, "dt"_P = dt) * 0.5;
-        if constexpr (std::same_as<decltype(Ch), decltype(channels::stereo_left)>) {
+        auto const channel_output = lp("dt"_P = dt) * 0.5;
+        if constexpr (std::same_as<decltype(Ch), decltype(stereo::left)>) {
             left = channel_output;
         } else {
             right = channel_output;
         }
     });
 
-    g.outputs(channels::stereo_left = left, channels::stereo_right = right);
+    g.outputs("main"_P[stereo::left] = left, "main"_P[stereo::right] = right);
 }
 
 IV_EXPORT_MODULE("iv.test.noisy_saw", noisy_saw_project);

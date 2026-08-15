@@ -8,12 +8,12 @@ struct DebugProbe {
     std::string label = "debug";
     size_t every_n_ticks = 4800;
 
-    auto inputs() const
+    static constexpr auto inputs()
     {
         return std::array<iv::InputConfig, 1>{};
     }
 
-    auto outputs() const
+    static constexpr auto outputs()
     {
         return std::array<iv::OutputConfig, 1>{};
     }

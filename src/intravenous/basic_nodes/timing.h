@@ -16,12 +16,12 @@ namespace iv {
         : _latency(latency)
         {}
 
-        constexpr auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array<InputConfig, 1>{};
         }
 
-        constexpr auto outputs() const
+        static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{};
         }

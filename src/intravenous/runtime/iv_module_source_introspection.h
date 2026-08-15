@@ -39,6 +39,8 @@ class IvModuleSourceIntrospection {
     std::unordered_map<std::string, IvModuleInstanceInfo> realized_instances_by_id;
     std::unordered_map<std::string, std::vector<PublicSampleInputInfo>> public_inputs_by_instance_id;
     std::unordered_map<std::string, std::vector<PublicEventInputInfo>> public_event_inputs_by_instance_id;
+    std::unordered_map<std::string, std::vector<PublicSampleOutputInfo>> public_outputs_by_instance_id;
+    std::unordered_map<std::string, std::vector<PublicEventOutputInfo>> public_event_outputs_by_instance_id;
 
     SourceTextLineMap const &source_text_for(std::string const &normalized_path) const;
     void invalidate_source_text(std::string const &normalized_path);
@@ -51,6 +53,8 @@ class IvModuleSourceIntrospection {
         std::string const &instance_id) const;
     LogicalNodeInfo to_public_sample_input(PublicSampleInputInfo const &input) const;
     LogicalNodeInfo to_public_event_input(PublicEventInputInfo const &input) const;
+    LogicalNodeInfo to_public_sample_output(PublicSampleOutputInfo const &output) const;
+    LogicalNodeInfo to_public_event_output(PublicEventOutputInfo const &output) const;
 
 public:
     IvModuleSourceIntrospection() = default;
@@ -61,6 +65,8 @@ public:
         std::vector<IvModuleInstanceInfo> const &instances);
     void set_public_sample_inputs(std::vector<PublicSampleInputInfo> inputs);
     void set_public_event_inputs(std::vector<PublicEventInputInfo> inputs);
+    void set_public_sample_outputs(std::vector<PublicSampleOutputInfo> outputs);
+    void set_public_event_outputs(std::vector<PublicEventOutputInfo> outputs);
     void replace_public_input_instances(std::span<std::string const> instance_ids);
     ProjectQueryResult
     query_by_spans(

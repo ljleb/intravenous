@@ -19,6 +19,8 @@ void refresh_public_inputs()
     if (bound_introspection == nullptr || bound_graph_input_lanes == nullptr) return;
     bound_introspection->set_public_sample_inputs(bound_graph_input_lanes->public_sample_inputs());
     bound_introspection->set_public_event_inputs(bound_graph_input_lanes->public_event_inputs());
+    bound_introspection->set_public_sample_outputs(bound_graph_input_lanes->public_sample_outputs());
+    bound_introspection->set_public_event_outputs(bound_graph_input_lanes->public_event_outputs());
 }
 
 void notify_updated_node_ids(std::vector<std::string> node_ids)
@@ -87,6 +89,10 @@ void notify_replaced_instances(IvModuleInstanceBuildersChanged const &diff)
                 bound_graph_input_lanes->public_sample_inputs());
             bound_introspection->set_public_event_inputs(
                 bound_graph_input_lanes->public_event_inputs());
+            bound_introspection->set_public_sample_outputs(
+                bound_graph_input_lanes->public_sample_outputs());
+            bound_introspection->set_public_event_outputs(
+                bound_graph_input_lanes->public_event_outputs());
         }
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_source_introspection_nodes_updated_event,
@@ -321,6 +327,7 @@ void handle_set_sample_output_state(
             },
             project_builder);
         project_builder.build();
+        refresh_public_inputs();
         notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());
@@ -343,6 +350,7 @@ void handle_set_event_output_state(
             },
             project_builder);
         project_builder.build();
+        refresh_public_inputs();
         notify_updated_node_ids({request.node_id});
     } catch (std::exception const &e) {
         builder.fail(e.what());

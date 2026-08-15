@@ -1,5 +1,7 @@
 #include <intravenous/graph/builder/subgraphs.h>
 
+#include <limits>
+
 namespace iv {
 bool SubgraphScopeManager::active() const
 {
@@ -46,8 +48,8 @@ SamplePortRef SubgraphScopeManager::add_scope_sample_input(
     scope.input_configs.emplace_back(InputConfig{
         .name = has_name ? std::string(name) : std::string{},
         .default_value = default_value,
-        .min = min,
-        .max = max,
+        .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
+        .max = max.value_or(std::numeric_limits<Sample::storage>::infinity()),
     });
     size_t const placeholder_node = topology.append_placeholder_node(
         std::array<OutputConfig, 1>{ OutputConfig{ .name = has_name ? std::string(name) : std::string{} } },
