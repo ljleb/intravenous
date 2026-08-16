@@ -4,6 +4,7 @@
 #include <intravenous/graph/builder/node_call.h>
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/compiler.h>
+#include <intravenous/node/static_port_access.h>
 
 #include <concepts>
 #include <cstdint>
@@ -86,6 +87,23 @@ namespace iv {
 
         SamplePortRef operator[](size_t output_index) const;
         SamplePortRef operator[](std::string_view output_name) const;
+
+        template<fixed_string Name, NamedPortKind Kind>
+        auto operator[](PortName<Name, Kind>) const
+        requires (
+            !std::same_as<Node, void>
+            && Kind == NamedPortKind::sample
+            && details::has_constexpr_sample_port_configs<Node>)
+        {
+            constexpr auto output_index = details::static_output_port_index<Node, Name>();
+            constexpr auto layout = details::static_output_port_layout<Node, Name>();
+            using ChannelType = typename RuntimeChannelTypeTraits<layout.channel_type>::type;
+            if (!_graph_builder) {
+                details::error("attempted to use a null NodeRef");
+            }
+            return TypedSamplePortRef<ChannelType, layout.sample_layout>{
+                SamplePortRef(*_graph_builder, _index, output_index)};
+        }
         EventPortRef event_port(size_t output_index) const;
         EventPortRef event_port(std::string_view output_name) const;
         EventPortRef event_port() const;
@@ -208,13 +226,16 @@ namespace iv {
         }
 
         template<size_t I>
-        SamplePortRef get() const
+        auto get() const
         {
             static_assert(I < output_count);
             if (!this->_graph_builder) {
                 details::error("attempted to use a null NodeRef");
             }
-            return SamplePortRef(*this->_graph_builder, this->_index, I);
+            constexpr auto layout = details::static_output_port_layout_at<NodeType, I>();
+            using ChannelType = typename RuntimeChannelTypeTraits<layout.channel_type>::type;
+            return TypedSamplePortRef<ChannelType, layout.sample_layout>{
+                SamplePortRef(*this->_graph_builder, this->_index, I)};
         }
     };
 

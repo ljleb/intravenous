@@ -57,6 +57,14 @@ namespace iv::details {
         static constexpr auto configs = Node::outputs();
         return effective_channel_layout(configs[static_output_port_index<Node, Name>()]);
     }
+
+    template<typename Node, size_t Index>
+    consteval ChannelLayout static_output_port_layout_at()
+    {
+        static constexpr auto configs = Node::outputs();
+        static_assert(Index < configs.size(), "static output port index is out of bounds");
+        return effective_channel_layout(configs[Index]);
+    }
     template<class Channel>
     constexpr size_t channel_ordinal(Channel)
     {

@@ -10,7 +10,7 @@ inline void event_loader_project(iv::ModuleContext const& context)
     auto const voice = g.embed_subgraph(voice_builder);
 
     voice.connect_event_input("trigger", root_trigger);
-    g.event_outputs("trigger"_F = (voice >> "trigger"_F));
+    g.event_outputs("trigger"_F = voice.event_port("trigger"));
     g.outputs();
 }
 

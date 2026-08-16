@@ -94,6 +94,7 @@ namespace iv {
         static constexpr auto outputs()
         {
             return std::array<OutputConfig, 1>{OutputConfig{
+                .name = "out",
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = Layout,

@@ -169,6 +169,33 @@ namespace iv {
     concept SamplePortLike = std::convertible_to<std::remove_cvref_t<T>, SamplePortRef>;
 
     template<class T>
+    struct typed_sample_port_traits {};
+
+    template<class ChannelType, SampleStreamLayout Layout>
+    struct typed_sample_port_traits<TypedSamplePortRef<ChannelType, Layout>> {
+        using channel_type = ChannelType;
+        static constexpr auto sample_layout = Layout;
+    };
+
+    template<class T>
+    concept TypedSamplePortLike = requires {
+        typename typed_sample_port_traits<std::remove_cvref_t<T>>::channel_type;
+    };
+
+    template<class L, class R, bool HasLeft = TypedSamplePortLike<L>>
+    struct binary_typed_channel;
+
+    template<class L, class R>
+    struct binary_typed_channel<L, R, true> {
+        using type = typename typed_sample_port_traits<std::remove_cvref_t<L>>::channel_type;
+    };
+
+    template<class L, class R>
+    struct binary_typed_channel<L, R, false> {
+        using type = typename typed_sample_port_traits<std::remove_cvref_t<R>>::channel_type;
+    };
+
+    template<class T>
     concept EventPortLike = std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
 
     template<class T>
@@ -217,7 +244,7 @@ namespace iv {
 
     template<class Node, class L, class R>
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
-    NodeRef make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
+    auto make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
     {
         GraphBuilder* g = nullptr;
 
@@ -246,7 +273,10 @@ namespace iv {
     }
 
     template<class L, class R>
-    requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
+    requires (
+        (SamplePortLike<L> || ScalarLike<L>) &&
+        (SamplePortLike<R> || ScalarLike<R>) &&
+        !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     NodeRef operator+(L&& lhs, R&& rhs)
     {
         return make_binary_op<Sum<mono, SampleStreamLayout::planar, 2>>(
@@ -254,6 +284,40 @@ namespace iv {
             std::forward<R>(rhs),
             "operator+"
         );
+    }
+
+    template<class L, class R>
+    requires (
+        (TypedSamplePortLike<L> || ScalarLike<L>) &&
+        (TypedSamplePortLike<R> || ScalarLike<R>) &&
+        (TypedSamplePortLike<L> || TypedSamplePortLike<R>))
+    auto operator+(L&& lhs, R&& rhs)
+    {
+        using Left = typed_sample_port_traits<std::remove_cvref_t<L>>;
+        using Right = typed_sample_port_traits<std::remove_cvref_t<R>>;
+
+        if constexpr (TypedSamplePortLike<L> && TypedSamplePortLike<R>) {
+            static_assert(
+                std::same_as<typename Left::channel_type, typename Right::channel_type>,
+                "operator+: typed sample ports must have the same channel type");
+        }
+
+        using ChannelType = typename binary_typed_channel<L, R>::type;
+        constexpr auto layout = [] {
+            if constexpr (TypedSamplePortLike<L> && TypedSamplePortLike<R>) {
+                return Left::sample_layout == Right::sample_layout
+                    ? Left::sample_layout
+                    : SampleStreamLayout::planar;
+            } else if constexpr (TypedSamplePortLike<L>) {
+                return Left::sample_layout;
+            } else {
+                return Right::sample_layout;
+            }
+        }();
+
+        auto sum = make_binary_op<Sum<ChannelType, layout, 2>>(
+            std::forward<L>(lhs), std::forward<R>(rhs), "operator+");
+        return sum[PortName<"out", NamedPortKind::sample>{}];
     }
 
     template<class L, class R>
@@ -302,11 +366,19 @@ namespace iv {
     template<class T>
     requires (
         std::convertible_to<std::remove_cvref_t<T>, SamplePortRef> &&
-        !std::same_as<std::remove_cvref_t<T>, SamplePortRef>
+        !std::same_as<std::remove_cvref_t<T>, SamplePortRef> &&
+        !TypedSamplePortLike<T>
     )
     SamplePortRef operator~(T&& value)
     {
         return static_cast<SamplePortRef>(std::forward<T>(value)).detach();
+    }
+
+    template<class ChannelType, SampleStreamLayout Layout>
+    TypedSamplePortRef<ChannelType, Layout> operator~(
+        TypedSamplePortRef<ChannelType, Layout> const& value)
+    {
+        return TypedSamplePortRef<ChannelType, Layout>{value.erased().detach()};
     }
 
     template<class L, class R>
@@ -427,50 +499,20 @@ namespace iv {
         );
     }
 
-    template<fixed_string Name, class R>
-    requires NodeLike<R>
-    SamplePortRef operator<<(PortName<Name, NamedPortKind::sample>, R&& rhs)
-    {
-        NodeRef node = _materialize_node_ref(std::forward<R>(rhs));
-        return node[Name.view()];
-    }
-
-    template<class L, fixed_string Name>
-    requires NodeLike<L>
-    SamplePortRef operator>>(L&& lhs, PortName<Name, NamedPortKind::sample>)
-    {
-        NodeRef node = _materialize_node_ref(std::forward<L>(lhs));
-        return node[Name.view()];
-    }
-
-    template<fixed_string Name, class R>
-    requires NodeLike<R>
-    EventPortRef operator<<(PortName<Name, NamedPortKind::event>, R&& rhs)
-    {
-        return _materialize_node_ref(std::forward<R>(rhs)).event_port(Name.view());
-    }
-
-    template<class L, fixed_string Name>
-    requires NodeLike<L>
-    EventPortRef operator>>(L&& lhs, PortName<Name, NamedPortKind::event>)
-    {
-        return _materialize_node_ref(std::forward<L>(lhs)).event_port(Name.view());
-    }
-
     template<size_t I, class Node>
-    SamplePortRef get(StructuredNodeRef<Node> const& node_ref)
+    auto get(StructuredNodeRef<Node> const& node_ref)
     {
         return node_ref.template get<I>();
     }
 
     template<size_t I, class Node>
-    SamplePortRef get(StructuredNodeRef<Node>& node_ref)
+    auto get(StructuredNodeRef<Node>& node_ref)
     {
         return node_ref.template get<I>();
     }
 
     template<size_t I, class Node>
-    SamplePortRef get(StructuredNodeRef<Node>&& node_ref)
+    auto get(StructuredNodeRef<Node>&& node_ref)
     {
         return node_ref.template get<I>();
     }

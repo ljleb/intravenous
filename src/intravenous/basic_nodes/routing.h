@@ -51,7 +51,11 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, ChannelType::channel_count>{};
+            auto configs = std::array<OutputConfig, ChannelType::channel_count>{};
+            for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
+                configs[channel].name = ChannelType::channel_names[channel];
+            }
+            return configs;
         }
 
         void tick(TickSampleContext<ChannelUnpack> const& ctx) const

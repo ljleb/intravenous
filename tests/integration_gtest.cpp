@@ -460,7 +460,7 @@ void polyphonic_module(iv::ModuleContext const& context)
             "dt"_P = dt
         );
         (void)Voice;
-        g.outputs("main"_P = saw * ("amplitude"_P << m));
+        g.outputs("main"_P = saw * m["amplitude"_P]);
     });
 }
 

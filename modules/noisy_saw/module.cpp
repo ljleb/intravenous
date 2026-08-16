@@ -41,7 +41,7 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
             auto hi_pass = g.node<SimpleIirHighPass>();
 
             saw(
-                "frequency"_P = m >> "frequency"_P,
+                "frequency"_P = m["frequency"_P],
                 "phase_offset"_P = phi,
                 "dt"_P = dt
             );
@@ -51,7 +51,7 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
             u_to_n < generator;
 
             (void)Voice;
-            lp.connect_input("in", saw * (m >> "amplitude"_P));
+            lp.connect_input("in", saw * m["amplitude"_P]);
         });
         auto const channel_output = lp("dt"_P = dt) * 0.5;
         if constexpr (std::same_as<decltype(Ch), decltype(stereo::left)>) {

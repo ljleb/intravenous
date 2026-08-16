@@ -1,6 +1,8 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/node/tick.h>
+#include <intravenous/graph/builder.h>
+#include <intravenous/dsl.h>
 #include <intravenous/runtime/sample_stream_blocks.h>
 
 #include <gtest/gtest.h>
@@ -14,6 +16,8 @@ static_assert(iv::stereo::channel_count == 2);
 static_assert(iv::stereo::left.channel_ordinal == 0);
 static_assert(iv::stereo::right.channel_ordinal == 1);
 static_assert(iv::ChannelTypeTraits<iv::stereo>::id == iv::ChannelTypeId::stereo);
+static_assert(iv::details::has_constexpr_sample_port_configs<iv::ChannelPack<iv::stereo>>);
+static_assert(iv::details::has_constexpr_sample_port_configs<iv::ChannelUnpack<iv::stereo>>);
 static_assert(iv::sample_storage_size(
     iv::ChannelLayout{
         .channel_type = iv::ChannelTypeId::stereo,
@@ -94,6 +98,42 @@ struct InterleavedStereoCopy {
             output[frame][iv::stereo::left] = input[frame][iv::stereo::left];
             output[frame][iv::stereo::right] = input[frame][iv::stereo::right];
         }
+    }
+};
+
+struct NamedStereoSource {
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 1>{iv::OutputConfig{
+            .name = "main",
+            .channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+        }};
+    }
+
+    void tick(iv::TickSampleContext<NamedStereoSource> const& ctx) const
+    {
+        ctx.outputs[0].push_frame(std::array<iv::Sample, 2>{0.0f, 0.0f});
+    }
+};
+
+struct NamedInterleavedStereoSource {
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 1>{iv::OutputConfig{
+            .name = "main",
+            .channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            },
+        }};
+    }
+
+    void tick(iv::TickSampleContext<NamedInterleavedStereoSource> const& ctx) const
+    {
+        ctx.outputs[0].push_frame(std::array<iv::Sample, 2>{0.0f, 0.0f});
     }
 };
 
@@ -265,8 +305,8 @@ TEST(Channels, ChannelUnpackProjectsEachPlanarStereoChannelToMonoOutput)
     iv::SharedPortData input_data(input_samples, 0, stereo_layout, 8);
     iv::SharedPortData left_data(left_samples, 0, mono_layout, 8);
     iv::SharedPortData right_data(right_samples, 0, mono_layout, 8);
-    input_samples[input_data.sample_index(7, 0)] = iv::Sample{2.0f};
-    input_samples[input_data.sample_index(7, 1)] = iv::Sample{-3.0f};
+    input_samples[input_data.sample_index(0, 0)] = iv::Sample{2.0f};
+    input_samples[input_data.sample_index(0, 1)] = iv::Sample{-3.0f};
 
     std::array<iv::InputPort, 1> inputs{iv::InputPort(input_data, 0)};
     std::array<iv::OutputPort, 2> outputs{
@@ -288,6 +328,77 @@ TEST(Channels, ChannelUnpackProjectsEachPlanarStereoChannelToMonoOutput)
 
     EXPECT_EQ(left_samples[left_data.sample_index(0, 0)], iv::Sample{2.0f});
     EXPECT_EQ(right_samples[right_data.sample_index(0, 0)], iv::Sample{-3.0f});
+}
+
+TEST(Channels, ChannelBoundaryAdaptersInsertAsOrdinaryGraphNodes)
+{
+    iv::GraphBuilder g;
+    (void)g.node<iv::ChannelPack<iv::stereo>>();
+    (void)g.node<iv::ChannelUnpack<iv::stereo>>();
+    g.outputs();
+
+    auto const built = g.build_root_node();
+    EXPECT_EQ(built.graph.outputs().size(), 0u);
+}
+
+TEST(Channels, NamedConcreteOutputCarriesItsStaticChannelType)
+{
+    iv::GraphBuilder g;
+    auto source = g.node<NamedStereoSource>();
+    auto stream = source[iv::PortName<"main">{}];
+    auto left = stream[iv::stereo::left];
+
+    static_assert(std::same_as<
+        decltype(stream),
+        iv::TypedSamplePortRef<iv::stereo, iv::SampleStreamLayout::planar>>);
+    static_assert(std::same_as<
+        decltype(left),
+        iv::TypedSamplePortChannelRef<
+            iv::stereo,
+            iv::SampleStreamLayout::planar,
+            std::remove_cvref_t<decltype(iv::stereo::left)>>>);
+
+    g.outputs(iv::PortName<"left_only">{}[iv::stereo::left] = left);
+    auto const built = g.build_root_node();
+    ASSERT_EQ(built.graph.outputs().size(), 1u);
+    EXPECT_EQ(
+        built.graph.outputs().front().channel_layout.channel_type,
+        iv::ChannelTypeId::stereo);
+}
+
+TEST(Channels, TypedStreamOperatorsPreserveChannelTypeAndChoosePlanarForMixedLayouts)
+{
+    iv::GraphBuilder g;
+    auto planar_source = g.node<NamedStereoSource>();
+    auto interleaved_source = g.node<NamedInterleavedStereoSource>();
+    auto planar = planar_source[iv::PortName<"main">{}];
+    auto interleaved = interleaved_source[iv::PortName<"main">{}];
+
+    auto same_layout_sum = planar + planar;
+    auto mixed_layout_sum = planar + interleaved;
+    auto scalar_sum = 1.0f + planar;
+    auto detached = ~planar;
+
+    static_assert(std::same_as<
+        decltype(same_layout_sum),
+        iv::TypedSamplePortRef<iv::stereo, iv::SampleStreamLayout::planar>>);
+    static_assert(std::same_as<
+        decltype(mixed_layout_sum),
+        iv::TypedSamplePortRef<iv::stereo, iv::SampleStreamLayout::planar>>);
+    static_assert(std::same_as<
+        decltype(scalar_sum),
+        iv::TypedSamplePortRef<iv::stereo, iv::SampleStreamLayout::planar>>);
+    static_assert(std::same_as<
+        decltype(detached),
+        iv::TypedSamplePortRef<iv::stereo, iv::SampleStreamLayout::planar>>);
+
+    g.outputs(
+        iv::PortName<"same">{} = same_layout_sum,
+        iv::PortName<"mixed">{} = mixed_layout_sum,
+        iv::PortName<"scalar">{} = scalar_sum,
+        iv::PortName<"detached">{} = detached);
+    auto const built = g.build_root_node();
+    EXPECT_EQ(built.graph.outputs().size(), 4u);
 }
 
 TEST(Channels, OutputPortAppliesMonoToStereoConversionAtItsWriteBoundary)

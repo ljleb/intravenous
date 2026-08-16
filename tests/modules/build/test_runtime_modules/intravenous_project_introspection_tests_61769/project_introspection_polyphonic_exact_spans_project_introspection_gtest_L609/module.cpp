@@ -16,7 +16,7 @@ void polyphonic_module(iv::ModuleContext const& context)
             "frequency"_P = 440.0,
             "dt"_P = dt
         );
-        return saw * ("amplitude"_P << m);
+        return saw * m["amplitude"_P];
     });
     sink(voices);
     g.outputs();

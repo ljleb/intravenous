@@ -228,6 +228,13 @@ namespace iv {
         SamplePortRef lift_to_sample_port(SamplePortRef const& sample_port);
         SamplePortRef lift_to_sample_port(SamplePortRef&& sample_port);
 
+        template<class ChannelType, SampleStreamLayout Layout>
+        SamplePortRef lift_to_sample_port(TypedSamplePortRef<ChannelType, Layout> const& sample_port);
+
+        template<class ChannelType, SampleStreamLayout Layout, class Member>
+        SamplePortRef lift_to_sample_port(
+            TypedSamplePortChannelRef<ChannelType, Layout, Member> const& sample_port);
+
         template<class T>
         requires std::is_arithmetic_v<std::remove_cvref_t<T>> || std::is_same_v<std::remove_cvref_t<T>, Sample>
         SamplePortRef lift_to_sample_port(T value)
@@ -245,6 +252,22 @@ namespace iv {
         auto pack = builder.template node<ChannelPack<ChannelType>>();
         pack.connect_input(channel, source);
         return static_cast<SamplePortRef>(pack);
+    }
+
+    template<class ChannelType, SampleStreamLayout Layout>
+    SamplePortRef GraphBuilder::lift_to_sample_port(
+        TypedSamplePortRef<ChannelType, Layout> const& sample_port)
+    {
+        return lift_to_sample_port(static_cast<SamplePortRef>(sample_port));
+    }
+
+    template<class ChannelType, SampleStreamLayout Layout, class Member>
+    SamplePortRef GraphBuilder::lift_to_sample_port(
+        TypedSamplePortChannelRef<ChannelType, Layout, Member> const& sample_port)
+    {
+        auto unpack = node<ChannelUnpack<ChannelType>>();
+        unpack.connect_input("in", sample_port.port());
+        return unpack[port_index(Member{})];
     }
 
     template<class Config>
