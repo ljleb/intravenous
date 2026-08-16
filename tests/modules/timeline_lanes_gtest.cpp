@@ -312,7 +312,7 @@ TEST(Lanes, ConnectionsUseSharedPortKind)
 TEST(Lanes, GraphInputPortsCanDescribeConcreteEventPorts)
 {
     iv::GraphInputPortDescriptor target {
-        .logical_node_id = "node",
+        .virtual_node_id = "node",
         .concrete_member_ordinal = 4u,
         .port_kind = iv::PortKind::event,
         .port_ordinal = 5u,
@@ -331,7 +331,7 @@ TEST(Lanes, GraphInputLanesReuseIdsForStablePorts)
     iv::GraphInputLaneRegistry registry;
     std::vector<iv::GraphInputPortDescriptor> ports {
         iv::GraphInputPortDescriptor {
-            .logical_node_id = "node",
+            .virtual_node_id = "node",
             .port_kind = iv::PortKind::sample,
             .port_ordinal = 1,
             .port_name = "frequency",
@@ -352,7 +352,7 @@ TEST(Lanes, GraphInputLanesDropMissingPortsWithoutDeletingConnections)
     iv::GraphInputLaneRegistry registry;
     auto const lanes = registry.reconcile({
         iv::GraphInputPortDescriptor {
-            .logical_node_id = "node",
+            .virtual_node_id = "node",
             .concrete_member_ordinal = 2u,
             .port_kind = iv::PortKind::event,
             .port_ordinal = 0,
@@ -381,7 +381,7 @@ TEST(Lanes, GraphInputLanesDropMissingPortsWithoutDeletingConnections)
     ASSERT_EQ(dangling.size(), 1u);
     EXPECT_EQ(dangling[0].connection, connection);
     ASSERT_TRUE(dangling[0].missing_port.has_value());
-    EXPECT_EQ(dangling[0].missing_port->logical_node_id, "node");
+    EXPECT_EQ(dangling[0].missing_port->virtual_node_id, "node");
     ASSERT_TRUE(dangling[0].missing_port->concrete_member_ordinal.has_value());
     EXPECT_EQ(*dangling[0].missing_port->concrete_member_ordinal, 2u);
 }
@@ -814,20 +814,20 @@ TEST(Lanes, LaneGraphTracksOrganizationalParentsWithoutAffectingConnections)
     EXPECT_TRUE(graph.children_for(parent).empty());
 }
 
-TEST(Lanes, GraphInputLaneBindingsWireLogicalKnobsToConcreteKnobsToGraphInputs)
+TEST(Lanes, GraphInputLaneBindingsWireVirtualKnobsToConcreteKnobsToGraphInputs)
 {
     iv::LaneGraph graph;
     auto const lanes = iv::GraphInputLaneController {}.reconcile(graph,
         std::array {
             iv::GraphInputPortDescriptor {
-                .logical_node_id = "osc",
+                .virtual_node_id = "osc",
                 .port_kind = iv::PortKind::sample,
                 .port_ordinal = 1,
                 .port_name = "frequency",
                 .port_type = "sample",
             },
             iv::GraphInputPortDescriptor {
-                .logical_node_id = "osc",
+                .virtual_node_id = "osc",
                 .concrete_member_ordinal = 0u,
                 .port_kind = iv::PortKind::sample,
                 .port_ordinal = 1,
@@ -835,7 +835,7 @@ TEST(Lanes, GraphInputLaneBindingsWireLogicalKnobsToConcreteKnobsToGraphInputs)
                 .port_type = "sample",
             },
             iv::GraphInputPortDescriptor {
-                .logical_node_id = "osc",
+                .virtual_node_id = "osc",
                 .concrete_member_ordinal = 1u,
                 .port_kind = iv::PortKind::sample,
                 .port_ordinal = 1,
@@ -846,12 +846,12 @@ TEST(Lanes, GraphInputLaneBindingsWireLogicalKnobsToConcreteKnobsToGraphInputs)
     );
 
     ASSERT_EQ(lanes.sample_inputs.size(), 2u);
-    ASSERT_TRUE(lanes.sample_inputs[0].logical_knob_lane.has_value());
-    EXPECT_EQ(lanes.sample_inputs[0].logical_knob_lane, lanes.sample_inputs[1].logical_knob_lane);
+    ASSERT_TRUE(lanes.sample_inputs[0].virtual_knob_lane.has_value());
+    EXPECT_EQ(lanes.sample_inputs[0].virtual_knob_lane, lanes.sample_inputs[1].virtual_knob_lane);
 
     for (auto const& control : lanes.sample_inputs) {
         ASSERT_EQ(graph.inputs_for(control.knob_lane).size(), 1u);
-        EXPECT_EQ(graph.inputs_for(control.knob_lane)[0].source, *control.logical_knob_lane);
+        EXPECT_EQ(graph.inputs_for(control.knob_lane)[0].source, *control.virtual_knob_lane);
         EXPECT_EQ(graph.inputs_for(control.knob_lane)[0].input, iv::realtime_sample_input());
 
         ASSERT_EQ(graph.inputs_for(control.graph_input_lane).size(), 1u);
@@ -868,13 +868,13 @@ TEST(Lanes, ConcreteKnobOwnershipIsJustDisconnectingTheOverrideInput)
     auto const lanes = iv::GraphInputLaneController {}.reconcile(graph,
         std::array {
             iv::GraphInputPortDescriptor {
-                .logical_node_id = "osc",
+                .virtual_node_id = "osc",
                 .port_kind = iv::PortKind::sample,
                 .port_ordinal = 1,
                 .port_name = "frequency",
             },
             iv::GraphInputPortDescriptor {
-                .logical_node_id = "osc",
+                .virtual_node_id = "osc",
                 .concrete_member_ordinal = 0u,
                 .port_kind = iv::PortKind::sample,
                 .port_ordinal = 1,
@@ -899,13 +899,13 @@ TEST(Lanes, GraphInputLaneBindingReconciliationReusesSemanticKnobLaneIdentities)
     iv::LaneGraph graph;
     std::array ports {
         iv::GraphInputPortDescriptor {
-            .logical_node_id = "osc",
+            .virtual_node_id = "osc",
             .port_kind = iv::PortKind::sample,
             .port_ordinal = 1,
             .port_name = "frequency",
         },
         iv::GraphInputPortDescriptor {
-            .logical_node_id = "osc",
+            .virtual_node_id = "osc",
             .concrete_member_ordinal = 0u,
             .port_kind = iv::PortKind::sample,
             .port_ordinal = 1,
@@ -916,11 +916,11 @@ TEST(Lanes, GraphInputLaneBindingReconciliationReusesSemanticKnobLaneIdentities)
     auto const first = iv::GraphInputLaneController {}.reconcile(graph, ports);
     auto const second = iv::GraphInputLaneController {}.reconcile(graph, ports);
 
-    ASSERT_EQ(first.logical_sample_knobs.size(), 1u);
-    ASSERT_EQ(second.logical_sample_knobs.size(), 1u);
+    ASSERT_EQ(first.virtual_sample_knobs.size(), 1u);
+    ASSERT_EQ(second.virtual_sample_knobs.size(), 1u);
     ASSERT_EQ(first.sample_inputs.size(), 1u);
     ASSERT_EQ(second.sample_inputs.size(), 1u);
-    EXPECT_EQ(first.logical_sample_knobs[0].knob_lane, second.logical_sample_knobs[0].knob_lane);
+    EXPECT_EQ(first.virtual_sample_knobs[0].knob_lane, second.virtual_sample_knobs[0].knob_lane);
     EXPECT_EQ(first.sample_inputs[0].knob_lane, second.sample_inputs[0].knob_lane);
     EXPECT_EQ(first.sample_inputs[0].graph_input_lane, second.sample_inputs[0].graph_input_lane);
 }

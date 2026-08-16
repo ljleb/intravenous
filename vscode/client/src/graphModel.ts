@@ -14,16 +14,16 @@ export type SourceSpan = {
     end: SourcePosition;
 };
 
-export type LogicalPortConnectivity =
+export type VirtualPortConnectivity =
     | "disconnected"
     | "connected"
     | "mixed";
 
-export type LogicalPort = {
+export type VirtualPort = {
     ordinal?: number;
     name?: string;
     type?: string;
-    connectivity?: LogicalPortConnectivity | string;
+    connectivity?: VirtualPortConnectivity | string;
     defaultValue?: number;
     minValue?: number | null;
     maxValue?: number | null;
@@ -32,28 +32,28 @@ export type LogicalPort = {
     stateValue?: string;
 };
 
-export type LogicalNodeMember = {
+export type VirtualNodeMember = {
     ordinal?: number;
     backingNodeId?: string;
     kind?: string;
     typeIdentity?: string;
-    sampleInputs?: LogicalPort[];
-    sampleOutputs?: LogicalPort[];
-    eventInputs?: LogicalPort[];
-    eventOutputs?: LogicalPort[];
+    sampleInputs?: VirtualPort[];
+    sampleOutputs?: VirtualPort[];
+    eventInputs?: VirtualPort[];
+    eventOutputs?: VirtualPort[];
 };
 
-export type LogicalNode = {
+export type VirtualNode = {
     id?: string;
     instanceId?: string;
     kind?: string;
     sourceIdentity?: string;
     typeIdentity?: string;
     sourceSpans?: SourceSpan[];
-    sampleInputs?: LogicalPort[];
-    sampleOutputs?: LogicalPort[];
-    eventInputs?: LogicalPort[];
-    eventOutputs?: LogicalPort[];
+    sampleInputs?: VirtualPort[];
+    sampleOutputs?: VirtualPort[];
+    eventInputs?: VirtualPort[];
+    eventOutputs?: VirtualPort[];
     memberCount?: number;
-    members?: LogicalNodeMember[];
+    members?: VirtualNodeMember[];
 };

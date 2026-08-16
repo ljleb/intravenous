@@ -47,12 +47,12 @@ namespace iv {
         std::vector<SourceInfo> infos {};
     };
 
-    struct LogicalNodeBinding {
+    struct VirtualNodeBinding {
         std::vector<std::string> ids {};
     };
 
     struct VacantInputOwnership {
-        std::string logical_node_id {};
+        std::string virtual_node_id {};
     };
 
     struct NodeTypeIdentity {
@@ -65,7 +65,7 @@ namespace iv {
         NodeLifetime lifetime {};
         LoweredSubgraphBinding lowered_subgraph {};
         NodeSourceAnnotations source_annotations {};
-        LogicalNodeBinding logical_binding {};
+        VirtualNodeBinding virtual_binding {};
         VacantInputOwnership vacant_input_ownership {};
         NodeTypeIdentity type_identity {};
 

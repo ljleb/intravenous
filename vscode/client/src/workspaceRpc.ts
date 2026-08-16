@@ -1,5 +1,5 @@
 import { JsonRpcSocketClient } from "./rpcClient";
-import { LogicalNode, SourceSpan } from "./graphModel";
+import { VirtualNode, SourceSpan } from "./graphModel";
 
 export type SourceQueryRange = {
     start: { line: number; column: number };
@@ -84,7 +84,7 @@ export class WorkspaceRpc {
         ranges: SourceQueryRange[],
         match: "union" | "intersection",
         instanceId: string | null,
-    ): Promise<{ nodes?: LogicalNode[] }> {
+    ): Promise<{ nodes?: VirtualNode[] }> {
         const params: Record<string, unknown> = { filePath, ranges, match };
         if (instanceId != null) {
             params.instanceId = instanceId;

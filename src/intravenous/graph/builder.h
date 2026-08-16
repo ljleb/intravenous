@@ -186,24 +186,24 @@ namespace iv {
         using VacantEventInput = GraphBuilderVacantEventInput;
         using RootNodeBuildResult = GraphBuilderRootNodeBuildResult;
         using VacantInputs = GraphBuilderVacantInputs;
-        using LogicalSampleInput = GraphBuilderLogicalSampleInput;
-        using LogicalEventInput = GraphBuilderLogicalEventInput;
-        using LogicalInputs = GraphBuilderLogicalInputs;
-        using LogicalSampleInputChannel = GraphBuilderLogicalSampleInputChannel;
-        using LogicalSampleInputFamily = GraphBuilderLogicalSampleInputFamily;
-        using LogicalSampleInputFamilies = GraphBuilderLogicalSampleInputFamilies;
-        using LogicalSampleOutput = GraphBuilderLogicalSampleOutput;
-        using LogicalEventOutput = GraphBuilderLogicalEventOutput;
-        using LogicalOutputs = GraphBuilderLogicalOutputs;
-        using LogicalSampleOutputChannel = GraphBuilderLogicalSampleOutputChannel;
-        using LogicalSampleOutputFamily = GraphBuilderLogicalSampleOutputFamily;
-        using LogicalSampleOutputFamilies = GraphBuilderLogicalSampleOutputFamilies;
+        using VirtualSampleInput = GraphBuilderVirtualSampleInput;
+        using VirtualEventInput = GraphBuilderVirtualEventInput;
+        using VirtualInputs = GraphBuilderVirtualInputs;
+        using VirtualSampleInputChannel = GraphBuilderVirtualSampleInputChannel;
+        using VirtualSampleInputFamily = GraphBuilderVirtualSampleInputFamily;
+        using VirtualSampleInputFamilies = GraphBuilderVirtualSampleInputFamilies;
+        using VirtualSampleOutput = GraphBuilderVirtualSampleOutput;
+        using VirtualEventOutput = GraphBuilderVirtualEventOutput;
+        using VirtualOutputs = GraphBuilderVirtualOutputs;
+        using VirtualSampleOutputChannel = GraphBuilderVirtualSampleOutputChannel;
+        using VirtualSampleOutputFamily = GraphBuilderVirtualSampleOutputFamily;
+        using VirtualSampleOutputFamilies = GraphBuilderVirtualSampleOutputFamilies;
 
         VacantInputs vacant_inputs() const;
-        LogicalInputs logical_inputs() const;
-        LogicalSampleInputFamilies logical_sample_input_families() const;
-        LogicalOutputs logical_outputs() const;
-        LogicalSampleOutputFamilies logical_sample_output_families() const;
+        VirtualInputs virtual_inputs() const;
+        VirtualSampleInputFamilies virtual_sample_input_families() const;
+        VirtualOutputs virtual_outputs() const;
+        VirtualSampleOutputFamilies virtual_sample_output_families() const;
         GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
         bool public_sample_input_is_connected(size_t port_ordinal) const;
         std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
@@ -485,31 +485,31 @@ namespace iv {
 
         if (_allows_single_assignment) {
             if (!rhs._graph_builder) {
-                details::error("cannot initialize a logical-empty NodeRef from an empty NodeRef");
+                details::error("cannot initialize a virtual-empty NodeRef from an empty NodeRef");
             }
             _graph_builder = rhs._graph_builder;
             _index = rhs._index;
-            if (!_logical_declaration_id.empty() && _graph_builder) {
-                _graph_builder->_annotations.add_logical_id(_graph_builder->_topology, _index, _logical_declaration_id);
+            if (!_virtual_declaration_id.empty() && _graph_builder) {
+                _graph_builder->_annotations.add_virtual_id(_graph_builder->_topology, _index, _virtual_declaration_id);
                 _graph_builder->_annotations.initialize_vacant_input_owner(
                     _graph_builder->_topology,
                     _index,
-                    _logical_declaration_id
+                    _virtual_declaration_id
                 );
             }
             _allows_single_assignment = false;
             return derived();
         }
 
-        if (_graph_builder || !_logical_declaration_id.empty()) {
+        if (_graph_builder || !_virtual_declaration_id.empty()) {
             details::error(
-                "cannot assign to NodeRef '" + _logical_declaration_id + "' after it has already been initialized"
+                "cannot assign to NodeRef '" + _virtual_declaration_id + "' after it has already been initialized"
             );
         }
 
         _graph_builder = rhs._graph_builder;
         _index = rhs._index;
-        _logical_declaration_id = rhs._logical_declaration_id;
+        _virtual_declaration_id = rhs._virtual_declaration_id;
         _allows_single_assignment = rhs._allows_single_assignment;
         return Derived(*_graph_builder, _index);
     }
@@ -523,39 +523,39 @@ namespace iv {
 
         if (_allows_single_assignment) {
             if (!rhs._graph_builder) {
-                details::error("cannot initialize a logical-empty NodeRef from an empty NodeRef");
+                details::error("cannot initialize a virtual-empty NodeRef from an empty NodeRef");
             }
             _graph_builder = rhs._graph_builder;
             _index = rhs._index;
-            if (!_logical_declaration_id.empty() && _graph_builder) {
-                _graph_builder->_annotations.add_logical_id(_graph_builder->_topology, _index, _logical_declaration_id);
+            if (!_virtual_declaration_id.empty() && _graph_builder) {
+                _graph_builder->_annotations.add_virtual_id(_graph_builder->_topology, _index, _virtual_declaration_id);
                 _graph_builder->_annotations.transfer_vacant_input_owner(
                     _graph_builder->_topology,
                     _index,
-                    _logical_declaration_id
+                    _virtual_declaration_id
                 );
             }
             _allows_single_assignment = false;
             rhs._graph_builder = nullptr;
             rhs._index = 0;
-            rhs._logical_declaration_id.clear();
+            rhs._virtual_declaration_id.clear();
             rhs._allows_single_assignment = false;
             return derived();
         }
 
-        if (_graph_builder || !_logical_declaration_id.empty()) {
+        if (_graph_builder || !_virtual_declaration_id.empty()) {
             details::error(
-                "cannot assign to NodeRef '" + _logical_declaration_id + "' after it has already been initialized"
+                "cannot assign to NodeRef '" + _virtual_declaration_id + "' after it has already been initialized"
             );
         }
 
         _graph_builder = rhs._graph_builder;
         _index = rhs._index;
-        _logical_declaration_id = std::move(rhs._logical_declaration_id);
+        _virtual_declaration_id = std::move(rhs._virtual_declaration_id);
         _allows_single_assignment = rhs._allows_single_assignment;
         rhs._graph_builder = nullptr;
         rhs._index = 0;
-        rhs._logical_declaration_id.clear();
+        rhs._virtual_declaration_id.clear();
         rhs._allows_single_assignment = false;
         return derived();
     }
@@ -569,7 +569,7 @@ namespace iv {
     ) const
     {
         if (!declaration_identity.empty()) {
-            _logical_declaration_id = declaration_identity;
+            _virtual_declaration_id = declaration_identity;
         }
         if (!_graph_builder) {
             return;

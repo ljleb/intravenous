@@ -32,10 +32,10 @@ namespace iv {
         void (*)(GraphQueryBySpansRequest const &, SocketRpcGraphQueryResultBuilder &);
     using SocketRpcGraphQueryActiveRegionsEvent =
         void (*)(GraphQueryActiveRegionsRequest const &, SocketRpcRegionQueryResultBuilder &);
-    using SocketRpcGetLogicalNodeEvent =
-        void (*)(GetLogicalNodeRequest const &, SocketRpcLogicalNodeResultBuilder &);
-    using SocketRpcGetLogicalNodesEvent =
-        void (*)(GetLogicalNodesRequest const &, SocketRpcLogicalNodesResultBuilder &);
+    using SocketRpcGetVirtualNodeEvent =
+        void (*)(GetVirtualNodeRequest const &, SocketRpcVirtualNodeResultBuilder &);
+    using SocketRpcGetVirtualNodesEvent =
+        void (*)(GetVirtualNodesRequest const &, SocketRpcVirtualNodesResultBuilder &);
     using SocketRpcCreateIvModuleInstanceEvent =
         void (*)(CreateIvModuleInstanceRequest const &, SocketRpcCreateIvModuleInstanceResultBuilder &);
     using SocketRpcGetIvModuleSourcesEvent =
@@ -107,8 +107,8 @@ namespace iv {
 
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryBySpansEvent, iv_socket_rpc_graph_query_by_spans_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryActiveRegionsEvent, iv_socket_rpc_graph_query_active_regions_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetLogicalNodeEvent, iv_socket_rpc_get_logical_node_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetLogicalNodesEvent, iv_socket_rpc_get_logical_nodes_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodeEvent, iv_socket_rpc_get_virtual_node_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodesEvent, iv_socket_rpc_get_virtual_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvModuleSourcesEvent, iv_socket_rpc_get_iv_module_sources_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleSourceEvent, iv_socket_rpc_create_iv_module_source_event);
@@ -190,7 +190,7 @@ namespace iv {
         void send_lane_query_schema_changed(query::LaneQuerySchemaChange const &notification);
         void send_iv_module_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
-        void send_logical_nodes_updated(
-            ProjectLogicalNodesNotification const &notification);
+        void send_virtual_nodes_updated(
+            ProjectVirtualNodesNotification const &notification);
     };
 } // namespace iv

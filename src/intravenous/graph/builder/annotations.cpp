@@ -3,46 +3,46 @@
 #include <intravenous/graph/builder/topology.h>
 
 namespace iv {
-void GraphBuilderAnnotations::add_logical_id(
+void GraphBuilderAnnotations::add_virtual_id(
     GraphBuilderTopology& topology,
     size_t node_index,
-    std::string_view logical_node_id
+    std::string_view virtual_node_id
 )
 {
-    if (logical_node_id.empty()) {
+    if (virtual_node_id.empty()) {
         return;
     }
-    auto& logical_node_ids = topology.node(node_index).logical_binding.ids;
-    if (!std::ranges::contains(logical_node_ids, std::string(logical_node_id))) {
-        logical_node_ids.push_back(std::string(logical_node_id));
+    auto& virtual_node_ids = topology.node(node_index).virtual_binding.ids;
+    if (!std::ranges::contains(virtual_node_ids, std::string(virtual_node_id))) {
+        virtual_node_ids.push_back(std::string(virtual_node_id));
     }
 }
 
 void GraphBuilderAnnotations::initialize_vacant_input_owner(
     GraphBuilderTopology& topology,
     size_t node_index,
-    std::string_view logical_node_id
+    std::string_view virtual_node_id
 )
 {
-    if (logical_node_id.empty()) {
+    if (virtual_node_id.empty()) {
         return;
     }
-    auto& owner = topology.node(node_index).vacant_input_ownership.logical_node_id;
+    auto& owner = topology.node(node_index).vacant_input_ownership.virtual_node_id;
     if (owner.empty()) {
-        owner = std::string(logical_node_id);
+        owner = std::string(virtual_node_id);
     }
 }
 
 void GraphBuilderAnnotations::transfer_vacant_input_owner(
     GraphBuilderTopology& topology,
     size_t node_index,
-    std::string_view logical_node_id
+    std::string_view virtual_node_id
 )
 {
-    if (logical_node_id.empty()) {
+    if (virtual_node_id.empty()) {
         return;
     }
-    topology.node(node_index).vacant_input_ownership.logical_node_id = std::string(logical_node_id);
+    topology.node(node_index).vacant_input_ownership.virtual_node_id = std::string(virtual_node_id);
 }
 
 void GraphBuilderAnnotations::annotate_node_source_info(
@@ -78,7 +78,7 @@ void GraphBuilderAnnotations::annotate_node_source_info(
     if (std::find(infos.begin(), infos.end(), info) == infos.end()) {
         infos.push_back(std::move(info));
     }
-    add_logical_id(topology, ref._index, declaration_identity);
+    add_virtual_id(topology, ref._index, declaration_identity);
     initialize_vacant_input_owner(topology, ref._index, declaration_identity);
 }
 }

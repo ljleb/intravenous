@@ -96,14 +96,14 @@ struct SeededIvModuleSourceIntrospectionApp {
         return introspection.query_active_regions(file_path);
     }
 
-    auto get_logical_node(std::string const &node_id) const
+    auto get_virtual_node(std::string const &node_id) const
     {
-        return introspection.get_logical_node(node_id);
+        return introspection.get_virtual_node(node_id);
     }
 
-    auto get_logical_nodes(std::vector<std::string> const &node_ids) const
+    auto get_virtual_nodes(std::vector<std::string> const &node_ids) const
     {
-        return introspection.get_logical_nodes(node_ids);
+        return introspection.get_virtual_nodes(node_ids);
     }
 
     void set_sample_input_value(
@@ -168,7 +168,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
     auto const workspace = shared_inline_module_workspace(
-        "iv_module_source_introspection_merged_logical",
+        "iv_module_source_introspection_merged_virtual",
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/buffers.h>
 
@@ -180,7 +180,7 @@ namespace {
         return g.node<iv::ValueSource>(&context.sample_period()).node_ref();
     }
 
-    void merged_logical_module(iv::ModuleContext const& context)
+    void merged_virtual_module(iv::ModuleContext const& context)
     {
         using namespace iv;
         auto& g = context.builder();
@@ -191,7 +191,7 @@ namespace {
     }
 }
 
-IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
+IV_EXPORT_MODULE("iv.test.merged_virtual_module", merged_virtual_module);
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -241,24 +241,24 @@ IV_EXPORT_MODULE("iv.test.generic_channel_outputs", generic_channel_outputs);
     auto const result = app.query_by_spans(
         std::filesystem::weakly_canonical(workspace / "module.cpp"),
         {{.start = {.line = 1, .column = 1}, .end = {.line = 16, .column = 1}}});
-    std::vector<iv::LogicalNodeInfo const*> outputs;
+    std::vector<iv::VirtualNodeInfo const*> outputs;
     for (auto const& node : result.nodes) if (node.kind == "Public output") outputs.push_back(&node);
     ASSERT_EQ(outputs.size(), 2u);
     for (auto const* output : outputs) {
         ASSERT_FALSE(output->source_spans.empty());
         ASSERT_EQ(output->sample_outputs.size(), 1u);
-        EXPECT_EQ(output->sample_outputs.front().connectivity, iv::LogicalPortConnectivity::connected);
+        EXPECT_EQ(output->sample_outputs.front().connectivity, iv::VirtualPortConnectivity::connected);
         EXPECT_EQ(output->sample_outputs.front().state_value, "timelineLane");
         ASSERT_EQ(output->members.size(), 2u);
         for (auto const& member : output->members) {
             ASSERT_EQ(member.sample_outputs.size(), 1u);
-            EXPECT_EQ(member.sample_outputs.front().state_value, "logicalFollow");
-            EXPECT_EQ(member.sample_outputs.front().connectivity, iv::LogicalPortConnectivity::connected);
+            EXPECT_EQ(member.sample_outputs.front().state_value, "virtualFollow");
+            EXPECT_EQ(member.sample_outputs.front().connectivity, iv::VirtualPortConnectivity::connected);
         }
     }
 }
 
-TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedLogicalNodeIdStableAcrossReload)
+TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableAcrossReload)
 {
     auto const workspace = make_inline_module_workspace(
         "iv_module_source_introspection_stable_annotated_id",
@@ -317,7 +317,7 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     EXPECT_EQ(reloaded_it->id, initial_id);
 }
 
-TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedLogicalNode)
+TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedVirtualNode)
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_annotated_symbol",
@@ -523,10 +523,10 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
             continue;
         }
         EXPECT_EQ(node.member_count, 1u);
-        if (node.sample_inputs.front().connectivity == iv::LogicalPortConnectivity::connected) {
+        if (node.sample_inputs.front().connectivity == iv::VirtualPortConnectivity::connected) {
             ++connected_sum_count;
         } else if (
-            node.sample_inputs.front().connectivity == iv::LogicalPortConnectivity::disconnected) {
+            node.sample_inputs.front().connectivity == iv::VirtualPortConnectivity::disconnected) {
             ++disconnected_sum_count;
         }
     }
@@ -678,22 +678,22 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
         {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
 
     ASSERT_EQ(result.nodes.size(), 1u);
-    auto const &logical = result.nodes.front();
-    EXPECT_EQ(logical.kind, "iv::SawOscillator");
-    EXPECT_EQ(logical.member_count, 2u);
-    ASSERT_EQ(logical.members.size(), 2u);
-    EXPECT_EQ(logical.members[0].ordinal, 0u);
-    EXPECT_EQ(logical.members[1].ordinal, 1u);
-    EXPECT_EQ(logical.members[0].kind, "iv::SawOscillator");
-    EXPECT_EQ(logical.members[1].kind, "iv::SawOscillator");
-    ASSERT_EQ(logical.sample_inputs.size(), 3u);
-    EXPECT_EQ(logical.sample_inputs[0].name, "phase_offset");
-    EXPECT_EQ(logical.sample_inputs[1].name, "frequency");
-    EXPECT_EQ(logical.sample_inputs[2].name, "dt");
-    ASSERT_EQ(logical.sample_outputs.size(), 1u);
-    EXPECT_EQ(logical.sample_outputs[0].name, "out");
+    auto const& virtual_node = result.nodes.front();
+    EXPECT_EQ(virtual_node.kind, "iv::SawOscillator");
+    EXPECT_EQ(virtual_node.member_count, 2u);
+    ASSERT_EQ(virtual_node.members.size(), 2u);
+    EXPECT_EQ(virtual_node.members[0].ordinal, 0u);
+    EXPECT_EQ(virtual_node.members[1].ordinal, 1u);
+    EXPECT_EQ(virtual_node.members[0].kind, "iv::SawOscillator");
+    EXPECT_EQ(virtual_node.members[1].kind, "iv::SawOscillator");
+    ASSERT_EQ(virtual_node.sample_inputs.size(), 3u);
+    EXPECT_EQ(virtual_node.sample_inputs[0].name, "phase_offset");
+    EXPECT_EQ(virtual_node.sample_inputs[1].name, "frequency");
+    EXPECT_EQ(virtual_node.sample_inputs[2].name, "dt");
+    ASSERT_EQ(virtual_node.sample_outputs.size(), 1u);
+    EXPECT_EQ(virtual_node.sample_outputs[0].name, "out");
 
-    auto const resolved = app.get_logical_node(logical.id);
+    auto const resolved = app.get_virtual_node(virtual_node.id);
     EXPECT_EQ(resolved.kind, "iv::SawOscillator");
     EXPECT_EQ(resolved.member_count, 2u);
     ASSERT_EQ(resolved.sample_inputs.size(), 3u);
@@ -703,19 +703,19 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     ASSERT_EQ(resolved.sample_outputs.size(), 1u);
     EXPECT_EQ(resolved.sample_outputs[0].name, "out");
 
-    app.set_sample_input_value(logical.id, 1, 0.25f);
-    auto const logical_override = app.get_logical_node(logical.id);
-    ASSERT_EQ(logical_override.members.size(), 2u);
-    EXPECT_FLOAT_EQ(static_cast<float>(logical_override.sample_inputs[1].current_value), 0.25f);
+    app.set_sample_input_value(virtual_node.id, 1, 0.25f);
+    auto const virtual_override = app.get_virtual_node(virtual_node.id);
+    ASSERT_EQ(virtual_override.members.size(), 2u);
+    EXPECT_FLOAT_EQ(static_cast<float>(virtual_override.sample_inputs[1].current_value), 0.25f);
     EXPECT_FLOAT_EQ(
-        static_cast<float>(logical_override.members[0].sample_inputs[1].current_value), 0.25f);
+        static_cast<float>(virtual_override.members[0].sample_inputs[1].current_value), 0.25f);
     EXPECT_FLOAT_EQ(
-        static_cast<float>(logical_override.members[1].sample_inputs[1].current_value), 0.25f);
-    EXPECT_FALSE(logical_override.members[0].sample_inputs[1].has_concrete_override);
-    EXPECT_FALSE(logical_override.members[1].sample_inputs[1].has_concrete_override);
+        static_cast<float>(virtual_override.members[1].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FALSE(virtual_override.members[0].sample_inputs[1].has_concrete_override);
+    EXPECT_FALSE(virtual_override.members[1].sample_inputs[1].has_concrete_override);
 
-    app.set_sample_input_value(logical.id, 1, 0.75f, 1u);
-    auto const concrete_override = app.get_logical_node(logical.id);
+    app.set_sample_input_value(virtual_node.id, 1, 0.75f, 1u);
+    auto const concrete_override = app.get_virtual_node(virtual_node.id);
     ASSERT_EQ(concrete_override.members.size(), 2u);
     EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.sample_inputs[1].current_value), 0.25f);
     EXPECT_FLOAT_EQ(
@@ -726,11 +726,11 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_TRUE(concrete_override.members[1].sample_inputs[1].has_concrete_override);
 
     app.set_sample_input_state(
-        logical.id,
+        virtual_node.id,
         1,
-        iv::ProjectSampleInputState::logical_follow,
+        iv::ProjectSampleInputState::virtual_follow,
         1u);
-    auto const cleared_override = app.get_logical_node(logical.id);
+    auto const cleared_override = app.get_virtual_node(virtual_node.id);
     ASSERT_EQ(cleared_override.members.size(), 2u);
     EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.sample_inputs[1].current_value), 0.25f);
     EXPECT_FLOAT_EQ(
@@ -791,7 +791,7 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     }));
 }
 
-TEST(IvModuleSourceIntrospection, ReloadKeepsLogicalNodeIdsAddressable)
+TEST(IvModuleSourceIntrospection, ReloadKeepsVirtualNodeIdsAddressable)
 {
     auto const workspace = mutable_module_fixture_workspace("iv_module_source_introspection_reload_epoch", "local_cmake");
     auto const module_cpp = workspace / "module.cpp";
@@ -816,5 +816,5 @@ TEST(IvModuleSourceIntrospection, ReloadKeepsLogicalNodeIdsAddressable)
     iv::test::write_text(module_cpp, original_text);
 
     EXPECT_FALSE(reloaded.nodes.empty());
-    EXPECT_NO_THROW((void)app.get_logical_node(initial.nodes.front().id));
+    EXPECT_NO_THROW((void)app.get_virtual_node(initial.nodes.front().id));
 }

@@ -44,9 +44,9 @@ iv::InternedString intern(std::string_view value)
     return iv::InternedString::from_view(value);
 }
 
-std::string runtime_node_id(std::string_view instance_id, std::string_view logical_node_id)
+std::string runtime_node_id(std::string_view instance_id, std::string_view virtual_node_id)
 {
-    return std::string(instance_id) + "\x1flogical:" + std::string(logical_node_id);
+    return std::string(instance_id) + "\x1fvirtual:" + std::string(virtual_node_id);
 }
 
 struct TestEventLaneNode {
@@ -218,47 +218,47 @@ iv::IvModuleInstance make_instance_with_ports()
     instance.module_root = std::filesystem::path("/tmp/module");
     instance.module_id = "iv.test.module";
 
-    iv::IntrospectionLogicalNode node {};
+    iv::IntrospectionVirtualNode node {};
     node.id = "node-1";
     node.kind = "TestNode";
     node.sample_inputs.push_back(iv::IntrospectionPortInfo{
         .name = "frequency",
         .type = "sample",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
         .default_value = 440.0f,
     });
     node.event_inputs.push_back(iv::IntrospectionPortInfo{
         .name = "trigger",
         .type = "event",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
     });
-    instance.introspection.logical_nodes.push_back(std::move(node));
+    instance.introspection.virtual_nodes.push_back(std::move(node));
     return instance;
 }
 
 iv::IvModuleInstance make_instance_with_member_ports()
 {
     auto instance = make_instance_with_ports();
-    iv::IntrospectionLogicalNode::Member member {};
+    iv::IntrospectionVirtualNode::Member member {};
     member.ordinal = 0;
     member.backing_node_id = "node-1";
     member.kind = "TestNode";
     member.sample_inputs.push_back(iv::IntrospectionPortInfo{
         .name = "frequency",
         .type = "sample",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
         .default_value = 440.0f,
     });
     member.event_inputs.push_back(iv::IntrospectionPortInfo{
         .name = "trigger",
         .type = "event",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
     });
-    instance.introspection.logical_nodes.front().members.push_back(std::move(member));
+    instance.introspection.virtual_nodes.front().members.push_back(std::move(member));
     return instance;
 }
 
@@ -1103,17 +1103,17 @@ TEST_F(ProjectPersistenceTest, GraphInputAuthoredStateCoversAllMutationKinds)
     EXPECT_TRUE(names.contains("graph.setEventOutputState"));
 }
 
-TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsForMemberAndLogicalPorts)
+TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsForMemberAndVirtualPorts)
 {
-    auto const logical_sample_input_node_id = runtime_node_id("instance:a", "node-logical");
+    auto const virtual_sample_input_node_id = runtime_node_id("instance:a", "node-virtual");
     auto const member_sample_input_node_id = runtime_node_id("instance:a", "node-member");
-    auto const logical_event_input_node_id = runtime_node_id("instance:b", "event-logical");
+    auto const virtual_event_input_node_id = runtime_node_id("instance:b", "event-virtual");
     auto const member_event_input_node_id = runtime_node_id("instance:b", "event-member");
-    auto const logical_sample_output_node_id = runtime_node_id("instance:c", "sample-out");
+    auto const virtual_sample_output_node_id = runtime_node_id("instance:c", "sample-out");
     auto const member_event_output_node_id = runtime_node_id("instance:c", "event-out");
     iv::GraphInputLanes::AuthoredStateSnapshot snapshot;
     snapshot.sample_input_states.push_back(iv::ProjectSetSampleInputStateRequest{
-        .node_id = logical_sample_input_node_id,
+        .node_id = virtual_sample_input_node_id,
         .member_ordinal = std::nullopt,
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::disconnected,
@@ -1123,11 +1123,11 @@ TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsFo
         .node_id = member_sample_input_node_id,
         .member_ordinal = 1,
         .input_ordinal = 2,
-        .state = iv::ProjectSampleInputState::logical_follow,
+        .state = iv::ProjectSampleInputState::virtual_follow,
         .lane_id = std::nullopt,
     });
     snapshot.event_input_states.push_back(iv::ProjectSetEventInputStateRequest{
-        .node_id = logical_event_input_node_id,
+        .node_id = virtual_event_input_node_id,
         .member_ordinal = std::nullopt,
         .input_ordinal = 0,
         .state = iv::ProjectEventInputState::default_,
@@ -1141,10 +1141,10 @@ TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsFo
         .lane_id = std::nullopt,
     });
     snapshot.sample_output_states.push_back(iv::ProjectSetSampleOutputStateRequest{
-        .node_id = logical_sample_output_node_id,
+        .node_id = virtual_sample_output_node_id,
         .member_ordinal = std::nullopt,
         .output_ordinal = 0,
-        .state = iv::ProjectSampleOutputState::logical,
+        .state = iv::ProjectSampleOutputState::virtual_port,
         .lane_id = std::nullopt,
     });
     snapshot.event_output_states.push_back(iv::ProjectSetEventOutputStateRequest{
@@ -1170,13 +1170,13 @@ TEST(ProjectPersistenceBuilder, GraphInputAuthoredStateSerializesStateVariantsFo
         throw std::runtime_error("command not found");
     };
 
-    EXPECT_EQ(find_command("graph.setSampleInputState", logical_sample_input_node_id)["state"], "disconnected");
-    EXPECT_TRUE(find_command("graph.setSampleInputState", logical_sample_input_node_id)["member_ordinal"].is_null());
-    EXPECT_EQ(find_command("graph.setSampleInputState", member_sample_input_node_id)["state"], "logicalFollow");
+    EXPECT_EQ(find_command("graph.setSampleInputState", virtual_sample_input_node_id)["state"], "disconnected");
+    EXPECT_TRUE(find_command("graph.setSampleInputState", virtual_sample_input_node_id)["member_ordinal"].is_null());
+    EXPECT_EQ(find_command("graph.setSampleInputState", member_sample_input_node_id)["state"], "virtualFollow");
     EXPECT_EQ(find_command("graph.setSampleInputState", member_sample_input_node_id)["member_ordinal"], 1);
-    EXPECT_EQ(find_command("graph.setEventInputState", logical_event_input_node_id)["state"], "default");
+    EXPECT_EQ(find_command("graph.setEventInputState", virtual_event_input_node_id)["state"], "default");
     EXPECT_EQ(find_command("graph.setEventInputState", member_event_input_node_id)["state"], "disconnected");
-    EXPECT_EQ(find_command("graph.setSampleOutputState", logical_sample_output_node_id)["state"], "logical");
+    EXPECT_EQ(find_command("graph.setSampleOutputState", virtual_sample_output_node_id)["state"], "virtual");
     EXPECT_EQ(find_command("graph.setEventOutputState", member_event_output_node_id)["state"], "disconnected");
 }
 

@@ -200,7 +200,7 @@ namespace {
     struct DeclaredGraphAnalysis {
         bool is_complete = true;
         std::unordered_map<std::string, std::vector<std::string>> users_by_task {};
-        std::vector<std::string> topological_order {};
+        std::vector<std::string> topovirtual_order {};
     };
 
     DeclaredGraphAnalysis analyze_declared_graph(
@@ -244,7 +244,7 @@ namespace {
         while (!ready.empty()) {
             auto task_id = ready.top();
             ready.pop();
-            analysis.topological_order.push_back(task_id);
+            analysis.topovirtual_order.push_back(task_id);
 
             for (auto const &user : analysis.users_by_task.at(task_id)) {
                 auto &remaining = indegree.at(user);
@@ -255,7 +255,7 @@ namespace {
             }
         }
 
-        if (analysis.topological_order.size() != tasks.size()) {
+        if (analysis.topovirtual_order.size() != tasks.size()) {
             throw std::runtime_error("task graph contains a cycle");
         }
 
@@ -281,7 +281,7 @@ namespace {
             return successor_task.depends_on.size() == 1 && successor_task.depends_on.front() == task_id;
         };
 
-        for (auto const &task_id : analysis.topological_order) {
+        for (auto const &task_id : analysis.topovirtual_order) {
             if (assigned.contains(task_id)) {
                 continue;
             }

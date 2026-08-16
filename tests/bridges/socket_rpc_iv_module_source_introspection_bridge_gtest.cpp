@@ -40,7 +40,7 @@ IV_SUBSCRIBE_LINKER_EVENT(
         snapshots.reserve(requests.size());
         for (auto const &request : requests) {
             snapshots.push_back(IvModuleSourceIntrospectionLiveInputSnapshot{
-                .logical_node_id = request.logical_node_id,
+                .virtual_node_id = request.virtual_node_id,
                 .member_ordinal = request.member_ordinal,
                 .input_ordinal = request.input_ordinal,
                 .current_value = request.fallback,

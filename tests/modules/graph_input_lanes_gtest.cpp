@@ -49,9 +49,9 @@ std::vector<iv::Sample> sample_values(iv::OwnedSampleBlock const &block)
     return std::vector<iv::Sample>(block.samples.begin(), block.samples.end());
 }
 
-std::string runtime_node_id(std::string_view instance_id, std::string_view logical_node_id)
+std::string runtime_node_id(std::string_view instance_id, std::string_view virtual_node_id)
 {
-    return std::string(instance_id) + "\x1flogical:" + std::string(logical_node_id);
+    return std::string(instance_id) + "\x1fvirtual:" + std::string(virtual_node_id);
 }
 
 std::string lane_output_name(iv::TypeErasedLaneNode const &node)
@@ -93,48 +93,48 @@ iv::IvModuleInstance make_instance_with_ports()
     instance.module_root = std::filesystem::path("/tmp/module");
     instance.module_id = "iv.test.module";
 
-    iv::IntrospectionLogicalNode node {};
+    iv::IntrospectionVirtualNode node {};
     node.id = "node-1";
     node.kind = "TestNode";
     node.sample_inputs.push_back(iv::IntrospectionPortInfo {
         .name = "frequency",
         .type = "sample",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
         .default_value = 440.0f,
     });
     node.event_inputs.push_back(iv::IntrospectionPortInfo {
         .name = "trigger",
         .type = "event",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
     });
 
-    instance.introspection.logical_nodes.push_back(std::move(node));
+    instance.introspection.virtual_nodes.push_back(std::move(node));
     return instance;
 }
 
 iv::IvModuleInstance make_instance_with_member_ports()
 {
     auto instance = make_instance_with_ports();
-    iv::IntrospectionLogicalNode::Member member {};
+    iv::IntrospectionVirtualNode::Member member {};
     member.ordinal = 0;
     member.backing_node_id = "node-1";
     member.kind = "TestNode";
     member.sample_inputs.push_back(iv::IntrospectionPortInfo {
         .name = "frequency",
         .type = "sample",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
         .default_value = 440.0f,
     });
     member.event_inputs.push_back(iv::IntrospectionPortInfo {
         .name = "trigger",
         .type = "event",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
     });
-    instance.introspection.logical_nodes.front().members.push_back(std::move(member));
+    instance.introspection.virtual_nodes.front().members.push_back(std::move(member));
     return instance;
 }
 
@@ -146,33 +146,33 @@ iv::IvModuleInstance make_instance_with_output_ports()
     instance.module_root = std::filesystem::path("/tmp/module");
     instance.module_id = "iv.test.module";
 
-    iv::IntrospectionLogicalNode node {};
+    iv::IntrospectionVirtualNode node {};
     node.id = "node-1";
     node.kind = "TestNode";
     node.sample_outputs.push_back(iv::IntrospectionPortInfo {
         .name = "out",
         .type = "sample",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
     });
-    instance.introspection.logical_nodes.push_back(std::move(node));
+    instance.introspection.virtual_nodes.push_back(std::move(node));
     return instance;
 }
 
 iv::IvModuleInstance make_instance_with_member_output_ports()
 {
     auto instance = make_instance_with_output_ports();
-    iv::IntrospectionLogicalNode::Member member {};
+    iv::IntrospectionVirtualNode::Member member {};
     member.ordinal = 0;
     member.backing_node_id = "node-1";
     member.kind = "TestNode";
     member.sample_outputs.push_back(iv::IntrospectionPortInfo {
         .name = "out",
         .type = "sample",
-        .connectivity = iv::LogicalPortConnectivity::disconnected,
+        .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
     });
-    instance.introspection.logical_nodes.front().members.push_back(std::move(member));
+    instance.introspection.virtual_nodes.front().members.push_back(std::move(member));
     return instance;
 }
 
@@ -236,7 +236,7 @@ TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
     EXPECT_EQ(removal_count, 0u);
 }
 
-TEST_F(GraphInputLanesTest, AnnotatedPublicInputsGroupRepeatedSourceIntoOneLogicalLane)
+TEST_F(GraphInputLanesTest, AnnotatedPublicInputsGroupRepeatedSourceIntoOneVirtualLane)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
@@ -259,14 +259,14 @@ TEST_F(GraphInputLanesTest, AnnotatedPublicInputsGroupRepeatedSourceIntoOneLogic
     auto const inputs = lanes.public_sample_inputs();
     ASSERT_EQ(inputs.size(), 1u);
     EXPECT_EQ(inputs[0].source_identity, "public-gain");
-    EXPECT_EQ(inputs[0].logical_state, "timelineLane");
+    EXPECT_EQ(inputs[0].virtual_state, "timelineLane");
     EXPECT_EQ(inputs[0].member_ordinals, (std::vector<size_t>{0, 1}));
     EXPECT_EQ(inputs[0].default_value, iv::Sample{1.0f});
     EXPECT_EQ(inputs[0].min, std::optional<iv::Sample>{iv::Sample{0.0f}});
     EXPECT_EQ(inputs[0].max, std::optional<iv::Sample>{iv::Sample{2.0f}});
 }
 
-TEST_F(GraphInputLanesTest, PublicInputLogicalAndConcreteStatesReconcileIndependently)
+TEST_F(GraphInputLanesTest, PublicInputVirtualAndConcreteStatesReconcileIndependently)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
@@ -300,7 +300,7 @@ TEST_F(GraphInputLanesTest, PublicInputLogicalAndConcreteStatesReconcileIndepend
     EXPECT_FALSE(witness.rebuild_requests.empty());
 }
 
-TEST_F(GraphInputLanesTest, AnnotatedPublicEventInputsShareLogicalTimelineLane)
+TEST_F(GraphInputLanesTest, AnnotatedPublicEventInputsShareVirtualTimelineLane)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
@@ -321,9 +321,9 @@ TEST_F(GraphInputLanesTest, AnnotatedPublicEventInputsShareLogicalTimelineLane)
     auto const inputs = lanes.public_event_inputs();
     ASSERT_EQ(inputs.size(), 1u);
     EXPECT_EQ(inputs[0].source_identity, "public-trigger");
-    EXPECT_EQ(inputs[0].logical_state, "timelineLane");
+    EXPECT_EQ(inputs[0].virtual_state, "timelineLane");
     EXPECT_EQ(inputs[0].member_ordinals, (std::vector<size_t>{0, 1}));
-    EXPECT_EQ(inputs[0].member_states, (std::vector<std::string>{"logicalFollow", "logicalFollow"}));
+    EXPECT_EQ(inputs[0].member_states, (std::vector<std::string>{"virtualFollow", "virtualFollow"}));
 }
 
 TEST_F(GraphInputLanesTest, DeletingLastInstancePublishesTimelineRemovals)
@@ -374,7 +374,7 @@ TEST_F(GraphInputLanesTest, UpdatedInstancePublishesTimelineBatch)
     EXPECT_GE(upsert_count, 1u);
 }
 
-TEST_F(GraphInputLanesTest, LogicalSampleInputOverrideDoesNotPublishTimelineBatchByDefault)
+TEST_F(GraphInputLanesTest, VirtualSampleInputOverrideDoesNotPublishTimelineBatchByDefault)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
@@ -422,7 +422,7 @@ TEST_F(GraphInputLanesTest, SampleValueChangesDoNotQueueRebuilds)
     EXPECT_TRUE(witness.rebuild_requests.empty());
 }
 
-TEST_F(GraphInputLanesTest, VacantSampleInputsDefaultToLogicalFollowWithoutTimelineDependencies)
+TEST_F(GraphInputLanesTest, VacantSampleInputsDefaultToVirtualFollowWithoutTimelineDependencies)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
@@ -442,7 +442,7 @@ TEST_F(GraphInputLanesTest, VacantSampleInputsDefaultToLogicalFollowWithoutTimel
         0u);
 }
 
-TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDependency)
+TEST_F(GraphInputLanesTest, VirtualSampleInputTimelineStatePublishesTimelineDependency)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
@@ -474,7 +474,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDepe
     for (auto const &upsert : witness.timeline_batches.front().upserts) {
         if (upsert.metadata.has_unit("dsp_graph.graph_input")
             && upsert.metadata.has_unit("dsp_graph.knob")
-            && upsert.metadata.has_unit("dsp_graph.logical")
+            && upsert.metadata.has_unit("dsp_graph.virtual")
             && upsert.metadata.has_unit("dsp_graph.sample")) {
             created_lane = &upsert;
             break;
@@ -501,14 +501,14 @@ TEST_F(GraphInputLanesTest, LogicalSampleInputTimelineStatePublishesTimelineDepe
 
     auto const bindings = lanes.graph_input_lane_bindings(iv::ProjectGraphInputLaneBindingsRequest{
         .ports = {iv::GraphInputPortDescriptor{
-            .logical_node_id = runtime_node_id(instance.instance_id, "node-1"),
+            .virtual_node_id = runtime_node_id(instance.instance_id, "node-1"),
             .port_kind = iv::PortKind::sample,
             .port_ordinal = 0,
             .sample_channel_type = iv::ChannelTypeId::mono,
         }},
     });
-    ASSERT_EQ(bindings.logical_sample_knobs.size(), 1u);
-    EXPECT_EQ(bindings.logical_sample_knobs.front().knob_lane, created_lane_id);
+    ASSERT_EQ(bindings.virtual_sample_knobs.size(), 1u);
+    EXPECT_EQ(bindings.virtual_sample_knobs.front().knob_lane, created_lane_id);
     for (auto const &batch : witness.timeline_batches) {
         EXPECT_EQ(std::find(batch.removals.begin(), batch.removals.end(), created_lane_id), batch.removals.end());
     }
@@ -636,7 +636,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
         0u);
 }
 
-TEST_F(GraphInputLanesTest, VacantEventInputsDefaultToLogicalFollowWithTimelineDependency)
+TEST_F(GraphInputLanesTest, VacantEventInputsDefaultToVirtualFollowWithTimelineDependency)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
@@ -808,7 +808,7 @@ bool batch_has_public_lane(
 }
 } // namespace
 
-TEST_F(GraphInputLanesTest, LogicalOutputsDoNotAutoCreateTimelineLanesWithoutExplicitState)
+TEST_F(GraphInputLanesTest, VirtualOutputsDoNotAutoCreateTimelineLanesWithoutExplicitState)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_output_ports();
@@ -825,7 +825,7 @@ TEST_F(GraphInputLanesTest, LogicalOutputsDoNotAutoCreateTimelineLanesWithoutExp
 
     bool saw_output_lane = false;
     for (auto const &batch : witness.timeline_batches) {
-        saw_output_lane = saw_output_lane || batch_has_output_lane(batch, "dsp_graph.logical");
+        saw_output_lane = saw_output_lane || batch_has_output_lane(batch, "dsp_graph.virtual");
     }
     EXPECT_FALSE(saw_output_lane);
 }
@@ -1123,7 +1123,7 @@ TEST_F(GraphInputLanesTest, PublicEventPortsCreateAutomaticLanesAndDependency)
     EXPECT_NO_THROW((void)builder.build_execution_root_node());
 }
 
-TEST_F(GraphInputLanesTest, LogicalSampleOutputTimelineStateCreatesAggregationLaneWithDspDependency)
+TEST_F(GraphInputLanesTest, VirtualSampleOutputTimelineStateCreatesAggregationLaneWithDspDependency)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_output_ports();
@@ -1150,7 +1150,7 @@ TEST_F(GraphInputLanesTest, LogicalSampleOutputTimelineStateCreatesAggregationLa
     iv::TimelineLaneUpsert const *upsert = nullptr;
     ASSERT_TRUE(batch_has_output_lane(
         witness.timeline_batches.front(),
-        "dsp_graph.logical",
+        "dsp_graph.virtual",
         &upsert));
     ASSERT_NE(upsert, nullptr);
 
@@ -1271,7 +1271,7 @@ TEST_F(GraphInputLanesTest, TogglingSampleOutputBackToDisconnectedRemovesLane)
     iv::TimelineLaneUpsert const *created = nullptr;
     ASSERT_TRUE(batch_has_output_lane(
         witness.timeline_batches.back(),
-        "dsp_graph.logical",
+        "dsp_graph.virtual",
         &created));
     auto const created_lane = created->lane;
     witness.timeline_batches.clear();
@@ -1315,7 +1315,7 @@ TEST_F(GraphInputLanesTest, SampleOutputLanesRemainMonoAcrossRebuild)
 
     iv::TimelineLaneUpsert const *created = nullptr;
     for (auto const &batch : witness.timeline_batches) {
-        if (batch_has_output_lane(batch, "dsp_graph.logical", &created)) {
+        if (batch_has_output_lane(batch, "dsp_graph.virtual", &created)) {
             break;
         }
     }

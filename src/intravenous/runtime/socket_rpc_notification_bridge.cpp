@@ -42,8 +42,8 @@ namespace {
                     bound_server->send_lane_view_updated(payload.lane_view);
                 } else if constexpr (std::same_as<
                                          Payload,
-                                         ProjectLogicalNodesNotification>) {
-                    bound_server->send_logical_nodes_updated(payload);
+                                         ProjectVirtualNodesNotification>) {
+                    bound_server->send_virtual_nodes_updated(payload);
                 }
             },
             notification);
@@ -124,11 +124,11 @@ namespace {
     IV_SUBSCRIBE_LINKER_EVENT(
         IvModuleSourceIntrospectionNodesUpdatedEvent,
         iv_runtime_iv_module_source_introspection_nodes_updated_event,
-        +[](ProjectLogicalNodesNotification const &notification) {
+        +[](ProjectVirtualNodesNotification const &notification) {
             if (bound_server == nullptr) {
                 return;
             }
-            bound_server->send_logical_nodes_updated(notification);
+            bound_server->send_virtual_nodes_updated(notification);
         });
 } // namespace
 

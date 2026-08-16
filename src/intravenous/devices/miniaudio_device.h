@@ -220,7 +220,7 @@ namespace iv {
             });
 
             if (!_request_pending) {
-                throw std::logic_error("MiniaudioLogicalDevice wait_for_block_request() interrupted without a pending request");
+                throw std::logic_error("MiniaudioAudioOutputDevice wait_for_block_request() interrupted without a pending request");
             }
 
             return std::span<Sample>(_pending_output, _pending_samples);
@@ -231,7 +231,7 @@ namespace iv {
             {
                 std::scoped_lock lock(_mutex);
                 if (!_request_pending || _response_ready || _pending_output == nullptr) {
-                    throw std::logic_error("MiniaudioLogicalDevice has no claimed request awaiting response");
+                    throw std::logic_error("MiniaudioAudioOutputDevice has no claimed request awaiting response");
                 }
                 _response_ready = true;
             }

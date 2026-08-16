@@ -26,11 +26,11 @@ namespace iv {
         std::filesystem::path file_path{};
     };
 
-    struct GetLogicalNodeRequest {
+    struct GetVirtualNodeRequest {
         std::string node_id{};
     };
 
-    struct GetLogicalNodesRequest {
+    struct GetVirtualNodesRequest {
         std::vector<std::string> node_ids{};
     };
 
@@ -166,8 +166,8 @@ namespace iv {
     using SocketRpcRequestPayload = std::variant<
         GraphQueryBySpansRequest,
         GraphQueryActiveRegionsRequest,
-        GetLogicalNodeRequest,
-        GetLogicalNodesRequest,
+        GetVirtualNodeRequest,
+        GetVirtualNodesRequest,
         CreateIvModuleInstanceRequest,
         GetIvModuleSourcesRequest,
         CreateIvModuleSourceRequest,

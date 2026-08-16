@@ -182,7 +182,7 @@ TEST(SocketRpcRequestParser, ParsesDefaultSampleInputStateRequest)
 TEST(SocketRpcRequestParser, ParsesSetEventInputStateRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":26,"method":"graph.setEventInputState","params":{"nodeId":"node-1","memberOrdinal":2,"inputOrdinal":5,"state":"logicalFollow"}})");
+        R"({"jsonrpc":"2.0","id":26,"method":"graph.setEventInputState","params":{"nodeId":"node-1","memberOrdinal":2,"inputOrdinal":5,"state":"virtualFollow"}})");
 
     EXPECT_EQ(parsed.request_id, 26);
     auto const* request = std::get_if<iv::SetEventInputStateRequest>(&parsed.payload);
@@ -191,13 +191,13 @@ TEST(SocketRpcRequestParser, ParsesSetEventInputStateRequest)
     ASSERT_TRUE(request->member_ordinal.has_value());
     EXPECT_EQ(*request->member_ordinal, 2u);
     EXPECT_EQ(request->input_ordinal, 5u);
-    EXPECT_EQ(request->state, "logicalFollow");
+    EXPECT_EQ(request->state, "virtualFollow");
 }
 
 TEST(SocketRpcRequestParser, ParsesSetSampleOutputStateRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":27,"method":"graph.setSampleOutputState","params":{"nodeId":"node-1","memberOrdinal":2,"outputOrdinal":5,"state":"logical"}})");
+        R"({"jsonrpc":"2.0","id":27,"method":"graph.setSampleOutputState","params":{"nodeId":"node-1","memberOrdinal":2,"outputOrdinal":5,"state":"virtual"}})");
 
     EXPECT_EQ(parsed.request_id, 27);
     auto const* request = std::get_if<iv::SetSampleOutputStateRequest>(&parsed.payload);
@@ -206,7 +206,7 @@ TEST(SocketRpcRequestParser, ParsesSetSampleOutputStateRequest)
     ASSERT_TRUE(request->member_ordinal.has_value());
     EXPECT_EQ(*request->member_ordinal, 2u);
     EXPECT_EQ(request->output_ordinal, 5u);
-    EXPECT_EQ(request->state, "logical");
+    EXPECT_EQ(request->state, "virtual");
 }
 
 TEST(SocketRpcRequestParser, ParsesSetEventOutputStateRequest)
@@ -419,7 +419,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
 {
     iv::SocketRpcGraphQueryResultBuilder builder;
     iv::ProjectQueryResult result;
-    result.nodes.push_back(iv::LogicalNodeInfo {
+    result.nodes.push_back(iv::VirtualNodeInfo {
         .id = "node-1",
         .kind = "Oscillator",
         .source_identity = "src-1",
@@ -434,7 +434,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
             },
         },
         .sample_inputs = {
-            iv::LogicalPortInfo {
+            iv::VirtualPortInfo {
                 .name = "frequency",
                 .type = "sample",
                 .ordinal = 1,

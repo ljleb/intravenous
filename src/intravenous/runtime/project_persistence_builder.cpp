@@ -120,8 +120,8 @@ char const *ProjectPersistenceBuilder::sample_input_state_name(ProjectSampleInpu
         return "default";
     case ProjectSampleInputState::overridden:
         return "overridden";
-    case ProjectSampleInputState::logical_follow:
-        return "logicalFollow";
+    case ProjectSampleInputState::virtual_follow:
+        return "virtualFollow";
     case ProjectSampleInputState::timeline_lane:
         return "timelineLane";
     case ProjectSampleInputState::disconnected:
@@ -135,8 +135,8 @@ char const *ProjectPersistenceBuilder::event_input_state_name(ProjectEventInputS
     switch (state) {
     case ProjectEventInputState::default_:
         return "default";
-    case ProjectEventInputState::logical_follow:
-        return "logicalFollow";
+    case ProjectEventInputState::virtual_follow:
+        return "virtualFollow";
     case ProjectEventInputState::timeline_lane:
         return "timelineLane";
     case ProjectEventInputState::disconnected:
@@ -150,8 +150,8 @@ char const *ProjectPersistenceBuilder::sample_output_state_name(ProjectSampleOut
     switch (state) {
     case ProjectSampleOutputState::disconnected:
         return "disconnected";
-    case ProjectSampleOutputState::logical:
-        return "logical";
+    case ProjectSampleOutputState::virtual_port:
+        return "virtual";
     case ProjectSampleOutputState::timeline_lane:
         return "timelineLane";
     }
@@ -163,8 +163,8 @@ char const *ProjectPersistenceBuilder::event_output_state_name(ProjectEventOutpu
     switch (state) {
     case ProjectEventOutputState::disconnected:
         return "disconnected";
-    case ProjectEventOutputState::logical:
-        return "logical";
+    case ProjectEventOutputState::virtual_port:
+        return "virtual";
     case ProjectEventOutputState::timeline_lane:
         return "timelineLane";
     }

@@ -134,7 +134,7 @@ SourcePosition SourceTextLineMap::position_for(size_t offset) const
 }
 
 namespace {
-constexpr std::string_view runtime_node_id_separator = "\x1flogical:";
+constexpr std::string_view runtime_node_id_separator = "\x1fvirtual:";
 
 struct LivePortStateMaps {
     std::unordered_map<std::string, std::string> sample_inputs;
@@ -144,11 +144,11 @@ struct LivePortStateMaps {
 };
 
 std::string port_state_key(
-    std::string_view logical_node_id,
+    std::string_view virtual_node_id,
     std::optional<size_t> member_ordinal,
     size_t port_ordinal)
 {
-    std::string key(logical_node_id);
+    std::string key(virtual_node_id);
     key += "#port:";
     key += std::to_string(port_ordinal);
     if (member_ordinal.has_value()) {
@@ -165,8 +165,8 @@ std::string sample_input_state_value(ProjectSampleInputState state)
         return "default";
     case ProjectSampleInputState::overridden:
         return "overridden";
-    case ProjectSampleInputState::logical_follow:
-        return "logicalFollow";
+    case ProjectSampleInputState::virtual_follow:
+        return "virtualFollow";
     case ProjectSampleInputState::timeline_lane:
         return "timelineLane";
     case ProjectSampleInputState::disconnected:
@@ -180,8 +180,8 @@ std::string event_input_state_value(ProjectEventInputState state)
     switch (state) {
     case ProjectEventInputState::default_:
         return "default";
-    case ProjectEventInputState::logical_follow:
-        return "logicalFollow";
+    case ProjectEventInputState::virtual_follow:
+        return "virtualFollow";
     case ProjectEventInputState::timeline_lane:
         return "timelineLane";
     case ProjectEventInputState::disconnected:
@@ -195,8 +195,8 @@ std::string sample_output_state_value(ProjectSampleOutputState state)
     switch (state) {
     case ProjectSampleOutputState::disconnected:
         return "disconnected";
-    case ProjectSampleOutputState::logical:
-        return "logical";
+    case ProjectSampleOutputState::virtual_port:
+        return "virtual";
     case ProjectSampleOutputState::timeline_lane:
         return "timelineLane";
     }
@@ -208,8 +208,8 @@ std::string event_output_state_value(ProjectEventOutputState state)
     switch (state) {
     case ProjectEventOutputState::disconnected:
         return "disconnected";
-    case ProjectEventOutputState::logical:
-        return "logical";
+    case ProjectEventOutputState::virtual_port:
+        return "virtual";
     case ProjectEventOutputState::timeline_lane:
         return "timelineLane";
     }
@@ -255,9 +255,9 @@ LivePortStateMaps build_live_port_state_maps(
     return maps;
 }
 
-LogicalPortInfo to_live_port(IntrospectionPortInfo const &port)
+VirtualPortInfo to_live_port(IntrospectionPortInfo const &port)
 {
-    return LogicalPortInfo{
+    return VirtualPortInfo{
         .name = port.name,
         .type = port.type,
         .connectivity = port.connectivity,
@@ -270,9 +270,9 @@ LogicalPortInfo to_live_port(IntrospectionPortInfo const &port)
     };
 }
 
-std::vector<LogicalPortInfo> to_live_ports(std::span<IntrospectionPortInfo const> ports)
+std::vector<VirtualPortInfo> to_live_ports(std::span<IntrospectionPortInfo const> ports)
 {
-    std::vector<LogicalPortInfo> live_ports;
+    std::vector<VirtualPortInfo> live_ports;
     live_ports.reserve(ports.size());
     for (auto const &port : ports) {
         live_ports.push_back(to_live_port(port));
@@ -300,7 +300,7 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
     graph_index.definition_id = definition_id;
     graph_index.module_root = normalize_path(module_root);
     graph_index.module_id = module_id;
-    graph_index.logical_nodes = introspection.logical_nodes;
+    graph_index.virtual_nodes = introspection.virtual_nodes;
     graph_index.dependency_file_paths.insert(
         normalized_path_string(graph_index.module_root / "module.cpp"));
     for (auto const &dependency : dependencies) {
@@ -309,17 +309,17 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
                 normalized_path_string(dependency.entry_file));
         }
     }
-    for (auto &logical_node : graph_index.logical_nodes) {
-        for (auto &span : logical_node.source_spans) {
+    for (auto &virtual_node : graph_index.virtual_nodes) {
+        for (auto &span : virtual_node.source_spans) {
             if (!span.file_path.empty()) {
                 span.file_path = normalized_path_string(span.file_path);
                 graph_index.dependency_file_paths.insert(span.file_path);
             }
         }
-        sort_and_deduplicate_spans(logical_node.source_spans);
+        sort_and_deduplicate_spans(virtual_node.source_spans);
     }
-    for (size_t i = 0; i < graph_index.logical_nodes.size(); ++i) {
-        graph_index.logical_node_index_by_id.emplace(graph_index.logical_nodes[i].id, i);
+    for (size_t i = 0; i < graph_index.virtual_nodes.size(); ++i) {
+        graph_index.virtual_node_index_by_id.emplace(graph_index.virtual_nodes[i].id, i);
     }
 
     return graph_index;
@@ -327,17 +327,17 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
 
 std::string runtime_node_id(
     std::string_view instance_id,
-    std::string_view logical_node_id)
+    std::string_view virtual_node_id)
 {
     std::string value(instance_id);
     value += runtime_node_id_separator;
-    value += logical_node_id;
+    value += virtual_node_id;
     return value;
 }
 
 struct ResolvedRuntimeNodeId {
     std::string instance_id;
-    std::string logical_node_id;
+    std::string virtual_node_id;
 };
 
 std::optional<ResolvedRuntimeNodeId> parse_runtime_node_id(std::string_view runtime_id)
@@ -348,16 +348,16 @@ std::optional<ResolvedRuntimeNodeId> parse_runtime_node_id(std::string_view runt
     }
     return ResolvedRuntimeNodeId{
         .instance_id = std::string(runtime_id.substr(0, separator)),
-        .logical_node_id = std::string(runtime_id.substr(separator + runtime_node_id_separator.size())),
+        .virtual_node_id = std::string(runtime_id.substr(separator + runtime_node_id_separator.size())),
     };
 }
 
 std::string live_input_snapshot_key(
-    std::string_view logical_node_id,
+    std::string_view virtual_node_id,
     std::optional<size_t> member_ordinal,
     size_t input_ordinal)
 {
-    std::string key(logical_node_id);
+    std::string key(virtual_node_id);
     key += "#input:";
     key += std::to_string(input_ordinal);
     if (member_ordinal.has_value()) {
@@ -368,7 +368,7 @@ std::string live_input_snapshot_key(
 }
 
 GraphInputPortDescriptor sample_graph_input_port_for(
-    IntrospectionLogicalNode const &node,
+    IntrospectionVirtualNode const &node,
     std::optional<size_t> concrete_member_ordinal,
     size_t input_ordinal)
 {
@@ -382,7 +382,7 @@ GraphInputPortDescriptor sample_graph_input_port_for(
         throw std::runtime_error("unknown sample input ordinal " + std::to_string(input_ordinal));
     }
     return GraphInputPortDescriptor{
-        .logical_node_id = node.id,
+        .virtual_node_id = node.id,
         .concrete_member_ordinal = concrete_member_ordinal,
         .port_kind = PortKind::sample,
         .port_ordinal = port_it->ordinal,
@@ -442,8 +442,8 @@ LiveSourceSpan IvModuleSourceIntrospection::to_live_span(SourceSpan const &span)
     };
 }
 
-LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
-    IntrospectionLogicalNode const &node,
+VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
+    IntrospectionVirtualNode const &node,
     std::string const &instance_id) const
 {
     auto const runtime_id = runtime_node_id(instance_id, node.id);
@@ -464,7 +464,7 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
             }));
     for (auto const &port : node.sample_inputs) {
         snapshot_requests.push_back(IvModuleSourceIntrospectionLiveInputSnapshotRequest{
-            .logical_node_id = runtime_id,
+            .virtual_node_id = runtime_id,
             .member_ordinal = std::nullopt,
             .input_ordinal = port.ordinal,
             .fallback = port.default_value,
@@ -473,7 +473,7 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
     for (auto const &member : node.members) {
         for (auto const &port : member.sample_inputs) {
             snapshot_requests.push_back(IvModuleSourceIntrospectionLiveInputSnapshotRequest{
-                .logical_node_id = runtime_id,
+                .virtual_node_id = runtime_id,
                 .member_ordinal = member.ordinal,
                 .input_ordinal = port.ordinal,
                 .fallback = port.default_value,
@@ -493,13 +493,13 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
     for (auto const &snapshot : snapshots) {
         snapshots_by_key.emplace(
             live_input_snapshot_key(
-                snapshot.logical_node_id,
+                snapshot.virtual_node_id,
                 snapshot.member_ordinal,
                 snapshot.input_ordinal),
             snapshot);
     }
 
-    LogicalNodeInfo live;
+    VirtualNodeInfo live;
     live.id = runtime_id;
     live.instance_id = instance_id;
     live.kind = node.kind;
@@ -510,7 +510,7 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
         auto const snapshot_it = snapshots_by_key.find(
             live_input_snapshot_key(runtime_id, std::nullopt, port.ordinal));
         if (snapshot_it == snapshots_by_key.end()) {
-            throw std::runtime_error("missing live input snapshot for logical input");
+            throw std::runtime_error("missing live input snapshot for virtual input");
         }
         port.current_value = snapshot_it->second.current_value;
         auto const state_it = live_port_states.sample_inputs.find(
@@ -550,7 +550,7 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
     live.member_count = node.backing_node_ids.size();
     live.members.reserve(node.members.size());
     for (auto const &member : node.members) {
-        LogicalNodeMemberInfo live_member;
+        VirtualNodeMemberInfo live_member;
         live_member.ordinal = member.ordinal;
         live_member.backing_node_id = member.backing_node_id;
         live_member.kind = member.kind;
@@ -570,9 +570,9 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
                 port.state_value = state_it->second;
             } else {
                 port.state_value =
-                    port.connectivity == LogicalPortConnectivity::connected
+                    port.connectivity == VirtualPortConnectivity::connected
                         ? "disconnected"
-                        : "logicalFollow";
+                        : "virtualFollow";
             }
         }
         live_member.sample_outputs = to_live_ports(member.sample_outputs);
@@ -582,12 +582,12 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
             if (state_it != live_port_states.sample_outputs.end()) {
                 port.state_value = state_it->second;
             } else {
-                auto const logical_state_it = live_port_states.sample_outputs.find(
+                auto const virtual_state_it = live_port_states.sample_outputs.find(
                     port_state_key(runtime_id, std::nullopt, port.ordinal));
                 port.state_value =
-                    logical_state_it != live_port_states.sample_outputs.end()
-                    && logical_state_it->second == "timelineLane"
-                        ? "logical"
+                    virtual_state_it != live_port_states.sample_outputs.end()
+                    && virtual_state_it->second == "timelineLane"
+                        ? "virtual"
                         : "disconnected";
             }
         }
@@ -599,9 +599,9 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
                 port.state_value = state_it->second;
             } else {
                 port.state_value =
-                    port.connectivity == LogicalPortConnectivity::connected
+                    port.connectivity == VirtualPortConnectivity::connected
                         ? "disconnected"
-                        : "logicalFollow";
+                        : "virtualFollow";
             }
         }
         live_member.event_outputs = to_live_ports(member.event_outputs);
@@ -611,12 +611,12 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
             if (state_it != live_port_states.event_outputs.end()) {
                 port.state_value = state_it->second;
             } else {
-                auto const logical_state_it = live_port_states.event_outputs.find(
+                auto const virtual_state_it = live_port_states.event_outputs.find(
                     port_state_key(runtime_id, std::nullopt, port.ordinal));
                 port.state_value =
-                    logical_state_it != live_port_states.event_outputs.end()
-                    && logical_state_it->second == "timelineLane"
-                        ? "logical"
+                    virtual_state_it != live_port_states.event_outputs.end()
+                    && virtual_state_it->second == "timelineLane"
+                        ? "virtual"
                         : "disconnected";
             }
         }
@@ -629,9 +629,9 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_logical_node(
     return live;
 }
 
-LogicalNodeInfo IvModuleSourceIntrospection::to_public_sample_input(PublicSampleInputInfo const &input) const
+VirtualNodeInfo IvModuleSourceIntrospection::to_public_sample_input(PublicSampleInputInfo const &input) const
 {
-    LogicalNodeInfo node{
+    VirtualNodeInfo node{
         .id = public_input_node_id(input),
         .instance_id = input.instance_id,
         .kind = "Public input",
@@ -642,33 +642,33 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_public_sample_input(PublicSample
     for (auto const &info : input.source_infos) {
         node.source_spans.push_back(to_live_span(info.span));
     }
-    node.sample_inputs.push_back(LogicalPortInfo{
+    node.sample_inputs.push_back(VirtualPortInfo{
         .name = input.name.empty() ? "input" : input.name,
         .type = "sample",
         .connectivity = input.graph_connected
-            ? LogicalPortConnectivity::connected
-            : LogicalPortConnectivity::disconnected,
+            ? VirtualPortConnectivity::connected
+            : VirtualPortConnectivity::disconnected,
         .ordinal = 0,
         .default_value = input.default_value,
         .min = input.min,
         .max = input.max,
         .current_value = input.current_value,
-        .state_value = input.logical_state,
+        .state_value = input.virtual_state,
     });
     for (size_t i = 0; i < input.member_ordinals.size(); ++i) {
         auto const member_ordinal = input.member_ordinals[i];
-        LogicalNodeMemberInfo member{
+        VirtualNodeMemberInfo member{
             .ordinal = member_ordinal,
             .kind = "Public input member",
             .type_identity = "iv::PublicSampleInputRef",
         };
-        member.sample_inputs.push_back(LogicalPortInfo{
+        member.sample_inputs.push_back(VirtualPortInfo{
             .name = input.name.empty() ? "input" : input.name,
             .type = "sample",
             .connectivity = i < input.member_graph_connected.size()
                     && input.member_graph_connected[i]
-                ? LogicalPortConnectivity::connected
-                : LogicalPortConnectivity::disconnected,
+                ? VirtualPortConnectivity::connected
+                : VirtualPortConnectivity::disconnected,
             .ordinal = 0,
             .default_value = input.default_value,
             .min = input.min,
@@ -676,16 +676,16 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_public_sample_input(PublicSample
             .current_value = input.current_value,
             .state_value = i < input.member_states.size()
                 ? input.member_states[i]
-                : "logicalFollow",
+                : "virtualFollow",
         });
         node.members.push_back(std::move(member));
     }
     return node;
 }
 
-LogicalNodeInfo IvModuleSourceIntrospection::to_public_event_input(PublicEventInputInfo const &input) const
+VirtualNodeInfo IvModuleSourceIntrospection::to_public_event_input(PublicEventInputInfo const &input) const
 {
-    LogicalNodeInfo node{
+    VirtualNodeInfo node{
         .id = public_sample_input_node_id(input.instance_id, input.source_identity),
         .instance_id = input.instance_id,
         .kind = "Public event input",
@@ -694,77 +694,77 @@ LogicalNodeInfo IvModuleSourceIntrospection::to_public_event_input(PublicEventIn
         .member_count = input.member_ordinals.size(),
     };
     for (auto const &info : input.source_infos) node.source_spans.push_back(to_live_span(info.span));
-    node.event_inputs.push_back(LogicalPortInfo{
+    node.event_inputs.push_back(VirtualPortInfo{
         .name = input.name.empty() ? "event" : input.name,
         .type = details::event_type_name(input.type),
         .connectivity = input.graph_connected
-            ? LogicalPortConnectivity::connected
-            : LogicalPortConnectivity::disconnected,
+            ? VirtualPortConnectivity::connected
+            : VirtualPortConnectivity::disconnected,
         .ordinal = 0,
-        .state_value = input.logical_state,
+        .state_value = input.virtual_state,
     });
     for (size_t i = 0; i < input.member_ordinals.size(); ++i) {
-        LogicalNodeMemberInfo member{.ordinal = input.member_ordinals[i], .kind = "Public event input member", .type_identity = "iv::PublicEventInputRef"};
-        member.event_inputs.push_back(LogicalPortInfo{
+        VirtualNodeMemberInfo member{.ordinal = input.member_ordinals[i], .kind = "Public event input member", .type_identity = "iv::PublicEventInputRef"};
+        member.event_inputs.push_back(VirtualPortInfo{
             .name = input.name.empty() ? "event" : input.name,
             .type = details::event_type_name(input.type),
             .connectivity = i < input.member_graph_connected.size()
                     && input.member_graph_connected[i]
-                ? LogicalPortConnectivity::connected
-                : LogicalPortConnectivity::disconnected,
+                ? VirtualPortConnectivity::connected
+                : VirtualPortConnectivity::disconnected,
             .ordinal = 0,
-            .state_value = i < input.member_states.size() ? input.member_states[i] : "logicalFollow",
+            .state_value = i < input.member_states.size() ? input.member_states[i] : "virtualFollow",
         });
         node.members.push_back(std::move(member));
     }
     return node;
 }
 
-LogicalNodeInfo IvModuleSourceIntrospection::to_public_sample_output(PublicSampleOutputInfo const& output) const
+VirtualNodeInfo IvModuleSourceIntrospection::to_public_sample_output(PublicSampleOutputInfo const& output) const
 {
-    LogicalNodeInfo node{
+    VirtualNodeInfo node{
         .id = public_output_node_id(output), .instance_id = output.instance_id,
         .kind = "Public output", .source_identity = output.source_identity,
         .type_identity = "iv::GraphBuilder::outputs",
     };
     for (auto const& info : output.source_infos) node.source_spans.push_back(to_live_span(info.span));
-    node.sample_outputs.push_back(LogicalPortInfo{
+    node.sample_outputs.push_back(VirtualPortInfo{
         .name = output.name.empty() ? "output" : output.name, .type = "sample",
-        .connectivity = output.graph_connected ? LogicalPortConnectivity::connected : LogicalPortConnectivity::disconnected,
-        .ordinal = 0, .state_value = output.logical_state,
+        .connectivity = output.graph_connected ? VirtualPortConnectivity::connected : VirtualPortConnectivity::disconnected,
+        .ordinal = 0, .state_value = output.virtual_state,
     });
     for (size_t i = 0; i < output.member_ordinals.size(); ++i) {
-        LogicalNodeMemberInfo member{.ordinal = output.member_ordinals[i], .kind = "Public output member", .type_identity = "iv::GraphBuilder::outputs"};
-        member.sample_outputs.push_back(LogicalPortInfo{
+        VirtualNodeMemberInfo member{.ordinal = output.member_ordinals[i], .kind = "Public output member", .type_identity = "iv::GraphBuilder::outputs"};
+        member.sample_outputs.push_back(VirtualPortInfo{
             .name = output.name.empty() ? "output" : output.name, .type = "sample",
             .connectivity = i < output.member_graph_connected.size() && output.member_graph_connected[i]
-                ? LogicalPortConnectivity::connected : LogicalPortConnectivity::disconnected,
-            .ordinal = 0, .state_value = i < output.member_states.size() ? output.member_states[i] : "logicalFollow",
+                ? VirtualPortConnectivity::connected : VirtualPortConnectivity::disconnected,
+            .ordinal = 0, .state_value = i < output.member_states.size() ? output.member_states[i] : "virtualFollow",
         });
         node.members.push_back(std::move(member));
     }
     return node;
 }
 
-LogicalNodeInfo IvModuleSourceIntrospection::to_public_event_output(PublicEventOutputInfo const& output) const
+VirtualNodeInfo IvModuleSourceIntrospection::to_public_event_output(PublicEventOutputInfo const& output) const
 {
-    LogicalNodeInfo node{
+    VirtualNodeInfo node{
         .id = public_output_node_id(output), .instance_id = output.instance_id,
         .kind = "Public event output", .source_identity = output.source_identity,
         .type_identity = "iv::GraphBuilder::event_outputs",
     };
     for (auto const& info : output.source_infos) node.source_spans.push_back(to_live_span(info.span));
-    node.event_outputs.push_back(LogicalPortInfo{ .name = output.name.empty() ? "event" : output.name,
+    node.event_outputs.push_back(VirtualPortInfo{ .name = output.name.empty() ? "event" : output.name,
         .type = details::event_type_name(output.type),
-        .connectivity = output.graph_connected ? LogicalPortConnectivity::connected : LogicalPortConnectivity::disconnected,
-        .ordinal = 0, .state_value = output.logical_state });
+        .connectivity = output.graph_connected ? VirtualPortConnectivity::connected : VirtualPortConnectivity::disconnected,
+        .ordinal = 0, .state_value = output.virtual_state });
     for (size_t i = 0; i < output.member_ordinals.size(); ++i) {
-        LogicalNodeMemberInfo member{.ordinal = output.member_ordinals[i], .kind = "Public event output member", .type_identity = "iv::GraphBuilder::event_outputs"};
-        member.event_outputs.push_back(LogicalPortInfo{.name = output.name.empty() ? "event" : output.name,
+        VirtualNodeMemberInfo member{.ordinal = output.member_ordinals[i], .kind = "Public event output member", .type_identity = "iv::GraphBuilder::event_outputs"};
+        member.event_outputs.push_back(VirtualPortInfo{.name = output.name.empty() ? "event" : output.name,
             .type = details::event_type_name(output.type),
             .connectivity = i < output.member_graph_connected.size() && output.member_graph_connected[i]
-                ? LogicalPortConnectivity::connected : LogicalPortConnectivity::disconnected,
-            .ordinal = 0, .state_value = i < output.member_states.size() ? output.member_states[i] : "logicalFollow"});
+                ? VirtualPortConnectivity::connected : VirtualPortConnectivity::disconnected,
+            .ordinal = 0, .state_value = i < output.member_states.size() ? output.member_states[i] : "virtualFollow"});
         node.members.push_back(std::move(member));
     }
     return node;
@@ -855,24 +855,24 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             return span.begin - end;
         };
 
-    struct RankedRuntimeLogicalNode {
+    struct RankedRuntimeVirtualNode {
         std::string definition_id;
-        size_t logical_index = 0;
+        size_t virtual_index = 0;
         uint32_t best_span_size = std::numeric_limits<uint32_t>::max();
         uint32_t best_distance = std::numeric_limits<uint32_t>::max();
         uint32_t best_begin = std::numeric_limits<uint32_t>::max();
         uint32_t best_end = std::numeric_limits<uint32_t>::max();
     };
 
-    std::vector<RankedRuntimeLogicalNode> ranked_nodes;
+    std::vector<RankedRuntimeVirtualNode> ranked_nodes;
     for (auto const &[definition_id, graph_index] : graph_indexes_by_definition_id) {
-        for (size_t logical_index = 0; logical_index < graph_index.logical_nodes.size();
-             ++logical_index) {
-            auto const &node = graph_index.logical_nodes[logical_index];
+        for (size_t virtual_index = 0; virtual_index < graph_index.virtual_nodes.size();
+             ++virtual_index) {
+            auto const &node = graph_index.virtual_nodes[virtual_index];
             bool matches = requested_ranges.empty();
-            RankedRuntimeLogicalNode ranked{
+            RankedRuntimeVirtualNode ranked{
                 .definition_id = definition_id,
-                .logical_index = logical_index,
+                .virtual_index = virtual_index,
             };
             if (!requested_ranges.empty()) {
                 auto const node_matches_range =
@@ -931,8 +931,8 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         }
         auto const &a_index = graph_indexes_by_definition_id.at(a.definition_id);
         auto const &b_index = graph_indexes_by_definition_id.at(b.definition_id);
-        auto const &a_node = a_index.logical_nodes[a.logical_index];
-        auto const &b_node = b_index.logical_nodes[b.logical_index];
+        auto const &a_node = a_index.virtual_nodes[a.virtual_index];
+        auto const &b_node = b_index.virtual_nodes[b.virtual_index];
         if (a_node.kind != b_node.kind) {
             return a_node.kind < b_node.kind;
         }
@@ -949,7 +949,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             continue;
         }
         auto const &graph_index = index_it->second;
-        auto const &node = graph_index.logical_nodes[ranked.logical_index];
+        auto const &node = graph_index.virtual_nodes[ranked.virtual_index];
         std::vector<std::string> matching_instance_ids;
         for (auto const &[candidate_instance_id, instance] : realized_instances_by_id) {
             if (instance.definition_id != ranked.definition_id) {
@@ -966,7 +966,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             if (!emitted.insert(emitted_id).second) {
                 continue;
             }
-            result.nodes.push_back(to_logical_node(node, matching_instance_id));
+            result.nodes.push_back(to_virtual_node(node, matching_instance_id));
         }
     }
 
@@ -1051,7 +1051,7 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
 
     std::unordered_set<std::string> emitted_spans;
     for (auto const &[_, graph_index] : graph_indexes_by_definition_id) {
-        for (auto const &node : graph_index.logical_nodes) {
+        for (auto const &node : graph_index.virtual_nodes) {
             for (auto const &span : node.source_spans) {
                 if (span.file_path != normalized_file_path) {
                     continue;
@@ -1135,7 +1135,7 @@ bool IvModuleSourceIntrospection::definition_uses_source_file(
         normalized_path_string(file_path));
 }
 
-LogicalNodeInfo IvModuleSourceIntrospection::get_logical_node(std::string const &node_id) const
+VirtualNodeInfo IvModuleSourceIntrospection::get_virtual_node(std::string const &node_id) const
 {
     std::scoped_lock lock(mutex);
     for (auto const &[_, inputs] : public_inputs_by_instance_id) {
@@ -1168,20 +1168,20 @@ LogicalNodeInfo IvModuleSourceIntrospection::get_logical_node(std::string const 
     if (index_it == graph_indexes_by_definition_id.end()) {
         throw std::runtime_error("unknown node id: " + node_id);
     }
-    auto const logical_it = index_it->second.logical_node_index_by_id.find(resolved->logical_node_id);
-    if (logical_it == index_it->second.logical_node_index_by_id.end()) {
+    auto const virtual_it = index_it->second.virtual_node_index_by_id.find(resolved->virtual_node_id);
+    if (virtual_it == index_it->second.virtual_node_index_by_id.end()) {
         throw std::runtime_error("unknown node id: " + node_id);
     }
-    return to_logical_node(
-        index_it->second.logical_nodes[logical_it->second],
+    return to_virtual_node(
+        index_it->second.virtual_nodes[virtual_it->second],
         resolved->instance_id);
 }
 
-std::vector<LogicalNodeInfo> IvModuleSourceIntrospection::get_logical_nodes(
+std::vector<VirtualNodeInfo> IvModuleSourceIntrospection::get_virtual_nodes(
     std::vector<std::string> const &node_ids) const
 {
     std::scoped_lock lock(mutex);
-    std::vector<LogicalNodeInfo> nodes;
+    std::vector<VirtualNodeInfo> nodes;
     nodes.reserve(node_ids.size());
     for (auto const &node_id : node_ids) {
         bool public_node = false;
@@ -1227,22 +1227,22 @@ std::vector<LogicalNodeInfo> IvModuleSourceIntrospection::get_logical_nodes(
         if (index_it == graph_indexes_by_definition_id.end()) {
             throw std::runtime_error("unknown node id: " + node_id);
         }
-        auto const logical_it = index_it->second.logical_node_index_by_id.find(resolved->logical_node_id);
-        if (logical_it == index_it->second.logical_node_index_by_id.end()) {
+        auto const virtual_it = index_it->second.virtual_node_index_by_id.find(resolved->virtual_node_id);
+        if (virtual_it == index_it->second.virtual_node_index_by_id.end()) {
             throw std::runtime_error("unknown node id: " + node_id);
         }
-        nodes.push_back(to_logical_node(
-            index_it->second.logical_nodes[logical_it->second],
+        nodes.push_back(to_virtual_node(
+            index_it->second.virtual_nodes[virtual_it->second],
             resolved->instance_id));
     }
     return nodes;
 }
 
-std::vector<LogicalNodeInfo> IvModuleSourceIntrospection::get_logical_nodes_for_instances(
+std::vector<VirtualNodeInfo> IvModuleSourceIntrospection::get_virtual_nodes_for_instances(
     std::vector<IvModuleInstanceInfo> const &instances) const
 {
     std::scoped_lock lock(mutex);
-    std::vector<LogicalNodeInfo> nodes;
+    std::vector<VirtualNodeInfo> nodes;
     for (auto const &instance : instances) {
         if (!instance.realized || instance.instance_id.empty() || instance.definition_id.empty()) {
             continue;
@@ -1251,8 +1251,8 @@ std::vector<LogicalNodeInfo> IvModuleSourceIntrospection::get_logical_nodes_for_
         if (index_it == graph_indexes_by_definition_id.end()) {
             continue;
         }
-        for (auto const &logical_node : index_it->second.logical_nodes) {
-            nodes.push_back(to_logical_node(logical_node, instance.instance_id));
+        for (auto const &virtual_node : index_it->second.virtual_nodes) {
+            nodes.push_back(to_virtual_node(virtual_node, instance.instance_id));
         }
         if (auto const public_it = public_inputs_by_instance_id.find(instance.instance_id);
             public_it != public_inputs_by_instance_id.end()) {
@@ -1294,11 +1294,11 @@ GraphInputPortDescriptor IvModuleSourceIntrospection::sample_graph_input_port_fo
     if (index_it == graph_indexes_by_definition_id.end()) {
         throw std::runtime_error("unknown node id: " + node_id);
     }
-    auto const logical_it = index_it->second.logical_node_index_by_id.find(resolved->logical_node_id);
-    if (logical_it == index_it->second.logical_node_index_by_id.end()) {
+    auto const virtual_it = index_it->second.virtual_node_index_by_id.find(resolved->virtual_node_id);
+    if (virtual_it == index_it->second.virtual_node_index_by_id.end()) {
         throw std::runtime_error("unknown node id: " + node_id);
     }
-    auto const &node = index_it->second.logical_nodes[logical_it->second];
+    auto const &node = index_it->second.virtual_nodes[virtual_it->second];
     if (concrete_member_ordinal.has_value() &&
         *concrete_member_ordinal >= node.members.size()) {
         throw std::runtime_error("unknown member ordinal " +
@@ -1306,7 +1306,7 @@ GraphInputPortDescriptor IvModuleSourceIntrospection::sample_graph_input_port_fo
                                  " for node id: " + node_id);
     }
     auto descriptor = sample_graph_input_port_for(node, concrete_member_ordinal, input_ordinal);
-    descriptor.logical_node_id = node_id;
+    descriptor.virtual_node_id = node_id;
     return descriptor;
 }
 } // namespace iv

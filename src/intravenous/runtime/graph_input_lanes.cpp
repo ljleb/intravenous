@@ -20,12 +20,12 @@ constexpr std::string_view metadata_dsp_graph = "dsp_graph";
 constexpr std::string_view metadata_graph_input = "dsp_graph.graph_input";
 constexpr std::string_view metadata_input = "dsp_graph.input";
 constexpr std::string_view metadata_knob = "dsp_graph.knob";
-constexpr std::string_view metadata_logical = "dsp_graph.logical";
+constexpr std::string_view metadata_virtual = "dsp_graph.virtual";
 constexpr std::string_view metadata_concrete = "dsp_graph.concrete";
 constexpr std::string_view metadata_sample = "dsp_graph.sample";
 constexpr std::string_view metadata_event = "dsp_graph.event";
 constexpr std::string_view metadata_module_instance_id = "dsp_graph.module_instance_id";
-constexpr std::string_view metadata_logical_node_id = "dsp_graph.logical_node_id";
+constexpr std::string_view metadata_virtual_node_id = "dsp_graph.virtual_node_id";
 constexpr std::string_view metadata_concrete_node_id = "dsp_graph.concrete_node_id";
 constexpr std::string_view metadata_port_kind = "dsp_graph.port_kind";
 constexpr std::string_view metadata_port_ordinal = "dsp_graph.port_ordinal";
@@ -73,9 +73,9 @@ std::optional<int> public_port_name_hash(GraphInputLanes::DesiredPublicGraphPort
     return static_cast<int>(std::hash<std::string>{}(port.port_name));
 }
 
-std::string runtime_logical_node_id(
+std::string runtime_virtual_node_id(
     std::string_view instance_id,
-    std::string_view logical_node_id);
+    std::string_view virtual_node_id);
 
 int local_hash_string(std::string const &value)
 {
@@ -126,18 +126,18 @@ void append_graph_input_port_descriptors(
     std::vector<GraphInputLanes::DesiredGraphInputPort> &ports,
     std::string const &instance_id,
     int module_instance_id,
-    std::string const &logical_node_id,
+    std::string const &virtual_node_id,
     std::optional<size_t> concrete_member_ordinal,
     PortKind port_kind,
-    std::span<IntrospectionPortInfo const> logical_ports)
+    std::span<IntrospectionPortInfo const> virtual_ports)
 {
-    ports.reserve(ports.size() + logical_ports.size());
-    for (auto const &port : logical_ports) {
+    ports.reserve(ports.size() + virtual_ports.size());
+    for (auto const &port : virtual_ports) {
         ports.push_back(GraphInputLanes::DesiredGraphInputPort{
             .instance_id = instance_id,
             .module_instance_id = module_instance_id,
             .port = GraphInputPortDescriptor{
-                .logical_node_id = logical_node_id,
+                .virtual_node_id = virtual_node_id,
                 .concrete_member_ordinal = concrete_member_ordinal,
                 .port_kind = port_kind,
                 .port_ordinal = port.ordinal,
@@ -145,7 +145,7 @@ void append_graph_input_port_descriptors(
                 .port_type = port.type,
                 .sample_channel_type = port.sample_channel_type,
             },
-            .default_connected = port.connectivity != LogicalPortConnectivity::disconnected,
+            .default_connected = port.connectivity != VirtualPortConnectivity::disconnected,
         });
     }
 }
@@ -162,7 +162,7 @@ bool batch_has_changes(TimelineLaneBatchUpdate const &batch)
 
 std::optional<ChannelTypeId> resolve_sample_channel_type(
     std::span<GraphInputLanes::DesiredGraphInputPort const> ports,
-    std::string_view logical_node_id,
+    std::string_view virtual_node_id,
     std::optional<size_t> concrete_member_ordinal,
     size_t port_ordinal)
 {
@@ -170,7 +170,7 @@ std::optional<ChannelTypeId> resolve_sample_channel_type(
         if (port.port.port_kind != PortKind::sample) {
             continue;
         }
-        if (port.port.logical_node_id != logical_node_id) {
+        if (port.port.virtual_node_id != virtual_node_id) {
             continue;
         }
         if (port.port.concrete_member_ordinal != concrete_member_ordinal) {
@@ -184,19 +184,19 @@ std::optional<ChannelTypeId> resolve_sample_channel_type(
     return std::nullopt;
 }
 
-std::string logical_knob_key(GraphInputLanes::DesiredGraphInputPort const &port)
+std::string virtual_knob_key(GraphInputLanes::DesiredGraphInputPort const &port)
 {
-    auto const logical_node_id = local_hash_string(port.port.logical_node_id);
+    auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);
     auto const concrete_node_id = local_hash_string(
-        port.port.logical_node_id
+        port.port.virtual_node_id
         + "\x1f"
         + "member:"
         + (port.port.concrete_member_ordinal.has_value()
             ? std::to_string(*port.port.concrete_member_ordinal)
-            : std::string("logical")));
+            : std::string("virtual")));
 
-    return "logical-knob:instance:" + std::to_string(port.module_instance_id)
-        + "\x1f" + "logical:" + std::to_string(logical_node_id)
+    return "virtual-knob:instance:" + std::to_string(port.module_instance_id)
+        + "\x1f" + "virtual:" + std::to_string(virtual_node_id)
         + "\x1f" + "concrete:" + std::to_string(concrete_node_id)
         + "\x1f" + "kind:" + std::to_string(static_cast<int>(port.port.port_kind == PortKind::event))
         + "\x1f" + "ordinal:" + std::to_string(port.port.port_ordinal)
@@ -206,16 +206,16 @@ std::string logical_knob_key(GraphInputLanes::DesiredGraphInputPort const &port)
             : std::string("none"));
 }
 
-std::string logical_event_input_key(GraphInputLanes::DesiredGraphInputPort const &port)
+std::string virtual_event_input_key(GraphInputLanes::DesiredGraphInputPort const &port)
 {
-    auto const logical_node_id = local_hash_string(port.port.logical_node_id);
+    auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);
     auto const concrete_node_id = local_hash_string(
-        port.port.logical_node_id
+        port.port.virtual_node_id
         + "\x1f"
-        + "member:logical");
+        + "member:virtual");
 
-    return "logical-event-input:instance:" + std::to_string(port.module_instance_id)
-        + "\x1f" + "logical:" + std::to_string(logical_node_id)
+    return "virtual-event-input:instance:" + std::to_string(port.module_instance_id)
+        + "\x1f" + "virtual:" + std::to_string(virtual_node_id)
         + "\x1f" + "concrete:" + std::to_string(concrete_node_id)
         + "\x1f" + "kind:" + std::to_string(static_cast<int>(port.port.port_kind == PortKind::event))
         + "\x1f" + "ordinal:" + std::to_string(port.port.port_ordinal)
@@ -224,17 +224,17 @@ std::string logical_event_input_key(GraphInputLanes::DesiredGraphInputPort const
 
 std::string sample_input_key(GraphInputLanes::DesiredGraphInputPort const &port)
 {
-    auto const logical_node_id = local_hash_string(port.port.logical_node_id);
+    auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);
     auto const concrete_node_id = local_hash_string(
-        port.port.logical_node_id
+        port.port.virtual_node_id
         + "\x1f"
         + "member:"
         + (port.port.concrete_member_ordinal.has_value()
             ? std::to_string(*port.port.concrete_member_ordinal)
-            : std::string("logical")));
+            : std::string("virtual")));
 
     return "sample-input:instance:" + std::to_string(port.module_instance_id)
-        + "\x1f" + "logical:" + std::to_string(logical_node_id)
+        + "\x1f" + "virtual:" + std::to_string(virtual_node_id)
         + "\x1f" + "concrete:" + std::to_string(concrete_node_id)
         + "\x1f" + "kind:" + std::to_string(static_cast<int>(port.port.port_kind == PortKind::event))
         + "\x1f" + "ordinal:" + std::to_string(port.port.port_ordinal)
@@ -246,17 +246,17 @@ std::string sample_input_key(GraphInputLanes::DesiredGraphInputPort const &port)
 
 std::string event_input_key(GraphInputLanes::DesiredGraphInputPort const &port)
 {
-    auto const logical_node_id = local_hash_string(port.port.logical_node_id);
+    auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);
     auto const concrete_node_id = local_hash_string(
-        port.port.logical_node_id
+        port.port.virtual_node_id
         + "\x1f"
         + "member:"
         + (port.port.concrete_member_ordinal.has_value()
             ? std::to_string(*port.port.concrete_member_ordinal)
-            : std::string("logical")));
+            : std::string("virtual")));
 
     return "event-input:instance:" + std::to_string(port.module_instance_id)
-        + "\x1f" + "logical:" + std::to_string(logical_node_id)
+        + "\x1f" + "virtual:" + std::to_string(virtual_node_id)
         + "\x1f" + "concrete:" + std::to_string(concrete_node_id)
         + "\x1f" + "kind:" + std::to_string(static_cast<int>(port.port.port_kind == PortKind::event))
         + "\x1f" + "ordinal:" + std::to_string(port.port.port_ordinal)
@@ -267,17 +267,17 @@ std::string output_identity_key(
     GraphInputLanes::DesiredGraphInputPort const &port,
     std::string_view role)
 {
-    auto const logical_node_id = local_hash_string(port.port.logical_node_id);
+    auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);
     auto const concrete_node_id = local_hash_string(
-        port.port.logical_node_id
+        port.port.virtual_node_id
         + "\x1f"
         + "member:"
         + (port.port.concrete_member_ordinal.has_value()
             ? std::to_string(*port.port.concrete_member_ordinal)
-            : std::string("logical")));
+            : std::string("virtual")));
 
     return std::string(role) + ":instance:" + std::to_string(port.module_instance_id)
-        + "\x1f" + "logical:" + std::to_string(logical_node_id)
+        + "\x1f" + "virtual:" + std::to_string(virtual_node_id)
         + "\x1f" + "concrete:" + std::to_string(concrete_node_id)
         + "\x1f" + "kind:" + std::to_string(static_cast<int>(port.port.port_kind == PortKind::event))
         + "\x1f" + "ordinal:" + std::to_string(port.port.port_ordinal)
@@ -304,7 +304,7 @@ std::string public_port_identity_key(GraphInputLanes::DesiredPublicGraphPort con
         + (port.input && (source_identity_hash.has_value() || port.concrete_member_ordinal.has_value())
             ? (port.concrete_member_ordinal.has_value()
                 ? "\x1fmember:" + std::to_string(*port.concrete_member_ordinal)
-                : "\x1fmember:logical")
+                : "\x1fmember:virtual")
             : "");
 }
 
@@ -313,13 +313,13 @@ std::string existing_identity_key(
     std::string_view role)
 {
     auto const module_instance_id = metadata.int_value(metadata_module_instance_id);
-    auto const logical_node_id = metadata.int_value(metadata_logical_node_id);
+    auto const virtual_node_id = metadata.int_value(metadata_virtual_node_id);
     auto const concrete_node_id = metadata.int_value(metadata_concrete_node_id);
     auto const port_kind = metadata.int_value(metadata_port_kind);
     auto const port_ordinal = metadata.int_value(metadata_port_ordinal);
     auto const channel_type = metadata.int_value(metadata_channel_type);
     if (!module_instance_id.has_value()
-        || !logical_node_id.has_value()
+        || !virtual_node_id.has_value()
         || !concrete_node_id.has_value()
         || !port_kind.has_value()
         || !port_ordinal.has_value()) {
@@ -328,7 +328,7 @@ std::string existing_identity_key(
 
     return std::string(role)
         + ":instance:" + std::to_string(*module_instance_id)
-        + "\x1f" + "logical:" + std::to_string(*logical_node_id)
+        + "\x1f" + "virtual:" + std::to_string(*virtual_node_id)
         + "\x1f" + "concrete:" + std::to_string(*concrete_node_id)
         + "\x1f" + "kind:" + std::to_string(*port_kind)
         + "\x1f" + "ordinal:" + std::to_string(*port_ordinal)
@@ -336,13 +336,13 @@ std::string existing_identity_key(
         + (channel_type.has_value() ? std::to_string(*channel_type) : std::string("none"));
 }
 
-std::string runtime_logical_node_id(
+std::string runtime_virtual_node_id(
     std::string_view instance_id,
-    std::string_view logical_node_id)
+    std::string_view virtual_node_id)
 {
     std::string value(instance_id);
-    value += "\x1flogical:";
-    value += logical_node_id;
+    value += "\x1fvirtual:";
+    value += virtual_node_id;
     return value;
 }
 
@@ -370,11 +370,11 @@ TypeErasedLaneNode make_sample_input_node(Sample default_value, std::string name
 }
 
 GraphInputPortDescriptor sample_output_descriptor(
-    GraphBuilder::LogicalSampleOutputFamily const &output,
+    GraphBuilder::VirtualSampleOutputFamily const &output,
     std::optional<size_t> member_ordinal)
 {
     return GraphInputPortDescriptor{
-        .logical_node_id = output.logical_node_id,
+        .virtual_node_id = output.virtual_node_id,
         .concrete_member_ordinal = member_ordinal,
         .port_kind = PortKind::sample,
         .port_ordinal = output.family_ordinal,
@@ -385,11 +385,11 @@ GraphInputPortDescriptor sample_output_descriptor(
 }
 
 GraphInputPortDescriptor event_output_descriptor(
-    GraphBuilder::LogicalEventOutput const &output,
+    GraphBuilder::VirtualEventOutput const &output,
     std::optional<size_t> member_ordinal)
 {
     return GraphInputPortDescriptor{
-        .logical_node_id = output.logical_node_id,
+        .virtual_node_id = output.virtual_node_id,
         .concrete_member_ordinal = member_ordinal,
         .port_kind = PortKind::event,
         .port_ordinal = output.source.port,
@@ -399,11 +399,11 @@ GraphInputPortDescriptor event_output_descriptor(
 }
 
 GraphInputPortDescriptor sample_port_descriptor(
-    GraphBuilder::LogicalSampleInputFamily const &input,
+    GraphBuilder::VirtualSampleInputFamily const &input,
     std::optional<size_t> member_ordinal)
 {
     return GraphInputPortDescriptor{
-        .logical_node_id = input.logical_node_id,
+        .virtual_node_id = input.virtual_node_id,
         .concrete_member_ordinal = member_ordinal,
         .port_kind = PortKind::sample,
         .port_ordinal = input.family_ordinal,
@@ -414,11 +414,11 @@ GraphInputPortDescriptor sample_port_descriptor(
 }
 
 GraphInputPortDescriptor event_port_descriptor(
-    GraphBuilder::LogicalEventInput const &input,
+    GraphBuilder::VirtualEventInput const &input,
     std::optional<size_t> member_ordinal)
 {
     return GraphInputPortDescriptor{
-        .logical_node_id = input.logical_node_id,
+        .virtual_node_id = input.virtual_node_id,
         .concrete_member_ordinal = member_ordinal,
         .port_kind = PortKind::event,
         .port_ordinal = input.target.port,
@@ -427,22 +427,22 @@ GraphInputPortDescriptor event_port_descriptor(
     };
 }
 
-GraphInputPortDescriptor with_runtime_logical_node_id(
+GraphInputPortDescriptor with_runtime_virtual_node_id(
     GraphInputPortDescriptor descriptor,
     std::string_view instance_id)
 {
-    descriptor.logical_node_id = runtime_logical_node_id(
+    descriptor.virtual_node_id = runtime_virtual_node_id(
         instance_id,
-        descriptor.logical_node_id);
+        descriptor.virtual_node_id);
     return descriptor;
 }
 
 bool builder_has_graph_port_descriptions(GraphBuilder const &builder)
 {
-    return !builder.logical_sample_input_families().families.empty()
-        || !builder.logical_inputs().event.empty()
-        || !builder.logical_sample_output_families().families.empty()
-        || !builder.logical_outputs().event.empty()
+    return !builder.virtual_sample_input_families().families.empty()
+        || !builder.virtual_inputs().event.empty()
+        || !builder.virtual_sample_output_families().families.empty()
+        || !builder.virtual_outputs().event.empty()
         || !builder.public_sample_input_families().families.empty()
         || !builder.public_event_inputs().empty()
         || !builder.public_sample_output_families().families.empty()
@@ -457,8 +457,8 @@ GraphInputLanes::graph_input_port_descriptors_for(
 {
     std::vector<DesiredGraphInputPort> ports;
     auto const module_instance_id = module_instance_numeric_id(instance.instance_id);
-    for (auto const &node : instance.introspection.logical_nodes) {
-        auto const runtime_node_id = runtime_logical_node_id(instance.instance_id, node.id);
+    for (auto const &node : instance.introspection.virtual_nodes) {
+        auto const runtime_node_id = runtime_virtual_node_id(instance.instance_id, node.id);
         append_graph_input_port_descriptors(
             ports,
             instance.instance_id,
@@ -503,8 +503,8 @@ GraphInputLanes::graph_output_port_descriptors_for(
 {
     std::vector<DesiredGraphInputPort> ports;
     auto const module_instance_id = module_instance_numeric_id(instance.instance_id);
-    for (auto const &node : instance.introspection.logical_nodes) {
-        auto const runtime_node_id = runtime_logical_node_id(instance.instance_id, node.id);
+    for (auto const &node : instance.introspection.virtual_nodes) {
+        auto const runtime_node_id = runtime_virtual_node_id(instance.instance_id, node.id);
         append_graph_input_port_descriptors(
             ports,
             instance.instance_id,
@@ -708,36 +708,36 @@ int GraphInputLanes::hash_string(std::string const &value)
     return static_cast<int>(std::hash<std::string>{}(value));
 }
 
-std::string GraphInputLanes::concrete_key(std::string_view logical_node_id, size_t member_ordinal)
+std::string GraphInputLanes::concrete_key(std::string_view virtual_node_id, size_t member_ordinal)
 {
-    return concrete_key_prefix(logical_node_id) + std::to_string(member_ordinal);
+    return concrete_key_prefix(virtual_node_id) + std::to_string(member_ordinal);
 }
 
-std::string GraphInputLanes::concrete_key_prefix(std::string_view logical_node_id)
+std::string GraphInputLanes::concrete_key_prefix(std::string_view virtual_node_id)
 {
-    return std::string(logical_node_id) + "\x1fmember:";
+    return std::string(virtual_node_id) + "\x1fmember:";
 }
 
 std::string GraphInputLanes::concrete_override_key(
-    std::string_view logical_node_id,
+    std::string_view virtual_node_id,
     size_t member_ordinal,
     size_t input_ordinal)
 {
-    return concrete_key(logical_node_id, member_ordinal) + "\x1finput:" + std::to_string(input_ordinal);
+    return concrete_key(virtual_node_id, member_ordinal) + "\x1finput:" + std::to_string(input_ordinal);
 }
 
 std::string GraphInputLanes::desired_port_key(DesiredGraphInputPort const &port)
 {
-    auto const logical_node_id = hash_string(port.port.logical_node_id);
+    auto const virtual_node_id = hash_string(port.port.virtual_node_id);
     auto const concrete_node_id = hash_string(
-        port.port.logical_node_id
+        port.port.virtual_node_id
         + "\x1fmember:"
         + (port.port.concrete_member_ordinal.has_value()
             ? std::to_string(*port.port.concrete_member_ordinal)
-            : std::string("logical")));
+            : std::string("virtual")));
 
     return "instance:" + std::to_string(port.module_instance_id)
-        + "\x1f" + "logical:" + std::to_string(logical_node_id)
+        + "\x1f" + "virtual:" + std::to_string(virtual_node_id)
         + "\x1f" + "concrete:" + std::to_string(concrete_node_id)
         + "\x1f" + "kind:" + std::to_string(static_cast<int>(port.port.port_kind == PortKind::event))
         + "\x1f" + "ordinal:" + std::to_string(port.port.port_ordinal)
@@ -749,11 +749,11 @@ std::string GraphInputLanes::desired_port_key(DesiredGraphInputPort const &port)
 
 std::string GraphInputLanes::graph_input_port_key(GraphInputPortDescriptor const &port)
 {
-    std::string key = std::to_string(hash_string(port.logical_node_id));
+    std::string key = std::to_string(hash_string(port.virtual_node_id));
     key += "\x1fmember:";
     key += port.concrete_member_ordinal.has_value()
         ? std::to_string(*port.concrete_member_ordinal)
-        : "logical";
+        : "virtual";
     key += "\x1fkind:";
     key += port.port_kind == PortKind::sample ? "sample" : "event";
     key += "\x1fordinal:";
@@ -778,7 +778,7 @@ std::string GraphInputLanes::public_sample_input_state_key(
     auto key = std::string(instance_id) + "\x1fpublic-source:" + std::string(source_identity);
     key += member_ordinal.has_value()
         ? "\x1fmember:" + std::to_string(*member_ordinal)
-        : "\x1fmember:logical";
+        : "\x1fmember:virtual";
     return key;
 }
 
@@ -795,7 +795,7 @@ std::string GraphInputLanes::public_port_external_id(DesiredPublicGraphPort cons
         id += "source:" + std::to_string(source_identity_hash);
         id += port.concrete_member_ordinal.has_value()
             ? ":member:" + std::to_string(*port.concrete_member_ordinal)
-            : ":member:logical";
+            : ":member:virtual";
     } else {
         id += "ordinal:" + std::to_string(port.port_ordinal);
         if (auto const name_hash = public_port_name_hash(port); name_hash.has_value()) {
@@ -830,7 +830,7 @@ GraphInputPortDescriptor GraphInputLanes::sample_input_descriptor(
     ChannelTypeId channel_type)
 {
     return GraphInputPortDescriptor{
-        .logical_node_id = node_id,
+        .virtual_node_id = node_id,
         .concrete_member_ordinal = member_ordinal,
         .port_kind = PortKind::sample,
         .port_ordinal = input_ordinal,
@@ -843,7 +843,7 @@ GraphInputPortDescriptor GraphInputLanes::sample_input_descriptor(
 LaneMetadata GraphInputLanes::graph_input_metadata(
     DesiredGraphInputPort const &port,
     bool knob,
-    bool logical,
+    bool is_virtual,
     bool concrete,
     bool sample,
     bool event)
@@ -856,8 +856,8 @@ LaneMetadata GraphInputLanes::graph_input_metadata(
     } else {
         metadata.set_unit(std::string(metadata_input));
     }
-    if (logical) {
-        metadata.set_unit(std::string(metadata_logical));
+    if (is_virtual) {
+        metadata.set_unit(std::string(metadata_virtual));
     }
     if (concrete) {
         metadata.set_unit(std::string(metadata_concrete));
@@ -869,15 +869,15 @@ LaneMetadata GraphInputLanes::graph_input_metadata(
         metadata.set_unit(std::string(metadata_event));
     }
     metadata.set_int(std::string(metadata_module_instance_id), port.module_instance_id);
-    metadata.set_int(std::string(metadata_logical_node_id), hash_string(port.port.logical_node_id));
+    metadata.set_int(std::string(metadata_virtual_node_id), hash_string(port.port.virtual_node_id));
     metadata.set_int(
         std::string(metadata_concrete_node_id),
         hash_string(
-            port.port.logical_node_id
+            port.port.virtual_node_id
             + "\x1fmember:"
             + (port.port.concrete_member_ordinal.has_value()
                 ? std::to_string(*port.port.concrete_member_ordinal)
-                : std::string("logical"))));
+                : std::string("virtual"))));
     metadata.set_int(
         std::string(metadata_port_kind),
         static_cast<int>(port.port.port_kind == PortKind::event));
@@ -899,7 +899,7 @@ LaneMetadata GraphInputLanes::graph_input_metadata(
 
 LaneMetadata GraphInputLanes::graph_output_metadata(
     DesiredGraphInputPort const &port,
-    bool logical,
+    bool is_virtual,
     bool concrete,
     bool sample,
     bool event)
@@ -908,8 +908,8 @@ LaneMetadata GraphInputLanes::graph_output_metadata(
     metadata.set_unit(std::string(metadata_dsp_graph));
     metadata.set_unit(std::string(metadata_graph_output));
     metadata.set_unit(std::string(metadata_output));
-    if (logical) {
-        metadata.set_unit(std::string(metadata_logical));
+    if (is_virtual) {
+        metadata.set_unit(std::string(metadata_virtual));
     }
     if (concrete) {
         metadata.set_unit(std::string(metadata_concrete));
@@ -921,15 +921,15 @@ LaneMetadata GraphInputLanes::graph_output_metadata(
         metadata.set_unit(std::string(metadata_event));
     }
     metadata.set_int(std::string(metadata_module_instance_id), port.module_instance_id);
-    metadata.set_int(std::string(metadata_logical_node_id), hash_string(port.port.logical_node_id));
+    metadata.set_int(std::string(metadata_virtual_node_id), hash_string(port.port.virtual_node_id));
     metadata.set_int(
         std::string(metadata_concrete_node_id),
         hash_string(
-            port.port.logical_node_id
+            port.port.virtual_node_id
             + "\x1fmember:"
             + (port.port.concrete_member_ordinal.has_value()
                 ? std::to_string(*port.port.concrete_member_ordinal)
-                : std::string("logical"))));
+                : std::string("virtual"))));
     metadata.set_int(
         std::string(metadata_port_kind),
         static_cast<int>(port.port.port_kind == PortKind::event));
@@ -998,27 +998,27 @@ bool GraphInputLanes::lane_metadata_matches_port(
     LaneMetadata const &metadata,
     DesiredGraphInputPort const &port)
 {
-    auto const logical_node_id = metadata.int_value(metadata_logical_node_id);
+    auto const virtual_node_id = metadata.int_value(metadata_virtual_node_id);
     auto const concrete_node_id = metadata.int_value(metadata_concrete_node_id);
     auto const port_kind = metadata.int_value(metadata_port_kind);
     auto const port_ordinal = metadata.int_value(metadata_port_ordinal);
     auto const channel_type = metadata.int_value(metadata_channel_type);
-    if (!logical_node_id.has_value()
+    if (!virtual_node_id.has_value()
         || !concrete_node_id.has_value()
         || !port_kind.has_value()
         || !port_ordinal.has_value()) {
         return false;
     }
 
-    auto const expected_logical = hash_string(port.port.logical_node_id);
+    auto const expected_virtual = hash_string(port.port.virtual_node_id);
     auto const expected_concrete = hash_string(
-        port.port.logical_node_id
+        port.port.virtual_node_id
         + "\x1fmember:"
         + (port.port.concrete_member_ordinal.has_value()
             ? std::to_string(*port.port.concrete_member_ordinal)
-            : std::string("logical")));
+            : std::string("virtual")));
 
-    return *logical_node_id == expected_logical
+    return *virtual_node_id == expected_virtual
         && *concrete_node_id == expected_concrete
         && *port_kind == static_cast<int>(port.port.port_kind == PortKind::event)
         && *port_ordinal == static_cast<int>(port.port.port_ordinal)
@@ -1030,19 +1030,19 @@ bool GraphInputLanes::lane_metadata_matches_port(
 
 bool GraphInputLanes::has_concrete_descriptor_for_port(
     std::span<DesiredGraphInputPort const> ports,
-    DesiredGraphInputPort const &logical_port)
+    DesiredGraphInputPort const &virtual_port)
 {
     for (auto const &port : ports) {
-        if (port.instance_id != logical_port.instance_id) {
+        if (port.instance_id != virtual_port.instance_id) {
             continue;
         }
-        if (port.port.logical_node_id != logical_port.port.logical_node_id) {
+        if (port.port.virtual_node_id != virtual_port.port.virtual_node_id) {
             continue;
         }
-        if (port.port.port_kind != logical_port.port.port_kind) {
+        if (port.port.port_kind != virtual_port.port.port_kind) {
             continue;
         }
-        if (port.port.port_ordinal != logical_port.port.port_ordinal) {
+        if (port.port.port_ordinal != virtual_port.port.port_ordinal) {
             continue;
         }
         if (port.port.concrete_member_ordinal.has_value()) {
@@ -1095,11 +1095,11 @@ std::atomic<Sample::storage>& GraphInputLanes::ensure_live_input_value_initializ
 }
 
 Sample GraphInputLanes::live_input_value_or_locked(
-    std::string_view logical_node_id,
+    std::string_view virtual_node_id,
     size_t input_ordinal,
     Sample fallback) const
 {
-    auto it = live_input_values.find(std::string(logical_node_id));
+    auto it = live_input_values.find(std::string(virtual_node_id));
     if (it == live_input_values.end() || it->second.size() <= input_ordinal) {
         return fallback;
     }
@@ -1110,13 +1110,13 @@ Sample GraphInputLanes::live_input_value_or_locked(
 }
 
 Sample GraphInputLanes::live_input_value_or_locked(
-    std::string_view logical_node_id,
+    std::string_view virtual_node_id,
     size_t member_ordinal,
     size_t input_ordinal,
     Sample fallback) const
 {
-    auto const override = concrete_override_key(logical_node_id, member_ordinal, input_ordinal);
-    auto const key = concrete_key(logical_node_id, member_ordinal);
+    auto const override = concrete_override_key(virtual_node_id, member_ordinal, input_ordinal);
+    auto const key = concrete_key(virtual_node_id, member_ordinal);
     if (concrete_live_input_overrides.contains(override)) {
         auto it = live_input_values.find(key);
         if (it != live_input_values.end()
@@ -1125,7 +1125,7 @@ Sample GraphInputLanes::live_input_value_or_locked(
             return Sample{it->second[input_ordinal]->load(std::memory_order_relaxed)};
         }
     }
-    return live_input_value_or_locked(logical_node_id, input_ordinal, fallback);
+    return live_input_value_or_locked(virtual_node_id, input_ordinal, fallback);
 }
 
 std::atomic<Sample::storage> const* GraphInputLanes::live_input_value_ptr_or_locked(
@@ -1136,7 +1136,7 @@ std::atomic<Sample::storage> const* GraphInputLanes::live_input_value_ptr_or_loc
 }
 
 void GraphInputLanes::mark_instances_requiring_rebuild_locked(
-    std::string_view logical_node_id,
+    std::string_view virtual_node_id,
     std::optional<size_t> member_ordinal,
     size_t input_ordinal)
 {
@@ -1144,7 +1144,7 @@ void GraphInputLanes::mark_instances_requiring_rebuild_locked(
         if (port.port.port_kind != PortKind::sample) {
             continue;
         }
-        if (port.port.logical_node_id != logical_node_id) {
+        if (port.port.virtual_node_id != virtual_node_id) {
             continue;
         }
         if (port.port.port_ordinal != input_ordinal) {
@@ -1159,12 +1159,12 @@ void GraphInputLanes::mark_instances_requiring_rebuild_locked(
     }
 }
 
-void GraphInputLanes::mark_instances_requiring_rebuild_for_logical_sample_input_locked(
-    std::string_view logical_node_id,
+void GraphInputLanes::mark_instances_requiring_rebuild_for_virtual_sample_input_locked(
+    std::string_view virtual_node_id,
     size_t input_ordinal)
 {
     mark_instances_requiring_rebuild_locked(
-        logical_node_id,
+        virtual_node_id,
         std::nullopt,
         input_ordinal);
 }
@@ -1349,7 +1349,7 @@ void GraphInputLanes::reconcile_public_ports_locked(TimelineLaneBatchUpdate *bat
     std::unordered_set<std::string> reconciled_public_port_keys;
     for (auto const &port : desired_public_input_ports) {
         // Inputs without a source annotation retain the legacy one-port/one-
-        // lane behavior.  Annotated inputs add a logical lane keyed by source
+        // lane behavior.  Annotated inputs add a virtual lane keyed by source
         // identity and, on demand, a lane for an individual evaluation.
         if (port.source_identity.empty()) {
             if (reconciled_public_port_keys.insert(public_port_key(port)).second) {
@@ -1358,19 +1358,19 @@ void GraphInputLanes::reconcile_public_ports_locked(TimelineLaneBatchUpdate *bat
             continue;
         }
 
-        auto const logical_state_key = public_sample_input_state_key(
+        auto const virtual_state_key = public_sample_input_state_key(
             port.instance_id, port.source_identity, std::nullopt);
-        auto const logical_is_timeline = [&] {
+        auto const virtual_is_timeline = [&] {
             if (port.port_kind == PortKind::event) {
-                auto const it = public_event_input_states_by_key.find(logical_state_key);
+                auto const it = public_event_input_states_by_key.find(virtual_state_key);
                 return it == public_event_input_states_by_key.end()
                     || it->second == ProjectEventInputState::timeline_lane;
             }
-            auto const it = public_sample_input_states_by_key.find(logical_state_key);
+            auto const it = public_sample_input_states_by_key.find(virtual_state_key);
             return it == public_sample_input_states_by_key.end()
                 || it->second == ProjectSampleInputState::timeline_lane;
         }();
-        if (logical_is_timeline
+        if (virtual_is_timeline
             && reconciled_public_port_keys.insert(public_port_key(port)).second) {
             reconcile_port(port);
         }
@@ -1401,29 +1401,29 @@ void GraphInputLanes::reconcile_public_ports_locked(TimelineLaneBatchUpdate *bat
             if (reconciled_public_port_keys.insert(public_port_key(port)).second) reconcile_port(port);
             continue;
         }
-        auto const logical_key = public_sample_input_state_key(
+        auto const virtual_key = public_sample_input_state_key(
             port.instance_id, port.source_identity, std::nullopt);
         auto const member_key = public_sample_input_state_key(
             port.instance_id, port.source_identity, port.port_ordinal);
         bool connected = false;
         if (port.port_kind == PortKind::sample) {
-            auto const logical_it = public_sample_output_states_by_key.find(logical_key);
-            auto const logical_connected = logical_it == public_sample_output_states_by_key.end()
-                || logical_it->second == ProjectSampleOutputState::timeline_lane;
+            auto const virtual_it = public_sample_output_states_by_key.find(virtual_key);
+            auto const virtual_connected = virtual_it == public_sample_output_states_by_key.end()
+                || virtual_it->second == ProjectSampleOutputState::timeline_lane;
             auto const member_it = public_sample_output_states_by_key.find(member_key);
             auto const member_state = member_it == public_sample_output_states_by_key.end()
-                ? ProjectSampleOutputState::logical : member_it->second;
+                ? ProjectSampleOutputState::virtual_port : member_it->second;
             connected = member_state == ProjectSampleOutputState::timeline_lane
-                || (member_state == ProjectSampleOutputState::logical && logical_connected);
+                || (member_state == ProjectSampleOutputState::virtual_port && virtual_connected);
         } else {
-            auto const logical_it = public_event_output_states_by_key.find(logical_key);
-            auto const logical_connected = logical_it == public_event_output_states_by_key.end()
-                || logical_it->second == ProjectEventOutputState::timeline_lane;
+            auto const virtual_it = public_event_output_states_by_key.find(virtual_key);
+            auto const virtual_connected = virtual_it == public_event_output_states_by_key.end()
+                || virtual_it->second == ProjectEventOutputState::timeline_lane;
             auto const member_it = public_event_output_states_by_key.find(member_key);
             auto const member_state = member_it == public_event_output_states_by_key.end()
-                ? ProjectEventOutputState::logical : member_it->second;
+                ? ProjectEventOutputState::virtual_port : member_it->second;
             connected = member_state == ProjectEventOutputState::timeline_lane
-                || (member_state == ProjectEventOutputState::logical && logical_connected);
+                || (member_state == ProjectEventOutputState::virtual_port && virtual_connected);
         }
         if (connected && reconciled_public_port_keys.insert(public_port_key(port)).second) {
             reconcile_port(port);
@@ -1480,18 +1480,18 @@ std::optional<LaneId> GraphInputLanes::effective_public_sample_input_lane_locked
         return public_graph_port_lane_for(port);
     }
 
-    auto const logical_state_key = public_sample_input_state_key(
+    auto const virtual_state_key = public_sample_input_state_key(
         port.instance_id, port.source_identity, std::nullopt);
-    auto const logical_state_it = public_sample_input_states_by_key.find(logical_state_key);
-    auto const logical_state = logical_state_it == public_sample_input_states_by_key.end()
+    auto const virtual_state_it = public_sample_input_states_by_key.find(virtual_state_key);
+    auto const virtual_state = virtual_state_it == public_sample_input_states_by_key.end()
         ? ProjectSampleInputState::timeline_lane
-        : logical_state_it->second;
+        : virtual_state_it->second;
 
     auto const member_state_key = public_sample_input_state_key(
         port.instance_id, port.source_identity, port.port_ordinal);
     auto const member_state_it = public_sample_input_states_by_key.find(member_state_key);
     auto const member_state = member_state_it == public_sample_input_states_by_key.end()
-        ? ProjectSampleInputState::logical_follow
+        ? ProjectSampleInputState::virtual_follow
         : member_state_it->second;
 
     if (member_state == ProjectSampleInputState::disconnected) {
@@ -1502,10 +1502,10 @@ std::optional<LaneId> GraphInputLanes::effective_public_sample_input_lane_locked
         concrete_port.concrete_member_ordinal = port.port_ordinal;
         return public_graph_port_lane_for(concrete_port);
     }
-    if (logical_state == ProjectSampleInputState::disconnected) {
+    if (virtual_state == ProjectSampleInputState::disconnected) {
         return std::nullopt;
     }
-    if (logical_state == ProjectSampleInputState::overridden) {
+    if (virtual_state == ProjectSampleInputState::overridden) {
         return std::nullopt;
     }
     return public_graph_port_lane_for(port);
@@ -1517,15 +1517,15 @@ std::optional<LaneId> GraphInputLanes::effective_public_event_input_lane_locked(
     if (port.port_kind != PortKind::event || port.source_identity.empty()) {
         return public_graph_port_lane_for(port);
     }
-    auto const logical_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
-    auto const logical_it = public_event_input_states_by_key.find(logical_key);
-    auto const logical_state = logical_it == public_event_input_states_by_key.end()
-        ? ProjectEventInputState::timeline_lane : logical_it->second;
+    auto const virtual_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
+    auto const virtual_it = public_event_input_states_by_key.find(virtual_key);
+    auto const virtual_state = virtual_it == public_event_input_states_by_key.end()
+        ? ProjectEventInputState::timeline_lane : virtual_it->second;
     auto const member_key = public_sample_input_state_key(port.instance_id, port.source_identity, port.port_ordinal);
     auto const member_it = public_event_input_states_by_key.find(member_key);
     auto const member_state = member_it == public_event_input_states_by_key.end()
-        ? ProjectEventInputState::logical_follow : member_it->second;
-    if (member_state == ProjectEventInputState::disconnected || logical_state == ProjectEventInputState::disconnected) {
+        ? ProjectEventInputState::virtual_follow : member_it->second;
+    if (member_state == ProjectEventInputState::disconnected || virtual_state == ProjectEventInputState::disconnected) {
         return std::nullopt;
     }
     if (member_state == ProjectEventInputState::timeline_lane) {
@@ -1540,14 +1540,14 @@ std::optional<GraphInputLanes::ConcreteOutputState>
 GraphInputLanes::effective_concrete_output_state_locked(
     DesiredGraphInputPort const &port) const
 {
-    auto logical_port = port;
-    logical_port.port.concrete_member_ordinal = std::nullopt;
-    bool const logical_is_timeline_lane =
-        logical_output_is_timeline_lane_locked(logical_port);
+    auto virtual_port = port;
+    virtual_port.port.concrete_member_ordinal = std::nullopt;
+    bool const virtual_is_timeline_lane =
+        virtual_output_is_timeline_lane_locked(virtual_port);
 
     std::optional<ConcreteOutputState> state =
-        logical_is_timeline_lane
-            ? std::optional<ConcreteOutputState>(ConcreteOutputState::logical)
+        virtual_is_timeline_lane
+            ? std::optional<ConcreteOutputState>(ConcreteOutputState::virtual_port)
             : std::nullopt;
     if (auto const it = concrete_output_states_by_key.find(graph_input_port_key(port.port));
         it != concrete_output_states_by_key.end()) {
@@ -1556,17 +1556,17 @@ GraphInputLanes::effective_concrete_output_state_locked(
     return state;
 }
 
-bool GraphInputLanes::logical_output_is_timeline_lane_locked(
+bool GraphInputLanes::virtual_output_is_timeline_lane_locked(
     DesiredGraphInputPort const &port) const
 {
-    auto const it = logical_output_states_by_key.find(graph_input_port_key(port.port));
-    return it != logical_output_states_by_key.end()
-        && it->second == LogicalOutputState::timeline_lane;
+    auto const it = virtual_output_states_by_key.find(graph_input_port_key(port.port));
+    return it != virtual_output_states_by_key.end()
+        && it->second == VirtualOutputState::timeline_lane;
 }
 
 void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *batch)
 {
-    std::unordered_map<std::string, ExistingTrackedLane> logical_outputs_by_key;
+    std::unordered_map<std::string, ExistingTrackedLane> virtual_outputs_by_key;
     std::unordered_map<std::string, ExistingTrackedLane> concrete_outputs_by_key;
     std::unordered_set<std::uint64_t> used_lane_ids;
 
@@ -1576,9 +1576,9 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
             || tracked.metadata.has_unit(metadata_public)) {
             continue;
         }
-        if (tracked.metadata.has_unit(metadata_logical)) {
-            logical_outputs_by_key.emplace(
-                existing_identity_key(tracked.metadata, "logical-output"),
+        if (tracked.metadata.has_unit(metadata_virtual)) {
+            virtual_outputs_by_key.emplace(
+                existing_identity_key(tracked.metadata, "virtual-output"),
                 tracked);
         } else if (tracked.metadata.has_unit(metadata_concrete)) {
             concrete_outputs_by_key.emplace(
@@ -1591,22 +1591,22 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
         if (port.port.concrete_member_ordinal.has_value()) {
             continue;
         }
-        if (!logical_output_is_timeline_lane_locked(port)) {
+        if (!virtual_output_is_timeline_lane_locked(port)) {
             continue;
         }
 
         bool const is_event = port.port.port_kind == PortKind::event;
-        auto const key = output_identity_key(port, "logical-output");
+        auto const key = output_identity_key(port, "virtual-output");
         LaneId lane {};
-        if (auto const it = logical_outputs_by_key.find(key); it != logical_outputs_by_key.end()) {
+        if (auto const it = virtual_outputs_by_key.find(key); it != virtual_outputs_by_key.end()) {
             lane = it->second.lane;
         } else {
             lane = stable_lane_id_for_key(key);
             if (batch != nullptr) {
                 auto metadata = graph_output_metadata(port, true, false, !is_event, is_event);
                 auto external_id = lane_external_id_or_new(
-                    logical_output_lane_ids_by_key,
-                    logical_outputs_by_key,
+                    virtual_output_lane_ids_by_key,
+                    virtual_outputs_by_key,
                     key);
                 batch->upserts.push_back(TimelineLaneUpsert{
                     .lane = lane,
@@ -1690,20 +1690,20 @@ void GraphInputLanes::reconcile_output_ports_locked(TimelineLaneBatchUpdate *bat
 
 LaneId GraphInputLanes::graph_output_lane_for(
     GraphInputPortDescriptor const &port,
-    bool logical_aggregation)
+    bool virtual_aggregation)
 {
     std::scoped_lock lock(mutex);
     for (auto const &tracked : tracked_lanes) {
         if (!tracked.metadata.has_unit(metadata_graph_output)) {
             continue;
         }
-        if (logical_aggregation && !tracked.metadata.has_unit(metadata_logical)) {
+        if (virtual_aggregation && !tracked.metadata.has_unit(metadata_virtual)) {
             continue;
         }
-        if (!logical_aggregation && !tracked.metadata.has_unit(metadata_concrete)) {
+        if (!virtual_aggregation && !tracked.metadata.has_unit(metadata_concrete)) {
             continue;
         }
-        if (tracked.metadata.int_value(metadata_logical_node_id) != hash_string(port.logical_node_id)) {
+        if (tracked.metadata.int_value(metadata_virtual_node_id) != hash_string(port.virtual_node_id)) {
             continue;
         }
         if (tracked.metadata.int_value(metadata_port_kind)
@@ -1731,7 +1731,7 @@ LaneId GraphInputLanes::graph_output_lane_for(
 }
 
 void GraphInputLanes::mark_instances_requiring_output_rebuild_locked(
-    std::string_view logical_node_id,
+    std::string_view virtual_node_id,
     std::optional<size_t> member_ordinal,
     size_t output_ordinal,
     PortKind port_kind)
@@ -1740,7 +1740,7 @@ void GraphInputLanes::mark_instances_requiring_output_rebuild_locked(
         if (port.port.port_kind != port_kind) {
             continue;
         }
-        if (port.port.logical_node_id != logical_node_id) {
+        if (port.port.virtual_node_id != virtual_node_id) {
             continue;
         }
         if (port.port.port_ordinal != output_ordinal) {
@@ -1756,8 +1756,8 @@ void GraphInputLanes::mark_instances_requiring_output_rebuild_locked(
 GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatchUpdate *batch)
 {
     GraphInputLaneBindings result;
-    std::unordered_map<std::string, ExistingTrackedLane> logical_sample_knobs_by_key;
-    std::unordered_map<std::string, ExistingTrackedLane> logical_event_inputs_by_key;
+    std::unordered_map<std::string, ExistingTrackedLane> virtual_sample_knobs_by_key;
+    std::unordered_map<std::string, ExistingTrackedLane> virtual_event_inputs_by_key;
     std::unordered_map<std::string, ExistingTrackedLane> sample_inputs_by_key;
     std::unordered_map<std::string, ExistingTrackedLane> event_inputs_by_key;
     std::unordered_set<std::uint64_t> used_lane_ids;
@@ -1769,16 +1769,16 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             continue;
         }
         if (tracked.metadata.has_unit(metadata_knob)
-            && tracked.metadata.has_unit(metadata_logical)
+            && tracked.metadata.has_unit(metadata_virtual)
             && tracked.metadata.has_unit(metadata_sample)) {
-            logical_sample_knobs_by_key.emplace(
-                existing_identity_key(tracked.metadata, "logical-knob"),
+            virtual_sample_knobs_by_key.emplace(
+                existing_identity_key(tracked.metadata, "virtual-knob"),
                 tracked);
         } else if (tracked.metadata.has_unit(metadata_input)
-            && tracked.metadata.has_unit(metadata_logical)
+            && tracked.metadata.has_unit(metadata_virtual)
             && tracked.metadata.has_unit(metadata_event)) {
-            logical_event_inputs_by_key.emplace(
-                existing_identity_key(tracked.metadata, "logical-event-input"),
+            virtual_event_inputs_by_key.emplace(
+                existing_identity_key(tracked.metadata, "virtual-event-input"),
                 tracked);
         } else if (tracked.metadata.has_unit(metadata_input)
             && tracked.metadata.has_unit(metadata_sample)) {
@@ -1793,22 +1793,22 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
         }
     }
 
-    std::unordered_map<std::string, LaneId> logical_sample_knob_lanes;
+    std::unordered_map<std::string, LaneId> virtual_sample_knob_lanes;
     for (auto const &port : desired_ports) {
         if (port.port.port_kind != PortKind::sample || port.port.concrete_member_ordinal.has_value()) {
             continue;
         }
         auto const state_key = graph_input_port_key(port.port);
-        auto const state = logical_sample_knob_states_by_key.find(state_key);
-        if (state == logical_sample_knob_states_by_key.end()
-            || state->second != LogicalSampleKnobState::timeline_lane) {
+        auto const state = virtual_sample_knob_states_by_key.find(state_key);
+        if (state == virtual_sample_knob_states_by_key.end()
+            || state->second != VirtualSampleKnobState::timeline_lane) {
             continue;
         }
 
-        auto const key = logical_knob_key(port);
+        auto const key = virtual_knob_key(port);
         LaneId lane {};
-        if (auto const it = logical_sample_knobs_by_key.find(key);
-            it != logical_sample_knobs_by_key.end()) {
+        if (auto const it = virtual_sample_knobs_by_key.find(key);
+            it != virtual_sample_knobs_by_key.end()) {
             lane = it->second.lane;
         } else {
             lane = stable_lane_id_for_key(key);
@@ -1821,10 +1821,10 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                     true,
                     false);
                 auto const current_value =
-                    live_input_value_or_locked(port.port.logical_node_id, port.port.port_ordinal, Sample{0.0f});
+                    live_input_value_or_locked(port.port.virtual_node_id, port.port.port_ordinal, Sample{0.0f});
                 auto external_id = lane_external_id_or_new(
-                    logical_sample_knob_lane_ids_by_key,
-                    logical_sample_knobs_by_key,
+                    virtual_sample_knob_lane_ids_by_key,
+                    virtual_sample_knobs_by_key,
                     key);
                 batch->upserts.push_back(TimelineLaneUpsert{
                     .lane = lane,
@@ -1841,8 +1841,8 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             }
         }
         used_lane_ids.insert(lane.value);
-        logical_sample_knob_lanes.emplace(key, lane);
-        result.logical_sample_knobs.push_back(GraphInputLaneBinding{
+        virtual_sample_knob_lanes.emplace(key, lane);
+        result.virtual_sample_knobs.push_back(GraphInputLaneBinding{
             .port = port.port,
             .knob_lane = lane,
         });
@@ -1857,11 +1857,11 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             continue;
         }
 
-        auto const logical_key = logical_knob_key(DesiredGraphInputPort{
+        auto const virtual_key = virtual_knob_key(DesiredGraphInputPort{
             .instance_id = port.instance_id,
             .module_instance_id = port.module_instance_id,
             .port = GraphInputPortDescriptor{
-                .logical_node_id = port.port.logical_node_id,
+                .virtual_node_id = port.port.virtual_node_id,
                 .concrete_member_ordinal = std::nullopt,
                 .port_kind = port.port.port_kind,
                 .port_ordinal = port.port.port_ordinal,
@@ -1870,18 +1870,18 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                 .sample_channel_type = port.port.sample_channel_type,
             },
         });
-        std::optional<LaneId> logical_knob;
-        if (auto const it = logical_sample_knob_lanes.find(logical_key);
-            it != logical_sample_knob_lanes.end()) {
-            logical_knob = it->second;
+        std::optional<LaneId> virtual_knob;
+        if (auto const it = virtual_sample_knob_lanes.find(virtual_key);
+            it != virtual_sample_knob_lanes.end()) {
+            virtual_knob = it->second;
         }
 
         ConcreteSampleInputState state =
-            logical_knob.has_value()
-                ? ConcreteSampleInputState::logical_follow
+            virtual_knob.has_value()
+                ? ConcreteSampleInputState::virtual_follow
                 : ConcreteSampleInputState::disconnected;
         if (!port.port.concrete_member_ordinal.has_value()) {
-            state = ConcreteSampleInputState::logical_follow;
+            state = ConcreteSampleInputState::virtual_follow;
         }
         if (auto const it =
                 concrete_sample_input_states_by_key.find(graph_input_port_key(port.port));
@@ -1932,28 +1932,28 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
         result.sample_inputs.push_back(GraphInputLaneBinding{
             .port = port.port,
             .graph_input_lane = graph_input_lane,
-            .logical_knob_lane = logical_knob,
+            .virtual_knob_lane = virtual_knob,
         });
     }
 
-    auto ensure_logical_event_lane = [&](DesiredGraphInputPort const &port) {
-        auto logical_port = port;
-        logical_port.port.concrete_member_ordinal = std::nullopt;
-        auto const key = logical_event_input_key(logical_port);
-        if (auto const it = logical_event_inputs_by_key.find(key);
-            it != logical_event_inputs_by_key.end()) {
+    auto ensure_virtual_event_lane = [&](DesiredGraphInputPort const &port) {
+        auto virtual_port = port;
+        virtual_port.port.concrete_member_ordinal = std::nullopt;
+        auto const key = virtual_event_input_key(virtual_port);
+        if (auto const it = virtual_event_inputs_by_key.find(key);
+            it != virtual_event_inputs_by_key.end()) {
             used_lane_ids.insert(it->second.lane.value);
             return it->second.lane;
         }
 
         auto const lane = stable_lane_id_for_key(key);
         auto const external_id = lane_external_id_or_new(
-            logical_event_input_lane_ids_by_key,
-            logical_event_inputs_by_key,
+            virtual_event_input_lane_ids_by_key,
+            virtual_event_inputs_by_key,
             key);
         if (batch != nullptr) {
             auto metadata = graph_input_metadata(
-                logical_port,
+                virtual_port,
                 false,
                 true,
                 false,
@@ -1968,13 +1968,13 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
                 .metadata = std::move(metadata),
             });
         }
-        logical_event_inputs_by_key.emplace(
+        virtual_event_inputs_by_key.emplace(
             key,
             ExistingTrackedLane{
                 .lane = lane,
                 .external_id = external_id,
                 .metadata = graph_input_metadata(
-                    logical_port,
+                    virtual_port,
                     false,
                     true,
                     false,
@@ -1997,7 +1997,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
         ConcreteEventInputState state =
             port.default_connected
                 ? ConcreteEventInputState::disconnected
-                : ConcreteEventInputState::logical_follow;
+                : ConcreteEventInputState::virtual_follow;
         if (auto const it =
                 concrete_event_input_states_by_key.find(graph_input_port_key(port.port));
             it != concrete_event_input_states_by_key.end()) {
@@ -2005,8 +2005,8 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
         }
 
         LaneId graph_input_lane {};
-        if (state == ConcreteEventInputState::logical_follow) {
-            graph_input_lane = ensure_logical_event_lane(port);
+        if (state == ConcreteEventInputState::virtual_follow) {
+            graph_input_lane = ensure_virtual_event_lane(port);
         } else if (state == ConcreteEventInputState::timeline_lane) {
             auto const key = event_input_key(port);
             if (auto const it = event_inputs_by_key.find(key);
@@ -2299,23 +2299,23 @@ GraphInputLanes::collect_live_input_snapshots(
     snapshots.reserve(requests.size());
     for (auto const &request : requests) {
         snapshots.push_back(IvModuleSourceIntrospectionLiveInputSnapshot{
-            .logical_node_id = request.logical_node_id,
+            .virtual_node_id = request.virtual_node_id,
             .member_ordinal = request.member_ordinal,
             .input_ordinal = request.input_ordinal,
             .current_value = request.member_ordinal.has_value()
                 ? live_input_value_or_locked(
-                    request.logical_node_id,
+                    request.virtual_node_id,
                     *request.member_ordinal,
                     request.input_ordinal,
                     request.fallback)
                 : live_input_value_or_locked(
-                    request.logical_node_id,
+                    request.virtual_node_id,
                     request.input_ordinal,
                     request.fallback),
             .has_concrete_override = request.member_ordinal.has_value()
                 ? concrete_live_input_overrides.contains(
                     concrete_override_key(
-                        request.logical_node_id,
+                        request.virtual_node_id,
                         *request.member_ordinal,
                         request.input_ordinal))
                 : false,
@@ -2341,11 +2341,11 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
 
     for (auto const &port : request.ports) {
         if (port.port_kind == PortKind::sample && !port.concrete_member_ordinal.has_value()) {
-            auto logical_lane = find_lane([&](ExistingTrackedLane const &tracked) {
+            auto virtual_lane = find_lane([&](ExistingTrackedLane const &tracked) {
                 return tracked.metadata.has_unit(metadata_knob)
-                    && tracked.metadata.has_unit(metadata_logical)
+                    && tracked.metadata.has_unit(metadata_virtual)
                     && tracked.metadata.has_unit(metadata_sample)
-                    && tracked.metadata.int_value(metadata_logical_node_id) == hash_string(port.logical_node_id)
+                    && tracked.metadata.int_value(metadata_virtual_node_id) == hash_string(port.virtual_node_id)
                     && tracked.metadata.int_value(metadata_port_kind) == 0
                     && tracked.metadata.int_value(metadata_port_ordinal) == static_cast<int>(port.port_ordinal)
                     && tracked.metadata.int_value(metadata_channel_type)
@@ -2353,10 +2353,10 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
                             ? std::optional<int>(static_cast<int>(*port.sample_channel_type))
                             : std::nullopt);
             });
-            if (logical_lane) {
-                bindings.logical_sample_knobs.push_back(GraphInputLaneBinding{
+            if (virtual_lane) {
+                bindings.virtual_sample_knobs.push_back(GraphInputLaneBinding{
                     .port = port,
-                    .knob_lane = logical_lane,
+                    .knob_lane = virtual_lane,
                 });
             }
         }
@@ -2368,7 +2368,7 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
                 return tracked.metadata.has_unit(metadata_knob)
                     && tracked.metadata.has_unit(metadata_concrete)
                     && tracked.metadata.has_unit(metadata_sample)
-                    && tracked.metadata.int_value(metadata_logical_node_id) == hash_string(port.logical_node_id)
+                    && tracked.metadata.int_value(metadata_virtual_node_id) == hash_string(port.virtual_node_id)
                     && tracked.metadata.int_value(metadata_port_kind) == 0
                     && tracked.metadata.int_value(metadata_port_ordinal) == static_cast<int>(port.port_ordinal)
                     && tracked.metadata.int_value(metadata_channel_type)
@@ -2383,7 +2383,7 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
             auto graph_input_lane = find_lane([&](ExistingTrackedLane const &tracked) {
                 return tracked.metadata.has_unit(metadata_input)
                     && tracked.metadata.has_unit(metadata_sample)
-                    && tracked.metadata.int_value(metadata_logical_node_id) == hash_string(port.logical_node_id)
+                    && tracked.metadata.int_value(metadata_virtual_node_id) == hash_string(port.virtual_node_id)
                     && tracked.metadata.int_value(metadata_port_kind) == 0
                     && tracked.metadata.int_value(metadata_port_ordinal) == static_cast<int>(port.port_ordinal)
                     && tracked.metadata.int_value(metadata_channel_type)
@@ -2396,12 +2396,12 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
                             : std::nullopt);
             });
             if (concrete_lane || graph_input_lane) {
-                std::optional<LaneId> logical_knob;
-                for (auto const &binding : bindings.logical_sample_knobs) {
-                    if (binding.port.logical_node_id == port.logical_node_id
+                std::optional<LaneId> virtual_knob;
+                for (auto const &binding : bindings.virtual_sample_knobs) {
+                    if (binding.port.virtual_node_id == port.virtual_node_id
                         && binding.port.port_kind == port.port_kind
                         && binding.port.port_ordinal == port.port_ordinal) {
-                        logical_knob = binding.knob_lane;
+                        virtual_knob = binding.knob_lane;
                         break;
                     }
                 }
@@ -2409,7 +2409,7 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
                     .port = port,
                     .knob_lane = concrete_lane,
                     .graph_input_lane = graph_input_lane,
-                    .logical_knob_lane = logical_knob,
+                    .virtual_knob_lane = virtual_knob,
                 });
             }
             continue;
@@ -2418,7 +2418,7 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
         auto graph_input_lane = find_lane([&](ExistingTrackedLane const &tracked) {
             return tracked.metadata.has_unit(metadata_input)
                 && tracked.metadata.has_unit(metadata_event)
-                && tracked.metadata.int_value(metadata_logical_node_id) == hash_string(port.logical_node_id)
+                && tracked.metadata.int_value(metadata_virtual_node_id) == hash_string(port.virtual_node_id)
                 && tracked.metadata.int_value(metadata_port_kind) == 1
                 && tracked.metadata.int_value(metadata_port_ordinal) == static_cast<int>(port.port_ordinal)
                 && tracked.metadata.int_value(metadata_member_ordinal)
@@ -2478,17 +2478,17 @@ void GraphInputLanes::set_sample_input_value(
                 std::nullopt,
                 request.input_ordinal,
                 sample_channel_type));
-            auto const knob_state = logical_sample_knob_states_by_key.find(port_key);
-            bool const timeline_knob = knob_state != logical_sample_knob_states_by_key.end()
-                && knob_state->second == LogicalSampleKnobState::timeline_lane;
+            auto const knob_state = virtual_sample_knob_states_by_key.find(port_key);
+            bool const timeline_knob = knob_state != virtual_sample_knob_states_by_key.end()
+                && knob_state->second == VirtualSampleKnobState::timeline_lane;
             if (!timeline_knob) {
-                logical_sample_knob_states_by_key[port_key] =
-                    LogicalSampleKnobState::overridden;
+                virtual_sample_knob_states_by_key[port_key] =
+                    VirtualSampleKnobState::overridden;
             }
             ensure_live_input_value_locked(request.node_id, request.input_ordinal)
                 .store(request.value.value, std::memory_order_relaxed);
             if (timeline_knob) {
-                knob_lane = stable_lane_id_for_key(logical_knob_key(DesiredGraphInputPort{
+                knob_lane = stable_lane_id_for_key(virtual_knob_key(DesiredGraphInputPort{
                     .port = sample_input_descriptor(
                         request.node_id,
                         std::nullopt,
@@ -2578,10 +2578,10 @@ void GraphInputLanes::set_sample_input_state(
                     ConcreteSampleInputState::overridden;
                 concrete_sample_input_lane_ids_by_key.erase(sample_key);
                 break;
-            case ProjectSampleInputState::logical_follow:
+            case ProjectSampleInputState::virtual_follow:
                 concrete_live_input_overrides.erase(override_key);
                 concrete_sample_input_states_by_key[port_key] =
-                    ConcreteSampleInputState::logical_follow;
+                    ConcreteSampleInputState::virtual_follow;
                 concrete_sample_input_lane_ids_by_key.erase(sample_key);
                 break;
             case ProjectSampleInputState::timeline_lane:
@@ -2607,7 +2607,7 @@ void GraphInputLanes::set_sample_input_state(
                 request.member_ordinal,
                 request.input_ordinal);
         } else {
-            auto const logical_key = logical_knob_key(DesiredGraphInputPort{
+            auto const virtual_key = virtual_knob_key(DesiredGraphInputPort{
                 .instance_id = {},
                 .module_instance_id = 0,
                 .port = sample_input_descriptor(
@@ -2633,25 +2633,25 @@ void GraphInputLanes::set_sample_input_state(
             switch (request.state) {
             case ProjectSampleInputState::default_:
             case ProjectSampleInputState::overridden:
-                logical_sample_knob_states_by_key[port_key] =
-                    LogicalSampleKnobState::overridden;
-                logical_sample_knob_lane_ids_by_key.erase(logical_key);
+                virtual_sample_knob_states_by_key[port_key] =
+                    VirtualSampleKnobState::overridden;
+                virtual_sample_knob_lane_ids_by_key.erase(virtual_key);
                 break;
             case ProjectSampleInputState::timeline_lane:
-                logical_sample_knob_states_by_key[port_key] =
-                    LogicalSampleKnobState::timeline_lane;
+                virtual_sample_knob_states_by_key[port_key] =
+                    VirtualSampleKnobState::timeline_lane;
                 if (request.lane_id.has_value()) {
-                    logical_sample_knob_lane_ids_by_key[logical_key] = *request.lane_id;
+                    virtual_sample_knob_lane_ids_by_key[virtual_key] = *request.lane_id;
                 } else {
-                    logical_sample_knob_lane_ids_by_key.erase(logical_key);
+                    virtual_sample_knob_lane_ids_by_key.erase(virtual_key);
                 }
                 break;
-            case ProjectSampleInputState::logical_follow:
+            case ProjectSampleInputState::virtual_follow:
             case ProjectSampleInputState::disconnected:
                 throw std::runtime_error(
-                    "logical sample input state only supports overridden or timeline_lane");
+                    "virtual sample input state only supports overridden or timeline_lane");
             }
-            mark_instances_requiring_rebuild_for_logical_sample_input_locked(
+            mark_instances_requiring_rebuild_for_virtual_sample_input_locked(
                 request.node_id,
                 request.input_ordinal);
         }
@@ -2686,7 +2686,7 @@ void GraphInputLanes::set_public_sample_input_state(
                 && request.state != ProjectSampleInputState::timeline_lane
                 && request.state != ProjectSampleInputState::disconnected) {
                 throw std::runtime_error(
-                    "logical public sample input state only supports overridden, timeline_lane, or disconnected");
+                    "virtual public sample input state only supports overridden, timeline_lane, or disconnected");
             }
         } else if (request.state == ProjectSampleInputState::default_) {
             public_sample_input_states_by_key.erase(state_key);
@@ -2701,7 +2701,7 @@ void GraphInputLanes::set_public_sample_input_state(
         if (request.state == ProjectSampleInputState::timeline_lane
             && request.lane_id.has_value()) {
             // Lanes are keyed by public-port identity.  The state key has the
-            // same logical/member partition and is deliberately used here so
+            // same virtual/member partition and is deliberately used here so
             // callers can retain a chosen timeline external id.
             public_sample_input_lane_ids_by_key[state_key] = *request.lane_id;
         } else {
@@ -2774,7 +2774,7 @@ void GraphInputLanes::set_public_event_input_state(
             && state != ProjectEventInputState::timeline_lane
             && state != ProjectEventInputState::disconnected) {
             throw std::runtime_error(
-                "logical public event input state only supports timeline_lane or disconnected");
+                "virtual public event input state only supports timeline_lane or disconnected");
         }
         if (state == ProjectEventInputState::default_) {
             public_event_input_states_by_key.erase(key);
@@ -2823,7 +2823,7 @@ std::vector<PublicSampleInputInfo> GraphInputLanes::public_sample_inputs() const
                 .min = port.min,
                 .max = port.max,
                 .current_value = current_value,
-                .logical_state = state == ProjectSampleInputState::overridden ? "overridden"
+                .virtual_state = state == ProjectSampleInputState::overridden ? "overridden"
                     : state == ProjectSampleInputState::timeline_lane ? "timelineLane"
                     : state == ProjectSampleInputState::disconnected ? "disconnected"
                     : "default",
@@ -2836,13 +2836,13 @@ std::vector<PublicSampleInputInfo> GraphInputLanes::public_sample_inputs() const
             port.instance_id, port.source_identity, port.port_ordinal);
         auto const member_state_it = public_sample_input_states_by_key.find(member_key);
         auto const member_state = member_state_it == public_sample_input_states_by_key.end()
-            ? ProjectSampleInputState::logical_follow
+            ? ProjectSampleInputState::virtual_follow
             : member_state_it->second;
         result[it->second].member_states.push_back(
             member_state == ProjectSampleInputState::timeline_lane ? "timelineLane"
                 : member_state == ProjectSampleInputState::disconnected ? "disconnected"
                     : member_state == ProjectSampleInputState::overridden ? "overridden"
-                        : "logicalFollow");
+                        : "virtualFollow");
     }
     return result;
 }
@@ -2866,7 +2866,7 @@ std::vector<PublicEventInputInfo> GraphInputLanes::public_event_inputs() const
                 .source_infos = port.source_infos,
                 .name = port.port_name,
                 .type = *port.event_type,
-                .logical_state = state == ProjectEventInputState::disconnected ? "disconnected" : "timelineLane",
+                .virtual_state = state == ProjectEventInputState::disconnected ? "disconnected" : "timelineLane",
                 .graph_connected = port.graph_connected,
             });
         }
@@ -2874,13 +2874,13 @@ std::vector<PublicEventInputInfo> GraphInputLanes::public_event_inputs() const
         auto const member_key = public_sample_input_state_key(port.instance_id, port.source_identity, member_ordinal);
         auto const member_it = public_event_input_states_by_key.find(member_key);
         auto const member_state = member_it == public_event_input_states_by_key.end()
-            ? ProjectEventInputState::logical_follow : member_it->second;
+            ? ProjectEventInputState::virtual_follow : member_it->second;
         result[it->second].member_ordinals.push_back(port.port_ordinal);
         result[it->second].member_graph_connected.push_back(port.graph_connected);
         result[it->second].member_states.push_back(
             member_state == ProjectEventInputState::timeline_lane ? "timelineLane"
                 : member_state == ProjectEventInputState::disconnected ? "disconnected"
-                    : "logicalFollow");
+                    : "virtualFollow");
     }
     return result;
 }
@@ -2892,29 +2892,29 @@ std::vector<PublicSampleOutputInfo> GraphInputLanes::public_sample_outputs() con
     std::unordered_map<std::string, size_t> index;
     for (auto const& port : desired_public_output_ports) {
         if (port.port_kind != PortKind::sample || port.source_identity.empty()) continue;
-        auto const logical_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
+        auto const virtual_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
         auto const member_ordinal = port.concrete_member_ordinal.value_or(port.port_ordinal);
         auto const member_key = public_sample_input_state_key(port.instance_id, port.source_identity, member_ordinal);
-        auto const logical_it = public_sample_output_states_by_key.find(logical_key);
+        auto const virtual_it = public_sample_output_states_by_key.find(virtual_key);
         auto const member_it = public_sample_output_states_by_key.find(member_key);
-        auto const logical_connected = logical_it == public_sample_output_states_by_key.end()
-            || logical_it->second == ProjectSampleOutputState::timeline_lane;
+        auto const virtual_connected = virtual_it == public_sample_output_states_by_key.end()
+            || virtual_it->second == ProjectSampleOutputState::timeline_lane;
         auto const member_state = member_it == public_sample_output_states_by_key.end()
-            ? ProjectSampleOutputState::logical : member_it->second;
+            ? ProjectSampleOutputState::virtual_port : member_it->second;
         auto const key = port.instance_id + "\x1f" + port.source_identity;
         auto [it, inserted] = index.emplace(key, result.size());
         if (inserted) result.push_back(PublicSampleOutputInfo{
             .instance_id = port.instance_id, .source_identity = port.source_identity,
             .source_infos = port.source_infos, .name = port.port_name,
-            .logical_state = logical_connected ? "timelineLane" : "disconnected",
-            .graph_connected = logical_connected,
+            .virtual_state = virtual_connected ? "timelineLane" : "disconnected",
+            .graph_connected = virtual_connected,
         });
         auto& output = result[it->second];
         output.member_ordinals.push_back(member_ordinal);
         output.member_graph_connected.push_back(member_state == ProjectSampleOutputState::timeline_lane
-            || (member_state == ProjectSampleOutputState::logical && logical_connected));
+            || (member_state == ProjectSampleOutputState::virtual_port && virtual_connected));
         output.member_states.push_back(member_state == ProjectSampleOutputState::timeline_lane ? "timelineLane"
-            : member_state == ProjectSampleOutputState::disconnected ? "disconnected" : "logicalFollow");
+            : member_state == ProjectSampleOutputState::disconnected ? "disconnected" : "virtualFollow");
     }
     return result;
 }
@@ -2926,28 +2926,28 @@ std::vector<PublicEventOutputInfo> GraphInputLanes::public_event_outputs() const
     std::unordered_map<std::string, size_t> index;
     for (auto const& port : desired_public_output_ports) {
         if (port.port_kind != PortKind::event || port.source_identity.empty() || !port.event_type) continue;
-        auto const logical_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
+        auto const virtual_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
         auto const member_ordinal = port.concrete_member_ordinal.value_or(port.port_ordinal);
         auto const member_key = public_sample_input_state_key(port.instance_id, port.source_identity, member_ordinal);
-        auto const logical_it = public_event_output_states_by_key.find(logical_key);
+        auto const virtual_it = public_event_output_states_by_key.find(virtual_key);
         auto const member_it = public_event_output_states_by_key.find(member_key);
-        auto const logical_connected = logical_it == public_event_output_states_by_key.end()
-            || logical_it->second == ProjectEventOutputState::timeline_lane;
+        auto const virtual_connected = virtual_it == public_event_output_states_by_key.end()
+            || virtual_it->second == ProjectEventOutputState::timeline_lane;
         auto const member_state = member_it == public_event_output_states_by_key.end()
-            ? ProjectEventOutputState::logical : member_it->second;
+            ? ProjectEventOutputState::virtual_port : member_it->second;
         auto const key = port.instance_id + "\x1f" + port.source_identity;
         auto [it, inserted] = index.emplace(key, result.size());
         if (inserted) result.push_back(PublicEventOutputInfo{
             .instance_id = port.instance_id, .source_identity = port.source_identity,
             .source_infos = port.source_infos, .name = port.port_name, .type = *port.event_type,
-            .logical_state = logical_connected ? "timelineLane" : "disconnected", .graph_connected = logical_connected,
+            .virtual_state = virtual_connected ? "timelineLane" : "disconnected", .graph_connected = virtual_connected,
         });
         auto& output = result[it->second];
         output.member_ordinals.push_back(member_ordinal);
         output.member_graph_connected.push_back(member_state == ProjectEventOutputState::timeline_lane
-            || (member_state == ProjectEventOutputState::logical && logical_connected));
+            || (member_state == ProjectEventOutputState::virtual_port && virtual_connected));
         output.member_states.push_back(member_state == ProjectEventOutputState::timeline_lane ? "timelineLane"
-            : member_state == ProjectEventOutputState::disconnected ? "disconnected" : "logicalFollow");
+            : member_state == ProjectEventOutputState::disconnected ? "disconnected" : "virtualFollow");
     }
     return result;
 }
@@ -2962,24 +2962,24 @@ void GraphInputLanes::set_event_input_state(
             .instance_id = {},
             .module_instance_id = 0,
             .port = GraphInputPortDescriptor{
-                .logical_node_id = request.node_id,
+                .virtual_node_id = request.node_id,
                 .concrete_member_ordinal = request.member_ordinal,
                 .port_kind = PortKind::event,
                 .port_ordinal = request.input_ordinal,
             },
         });
-        auto const logical_key_value = logical_event_input_key(DesiredGraphInputPort{
+        auto const virtual_key_value = virtual_event_input_key(DesiredGraphInputPort{
             .instance_id = {},
             .module_instance_id = 0,
             .port = GraphInputPortDescriptor{
-                .logical_node_id = request.node_id,
+                .virtual_node_id = request.node_id,
                 .concrete_member_ordinal = std::nullopt,
                 .port_kind = PortKind::event,
                 .port_ordinal = request.input_ordinal,
             },
         });
         auto const port_key = graph_input_port_key(GraphInputPortDescriptor{
-            .logical_node_id = request.node_id,
+            .virtual_node_id = request.node_id,
             .concrete_member_ordinal = request.member_ordinal,
             .port_kind = PortKind::event,
             .port_ordinal = request.input_ordinal,
@@ -2990,12 +2990,12 @@ void GraphInputLanes::set_event_input_state(
             concrete_event_input_states_by_key.erase(port_key);
             concrete_event_input_lane_ids_by_key.erase(concrete_key_value);
             break;
-        case ProjectEventInputState::logical_follow:
+        case ProjectEventInputState::virtual_follow:
             concrete_event_input_states_by_key[port_key] =
-                ConcreteEventInputState::logical_follow;
+                ConcreteEventInputState::virtual_follow;
             concrete_event_input_lane_ids_by_key.erase(concrete_key_value);
             if (request.lane_id.has_value()) {
-                logical_event_input_lane_ids_by_key[logical_key_value] = *request.lane_id;
+                virtual_event_input_lane_ids_by_key[virtual_key_value] = *request.lane_id;
             }
             break;
         case ProjectEventInputState::timeline_lane:
@@ -3014,32 +3014,32 @@ void GraphInputLanes::set_event_input_state(
             break;
         }
 
-        bool has_logical_follow_remaining = false;
+        bool has_virtual_follow_remaining = false;
         for (auto const &port : desired_ports) {
             if (port.port.port_kind != PortKind::event) {
                 continue;
             }
-            if (port.port.logical_node_id != request.node_id) {
+            if (port.port.virtual_node_id != request.node_id) {
                 continue;
             }
             if (port.port.port_ordinal != request.input_ordinal) {
                 continue;
             }
             auto const candidate_port_key = graph_input_port_key(GraphInputPortDescriptor{
-                .logical_node_id = port.port.logical_node_id,
+                .virtual_node_id = port.port.virtual_node_id,
                 .concrete_member_ordinal = port.port.concrete_member_ordinal,
                 .port_kind = PortKind::event,
                 .port_ordinal = port.port.port_ordinal,
             });
             if (auto const it = concrete_event_input_states_by_key.find(candidate_port_key);
                 it != concrete_event_input_states_by_key.end()
-                && it->second == ConcreteEventInputState::logical_follow) {
-                has_logical_follow_remaining = true;
+                && it->second == ConcreteEventInputState::virtual_follow) {
+                has_virtual_follow_remaining = true;
                 break;
             }
         }
-        if (!has_logical_follow_remaining) {
-            logical_event_input_lane_ids_by_key.erase(logical_key_value);
+        if (!has_virtual_follow_remaining) {
+            virtual_event_input_lane_ids_by_key.erase(virtual_key_value);
         }
 
         mark_instances_requiring_rebuild_locked(
@@ -3061,7 +3061,7 @@ void GraphInputLanes::set_sample_output_state(
             auto const key = public_sample_input_state_key(
                 public_output->first, public_output->second, request.member_ordinal);
             if (request.member_ordinal.has_value()) {
-                if (request.state == ProjectSampleOutputState::logical) {
+                if (request.state == ProjectSampleOutputState::virtual_port) {
                     public_sample_output_states_by_key.erase(key);
                 } else {
                     public_sample_output_states_by_key[key] = request.state;
@@ -3072,7 +3072,7 @@ void GraphInputLanes::set_sample_output_state(
                 } else if (request.state == ProjectSampleOutputState::disconnected) {
                     public_sample_output_states_by_key[key] = request.state;
                 } else {
-                    throw std::runtime_error("logical public sample output only supports connected or disconnected");
+                    throw std::runtime_error("virtual public sample output only supports connected or disconnected");
                 }
             }
             (void)reconcile_ports_locked(&batch);
@@ -3084,7 +3084,7 @@ void GraphInputLanes::set_sample_output_state(
                 .instance_id = {},
                 .module_instance_id = 0,
                 .port = GraphInputPortDescriptor{
-                    .logical_node_id = request.node_id,
+                    .virtual_node_id = request.node_id,
                     .concrete_member_ordinal = request.member_ordinal,
                     .port_kind = PortKind::sample,
                     .port_ordinal = request.output_ordinal,
@@ -3095,14 +3095,14 @@ void GraphInputLanes::set_sample_output_state(
                         request.output_ordinal).value_or(ChannelTypeId::mono),
                 },
             },
-            request.member_ordinal.has_value() ? "concrete-output" : "logical-output");
+            request.member_ordinal.has_value() ? "concrete-output" : "virtual-output");
         auto const sample_channel_type = resolve_sample_channel_type(
             desired_output_ports,
             request.node_id,
             request.member_ordinal,
             request.output_ordinal).value_or(ChannelTypeId::mono);
         auto const port_key = graph_input_port_key(GraphInputPortDescriptor{
-            .logical_node_id = request.node_id,
+            .virtual_node_id = request.node_id,
             .concrete_member_ordinal = request.member_ordinal,
             .port_kind = PortKind::sample,
             .port_ordinal = request.output_ordinal,
@@ -3115,8 +3115,8 @@ void GraphInputLanes::set_sample_output_state(
                 concrete_output_states_by_key.erase(port_key);
                 concrete_output_lane_ids_by_key.erase(identity_key);
                 break;
-            case ProjectSampleOutputState::logical:
-                concrete_output_states_by_key[port_key] = ConcreteOutputState::logical;
+            case ProjectSampleOutputState::virtual_port:
+                concrete_output_states_by_key[port_key] = ConcreteOutputState::virtual_port;
                 concrete_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectSampleOutputState::timeline_lane:
@@ -3131,20 +3131,20 @@ void GraphInputLanes::set_sample_output_state(
         } else {
             switch (request.state) {
             case ProjectSampleOutputState::disconnected:
-                logical_output_states_by_key.erase(port_key);
-                logical_output_lane_ids_by_key.erase(identity_key);
+                virtual_output_states_by_key.erase(port_key);
+                virtual_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectSampleOutputState::timeline_lane:
-                logical_output_states_by_key[port_key] = LogicalOutputState::timeline_lane;
+                virtual_output_states_by_key[port_key] = VirtualOutputState::timeline_lane;
                 if (request.lane_id.has_value()) {
-                    logical_output_lane_ids_by_key[identity_key] = *request.lane_id;
+                    virtual_output_lane_ids_by_key[identity_key] = *request.lane_id;
                 } else {
-                    logical_output_lane_ids_by_key.erase(identity_key);
+                    virtual_output_lane_ids_by_key.erase(identity_key);
                 }
                 break;
-            case ProjectSampleOutputState::logical:
+            case ProjectSampleOutputState::virtual_port:
                 throw std::runtime_error(
-                    "logical sample output state only supports disconnected or timeline_lane");
+                    "virtual sample output state only supports disconnected or timeline_lane");
             }
         }
 
@@ -3168,7 +3168,7 @@ void GraphInputLanes::set_event_output_state(
             auto const key = public_sample_input_state_key(
                 public_output->first, public_output->second, request.member_ordinal);
             if (request.member_ordinal.has_value()) {
-                if (request.state == ProjectEventOutputState::logical) {
+                if (request.state == ProjectEventOutputState::virtual_port) {
                     public_event_output_states_by_key.erase(key);
                 } else {
                     public_event_output_states_by_key[key] = request.state;
@@ -3179,7 +3179,7 @@ void GraphInputLanes::set_event_output_state(
                 } else if (request.state == ProjectEventOutputState::disconnected) {
                     public_event_output_states_by_key[key] = request.state;
                 } else {
-                    throw std::runtime_error("logical public event output only supports connected or disconnected");
+                    throw std::runtime_error("virtual public event output only supports connected or disconnected");
                 }
             }
             (void)reconcile_ports_locked(&batch);
@@ -3191,15 +3191,15 @@ void GraphInputLanes::set_event_output_state(
                 .instance_id = {},
                 .module_instance_id = 0,
                 .port = GraphInputPortDescriptor{
-                    .logical_node_id = request.node_id,
+                    .virtual_node_id = request.node_id,
                     .concrete_member_ordinal = request.member_ordinal,
                     .port_kind = PortKind::event,
                     .port_ordinal = request.output_ordinal,
                 },
             },
-            request.member_ordinal.has_value() ? "concrete-output" : "logical-output");
+            request.member_ordinal.has_value() ? "concrete-output" : "virtual-output");
         auto const port_key = graph_input_port_key(GraphInputPortDescriptor{
-            .logical_node_id = request.node_id,
+            .virtual_node_id = request.node_id,
             .concrete_member_ordinal = request.member_ordinal,
             .port_kind = PortKind::event,
             .port_ordinal = request.output_ordinal,
@@ -3211,8 +3211,8 @@ void GraphInputLanes::set_event_output_state(
                 concrete_output_states_by_key.erase(port_key);
                 concrete_output_lane_ids_by_key.erase(identity_key);
                 break;
-            case ProjectEventOutputState::logical:
-                concrete_output_states_by_key[port_key] = ConcreteOutputState::logical;
+            case ProjectEventOutputState::virtual_port:
+                concrete_output_states_by_key[port_key] = ConcreteOutputState::virtual_port;
                 concrete_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectEventOutputState::timeline_lane:
@@ -3227,20 +3227,20 @@ void GraphInputLanes::set_event_output_state(
         } else {
             switch (request.state) {
             case ProjectEventOutputState::disconnected:
-                logical_output_states_by_key.erase(port_key);
-                logical_output_lane_ids_by_key.erase(identity_key);
+                virtual_output_states_by_key.erase(port_key);
+                virtual_output_lane_ids_by_key.erase(identity_key);
                 break;
             case ProjectEventOutputState::timeline_lane:
-                logical_output_states_by_key[port_key] = LogicalOutputState::timeline_lane;
+                virtual_output_states_by_key[port_key] = VirtualOutputState::timeline_lane;
                 if (request.lane_id.has_value()) {
-                    logical_output_lane_ids_by_key[identity_key] = *request.lane_id;
+                    virtual_output_lane_ids_by_key[identity_key] = *request.lane_id;
                 } else {
-                    logical_output_lane_ids_by_key.erase(identity_key);
+                    virtual_output_lane_ids_by_key.erase(identity_key);
                 }
                 break;
-            case ProjectEventOutputState::logical:
+            case ProjectEventOutputState::virtual_port:
                 throw std::runtime_error(
-                    "logical event output state only supports disconnected or timeline_lane");
+                    "virtual event output state only supports disconnected or timeline_lane");
             }
         }
 
@@ -3264,33 +3264,33 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
 {
     std::scoped_lock lock(mutex);
     AuthoredStateSnapshot snapshot;
-    std::unordered_map<std::string, InternedString> logical_sample_knob_external_ids_by_key;
+    std::unordered_map<std::string, InternedString> virtual_sample_knob_external_ids_by_key;
     std::unordered_map<std::string, InternedString> sample_input_external_ids_by_key;
-    std::unordered_map<std::string, InternedString> logical_event_input_external_ids_by_key;
+    std::unordered_map<std::string, InternedString> virtual_event_input_external_ids_by_key;
     std::unordered_map<std::string, InternedString> event_input_external_ids_by_key;
-    std::unordered_map<std::string, InternedString> logical_output_external_ids_by_key;
+    std::unordered_map<std::string, InternedString> virtual_output_external_ids_by_key;
     std::unordered_map<std::string, InternedString> concrete_output_external_ids_by_key;
 
     // Public inputs are persisted through the existing graph sample-input
     // commands, using their synthetic source-query node id.  Project loading
     // bypasses socket RPC, so the runtime-project bridge recognizes that id
     // and routes it back to the public-input model.
-    std::unordered_set<std::string> persisted_public_logical_inputs;
+    std::unordered_set<std::string> persisted_public_virtual_inputs;
     for (auto const &port : desired_public_input_ports) {
         if (port.port_kind != PortKind::sample || port.source_identity.empty()) {
             continue;
         }
-        auto const logical_key = public_sample_input_state_key(
+        auto const virtual_key = public_sample_input_state_key(
             port.instance_id, port.source_identity, std::nullopt);
         auto const synthetic_node_id = public_sample_input_node_id(
             port.instance_id, port.source_identity);
-        if (persisted_public_logical_inputs.insert(logical_key).second) {
-            auto const state_it = public_sample_input_states_by_key.find(logical_key);
+        if (persisted_public_virtual_inputs.insert(virtual_key).second) {
+            auto const state_it = public_sample_input_states_by_key.find(virtual_key);
             auto const state = state_it == public_sample_input_states_by_key.end()
                 ? ProjectSampleInputState::timeline_lane
                 : state_it->second;
             if (state == ProjectSampleInputState::overridden) {
-                auto const value_it = public_sample_input_values.find(logical_key);
+                auto const value_it = public_sample_input_values.find(virtual_key);
                 snapshot.sample_input_values.push_back(ProjectSetSampleInputValueRequest{
                     .node_id = synthetic_node_id,
                     .input_ordinal = 0,
@@ -3315,11 +3315,11 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
             port.instance_id, port.source_identity, port.port_ordinal);
         if (auto const state_it = public_sample_input_states_by_key.find(member_key);
             state_it != public_sample_input_states_by_key.end()) {
-            ProjectSampleInputState state = ProjectSampleInputState::logical_follow;
+            ProjectSampleInputState state = ProjectSampleInputState::virtual_follow;
             switch (state_it->second) {
             case ProjectSampleInputState::default_:
-            case ProjectSampleInputState::logical_follow:
-                state = ProjectSampleInputState::logical_follow;
+            case ProjectSampleInputState::virtual_follow:
+                state = ProjectSampleInputState::virtual_follow;
                 break;
             case ProjectSampleInputState::timeline_lane:
                 state = ProjectSampleInputState::timeline_lane;
@@ -3339,20 +3339,20 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
         }
     }
 
-    std::unordered_set<std::string> persisted_public_logical_events;
+    std::unordered_set<std::string> persisted_public_virtual_events;
     for (auto const &port : desired_public_input_ports) {
         if (port.port_kind != PortKind::event || port.source_identity.empty()) continue;
-        auto const logical_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
+        auto const virtual_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
         auto const node_id = public_sample_input_node_id(port.instance_id, port.source_identity);
-        if (persisted_public_logical_events.insert(logical_key).second) {
-            if (auto const it = public_event_input_states_by_key.find(logical_key);
+        if (persisted_public_virtual_events.insert(virtual_key).second) {
+            if (auto const it = public_event_input_states_by_key.find(virtual_key);
                 it != public_event_input_states_by_key.end()
                 && (it->second != ProjectEventInputState::timeline_lane
-                    || public_event_input_lane_ids_by_key.contains(logical_key))) {
+                    || public_event_input_lane_ids_by_key.contains(virtual_key))) {
                 snapshot.event_input_states.push_back(ProjectSetEventInputStateRequest{
                     .node_id = node_id, .input_ordinal = 0, .state = it->second,
                     .lane_id = [&]() -> std::optional<InternedString> {
-                        if (auto const lane = public_event_input_lane_ids_by_key.find(logical_key);
+                        if (auto const lane = public_event_input_lane_ids_by_key.find(virtual_key);
                             lane != public_event_input_lane_ids_by_key.end()) return lane->second;
                         return std::nullopt;
                     }(),
@@ -3380,16 +3380,16 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
         }
         if (tracked.metadata.has_unit(metadata_graph_input)) {
             if (tracked.metadata.has_unit(metadata_knob)
-                && tracked.metadata.has_unit(metadata_logical)
+                && tracked.metadata.has_unit(metadata_virtual)
                 && tracked.metadata.has_unit(metadata_sample)) {
-                logical_sample_knob_external_ids_by_key.emplace(
-                    existing_identity_key(tracked.metadata, "logical-knob"),
+                virtual_sample_knob_external_ids_by_key.emplace(
+                    existing_identity_key(tracked.metadata, "virtual-knob"),
                     tracked.external_id);
             } else if (tracked.metadata.has_unit(metadata_input)
-                && tracked.metadata.has_unit(metadata_logical)
+                && tracked.metadata.has_unit(metadata_virtual)
                 && tracked.metadata.has_unit(metadata_event)) {
-                logical_event_input_external_ids_by_key.emplace(
-                    existing_identity_key(tracked.metadata, "logical-event-input"),
+                virtual_event_input_external_ids_by_key.emplace(
+                    existing_identity_key(tracked.metadata, "virtual-event-input"),
                     tracked.external_id);
             } else if (tracked.metadata.has_unit(metadata_input)
                 && tracked.metadata.has_unit(metadata_sample)) {
@@ -3404,9 +3404,9 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
             }
         }
         if (tracked.metadata.has_unit(metadata_graph_output)) {
-            if (tracked.metadata.has_unit(metadata_logical)) {
-                logical_output_external_ids_by_key.emplace(
-                    existing_identity_key(tracked.metadata, "logical-output"),
+            if (tracked.metadata.has_unit(metadata_virtual)) {
+                virtual_output_external_ids_by_key.emplace(
+                    existing_identity_key(tracked.metadata, "virtual-output"),
                     tracked.external_id);
             } else if (tracked.metadata.has_unit(metadata_concrete)) {
                 concrete_output_external_ids_by_key.emplace(
@@ -3420,18 +3420,18 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
         if (port.port.port_kind == PortKind::sample) {
             if (!port.port.concrete_member_ordinal.has_value()) {
                 auto const state_key = graph_input_port_key(port.port);
-                if (auto const state_it = logical_sample_knob_states_by_key.find(state_key);
-                    state_it != logical_sample_knob_states_by_key.end()) {
-                    if (state_it->second == LogicalSampleKnobState::timeline_lane) {
+                if (auto const state_it = virtual_sample_knob_states_by_key.find(state_key);
+                    state_it != virtual_sample_knob_states_by_key.end()) {
+                    if (state_it->second == VirtualSampleKnobState::timeline_lane) {
                         snapshot.sample_input_states.push_back(ProjectSetSampleInputStateRequest{
-                            .node_id = port.port.logical_node_id,
+                            .node_id = port.port.virtual_node_id,
                             .member_ordinal = std::nullopt,
                             .input_ordinal = port.port.port_ordinal,
                             .state = ProjectSampleInputState::timeline_lane,
                             .lane_id = [&]() -> std::optional<InternedString> {
-                                auto const key = logical_knob_key(port);
-                                if (auto const it = logical_sample_knob_external_ids_by_key.find(key);
-                                    it != logical_sample_knob_external_ids_by_key.end()) {
+                                auto const key = virtual_knob_key(port);
+                                if (auto const it = virtual_sample_knob_external_ids_by_key.find(key);
+                                    it != virtual_sample_knob_external_ids_by_key.end()) {
                                     return it->second;
                                 }
                                 return std::nullopt;
@@ -3439,11 +3439,11 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                         });
                     } else {
                         snapshot.sample_input_values.push_back(ProjectSetSampleInputValueRequest{
-                            .node_id = port.port.logical_node_id,
+                            .node_id = port.port.virtual_node_id,
                             .member_ordinal = std::nullopt,
                             .input_ordinal = port.port.port_ordinal,
                             .value = live_input_value_or_locked(
-                                port.port.logical_node_id,
+                                port.port.virtual_node_id,
                                 port.port.port_ordinal,
                                 Sample{0.0f}),
                         });
@@ -3458,11 +3458,11 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                 auto const member_ordinal = *port.port.concrete_member_ordinal;
                 if (state_it->second == ConcreteSampleInputState::overridden) {
                     snapshot.sample_input_values.push_back(ProjectSetSampleInputValueRequest{
-                        .node_id = port.port.logical_node_id,
+                        .node_id = port.port.virtual_node_id,
                         .member_ordinal = member_ordinal,
                         .input_ordinal = port.port.port_ordinal,
                         .value = live_input_value_or_locked(
-                            port.port.logical_node_id,
+                            port.port.virtual_node_id,
                             member_ordinal,
                             port.port.port_ordinal,
                             Sample{0.0f}),
@@ -3473,8 +3473,8 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                     case ConcreteSampleInputState::overridden:
                         state = ProjectSampleInputState::overridden;
                         break;
-                    case ConcreteSampleInputState::logical_follow:
-                        state = ProjectSampleInputState::logical_follow;
+                    case ConcreteSampleInputState::virtual_follow:
+                        state = ProjectSampleInputState::virtual_follow;
                         break;
                     case ConcreteSampleInputState::timeline_lane:
                         state = ProjectSampleInputState::timeline_lane;
@@ -3484,7 +3484,7 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                         break;
                     }
                     snapshot.sample_input_states.push_back(ProjectSetSampleInputStateRequest{
-                        .node_id = port.port.logical_node_id,
+                        .node_id = port.port.virtual_node_id,
                         .member_ordinal = member_ordinal,
                         .input_ordinal = port.port.port_ordinal,
                         .state = state,
@@ -3512,8 +3512,8 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
             case ConcreteEventInputState::default_:
                 state = ProjectEventInputState::default_;
                 break;
-            case ConcreteEventInputState::logical_follow:
-                state = ProjectEventInputState::logical_follow;
+            case ConcreteEventInputState::virtual_follow:
+                state = ProjectEventInputState::virtual_follow;
                 break;
             case ConcreteEventInputState::timeline_lane:
                 state = ProjectEventInputState::timeline_lane;
@@ -3523,7 +3523,7 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                 break;
             }
             snapshot.event_input_states.push_back(ProjectSetEventInputStateRequest{
-                .node_id = port.port.logical_node_id,
+                .node_id = port.port.virtual_node_id,
                 .member_ordinal = port.port.concrete_member_ordinal,
                 .input_ordinal = port.port.port_ordinal,
                 .state = state,
@@ -3535,12 +3535,12 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                             return it->second;
                         }
                     }
-                    if (state == ProjectEventInputState::logical_follow) {
-                        auto logical_port = port;
-                        logical_port.port.concrete_member_ordinal = std::nullopt;
-                        auto const key = logical_event_input_key(logical_port);
-                        if (auto const it = logical_event_input_external_ids_by_key.find(key);
-                            it != logical_event_input_external_ids_by_key.end()) {
+                    if (state == ProjectEventInputState::virtual_follow) {
+                        auto virtual_port = port;
+                        virtual_port.port.concrete_member_ordinal = std::nullopt;
+                        auto const key = virtual_event_input_key(virtual_port);
+                        if (auto const it = virtual_event_input_external_ids_by_key.find(key);
+                            it != virtual_event_input_external_ids_by_key.end()) {
                             return it->second;
                         }
                     }
@@ -3553,19 +3553,19 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
     std::unordered_set<std::string> persisted_public_outputs;
     for (auto const &port : desired_public_output_ports) {
         if (port.source_identity.empty()) continue;
-        auto const logical_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
+        auto const virtual_key = public_sample_input_state_key(port.instance_id, port.source_identity, std::nullopt);
         auto const member_key = public_sample_input_state_key(port.instance_id, port.source_identity, port.port_ordinal);
         auto const node_id = public_output_node_id(port.instance_id, port.source_identity);
         if (port.port_kind == PortKind::sample) {
-            if (persisted_public_outputs.insert("sample:" + logical_key).second) {
-                if (auto const it = public_sample_output_states_by_key.find(logical_key); it != public_sample_output_states_by_key.end())
+            if (persisted_public_outputs.insert("sample:" + virtual_key).second) {
+                if (auto const it = public_sample_output_states_by_key.find(virtual_key); it != public_sample_output_states_by_key.end())
                     snapshot.sample_output_states.push_back({.node_id = node_id, .member_ordinal = std::nullopt, .output_ordinal = 0, .state = it->second});
             }
             if (auto const it = public_sample_output_states_by_key.find(member_key); it != public_sample_output_states_by_key.end())
                 snapshot.sample_output_states.push_back({.node_id = node_id, .member_ordinal = port.port_ordinal, .output_ordinal = 0, .state = it->second});
         } else {
-            if (persisted_public_outputs.insert("event:" + logical_key).second) {
-                if (auto const it = public_event_output_states_by_key.find(logical_key); it != public_event_output_states_by_key.end())
+            if (persisted_public_outputs.insert("event:" + virtual_key).second) {
+                if (auto const it = public_event_output_states_by_key.find(virtual_key); it != public_event_output_states_by_key.end())
                     snapshot.event_output_states.push_back({.node_id = node_id, .member_ordinal = std::nullopt, .output_ordinal = 0, .state = it->second});
             }
             if (auto const it = public_event_output_states_by_key.find(member_key); it != public_event_output_states_by_key.end())
@@ -3580,11 +3580,11 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                 if (auto const it = concrete_output_states_by_key.find(output_state_key);
                     it != concrete_output_states_by_key.end()) {
                     snapshot.sample_output_states.push_back(ProjectSetSampleOutputStateRequest{
-                        .node_id = port.port.logical_node_id,
+                        .node_id = port.port.virtual_node_id,
                         .member_ordinal = port.port.concrete_member_ordinal,
                         .output_ordinal = port.port.port_ordinal,
-                        .state = it->second == ConcreteOutputState::logical
-                            ? ProjectSampleOutputState::logical
+                        .state = it->second == ConcreteOutputState::virtual_port
+                            ? ProjectSampleOutputState::virtual_port
                             : ProjectSampleOutputState::timeline_lane,
                         .lane_id = it->second == ConcreteOutputState::timeline_lane
                             ? [&]() -> std::optional<InternedString> {
@@ -3598,18 +3598,18 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                             : std::nullopt,
                     });
                 }
-            } else if (auto const it = logical_output_states_by_key.find(output_state_key);
-                it != logical_output_states_by_key.end()) {
+            } else if (auto const it = virtual_output_states_by_key.find(output_state_key);
+                it != virtual_output_states_by_key.end()) {
                 (void)it;
                 snapshot.sample_output_states.push_back(ProjectSetSampleOutputStateRequest{
-                    .node_id = port.port.logical_node_id,
+                    .node_id = port.port.virtual_node_id,
                     .member_ordinal = std::nullopt,
                     .output_ordinal = port.port.port_ordinal,
                     .state = ProjectSampleOutputState::timeline_lane,
                     .lane_id = [&]() -> std::optional<InternedString> {
-                        auto const key = output_identity_key(port, "logical-output");
-                        if (auto const lane_it = logical_output_external_ids_by_key.find(key);
-                            lane_it != logical_output_external_ids_by_key.end()) {
+                        auto const key = output_identity_key(port, "virtual-output");
+                        if (auto const lane_it = virtual_output_external_ids_by_key.find(key);
+                            lane_it != virtual_output_external_ids_by_key.end()) {
                             return lane_it->second;
                         }
                         return std::nullopt;
@@ -3623,11 +3623,11 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
             if (auto const it = concrete_output_states_by_key.find(output_state_key);
                 it != concrete_output_states_by_key.end()) {
                 snapshot.event_output_states.push_back(ProjectSetEventOutputStateRequest{
-                    .node_id = port.port.logical_node_id,
+                    .node_id = port.port.virtual_node_id,
                     .member_ordinal = port.port.concrete_member_ordinal,
                     .output_ordinal = port.port.port_ordinal,
-                    .state = it->second == ConcreteOutputState::logical
-                        ? ProjectEventOutputState::logical
+                    .state = it->second == ConcreteOutputState::virtual_port
+                        ? ProjectEventOutputState::virtual_port
                         : ProjectEventOutputState::timeline_lane,
                     .lane_id = it->second == ConcreteOutputState::timeline_lane
                         ? [&]() -> std::optional<InternedString> {
@@ -3641,18 +3641,18 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                         : std::nullopt,
                 });
             }
-        } else if (auto const it = logical_output_states_by_key.find(output_state_key);
-            it != logical_output_states_by_key.end()) {
+        } else if (auto const it = virtual_output_states_by_key.find(output_state_key);
+            it != virtual_output_states_by_key.end()) {
             (void)it;
             snapshot.event_output_states.push_back(ProjectSetEventOutputStateRequest{
-                .node_id = port.port.logical_node_id,
+                .node_id = port.port.virtual_node_id,
                 .member_ordinal = std::nullopt,
                 .output_ordinal = port.port.port_ordinal,
                 .state = ProjectEventOutputState::timeline_lane,
                 .lane_id = [&]() -> std::optional<InternedString> {
-                    auto const key = output_identity_key(port, "logical-output");
-                    if (auto const lane_it = logical_output_external_ids_by_key.find(key);
-                        lane_it != logical_output_external_ids_by_key.end()) {
+                    auto const key = output_identity_key(port, "virtual-output");
+                    if (auto const lane_it = virtual_output_external_ids_by_key.find(key);
+                        lane_it != virtual_output_external_ids_by_key.end()) {
                         return lane_it->second;
                     }
                     return std::nullopt;
@@ -3706,21 +3706,21 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
 {
     BuilderCompletionDiff diff;
     auto qualify_descriptor = [&](GraphInputPortDescriptor descriptor) {
-        return with_runtime_logical_node_id(std::move(descriptor), instance_id);
+        return with_runtime_virtual_node_id(std::move(descriptor), instance_id);
     };
-    auto runtime_node_id = [&](std::string_view logical_node_id) {
-        return runtime_logical_node_id(instance_id, logical_node_id);
+    auto runtime_node_id = [&](std::string_view virtual_node_id) {
+        return runtime_virtual_node_id(instance_id, virtual_node_id);
     };
-    auto const logical_sample_inputs = builder.logical_sample_input_families();
-    auto const logical_inputs = builder.logical_inputs();
-    auto const logical_sample_outputs = builder.logical_sample_output_families();
-    auto const logical_outputs = builder.logical_outputs();
+    auto const virtual_sample_inputs = builder.virtual_sample_input_families();
+    auto const virtual_inputs = builder.virtual_inputs();
+    auto const virtual_sample_outputs = builder.virtual_sample_output_families();
+    auto const virtual_outputs = builder.virtual_outputs();
     auto const public_sample_inputs = builder.public_sample_input_families();
     auto const public_event_inputs = builder.public_event_inputs();
     auto const public_sample_outputs = builder.public_sample_output_families();
     auto const public_event_outputs = builder.public_event_outputs();
-    if (logical_sample_inputs.families.empty() && logical_inputs.event.empty()
-        && logical_sample_outputs.families.empty() && logical_outputs.event.empty()
+    if (virtual_sample_inputs.families.empty() && virtual_inputs.event.empty()
+        && virtual_sample_outputs.families.empty() && virtual_outputs.event.empty()
         && public_sample_inputs.families.empty() && public_event_inputs.empty()
         && public_sample_outputs.families.empty() && public_event_outputs.empty()) {
         return diff;
@@ -3728,10 +3728,10 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
     auto const module_instance_id = module_instance_numeric_id(instance_id);
     emit_debug_message(
         "graph input lanes builder ports: instance=" + instance_id
-        + " logicalSampleInputs=" + std::to_string(logical_sample_inputs.families.size())
-        + " logicalEventInputs=" + std::to_string(logical_inputs.event.size())
-        + " logicalSampleOutputs=" + std::to_string(logical_sample_outputs.families.size())
-        + " logicalEventOutputs=" + std::to_string(logical_outputs.event.size())
+        + " virtualSampleInputs=" + std::to_string(virtual_sample_inputs.families.size())
+        + " virtualEventInputs=" + std::to_string(virtual_inputs.event.size())
+        + " virtualSampleOutputs=" + std::to_string(virtual_sample_outputs.families.size())
+        + " virtualEventOutputs=" + std::to_string(virtual_outputs.event.size())
         + " publicSampleInputs=" + std::to_string(public_sample_inputs.families.size())
         + " publicEventInputs=" + std::to_string(public_event_inputs.size())
         + " publicSampleOutputs=" + std::to_string(public_sample_outputs.families.size())
@@ -3756,17 +3756,17 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             instance_ports.push_back(std::move(desired));
         };
 
-        for (auto const &input : logical_sample_inputs.families) {
-            auto logical = qualify_descriptor(sample_port_descriptor(input, std::nullopt));
+        for (auto const &input : virtual_sample_inputs.families) {
+            auto virtual_port = qualify_descriptor(sample_port_descriptor(input, std::nullopt));
             auto concrete = qualify_descriptor(sample_port_descriptor(input, input.member_ordinal));
-            sample_input_default_values[sample_default_value_key(instance_id, logical)] =
+            sample_input_default_values[sample_default_value_key(instance_id, virtual_port)] =
                 input.config.default_value;
             sample_input_default_values[sample_default_value_key(instance_id, concrete)] =
                 input.config.default_value;
-            append_port(std::move(logical));
+            append_port(std::move(virtual_port));
             append_port(std::move(concrete));
         }
-        for (auto const &input : logical_inputs.event) {
+        for (auto const &input : virtual_inputs.event) {
             append_port(qualify_descriptor(event_port_descriptor(input, std::nullopt)));
             append_port(qualify_descriptor(event_port_descriptor(input, input.member_ordinal)));
         }
@@ -3786,12 +3786,12 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             }
             instance_output_ports.push_back(std::move(desired));
         };
-        for (auto const &output : logical_sample_outputs.families) {
+        for (auto const &output : virtual_sample_outputs.families) {
             append_output_port(qualify_descriptor(sample_output_descriptor(output, std::nullopt)));
             append_output_port(
                 qualify_descriptor(sample_output_descriptor(output, output.member_ordinal)));
         }
-        for (auto const &output : logical_outputs.event) {
+        for (auto const &output : virtual_outputs.event) {
             append_output_port(qualify_descriptor(event_output_descriptor(output, std::nullopt)));
             append_output_port(
                 qualify_descriptor(event_output_descriptor(output, output.member_ordinal)));
@@ -3813,12 +3813,12 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
     }
 
     std::unordered_map<std::string, size_t> sample_control_node_indices;
-    for (auto const &input : logical_sample_inputs.families) {
-        auto const qualified_node_id = runtime_node_id(input.logical_node_id);
+    for (auto const &input : virtual_sample_inputs.families) {
+        auto const qualified_node_id = runtime_node_id(input.virtual_node_id);
         auto const concrete_port =
             qualify_descriptor(sample_port_descriptor(input, input.member_ordinal));
         auto const state_key = instance_port_state_key("", concrete_port);
-        auto const logical_default_value = live_input_value_or_locked(
+        auto const virtual_default_value = live_input_value_or_locked(
             qualified_node_id,
             input.family_ordinal,
             input.config.default_value);
@@ -3829,7 +3829,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         (void)ensure_live_input_value_initialized_locked(
             concrete_key(qualified_node_id, input.member_ordinal),
             input.family_ordinal,
-            logical_default_value);
+            virtual_default_value);
 
         bool any_existing_connection = false;
         for (auto const &channel : input.channels) {
@@ -3839,7 +3839,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         ConcreteSampleInputState state =
             any_existing_connection
                 ? ConcreteSampleInputState::disconnected
-                : ConcreteSampleInputState::logical_follow;
+                : ConcreteSampleInputState::virtual_follow;
         if (auto const it = concrete_sample_input_states_by_key.find(state_key);
             it != concrete_sample_input_states_by_key.end()) {
             state = it->second;
@@ -3880,27 +3880,27 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
                 source = builder.node<ValueSource>(
                     live_input_value_ptr_or_locked(key, input.family_ordinal));
                 have_source = true;
-            } else if (state == ConcreteSampleInputState::logical_follow) {
-                auto const logical_state_key = graph_input_port_key(
+            } else if (state == ConcreteSampleInputState::virtual_follow) {
+                auto const virtual_state_key = graph_input_port_key(
                     qualify_descriptor(sample_port_descriptor(input, std::nullopt)));
-                auto const logical_state_it =
-                    logical_sample_knob_states_by_key.find(logical_state_key);
-                auto const logical_state =
-                    logical_state_it != logical_sample_knob_states_by_key.end()
-                        ? logical_state_it->second
-                        : LogicalSampleKnobState::overridden;
+                auto const virtual_state_it =
+                    virtual_sample_knob_states_by_key.find(virtual_state_key);
+                auto const virtual_state =
+                    virtual_state_it != virtual_sample_knob_states_by_key.end()
+                        ? virtual_state_it->second
+                        : VirtualSampleKnobState::overridden;
 
-                if (logical_state == LogicalSampleKnobState::timeline_lane) {
+                if (virtual_state == VirtualSampleKnobState::timeline_lane) {
                     auto const bindings = sample_input_bindings(
                         qualified_node_id,
                         std::nullopt,
                         input.family_ordinal,
                         input.channel_type);
-                    if (bindings.logical_sample_knobs.empty()) {
+                    if (bindings.virtual_sample_knobs.empty()) {
                         throw std::runtime_error(
-                            "logical sample knob timeline lane could not be resolved");
+                            "virtual sample knob timeline lane could not be resolved");
                     }
-                    prerequisite_lane = bindings.logical_sample_knobs.front().knob_lane;
+                    prerequisite_lane = bindings.virtual_sample_knobs.front().knob_lane;
                     auto const identity = LaneInputValue::nominal_identity(prerequisite_lane, channel_index);
                     if (auto const existing = sample_control_node_indices.find(identity);
                         existing != sample_control_node_indices.end()) {
@@ -3932,7 +3932,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             diff.sample_inputs.push_back(CompletedSampleInput{
                 .input = GraphBuilder::VacantSampleInput{
                     .target = *first_target->target,
-                    .logical_node_id = input.logical_node_id,
+                    .virtual_node_id = input.virtual_node_id,
                     .member_ordinal = input.member_ordinal,
                     .config = input.config,
                 },
@@ -3944,14 +3944,14 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         }
     }
 
-    for (auto const &input : logical_inputs.event) {
+    for (auto const &input : virtual_inputs.event) {
         auto const concrete_port =
             qualify_descriptor(event_port_descriptor(input, input.member_ordinal));
         auto const state_key = instance_port_state_key("", concrete_port);
         ConcreteEventInputState state =
             input.has_existing_connection
                 ? ConcreteEventInputState::disconnected
-                : ConcreteEventInputState::logical_follow;
+                : ConcreteEventInputState::virtual_follow;
         if (auto const it = concrete_event_input_states_by_key.find(state_key);
             it != concrete_event_input_states_by_key.end()) {
             state = it->second;
@@ -3961,7 +3961,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             state =
                 input.has_existing_connection
                     ? ConcreteEventInputState::disconnected
-                    : ConcreteEventInputState::logical_follow;
+                    : ConcreteEventInputState::virtual_follow;
         }
 
         if (state == ConcreteEventInputState::disconnected) {
@@ -3984,7 +3984,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         diff.event_inputs.push_back(CompletedEventInput{
             .input = GraphBuilder::VacantEventInput{
                 .target = input.target,
-                .logical_node_id = input.logical_node_id,
+                .virtual_node_id = input.virtual_node_id,
                 .member_ordinal = input.member_ordinal,
                 .config = input.config,
             },
@@ -3996,7 +3996,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
     std::unordered_map<std::uint64_t, NodeRef> sample_sink_by_lane;
     std::unordered_map<std::uint64_t, NodeRef> event_sink_by_lane;
 
-    for (auto const &output : logical_sample_outputs.families) {
+    for (auto const &output : virtual_sample_outputs.families) {
         auto const concrete_port =
             qualify_descriptor(sample_output_descriptor(output, output.member_ordinal));
         DesiredGraphInputPort concrete_desired{
@@ -4037,7 +4037,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         }
     }
 
-    for (auto const &output : logical_outputs.event) {
+    for (auto const &output : virtual_outputs.event) {
         auto const concrete_port =
             qualify_descriptor(event_output_descriptor(output, output.member_ordinal));
         DesiredGraphInputPort concrete_desired{
@@ -4082,20 +4082,20 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         {
             std::scoped_lock lock(mutex);
             for (auto const &port : desired_public_input_ports_by_instance_id[instance_id]) {
-                auto const logical_state_key = public_sample_input_state_key(
+                auto const virtual_state_key = public_sample_input_state_key(
                     port.instance_id, port.source_identity, std::nullopt);
-                auto const logical_state_it = public_sample_input_states_by_key.find(logical_state_key);
-                auto const logical_state = port.source_identity.empty()
+                auto const virtual_state_it = public_sample_input_states_by_key.find(virtual_state_key);
+                auto const virtual_state = port.source_identity.empty()
                     ? ProjectSampleInputState::timeline_lane
-                    : logical_state_it == public_sample_input_states_by_key.end()
+                    : virtual_state_it == public_sample_input_states_by_key.end()
                         ? ProjectSampleInputState::timeline_lane
-                        : logical_state_it->second;
+                        : virtual_state_it->second;
                 auto const lane = port.port_kind == PortKind::sample
                     ? effective_public_sample_input_lane_locked(port)
                     : effective_public_event_input_lane_locked(port);
                 auto const use_override_value = port.port_kind == PortKind::sample
                     && !port.source_identity.empty()
-                    && logical_state == ProjectSampleInputState::overridden
+                    && virtual_state == ProjectSampleInputState::overridden
                     && (!lane.has_value() || !*lane);
                 if ((!lane.has_value() || !*lane) && !use_override_value) {
                     continue;

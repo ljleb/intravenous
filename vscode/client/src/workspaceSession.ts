@@ -6,7 +6,7 @@ import * as path from "path";
 import { Duplex } from "stream";
 
 import { collectPrimarySourceSpans, QueryShape, sortNodesByRelevance } from "./graphQueryModel";
-import { LogicalNode, LogicalNodeMember, LogicalPort, SourcePosition, SourceRange, SourceSpan } from "./graphModel";
+import { VirtualNode, VirtualNodeMember, VirtualPort, SourcePosition, SourceRange, SourceSpan } from "./graphModel";
 import { LiveGraphControlMessage } from "./liveGraphProtocol";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
@@ -22,8 +22,8 @@ const packagedDefaultServerDir = typeof __INTRAVENOUS_DEFAULT_DIR__ === "string"
 
 type LiveGraphProviderLike = {
     setInstances(instances: IvModuleInstanceInfo[]): void;
-    setNodes(nodes: LogicalNode[]): void;
-    upsertNodes(nodes: LogicalNode[], replaceInstanceIds?: string[]): void;
+    setNodes(nodes: VirtualNode[]): void;
+    upsertNodes(nodes: VirtualNode[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
     setModuleSource(moduleRoot: string | null): void;
 };
@@ -259,7 +259,7 @@ export class WorkspaceSession {
         });
 
         this.notifications.subscribe<GraphNodesUpdatedNotification>("graph.nodesUpdated", async (params) => {
-            const nodes = this.parseLogicalNodes(params.nodes);
+            const nodes = this.parseVirtualNodes(params.nodes);
             const replaceInstanceIds = Array.isArray(params.replaceInstanceIds)
                 ? params.replaceInstanceIds.filter((value): value is string => typeof value === "string")
                 : [];
@@ -584,14 +584,14 @@ export class WorkspaceSession {
         };
     }
 
-    private parseLogicalPort(payload: unknown): LogicalPort | null {
+    private parseVirtualPort(payload: unknown): VirtualPort | null {
         if (!payload || typeof payload !== "object") {
             return null;
         }
-        return payload as LogicalPort;
+        return payload as VirtualPort;
     }
 
-    private parseLogicalNodeMember(payload: unknown): LogicalNodeMember | null {
+    private parseVirtualNodeMember(payload: unknown): VirtualNodeMember | null {
         if (!payload || typeof payload !== "object") {
             return null;
         }
@@ -602,21 +602,21 @@ export class WorkspaceSession {
             kind: typeof candidate.kind === "string" ? candidate.kind : undefined,
             typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
             sampleInputs: Array.isArray(candidate.sampleInputs)
-                ? candidate.sampleInputs.map((port) => this.parseLogicalPort(port)).filter((port): port is LogicalPort => port !== null)
+                ? candidate.sampleInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
                 : undefined,
             sampleOutputs: Array.isArray(candidate.sampleOutputs)
-                ? candidate.sampleOutputs.map((port) => this.parseLogicalPort(port)).filter((port): port is LogicalPort => port !== null)
+                ? candidate.sampleOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
                 : undefined,
             eventInputs: Array.isArray(candidate.eventInputs)
-                ? candidate.eventInputs.map((port) => this.parseLogicalPort(port)).filter((port): port is LogicalPort => port !== null)
+                ? candidate.eventInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
                 : undefined,
             eventOutputs: Array.isArray(candidate.eventOutputs)
-                ? candidate.eventOutputs.map((port) => this.parseLogicalPort(port)).filter((port): port is LogicalPort => port !== null)
+                ? candidate.eventOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
                 : undefined,
         };
     }
 
-    private parseLogicalNodes(payload: unknown): LogicalNode[] {
+    private parseVirtualNodes(payload: unknown): VirtualNode[] {
         if (!Array.isArray(payload)) {
             return [];
         }
@@ -629,7 +629,7 @@ export class WorkspaceSession {
                 ? candidate.sourceSpans.map((span) => this.parseSourceSpan(span)).filter((span): span is SourceSpan => span !== null)
                 : undefined;
             const members = Array.isArray(candidate.members)
-                ? candidate.members.map((member) => this.parseLogicalNodeMember(member)).filter((member): member is LogicalNodeMember => member !== null)
+                ? candidate.members.map((member) => this.parseVirtualNodeMember(member)).filter((member): member is VirtualNodeMember => member !== null)
                 : undefined;
             return [{
                 id: typeof candidate.id === "string" ? candidate.id : undefined,
@@ -639,16 +639,16 @@ export class WorkspaceSession {
                 typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
                 sourceSpans,
                 sampleInputs: Array.isArray(candidate.sampleInputs)
-                    ? candidate.sampleInputs.map((port) => this.parseLogicalPort(port)).filter((port): port is LogicalPort => port !== null)
+                    ? candidate.sampleInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
                     : undefined,
                 sampleOutputs: Array.isArray(candidate.sampleOutputs)
-                    ? candidate.sampleOutputs.map((port) => this.parseLogicalPort(port)).filter((port): port is LogicalPort => port !== null)
+                    ? candidate.sampleOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
                     : undefined,
                 eventInputs: Array.isArray(candidate.eventInputs)
-                    ? candidate.eventInputs.map((port) => this.parseLogicalPort(port)).filter((port): port is LogicalPort => port !== null)
+                    ? candidate.eventInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
                     : undefined,
                 eventOutputs: Array.isArray(candidate.eventOutputs)
-                    ? candidate.eventOutputs.map((port) => this.parseLogicalPort(port)).filter((port): port is LogicalPort => port !== null)
+                    ? candidate.eventOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
                     : undefined,
                 memberCount: typeof candidate.memberCount === "number" ? candidate.memberCount : undefined,
                 members,
@@ -1251,7 +1251,7 @@ export class WorkspaceSession {
         }
     }
 
-    updatePrimaryHighlight(nodes: LogicalNode[]): void {
+    updatePrimaryHighlight(nodes: VirtualNode[]): void {
         if (!Array.isArray(nodes) || nodes.length === 0) {
             this.highlighter.clearPrimary();
             return;
@@ -1273,7 +1273,7 @@ export class WorkspaceSession {
         }));
     }
 
-    async updateFromEditor(editor: vscode.TextEditor | undefined): Promise<LogicalNode[]> {
+    async updateFromEditor(editor: vscode.TextEditor | undefined): Promise<VirtualNode[]> {
         if (!this.rpc || !editor) {
             return [];
         }
@@ -1312,7 +1312,7 @@ export class WorkspaceSession {
     // even when focus moves to a webview. Backend node-change notifications
     // carry instance-wide deltas, so they must be reprojected through this
     // query before updating the panel.
-    private async refreshLastQuery(): Promise<LogicalNode[]> {
+    private async refreshLastQuery(): Promise<VirtualNode[]> {
         if (!this.rpc || !this.lastQuery) {
             return [];
         }
@@ -1329,7 +1329,7 @@ export class WorkspaceSession {
             return [];
         }
         this.lastQueryError = "";
-        const nodes = sortNodesByRelevance(this.parseLogicalNodes(result.nodes), query);
+        const nodes = sortNodesByRelevance(this.parseVirtualNodes(result.nodes), query);
         const activeRegions = this.parseSourceSpans(activeRegionsResult.sourceSpans);
         this.provider.setNodes(nodes);
         this.highlighter.setActiveRegions(activeRegions);

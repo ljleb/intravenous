@@ -15,11 +15,11 @@ namespace iv {
         GraphInputPortDescriptor port {};
         LaneId knob_lane {};
         LaneId graph_input_lane {};
-        std::optional<LaneId> logical_knob_lane {};
+        std::optional<LaneId> virtual_knob_lane {};
     };
 
     struct GraphInputLaneBindings {
-        std::vector<GraphInputLaneBinding> logical_sample_knobs {};
+        std::vector<GraphInputLaneBinding> virtual_sample_knobs {};
         std::vector<GraphInputLaneBinding> sample_inputs {};
         std::vector<GraphInputLaneBinding> event_inputs {};
     };
@@ -27,7 +27,7 @@ namespace iv {
     class GraphInputLaneController {
         static constexpr char const* metadata_graph_input = "graph_input";
         static constexpr char const* metadata_knob = "knob";
-        static constexpr char const* metadata_logical = "logical";
+        static constexpr char const* metadata_virtual = "virtual";
         static constexpr char const* metadata_concrete = "concrete";
         static constexpr char const* metadata_sample = "sample";
         static constexpr char const* metadata_event = "event";
@@ -39,7 +39,7 @@ namespace iv {
 
         static std::string port_identity(GraphInputPortDescriptor const& port)
         {
-            return port.logical_node_id
+            return port.virtual_node_id
                 + "\x1fkind:" + (port.port_kind == PortKind::sample ? "sample" : "event")
                 + "\x1fordinal:" + std::to_string(port.port_ordinal);
         }
@@ -50,13 +50,13 @@ namespace iv {
             key += "\x1fmember:";
             key += port.concrete_member_ordinal.has_value()
                 ? std::to_string(*port.concrete_member_ordinal)
-                : "logical";
+                : "virtual";
             return key;
         }
 
-        static std::string logical_knob_identity(GraphInputPortDescriptor const& port)
+        static std::string virtual_knob_identity(GraphInputPortDescriptor const& port)
         {
-            return "graph-input:logical-knob:" + port_identity(port);
+            return "graph-input:virtual-knob:" + port_identity(port);
         }
 
         static std::string concrete_knob_identity(GraphInputPortDescriptor const& port)
@@ -82,7 +82,7 @@ namespace iv {
         static LaneMetadata graph_input_metadata(
             GraphInputPortDescriptor const& port,
             bool knob,
-            bool logical,
+            bool is_virtual,
             bool concrete,
             bool sample,
             bool event,
@@ -93,8 +93,8 @@ namespace iv {
             if (knob) {
                 metadata.set_unit(metadata_knob);
             }
-            if (logical) {
-                metadata.set_unit(metadata_logical);
+            if (is_virtual) {
+                metadata.set_unit(metadata_virtual);
             }
             if (concrete) {
                 metadata.set_unit(metadata_concrete);
@@ -105,7 +105,7 @@ namespace iv {
             if (event) {
                 metadata.set_unit(metadata_event);
             }
-            metadata.set_int(metadata_node_hash, hash_string(port.logical_node_id));
+            metadata.set_int(metadata_node_hash, hash_string(port.virtual_node_id));
             metadata.set_int(metadata_port_kind, static_cast<int>(port.port_kind == PortKind::event));
             metadata.set_int(metadata_port_ordinal, static_cast<int>(port.port_ordinal));
             if (port.concrete_member_ordinal.has_value()) {
@@ -127,7 +127,7 @@ namespace iv {
             if (!node_hash.has_value() || !port_kind.has_value() || !port_ordinal.has_value()) {
                 return false;
             }
-            if (*node_hash != hash_string(port.logical_node_id)) {
+            if (*node_hash != hash_string(port.virtual_node_id)) {
                 return false;
             }
             if (*port_kind != static_cast<int>(port.port_kind == PortKind::event)) {
@@ -195,14 +195,14 @@ namespace iv {
 
         static bool has_concrete_descriptor_for_port(
             std::span<GraphInputPortDescriptor const> ports,
-            GraphInputPortDescriptor const& logical_port
+            GraphInputPortDescriptor const& virtual_port
         )
         {
             for (auto const& port : ports) {
                 if (
-                    port.logical_node_id == logical_port.logical_node_id
-                    && port.port_kind == logical_port.port_kind
-                    && port.port_ordinal == logical_port.port_ordinal
+                    port.virtual_node_id == virtual_port.virtual_node_id
+                    && port.port_kind == virtual_port.port_kind
+                    && port.port_ordinal == virtual_port.port_ordinal
                     && port.concrete_member_ordinal.has_value()
                 ) {
                     return true;
@@ -218,7 +218,7 @@ namespace iv {
         ) const
         {
             GraphInputLaneBindings result;
-            std::unordered_map<std::string, LaneId> logical_sample_knobs;
+            std::unordered_map<std::string, LaneId> virtual_sample_knobs;
 
             for (auto const& port : ports) {
                 if (
@@ -228,11 +228,11 @@ namespace iv {
                     continue;
                 }
 
-                auto const identity = logical_knob_identity(port);
+                auto const identity = virtual_knob_identity(port);
                 auto const identity_hash = hash_string(identity);
-                LaneId logical_knob = find_knob_lane(graph, identity_hash);
-                if (!logical_knob) {
-                    logical_knob = graph.add_lane(
+                LaneId virtual_knob = find_knob_lane(graph, identity_hash);
+                if (!virtual_knob) {
+                    virtual_knob = graph.add_lane(
                         KnobLaneNode {},
                         graph_input_metadata(
                             port,
@@ -244,10 +244,10 @@ namespace iv {
                             identity_hash)
                     );
                 }
-                logical_sample_knobs.emplace(port_identity(port), logical_knob);
-                result.logical_sample_knobs.push_back(GraphInputLaneBinding {
+                virtual_sample_knobs.emplace(port_identity(port), virtual_knob);
+                result.virtual_sample_knobs.push_back(GraphInputLaneBinding {
                     .port = port,
-                    .knob_lane = logical_knob,
+                    .knob_lane = virtual_knob,
                 });
             }
 
@@ -262,9 +262,9 @@ namespace iv {
                     continue;
                 }
 
-                std::optional<LaneId> logical_knob;
-                if (auto it = logical_sample_knobs.find(port_identity(port)); it != logical_sample_knobs.end()) {
-                    logical_knob = it->second;
+                std::optional<LaneId> virtual_knob;
+                if (auto it = virtual_sample_knobs.find(port_identity(port)); it != virtual_sample_knobs.end()) {
+                    virtual_knob = it->second;
                 }
 
                 auto const identity = concrete_knob_identity(port);
@@ -301,11 +301,11 @@ namespace iv {
                 }
 
                 if (
-                    logical_knob.has_value()
-                    && *logical_knob != concrete_knob
+                    virtual_knob.has_value()
+                    && *virtual_knob != concrete_knob
                     && !concrete_knob_existed
                 ) {
-                    graph.connect(*logical_knob, concrete_knob, realtime_sample_input());
+                    graph.connect(*virtual_knob, concrete_knob, realtime_sample_input());
                 }
                 if (!graph_input_existed) {
                     graph.connect(concrete_knob, graph_input, realtime_sample_input());
@@ -316,7 +316,7 @@ namespace iv {
                     .port = port,
                     .knob_lane = concrete_knob,
                     .graph_input_lane = graph_input,
-                    .logical_knob_lane = logical_knob,
+                    .virtual_knob_lane = virtual_knob,
                 });
             }
 
@@ -361,7 +361,7 @@ namespace iv {
         {
             auto const identity = port.concrete_member_ordinal.has_value()
                 ? concrete_knob_identity(port)
-                : logical_knob_identity(port);
+                : virtual_knob_identity(port);
             auto const identity_hash = hash_string(identity);
             graph.for_each_lane([&](LaneRecord& lane) {
                 auto* knob = lane.node.try_as<KnobLaneNode>();
@@ -384,28 +384,28 @@ namespace iv {
                 return;
             }
 
-            GraphInputPortDescriptor logical_port = port;
-            logical_port.concrete_member_ordinal = std::nullopt;
+            GraphInputPortDescriptor virtual_port = port;
+            virtual_port.concrete_member_ordinal = std::nullopt;
 
-            LaneId logical_knob;
+            LaneId virtual_knob;
             LaneId concrete_knob;
-            auto const logical_identity = logical_knob_identity(logical_port);
+            auto const virtual_identity = virtual_knob_identity(virtual_port);
             auto const concrete_identity = concrete_knob_identity(port);
-            auto const logical_hash = hash_string(logical_identity);
+            auto const virtual_hash = hash_string(virtual_identity);
             auto const concrete_hash = hash_string(concrete_identity);
             graph.for_each_lane([&](LaneRecord const& lane) {
                 auto const* knob = lane.node.try_as<KnobLaneNode>();
                 if (!knob) {
                     return;
                 }
-                if (int_metadata(lane.metadata, metadata_identity_hash) == logical_hash) {
-                    logical_knob = lane.id;
+                if (int_metadata(lane.metadata, metadata_identity_hash) == virtual_hash) {
+                    virtual_knob = lane.id;
                 } else if (int_metadata(lane.metadata, metadata_identity_hash) == concrete_hash) {
                     concrete_knob = lane.id;
                 }
             });
-            if (logical_knob && concrete_knob) {
-                graph.connect_exclusive(logical_knob, concrete_knob, realtime_sample_input());
+            if (virtual_knob && concrete_knob) {
+                graph.connect_exclusive(virtual_knob, concrete_knob, realtime_sample_input());
             }
         }
     };

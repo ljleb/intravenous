@@ -112,7 +112,7 @@ private:
     void rebuild_runtime_storage_locked();
     void rebuild_compiled_support_and_notify_locked();
     VersionedTaskGraphUpdate replace_all_lanes_locked(std::vector<TrackedLane> lanes);
-    std::vector<LaneId> topological_order_locked() const;
+    std::vector<LaneId> topovirtual_order_locked() const;
     void execute_lane_locked(LaneId lane, size_t start_index);
     SampleBlockView<Sample> realtime_sample_block_mutable_locked(LaneId lane);
     SampleBlockView<Sample const> realtime_sample_block_locked(LaneId lane) const;

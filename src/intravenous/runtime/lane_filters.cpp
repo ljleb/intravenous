@@ -94,7 +94,7 @@ LaneFilterResult filter_result_from(
     };
 }
 
-void append_topological_filter_order(
+void append_topovirtual_filter_order(
     std::string const &filter_name,
     std::unordered_map<std::string, LaneFilters::RegisteredLaneFilter> const &filters_by_name,
     std::unordered_set<std::string> &temporary_marks,
@@ -114,7 +114,7 @@ void append_topological_filter_order(
             if (!filters_by_name.contains(dependency_name)) {
                 continue;
             }
-            append_topological_filter_order(
+            append_topovirtual_filter_order(
                 dependency_name,
                 filters_by_name,
                 temporary_marks,
@@ -127,7 +127,7 @@ void append_topological_filter_order(
     order.push_back(filter_name);
 }
 
-std::vector<std::string> topological_filter_order(
+std::vector<std::string> topovirtual_filter_order(
     std::unordered_map<std::string, LaneFilters::RegisteredLaneFilter> const &filters_by_name)
 {
     std::vector<std::string> order;
@@ -136,7 +136,7 @@ std::vector<std::string> topological_filter_order(
     std::unordered_set<std::string> permanent_marks;
 
     for (auto const &[filter_name, _] : filters_by_name) {
-        append_topological_filter_order(
+        append_topovirtual_filter_order(
             filter_name,
             filters_by_name,
             temporary_marks,
@@ -288,7 +288,7 @@ std::vector<LaneFilterResult> LaneFilters::refresh_all_filters_locked()
     // v1 execution model: any relevant change invalidates all stored filters.
     // Later we can narrow this to dependency- and property-directed invalidation.
     std::unordered_set<std::string> visiting;
-    auto const order = topological_filter_order(filters_by_name);
+    auto const order = topovirtual_filter_order(filters_by_name);
     results.reserve(order.size());
     for (auto const &filter_name : order) {
         auto it = filters_by_name.find(filter_name);

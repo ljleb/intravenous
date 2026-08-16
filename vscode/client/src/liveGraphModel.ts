@@ -1,4 +1,4 @@
-import { LogicalNode, LogicalNodeMember, LogicalPort } from "./graphModel";
+import { VirtualNode, VirtualNodeMember, VirtualPort } from "./graphModel";
 import {
     SerializedLiveGraphInstance,
     LiveGraphPortStateAction,
@@ -8,7 +8,7 @@ import {
     SerializedLiveGraphPort,
 } from "./liveGraphProtocol";
 
-function logicalIdentitySummary(node: LogicalNode): string {
+function virtualIdentitySummary(node: VirtualNode): string {
     const identity = typeof node?.sourceIdentity === "string" && node.sourceIdentity.length > 0
         ? node.sourceIdentity
         : (typeof node?.id === "string" ? node.id : "");
@@ -29,22 +29,22 @@ function logicalIdentitySummary(node: LogicalNode): string {
     return identity;
 }
 
-function sampleInputsForMemberView(node: LogicalNode, member: LogicalNodeMember): LogicalPort[] {
-    const logicalInputs = new Map<number, LogicalPort>();
+function sampleInputsForMemberView(node: VirtualNode, member: VirtualNodeMember): VirtualPort[] {
+    const virtualInputs = new Map<number, VirtualPort>();
     for (const input of node.sampleInputs || []) {
-        logicalInputs.set(Number(input.ordinal), input);
+        virtualInputs.set(Number(input.ordinal), input);
     }
     return (member.sampleInputs || []).map((input) => {
         if (input.hasConcreteOverride) {
             return input;
         }
-        const logicalInput = logicalInputs.get(Number(input.ordinal));
-        if (!logicalInput || typeof logicalInput.currentValue !== "number") {
+        const virtualInput = virtualInputs.get(Number(input.ordinal));
+        if (!virtualInput || typeof virtualInput.currentValue !== "number") {
             return input;
         }
         return {
             ...input,
-            currentValue: logicalInput.currentValue,
+            currentValue: virtualInput.currentValue,
         };
     });
 }
@@ -55,10 +55,10 @@ function displayStateSummary(stateValue: string, family: LiveGraphPortStateFamil
         return "default";
     case "overridden":
         return family === "sampleInput" ? "override" : "default";
-    case "logicalFollow":
-        return "follow logical";
-    case "logical":
-        return "follow logical output";
+    case "virtualFollow":
+        return "follow virtual";
+    case "virtual":
+        return "follow virtual output";
     case "timelineLane":
         return "lane-connected";
     case "disconnected":
@@ -70,7 +70,7 @@ function displayStateSummary(stateValue: string, family: LiveGraphPortStateFamil
 
 type PortUiContext = {
     builtInConnected: boolean;
-    logicalOutputAvailable: boolean;
+    virtualOutputAvailable: boolean;
     publicInput: boolean;
 };
 
@@ -78,7 +78,7 @@ function laneAction(): LiveGraphPortStateAction {
     return { state: "timelineLane", label: "Connect lane" };
 }
 
-function logicalSampleInputUi(stateValue: string): { summary: string; actions: LiveGraphPortStateAction[] } {
+function virtualSampleInputUi(stateValue: string): { summary: string; actions: LiveGraphPortStateAction[] } {
     return {
         summary: stateValue === "timelineLane" ? "lane-connected" : "knob value",
         actions: stateValue === "timelineLane"
@@ -87,11 +87,11 @@ function logicalSampleInputUi(stateValue: string): { summary: string; actions: L
     };
 }
 
-function logicalEventInputUi(stateValue: string, publicInput: boolean): { summary: string; actions: LiveGraphPortStateAction[] } {
+function virtualEventInputUi(stateValue: string, publicInput: boolean): { summary: string; actions: LiveGraphPortStateAction[] } {
     const summary =
         stateValue === "timelineLane" ? "lane-connected"
             : stateValue === "disconnected" ? "disconnected"
-                : stateValue === "logicalFollow" ? "follow logical input"
+                : stateValue === "virtualFollow" ? "follow virtual input"
                     : "default";
     if (publicInput) {
         return {
@@ -117,9 +117,9 @@ function concreteSampleInputUi(
     context: PortUiContext,
 ): { summary: string; actions: LiveGraphPortStateAction[] } {
     if (!context.builtInConnected) {
-        const followLogical: LiveGraphPortStateAction = {
+        const followVirtual: LiveGraphPortStateAction = {
             state: "default",
-            label: "Follow logical value",
+            label: "Follow virtual value",
             reset: true,
         };
         const override: LiveGraphPortStateAction = {
@@ -129,23 +129,23 @@ function concreteSampleInputUi(
         if (stateValue === "timelineLane") {
             return {
                 summary: "lane-connected",
-                actions: [followLogical, override, { state: "disconnected", label: "Disconnect" }],
+                actions: [followVirtual, override, { state: "disconnected", label: "Disconnect" }],
             };
         }
         if (stateValue === "disconnected") {
             return {
                 summary: "disconnected",
-                actions: [followLogical, override, laneAction()],
+                actions: [followVirtual, override, laneAction()],
             };
         }
         if (stateValue === "overridden") {
             return {
                 summary: "concrete override",
-                actions: [followLogical, laneAction(), { state: "disconnected", label: "Disconnect" }],
+                actions: [followVirtual, laneAction(), { state: "disconnected", label: "Disconnect" }],
             };
         }
         return {
-            summary: "follow logical value",
+            summary: "follow virtual value",
             actions: [{ state: "disconnected", label: "Disconnect" }, override, laneAction()],
         };
     }
@@ -157,10 +157,10 @@ function concreteSampleInputUi(
     if (stateValue !== "overridden") {
         actions.push({ state: "overridden", label: "Use concrete override" });
     }
-    if (stateValue !== "logicalFollow") {
+    if (stateValue !== "virtualFollow") {
         actions.push({
-            state: context.builtInConnected ? "logicalFollow" : "default",
-            label: "Follow logical value",
+            state: context.builtInConnected ? "virtualFollow" : "default",
+            label: "Follow virtual value",
             reset: !context.builtInConnected,
         });
     }
@@ -172,7 +172,7 @@ function concreteSampleInputUi(
             summary:
                 stateValue === "disconnected" ? "built-in connection"
                     : stateValue === "overridden" ? "concrete override"
-                        : stateValue === "logicalFollow" ? "follow logical value"
+                        : stateValue === "virtualFollow" ? "follow virtual value"
                             : "lane-connected",
             actions,
         };
@@ -183,7 +183,7 @@ function concreteSampleInputUi(
     return {
         summary:
             stateValue === "overridden" ? "concrete override"
-                : stateValue === "logicalFollow" ? "follow logical value"
+                : stateValue === "virtualFollow" ? "follow virtual value"
                     : stateValue === "timelineLane" ? "lane-connected"
                         : "disconnected",
         actions,
@@ -195,16 +195,16 @@ function concreteEventInputUi(
     context: PortUiContext,
 ): { summary: string; actions: LiveGraphPortStateAction[] } {
     if (!context.builtInConnected) {
-        const followLogical: LiveGraphPortStateAction = {
+        const followVirtual: LiveGraphPortStateAction = {
             state: "default",
-            label: "Follow logical",
+            label: "Follow virtual",
             reset: true,
         };
         if (stateValue === "timelineLane") {
             return {
                 summary: "lane-connected",
                 actions: [
-                    followLogical,
+                    followVirtual,
                     { state: "disconnected", label: "Disconnect" },
                 ],
             };
@@ -212,11 +212,11 @@ function concreteEventInputUi(
         if (stateValue === "disconnected") {
             return {
                 summary: "disconnected",
-                actions: [laneAction(), followLogical],
+                actions: [laneAction(), followVirtual],
             };
         }
         return {
-            summary: "follow logical input",
+            summary: "follow virtual input",
             actions: [
                 { state: "disconnected", label: "Disconnect" },
                 laneAction(),
@@ -228,10 +228,10 @@ function concreteEventInputUi(
     if (context.builtInConnected && stateValue !== "disconnected") {
         actions.push({ state: "default", label: "Use built-in connection", reset: true });
     }
-    if (stateValue !== "logicalFollow") {
+    if (stateValue !== "virtualFollow") {
         actions.push({
-            state: context.builtInConnected ? "logicalFollow" : "default",
-            label: "Follow logical input",
+            state: context.builtInConnected ? "virtualFollow" : "default",
+            label: "Follow virtual input",
             reset: !context.builtInConnected,
         });
     }
@@ -242,7 +242,7 @@ function concreteEventInputUi(
         return {
             summary:
                 stateValue === "disconnected" ? "built-in connection"
-                    : stateValue === "logicalFollow" ? "follow logical input"
+                    : stateValue === "virtualFollow" ? "follow virtual input"
                         : "lane-connected",
             actions,
         };
@@ -252,14 +252,14 @@ function concreteEventInputUi(
     }
     return {
         summary:
-            stateValue === "logicalFollow" ? "follow logical input"
+            stateValue === "virtualFollow" ? "follow virtual input"
                 : stateValue === "timelineLane" ? "lane-connected"
                     : "disconnected",
         actions,
     };
 }
 
-function logicalOutputUi(stateValue: string): { summary: string; actions: LiveGraphPortStateAction[] } {
+function virtualOutputUi(stateValue: string): { summary: string; actions: LiveGraphPortStateAction[] } {
     return {
         summary: stateValue === "timelineLane" ? "lane-connected" : "disconnected",
         actions: stateValue === "timelineLane"
@@ -272,29 +272,29 @@ function concreteOutputUi(
     stateValue: string,
     context: PortUiContext,
 ): { summary: string; actions: LiveGraphPortStateAction[] } {
-    const logicalAction: LiveGraphPortStateAction = {
-        state: "logical",
-        label: "Use logical output",
+    const virtualAction: LiveGraphPortStateAction = {
+        state: "virtual",
+        label: "Use virtual output",
     };
     if (stateValue === "timelineLane") {
         return {
             summary: "lane-connected",
             actions: [
-                ...(context.logicalOutputAvailable ? [logicalAction] : []),
+                ...(context.virtualOutputAvailable ? [virtualAction] : []),
                 { state: "disconnected", label: "Disconnect" },
             ],
         };
     }
-    if (stateValue === "logical") {
+    if (stateValue === "virtual") {
         return {
-            summary: "logical output",
+            summary: "virtual output",
             actions: [{ state: "disconnected", label: "Disconnect" }, laneAction()],
         };
     }
     return {
         summary: "disconnected",
         actions: [
-            ...(context.logicalOutputAvailable ? [logicalAction] : []),
+            ...(context.virtualOutputAvailable ? [virtualAction] : []),
             laneAction(),
         ],
     };
@@ -302,7 +302,7 @@ function concreteOutputUi(
 }
 
 function describePortState(
-    port: LogicalPort,
+    port: VirtualPort,
     family: LiveGraphPortStateFamily | null,
     memberOrdinal: number | null,
     context: PortUiContext,
@@ -314,7 +314,7 @@ function describePortState(
 
     if (family === "sampleInput") {
         if (memberOrdinal == null) {
-            const state = logicalSampleInputUi(stateValue);
+            const state = virtualSampleInputUi(stateValue);
             return { summary: state.summary, resetState: null, actions: state.actions };
         }
         const state = concreteSampleInputUi(stateValue, context);
@@ -323,7 +323,7 @@ function describePortState(
 
     if (family === "eventInput") {
         if (memberOrdinal == null) {
-            const state = logicalEventInputUi(stateValue, context.publicInput);
+            const state = virtualEventInputUi(stateValue, context.publicInput);
             return { summary: state.summary, resetState: null, actions: state.actions };
         }
         const state = concreteEventInputUi(stateValue, context);
@@ -332,7 +332,7 @@ function describePortState(
 
     if (family === "sampleOutput" || family === "eventOutput") {
         if (memberOrdinal == null) {
-            const state = logicalOutputUi(stateValue);
+            const state = virtualOutputUi(stateValue);
             return { summary: state.summary, resetState: null, actions: state.actions };
         }
         const state = concreteOutputUi(stateValue, context);
@@ -347,7 +347,7 @@ function describePortState(
 }
 
 function serializePort(
-    port: LogicalPort,
+    port: VirtualPort,
     index: number,
     direction: "input" | "output",
     portKind: "sample" | "event",
@@ -392,11 +392,11 @@ function serializePort(
 
 function makePortGroup(
     label: string,
-    ports: LogicalPort[] | undefined,
+    ports: VirtualPort[] | undefined,
     direction: "input" | "output",
     portKind: "sample" | "event",
     memberOrdinal: number | null,
-    contextForPort: ((port: LogicalPort) => PortUiContext) | null,
+    contextForPort: ((port: VirtualPort) => PortUiContext) | null,
     forceTweakable = false,
 ): SerializedLiveGraphGroup | null {
     if (!Array.isArray(ports) || ports.length === 0) {
@@ -414,34 +414,34 @@ function makePortGroup(
             direction,
             portKind,
             memberOrdinal,
-            contextForPort ? contextForPort(port) : { builtInConnected: false, logicalOutputAvailable: false, publicInput: false },
+            contextForPort ? contextForPort(port) : { builtInConnected: false, virtualOutputAvailable: false, publicInput: false },
             forceTweakable,
         )),
     };
 }
 
-function findLogicalPort(
-    ports: LogicalPort[] | undefined,
+function findVirtualPort(
+    ports: VirtualPort[] | undefined,
     ordinal: number,
-): LogicalPort | null {
+): VirtualPort | null {
     if (!Array.isArray(ports)) {
         return null;
     }
     return ports.find((port) => Number(port.ordinal) === Number(ordinal)) || null;
 }
 
-export function serializeLiveGraphNodes(nodes: LogicalNode[]): SerializedLiveGraphNode[] {
+export function serializeLiveGraphNodes(nodes: VirtualNode[]): SerializedLiveGraphNode[] {
     return nodes.map((node) => ({
         id: node.id || "",
         instanceId: node.instanceId || "",
         kind: node.kind || node.id || "",
         description: Number(node.memberCount || 0) > 1
             ? (() => {
-                const identity = logicalIdentitySummary(node);
+                const identity = virtualIdentitySummary(node);
                 return identity ? `${identity} • ${node.memberCount} nodes` : `${node.memberCount} nodes`;
             })()
-            : (logicalIdentitySummary(node) || node.id || ""),
-        tooltip: `${node.kind || "node"}${logicalIdentitySummary(node) ? ` • ${logicalIdentitySummary(node)}` : ""}${Number(node.memberCount || 0) > 1 ? ` • ${node.memberCount} members` : ""}`,
+            : (virtualIdentitySummary(node) || node.id || ""),
+        tooltip: `${node.kind || "node"}${virtualIdentitySummary(node) ? ` • ${virtualIdentitySummary(node)}` : ""}${Number(node.memberCount || 0) > 1 ? ` • ${node.memberCount} members` : ""}`,
         memberCount: Number(node.memberCount || 0),
         icon: Number(node.memberCount || 0) > 1 ? "merged" : "single",
         groups: [
@@ -449,7 +449,7 @@ export function serializeLiveGraphNodes(nodes: LogicalNode[]): SerializedLiveGra
             makePortGroup("sample outputs", node.sampleOutputs, "output", "sample", null, null),
             makePortGroup("event inputs", node.eventInputs, "input", "event", null, () => ({
                 builtInConnected: false,
-                logicalOutputAvailable: false,
+                virtualOutputAvailable: false,
                 publicInput: String(node.id || "").startsWith("iv.public-input:"),
             })),
             makePortGroup("event outputs", node.eventOutputs, "output", "event", null, null),
@@ -469,7 +469,7 @@ export function serializeLiveGraphNodes(nodes: LogicalNode[]): SerializedLiveGra
                         Number(member.ordinal || 0),
                         (port) => ({
                             builtInConnected: port.connectivity === "connected",
-                            logicalOutputAvailable: false,
+                            virtualOutputAvailable: false,
                             publicInput: false,
                         }),
                         true),
@@ -481,8 +481,8 @@ export function serializeLiveGraphNodes(nodes: LogicalNode[]): SerializedLiveGra
                         Number(member.ordinal || 0),
                         (port) => ({
                             builtInConnected: false,
-                            logicalOutputAvailable:
-                                findLogicalPort(node.sampleOutputs, Number(port.ordinal))?.stateValue === "timelineLane",
+                            virtualOutputAvailable:
+                                findVirtualPort(node.sampleOutputs, Number(port.ordinal))?.stateValue === "timelineLane",
                             publicInput: false,
                         })),
                     makePortGroup(
@@ -493,7 +493,7 @@ export function serializeLiveGraphNodes(nodes: LogicalNode[]): SerializedLiveGra
                         Number(member.ordinal || 0),
                         (port) => ({
                             builtInConnected: port.connectivity === "connected",
-                            logicalOutputAvailable: false,
+                            virtualOutputAvailable: false,
                             publicInput: false,
                         })),
                     makePortGroup(
@@ -504,8 +504,8 @@ export function serializeLiveGraphNodes(nodes: LogicalNode[]): SerializedLiveGra
                         Number(member.ordinal || 0),
                         (port) => ({
                             builtInConnected: false,
-                            logicalOutputAvailable:
-                                findLogicalPort(node.eventOutputs, Number(port.ordinal))?.stateValue === "timelineLane",
+                            virtualOutputAvailable:
+                                findVirtualPort(node.eventOutputs, Number(port.ordinal))?.stateValue === "timelineLane",
                             publicInput: false,
                         })),
                 ].filter((group): group is SerializedLiveGraphGroup => group !== null),

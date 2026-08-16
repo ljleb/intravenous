@@ -447,7 +447,7 @@ TEST(TimelineExecution, SynchronizeDiffUpdatesRetainedLanesInsteadOfRecreatingTh
 TEST(TimelineExecution, ExecutesRealtimeSampleKnobChainForward)
 {
     iv::Timeline timeline;
-    auto const logical = timeline.with_graph([&](iv::LaneGraph& graph) {
+    auto const virtual_lane = timeline.with_graph([&](iv::LaneGraph& graph) {
         return graph.add_lane(iv::TypeErasedLaneNode(iv::KnobLaneNode {
             .value = 440.0f,
         }), {}, iv::ChannelTypeId::mono);
@@ -460,7 +460,7 @@ TEST(TimelineExecution, ExecutesRealtimeSampleKnobChainForward)
     timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate {
         .connections_to_add = {
             iv::LaneGraphConnection {
-                .source = logical,
+                .source = virtual_lane,
                 .target = concrete,
                 .input = iv::realtime_sample_input(),
             },
@@ -475,11 +475,11 @@ TEST(TimelineExecution, ExecutesRealtimeSampleKnobChainForward)
     execution.set_realtime_start_index(64);
     harness.run_once();
 
-    auto const logical_block = execution.realtime_sample_block(logical);
+    auto const virtual_block = execution.realtime_sample_block(virtual_lane);
     auto const concrete_block = execution.realtime_sample_block(concrete);
-    ASSERT_EQ(logical_block.frame_count, 4u);
+    ASSERT_EQ(virtual_block.frame_count, 4u);
     ASSERT_EQ(concrete_block.frame_count, 4u);
-    EXPECT_EQ(sample_values(logical_block),
+    EXPECT_EQ(sample_values(virtual_block),
         (std::vector<iv::Sample> { 440.0f, 440.0f, 440.0f, 440.0f }));
     EXPECT_EQ(sample_values(concrete_block),
         (std::vector<iv::Sample> { 440.0f, 440.0f, 440.0f, 440.0f }));

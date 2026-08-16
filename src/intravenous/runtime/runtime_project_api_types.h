@@ -38,34 +38,34 @@ namespace iv {
         bool operator==(LiveSourceSpan const &) const = default;
     };
 
-    struct LogicalNodeMemberInfo {
+    struct VirtualNodeMemberInfo {
         size_t ordinal = 0;
         std::string backing_node_id{};
         std::string kind{};
         std::string type_identity{};
-        std::vector<LogicalPortInfo> sample_inputs{};
-        std::vector<LogicalPortInfo> sample_outputs{};
-        std::vector<LogicalPortInfo> event_inputs{};
-        std::vector<LogicalPortInfo> event_outputs{};
+        std::vector<VirtualPortInfo> sample_inputs{};
+        std::vector<VirtualPortInfo> sample_outputs{};
+        std::vector<VirtualPortInfo> event_inputs{};
+        std::vector<VirtualPortInfo> event_outputs{};
     };
 
-    struct LogicalNodeInfo {
+    struct VirtualNodeInfo {
         std::string id{};
         std::string instance_id{};
         std::string kind{};
         std::string source_identity{};
         std::string type_identity{};
         std::vector<LiveSourceSpan> source_spans{};
-        std::vector<LogicalPortInfo> sample_inputs{};
-        std::vector<LogicalPortInfo> sample_outputs{};
-        std::vector<LogicalPortInfo> event_inputs{};
-        std::vector<LogicalPortInfo> event_outputs{};
+        std::vector<VirtualPortInfo> sample_inputs{};
+        std::vector<VirtualPortInfo> sample_outputs{};
+        std::vector<VirtualPortInfo> event_inputs{};
+        std::vector<VirtualPortInfo> event_outputs{};
         size_t member_count = 0;
-        std::vector<LogicalNodeMemberInfo> members{};
+        std::vector<VirtualNodeMemberInfo> members{};
     };
 
     // Source-annotated public inputs are not graph nodes, but the source
-    // sidebar presents them using the same logical/member shape.
+    // sidebar presents them using the same virtual/member shape.
     struct PublicSampleInputInfo {
         std::string instance_id {};
         std::string source_identity {};
@@ -75,7 +75,7 @@ namespace iv {
         std::optional<Sample> min {};
         std::optional<Sample> max {};
         Sample current_value = 0.0f;
-        std::string logical_state {};
+        std::string virtual_state {};
         bool graph_connected = false;
         std::vector<size_t> member_ordinals {};
         std::vector<bool> member_graph_connected {};
@@ -88,7 +88,7 @@ namespace iv {
         std::vector<SourceInfo> source_infos {};
         std::string name {};
         EventTypeId type = EventTypeId::trigger;
-        std::string logical_state {};
+        std::string virtual_state {};
         bool graph_connected = false;
         std::vector<size_t> member_ordinals {};
         std::vector<bool> member_graph_connected {};
@@ -100,7 +100,7 @@ namespace iv {
         std::string source_identity {};
         std::vector<SourceInfo> source_infos {};
         std::string name {};
-        std::string logical_state {};
+        std::string virtual_state {};
         bool graph_connected = false;
         std::vector<size_t> member_ordinals {};
         std::vector<bool> member_graph_connected {};
@@ -113,7 +113,7 @@ namespace iv {
         std::vector<SourceInfo> source_infos {};
         std::string name {};
         EventTypeId type = EventTypeId::trigger;
-        std::string logical_state {};
+        std::string virtual_state {};
         bool graph_connected = false;
         std::vector<size_t> member_ordinals {};
         std::vector<bool> member_graph_connected {};
@@ -121,7 +121,7 @@ namespace iv {
     };
 
     struct ProjectQueryResult {
-        std::vector<LogicalNodeInfo> nodes{};
+        std::vector<VirtualNodeInfo> nodes{};
     };
 
     struct ProjectRegionQueryResult {
@@ -147,8 +147,8 @@ namespace iv {
         LaneViewResult lane_view{};
     };
 
-    struct ProjectLogicalNodesNotification {
-        std::vector<LogicalNodeInfo> nodes{};
+    struct ProjectVirtualNodesNotification {
+        std::vector<VirtualNodeInfo> nodes{};
         std::vector<std::string> replace_instance_ids{};
     };
 
@@ -156,5 +156,5 @@ namespace iv {
         ProjectMessageNotification,
         ProjectStatusNotification,
         ProjectLaneViewNotification,
-        ProjectLogicalNodesNotification>;
+        ProjectVirtualNodesNotification>;
 } // namespace iv

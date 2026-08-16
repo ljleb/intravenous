@@ -19,7 +19,7 @@ struct PreparedBuilderGraph {
         .nodes = {},
         .explicit_ttl_samples = {},
         .node_ids = {},
-        .node_logical_ids = {},
+        .node_virtual_ids = {},
         .node_source_infos = {},
         .node_construction_order = {},
         .node_kinds = {},
@@ -90,7 +90,7 @@ struct PreparedBuilderGraph {
     {
         graph.explicit_ttl_samples.push_back(node.lifetime.ttl_samples);
         graph.node_ids.push_back(identity.child_id(node_i));
-        graph.node_logical_ids.push_back(node.logical_binding.ids);
+        graph.node_virtual_ids.push_back(node.virtual_binding.ids);
         graph.node_source_infos.push_back(node.source_annotations.infos);
         graph.node_construction_order.push_back(node_i);
         graph.node_kinds.push_back(std::move(kind));
@@ -206,7 +206,7 @@ struct PreparedBuilderGraph {
         ));
         graph.explicit_ttl_samples.push_back(std::nullopt);
         graph.node_ids.push_back(identity.child_id(placeholder_node) + ".default." + std::to_string(input_port));
-        graph.node_logical_ids.emplace_back();
+        graph.node_virtual_ids.emplace_back();
         graph.node_source_infos.emplace_back();
         graph.node_construction_order.push_back(placeholder_node);
         return PortId{ graph.nodes.size() - 1, 0 };
@@ -414,8 +414,8 @@ GraphIntrospectionMetadata GraphBuilderFinalizer::build_metadata(
     prepared.lower_edges();
 
     auto lowered_scopes = prepared.build_lowered_scopes();
-    auto [logical_nodes, _] = details::build_logical_metadata(prepared.graph, lowered_scopes);
-    return GraphIntrospectionMetadata{ .logical_nodes = std::move(logical_nodes) };
+    auto [virtual_nodes, _] = details::build_virtual_metadata(prepared.graph, lowered_scopes);
+    return GraphIntrospectionMetadata{ .virtual_nodes = std::move(virtual_nodes) };
 }
 
 GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
@@ -455,7 +455,7 @@ GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
 
     auto lowered_scopes = prepared.build_lowered_scopes();
     auto lowered_subgraphs = details::compile_lowered_subgraphs(prepared.graph, lowered_scopes);
-    auto [_, logical_node_ids_by_backing_node_id] = details::build_logical_metadata(prepared.graph, lowered_scopes);
+    auto [_, virtual_node_ids_by_backing_node_id] = details::build_virtual_metadata(prepared.graph, lowered_scopes);
 
     auto detached = [&] {
         std::vector<DetachedInfo> detached_info;
@@ -498,7 +498,7 @@ GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
             .metadata = GraphBuildMetadata{
                 .lowered_subgraphs = std::move(lowered_subgraphs),
                 .node_source_infos = std::move(node_source_infos),
-                .logical_node_ids_by_backing_node_id = std::move(logical_node_ids_by_backing_node_id),
+                .virtual_node_ids_by_backing_node_id = std::move(virtual_node_ids_by_backing_node_id),
             },
         };
 }

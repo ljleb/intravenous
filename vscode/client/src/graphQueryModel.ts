@@ -1,4 +1,4 @@
-import { LogicalNode, SourcePosition, SourceRange, SourceSpan } from "./graphModel";
+import { VirtualNode, SourcePosition, SourceRange, SourceSpan } from "./graphModel";
 
 export type QueryShape = {
     filePath: string;
@@ -9,7 +9,7 @@ function positionKey(position: SourcePosition): number {
     return (position.line * 1000000) + position.column;
 }
 
-export function collectPrimarySourceSpans(nodes: LogicalNode[]): SourceSpan[] {
+export function collectPrimarySourceSpans(nodes: VirtualNode[]): SourceSpan[] {
     const spans: SourceSpan[] = [];
     const seen = new Set<string>();
 
@@ -39,12 +39,12 @@ export function collectPrimarySourceSpans(nodes: LogicalNode[]): SourceSpan[] {
     return spans;
 }
 
-export function sortNodesByRelevance(nodes: LogicalNode[], query: QueryShape | null): LogicalNode[] {
+export function sortNodesByRelevance(nodes: VirtualNode[], query: QueryShape | null): VirtualNode[] {
     if (!query) {
         return nodes;
     }
 
-    const scoreNode = (node: LogicalNode): [number, number, number, number] => {
+    const scoreNode = (node: VirtualNode): [number, number, number, number] => {
         let best: [number, number, number, number] | null = null;
         for (const span of node.sourceSpans || []) {
             if (span.filePath !== query.filePath) {

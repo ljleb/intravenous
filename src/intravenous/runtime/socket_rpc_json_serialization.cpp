@@ -6,14 +6,14 @@
 
 namespace iv {
 namespace {
-std::string_view logical_port_connectivity_json(LogicalPortConnectivity connectivity)
+std::string_view virtual_port_connectivity_json(VirtualPortConnectivity connectivity)
 {
     switch (connectivity) {
-    case LogicalPortConnectivity::disconnected:
+    case VirtualPortConnectivity::disconnected:
         return "disconnected";
-    case LogicalPortConnectivity::connected:
+    case VirtualPortConnectivity::connected:
         return "connected";
-    case LogicalPortConnectivity::mixed:
+    case VirtualPortConnectivity::mixed:
         return "mixed";
     }
     return "disconnected";
@@ -185,13 +185,13 @@ SocketRpcJson iv_module_sources_json(std::vector<IvModuleSourceInfo> const &sour
     return json;
 }
 
-SocketRpcJson logical_port_json(LogicalPortInfo const &port)
+SocketRpcJson virtual_port_json(VirtualPortInfo const &port)
 {
     SocketRpcJson json = SocketRpcJson::object();
     json["ordinal"] = port.ordinal;
     json["name"] = port.name;
     json["type"] = port.type;
-    json["connectivity"] = std::string(logical_port_connectivity_json(port.connectivity));
+    json["connectivity"] = std::string(virtual_port_connectivity_json(port.connectivity));
     json["defaultValue"] = static_cast<Sample::storage>(port.default_value);
     json["minValue"] = port.min.has_value()
         ? SocketRpcJson(static_cast<Sample::storage>(*port.min))
@@ -208,39 +208,39 @@ SocketRpcJson logical_port_json(LogicalPortInfo const &port)
     return json;
 }
 
-SocketRpcJson logical_ports_json(std::vector<LogicalPortInfo> const &ports)
+SocketRpcJson virtual_ports_json(std::vector<VirtualPortInfo> const &ports)
 {
     SocketRpcJson json = SocketRpcJson::array();
     for (auto const &port : ports) {
-        json.push_back(logical_port_json(port));
+        json.push_back(virtual_port_json(port));
     }
     return json;
 }
 
-SocketRpcJson logical_node_member_json(LogicalNodeMemberInfo const &member)
+SocketRpcJson virtual_node_member_json(VirtualNodeMemberInfo const &member)
 {
     return SocketRpcJson{
         {"ordinal", member.ordinal},
         {"backingNodeId", member.backing_node_id},
         {"kind", member.kind},
         {"typeIdentity", member.type_identity},
-        {"sampleInputs", logical_ports_json(member.sample_inputs)},
-        {"sampleOutputs", logical_ports_json(member.sample_outputs)},
-        {"eventInputs", logical_ports_json(member.event_inputs)},
-        {"eventOutputs", logical_ports_json(member.event_outputs)},
+        {"sampleInputs", virtual_ports_json(member.sample_inputs)},
+        {"sampleOutputs", virtual_ports_json(member.sample_outputs)},
+        {"eventInputs", virtual_ports_json(member.event_inputs)},
+        {"eventOutputs", virtual_ports_json(member.event_outputs)},
     };
 }
 
-SocketRpcJson logical_node_members_json(std::vector<LogicalNodeMemberInfo> const &members)
+SocketRpcJson virtual_node_members_json(std::vector<VirtualNodeMemberInfo> const &members)
 {
     SocketRpcJson json = SocketRpcJson::array();
     for (auto const &member : members) {
-        json.push_back(logical_node_member_json(member));
+        json.push_back(virtual_node_member_json(member));
     }
     return json;
 }
 
-SocketRpcJson logical_node_json(LogicalNodeInfo const &node)
+SocketRpcJson virtual_node_json(VirtualNodeInfo const &node)
 {
     return SocketRpcJson{
         {"id", node.id},
@@ -249,20 +249,20 @@ SocketRpcJson logical_node_json(LogicalNodeInfo const &node)
         {"sourceIdentity", node.source_identity},
         {"typeIdentity", node.type_identity},
         {"sourceSpans", live_source_spans_json(node.source_spans)},
-        {"sampleInputs", logical_ports_json(node.sample_inputs)},
-        {"sampleOutputs", logical_ports_json(node.sample_outputs)},
-        {"eventInputs", logical_ports_json(node.event_inputs)},
-        {"eventOutputs", logical_ports_json(node.event_outputs)},
+        {"sampleInputs", virtual_ports_json(node.sample_inputs)},
+        {"sampleOutputs", virtual_ports_json(node.sample_outputs)},
+        {"eventInputs", virtual_ports_json(node.event_inputs)},
+        {"eventOutputs", virtual_ports_json(node.event_outputs)},
         {"memberCount", node.member_count},
-        {"members", logical_node_members_json(node.members)},
+        {"members", virtual_node_members_json(node.members)},
     };
 }
 
-SocketRpcJson logical_nodes_json(std::vector<LogicalNodeInfo> const &nodes)
+SocketRpcJson virtual_nodes_json(std::vector<VirtualNodeInfo> const &nodes)
 {
     SocketRpcJson json = SocketRpcJson::array();
     for (auto const &node : nodes) {
-        json.push_back(logical_node_json(node));
+        json.push_back(virtual_node_json(node));
     }
     return json;
 }

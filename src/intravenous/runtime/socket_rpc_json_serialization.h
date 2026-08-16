@@ -23,12 +23,12 @@ namespace iv {
     SocketRpcJson iv_module_source_json(IvModuleSourceInfo const &source);
     SocketRpcJson iv_module_sources_json(std::vector<IvModuleSourceInfo> const &sources);
 
-    SocketRpcJson logical_port_json(LogicalPortInfo const &port);
-    SocketRpcJson logical_ports_json(std::vector<LogicalPortInfo> const &ports);
-    SocketRpcJson logical_node_member_json(LogicalNodeMemberInfo const &member);
-    SocketRpcJson logical_node_members_json(std::vector<LogicalNodeMemberInfo> const &members);
-    SocketRpcJson logical_node_json(LogicalNodeInfo const &node);
-    SocketRpcJson logical_nodes_json(std::vector<LogicalNodeInfo> const &nodes);
+    SocketRpcJson virtual_port_json(VirtualPortInfo const &port);
+    SocketRpcJson virtual_ports_json(std::vector<VirtualPortInfo> const &ports);
+    SocketRpcJson virtual_node_member_json(VirtualNodeMemberInfo const &member);
+    SocketRpcJson virtual_node_members_json(std::vector<VirtualNodeMemberInfo> const &members);
+    SocketRpcJson virtual_node_json(VirtualNodeInfo const &node);
+    SocketRpcJson virtual_nodes_json(std::vector<VirtualNodeInfo> const &nodes);
 
     SocketRpcJson lane_metadata_json(LaneMetadata const &metadata);
     SocketRpcJson lane_query_result_json(LaneQueryResult const &result);

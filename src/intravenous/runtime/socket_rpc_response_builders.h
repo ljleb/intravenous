@@ -52,26 +52,26 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcLogicalNodeResultBuilder {
+    class SocketRpcVirtualNodeResultBuilder {
         int error_code = -32000;
         std::string error_message;
-        std::optional<LogicalNodeInfo> result;
+        std::optional<VirtualNodeInfo> result;
 
     public:
-        void succeed(LogicalNodeInfo value);
+        void succeed(VirtualNodeInfo value);
         void fail(std::string message);
         void fail(int code, std::string message);
 
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcLogicalNodesResultBuilder {
+    class SocketRpcVirtualNodesResultBuilder {
         int error_code = -32000;
         std::string error_message;
-        std::optional<std::vector<LogicalNodeInfo>> result;
+        std::optional<std::vector<VirtualNodeInfo>> result;
 
     public:
-        void succeed(std::vector<LogicalNodeInfo> value);
+        void succeed(std::vector<VirtualNodeInfo> value);
         void fail(std::string message);
         void fail(int code, std::string message);
 

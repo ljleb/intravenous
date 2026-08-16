@@ -538,7 +538,7 @@ void TimelineExecution::rebuild_runtime_storage_locked()
     realtime_sample_descriptors_.clear();
     realtime_sample_slot_by_lane_.clear();
     size_t next_sample_offset = 0;
-    auto const order = topological_order_locked();
+    auto const order = topovirtual_order_locked();
     for (auto const lane : order) {
         auto const &tracked = tracked_lanes_.at(lane);
         if (!is_realtime_sample_output(tracked.output)) {
@@ -571,7 +571,7 @@ void TimelineExecution::rebuild_runtime_storage_locked()
 void TimelineExecution::rebuild_compiled_support_and_notify_locked()
 {
     compiled_support_by_lane_.clear();
-    auto const order = topological_order_locked();
+    auto const order = topovirtual_order_locked();
     for (auto const lane : order) {
         auto tracked_it = tracked_lanes_.find(lane);
         if (tracked_it == tracked_lanes_.end() || tracked_it->second.node == nullptr) {
@@ -724,7 +724,7 @@ VersionedTaskGraphUpdate TimelineExecution::replace_all_lanes_locked(std::vector
     };
 }
 
-std::vector<LaneId> TimelineExecution::topological_order_locked() const
+std::vector<LaneId> TimelineExecution::topovirtual_order_locked() const
 {
     std::unordered_map<LaneId, size_t, LaneIdHash> indegree;
     std::unordered_map<LaneId, std::vector<LaneId>, LaneIdHash> users;

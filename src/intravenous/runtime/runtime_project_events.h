@@ -142,7 +142,7 @@ namespace iv {
     enum class ProjectSampleInputState {
         default_,
         overridden,
-        logical_follow,
+        virtual_follow,
         timeline_lane,
         disconnected,
     };
@@ -157,7 +157,7 @@ namespace iv {
 
     // Public sample inputs are identified by the stable declaration identity
     // emitted by the source rewriter, rather than by a graph-node id.  An
-    // absent member ordinal addresses the logical input; a present ordinal
+    // absent member ordinal addresses the virtual input; a present ordinal
     // addresses one concrete evaluation of that declaration.
     struct ProjectSetPublicSampleInputStateRequest {
         std::string instance_id;
@@ -208,7 +208,7 @@ namespace iv {
 
     enum class ProjectEventInputState {
         default_,
-        logical_follow,
+        virtual_follow,
         timeline_lane,
         disconnected,
     };
@@ -222,11 +222,11 @@ namespace iv {
     };
 
     // Output-state requests. `disconnected` is the default and maps to *erasing* the
-    // internal entry (mirror of input `default_` -> erase). Logical outputs only
+    // internal entry (mirror of input `default_` -> erase). Virtual outputs only
     // support `disconnected` or `timeline_lane`.
     enum class ProjectSampleOutputState {
         disconnected,
-        logical,
+        virtual_port,
         timeline_lane,
     };
 
@@ -240,7 +240,7 @@ namespace iv {
 
     enum class ProjectEventOutputState {
         disconnected,
-        logical,
+        virtual_port,
         timeline_lane,
     };
 

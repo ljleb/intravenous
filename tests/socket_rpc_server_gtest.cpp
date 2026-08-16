@@ -365,7 +365,7 @@ TEST(SocketRpcServer, SendsReadyNotificationAndStopsOnDisconnect)
 TEST(SocketRpcServer, DispatchesQueryEventAndReturnsSubscriberResult)
 {
     socket_rpc_test_state.reset();
-    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::LogicalNodeInfo {
+    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::VirtualNodeInfo {
         .id = "node-1",
         .kind = "TestNode",
         .source_identity = "src-1",
@@ -505,7 +505,7 @@ TEST(SocketRpcServer, AckSubscriberCanFailAndShutdownEventIsInvoked)
 TEST(SocketRpcServer, DefersLaneViewNotificationsUntilAfterResponse)
 {
     socket_rpc_test_state.reset();
-    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::LogicalNodeInfo {
+    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::VirtualNodeInfo {
         .id = "node-2",
         .kind = "DeferredNode",
     });

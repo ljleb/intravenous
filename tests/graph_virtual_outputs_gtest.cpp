@@ -51,34 +51,34 @@ struct StereoLeftOnlyNode {
 };
 } // namespace
 
-TEST(GraphLogicalOutputsTest, EnumeratesLogicalNodeOutputPorts)
+TEST(GraphVirtualOutputsTest, EnumeratesVirtualNodeOutputPorts)
 {
     GraphBuilder g;
     auto node = _annotate_node_source_info(g.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(), "node-1");
     (void)node;
 
-    auto const outputs = g.logical_outputs();
+    auto const outputs = g.virtual_outputs();
     ASSERT_EQ(outputs.sample.size(), 1u);
     auto const &output = outputs.sample.front();
-    EXPECT_EQ(output.logical_node_id, "node-1");
+    EXPECT_EQ(output.virtual_node_id, "node-1");
     EXPECT_EQ(output.member_ordinal, 0u);
     EXPECT_EQ(output.source.port, 0u);
     EXPECT_FALSE(output.has_existing_downstream_connection);
 }
 
-TEST(GraphLogicalOutputsTest, ReportsExistingDownstreamConnection)
+TEST(GraphVirtualOutputsTest, ReportsExistingDownstreamConnection)
 {
     GraphBuilder g;
     auto node = _annotate_node_source_info(g.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(), "node-1");
     auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
     sink(node);
 
-    auto const outputs = g.logical_outputs();
+    auto const outputs = g.virtual_outputs();
     ASSERT_EQ(outputs.sample.size(), 1u);
     EXPECT_TRUE(outputs.sample.front().has_existing_downstream_connection);
 }
 
-TEST(GraphLogicalOutputsTest, GroupsConcreteMembersOfSharedLogicalNode)
+TEST(GraphVirtualOutputsTest, GroupsConcreteMembersOfSharedVirtualNode)
 {
     GraphBuilder g;
     auto a = _annotate_node_source_info(g.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(), "shared");
@@ -86,23 +86,23 @@ TEST(GraphLogicalOutputsTest, GroupsConcreteMembersOfSharedLogicalNode)
     (void)a;
     (void)b;
 
-    auto const outputs = g.logical_outputs();
+    auto const outputs = g.virtual_outputs();
     ASSERT_EQ(outputs.sample.size(), 2u);
-    EXPECT_EQ(outputs.sample[0].logical_node_id, "shared");
-    EXPECT_EQ(outputs.sample[1].logical_node_id, "shared");
+    EXPECT_EQ(outputs.sample[0].virtual_node_id, "shared");
+    EXPECT_EQ(outputs.sample[1].virtual_node_id, "shared");
     EXPECT_NE(outputs.sample[0].member_ordinal, outputs.sample[1].member_ordinal);
 }
 
-TEST(GraphLogicalOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
+TEST(GraphVirtualOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
 {
     GraphBuilder g;
     auto node = _annotate_node_source_info(g.node<StereoOutputNode>().node_ref(), "stereo");
     (void)node;
 
-    auto const families = g.logical_sample_output_families();
+    auto const families = g.virtual_sample_output_families();
     ASSERT_EQ(families.families.size(), 1u);
     auto const& family = families.families.front();
-    EXPECT_EQ(family.logical_node_id, "stereo");
+    EXPECT_EQ(family.virtual_node_id, "stereo");
     EXPECT_EQ(family.family_ordinal, 0u);
     EXPECT_EQ(family.channel_type, ChannelTypeId::stereo);
     EXPECT_EQ(family.channels.size(), 2u);
@@ -110,23 +110,23 @@ TEST(GraphLogicalOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
     ASSERT_TRUE(family.channels[1].source.has_value());
 }
 
-TEST(GraphLogicalOutputsTest, KeepsSparseStereoFamiliesSparse)
+TEST(GraphVirtualOutputsTest, KeepsSparseStereoFamiliesSparse)
 {
     GraphBuilder g;
     auto node = _annotate_node_source_info(g.node<StereoLeftOnlyNode>().node_ref(), "stereo");
     (void)node;
 
-    auto const families = g.logical_sample_output_families();
+    auto const families = g.virtual_sample_output_families();
     ASSERT_EQ(families.families.size(), 1u);
     auto const& family = families.families.front();
-    EXPECT_EQ(family.logical_node_id, "stereo");
+    EXPECT_EQ(family.virtual_node_id, "stereo");
     EXPECT_EQ(family.channel_type, ChannelTypeId::stereo);
     EXPECT_EQ(family.channels.size(), 2u);
     ASSERT_TRUE(family.channels[0].source.has_value());
     EXPECT_FALSE(family.channels[1].source.has_value());
 }
 
-TEST(GraphLogicalOutputsTest, NamedChannelOutputsKeepNameAndChannelAsSeparateIdentity)
+TEST(GraphVirtualOutputsTest, NamedChannelOutputsKeepNameAndChannelAsSeparateIdentity)
 {
     GraphBuilder g;
     g.multi_channel<stereo>([&]<auto channel>() {
@@ -145,7 +145,7 @@ TEST(GraphLogicalOutputsTest, NamedChannelOutputsKeepNameAndChannelAsSeparateIde
     EXPECT_EQ(families.families.front().channels[1].port_ordinals, (std::vector<size_t>{0u}));
 }
 
-TEST(GraphLogicalOutputsTest, RepeatedNamedPublicOutputsShareOneSummedGraphPort)
+TEST(GraphVirtualOutputsTest, RepeatedNamedPublicOutputsShareOneSummedGraphPort)
 {
     GraphBuilder g;
     g.outputs("main"_P = 0.25f);
@@ -163,7 +163,7 @@ TEST(GraphLogicalOutputsTest, RepeatedNamedPublicOutputsShareOneSummedGraphPort)
     // multiple-source edge lowering is therefore responsible for summing them.
 }
 
-TEST(GraphLogicalOutputsTest, NamedChannelOutputsFormOneNamedStereoFamily)
+TEST(GraphVirtualOutputsTest, NamedChannelOutputsFormOneNamedStereoFamily)
 {
     GraphBuilder g;
     g.multi_channel<stereo>([&]<auto c> {
@@ -177,7 +177,7 @@ TEST(GraphLogicalOutputsTest, NamedChannelOutputsFormOneNamedStereoFamily)
     EXPECT_EQ(outputs[0].channel_layout.channel_type, ChannelTypeId::stereo);
 }
 
-TEST(GraphLogicalOutputsTest, WholeStreamAndChannelContributorsShareOneTypedPublicOutput)
+TEST(GraphVirtualOutputsTest, WholeStreamAndChannelContributorsShareOneTypedPublicOutput)
 {
     GraphBuilder g;
     auto stereo_source = g.node<Sum<stereo, SampleStreamLayout::interleaved, 1>>();
@@ -196,7 +196,7 @@ TEST(GraphLogicalOutputsTest, WholeStreamAndChannelContributorsShareOneTypedPubl
     EXPECT_EQ(families.families.front().channels[1].port_ordinals, (std::vector<size_t>{0u}));
 }
 
-TEST(GraphLogicalOutputsTest, NamedChannelOutputContributionsShareTheirStereoFamily)
+TEST(GraphVirtualOutputsTest, NamedChannelOutputContributionsShareTheirStereoFamily)
 {
     GraphBuilder g;
     g.multi_channel<stereo>([&]<auto c> {
@@ -209,7 +209,7 @@ TEST(GraphLogicalOutputsTest, NamedChannelOutputContributionsShareTheirStereoFam
     EXPECT_EQ(outputs.front().name, "main");
 }
 
-TEST(GraphLogicalOutputsTest, NamedPublicPortsRejectMixedChannelTypes)
+TEST(GraphVirtualOutputsTest, NamedPublicPortsRejectMixedChannelTypes)
 {
     GraphBuilder g;
     g.outputs("main"_P = 0.25f);
@@ -218,13 +218,13 @@ TEST(GraphLogicalOutputsTest, NamedPublicPortsRejectMixedChannelTypes)
     EXPECT_THROW((void)g.public_sample_output_families(), std::logic_error);
 }
 
-TEST(GraphLogicalOutputsTest, ChannelQualifiedDescriptorsAreNotNodeArguments)
+TEST(GraphVirtualOutputsTest, ChannelQualifiedDescriptorsAreNotNodeArguments)
 {
     using ChannelArgument = decltype("frequency"_P[mono::center] = 0.25f);
     static_assert(!details::valid_node_call_args_v<ChannelArgument>);
 }
 
-TEST(GraphLogicalOutputsTest, ChannelPortsSupportConstexprEquality)
+TEST(GraphVirtualOutputsTest, ChannelPortsSupportConstexprEquality)
 {
     constexpr auto is_left = []<auto channel>() {
         if constexpr (channel == stereo::left) {
@@ -242,7 +242,7 @@ TEST(GraphLogicalOutputsTest, ChannelPortsSupportConstexprEquality)
     EXPECT_FALSE(is_left.template operator()<stereo::right>());
 }
 
-TEST(GraphLogicalOutputsTest, MultiChannelReturnsIndexableChannelSampleRefs)
+TEST(GraphVirtualOutputsTest, MultiChannelReturnsIndexableChannelSampleRefs)
 {
     GraphBuilder g;
     auto refs = g.multi_channel<stereo>([&]<auto channel>() {

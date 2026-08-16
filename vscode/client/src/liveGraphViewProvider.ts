@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 
-import { LogicalNode } from "./graphModel";
+import { VirtualNode } from "./graphModel";
 import {
     LiveGraphInstance,
     serializeLiveGraphInstances,
@@ -29,7 +29,7 @@ export class LiveGraphViewProvider {
     private readonly extensionUri: vscode.Uri;
     private view: vscode.WebviewView | null = null;
     private instances: LiveGraphInstance[] = [];
-    private nodes: LogicalNode[] = [];
+    private nodes: VirtualNode[] = [];
     private selectedInstanceId: string | null = null;
     private moduleRoot: string | null = null;
     private controlHandler: LiveGraphControlHandler | null = null;
@@ -38,7 +38,7 @@ export class LiveGraphViewProvider {
         this.extensionUri = extensionUri;
     }
 
-    setNodes(nodes: LogicalNode[]): void {
+    setNodes(nodes: VirtualNode[]): void {
         this.nodes = Array.isArray(nodes) ? nodes : [];
         this.postNodes();
     }
@@ -74,7 +74,7 @@ export class LiveGraphViewProvider {
         void this.view.webview.postMessage(message);
     }
 
-    upsertNodes(nodes: LogicalNode[], replaceInstanceIds: string[] = []): void {
+    upsertNodes(nodes: VirtualNode[], replaceInstanceIds: string[] = []): void {
         const replaceIds = new Set(replaceInstanceIds);
         const nextNodes = this.nodes.filter((node) => !node.instanceId || !replaceIds.has(node.instanceId));
         const nextById = new Map(nextNodes.map((node) => [node.id || "", node]));
@@ -155,7 +155,7 @@ export class LiveGraphViewProvider {
         void this.view.webview.postMessage(message);
     }
 
-    private postNodeDelta(nodes: LogicalNode[], replaceInstanceIds: string[]): void {
+    private postNodeDelta(nodes: VirtualNode[], replaceInstanceIds: string[]): void {
         if (!this.view) {
             return;
         }
@@ -176,7 +176,7 @@ export class LiveGraphViewProvider {
         void this.view.webview.postMessage(message);
     }
 
-    private filteredNodes(): LogicalNode[] {
+    private filteredNodes(): VirtualNode[] {
         if (!this.selectedInstanceId) {
             return this.nodes;
         }
@@ -519,8 +519,8 @@ export class LiveGraphViewProvider {
             color: var(--vscode-errorForeground);
         }
 
-        .port-row[data-state="logicalFollow"] .port-state-icon,
-        .port-row[data-state="logical"] .port-state-icon {
+        .port-row[data-state="virtualFollow"] .port-state-icon,
+        .port-row[data-state="virtual"] .port-state-icon {
             color: var(--vscode-charts-blue);
         }
 
@@ -680,7 +680,7 @@ export class LiveGraphViewProvider {
             if (port.stateValue === "timelineLane") {
                 return '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 9h10"/><path d="m10 5 4 4-4 4"/></svg>';
             }
-            if (port.stateValue === "logicalFollow" || port.stateValue === "logical") {
+            if (port.stateValue === "virtualFollow" || port.stateValue === "virtual") {
                 return '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 5.5h7.5a2 2 0 0 1 0 4H7.5a2 2 0 0 0 0 4H15"/><path d="m12.5 3 2.5 2.5-2.5 2.5"/></svg>';
             }
             if (port.stateValue === "overridden") {
@@ -697,8 +697,8 @@ export class LiveGraphViewProvider {
                 return false;
             }
             return port.stateValue === "timelineLane"
-                || port.stateValue === "logicalFollow"
-                || port.stateValue === "logical"
+                || port.stateValue === "virtualFollow"
+                || port.stateValue === "virtual"
                 || port.stateValue === "overridden";
         }
 
@@ -966,7 +966,7 @@ export class LiveGraphViewProvider {
                 descriptionEl.textContent = hasOverride ? "override" : "default";
             }
             if (portRow.__knobDrag && portRow.__knobDrag.port) {
-                portRow.title = portRow.__knobDrag.port.name + " • " + (hasOverride ? "override" : "inherited from logical");
+                portRow.title = portRow.__knobDrag.port.name + " • " + (hasOverride ? "override" : "inherited from virtual");
             }
         }
 
@@ -1577,7 +1577,7 @@ export class LiveGraphViewProvider {
                 const empty = document.createElement("div");
                 empty.className = "empty";
                 empty.textContent = "[no nodes]";
-                empty.title = "No visible logical nodes at the current selection";
+                empty.title = "No visible virtual nodes at the current selection";
                 content.appendChild(empty);
                 return;
             }

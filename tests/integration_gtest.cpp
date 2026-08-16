@@ -48,9 +48,9 @@ iv::InternedString intern(std::string_view value)
     return iv::InternedString::from_view(value);
 }
 
-std::string runtime_node_id(std::string_view instance_id, std::string_view logical_node_id)
+std::string runtime_node_id(std::string_view instance_id, std::string_view virtual_node_id)
 {
-    return std::string(instance_id) + "\x1flogical:" + std::string(logical_node_id);
+    return std::string(instance_id) + "\x1fvirtual:" + std::string(virtual_node_id);
 }
 
 struct IntegrationReloadWitness {
@@ -353,24 +353,24 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
 
     auto const loaded_definitions = definitions.loaded_definitions();
     ASSERT_EQ(loaded_definitions.size(), 1u);
-    EXPECT_FALSE(loaded_definitions.front().introspection.logical_nodes.empty());
+    EXPECT_FALSE(loaded_definitions.front().introspection.virtual_nodes.empty());
 
-    auto const logical_node_it = std::find_if(
-        loaded_definitions.front().introspection.logical_nodes.begin(),
-        loaded_definitions.front().introspection.logical_nodes.end(),
+    auto const virtual_node_it = std::find_if(
+        loaded_definitions.front().introspection.virtual_nodes.begin(),
+        loaded_definitions.front().introspection.virtual_nodes.end(),
         [](auto const &node) {
             return node.kind.contains("SawOscillator");
         });
-    ASSERT_NE(logical_node_it, loaded_definitions.front().introspection.logical_nodes.end());
+    ASSERT_NE(virtual_node_it, loaded_definitions.front().introspection.virtual_nodes.end());
     auto const frequency_input_it = std::find_if(
-        logical_node_it->sample_inputs.begin(), logical_node_it->sample_inputs.end(),
+        virtual_node_it->sample_inputs.begin(), virtual_node_it->sample_inputs.end(),
         [](auto const &input) { return input.name == "frequency"; });
-    ASSERT_NE(frequency_input_it, logical_node_it->sample_inputs.end());
+    ASSERT_NE(frequency_input_it, virtual_node_it->sample_inputs.end());
 
     // Begin in the normal knob-controlled state. The user then changes this
-    // exact logical port to a timeline lane while the unfiltered view is open.
+    // exact virtual port to a timeline lane while the unfiltered view is open.
     graph_input_lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
-        .node_id = runtime_node_id(created, logical_node_it->id),
+        .node_id = runtime_node_id(created, virtual_node_it->id),
         .member_ordinal = std::nullopt,
         .input_ordinal = frequency_input_it->ordinal,
         .state = iv::ProjectSampleInputState::overridden,
@@ -391,7 +391,7 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
     lane_view_updates.clear();
 
     graph_input_lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
-        .node_id = runtime_node_id(created, logical_node_it->id),
+        .node_id = runtime_node_id(created, virtual_node_it->id),
         .member_ordinal = std::nullopt,
         .input_ordinal = frequency_input_it->ordinal,
         .state = iv::ProjectSampleInputState::timeline_lane,
@@ -406,7 +406,7 @@ IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
     ASSERT_NE(visible_update, lane_view_updates.rend());
     // Each stereo channel receives two contributors across the two generic
     // instantiations, but all four contributions aggregate into one `main`
-    // public-output lane. The newly exposed logical input is a second lane.
+    // public-output lane. The newly exposed virtual input is a second lane.
     auto const &visible_view = *visible_update;
     EXPECT_GE(visible_view.lanes.total_lane_count, initial_lane_count + 1);
     size_t public_main_lane_count = 0;
@@ -475,28 +475,28 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
         module_cpp,
         {{.start = {.line = 11, .column = 20}, .end = {.line = 11, .column = 20}}});
     ASSERT_EQ(result.nodes.size(), 1u);
-    auto const logical_id = result.nodes.front().id;
+    auto const virtual_id = result.nodes.front().id;
 
-    app.set_sample_input_value(logical_id, 1, 0.25f);
-    auto const logical_override = app.get_logical_node(logical_id);
-    EXPECT_FLOAT_EQ(static_cast<float>(logical_override.sample_inputs[1].current_value), 0.25f);
+    app.set_sample_input_value(virtual_id, 1, 0.25f);
+    auto const virtual_override = app.get_virtual_node(virtual_id);
+    EXPECT_FLOAT_EQ(static_cast<float>(virtual_override.sample_inputs[1].current_value), 0.25f);
     EXPECT_FLOAT_EQ(
-        static_cast<float>(logical_override.members[0].sample_inputs[1].current_value), 0.25f);
+        static_cast<float>(virtual_override.members[0].sample_inputs[1].current_value), 0.25f);
     EXPECT_FLOAT_EQ(
-        static_cast<float>(logical_override.members[1].sample_inputs[1].current_value), 0.25f);
+        static_cast<float>(virtual_override.members[1].sample_inputs[1].current_value), 0.25f);
 
-    app.set_sample_input_value(logical_id, 1, 0.75f, 1u);
-    auto const concrete_override = app.get_logical_node(logical_id);
+    app.set_sample_input_value(virtual_id, 1, 0.75f, 1u);
+    auto const concrete_override = app.get_virtual_node(virtual_id);
     EXPECT_TRUE(concrete_override.members[1].sample_inputs[1].has_concrete_override);
     EXPECT_FLOAT_EQ(
         static_cast<float>(concrete_override.members[1].sample_inputs[1].current_value), 0.75f);
 
     app.set_sample_input_state(
-        logical_id,
+        virtual_id,
         1,
-        iv::ProjectSampleInputState::logical_follow,
+        iv::ProjectSampleInputState::virtual_follow,
         1u);
-    auto const cleared_override = app.get_logical_node(logical_id);
+    auto const cleared_override = app.get_virtual_node(virtual_id);
     EXPECT_FALSE(cleared_override.members[1].sample_inputs[1].has_concrete_override);
     EXPECT_FLOAT_EQ(
         static_cast<float>(cleared_override.members[1].sample_inputs[1].current_value), 0.25f);

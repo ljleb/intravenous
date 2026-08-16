@@ -207,7 +207,7 @@ void GraphBuilder::annotate_public_sample_input_source_info(
     // Scoped inputs are represented by placeholder nodes until the enclosing
     // scope is lowered.  Annotating that placeholder is deliberately the
     // same path as node annotation: finalization transfers it to the lowered
-    // logical scope, making a `g.input()` inside channel/loop scopes queryable
+    // virtual scope, making a `g.input()` inside channel/loop scopes queryable
     // at the declaration identifier as well.
     if (ref.port.node_index != GRAPH_ID) {
         NodeRef(*this, ref.port.node_index)._annotate_source_info(
@@ -424,24 +424,24 @@ GraphBuilder::VacantInputs GraphBuilder::vacant_inputs() const
     return _connections.collect_vacant_inputs(_topology);
 }
 
-GraphBuilder::LogicalInputs GraphBuilder::logical_inputs() const
+GraphBuilder::VirtualInputs GraphBuilder::virtual_inputs() const
 {
-    return _connections.collect_logical_inputs(_topology);
+    return _connections.collect_virtual_inputs(_topology);
 }
 
-GraphBuilder::LogicalSampleInputFamilies GraphBuilder::logical_sample_input_families() const
+GraphBuilder::VirtualSampleInputFamilies GraphBuilder::virtual_sample_input_families() const
 {
-    return _connections.collect_logical_sample_input_families(_topology);
+    return _connections.collect_virtual_sample_input_families(_topology);
 }
 
-GraphBuilder::LogicalOutputs GraphBuilder::logical_outputs() const
+GraphBuilder::VirtualOutputs GraphBuilder::virtual_outputs() const
 {
-    return _connections.collect_logical_outputs(_topology);
+    return _connections.collect_virtual_outputs(_topology);
 }
 
-GraphBuilder::LogicalSampleOutputFamilies GraphBuilder::logical_sample_output_families() const
+GraphBuilder::VirtualSampleOutputFamilies GraphBuilder::virtual_sample_output_families() const
 {
-    return _connections.collect_logical_sample_output_families(_topology);
+    return _connections.collect_virtual_sample_output_families(_topology);
 }
 
 GraphBuilderPublicSamplePortFamilies GraphBuilder::public_sample_input_families() const

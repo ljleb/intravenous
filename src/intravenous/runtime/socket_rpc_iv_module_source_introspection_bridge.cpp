@@ -31,8 +31,8 @@ void notify_updated_node_ids(std::vector<std::string> node_ids)
     try {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_source_introspection_nodes_updated_event,
-            ProjectLogicalNodesNotification{
-                .nodes = bound_introspection->get_logical_nodes(std::move(node_ids)),
+            ProjectVirtualNodesNotification{
+                .nodes = bound_introspection->get_virtual_nodes(std::move(node_ids)),
             });
     } catch (...) {
     }
@@ -96,8 +96,8 @@ void notify_replaced_instances(IvModuleInstanceBuildersChanged const &diff)
         }
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_source_introspection_nodes_updated_event,
-            ProjectLogicalNodesNotification{
-                .nodes = bound_introspection->get_logical_nodes_for_instances(instances),
+            ProjectVirtualNodesNotification{
+                .nodes = bound_introspection->get_virtual_nodes_for_instances(instances),
                 .replace_instance_ids = std::move(replace_instance_ids),
             });
     } catch (...) {
@@ -112,8 +112,8 @@ ProjectSampleInputState parse_project_sample_input_state(std::string const &stat
     if (state == "overridden") {
         return ProjectSampleInputState::overridden;
     }
-    if (state == "logicalFollow") {
-        return ProjectSampleInputState::logical_follow;
+    if (state == "virtualFollow") {
+        return ProjectSampleInputState::virtual_follow;
     }
     if (state == "timelineLane") {
         return ProjectSampleInputState::timeline_lane;
@@ -129,8 +129,8 @@ ProjectEventInputState parse_project_event_input_state(std::string const &state)
     if (state == "default") {
         return ProjectEventInputState::default_;
     }
-    if (state == "logicalFollow") {
-        return ProjectEventInputState::logical_follow;
+    if (state == "virtualFollow") {
+        return ProjectEventInputState::virtual_follow;
     }
     if (state == "timelineLane") {
         return ProjectEventInputState::timeline_lane;
@@ -146,8 +146,8 @@ ProjectSampleOutputState parse_project_sample_output_state(std::string const &st
     if (state == "disconnected") {
         return ProjectSampleOutputState::disconnected;
     }
-    if (state == "logical") {
-        return ProjectSampleOutputState::logical;
+    if (state == "virtual") {
+        return ProjectSampleOutputState::virtual_port;
     }
     if (state == "timelineLane") {
         return ProjectSampleOutputState::timeline_lane;
@@ -160,8 +160,8 @@ ProjectEventOutputState parse_project_event_output_state(std::string const &stat
     if (state == "disconnected") {
         return ProjectEventOutputState::disconnected;
     }
-    if (state == "logical") {
-        return ProjectEventOutputState::logical;
+    if (state == "virtual") {
+        return ProjectEventOutputState::virtual_port;
     }
     if (state == "timelineLane") {
         return ProjectEventOutputState::timeline_lane;
@@ -193,24 +193,24 @@ void handle_graph_query_active_regions(
     builder.succeed(bound_introspection->query_active_regions(request.file_path));
 }
 
-void handle_get_logical_node(
-    GetLogicalNodeRequest const &request,
-    SocketRpcLogicalNodeResultBuilder &builder)
+void handle_get_virtual_node(
+    GetVirtualNodeRequest const &request,
+    SocketRpcVirtualNodeResultBuilder &builder)
 {
     if (bound_introspection == nullptr) {
         return;
     }
-    builder.succeed(bound_introspection->get_logical_node(request.node_id));
+    builder.succeed(bound_introspection->get_virtual_node(request.node_id));
 }
 
-void handle_get_logical_nodes(
-    GetLogicalNodesRequest const &request,
-    SocketRpcLogicalNodesResultBuilder &builder)
+void handle_get_virtual_nodes(
+    GetVirtualNodesRequest const &request,
+    SocketRpcVirtualNodesResultBuilder &builder)
 {
     if (bound_introspection == nullptr) {
         return;
     }
-    builder.succeed(bound_introspection->get_logical_nodes(request.node_ids));
+    builder.succeed(bound_introspection->get_virtual_nodes(request.node_ids));
 }
 
 void handle_set_sample_input_value(
@@ -375,13 +375,13 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_socket_rpc_graph_query_active_regions_event,
     handle_graph_query_active_regions);
 IV_SUBSCRIBE_LINKER_EVENT(
-    SocketRpcGetLogicalNodeEvent,
-    iv_socket_rpc_get_logical_node_event,
-    handle_get_logical_node);
+    SocketRpcGetVirtualNodeEvent,
+    iv_socket_rpc_get_virtual_node_event,
+    handle_get_virtual_node);
 IV_SUBSCRIBE_LINKER_EVENT(
-    SocketRpcGetLogicalNodesEvent,
-    iv_socket_rpc_get_logical_nodes_event,
-    handle_get_logical_nodes);
+    SocketRpcGetVirtualNodesEvent,
+    iv_socket_rpc_get_virtual_nodes_event,
+    handle_get_virtual_nodes);
 IV_SUBSCRIBE_LINKER_EVENT(
     SocketRpcSetSampleInputValueEvent,
     iv_socket_rpc_set_sample_input_value_event,

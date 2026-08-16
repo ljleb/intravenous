@@ -301,18 +301,18 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
             },
         };
     }
-    if (method == "graph.getLogicalNode") {
+    if (method == "graph.getVirtualNode") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,
-            .payload = GetLogicalNodeRequest{
+            .payload = GetVirtualNodeRequest{
                 .node_id = parse_string_param(params, "nodeId"),
             },
         };
     }
-    if (method == "graph.getLogicalNodes") {
+    if (method == "graph.getVirtualNodes") {
         return ParsedSocketRpcRequest{
             .request_id = request_id,
-            .payload = GetLogicalNodesRequest{
+            .payload = GetVirtualNodesRequest{
                 .node_ids = parse_string_array_param(params, "nodeIds"),
             },
         };

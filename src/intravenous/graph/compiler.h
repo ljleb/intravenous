@@ -90,7 +90,7 @@ namespace iv::details {
         std::vector<TypeErasedNode> nodes;
         std::vector<std::optional<size_t>> explicit_ttl_samples;
         std::vector<std::string> node_ids;
-        std::vector<std::vector<std::string>> node_logical_ids;
+        std::vector<std::vector<std::string>> node_virtual_ids;
         std::vector<std::vector<SourceInfo>> node_source_infos;
         std::vector<size_t> node_construction_order;
         std::vector<std::string> node_kinds;
@@ -401,7 +401,7 @@ namespace iv::details {
                     effective_channel_layout(g.nodes[node].inputs()[in_port])));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
-                g.node_logical_ids.emplace_back();
+                g.node_virtual_ids.emplace_back();
                 g.node_source_infos.emplace_back();
                 g.node_construction_order.push_back(next_construction_order(g));
                 size_t const sum_node = g.nodes.size() - 1;
@@ -430,7 +430,7 @@ namespace iv::details {
                 effective_channel_layout(public_outputs[output_port])));
             g.explicit_ttl_samples.push_back(std::nullopt);
             g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
-            g.node_logical_ids.emplace_back();
+            g.node_virtual_ids.emplace_back();
             g.node_source_infos.emplace_back();
             g.node_construction_order.push_back(next_construction_order(g));
             size_t const sum_node = g.nodes.size() - 1;
@@ -461,7 +461,7 @@ namespace iv::details {
                 g.nodes.emplace_back(EventConcatenation(port_arity, concat_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
-                g.node_logical_ids.emplace_back();
+                g.node_virtual_ids.emplace_back();
                 g.node_source_infos.emplace_back();
                 g.node_construction_order.push_back(next_construction_order(g));
                 size_t const concat_node = g.nodes.size() - 1;
@@ -507,7 +507,7 @@ namespace iv::details {
                 g.nodes.push_back(make_broadcast_node(port_arity));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
-                g.node_logical_ids.emplace_back();
+                g.node_virtual_ids.emplace_back();
                 g.node_source_infos.emplace_back();
                 g.node_construction_order.push_back(next_construction_order(g));
                 size_t const broadcast_node = g.nodes.size() - 1;
@@ -539,7 +539,7 @@ namespace iv::details {
                 g.nodes.emplace_back(BroadcastEvent(port_arity, broadcast_type));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
-                g.node_logical_ids.emplace_back();
+                g.node_virtual_ids.emplace_back();
                 g.node_source_infos.emplace_back();
                 g.node_construction_order.push_back(next_construction_order(g));
                 size_t const broadcast_node = g.nodes.size() - 1;
@@ -578,7 +578,7 @@ namespace iv::details {
                     g.nodes.emplace_back(DummySink());
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
-                    g.node_logical_ids.emplace_back();
+                    g.node_virtual_ids.emplace_back();
                     g.node_source_infos.emplace_back();
                     g.node_construction_order.push_back(next_construction_order(g));
                     size_t const new_node = g.nodes.size() - 1;
@@ -594,7 +594,7 @@ namespace iv::details {
                     g.nodes.emplace_back(DummyEventSink());
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
-                    g.node_logical_ids.emplace_back();
+                    g.node_virtual_ids.emplace_back();
                     g.node_source_infos.emplace_back();
                     g.node_construction_order.push_back(next_construction_order(g));
                     size_t const new_node = g.nodes.size() - 1;
@@ -672,13 +672,13 @@ namespace iv::details {
         std::vector<TypeErasedNode> sorted_nodes;
         std::vector<std::optional<size_t>> sorted_explicit_ttls;
         std::vector<std::string> sorted_node_ids;
-        std::vector<std::vector<std::string>> sorted_node_logical_ids;
+        std::vector<std::vector<std::string>> sorted_node_virtual_ids;
         std::vector<std::vector<SourceInfo>> sorted_node_source_infos;
         std::vector<size_t> sorted_node_construction_order;
         sorted_nodes.reserve(num_nodes);
         sorted_explicit_ttls.reserve(num_nodes);
         sorted_node_ids.reserve(num_nodes);
-        sorted_node_logical_ids.reserve(num_nodes);
+        sorted_node_virtual_ids.reserve(num_nodes);
         sorted_node_source_infos.reserve(num_nodes);
         sorted_node_construction_order.reserve(num_nodes);
         for (size_t old_i = 0; old_i < num_nodes; ++old_i)
@@ -686,14 +686,14 @@ namespace iv::details {
             sorted_nodes.push_back(std::move(g.nodes[sorted[old_i]]));
             sorted_explicit_ttls.push_back(std::move(g.explicit_ttl_samples[sorted[old_i]]));
             sorted_node_ids.push_back(std::move(g.node_ids[sorted[old_i]]));
-            sorted_node_logical_ids.push_back(std::move(g.node_logical_ids[sorted[old_i]]));
+            sorted_node_virtual_ids.push_back(std::move(g.node_virtual_ids[sorted[old_i]]));
             sorted_node_source_infos.push_back(std::move(g.node_source_infos[sorted[old_i]]));
             sorted_node_construction_order.push_back(g.node_construction_order[sorted[old_i]]);
         }
         g.nodes.swap(sorted_nodes);
         g.explicit_ttl_samples.swap(sorted_explicit_ttls);
         g.node_ids.swap(sorted_node_ids);
-        g.node_logical_ids.swap(sorted_node_logical_ids);
+        g.node_virtual_ids.swap(sorted_node_virtual_ids);
         g.node_source_infos.swap(sorted_node_source_infos);
         g.node_construction_order.swap(sorted_node_construction_order);
 

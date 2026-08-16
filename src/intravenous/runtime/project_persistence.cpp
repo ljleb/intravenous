@@ -125,8 +125,8 @@ ProjectSampleInputState parse_project_sample_input_state(std::string const &stat
     if (state == "overridden") {
         return ProjectSampleInputState::overridden;
     }
-    if (state == "logicalFollow") {
-        return ProjectSampleInputState::logical_follow;
+    if (state == "virtualFollow") {
+        return ProjectSampleInputState::virtual_follow;
     }
     if (state == "timelineLane") {
         return ProjectSampleInputState::timeline_lane;
@@ -142,8 +142,8 @@ ProjectEventInputState parse_project_event_input_state(std::string const &state)
     if (state == "default") {
         return ProjectEventInputState::default_;
     }
-    if (state == "logicalFollow") {
-        return ProjectEventInputState::logical_follow;
+    if (state == "virtualFollow") {
+        return ProjectEventInputState::virtual_follow;
     }
     if (state == "timelineLane") {
         return ProjectEventInputState::timeline_lane;
@@ -159,8 +159,8 @@ ProjectSampleOutputState parse_project_sample_output_state(std::string const &st
     if (state == "disconnected") {
         return ProjectSampleOutputState::disconnected;
     }
-    if (state == "logical") {
-        return ProjectSampleOutputState::logical;
+    if (state == "virtual") {
+        return ProjectSampleOutputState::virtual_port;
     }
     if (state == "timelineLane") {
         return ProjectSampleOutputState::timeline_lane;
@@ -173,8 +173,8 @@ ProjectEventOutputState parse_project_event_output_state(std::string const &stat
     if (state == "disconnected") {
         return ProjectEventOutputState::disconnected;
     }
-    if (state == "logical") {
-        return ProjectEventOutputState::logical;
+    if (state == "virtual") {
+        return ProjectEventOutputState::virtual_port;
     }
     if (state == "timelineLane") {
         return ProjectEventOutputState::timeline_lane;

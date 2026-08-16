@@ -82,7 +82,7 @@ namespace iv {
     };
 
     struct GraphInputPortDescriptor {
-        std::string logical_node_id {};
+        std::string virtual_node_id {};
         std::optional<size_t> concrete_member_ordinal {};
         PortKind port_kind = PortKind::sample;
         size_t port_ordinal = 0;
@@ -111,12 +111,12 @@ namespace iv {
 
         static std::string port_descriptor_key(GraphInputPortDescriptor const& port)
         {
-            std::string key = port.logical_node_id;
+            std::string key = port.virtual_node_id;
             key += "\x1fmember:";
             if (port.concrete_member_ordinal.has_value()) {
                 key += std::to_string(*port.concrete_member_ordinal);
             } else {
-                key += "logical";
+                key += "virtual";
             }
             key += "\x1fkind:";
             key += port.port_kind == PortKind::sample ? "sample" : "event";

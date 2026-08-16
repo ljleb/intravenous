@@ -10,14 +10,14 @@
 
 namespace iv {
 struct IvModuleSourceIntrospectionLiveInputSnapshotRequest {
-    std::string logical_node_id;
+    std::string virtual_node_id;
     std::optional<size_t> member_ordinal;
     size_t input_ordinal = 0;
     Sample fallback = Sample{0.0f};
 };
 
 struct IvModuleSourceIntrospectionLiveInputSnapshot {
-    std::string logical_node_id;
+    std::string virtual_node_id;
     std::optional<size_t> member_ordinal;
     size_t input_ordinal = 0;
     Sample current_value = Sample{0.0f};
@@ -54,7 +54,7 @@ using IvModuleSourceIntrospectionLiveInputSnapshotsRequestedEvent =
 using IvModuleSourceIntrospectionAuthoredStateSnapshotRequestedEvent =
     void (*)(IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder &);
 using IvModuleSourceIntrospectionNodesUpdatedEvent =
-    void (*)(ProjectLogicalNodesNotification const &);
+    void (*)(ProjectVirtualNodesNotification const &);
 
 IV_DECLARE_LINKER_EVENT(
     IvModuleSourceIntrospectionLiveInputSnapshotsRequestedEvent,

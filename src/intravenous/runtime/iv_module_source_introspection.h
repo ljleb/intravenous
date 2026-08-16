@@ -27,8 +27,8 @@ struct LoadedGraphIntrospectionIndex {
     std::string definition_id;
     std::filesystem::path module_root;
     std::string module_id;
-    std::vector<IntrospectionLogicalNode> logical_nodes;
-    std::unordered_map<std::string, size_t> logical_node_index_by_id;
+    std::vector<IntrospectionVirtualNode> virtual_nodes;
+    std::unordered_map<std::string, size_t> virtual_node_index_by_id;
     std::unordered_set<std::string> dependency_file_paths;
 };
 
@@ -48,13 +48,13 @@ class IvModuleSourceIntrospection {
     std::pair<uint32_t, uint32_t>
     byte_range_for(std::string const &normalized_path, SourceRange const &range) const;
     LiveSourceSpan to_live_span(SourceSpan const &span) const;
-    LogicalNodeInfo to_logical_node(
-        IntrospectionLogicalNode const &node,
+    VirtualNodeInfo to_virtual_node(
+        IntrospectionVirtualNode const &node,
         std::string const &instance_id) const;
-    LogicalNodeInfo to_public_sample_input(PublicSampleInputInfo const &input) const;
-    LogicalNodeInfo to_public_event_input(PublicEventInputInfo const &input) const;
-    LogicalNodeInfo to_public_sample_output(PublicSampleOutputInfo const &output) const;
-    LogicalNodeInfo to_public_event_output(PublicEventOutputInfo const &output) const;
+    VirtualNodeInfo to_public_sample_input(PublicSampleInputInfo const &input) const;
+    VirtualNodeInfo to_public_event_input(PublicEventInputInfo const &input) const;
+    VirtualNodeInfo to_public_sample_output(PublicSampleOutputInfo const &output) const;
+    VirtualNodeInfo to_public_event_output(PublicEventOutputInfo const &output) const;
 
 public:
     IvModuleSourceIntrospection() = default;
@@ -79,11 +79,11 @@ public:
     [[nodiscard]] bool definition_uses_source_file(
         std::string const &definition_id,
         std::filesystem::path const &file_path) const;
-    LogicalNodeInfo get_logical_node(std::string const &node_id) const;
-    std::vector<LogicalNodeInfo>
-    get_logical_nodes(std::vector<std::string> const &node_ids) const;
-    std::vector<LogicalNodeInfo>
-    get_logical_nodes_for_instances(std::vector<IvModuleInstanceInfo> const &instances) const;
+    VirtualNodeInfo get_virtual_node(std::string const &node_id) const;
+    std::vector<VirtualNodeInfo>
+    get_virtual_nodes(std::vector<std::string> const &node_ids) const;
+    std::vector<VirtualNodeInfo>
+    get_virtual_nodes_for_instances(std::vector<IvModuleInstanceInfo> const &instances) const;
     GraphInputPortDescriptor sample_graph_input_port_for_node(
         std::string const &node_id,
         std::optional<size_t> concrete_member_ordinal,

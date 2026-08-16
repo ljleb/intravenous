@@ -832,7 +832,7 @@ namespace {
 
             _insertions.push_back(InsertSpec {
                 .offset = name_range->end,
-                .text = " { iv::logical_empty_tag, " + cxx_string_literal(declaration_identity) + " }",
+                .text = " { iv::virtual_empty_tag, " + cxx_string_literal(declaration_identity) + " }",
             });
         }
 

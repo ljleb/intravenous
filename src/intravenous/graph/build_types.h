@@ -14,7 +14,7 @@
 #include <vector>
 
 namespace iv {
-    enum class LogicalPortConnectivity : std::uint8_t {
+    enum class VirtualPortConnectivity : std::uint8_t {
         disconnected,
         connected,
         mixed,
@@ -23,7 +23,7 @@ namespace iv {
     struct IntrospectionPortInfo {
         std::string name {};
         std::string type {};
-        LogicalPortConnectivity connectivity = LogicalPortConnectivity::disconnected;
+        VirtualPortConnectivity connectivity = VirtualPortConnectivity::disconnected;
         size_t ordinal = 0;
         Sample default_value = 0.0f;
         std::optional<Sample> min {};
@@ -35,10 +35,10 @@ namespace iv {
         bool operator==(IntrospectionPortInfo const&) const = default;
     };
 
-    struct LogicalPortInfo {
+    struct VirtualPortInfo {
         std::string name {};
         std::string type {};
-        LogicalPortConnectivity connectivity = LogicalPortConnectivity::disconnected;
+        VirtualPortConnectivity connectivity = VirtualPortConnectivity::disconnected;
         size_t ordinal = 0;
         Sample default_value = 0.0f;
         std::optional<Sample> min {};
@@ -48,10 +48,10 @@ namespace iv {
         std::optional<ChannelTypeId> sample_channel_type {};
         std::string state_value {};
 
-        bool operator==(LogicalPortInfo const&) const = default;
+        bool operator==(VirtualPortInfo const&) const = default;
     };
 
-    struct IntrospectionLogicalNode {
+    struct IntrospectionVirtualNode {
         struct Member {
             size_t ordinal = 0;
             std::string backing_node_id {};
@@ -77,13 +77,13 @@ namespace iv {
     };
 
     struct GraphIntrospectionMetadata {
-        std::vector<IntrospectionLogicalNode> logical_nodes;
+        std::vector<IntrospectionVirtualNode> virtual_nodes;
     };
 
     struct GraphBuildMetadata {
         std::vector<LoweredSubgraph> lowered_subgraphs;
         std::vector<std::vector<SourceInfo>> node_source_infos;
-        std::unordered_map<std::string, std::vector<std::string>> logical_node_ids_by_backing_node_id;
+        std::unordered_map<std::string, std::vector<std::string>> virtual_node_ids_by_backing_node_id;
     };
 
     struct GraphBuildArtifact {

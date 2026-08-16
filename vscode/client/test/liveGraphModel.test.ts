@@ -5,9 +5,9 @@ import {
     serializeLiveGraphInstances,
     serializeLiveGraphNodes,
 } from "../src/liveGraphModel";
-import { LogicalNode } from "../src/graphModel";
+import { VirtualNode } from "../src/graphModel";
 
-function sampleNode(): LogicalNode {
+function sampleNode(): VirtualNode {
     return {
         id: "node-1",
         kind: "Oscillator",
@@ -50,7 +50,7 @@ function sampleNode(): LogicalNode {
                 defaultValue: 0.5,
                 currentValue: 0.25,
                 hasConcreteOverride: false,
-                stateValue: "logicalFollow",
+                stateValue: "virtualFollow",
             }],
             sampleOutputs: [{
                 ordinal: 2,
@@ -62,7 +62,7 @@ function sampleNode(): LogicalNode {
                 ordinal: 3,
                 name: "gate",
                 connectivity: "mixed",
-                stateValue: "logicalFollow",
+                stateValue: "virtualFollow",
             }],
             eventOutputs: [{
                 ordinal: 4,
@@ -79,29 +79,29 @@ test("serializeLiveGraphNodes exposes all supported port state families", () => 
     assert.equal(serialized.length, 1);
 
     const node = serialized[0];
-    const logicalSampleInput = node.groups[0].ports[0];
-    const logicalSampleOutput = node.groups[1].ports[0];
-    const logicalEventInput = node.groups[2].ports[0];
-    const logicalEventOutput = node.groups[3].ports[0];
+    const virtualSampleInput = node.groups[0].ports[0];
+    const virtualSampleOutput = node.groups[1].ports[0];
+    const virtualEventInput = node.groups[2].ports[0];
+    const virtualEventOutput = node.groups[3].ports[0];
     const memberSampleInput = node.members[0].groups[0].ports[0];
 
-    assert.equal(logicalSampleInput.stateFamily, "sampleInput");
-    assert.equal(logicalSampleInput.stateSummary, "knob value");
-    assert.deepEqual(logicalSampleInput.stateActions.map((action) => action.state), ["timelineLane"]);
+    assert.equal(virtualSampleInput.stateFamily, "sampleInput");
+    assert.equal(virtualSampleInput.stateSummary, "knob value");
+    assert.deepEqual(virtualSampleInput.stateActions.map((action) => action.state), ["timelineLane"]);
 
-    assert.equal(logicalEventInput.stateFamily, "eventInput");
-    assert.equal(logicalEventInput.stateSummary, "default");
-    assert.deepEqual(logicalEventInput.stateActions.map((action) => action.state), ["timelineLane"]);
+    assert.equal(virtualEventInput.stateFamily, "eventInput");
+    assert.equal(virtualEventInput.stateSummary, "default");
+    assert.deepEqual(virtualEventInput.stateActions.map((action) => action.state), ["timelineLane"]);
 
-    assert.equal(logicalSampleOutput.stateFamily, "sampleOutput");
-    assert.equal(logicalSampleOutput.stateSummary, "disconnected");
-    assert.deepEqual(logicalSampleOutput.stateActions.map((action) => action.state), ["timelineLane"]);
+    assert.equal(virtualSampleOutput.stateFamily, "sampleOutput");
+    assert.equal(virtualSampleOutput.stateSummary, "disconnected");
+    assert.deepEqual(virtualSampleOutput.stateActions.map((action) => action.state), ["timelineLane"]);
 
-    assert.equal(logicalEventOutput.stateFamily, "eventOutput");
-    assert.equal(logicalEventOutput.stateSummary, "disconnected");
-    assert.deepEqual(logicalEventOutput.stateActions.map((action) => action.state), ["timelineLane"]);
+    assert.equal(virtualEventOutput.stateFamily, "eventOutput");
+    assert.equal(virtualEventOutput.stateSummary, "disconnected");
+    assert.deepEqual(virtualEventOutput.stateActions.map((action) => action.state), ["timelineLane"]);
 
-    assert.equal(memberSampleInput.stateSummary, "follow logical value");
+    assert.equal(memberSampleInput.stateSummary, "follow virtual value");
     assert.equal(memberSampleInput.resetState, null);
     assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
         "overridden",
@@ -111,7 +111,7 @@ test("serializeLiveGraphNodes exposes all supported port state families", () => 
 });
 
 test("serializeLiveGraphNodes treats default-connected concrete ports as connected", () => {
-    const node: LogicalNode = {
+    const node: VirtualNode = {
         id: "node-1",
         kind: "Module",
         sampleOutputs: [{
@@ -134,7 +134,7 @@ test("serializeLiveGraphNodes treats default-connected concrete ports as connect
                 ordinal: 2,
                 name: "mix",
                 connectivity: "connected",
-                stateValue: "logical",
+                stateValue: "virtual",
             }],
         }],
     };
@@ -147,11 +147,11 @@ test("serializeLiveGraphNodes treats default-connected concrete ports as connect
     assert.equal(memberSampleInput.resetState, null);
     assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
         "overridden",
-        "logicalFollow",
+        "virtualFollow",
         "timelineLane",
     ]);
 
-    assert.equal(memberSampleOutput.stateSummary, "logical output");
+    assert.equal(memberSampleOutput.stateSummary, "virtual output");
     assert.equal(memberSampleOutput.resetState, null);
     assert.deepEqual(memberSampleOutput.stateActions.map((action) => action.state), [
         "timelineLane",

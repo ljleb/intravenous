@@ -9,7 +9,7 @@ namespace {
         return g.node<iv::ValueSource>(&context.sample_period()).node_ref();
     }
 
-    void merged_logical_module(iv::ModuleContext const& context)
+    void merged_virtual_module(iv::ModuleContext const& context)
     {
         using namespace iv;
         auto& g = context.builder();
@@ -21,4 +21,4 @@ namespace {
     }
 }
 
-IV_EXPORT_MODULE("iv.test.merged_logical_module", merged_logical_module);
+IV_EXPORT_MODULE("iv.test.merged_virtual_module", merged_virtual_module);

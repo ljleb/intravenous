@@ -23,18 +23,18 @@ namespace iv {
     template<class Node>
     class StructuredNodeRef;
 
-    struct LogicalEmptyTag {
-        explicit constexpr LogicalEmptyTag() = default;
+    struct VirtualEmptyTag {
+        explicit constexpr VirtualEmptyTag() = default;
     };
 
-    inline constexpr LogicalEmptyTag logical_empty_tag {};
+    inline constexpr VirtualEmptyTag virtual_empty_tag {};
 
     template<class Derived, class Node = void>
     class NodeRefBase {
     protected:
         GraphBuilder* _graph_builder{};
         size_t _index{};
-        mutable std::string _logical_declaration_id {};
+        mutable std::string _virtual_declaration_id {};
         bool _allows_single_assignment = false;
 
         friend class GraphBuilder;
@@ -56,21 +56,21 @@ namespace iv {
         NodeRefBase(NodeRefBase const& rhs) :
             _graph_builder(rhs._graph_builder),
             _index(rhs._index),
-            _logical_declaration_id(rhs._allows_single_assignment ? rhs._logical_declaration_id : std::string{}),
+            _virtual_declaration_id(rhs._allows_single_assignment ? rhs._virtual_declaration_id : std::string{}),
             _allows_single_assignment(rhs._allows_single_assignment)
         {}
         NodeRefBase(NodeRefBase&& rhs) noexcept :
             _graph_builder(rhs._graph_builder),
             _index(rhs._index),
-            _logical_declaration_id(std::move(rhs._logical_declaration_id)),
+            _virtual_declaration_id(std::move(rhs._virtual_declaration_id)),
             _allows_single_assignment(rhs._allows_single_assignment)
         {
             rhs._graph_builder = nullptr;
             rhs._index = 0;
             rhs._allows_single_assignment = false;
         }
-        explicit NodeRefBase(LogicalEmptyTag, std::string_view declaration_identity) :
-            _logical_declaration_id(declaration_identity),
+        explicit NodeRefBase(VirtualEmptyTag, std::string_view declaration_identity) :
+            _virtual_declaration_id(declaration_identity),
             _allows_single_assignment(true)
         {}
         explicit NodeRefBase(GraphBuilder& graph_builder, size_t index) :

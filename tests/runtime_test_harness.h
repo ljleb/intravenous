@@ -102,14 +102,14 @@ struct BoundIvModuleSourceIntrospection {
         return introspection.query_active_regions(file_path);
     }
 
-    auto get_logical_node(std::string const &node_id) const
+    auto get_virtual_node(std::string const &node_id) const
     {
-        return introspection.get_logical_node(node_id);
+        return introspection.get_virtual_node(node_id);
     }
 
-    auto get_logical_nodes(std::vector<std::string> const &node_ids) const
+    auto get_virtual_nodes(std::vector<std::string> const &node_ids) const
     {
-        return introspection.get_logical_nodes(node_ids);
+        return introspection.get_virtual_nodes(node_ids);
     }
 
     auto open_lane_view(iv::LaneViewRequest request)

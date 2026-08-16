@@ -178,9 +178,9 @@ Json server_status_json(SocketRpcServerStatus const &notification) {
     return json;
 }
 
-Json logical_nodes_updated_json(ProjectLogicalNodesNotification const &notification) {
+Json virtual_nodes_updated_json(ProjectVirtualNodesNotification const &notification) {
     Json json{
-        {"nodes", logical_nodes_json(notification.nodes)},
+        {"nodes", virtual_nodes_json(notification.nodes)},
     };
     if (!notification.replace_instance_ids.empty()) {
         json["replaceInstanceIds"] = string_array_json(notification.replace_instance_ids);
@@ -278,13 +278,13 @@ void SocketRpcServer::handle_client(int fd) {
                         SocketRpcRegionQueryResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(iv_socket_rpc_graph_query_active_regions_event, event_request, builder);
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetLogicalNodeRequest>) {
-                        SocketRpcLogicalNodeResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_logical_node_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, GetVirtualNodeRequest>) {
+                        SocketRpcVirtualNodeResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_virtual_node_event, event_request, builder);
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetLogicalNodesRequest>) {
-                        SocketRpcLogicalNodesResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_logical_nodes_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, GetVirtualNodesRequest>) {
+                        SocketRpcVirtualNodesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_virtual_nodes_event, event_request, builder);
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, CreateIvModuleInstanceRequest>) {
                         SocketRpcCreateIvModuleInstanceResultBuilder builder;
@@ -699,8 +699,8 @@ void SocketRpcServer::send_iv_module_instances_updated(
     }
 }
 
-void SocketRpcServer::send_logical_nodes_updated(
-    ProjectLogicalNodesNotification const &notification) {
+void SocketRpcServer::send_virtual_nodes_updated(
+    ProjectVirtualNodesNotification const &notification) {
     int fd = -1;
     {
         std::scoped_lock client_lock(client_mutex);
@@ -712,7 +712,7 @@ void SocketRpcServer::send_logical_nodes_updated(
 
     auto const message = jsonrpc_notification(
         "graph.nodesUpdated",
-        logical_nodes_updated_json(notification));
+        virtual_nodes_updated_json(notification));
 
     {
         std::scoped_lock deferred_lock(deferred_notification_mutex);

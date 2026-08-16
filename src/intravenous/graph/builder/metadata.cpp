@@ -2,7 +2,7 @@
 
 namespace iv::details {
 
-LogicalPortConnectivity aggregate_connectivity(std::span<LogicalConcretePortInfo const> ports)
+VirtualPortConnectivity aggregate_connectivity(std::span<VirtualConcretePortInfo const> ports)
 {
     bool any_connected = false;
     bool any_disconnected = false;
@@ -11,11 +11,11 @@ LogicalPortConnectivity aggregate_connectivity(std::span<LogicalConcretePortInfo
         any_disconnected = any_disconnected || !port.connected;
     }
     if (any_connected && any_disconnected) {
-        return LogicalPortConnectivity::mixed;
+        return VirtualPortConnectivity::mixed;
     }
     return any_connected
-        ? LogicalPortConnectivity::connected
-        : LogicalPortConnectivity::disconnected;
+        ? VirtualPortConnectivity::connected
+        : VirtualPortConnectivity::disconnected;
 }
 
 void sort_and_deduplicate_spans(std::vector<SourceSpan>& spans)
@@ -27,7 +27,7 @@ void sort_and_deduplicate_spans(std::vector<SourceSpan>& spans)
 }
 
 std::vector<SourceSpan> source_spans_for(
-    std::span<LogicalConcreteNode const* const> nodes
+    std::span<VirtualConcreteNode const* const> nodes
 )
 {
     std::vector<SourceSpan> spans;
@@ -43,7 +43,7 @@ std::vector<SourceSpan> source_spans_for(
     return spans;
 }
 
-LogicalMetadataBuildResult build_logical_metadata(
+VirtualMetadataBuildResult build_virtual_metadata(
     PreparedGraph const& g,
     std::span<LoweredSubgraphSpec const> lowered_scopes
 )
@@ -73,12 +73,12 @@ LogicalMetadataBuildResult build_logical_metadata(
         });
     };
 
-    std::vector<LogicalConcreteNode> concrete_nodes;
-    std::vector<std::vector<std::string>> concrete_node_logical_ids;
+    std::vector<VirtualConcreteNode> concrete_nodes;
+    std::vector<std::vector<std::string>> concrete_node_virtual_ids;
     concrete_nodes.reserve(g.nodes.size());
-    concrete_node_logical_ids.reserve(g.nodes.size() + lowered_scopes.size());
+    concrete_node_virtual_ids.reserve(g.nodes.size() + lowered_scopes.size());
     for (size_t node_i = 0; node_i < g.nodes.size(); ++node_i) {
-        LogicalConcreteNode concrete;
+        VirtualConcreteNode concrete;
         concrete.id = g.node_ids[node_i];
         concrete.kind = node_i < g.node_kinds.size()
             ? g.node_kinds[node_i]
@@ -96,7 +96,7 @@ LogicalMetadataBuildResult build_logical_metadata(
         auto const inputs = g.nodes[node_i].inputs();
         concrete.sample_inputs.reserve(inputs.size());
         for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
-            concrete.sample_inputs.push_back(LogicalConcretePortInfo {
+            concrete.sample_inputs.push_back(VirtualConcretePortInfo {
                 .name = inputs[input_i].name,
                 .type = "sample",
                 .connected = sample_input_connected(node_i, input_i),
@@ -110,7 +110,7 @@ LogicalMetadataBuildResult build_logical_metadata(
         auto const outputs = g.nodes[node_i].outputs();
         concrete.sample_outputs.reserve(outputs.size());
         for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
-            concrete.sample_outputs.push_back(LogicalConcretePortInfo {
+            concrete.sample_outputs.push_back(VirtualConcretePortInfo {
                 .name = outputs[output_i].name,
                 .type = "sample",
                 .connected = sample_output_connected(node_i, output_i),
@@ -122,7 +122,7 @@ LogicalMetadataBuildResult build_logical_metadata(
         auto const event_inputs = g.nodes[node_i].event_inputs();
         concrete.event_inputs.reserve(event_inputs.size());
         for (size_t input_i = 0; input_i < event_inputs.size(); ++input_i) {
-            concrete.event_inputs.push_back(LogicalConcretePortInfo {
+            concrete.event_inputs.push_back(VirtualConcretePortInfo {
                 .name = event_inputs[input_i].name,
                 .type = event_type_name(event_inputs[input_i].type),
                 .connected = event_input_connected(node_i, input_i),
@@ -132,7 +132,7 @@ LogicalMetadataBuildResult build_logical_metadata(
         auto const event_outputs = g.nodes[node_i].event_outputs();
         concrete.event_outputs.reserve(event_outputs.size());
         for (size_t output_i = 0; output_i < event_outputs.size(); ++output_i) {
-            concrete.event_outputs.push_back(LogicalConcretePortInfo {
+            concrete.event_outputs.push_back(VirtualConcretePortInfo {
                 .name = event_outputs[output_i].name,
                 .type = event_type_name(event_outputs[output_i].type),
                 .connected = event_output_connected(node_i, output_i),
@@ -140,16 +140,16 @@ LogicalMetadataBuildResult build_logical_metadata(
         }
 
         concrete_nodes.push_back(std::move(concrete));
-        concrete_node_logical_ids.push_back(
-            node_i < g.node_logical_ids.size()
-                ? g.node_logical_ids[node_i]
+        concrete_node_virtual_ids.push_back(
+            node_i < g.node_virtual_ids.size()
+                ? g.node_virtual_ids[node_i]
                 : std::vector<std::string> {}
         );
     }
 
     for (size_t scope_i = 0; scope_i < lowered_scopes.size(); ++scope_i) {
         auto const& scope = lowered_scopes[scope_i];
-        LogicalConcreteNode concrete;
+        VirtualConcreteNode concrete;
         concrete.id = scope.backing_node_id;
         concrete.kind = scope.kind;
         concrete.construction_order = g.nodes.size() + scope_i;
@@ -158,7 +158,7 @@ LogicalMetadataBuildResult build_logical_metadata(
 
         concrete.sample_inputs.reserve(scope.sample_inputs.size());
         for (size_t input_i = 0; input_i < scope.sample_inputs.size(); ++input_i) {
-            concrete.sample_inputs.push_back(LogicalConcretePortInfo {
+            concrete.sample_inputs.push_back(VirtualConcretePortInfo {
                 .name = scope.sample_inputs[input_i].name,
                 .type = "sample",
                 .connected = input_i < scope.sample_input_targets.size() && !scope.sample_input_targets[input_i].empty(),
@@ -171,7 +171,7 @@ LogicalMetadataBuildResult build_logical_metadata(
 
         concrete.sample_outputs.reserve(scope.sample_outputs.size());
         for (size_t output_i = 0; output_i < scope.sample_outputs.size(); ++output_i) {
-            concrete.sample_outputs.push_back(LogicalConcretePortInfo {
+            concrete.sample_outputs.push_back(VirtualConcretePortInfo {
                 .name = scope.sample_outputs[output_i].name,
                 .type = "sample",
                 .connected = output_i < scope.sample_output_sources.size() &&
@@ -184,7 +184,7 @@ LogicalMetadataBuildResult build_logical_metadata(
 
         concrete.event_inputs.reserve(scope.event_inputs.size());
         for (size_t input_i = 0; input_i < scope.event_inputs.size(); ++input_i) {
-            concrete.event_inputs.push_back(LogicalConcretePortInfo {
+            concrete.event_inputs.push_back(VirtualConcretePortInfo {
                 .name = scope.event_inputs[input_i].name,
                 .type = event_type_name(scope.event_inputs[input_i].type),
                 .connected = input_i < scope.event_input_targets.size() && !scope.event_input_targets[input_i].empty(),
@@ -193,7 +193,7 @@ LogicalMetadataBuildResult build_logical_metadata(
 
         concrete.event_outputs.reserve(scope.event_outputs.size());
         for (size_t output_i = 0; output_i < scope.event_outputs.size(); ++output_i) {
-            concrete.event_outputs.push_back(LogicalConcretePortInfo {
+            concrete.event_outputs.push_back(VirtualConcretePortInfo {
                 .name = scope.event_outputs[output_i].name,
                 .type = event_type_name(scope.event_outputs[output_i].type),
                 .connected = output_i < scope.event_output_sources.size() &&
@@ -204,38 +204,38 @@ LogicalMetadataBuildResult build_logical_metadata(
 
         concrete_nodes.push_back(std::move(concrete));
 
-        std::vector<std::string> logical_node_ids;
+        std::vector<std::string> virtual_node_ids;
         for (auto const& info : scope.source_infos) {
             if (info.declaration_identity.empty()) {
                 continue;
             }
-            if (!std::ranges::contains(logical_node_ids, info.declaration_identity)) {
-                logical_node_ids.push_back(info.declaration_identity);
+            if (!std::ranges::contains(virtual_node_ids, info.declaration_identity)) {
+                virtual_node_ids.push_back(info.declaration_identity);
             }
         }
-        concrete_node_logical_ids.push_back(std::move(logical_node_ids));
+        concrete_node_virtual_ids.push_back(std::move(virtual_node_ids));
     }
 
-    struct LogicalGroup {
-        std::string logical_node_id;
+    struct VirtualGroup {
+        std::string virtual_node_id;
         std::string type_identity;
         std::vector<size_t> member_indices;
     };
 
-    std::vector<LogicalGroup> groups;
+    std::vector<VirtualGroup> groups;
     for (size_t i = 0; i < concrete_nodes.size(); ++i) {
-        if (i >= concrete_node_logical_ids.size() || concrete_node_logical_ids[i].empty()) {
+        if (i >= concrete_node_virtual_ids.size() || concrete_node_virtual_ids[i].empty()) {
             continue;
         }
-        for (auto const& logical_node_id : concrete_node_logical_ids[i]) {
+        for (auto const& virtual_node_id : concrete_node_virtual_ids[i]) {
             auto group_it = std::find_if(groups.begin(), groups.end(), [&](auto const& group) {
                 return
-                    group.logical_node_id == logical_node_id &&
+                    group.virtual_node_id == virtual_node_id &&
                     group.type_identity == concrete_nodes[i].type_identity;
             });
             if (group_it == groups.end()) {
-                groups.push_back(LogicalGroup {
-                    .logical_node_id = logical_node_id,
+                groups.push_back(VirtualGroup {
+                    .virtual_node_id = virtual_node_id,
                     .type_identity = concrete_nodes[i].type_identity,
                     .member_indices = { i },
                 });
@@ -245,14 +245,14 @@ LogicalMetadataBuildResult build_logical_metadata(
         }
     }
 
-    std::vector<IntrospectionLogicalNode> logical_nodes;
-    logical_nodes.reserve(groups.size());
+    std::vector<IntrospectionVirtualNode> virtual_nodes;
+    virtual_nodes.reserve(groups.size());
     for (size_t group_i = 0; group_i < groups.size(); ++group_i) {
         auto const& group = groups[group_i];
         size_t const same_identity_group_count = std::ranges::count_if(groups, [&](auto const& candidate) {
-            return candidate.logical_node_id == group.logical_node_id;
+            return candidate.virtual_node_id == group.virtual_node_id;
         });
-        std::vector<LogicalConcreteNode const*> members;
+        std::vector<VirtualConcreteNode const*> members;
         members.reserve(group.member_indices.size());
         auto member_indices = group.member_indices;
         std::sort(member_indices.begin(), member_indices.end(), [&](auto a, auto b) {
@@ -265,60 +265,60 @@ LogicalMetadataBuildResult build_logical_metadata(
         });
         std::vector<std::string> backing_node_ids;
         backing_node_ids.reserve(group.member_indices.size());
-        std::vector<IntrospectionLogicalNode::Member> logical_members;
-        logical_members.reserve(member_indices.size());
+        std::vector<IntrospectionVirtualNode::Member> virtual_members;
+        virtual_members.reserve(member_indices.size());
         for (auto member_index : member_indices) {
             members.push_back(&concrete_nodes[member_index]);
             auto const& backing_node_id = concrete_nodes[member_index].id;
             if (!std::ranges::contains(backing_node_ids, backing_node_id)) {
                 backing_node_ids.push_back(backing_node_id);
             }
-            logical_members.push_back(IntrospectionLogicalNode::Member {
-                .ordinal = logical_members.size(),
+            virtual_members.push_back(IntrospectionVirtualNode::Member {
+                .ordinal = virtual_members.size(),
                 .backing_node_id = backing_node_id,
                 .kind = concrete_nodes[member_index].kind,
                 .type_identity = concrete_nodes[member_index].type_identity,
                 .sample_inputs = aggregate_ports(
-                    std::span<LogicalConcreteNode const* const>(&members.back(), 1),
-                    &LogicalConcreteNode::sample_inputs
+                    std::span<VirtualConcreteNode const* const>(&members.back(), 1),
+                    &VirtualConcreteNode::sample_inputs
                 ),
                 .sample_outputs = aggregate_ports(
-                    std::span<LogicalConcreteNode const* const>(&members.back(), 1),
-                    &LogicalConcreteNode::sample_outputs
+                    std::span<VirtualConcreteNode const* const>(&members.back(), 1),
+                    &VirtualConcreteNode::sample_outputs
                 ),
                 .event_inputs = aggregate_ports(
-                    std::span<LogicalConcreteNode const* const>(&members.back(), 1),
-                    &LogicalConcreteNode::event_inputs
+                    std::span<VirtualConcreteNode const* const>(&members.back(), 1),
+                    &VirtualConcreteNode::event_inputs
                 ),
                 .event_outputs = aggregate_ports(
-                    std::span<LogicalConcreteNode const* const>(&members.back(), 1),
-                    &LogicalConcreteNode::event_outputs
+                    std::span<VirtualConcreteNode const* const>(&members.back(), 1),
+                    &VirtualConcreteNode::event_outputs
                 ),
             });
         }
 
         auto source_spans = source_spans_for(members);
-        std::string logical_id = group.logical_node_id;
+        std::string virtual_id = group.virtual_node_id;
         if (same_identity_group_count > 1) {
-            logical_id += "#type:" + stable_identity_suffix(group.type_identity);
+            virtual_id += "#type:" + stable_identity_suffix(group.type_identity);
         }
 
-        logical_nodes.push_back(IntrospectionLogicalNode {
-            .id = std::move(logical_id),
+        virtual_nodes.push_back(IntrospectionVirtualNode {
+            .id = std::move(virtual_id),
             .kind = members.front()->kind,
-            .source_identity = group.logical_node_id,
+            .source_identity = group.virtual_node_id,
             .type_identity = group.type_identity,
             .source_spans = std::move(source_spans),
-            .sample_inputs = aggregate_ports(members, &LogicalConcreteNode::sample_inputs),
-            .sample_outputs = aggregate_ports(members, &LogicalConcreteNode::sample_outputs),
-            .event_inputs = aggregate_ports(members, &LogicalConcreteNode::event_inputs),
-            .event_outputs = aggregate_ports(members, &LogicalConcreteNode::event_outputs),
+            .sample_inputs = aggregate_ports(members, &VirtualConcreteNode::sample_inputs),
+            .sample_outputs = aggregate_ports(members, &VirtualConcreteNode::sample_outputs),
+            .event_inputs = aggregate_ports(members, &VirtualConcreteNode::event_inputs),
+            .event_outputs = aggregate_ports(members, &VirtualConcreteNode::event_outputs),
             .backing_node_ids = std::move(backing_node_ids),
-            .members = std::move(logical_members),
+            .members = std::move(virtual_members),
         });
     }
 
-    std::sort(logical_nodes.begin(), logical_nodes.end(), [](auto const& a, auto const& b) {
+    std::sort(virtual_nodes.begin(), virtual_nodes.end(), [](auto const& a, auto const& b) {
         auto const a_file = a.source_spans.empty() ? std::string{} : a.source_spans.front().file_path;
         auto const b_file = b.source_spans.empty() ? std::string{} : b.source_spans.front().file_path;
         if (a_file != b_file) {
@@ -346,20 +346,20 @@ LogicalMetadataBuildResult build_logical_metadata(
         return a.backing_node_ids < b.backing_node_ids;
     });
 
-    std::unordered_map<std::string, std::vector<std::string>> logical_node_ids_by_backing_node_id;
-    for (auto const& logical_node : logical_nodes) {
-        for (auto const& backing_node_id : logical_node.backing_node_ids) {
-            logical_node_ids_by_backing_node_id[backing_node_id].push_back(logical_node.id);
+    std::unordered_map<std::string, std::vector<std::string>> virtual_node_ids_by_backing_node_id;
+    for (auto const& virtual_node : virtual_nodes) {
+        for (auto const& backing_node_id : virtual_node.backing_node_ids) {
+            virtual_node_ids_by_backing_node_id[backing_node_id].push_back(virtual_node.id);
         }
     }
-    for (auto& [_, logical_ids] : logical_node_ids_by_backing_node_id) {
-        std::sort(logical_ids.begin(), logical_ids.end());
-        logical_ids.erase(std::unique(logical_ids.begin(), logical_ids.end()), logical_ids.end());
+    for (auto& [_, virtual_ids] : virtual_node_ids_by_backing_node_id) {
+        std::sort(virtual_ids.begin(), virtual_ids.end());
+        virtual_ids.erase(std::unique(virtual_ids.begin(), virtual_ids.end()), virtual_ids.end());
     }
 
     return std::make_pair(
-        std::move(logical_nodes),
-        std::move(logical_node_ids_by_backing_node_id)
+        std::move(virtual_nodes),
+        std::move(virtual_node_ids_by_backing_node_id)
     );
 }
 }
