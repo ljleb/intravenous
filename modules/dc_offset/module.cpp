@@ -14,16 +14,7 @@ inline void noisy_saw_project(iv::ModuleContext const& context)
 {
     using namespace iv;
     GraphBuilder& g = context.builder();
-    SamplePortRef left;
-    SamplePortRef right;
-    g.multi_channel<stereo>([&]<auto Ch>() {
-        if constexpr (std::same_as<decltype(Ch), decltype(stereo::left)>) {
-            left = 0.01;
-        } else {
-            right = 0.01;
-        }
-    });
-    g.outputs("main"_P[stereo::left] = left, "main"_P[stereo::right] = right);
+    g.outputs("main"_P[stereo::left] = 0.01, "main"_P[stereo::right] = 0.01);
 }
 
 IV_EXPORT_MODULE("iv.test.dc_offset", noisy_saw_project);

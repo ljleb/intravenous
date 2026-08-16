@@ -298,18 +298,16 @@ namespace {
         using namespace iv;
         auto& g = context.builder();
         auto const dt = g.node<ValueSource>(&context.sample_period());
-        g.multi_channel<stereo>([&]<auto channel>() {
-            auto const voice = g.node<SawOscillator>();
-            voice(
-                "phase_offset"_P = 0.0,
-                "frequency"_P = 440.0,
-                "dt"_P = dt
-            );
-            auto const contribution = voice * 0.1;
-            g.outputs(
-                "main"_P[channel] = contribution,
-                "main"_P[swap_side(channel)] = contribution);
-        });
+        auto const voice = g.node<SawOscillator>();
+        voice(
+            "phase_offset"_P = 0.0,
+            "frequency"_P = 440.0,
+            "dt"_P = dt
+        );
+        auto const contribution = voice * 0.1;
+        g.outputs(
+            "main"_P[stereo::left] = contribution,
+            "main"_P[stereo::right] = contribution);
     }
 }
 

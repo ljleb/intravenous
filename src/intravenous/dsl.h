@@ -391,8 +391,8 @@ namespace iv {
         SamplePortRef source = static_cast<SamplePortRef>(std::forward<L>(lhs));
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
 
-        auto const inputs = get_inputs(target.node());
-        auto const outputs = get_outputs(target.node());
+        auto const inputs = get_inputs(target.ports());
+        auto const outputs = get_outputs(target.ports());
 
         if (inputs.size() != 1) {
             details::error(
@@ -452,8 +452,8 @@ namespace iv {
         EventPortRef source = std::forward<L>(lhs);
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
 
-        auto const event_inputs = get_event_inputs(target.node());
-        auto const event_outputs = get_event_outputs(target.node());
+        auto const event_inputs = get_event_inputs(target.ports());
+        auto const event_outputs = get_event_outputs(target.ports());
 
         if (event_inputs.size() != 1) {
             details::error(

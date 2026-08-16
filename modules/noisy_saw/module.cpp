@@ -28,7 +28,7 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
     size_t seed = 0;
     SamplePortRef left;
     SamplePortRef right;
-    g.multi_channel<stereo>([&]<auto Ch>() {
+    auto make_channel = [&]<auto Ch>() {
         auto lp = g.node<SimpleIirLowPass>();
         polyphonic<16>(g, [&]<size_t Voice>(auto m) {
             // m.connect_event_input("midi", midi);
@@ -59,7 +59,9 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
         } else {
             right = channel_output;
         }
-    });
+    };
+    make_channel.template operator()<stereo::left>();
+    make_channel.template operator()<stereo::right>();
 
     g.outputs("main"_P[stereo::left] = left, "main"_P[stereo::right] = right);
 }

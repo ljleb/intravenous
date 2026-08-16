@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_refs.h>
+#include <intravenous/graph/builder/node_bundles.h>
 #include <intravenous/graph/builder/topology.h>
 
 #include <concepts>
@@ -18,11 +19,13 @@ namespace iv {
         size_t start_node_index = 0;
         std::string kind {};
         std::vector<InputConfig> input_configs {};
-        std::vector<size_t> input_placeholder_nodes {};
+        // Side-table port identities used only while this scope is open.
+        // They become ports of the finished SubgraphNode at close.
+        std::vector<PortId> input_boundary_ports {};
         std::vector<OutputConfig> output_configs {};
         std::vector<PortId> output_sources {};
         std::vector<EventInputConfig> event_input_configs {};
-        std::vector<size_t> event_input_placeholder_nodes {};
+        std::vector<PortId> event_input_boundary_ports {};
         std::vector<EventOutputConfig> event_output_configs {};
         std::vector<PortId> event_output_sources {};
         bool outputs_defined = false;
@@ -39,6 +42,7 @@ namespace iv {
         SamplePortRef add_scope_sample_input(
             GraphBuilder&,
             GraphBuilderTopology&,
+            GraphBuilderNodeBundles&,
             std::string_view name,
             Sample default_value,
             std::optional<Sample> min,
@@ -48,6 +52,7 @@ namespace iv {
         EventPortRef add_scope_event_input(
             GraphBuilder&,
             GraphBuilderTopology&,
+            GraphBuilderNodeBundles&,
             std::string_view name,
             EventTypeId type,
             bool has_name
@@ -74,16 +79,22 @@ namespace iv {
             std::span<EventInputConfig const> graph_event_inputs
         );
         template<class Fn>
-        NodeRef run(GraphBuilder& builder, GraphBuilderTopology& topology, Fn&& fn, std::string_view kind);
+        NodeRef run(GraphBuilder& builder, GraphBuilderTopology& topology,
+                    GraphBuilderNodeBundles& node_bundles, Fn&& fn,
+                    std::string_view kind);
         size_t current_start_node_index() const;
 
     private:
-        NodeRef finalize_scope(GraphBuilder& builder, GraphBuilderTopology& topology, ScopedSubgraph scope);
+        NodeRef finalize_scope(GraphBuilder& builder, GraphBuilderTopology& topology,
+                               GraphBuilderNodeBundles& node_bundles,
+                               ScopedSubgraph scope);
         std::vector<ScopedSubgraph> _stack {};
     };
 
     template<class Fn>
-    NodeRef SubgraphScopeManager::run(GraphBuilder& builder, GraphBuilderTopology& topology, Fn&& fn, std::string_view kind)
+    NodeRef SubgraphScopeManager::run(GraphBuilder& builder, GraphBuilderTopology& topology,
+                                      GraphBuilderNodeBundles& node_bundles, Fn&& fn,
+                                      std::string_view kind)
     {
         static_assert(
             std::invocable<Fn&> && !std::invocable<Fn&, GraphBuilder&>,
@@ -109,7 +120,7 @@ namespace iv {
         ScopedSubgraph scope = finish();
         guard.active = false;
 
-        return finalize_scope(builder, topology, std::move(scope));
+        return finalize_scope(builder, topology, node_bundles, std::move(scope));
     }
 
     template<class LiftSample>

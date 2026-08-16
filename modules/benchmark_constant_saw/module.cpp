@@ -17,16 +17,7 @@ inline void benchmark_constant_saw(iv::ModuleContext const& context)
         "dt"_P = dt
     ) * 0.1;
 
-    SamplePortRef left;
-    SamplePortRef right;
-    g.multi_channel<stereo>([&]<auto Ch>() {
-        if constexpr (std::same_as<decltype(Ch), decltype(stereo::left)>) {
-            left = tone;
-        } else {
-            right = tone;
-        }
-    });
-    g.outputs("main"_P[stereo::left] = left, "main"_P[stereo::right] = right);
+    g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
 
 IV_EXPORT_MODULE("iv.test.benchmark_constant_saw", benchmark_constant_saw);

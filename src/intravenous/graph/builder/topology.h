@@ -14,9 +14,18 @@ namespace iv {
     class GraphBuilderTopology {
     public:
         size_t node_count() const;
-        BuilderNode& node(size_t index);
-        BuilderNode const& node(size_t index) const;
-        size_t append_node(BuilderNode node);
+        ConcreteNode& concrete_node(size_t index);
+        ConcreteNode const& concrete_node(size_t index) const;
+        SubgraphNode& subgraph_node(size_t index);
+        SubgraphNode const& subgraph_node(size_t index) const;
+        bool is_subgraph_node(size_t index) const;
+        NodePorts& ports(size_t index);
+        NodePorts const& ports(size_t index) const;
+        NodeLifetime& lifetime(size_t index);
+        NodeLifetime const& lifetime(size_t index) const;
+        NodeTypeIdentity const& type_identity(size_t index) const;
+        size_t append_node(ConcreteNode node);
+        size_t append_node(SubgraphNode node);
         void apply_ttl(size_t node_index, size_t ttl_samples);
         void add_sample_edge(GraphEdge edge);
         void add_event_edge(GraphEventEdge edge);
@@ -36,10 +45,10 @@ namespace iv {
                 fn(edge);
             }
         }
-        size_t append_placeholder_node(
-            std::span<OutputConfig const> sample_outputs,
-            std::span<EventOutputConfig const> event_outputs
-        );
+        PortId append_scope_sample_input(OutputConfig);
+        PortId append_scope_event_input(EventOutputConfig);
+        bool is_scope_boundary_port(PortId) const;
+        EventOutputConfig const& scope_boundary_event_output(PortId) const;
         template<class Config>
         static void validate_output_port_configs(
             std::span<Config const> configs,
@@ -47,8 +56,8 @@ namespace iv {
             std::string_view kind
         );
         template<class Node, class... Args>
-        details::node_ref_for_t<Node> insert_node(GraphBuilder& builder, Args&&... args);
-        size_t append_lowered_subgraph_placeholder(
+        size_t insert_node(Args&&... args);
+        size_t append_lowered_subgraph_node(
             std::string subgraph_kind,
             std::vector<InputConfig> input_configs,
             std::vector<OutputConfig> output_configs,
@@ -71,7 +80,12 @@ namespace iv {
         );
 
     private:
-        std::vector<BuilderNode> _nodes {};
+        std::vector<StoredNode> _nodes {};
+        struct ScopeBoundaryPort {
+            std::optional<OutputConfig> sample_output {};
+            std::optional<EventOutputConfig> event_output {};
+        };
+        std::vector<ScopeBoundaryPort> _scope_boundary_ports {};
         std::unordered_set<GraphEdge> _edges {};
         std::unordered_set<GraphEventEdge> _event_edges {};
     };
@@ -111,7 +125,7 @@ namespace iv {
     }
 
     template<class Node, class... Args>
-    details::node_ref_for_t<Node> GraphBuilderTopology::insert_node(GraphBuilder& builder, Args&&... args)
+    size_t GraphBuilderTopology::insert_node(Args&&... args)
     {
         using StoredNode = std::remove_cvref_t<Node>;
         static_assert(
@@ -151,22 +165,15 @@ namespace iv {
             }
         };
 
-        size_t const node_index = append_node(BuilderNode{
+        return append_node(ConcreteNode{
             .ports = NodePorts{
                 .sample_inputs = std::vector<InputConfig>(std::begin(inputs), std::end(inputs)),
                 .sample_outputs = std::vector<OutputConfig>(std::begin(outputs), std::end(outputs)),
-                .event_inputs = std::vector<EventInputConfig>(std::begin(event_inputs), std::end(event_inputs)),
-                .event_outputs = std::vector<EventOutputConfig>(std::begin(event_outputs), std::end(event_outputs)),
+                .event_input_configs = std::vector<EventInputConfig>(std::begin(event_inputs), std::end(event_inputs)),
+                .event_output_configs = std::vector<EventOutputConfig>(std::begin(event_outputs), std::end(event_outputs)),
             },
             .materialization = NodeMaterialization{ .factory = std::move(materialize) },
             .type_identity = NodeTypeIdentity{ .value = details::demangle_type_name(typeid(StoredNode).name()) },
         });
-        if constexpr (details::has_fixed_output_count_v<StoredNode>) {
-            return StructuredNodeRef<StoredNode>(builder, node_index);
-        } else if constexpr (details::should_preserve_node_type_v<StoredNode>) {
-            return TypedNodeRef<StoredNode>(builder, node_index);
-        } else {
-            return NodeRef(builder, node_index);
-        }
     }
 }

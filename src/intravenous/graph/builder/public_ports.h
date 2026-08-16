@@ -149,7 +149,7 @@ namespace iv {
             if (source.node_index == GRAPH_ID) {
                 return OutputConfig{};
             }
-            return topology.node(source.node_index).outputs()[source.output_port];
+            return topology.ports(source.node_index).outputs()[source.output_port];
         };
         auto const public_output_config = [&](SamplePortRef const& source, std::string_view name) {
             auto config = source_config(source);
@@ -259,7 +259,7 @@ namespace iv {
             auto source = lift_sample(ref);
             auto config = source.node_index == GRAPH_ID
                 ? OutputConfig{}
-                : topology.node(source.node_index).outputs()[source.output_port];
+                : topology.ports(source.node_index).outputs()[source.output_port];
             config.name = std::string(ref.name);
             config.channel_layout.sample_layout = SampleStreamLayout::planar;
             output_refs.push_back(OutputRefConfig{ .ref = source, .config = std::move(config) });

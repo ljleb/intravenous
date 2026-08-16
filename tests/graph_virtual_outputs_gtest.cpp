@@ -5,52 +5,6 @@
 
 namespace iv {
 
-namespace {
-struct StereoOutputNode {
-    static constexpr auto inputs()
-    {
-        return std::array<InputConfig, 1>{{
-            {.name = "in", .default_value = 0.0f}
-        }};
-    }
-
-    static constexpr auto outputs()
-    {
-        return std::array<OutputConfig, 2>{{
-            {.name = "__stereo_left_0"},
-            {.name = "__stereo_right_0"},
-        }};
-    }
-
-    void tick(auto const& ctx) const
-    {
-        ctx.outputs[0].push(Sample{0.0f});
-        ctx.outputs[1].push(Sample{0.0f});
-    }
-};
-
-struct StereoLeftOnlyNode {
-    static constexpr auto inputs()
-    {
-        return std::array<InputConfig, 1>{{
-            {.name = "in", .default_value = 0.0f}
-        }};
-    }
-
-    static constexpr auto outputs()
-    {
-        return std::array<OutputConfig, 1>{{
-            {.name = "__stereo_left_0"},
-        }};
-    }
-
-    void tick(auto const& ctx) const
-    {
-        ctx.outputs[0].push(Sample{0.0f});
-    }
-};
-} // namespace
-
 TEST(GraphVirtualOutputsTest, EnumeratesVirtualNodeOutputPorts)
 {
     GraphBuilder g;
@@ -96,7 +50,8 @@ TEST(GraphVirtualOutputsTest, GroupsConcreteMembersOfSharedVirtualNode)
 TEST(GraphVirtualOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
 {
     GraphBuilder g;
-    auto node = _annotate_node_source_info(g.node<StereoOutputNode>().node_ref(), "stereo");
+    auto node = _annotate_node_source_info(
+        g.node<Sum<stereo, SampleStreamLayout::planar, 1>>().node_ref(), "stereo");
     (void)node;
 
     auto const families = g.virtual_sample_output_families();
@@ -110,28 +65,10 @@ TEST(GraphVirtualOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
     ASSERT_TRUE(family.channels[1].source.has_value());
 }
 
-TEST(GraphVirtualOutputsTest, KeepsSparseStereoFamiliesSparse)
-{
-    GraphBuilder g;
-    auto node = _annotate_node_source_info(g.node<StereoLeftOnlyNode>().node_ref(), "stereo");
-    (void)node;
-
-    auto const families = g.virtual_sample_output_families();
-    ASSERT_EQ(families.families.size(), 1u);
-    auto const& family = families.families.front();
-    EXPECT_EQ(family.virtual_node_id, "stereo");
-    EXPECT_EQ(family.channel_type, ChannelTypeId::stereo);
-    EXPECT_EQ(family.channels.size(), 2u);
-    ASSERT_TRUE(family.channels[0].source.has_value());
-    EXPECT_FALSE(family.channels[1].source.has_value());
-}
-
 TEST(GraphVirtualOutputsTest, NamedChannelOutputsKeepNameAndChannelAsSeparateIdentity)
 {
     GraphBuilder g;
-    g.multi_channel<stereo>([&]<auto channel>() {
-        g.outputs("main"_P[channel] = 0.0f);
-    });
+    g.outputs("main"_P[stereo::left] = 0.0f, "main"_P[stereo::right] = 0.0f);
 
     auto const built = g.build_root_node();
     auto const outputs = built.graph.outputs();
@@ -166,9 +103,7 @@ TEST(GraphVirtualOutputsTest, RepeatedNamedPublicOutputsShareOneSummedGraphPort)
 TEST(GraphVirtualOutputsTest, NamedChannelOutputsFormOneNamedStereoFamily)
 {
     GraphBuilder g;
-    g.multi_channel<stereo>([&]<auto c> {
-        g.outputs("main"_P[c] = 0.25f);
-    });
+    g.outputs("main"_P[stereo::left] = 0.25f, "main"_P[stereo::right] = 0.25f);
 
     auto const built = g.build_root_node();
     auto const outputs = built.graph.outputs();
@@ -199,9 +134,7 @@ TEST(GraphVirtualOutputsTest, WholeStreamAndChannelContributorsShareOneTypedPubl
 TEST(GraphVirtualOutputsTest, NamedChannelOutputContributionsShareTheirStereoFamily)
 {
     GraphBuilder g;
-    g.multi_channel<stereo>([&]<auto c> {
-        g.outputs("main"_P[c] = 0.25f, "main"_P[swap_side(c)] = 0.5f);
-    });
+    g.outputs("main"_P[stereo::left] = 0.25f, "main"_P[stereo::right] = 0.5f);
 
     auto const built = g.build_root_node();
     auto const outputs = built.graph.outputs();
@@ -240,31 +173,6 @@ TEST(GraphVirtualOutputsTest, ChannelPortsSupportConstexprEquality)
 
     EXPECT_TRUE(is_left.template operator()<stereo::left>());
     EXPECT_FALSE(is_left.template operator()<stereo::right>());
-}
-
-TEST(GraphVirtualOutputsTest, MultiChannelReturnsIndexableChannelSampleRefs)
-{
-    GraphBuilder g;
-    auto refs = g.multi_channel<stereo>([&]<auto channel>() {
-        return channel = g.node<Constant>(0.25f);
-    });
-    static_assert(std::same_as<
-        decltype(refs),
-        ChannelRefs<stereo>>);
-
-    g.multi_channel<stereo>([&]<auto channel>() {
-        g.outputs("main"_P[channel] = refs[channel]);
-    });
-
-    auto const built = g.build_root_node();
-    auto const outputs = built.graph.outputs();
-    ASSERT_EQ(outputs.size(), 1u);
-    EXPECT_EQ(outputs[0].name, "main");
-    auto const families = g.public_sample_output_families();
-    ASSERT_EQ(families.families.size(), 1u);
-    ASSERT_EQ(families.families.front().channels.size(), 2u);
-    EXPECT_EQ(families.families.front().channels[0].port_ordinals, (std::vector<size_t>{0u}));
-    EXPECT_EQ(families.families.front().channels[1].port_ordinals, (std::vector<size_t>{0u}));
 }
 
 } // namespace iv

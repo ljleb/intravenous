@@ -246,7 +246,7 @@ void GraphBuilderPublicPorts::define_event_outputs(
 
         auto const source_type = (ref.node_index == GRAPH_ID)
             ? _event_inputs[ref.output_port].type
-            : topology.node(ref.node_index).event_outputs()[ref.output_port].type;
+            : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
         topology.add_event_edge(GraphEventEdge{
             PortId{ ref.node_index, ref.output_port },
             PortId{ GRAPH_ID, i },

@@ -226,9 +226,7 @@ namespace {
         using namespace iv;
         auto& g = context.builder();
         auto const source = g.node<Constant>(0.25f);
-        g.multi_channel<stereo>([&]<auto channel>() {
-            g.outputs("main"_P[channel] = source, "main"_P[swap_side(channel)] = source);
-        });
+        g.outputs("main"_P[stereo::left] = source, "main"_P[stereo::right] = source);
     }
 }
 

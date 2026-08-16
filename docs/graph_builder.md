@@ -120,13 +120,13 @@ Where:
 struct NodePorts {
     std::vector<InputConfig> sample_inputs;
     std::vector<OutputConfig> sample_outputs;
-    std::vector<EventInputConfig> event_inputs;
-    std::vector<EventOutputConfig> event_outputs;
+    std::vector<EventInputConfig> event_input_configs;
+    std::vector<EventOutputConfig> event_output_configs;
 
     std::span<InputConfig const> inputs() const;
     std::span<OutputConfig const> outputs() const;
-    std::span<EventInputConfig const> event_inputs_view() const;
-    std::span<EventOutputConfig const> event_outputs_view() const;
+    std::span<EventInputConfig const> event_inputs() const;
+    std::span<EventOutputConfig const> event_outputs() const;
 };
 ```
 

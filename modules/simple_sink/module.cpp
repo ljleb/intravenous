@@ -10,7 +10,7 @@ inline void simple_sink(iv::ModuleContext const& context)
     SamplePortRef left;
     SamplePortRef right;
 
-    g.multi_channel<stereo>([&]<auto Ch>() {
+    auto make_channel = [&]<auto Ch>() {
         auto const phase = g.node<PhaseIntegrator>();
         auto const osc = g.node<SawOscillator>();
         constexpr Sample channel_offset =
@@ -28,7 +28,9 @@ inline void simple_sink(iv::ModuleContext const& context)
         } else {
             right = tone;
         }
-    });
+    };
+    make_channel.template operator()<stereo::left>();
+    make_channel.template operator()<stereo::right>();
 
     g.outputs("main"_P[stereo::left] = left, "main"_P[stereo::right] = right);
 }

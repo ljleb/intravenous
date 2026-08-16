@@ -12,6 +12,7 @@
 
 namespace iv {
     class GraphBuilderTopology;
+    class GraphBuilderVirtualNodes;
 
     struct GraphBuilderVacantSampleInput {
         PortId target {};
@@ -134,13 +135,16 @@ namespace iv {
         );
         void mark_runtime_filled_sample_input(PortId target);
         void mark_runtime_filled_event_input(PortId target);
-        GraphBuilderVacantInputs collect_vacant_inputs(GraphBuilderTopology const&) const;
-        GraphBuilderVirtualInputs collect_virtual_inputs(GraphBuilderTopology const&) const;
+        GraphBuilderVacantInputs collect_vacant_inputs(
+            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
+        GraphBuilderVirtualInputs collect_virtual_inputs(
+            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualSampleInputFamilies collect_virtual_sample_input_families(
-            GraphBuilderTopology const&) const;
-        GraphBuilderVirtualOutputs collect_virtual_outputs(GraphBuilderTopology const&) const;
+            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
+        GraphBuilderVirtualOutputs collect_virtual_outputs(
+            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualSampleOutputFamilies collect_virtual_sample_output_families(
-            GraphBuilderTopology const&) const;
+            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
         void import_child(GraphBuilderConnections const& child, size_t child_node_offset);
         template<class Fn>
         void for_each_runtime_filled_sample_input(Fn&& fn) const

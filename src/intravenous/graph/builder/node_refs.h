@@ -81,7 +81,7 @@ namespace iv {
         Derived& operator=(Derived const& rhs);
         Derived& operator=(Derived&& rhs);
 
-        BuilderNode const& node() const;
+        NodePorts const& ports() const;
         NodeRef node_ref() const;
         Derived _clone_handle() const;
 
@@ -102,7 +102,7 @@ namespace iv {
                 details::error("attempted to use a null NodeRef");
             }
             return TypedSamplePortRef<ChannelType, layout.sample_layout>{
-                SamplePortRef(*_graph_builder, _index, output_index)};
+                this->operator[](output_index)};
         }
         EventPortRef event_port(size_t output_index) const;
         EventPortRef event_port(std::string_view output_name) const;
@@ -235,7 +235,7 @@ namespace iv {
             constexpr auto layout = details::static_output_port_layout_at<NodeType, I>();
             using ChannelType = typename RuntimeChannelTypeTraits<layout.channel_type>::type;
             return TypedSamplePortRef<ChannelType, layout.sample_layout>{
-                SamplePortRef(*this->_graph_builder, this->_index, I)};
+                this->operator[](I)};
         }
     };
 

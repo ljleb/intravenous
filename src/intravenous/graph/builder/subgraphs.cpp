@@ -37,6 +37,7 @@ void SubgraphScopeManager::abandon_top()
 SamplePortRef SubgraphScopeManager::add_scope_sample_input(
     GraphBuilder& builder,
     GraphBuilderTopology& topology,
+    GraphBuilderNodeBundles&,
     std::string_view name,
     Sample default_value,
     std::optional<Sample> min,
@@ -51,17 +52,16 @@ SamplePortRef SubgraphScopeManager::add_scope_sample_input(
         .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
         .max = max.value_or(std::numeric_limits<Sample::storage>::infinity()),
     });
-    size_t const placeholder_node = topology.append_placeholder_node(
-        std::array<OutputConfig, 1>{ OutputConfig{ .name = has_name ? std::string(name) : std::string{} } },
-        {}
-    );
-    scope.input_placeholder_nodes.push_back(placeholder_node);
-    return SamplePortRef(builder, placeholder_node, 0);
+    PortId const boundary = topology.append_scope_sample_input(
+        OutputConfig{ .name = has_name ? std::string(name) : std::string{} });
+    scope.input_boundary_ports.push_back(boundary);
+    return SamplePortRef(builder, boundary.node, boundary.port);
 }
 
 EventPortRef SubgraphScopeManager::add_scope_event_input(
     GraphBuilder& builder,
     GraphBuilderTopology& topology,
+    GraphBuilderNodeBundles&,
     std::string_view name,
     EventTypeId type,
     bool has_name
@@ -73,12 +73,10 @@ EventPortRef SubgraphScopeManager::add_scope_event_input(
     } else {
         scope.event_input_configs.emplace_back(EventInputConfig{ .type = type });
     }
-    size_t const placeholder_node = topology.append_placeholder_node(
-        {},
-        std::array<EventOutputConfig, 1>{ EventOutputConfig{ .name = has_name ? std::string(name) : std::string{}, .type = type } }
-    );
-    scope.event_input_placeholder_nodes.push_back(placeholder_node);
-    return EventPortRef(builder, placeholder_node, 0);
+    PortId const boundary = topology.append_scope_event_input(
+        EventOutputConfig{ .name = has_name ? std::string(name) : std::string{}, .type = type });
+    scope.event_input_boundary_ports.push_back(boundary);
+    return EventPortRef(builder, boundary.node, boundary.port);
 }
 
 void SubgraphScopeManager::define_sample_outputs(
@@ -152,7 +150,7 @@ void SubgraphScopeManager::define_event_outputs(
         }
         auto source_type = (ref.node_index == GRAPH_ID)
             ? graph_event_inputs[ref.output_port].type
-            : topology.node(ref.node_index).event_outputs()[ref.output_port].type;
+            : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
         scope.event_output_sources.push_back(PortId{ ref.node_index, ref.output_port });
         scope.event_output_configs.emplace_back(config);
         scope.event_output_configs.back().type = source_type;
@@ -160,58 +158,61 @@ void SubgraphScopeManager::define_event_outputs(
     scope.event_outputs_defined = true;
 }
 
-NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder, GraphBuilderTopology& topology, ScopedSubgraph scope)
+NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
+                                              GraphBuilderTopology& topology,
+                                              GraphBuilderNodeBundles& node_bundles,
+                                              ScopedSubgraph scope)
 {
-    size_t const placeholder_node_index = topology.node_count();
-    std::unordered_map<size_t, size_t> sample_input_index_by_placeholder;
-    sample_input_index_by_placeholder.reserve(scope.input_placeholder_nodes.size());
-    for (size_t i = 0; i < scope.input_placeholder_nodes.size(); ++i) {
-        sample_input_index_by_placeholder.emplace(scope.input_placeholder_nodes[i], i);
+    size_t const subgraph_node_index = topology.node_count();
+    std::unordered_map<size_t, size_t> sample_input_index_by_boundary;
+    sample_input_index_by_boundary.reserve(scope.input_boundary_ports.size());
+    for (size_t i = 0; i < scope.input_boundary_ports.size(); ++i) {
+        sample_input_index_by_boundary.emplace(scope.input_boundary_ports[i].node, i);
     }
 
-    std::unordered_map<size_t, size_t> event_input_index_by_placeholder;
-    event_input_index_by_placeholder.reserve(scope.event_input_placeholder_nodes.size());
-    for (size_t i = 0; i < scope.event_input_placeholder_nodes.size(); ++i) {
-        event_input_index_by_placeholder.emplace(scope.event_input_placeholder_nodes[i], i);
+    std::unordered_map<size_t, size_t> event_input_index_by_boundary;
+    event_input_index_by_boundary.reserve(scope.event_input_boundary_ports.size());
+    for (size_t i = 0; i < scope.event_input_boundary_ports.size(); ++i) {
+        event_input_index_by_boundary.emplace(scope.event_input_boundary_ports[i].node, i);
     }
 
     std::vector<std::vector<PortId>> subgraph_input_targets(scope.input_configs.size());
     std::vector<std::vector<PortId>> subgraph_event_input_targets(scope.event_input_configs.size());
 
     auto translate_sample_source = [&](PortId source) {
-        if (auto const it = sample_input_index_by_placeholder.find(source.node); it != sample_input_index_by_placeholder.end()) {
-            return PortId{ placeholder_node_index, it->second };
+        if (auto const it = sample_input_index_by_boundary.find(source.node); it != sample_input_index_by_boundary.end()) {
+            return PortId{ subgraph_node_index, it->second };
         }
         return source;
     };
 
     auto translate_event_source = [&](PortId source) {
-        if (auto const it = event_input_index_by_placeholder.find(source.node); it != event_input_index_by_placeholder.end()) {
-            return PortId{ placeholder_node_index, it->second };
+        if (auto const it = event_input_index_by_boundary.find(source.node); it != event_input_index_by_boundary.end()) {
+            return PortId{ subgraph_node_index, it->second };
         }
         return source;
     };
 
     topology.for_each_sample_edge([&](GraphEdge const& edge) {
-        auto const it = sample_input_index_by_placeholder.find(edge.source.node);
-        if (it == sample_input_index_by_placeholder.end()) {
+        auto const it = sample_input_index_by_boundary.find(edge.source.node);
+        if (it == sample_input_index_by_boundary.end()) {
             return;
         }
         subgraph_input_targets[it->second].push_back(edge.target);
     });
     topology.erase_sample_edges_matching([&](GraphEdge const& edge) {
-        return sample_input_index_by_placeholder.contains(edge.source.node);
+        return sample_input_index_by_boundary.contains(edge.source.node);
     });
 
     topology.for_each_event_edge([&](GraphEventEdge const& edge) {
-        auto const it = event_input_index_by_placeholder.find(edge.source.node);
-        if (it == event_input_index_by_placeholder.end()) {
+        auto const it = event_input_index_by_boundary.find(edge.source.node);
+        if (it == event_input_index_by_boundary.end()) {
             return;
         }
         subgraph_event_input_targets[it->second].push_back(edge.target);
     });
     topology.erase_event_edges_matching([&](GraphEventEdge const& edge) {
-        return event_input_index_by_placeholder.contains(edge.source.node);
+        return event_input_index_by_boundary.contains(edge.source.node);
     });
 
     for (auto& source : scope.output_sources) {
@@ -221,7 +222,7 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder, GraphBuilder
         source = translate_event_source(source);
     }
 
-    size_t const placeholder_node = topology.append_lowered_subgraph_placeholder(
+    size_t const subgraph_node = topology.append_lowered_subgraph_node(
         std::move(scope.kind),
         std::move(scope.input_configs),
         std::move(scope.output_configs),
@@ -235,7 +236,7 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder, GraphBuilder
         std::move(scope.event_output_sources)
     );
 
-    return NodeRef(builder, placeholder_node);
+    return NodeRef(builder, node_bundles.append_subgraph(topology, subgraph_node));
 }
 
 size_t SubgraphScopeManager::current_start_node_index() const

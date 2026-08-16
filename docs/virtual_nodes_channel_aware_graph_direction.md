@@ -24,7 +24,7 @@ object whose implementation may contain one or more executable nodes.
 | --- | --- |
 | **Concrete node** | One executable node instance run by the DSP graph. |
 | **Concrete port** | An input or output on a concrete node, with a declared channel type/layout. |
-| **Virtual node** | The node created by one authored `g.node<...>()` expression. It owns the mapping from its virtual ports to concrete nodes and ports. |
+| **Virtual node** | The graph-facing object associated with one source-authored named lvalue that receives a node-reference implementation. It owns the mapping from its virtual ports to concrete nodes and ports. |
 | **Virtual port** | One graph-facing and UI-facing port on a virtual node. It may compose several concrete ports created by tiling. |
 | **Tiled node** | A virtual node whose fully-mono concrete node type is instantiated once for each member of a requested channel type. A tiled node is not a concrete node and is not a separate module-author-facing value. |
 | **Tile** | One concrete-node member of a tiled node. For a mono node tiled to stereo, the left and right concrete instances are the two tiles. |
@@ -36,6 +36,56 @@ object whose implementation may contain one or more executable nodes.
 Source spans, source identities, lane state, sidepanel controls, and
 introspection attach to virtual nodes and virtual ports. Concrete members are
 implementation detail unless a diagnostic explicitly asks to expose them.
+
+## Authored identity, references, and membership
+
+A bare `g.node<T>()` expression creates concrete-node implementation data and
+returns a node reference. It does not, by itself, create an authored virtual
+node. The source rewriter establishes virtual-node identity when a named
+lvalue receives that reference. It gives an uninitialized node-reference
+lvalue its stable declaration identity and wraps its initializer or assignment
+right-hand side with the source-annotation operation for that identity.
+
+Conceptually:
+
+```text
+auto filter = g.node<Filter>();
+
+source-authored lvalue `filter`
+  -> stable virtual-node identity
+  -> explicit membership/mapping to the concrete Filter implementation
+```
+
+This source annotation is an explicit declaration of membership; it is not a
+later grouping heuristic. Source spans and type identities may be stored as
+metadata on the virtual node, but they must never be used to discover, split,
+or merge virtual nodes. Internal builder-generated nodes, unannotated
+temporaries, constants, sums, packs, and unpacks have no authored virtual-node
+identity unless an explicit source annotation associates them with one.
+
+Node-reference values remain move-only. That is a runtime-reference rule which
+keeps authored C++ assignment and aliasing behavior tractable; it is not an
+exclusive-ownership rule for graph metadata. Moving a reference clears the
+moved-from runtime handle, but does not remove virtual/concrete memberships
+already recorded by source annotation.
+
+Virtual/concrete membership is explicitly many-to-many. One virtual node can
+have several concrete members, as a tiled node does, and one concrete node may
+be a member of more than one virtual node when separately annotated authored
+lvalues intentionally project it. The builder stores both directions:
+
+```text
+Virtual node A ---\
+                    concrete node X
+Virtual node B ---/
+```
+
+Repeated annotation of the same virtual-node/concrete-member relation
+deduplicates it. It must not erase membership belonging to another virtual
+node. The forward virtual-node record and its virtual-port mappings are
+authoritative for sidepanel, lane, persistence, and introspection projection;
+the inverse concrete-to-virtual relation supports build metadata and
+diagnostics.
 
 ## Channel declarations
 
@@ -322,10 +372,11 @@ during this work.
   to one native C-typed concrete port. Prove direct native multi-channel node
   wiring end-to-end.
 - **Virtual graph metadata.** Replace inferred logical grouping with explicit
-  virtual-node identities, virtual ports, and one-to-one initial
-  virtual-to-execution-node/port mappings. Identity is recorded at insertion,
-  never reconstructed from names, source spans, scopes, adjacency, or type
-  matching.
+  virtual-node identities, virtual ports, and initial virtual-to-execution-
+  node/port mappings. Source annotation on an authored lvalue records an
+  identity and explicit membership; insertion alone does not. Membership may
+  be many-to-many, but it is never reconstructed from names, source spans,
+  scopes, adjacency, or type matching.
 - **Tiled node insertion, values, lowering, and old-model removal.** Add
   `g.node<T, C>()` through `TiledNode<T, C>` for constexpr fully-mono sample
   nodes, with one execution tile per member of `C` and a channel-aware form of

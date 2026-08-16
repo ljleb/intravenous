@@ -11,14 +11,14 @@ std::vector<OutputConfig> const& NodePorts::outputs() const
     return sample_outputs;
 }
 
-std::vector<EventInputConfig> const& NodePorts::event_inputs_view() const
+std::vector<EventInputConfig> const& NodePorts::event_inputs() const
 {
-    return event_inputs;
+    return event_input_configs;
 }
 
-std::vector<EventOutputConfig> const& NodePorts::event_outputs_view() const
+std::vector<EventOutputConfig> const& NodePorts::event_outputs() const
 {
-    return event_outputs;
+    return event_output_configs;
 }
 
 bool NodeMaterialization::is_placeholder() const
@@ -41,23 +41,29 @@ bool LoweredSubgraphBinding::active() const
         || !kind.empty();
 }
 
-std::vector<InputConfig> const& BuilderNode::inputs() const
+std::vector<InputConfig> const& ConcreteNode::inputs() const
 {
     return ports.inputs();
 }
 
-std::vector<OutputConfig> const& BuilderNode::outputs() const
+std::vector<OutputConfig> const& ConcreteNode::outputs() const
 {
     return ports.outputs();
 }
 
-std::vector<EventInputConfig> const& BuilderNode::event_inputs() const
+std::vector<EventInputConfig> const& ConcreteNode::event_inputs() const
 {
-    return ports.event_inputs_view();
+    return ports.event_inputs();
 }
 
-std::vector<EventOutputConfig> const& BuilderNode::event_outputs() const
+std::vector<EventOutputConfig> const& ConcreteNode::event_outputs() const
 {
-    return ports.event_outputs_view();
+    return ports.event_outputs();
 }
+
+std::vector<InputConfig> const& SubgraphNode::inputs() const { return ports.inputs(); }
+std::vector<OutputConfig> const& SubgraphNode::outputs() const { return ports.outputs(); }
+std::vector<EventInputConfig> const& SubgraphNode::event_inputs() const { return ports.event_inputs(); }
+std::vector<EventOutputConfig> const& SubgraphNode::event_outputs() const { return ports.event_outputs(); }
+
 }
