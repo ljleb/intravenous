@@ -1,5 +1,6 @@
 #pragma once
 #include <intravenous/basic_nodes/arithmetic.h>
+#include <intravenous/basic_nodes/routing.h>
 #include <intravenous/channel_ports.h>
 #include <intravenous/graph/builder/annotations.h>
 #include <intravenous/graph/builder/connections.h>
@@ -45,7 +46,9 @@ class GraphBuilder;
 namespace details {}
 
 class GraphBuilder {
-  template <class Derived, class Node> friend class NodeRefBase;
+  template <class Derived> friend class NodeRefBase;
+  template <class Derived, class Node> friend class ConcreteNodeRefBase;
+  template <class Node, class PortProjection> friend class TypedNodeRef;
   friend struct SamplePortRef;
   friend struct EventPortRef;
   friend class GraphBuilderChildEmbedder;
@@ -114,6 +117,9 @@ public:
   template <class Node, class... Args>
   details::node_ref_for_t<Node> node(Args &&...args);
 
+  template <class Node, class ChannelType, class... Args>
+  auto node(Args &&...args);
+
   NodeRef embed_subgraph(GraphBuilder const &child);
 
   template <class... Refs> void event_outputs(Refs &&...refs);
@@ -155,12 +161,14 @@ public:
   using VirtualSampleOutputChannel = GraphBuilderVirtualSampleOutputChannel;
   using VirtualSampleOutputFamily = GraphBuilderVirtualSampleOutputFamily;
   using VirtualSampleOutputFamilies = GraphBuilderVirtualSampleOutputFamilies;
+  using VirtualPorts = GraphBuilderVirtualPorts;
 
   VacantInputs vacant_inputs() const;
   VirtualInputs virtual_inputs() const;
   VirtualSampleInputFamilies virtual_sample_input_families() const;
   VirtualOutputs virtual_outputs() const;
   VirtualSampleOutputFamilies virtual_sample_output_families() const;
+  VirtualPorts virtual_ports() const;
   GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
   bool public_sample_input_is_connected(size_t port_ordinal) const;
   std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
@@ -169,10 +177,25 @@ public:
   public_event_input_source_infos(size_t port_ordinal) const;
   GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
   std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
-  void connect_sample_input(PortId target, SamplePortRef source);
-  void connect_event_input(PortId target, EventPortRef source);
-  void mark_runtime_filled_sample_input(PortId target);
-  void mark_runtime_filled_event_input(PortId target);
+  void connect_sample_input(ConcretePortId target, SamplePortRef source);
+  void connect_sample_input(NodeBundlePortId target, SamplePortRef source);
+  // Connect one mono source per channel of a builder-visible port.  The
+  // builder performs packing or tiled-port expansion as needed.
+  void connect_sample_input(NodeBundlePortId target,
+                            std::span<SamplePortRef const> sources);
+  void connect_event_input(ConcretePortId target, EventPortRef source);
+  void connect_event_input(NodeBundlePortId target, EventPortRef source);
+  void mark_runtime_filled_sample_input(ConcretePortId target);
+  void mark_runtime_filled_sample_input(NodeBundlePortId target);
+  void mark_runtime_filled_event_input(ConcretePortId target);
+  void mark_runtime_filled_event_input(NodeBundlePortId target);
+  bool sample_input_is_connected(NodeBundlePortId target) const;
+  bool event_input_is_connected(NodeBundlePortId target) const;
+  // Keep concrete-port resolution inside GraphBuilder when a graph-service
+  // node consumes a bundle output.
+  void connect_sample_output(NodeBundlePortId source, NodeRef const &target);
+  EventPortRef event_output(NodeBundlePortId source) const;
+  size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
   GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
   RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
   RootNodeBuildResult
@@ -193,6 +216,28 @@ private:
   SamplePortRef
   lift_to_sample_port(TypedSamplePortChannelRef<ChannelType, Layout,
                                                 Member> const &sample_port);
+
+  template <class ChannelType>
+  SamplePortRef lift_to_sample_port(
+      TypedSamplePortTileRef<ChannelType> const &sample_port);
+
+  template <class ChannelType>
+  TypedSamplePortTileRef<ChannelType>
+  tiled_sample_output(NodeBundleHandle, size_t output_ordinal);
+
+  template <class ChannelType>
+  void connect_tiled_sample_input(
+      NodeBundleHandle, size_t input_ordinal,
+      TypedSamplePortTileRef<ChannelType> const &source);
+
+  template <class ChannelType, SampleStreamLayout Layout>
+  void connect_tiled_sample_input(
+      NodeBundleHandle, size_t input_ordinal,
+      TypedSamplePortRef<ChannelType, Layout> const &source);
+
+  template <class ChannelType>
+  void broadcast_to_tiled_sample_input(
+      NodeBundleHandle, size_t input_ordinal, SamplePortRef source);
 
   template <class T>
     requires std::is_arithmetic_v<std::remove_cvref_t<T>> ||
@@ -226,6 +271,82 @@ SamplePortRef GraphBuilder::lift_to_sample_port(
   return unpack[port_index(Member{})];
 }
 
+template <class ChannelType>
+SamplePortRef GraphBuilder::lift_to_sample_port(
+    TypedSamplePortTileRef<ChannelType> const &sample_port) {
+  auto pack = node<ChannelPack<ChannelType>>();
+  for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
+    pack.connect_input(channel, sample_port.members()[channel]);
+  }
+  return static_cast<SamplePortRef>(pack);
+}
+
+template <class ChannelType>
+TypedSamplePortTileRef<ChannelType> GraphBuilder::tiled_sample_output(
+    NodeBundleHandle handle, size_t output_ordinal) {
+  auto const &mapping = _node_bundles.tiled_sample_output(handle, output_ordinal);
+  if (mapping.channel_layout.channel_type != ChannelTypeTraits<ChannelType>::id) {
+    details::error("tiled sample output has an unexpected channel type");
+  }
+  if (mapping.channel_ports.size() != ChannelType::channel_count) {
+    details::error("tiled sample output has an unexpected channel count");
+  }
+  std::array<SamplePortRef, ChannelType::channel_count> members{};
+  for (auto const &channel : mapping.channel_ports) {
+    if (channel.channel_ordinal >= members.size()) {
+      details::error("tiled sample output has an out-of-bounds channel ordinal");
+    }
+    members[channel.channel_ordinal] = SamplePortRef(
+        *this, channel.concrete_port.node, channel.concrete_port.port);
+  }
+  return TypedSamplePortTileRef<ChannelType>{std::move(members)};
+}
+
+template <class ChannelType>
+void GraphBuilder::connect_tiled_sample_input(
+    NodeBundleHandle handle, size_t input_ordinal,
+    TypedSamplePortTileRef<ChannelType> const &source) {
+  auto const &mapping = _node_bundles.tiled_sample_input(handle, input_ordinal);
+  if (mapping.channel_layout.channel_type != ChannelTypeTraits<ChannelType>::id ||
+      mapping.channel_ports.size() != ChannelType::channel_count) {
+    details::error("tiled sample input has an unexpected channel type");
+  }
+  for (auto const &channel : mapping.channel_ports) {
+    connect_sample_input(channel.concrete_port,
+                         source.members()[channel.channel_ordinal]);
+  }
+}
+
+template <class ChannelType, SampleStreamLayout Layout>
+void GraphBuilder::connect_tiled_sample_input(
+    NodeBundleHandle handle, size_t input_ordinal,
+    TypedSamplePortRef<ChannelType, Layout> const &source) {
+  auto unpack = node<ChannelUnpack<ChannelType>>();
+  unpack.connect_input(0, static_cast<SamplePortRef>(source));
+  auto const &mapping = _node_bundles.tiled_sample_input(handle, input_ordinal);
+  if (mapping.channel_layout.channel_type != ChannelTypeTraits<ChannelType>::id ||
+      mapping.channel_ports.size() != ChannelType::channel_count) {
+    details::error("tiled sample input has an unexpected channel type");
+  }
+  for (auto const &channel : mapping.channel_ports) {
+    connect_sample_input(channel.concrete_port,
+                         static_cast<SamplePortRef>(unpack[channel.channel_ordinal]));
+  }
+}
+
+template <class ChannelType>
+void GraphBuilder::broadcast_to_tiled_sample_input(
+    NodeBundleHandle handle, size_t input_ordinal, SamplePortRef source) {
+  auto const &mapping = _node_bundles.tiled_sample_input(handle, input_ordinal);
+  if (mapping.channel_layout.channel_type != ChannelTypeTraits<ChannelType>::id ||
+      mapping.channel_ports.size() != ChannelType::channel_count) {
+    details::error("tiled sample input has an unexpected channel type");
+  }
+  for (auto const &channel : mapping.channel_ports) {
+    connect_sample_input(channel.concrete_port, source);
+  }
+}
+
 template <class Config>
 void GraphBuilder::validate_output_port_configs(std::span<Config const> configs,
                                                 std::string_view node_label,
@@ -246,6 +367,47 @@ details::node_ref_for_t<Node> GraphBuilder::node(Args &&...args) {
     return TypedNodeRef<StoredNode>(*this, bundle_handle);
   } else {
     return NodeRef(*this, bundle_handle);
+  }
+}
+
+template <class Node, class ChannelType, class... Args>
+auto GraphBuilder::node(Args &&...args) {
+  using StoredNode = std::remove_cvref_t<Node>;
+  static_assert(details::has_constexpr_sample_port_configs<StoredNode>,
+                "tiled DSP nodes must provide constexpr static inputs()/outputs() configurations");
+  static_assert((std::copy_constructible<std::remove_cvref_t<Args>> && ...),
+                "tiled-node construction requires reusable constructor arguments");
+  static_assert([] consteval {
+    if constexpr (requires { StoredNode::inputs(); }) {
+      for (auto const &config : StoredNode::inputs()) {
+        if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+          return false;
+        }
+      }
+    }
+    if constexpr (requires { StoredNode::outputs(); }) {
+      for (auto const &config : StoredNode::outputs()) {
+        if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }(), "the initial tiled-node model only supports fully mono sample nodes");
+
+  std::array<size_t, ChannelType::channel_count> concrete_node_indices{};
+  for (auto &concrete_node_index : concrete_node_indices) {
+    concrete_node_index = _topology.insert_node<StoredNode>(args...);
+  }
+  auto const bundle_handle = _node_bundles.append_tiled(
+      _topology, concrete_node_indices,
+      ChannelLayout{.channel_type = ChannelTypeTraits<ChannelType>::id,
+                    .sample_layout = SampleStreamLayout::planar});
+  using Projection = TiledPortProjection<ChannelType>;
+  if constexpr (details::has_fixed_output_count_v<StoredNode>) {
+    return StructuredNodeRef<StoredNode, Projection>(*this, bundle_handle);
+  } else {
+    return TypedNodeRef<StoredNode, Projection>(*this, bundle_handle);
   }
 }
 
@@ -396,7 +558,7 @@ template <class... Refs> void GraphBuilder::subgraph_outputs(Refs &&...refs) {
 }
 
 template <class Derived, class Node>
-inline NodePorts const &NodeRefBase<Derived, Node>::ports() const {
+inline NodePorts const &ConcreteNodeRefBase<Derived, Node>::ports() const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
@@ -404,35 +566,36 @@ inline NodePorts const &NodeRefBase<Derived, Node>::ports() const {
       _graph_builder->_node_bundles.single_node_index(_index));
 }
 
-template <class Derived, class Node>
-inline NodeRef NodeRefBase<Derived, Node>::node_ref() const {
+template <class Derived>
+inline NodeRef NodeRefBase<Derived>::node_ref() const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
   return NodeRef(*_graph_builder, _index);
 }
 
-template <class Derived, class Node>
-inline Derived NodeRefBase<Derived, Node>::_clone_handle() const {
+template <class Derived>
+inline Derived NodeRefBase<Derived>::_clone_handle() const {
   if (!_graph_builder) {
     return Derived{};
   }
   return Derived(*_graph_builder, _index);
 }
 
-template <class Derived, class Node>
-inline Derived &NodeRefBase<Derived, Node>::operator=(Derived const &rhs) {
+template <class Derived>
+inline Derived &NodeRefBase<Derived>::operator=(Derived const &rhs) {
+  auto const &rhs_base = static_cast<NodeRefBase const &>(rhs);
   if (this == &rhs) {
     return derived();
   }
 
   if (_allows_single_assignment) {
-    if (!rhs._graph_builder) {
+    if (!rhs_base._graph_builder) {
       details::error(
           "cannot initialize a virtual-empty NodeRef from an empty NodeRef");
     }
-    _graph_builder = rhs._graph_builder;
-    _index = rhs._index;
+    _graph_builder = rhs_base._graph_builder;
+    _index = rhs_base._index;
     if (!_virtual_declaration_id.empty() && _graph_builder) {
       _graph_builder->_annotations.attach_virtual_node(
           _graph_builder->_topology, _graph_builder->_node_bundles,
@@ -448,26 +611,27 @@ inline Derived &NodeRefBase<Derived, Node>::operator=(Derived const &rhs) {
                    "' after it has already been initialized");
   }
 
-  _graph_builder = rhs._graph_builder;
-  _index = rhs._index;
-  _virtual_declaration_id = rhs._virtual_declaration_id;
-  _allows_single_assignment = rhs._allows_single_assignment;
+  _graph_builder = rhs_base._graph_builder;
+  _index = rhs_base._index;
+  _virtual_declaration_id = rhs_base._virtual_declaration_id;
+  _allows_single_assignment = rhs_base._allows_single_assignment;
   return Derived(*_graph_builder, _index);
 }
 
-template <class Derived, class Node>
-inline Derived &NodeRefBase<Derived, Node>::operator=(Derived &&rhs) {
+template <class Derived>
+inline Derived &NodeRefBase<Derived>::operator=(Derived &&rhs) {
+  auto &rhs_base = static_cast<NodeRefBase &>(rhs);
   if (this == &rhs) {
     return derived();
   }
 
   if (_allows_single_assignment) {
-    if (!rhs._graph_builder) {
+    if (!rhs_base._graph_builder) {
       details::error(
           "cannot initialize a virtual-empty NodeRef from an empty NodeRef");
     }
-    _graph_builder = rhs._graph_builder;
-    _index = rhs._index;
+    _graph_builder = rhs_base._graph_builder;
+    _index = rhs_base._index;
     if (!_virtual_declaration_id.empty() && _graph_builder) {
       _graph_builder->_annotations.attach_virtual_node(
           _graph_builder->_topology, _graph_builder->_node_bundles,
@@ -475,10 +639,10 @@ inline Derived &NodeRefBase<Derived, Node>::operator=(Derived &&rhs) {
           _virtual_declaration_id);
     }
     _allows_single_assignment = false;
-    rhs._graph_builder = nullptr;
-    rhs._index = 0;
-    rhs._virtual_declaration_id.clear();
-    rhs._allows_single_assignment = false;
+    rhs_base._graph_builder = nullptr;
+    rhs_base._index = 0;
+    rhs_base._virtual_declaration_id.clear();
+    rhs_base._allows_single_assignment = false;
     return derived();
   }
 
@@ -487,19 +651,19 @@ inline Derived &NodeRefBase<Derived, Node>::operator=(Derived &&rhs) {
                    "' after it has already been initialized");
   }
 
-  _graph_builder = rhs._graph_builder;
-  _index = rhs._index;
-  _virtual_declaration_id = std::move(rhs._virtual_declaration_id);
-  _allows_single_assignment = rhs._allows_single_assignment;
-  rhs._graph_builder = nullptr;
-  rhs._index = 0;
-  rhs._virtual_declaration_id.clear();
-  rhs._allows_single_assignment = false;
+  _graph_builder = rhs_base._graph_builder;
+  _index = rhs_base._index;
+  _virtual_declaration_id = std::move(rhs_base._virtual_declaration_id);
+  _allows_single_assignment = rhs_base._allows_single_assignment;
+  rhs_base._graph_builder = nullptr;
+  rhs_base._index = 0;
+  rhs_base._virtual_declaration_id.clear();
+  rhs_base._allows_single_assignment = false;
   return derived();
 }
 
-template <class Derived, class Node>
-inline void NodeRefBase<Derived, Node>::_annotate_source_info(
+template <class Derived>
+inline void NodeRefBase<Derived>::_annotate_source_info(
     std::string_view declaration_identity, std::string_view file_path,
     uint32_t begin, uint32_t end) const {
   if (!declaration_identity.empty()) {
@@ -508,17 +672,16 @@ inline void NodeRefBase<Derived, Node>::_annotate_source_info(
   if (!_graph_builder) {
     return;
   }
-  auto const ref = NodeRef(*_graph_builder, _index);
   _graph_builder->_annotations.annotate_node_source_info(
       _graph_builder->_topology, _graph_builder->_node_bundles,
       _graph_builder->_virtual_nodes,
-      _graph_builder->_identity, *_graph_builder, ref, declaration_identity,
+      _graph_builder->_identity, _index, declaration_identity,
       file_path, begin, end);
 }
 
 template <class Derived, class Node>
 inline SamplePortRef
-NodeRefBase<Derived, Node>::operator[](size_t output_index) const {
+ConcreteNodeRefBase<Derived, Node>::operator[](size_t output_index) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
@@ -529,7 +692,7 @@ NodeRefBase<Derived, Node>::operator[](size_t output_index) const {
 
 template <class Derived, class Node>
 inline SamplePortRef
-NodeRefBase<Derived, Node>::operator[](std::string_view output_name) const {
+ConcreteNodeRefBase<Derived, Node>::operator[](std::string_view output_name) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
@@ -559,7 +722,7 @@ NodeRefBase<Derived, Node>::operator[](std::string_view output_name) const {
 
 template <class Derived, class Node>
 inline EventPortRef
-NodeRefBase<Derived, Node>::event_port(size_t output_index) const {
+ConcreteNodeRefBase<Derived, Node>::event_port(size_t output_index) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
@@ -576,7 +739,7 @@ NodeRefBase<Derived, Node>::event_port(size_t output_index) const {
 
 template <class Derived, class Node>
 inline EventPortRef
-NodeRefBase<Derived, Node>::event_port(std::string_view output_name) const {
+ConcreteNodeRefBase<Derived, Node>::event_port(std::string_view output_name) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
@@ -606,7 +769,7 @@ NodeRefBase<Derived, Node>::event_port(std::string_view output_name) const {
 }
 
 template <class Derived, class Node>
-inline EventPortRef NodeRefBase<Derived, Node>::event_port() const {
+inline EventPortRef ConcreteNodeRefBase<Derived, Node>::event_port() const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
@@ -620,7 +783,7 @@ inline EventPortRef NodeRefBase<Derived, Node>::event_port() const {
 }
 
 template <class Derived, class Node>
-inline NodeRefBase<Derived, Node>::operator SamplePortRef() const {
+inline ConcreteNodeRefBase<Derived, Node>::operator SamplePortRef() const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
@@ -636,30 +799,30 @@ inline NodeRefBase<Derived, Node>::operator SamplePortRef() const {
 
 template <class Derived, class Node>
 inline bool
-NodeRefBase<Derived, Node>::input_is_connected(size_t input_port) const {
+ConcreteNodeRefBase<Derived, Node>::input_is_connected(size_t input_port) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
   return _graph_builder->_connections.sample_input_is_connected(
-      PortId{_graph_builder->_node_bundles.single_node_index(_index),
+      ConcretePortId{_graph_builder->_node_bundles.single_node_index(_index),
              input_port});
 }
 
 template <class Derived, class Node>
 inline bool
-NodeRefBase<Derived, Node>::event_input_is_connected(size_t input_port) const {
+ConcreteNodeRefBase<Derived, Node>::event_input_is_connected(size_t input_port) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
   return _graph_builder->_connections.event_input_is_connected(
-      PortId{_graph_builder->_node_bundles.single_node_index(_index),
+      ConcretePortId{_graph_builder->_node_bundles.single_node_index(_index),
              input_port});
 }
 
 template <class Derived, class Node>
 template <class... Args>
   requires(details::node_call_enabled<Node, Args...>)
-inline Derived NodeRefBase<Derived, Node>::operator()(Args &&...args) const {
+inline Derived ConcreteNodeRefBase<Derived, Node>::operator()(Args &&...args) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
@@ -686,7 +849,7 @@ inline Derived NodeRefBase<Derived, Node>::operator()(Args &&...args) const {
     }
 
     _graph_builder->connect_sample_input(
-        PortId{_graph_builder->_node_bundles.single_node_index(_index),
+        ConcretePortId{_graph_builder->_node_bundles.single_node_index(_index),
                input_port}, ref);
   };
 
@@ -708,7 +871,7 @@ inline Derived NodeRefBase<Derived, Node>::operator()(Args &&...args) const {
     }
 
     _graph_builder->connect_event_input(
-        PortId{_graph_builder->_node_bundles.single_node_index(_index),
+        ConcretePortId{_graph_builder->_node_bundles.single_node_index(_index),
                input_port}, ref);
   };
 
@@ -763,7 +926,7 @@ inline Derived NodeRefBase<Derived, Node>::operator()(Args &&...args) const {
 
 template <class Derived, class Node>
 template <class T>
-inline Derived NodeRefBase<Derived, Node>::connect_input(size_t input_port,
+inline Derived ConcreteNodeRefBase<Derived, Node>::connect_input(size_t input_port,
                                                          T &&value) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
@@ -790,7 +953,7 @@ inline Derived NodeRefBase<Derived, Node>::connect_input(size_t input_port,
   }
 
   _graph_builder->connect_sample_input(
-      PortId{_graph_builder->_node_bundles.single_node_index(_index),
+      ConcretePortId{_graph_builder->_node_bundles.single_node_index(_index),
              input_port}, ref);
   return Derived(*_graph_builder, _index);
 }
@@ -798,7 +961,7 @@ inline Derived NodeRefBase<Derived, Node>::connect_input(size_t input_port,
 template <class Derived, class Node>
 template <class T>
 inline Derived
-NodeRefBase<Derived, Node>::connect_input(std::string_view input_name,
+ConcreteNodeRefBase<Derived, Node>::connect_input(std::string_view input_name,
                                           T &&value) const {
   auto const inputs = get_inputs(ports());
   std::optional<size_t> matched_input;
@@ -824,7 +987,7 @@ NodeRefBase<Derived, Node>::connect_input(std::string_view input_name,
 
 template <class Derived, class Node>
 inline Derived
-NodeRefBase<Derived, Node>::connect_event_input(size_t input_port,
+ConcreteNodeRefBase<Derived, Node>::connect_event_input(size_t input_port,
                                                 EventPortRef value) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
@@ -848,14 +1011,14 @@ NodeRefBase<Derived, Node>::connect_event_input(size_t input_port,
   }
 
   _graph_builder->connect_event_input(
-      PortId{_graph_builder->_node_bundles.single_node_index(_index),
+      ConcretePortId{_graph_builder->_node_bundles.single_node_index(_index),
              input_port}, value);
   return Derived(*_graph_builder, _index);
 }
 
 template <class Derived, class Node>
 inline Derived
-NodeRefBase<Derived, Node>::connect_event_input(std::string_view input_name,
+ConcreteNodeRefBase<Derived, Node>::connect_event_input(std::string_view input_name,
                                                 EventPortRef value) const {
   auto const &event_inputs = ports().event_inputs();
   std::optional<size_t> matched_input;
@@ -881,12 +1044,12 @@ NodeRefBase<Derived, Node>::connect_event_input(std::string_view input_name,
 
 template <class Derived, class Node>
 inline SamplePortRef
-NodeRefBase<Derived, Node>::detach(size_t loop_extra_latency) const {
+ConcreteNodeRefBase<Derived, Node>::detach(size_t loop_extra_latency) const {
   return static_cast<SamplePortRef>(*this).detach(loop_extra_latency);
 }
 
 template <class Derived, class Node>
-inline Derived NodeRefBase<Derived, Node>::ttl(size_t ttl_samples) const {
+inline Derived ConcreteNodeRefBase<Derived, Node>::ttl(size_t ttl_samples) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
@@ -897,12 +1060,12 @@ inline Derived NodeRefBase<Derived, Node>::ttl(size_t ttl_samples) const {
 }
 
 template <class Derived, class Node>
-inline Derived NodeRefBase<Derived, Node>::no_ttl() const {
+inline Derived ConcreteNodeRefBase<Derived, Node>::no_ttl() const {
   return ttl(std::numeric_limits<size_t>::max());
 }
 
 template <class Derived, class Node>
-inline std::string NodeRefBase<Derived, Node>::to_string() const {
+inline std::string ConcreteNodeRefBase<Derived, Node>::to_string() const {
   if (!_graph_builder) {
     return "empty node";
   }

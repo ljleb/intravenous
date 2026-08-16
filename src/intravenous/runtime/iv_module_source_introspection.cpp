@@ -383,7 +383,7 @@ GraphInputPortDescriptor sample_graph_input_port_for(
     }
     return GraphInputPortDescriptor{
         .virtual_node_id = node.id,
-        .concrete_member_ordinal = concrete_member_ordinal,
+        .node_bundle_port_ordinal = concrete_member_ordinal,
         .port_kind = PortKind::sample,
         .port_ordinal = port_it->ordinal,
         .port_name = port_it->name,

@@ -12,17 +12,18 @@
 
 namespace iv {
     class GraphBuilderTopology;
+    class GraphBuilderNodeBundles;
     class GraphBuilderVirtualNodes;
 
     struct GraphBuilderVacantSampleInput {
-        PortId target {};
+        ConcretePortId target {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         InputConfig config {};
     };
 
     struct GraphBuilderVacantEventInput {
-        PortId target {};
+        ConcretePortId target {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         EventInputConfig config {};
@@ -34,7 +35,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleInput {
-        PortId target {};
+        ConcretePortId target {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         InputConfig config {};
@@ -43,7 +44,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualEventInput {
-        PortId target {};
+        ConcretePortId target {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         EventInputConfig config {};
@@ -57,7 +58,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleInputChannel {
-        std::optional<PortId> target {};
+        std::vector<ConcretePortId> targets {};
         bool has_existing_connection = false;
         bool runtime_filled = false;
     };
@@ -77,7 +78,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleOutput {
-        PortId source {};
+        ConcretePortId source {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         OutputConfig config {};
@@ -85,7 +86,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualEventOutput {
-        PortId source {};
+        ConcretePortId source {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         EventOutputConfig config {};
@@ -98,7 +99,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleOutputChannel {
-        std::optional<PortId> source {};
+        std::vector<ConcretePortId> sources {};
         bool has_existing_downstream_connection = false;
     };
 
@@ -118,53 +119,55 @@ namespace iv {
 
     class GraphBuilderConnections {
     public:
-        bool sample_input_is_connected(PortId target) const;
-        bool event_input_is_connected(PortId target) const;
+        bool sample_input_is_connected(ConcretePortId target) const;
+        bool event_input_is_connected(ConcretePortId target) const;
         void connect_sample_input(
             GraphBuilderTopology&,
             GraphBuilderIdentity const&,
-            PortId target,
+            ConcretePortId target,
             SamplePortRef source
         );
         void connect_event_input(
             GraphBuilderTopology&,
             std::span<EventInputConfig const> graph_event_inputs,
             GraphBuilderIdentity const&,
-            PortId target,
+            ConcretePortId target,
             EventPortRef source
         );
-        void mark_runtime_filled_sample_input(PortId target);
-        void mark_runtime_filled_event_input(PortId target);
+        void mark_runtime_filled_sample_input(ConcretePortId target);
+        void mark_runtime_filled_event_input(ConcretePortId target);
         GraphBuilderVacantInputs collect_vacant_inputs(
             GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualInputs collect_virtual_inputs(
             GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualSampleInputFamilies collect_virtual_sample_input_families(
-            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
+            GraphBuilderTopology const&, GraphBuilderNodeBundles const&,
+            GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualOutputs collect_virtual_outputs(
             GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualSampleOutputFamilies collect_virtual_sample_output_families(
-            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
+            GraphBuilderTopology const&, GraphBuilderNodeBundles const&,
+            GraphBuilderVirtualNodes const&) const;
         void import_child(GraphBuilderConnections const& child, size_t child_node_offset);
         template<class Fn>
         void for_each_runtime_filled_sample_input(Fn&& fn) const
         {
-            for (PortId const port : _runtime_filled_sample_inputs) {
+            for (ConcretePortId const port : _runtime_filled_sample_inputs) {
                 fn(port);
             }
         }
         template<class Fn>
         void for_each_runtime_filled_event_input(Fn&& fn) const
         {
-            for (PortId const port : _runtime_filled_event_inputs) {
+            for (ConcretePortId const port : _runtime_filled_event_inputs) {
                 fn(port);
             }
         }
 
     private:
-        std::unordered_set<PortId> _placed_sample_inputs {};
-        std::unordered_set<PortId> _placed_event_inputs {};
-        std::unordered_set<PortId> _runtime_filled_sample_inputs {};
-        std::unordered_set<PortId> _runtime_filled_event_inputs {};
+        std::unordered_set<ConcretePortId> _placed_sample_inputs {};
+        std::unordered_set<ConcretePortId> _placed_event_inputs {};
+        std::unordered_set<ConcretePortId> _runtime_filled_sample_inputs {};
+        std::unordered_set<ConcretePortId> _runtime_filled_event_inputs {};
     };
 }

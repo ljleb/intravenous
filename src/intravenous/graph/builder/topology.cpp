@@ -65,21 +65,21 @@ void GraphBuilderTopology::add_event_edge(GraphEventEdge edge) {
   _event_edges.emplace(std::move(edge));
 }
 
-PortId GraphBuilderTopology::append_scope_sample_input(OutputConfig output) {
+ConcretePortId GraphBuilderTopology::append_scope_sample_input(OutputConfig output) {
   auto const boundary_index = _scope_boundary_ports.size();
   _scope_boundary_ports.push_back(
       ScopeBoundaryPort{.sample_output = std::move(output)});
-  return PortId{GRAPH_ID - 1 - boundary_index, 0};
+  return ConcretePortId{GRAPH_ID - 1 - boundary_index, 0};
 }
 
-PortId GraphBuilderTopology::append_scope_event_input(EventOutputConfig output) {
+ConcretePortId GraphBuilderTopology::append_scope_event_input(EventOutputConfig output) {
   auto const boundary_index = _scope_boundary_ports.size();
   _scope_boundary_ports.push_back(
       ScopeBoundaryPort{.event_output = std::move(output)});
-  return PortId{GRAPH_ID - 1 - boundary_index, 0};
+  return ConcretePortId{GRAPH_ID - 1 - boundary_index, 0};
 }
 
-bool GraphBuilderTopology::is_scope_boundary_port(PortId port) const {
+bool GraphBuilderTopology::is_scope_boundary_port(ConcretePortId port) const {
   if (port.node >= GRAPH_ID || port.port != 0) {
     return false;
   }
@@ -88,7 +88,7 @@ bool GraphBuilderTopology::is_scope_boundary_port(PortId port) const {
 }
 
 EventOutputConfig const&
-GraphBuilderTopology::scope_boundary_event_output(PortId port) const {
+GraphBuilderTopology::scope_boundary_event_output(ConcretePortId port) const {
   IV_ASSERT(is_scope_boundary_port(port),
             "scope_boundary_event_output requires a boundary port");
   auto const boundary_index = GRAPH_ID - 1 - port.node;
@@ -104,10 +104,10 @@ size_t GraphBuilderTopology::append_lowered_subgraph_node(
     std::vector<EventInputConfig> event_input_configs,
     std::vector<EventOutputConfig> event_output_configs,
     size_t lowered_subgraph_begin, size_t lowered_subgraph_count,
-    std::vector<std::vector<PortId>> subgraph_input_targets,
-    std::vector<PortId> subgraph_output_sources,
-    std::vector<std::vector<PortId>> subgraph_event_input_targets,
-    std::vector<PortId> subgraph_event_output_sources) {
+    std::vector<std::vector<ConcretePortId>> subgraph_input_targets,
+    std::vector<ConcretePortId> subgraph_output_sources,
+    std::vector<std::vector<ConcretePortId>> subgraph_event_input_targets,
+    std::vector<ConcretePortId> subgraph_event_output_sources) {
   std::string type_identity = "lowered-subgraph:" + subgraph_kind;
   return append_node(SubgraphNode{
       .ports =
@@ -142,11 +142,11 @@ size_t GraphBuilderTopology::append_embedded_child(
   size_t const subgraph_node_index = node_count();
   size_t const child_node_offset = subgraph_node_index + 1;
 
-  auto remap_child_port = [&](PortId port) {
+  auto remap_child_port = [&](ConcretePortId port) {
     if (port.node == GRAPH_ID) {
-      return PortId{subgraph_node_index, port.port};
+      return ConcretePortId{subgraph_node_index, port.port};
     }
-    return PortId{child_node_offset + port.node, port.port};
+    return ConcretePortId{child_node_offset + port.node, port.port};
   };
 
   append_lowered_subgraph_node(
@@ -160,10 +160,10 @@ size_t GraphBuilderTopology::append_embedded_child(
       std::vector<EventOutputConfig>(child_event_outputs.begin(),
                                      child_event_outputs.end()),
       child_node_offset, child.node_count(),
-      std::vector<std::vector<PortId>>(child_sample_inputs.size()),
-      std::vector<PortId>(child_sample_outputs.size()),
-      std::vector<std::vector<PortId>>(child_event_inputs.size()),
-      std::vector<PortId>(child_event_outputs.size()));
+      std::vector<std::vector<ConcretePortId>>(child_sample_inputs.size()),
+      std::vector<ConcretePortId>(child_sample_outputs.size()),
+      std::vector<std::vector<ConcretePortId>>(child_event_inputs.size()),
+      std::vector<ConcretePortId>(child_event_outputs.size()));
 
   for (size_t i = 0; i < child.node_count(); ++i) {
     auto copied_node = child._nodes[i];
@@ -192,8 +192,8 @@ size_t GraphBuilderTopology::append_embedded_child(
   }
 
   child.for_each_sample_edge([&](GraphEdge const &edge) {
-    PortId const source = remap_child_port(edge.source);
-    PortId const target = remap_child_port(edge.target);
+    ConcretePortId const source = remap_child_port(edge.source);
+    ConcretePortId const target = remap_child_port(edge.target);
     if (source.node == subgraph_node_index && target.node == subgraph_node_index) {
       subgraph_node(subgraph_node_index)
           .lowered_subgraph.sample_output_sources[target.port] = source;
@@ -210,8 +210,8 @@ size_t GraphBuilderTopology::append_embedded_child(
   });
 
   child.for_each_event_edge([&](GraphEventEdge const &edge) {
-    PortId const source = remap_child_port(edge.source);
-    PortId const target = remap_child_port(edge.target);
+    ConcretePortId const source = remap_child_port(edge.source);
+    ConcretePortId const target = remap_child_port(edge.target);
     if (source.node == subgraph_node_index && target.node == subgraph_node_index) {
       subgraph_node(subgraph_node_index)
           .lowered_subgraph.event_output_sources[target.port] = source;

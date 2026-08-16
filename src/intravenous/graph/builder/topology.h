@@ -45,10 +45,10 @@ namespace iv {
                 fn(edge);
             }
         }
-        PortId append_scope_sample_input(OutputConfig);
-        PortId append_scope_event_input(EventOutputConfig);
-        bool is_scope_boundary_port(PortId) const;
-        EventOutputConfig const& scope_boundary_event_output(PortId) const;
+        ConcretePortId append_scope_sample_input(OutputConfig);
+        ConcretePortId append_scope_event_input(EventOutputConfig);
+        bool is_scope_boundary_port(ConcretePortId) const;
+        EventOutputConfig const& scope_boundary_event_output(ConcretePortId) const;
         template<class Config>
         static void validate_output_port_configs(
             std::span<Config const> configs,
@@ -65,10 +65,10 @@ namespace iv {
             std::vector<EventOutputConfig> event_output_configs,
             size_t lowered_subgraph_begin,
             size_t lowered_subgraph_count,
-            std::vector<std::vector<PortId>> subgraph_input_targets,
-            std::vector<PortId> subgraph_output_sources,
-            std::vector<std::vector<PortId>> subgraph_event_input_targets,
-            std::vector<PortId> subgraph_event_output_sources
+            std::vector<std::vector<ConcretePortId>> subgraph_input_targets,
+            std::vector<ConcretePortId> subgraph_output_sources,
+            std::vector<std::vector<ConcretePortId>> subgraph_event_input_targets,
+            std::vector<ConcretePortId> subgraph_event_output_sources
         );
         size_t append_embedded_child(
             GraphBuilderTopology const& child,

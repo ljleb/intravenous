@@ -16,20 +16,17 @@ void GraphBuilderAnnotations::attach_virtual_node(
 void GraphBuilderAnnotations::annotate_node_source_info(
     GraphBuilderTopology &topology, GraphBuilderNodeBundles &node_bundles,
     GraphBuilderVirtualNodes &virtual_nodes,
-    GraphBuilderIdentity const &identity, GraphBuilder const &owner,
-    NodeRef const &ref, std::string_view declaration_identity,
+    GraphBuilderIdentity const &identity,
+    size_t node_bundle_handle, std::string_view declaration_identity,
     std::string_view file_path, uint32_t begin, uint32_t end) {
-  if (!ref._graph_builder || declaration_identity.empty()) {
+  if (declaration_identity.empty()) {
     return;
   }
-  if (ref._graph_builder != &owner) {
+  if (node_bundle_handle >= node_bundles.size()) {
     details::error("builder " + identity.value +
-                   ": cannot record source info for node at address " +
-                   identity.child_id(
-                       node_bundles.single_node_index(ref._index)) +
-                   " because it belongs to another builder");
+                   ": cannot record source info for an unknown NodeBundle");
   }
-  auto &infos = node_bundles.bundle(ref._index).source_annotations.infos;
+  auto &infos = node_bundles.bundle(node_bundle_handle).source_annotations.infos;
   SourceInfo info{
       .declaration_identity = std::string(declaration_identity),
       .span =
@@ -42,7 +39,7 @@ void GraphBuilderAnnotations::annotate_node_source_info(
   if (std::find(infos.begin(), infos.end(), info) == infos.end()) {
     infos.push_back(std::move(info));
   }
-  attach_virtual_node(topology, node_bundles, virtual_nodes, ref._index, declaration_identity,
+  attach_virtual_node(topology, node_bundles, virtual_nodes, node_bundle_handle, declaration_identity,
                       &info);
 }
 } // namespace iv

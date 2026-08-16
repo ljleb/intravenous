@@ -28,14 +28,15 @@ namespace iv {
         static constexpr char const* metadata_graph_input = "graph_input";
         static constexpr char const* metadata_knob = "knob";
         static constexpr char const* metadata_virtual = "virtual";
-        static constexpr char const* metadata_concrete = "concrete";
+        // This controller's serialized lane metadata uses the UI term.
+        static constexpr char const* metadata_node_bundle = "concrete";
         static constexpr char const* metadata_sample = "sample";
         static constexpr char const* metadata_event = "event";
         static constexpr char const* metadata_identity_hash = "identity_hash";
         static constexpr char const* metadata_node_hash = "node_hash";
         static constexpr char const* metadata_port_kind = "port_kind";
         static constexpr char const* metadata_port_ordinal = "port_ordinal";
-        static constexpr char const* metadata_member_ordinal = "member_ordinal";
+        static constexpr char const* metadata_node_bundle_port_ordinal = "member_ordinal";
 
         static std::string port_identity(GraphInputPortDescriptor const& port)
         {
@@ -48,8 +49,8 @@ namespace iv {
         {
             std::string key = port_identity(port);
             key += "\x1fmember:";
-            key += port.concrete_member_ordinal.has_value()
-                ? std::to_string(*port.concrete_member_ordinal)
+            key += port.node_bundle_port_ordinal.has_value()
+                ? std::to_string(*port.node_bundle_port_ordinal)
                 : "virtual";
             return key;
         }
@@ -59,9 +60,9 @@ namespace iv {
             return "graph-input:virtual-knob:" + port_identity(port);
         }
 
-        static std::string concrete_knob_identity(GraphInputPortDescriptor const& port)
+        static std::string node_bundle_knob_identity(GraphInputPortDescriptor const& port)
         {
-            return "graph-input:concrete-knob:" + port_descriptor_identity(port);
+            return "graph-input:node-bundle-knob:" + port_descriptor_identity(port);
         }
 
         static int hash_string(std::string const& value)
@@ -83,7 +84,7 @@ namespace iv {
             GraphInputPortDescriptor const& port,
             bool knob,
             bool is_virtual,
-            bool concrete,
+            bool node_bundle,
             bool sample,
             bool event,
             std::optional<int> identity_hash = std::nullopt)
@@ -96,8 +97,8 @@ namespace iv {
             if (is_virtual) {
                 metadata.set_unit(metadata_virtual);
             }
-            if (concrete) {
-                metadata.set_unit(metadata_concrete);
+            if (node_bundle) {
+                metadata.set_unit(metadata_node_bundle);
             }
             if (sample) {
                 metadata.set_unit(metadata_sample);
@@ -108,10 +109,10 @@ namespace iv {
             metadata.set_int(metadata_node_hash, hash_string(port.virtual_node_id));
             metadata.set_int(metadata_port_kind, static_cast<int>(port.port_kind == PortKind::event));
             metadata.set_int(metadata_port_ordinal, static_cast<int>(port.port_ordinal));
-            if (port.concrete_member_ordinal.has_value()) {
+            if (port.node_bundle_port_ordinal.has_value()) {
                 metadata.set_int(
-                    metadata_member_ordinal,
-                    static_cast<int>(*port.concrete_member_ordinal));
+                    metadata_node_bundle_port_ordinal,
+                    static_cast<int>(*port.node_bundle_port_ordinal));
             }
             if (identity_hash.has_value()) {
                 metadata.set_int(metadata_identity_hash, *identity_hash);
@@ -136,10 +137,10 @@ namespace iv {
             if (*port_ordinal != static_cast<int>(port.port_ordinal)) {
                 return false;
             }
-            auto const member_ordinal = int_metadata(metadata, metadata_member_ordinal);
-            if (port.concrete_member_ordinal.has_value()) {
+            auto const member_ordinal = int_metadata(metadata, metadata_node_bundle_port_ordinal);
+            if (port.node_bundle_port_ordinal.has_value()) {
                 return member_ordinal.has_value() &&
-                    *member_ordinal == static_cast<int>(*port.concrete_member_ordinal);
+                    *member_ordinal == static_cast<int>(*port.node_bundle_port_ordinal);
             }
             return !member_ordinal.has_value();
         }
@@ -193,7 +194,7 @@ namespace iv {
             return found;
         }
 
-        static bool has_concrete_descriptor_for_port(
+        static bool has_node_bundle_descriptor_for_port(
             std::span<GraphInputPortDescriptor const> ports,
             GraphInputPortDescriptor const& virtual_port
         )
@@ -203,7 +204,7 @@ namespace iv {
                     port.virtual_node_id == virtual_port.virtual_node_id
                     && port.port_kind == virtual_port.port_kind
                     && port.port_ordinal == virtual_port.port_ordinal
-                    && port.concrete_member_ordinal.has_value()
+                    && port.node_bundle_port_ordinal.has_value()
                 ) {
                     return true;
                 }
@@ -223,7 +224,7 @@ namespace iv {
             for (auto const& port : ports) {
                 if (
                     port.port_kind != PortKind::sample
-                    || port.concrete_member_ordinal.has_value()
+                    || port.node_bundle_port_ordinal.has_value()
                 ) {
                     continue;
                 }
@@ -256,8 +257,8 @@ namespace iv {
                     continue;
                 }
                 if (
-                    !port.concrete_member_ordinal.has_value()
-                    && has_concrete_descriptor_for_port(ports, port)
+                    !port.node_bundle_port_ordinal.has_value()
+                    && has_node_bundle_descriptor_for_port(ports, port)
                 ) {
                     continue;
                 }
@@ -267,12 +268,12 @@ namespace iv {
                     virtual_knob = it->second;
                 }
 
-                auto const identity = concrete_knob_identity(port);
+                auto const identity = node_bundle_knob_identity(port);
                 auto const identity_hash = hash_string(identity);
-                LaneId concrete_knob = find_knob_lane(graph, identity_hash);
-                bool const concrete_knob_existed = static_cast<bool>(concrete_knob);
-                if (!concrete_knob) {
-                    concrete_knob = graph.add_lane(
+                LaneId node_bundle_knob = find_knob_lane(graph, identity_hash);
+                bool const node_bundle_knob_existed = static_cast<bool>(node_bundle_knob);
+                if (!node_bundle_knob) {
+                    node_bundle_knob = graph.add_lane(
                         KnobLaneNode {},
                         graph_input_metadata(
                             port,
@@ -302,19 +303,19 @@ namespace iv {
 
                 if (
                     virtual_knob.has_value()
-                    && *virtual_knob != concrete_knob
-                    && !concrete_knob_existed
+                    && *virtual_knob != node_bundle_knob
+                    && !node_bundle_knob_existed
                 ) {
-                    graph.connect(*virtual_knob, concrete_knob, realtime_sample_input());
+                    graph.connect(*virtual_knob, node_bundle_knob, realtime_sample_input());
                 }
                 if (!graph_input_existed) {
-                    graph.connect(concrete_knob, graph_input, realtime_sample_input());
+                    graph.connect(node_bundle_knob, graph_input, realtime_sample_input());
                 }
-                graph.add_child(concrete_knob, graph_input);
+                graph.add_child(node_bundle_knob, graph_input);
 
                 result.sample_inputs.push_back(GraphInputLaneBinding {
                     .port = port,
-                    .knob_lane = concrete_knob,
+                    .knob_lane = node_bundle_knob,
                     .graph_input_lane = graph_input,
                     .virtual_knob_lane = virtual_knob,
                 });
@@ -325,8 +326,8 @@ namespace iv {
                     continue;
                 }
                 if (
-                    !port.concrete_member_ordinal.has_value()
-                    && has_concrete_descriptor_for_port(ports, port)
+                    !port.node_bundle_port_ordinal.has_value()
+                    && has_node_bundle_descriptor_for_port(ports, port)
                 ) {
                     continue;
                 }
@@ -359,8 +360,8 @@ namespace iv {
             Sample value
         ) const
         {
-            auto const identity = port.concrete_member_ordinal.has_value()
-                ? concrete_knob_identity(port)
+            auto const identity = port.node_bundle_port_ordinal.has_value()
+                ? node_bundle_knob_identity(port)
                 : virtual_knob_identity(port);
             auto const identity_hash = hash_string(identity);
             graph.for_each_lane([&](LaneRecord& lane) {
@@ -369,7 +370,7 @@ namespace iv {
                     return;
                 }
                 knob->value = value;
-                if (port.concrete_member_ordinal.has_value()) {
+                if (port.node_bundle_port_ordinal.has_value()) {
                     graph.disconnect_input(lane.id, realtime_sample_input());
                 }
             });
@@ -380,17 +381,17 @@ namespace iv {
             GraphInputPortDescriptor const& port
         ) const
         {
-            if (!port.concrete_member_ordinal.has_value()) {
+            if (!port.node_bundle_port_ordinal.has_value()) {
                 return;
             }
 
             GraphInputPortDescriptor virtual_port = port;
-            virtual_port.concrete_member_ordinal = std::nullopt;
+            virtual_port.node_bundle_port_ordinal = std::nullopt;
 
             LaneId virtual_knob;
-            LaneId concrete_knob;
+            LaneId node_bundle_knob;
             auto const virtual_identity = virtual_knob_identity(virtual_port);
-            auto const concrete_identity = concrete_knob_identity(port);
+            auto const concrete_identity = node_bundle_knob_identity(port);
             auto const virtual_hash = hash_string(virtual_identity);
             auto const concrete_hash = hash_string(concrete_identity);
             graph.for_each_lane([&](LaneRecord const& lane) {
@@ -401,11 +402,11 @@ namespace iv {
                 if (int_metadata(lane.metadata, metadata_identity_hash) == virtual_hash) {
                     virtual_knob = lane.id;
                 } else if (int_metadata(lane.metadata, metadata_identity_hash) == concrete_hash) {
-                    concrete_knob = lane.id;
+                    node_bundle_knob = lane.id;
                 }
             });
-            if (virtual_knob && concrete_knob) {
-                graph.connect_exclusive(virtual_knob, concrete_knob, realtime_sample_input());
+            if (virtual_knob && node_bundle_knob) {
+                graph.connect_exclusive(virtual_knob, node_bundle_knob, realtime_sample_input());
             }
         }
     };

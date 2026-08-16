@@ -214,7 +214,7 @@ namespace iv {
             return port_data_nodes;
         }
 
-        std::string ingress_target_export_id(PortId target) const
+        std::string ingress_target_export_id(ConcretePortId target) const
         {
             if (target.node == GRAPH_ID) {
                 return graph_port_data_export_id(_graph_id, target.port);
@@ -222,7 +222,7 @@ namespace iv {
             return port_data_export_id(_node_ids[target.node], target.port);
         }
 
-        std::string ingress_event_target_export_id(PortId target) const
+        std::string ingress_event_target_export_id(ConcretePortId target) const
         {
             if (target.node == GRAPH_ID) {
                 return graph_event_port_data_export_id(_graph_id, target.port);

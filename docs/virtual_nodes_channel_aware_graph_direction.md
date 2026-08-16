@@ -16,26 +16,27 @@ migrated.
 
 ## Terminology
 
-The former term **logical node** is replaced by **virtual node** in this
-model. This is more specific: a virtual node is the source-authored graph
-object whose implementation may contain one or more executable nodes.
+"Logical node" is historical terminology for a different mechanism. This
+model instead distinguishes source-authored **virtual nodes** from their
+builder-visible **node bundles** and executable **concrete nodes**.
 
 | Term | Meaning |
 | --- | --- |
 | **Concrete node** | One executable node instance run by the DSP graph. |
 | **Concrete port** | An input or output on a concrete node, with a declared channel type/layout. |
-| **Virtual node** | The graph-facing object associated with one source-authored named lvalue that receives a node-reference implementation. It owns the mapping from its virtual ports to concrete nodes and ports. |
-| **Virtual port** | One graph-facing and UI-facing port on a virtual node. It may compose several concrete ports created by tiling. |
-| **Tiled node** | A virtual node whose fully-mono concrete node type is instantiated once for each member of a requested channel type. A tiled node is not a concrete node and is not a separate module-author-facing value. |
+| **Node bundle** | One builder-visible node implementation: either one concrete node, a tiled set of concrete nodes, or a subgraph node. It is the lowest graph-builder layer exposed to tooling. The UI calls this a **concrete member** to contrast it with a virtual node. |
+| **Virtual node** | The source-authored object associated with one named lvalue that receives a node-bundle reference. It owns explicit membership and virtual-port mappings to node bundles. |
+| **Virtual port** | One graph-facing and UI-facing port on a virtual node. It composes the corresponding port of each member node bundle. |
+| **Tiled node** | A node bundle whose fully-mono concrete node type is instantiated once for each member of a requested channel type. A tiled node is not itself a concrete node or a virtual node; source annotation may associate its bundle with one or more virtual nodes. |
 | **Tile** | One concrete-node member of a tiled node. For a mono node tiled to stereo, the left and right concrete instances are the two tiles. |
 | **Tiling** | Creating the tiles that implement a tiled node. |
-| **Virtual-port mapping** | The builder-owned relation from one virtual port to its concrete port(s), including the channel member handled by each tile. |
-| **Lane binding** | A `GraphInputLanes` association between one managed timeline lane and one virtual input or output port. It is never an association with an individual tile. |
+| **Virtual-port mapping** | The builder-owned relation from one virtual port to its node-bundle port(s), and then to their concrete port(s), including the channel member handled by each tile. |
+| **Lane binding** | A `GraphInputLanes` association with either a virtual port or a node-bundle port under it. It is never an association with an individual tile. |
 | **Channel conversion** | A planned edge operation that converts between compatible channel types/layouts while preserving each endpoint's declared representation. |
 
-Source spans, source identities, lane state, sidepanel controls, and
-introspection attach to virtual nodes and virtual ports. Concrete members are
-implementation detail unless a diagnostic explicitly asks to expose them.
+Source spans and source identities attach to virtual nodes. Introspection and
+the sidepanel project their member node bundles as UI “concrete” members, while
+keeping the concrete nodes and tiles inside a bundle as implementation detail.
 
 ## Authored identity, references, and membership
 
@@ -53,7 +54,7 @@ auto filter = g.node<Filter>();
 
 source-authored lvalue `filter`
   -> stable virtual-node identity
-  -> explicit membership/mapping to the concrete Filter implementation
+  -> explicit membership/mapping to the Filter node bundle
 ```
 
 This source annotation is an explicit declaration of membership; it is not a
@@ -66,21 +67,22 @@ identity unless an explicit source annotation associates them with one.
 Node-reference values remain move-only. That is a runtime-reference rule which
 keeps authored C++ assignment and aliasing behavior tractable; it is not an
 exclusive-ownership rule for graph metadata. Moving a reference clears the
-moved-from runtime handle, but does not remove virtual/concrete memberships
+moved-from runtime handle, but does not remove virtual-node/node-bundle memberships
 already recorded by source annotation.
 
-Virtual/concrete membership is explicitly many-to-many. One virtual node can
-have several concrete members, as a tiled node does, and one concrete node may
-be a member of more than one virtual node when separately annotated authored
-lvalues intentionally project it. The builder stores both directions:
+Virtual-node/node-bundle membership is explicitly many-to-many. One virtual
+node can have several node-bundle members, and one node bundle may be a member
+of more than one virtual node when separately annotated authored lvalues
+intentionally project it. A tiled bundle contains several concrete tile nodes.
+The builder stores both directions:
 
 ```text
 Virtual node A ---\
-                    concrete node X
-Virtual node B ---/
+                    node bundle X --- concrete tile 0
+Virtual node B ---/                 \-- concrete tile 1
 ```
 
-Repeated annotation of the same virtual-node/concrete-member relation
+Repeated annotation of the same virtual-node/node-bundle relation
 deduplicates it. It must not erase membership belonging to another virtual
 node. The forward virtual-node record and its virtual-port mappings are
 authoritative for sidepanel, lane, persistence, and introspection projection;
@@ -161,9 +163,11 @@ count divisibility does not say whether the mono port should broadcast, become
 5.1, or be shared, nor how a native stereo port partitions into 5.1. Those are
 future explicit per-port mapping rules, not defaults inferred from width.
 
-Event-port policy must likewise be explicit before promoted eventful nodes are
-enabled: event inputs need a broadcast/partition rule and event outputs need
-a merge rule. The first promoted-node implementation may reject event ports.
+Event ports are not channelized. A tiled event input broadcasts its one event
+stream to the matching event input of every tile. A tiled event output merges
+the event streams from every tile through `EventConcatenation`; ordinary event
+ordering semantics apply to the merged result. Event ports therefore have one
+node-bundle port and one virtual port, never one port per tile.
 
 Later extensions may allow native multi-channel concrete nodes. The builder
 will then compare the requested channel count with the concrete node's native
@@ -282,12 +286,12 @@ other DSP node.
 
 ## Sidepanel and lane semantics
 
-The sidepanel displays virtual nodes and virtual ports, not concrete nodes or
-tiles. An authored `g.node<MonoFilter, stereo>()` binding therefore contributes
-one sidepanel node and one sidepanel entry for each of its authored ports,
-even though its implementation contains two mono filter tiles. Tile count,
-tile order, and concrete node IDs are implementation detail and must not
-appear in UI labels, persisted UI state, or lane identities.
+The sidepanel displays virtual nodes, their virtual ports, and their member
+node bundles as UI “concrete” members. An authored
+`g.node<MonoFilter, stereo>()` binding therefore contributes one concrete
+member with stereo ports, even though its implementation contains two mono
+filter tiles. Tile count, tile order, and concrete node IDs are implementation
+detail and must not appear in UI labels, persisted UI state, or lane identities.
 
 For a mono concrete node tiled into a stereo virtual node:
 
@@ -300,32 +304,35 @@ For a mono concrete node tiled into a stereo virtual node:
   preserving the sidepanel control and lane binding when virtual identities
   remain the same.
 
-`GraphInputLanes` manages lane bindings at the virtual-port boundary. Its
-authoritative endpoint key must be a virtual-port address, conceptually:
+`GraphInputLanes` keeps virtual-port state and node-bundle-port state distinct.
+The virtual control/lane has a virtual-port address, conceptually:
 
 ```text
 { module instance, virtual node identity, port kind, virtual-port ordinal }
 ```
 
-It must not use a concrete member/tile ordinal as part of authored lane
-identity. The current logical/concrete key split is transitional and is
-replaced when graph-input state moves to virtual nodes and ports.
+The node-bundle state is addressed by the stable ordinal of that bundle port
+within the virtual-port mapping. This ordinal is not a build-local
+`NodeBundlePortId`, concrete-node ID, or tile ordinal. It preserves the
+override, follow, timeline-lane, and disconnected behavior formerly held at
+the concrete-member layer without exposing individual tiles.
 
 At graph rebuild time, the builder exposes a virtual-port mapping to
 `GraphInputLanes`: the virtual port's channel layout, default/control data,
-and the concrete input or output endpoints for each channel member. A lane
+and its node-bundle port mappings, each of which resolves to concrete input or
+output endpoints for every channel member. A lane
 source connected to a stereo virtual input therefore lowers through the
 mapping to the left and right mono concrete inputs. Conversely, a tiled
 virtual output lowers to one channel-aware lane source before it reaches the
 timeline. `GraphInputLanes` requests and retains one lane; the builder owns
 all tile routing and keeps it invisible to the lane manager.
 
-The same rule applies to all virtual-port state—default values, overrides,
-connections, source spans, persistence, and sidepanel controls. That state is
-addressed by the virtual port and has its declared channel layout. It is not
-duplicated per tile. A per-channel control policy, if needed beyond the
-ordinary channel-aware lane value, must be introduced explicitly at the
-virtual-port level rather than by exposing tiles.
+Virtual-port state—default values, source spans, virtual controls, and virtual
+lanes—has the port's declared channel layout. Per-node-bundle override,
+follow, connection, and lane state remains separately addressable under that
+virtual port. Neither layer is duplicated per tile. A per-channel control
+policy, if needed beyond the ordinary channel-aware lane value, must be
+introduced explicitly rather than by exposing tiles.
 
 Later native-channel support follows the same boundary rule: a native
 multi-channel concrete port is represented by one virtual port whose displayed
@@ -399,8 +406,8 @@ during this work.
   then prove source navigation, lane bindings, overrides, and channel mappings
   survive rebuilding a tiled node.
 
-Native multi-channel tiling, mixed-width node types, eventful promoted nodes,
-shared/per-channel control rules, richer channel types, and fused
+Native multi-channel tiling, mixed-width node types, shared/per-channel
+control rules, richer channel types, and fused
 pack/unpack/conversion operations are later independent design items. They are
 not inferred from channel counts and do not block the initial fully-mono tiled
 node model.
@@ -419,10 +426,11 @@ The test suite should define this model before broad migration:
   boundaries lower through `ChannelPack<C>` and `ChannelUnpack<C>`;
 - equal channel counts with different representations require conversion and
   do not qualify for direct tile-to-tile mapping;
-- the sidepanel and `GraphInputLanes` expose one virtual-port control and one
-  channel-aware lane for a tiled port, never one control/lane per tile;
-- rebuilding a tiled node preserves a virtual-port lane binding while replacing
-  its concrete-port mapping;
+- the sidepanel exposes one virtual-port control and one node-bundle member for
+  a tiled node; any virtual-port or node-bundle-port lane is channel-aware and
+  never duplicated per tile;
+- rebuilding a tiled node preserves virtual-port and node-bundle-port lane
+  identities while replacing its concrete-port mapping;
 - mixed native mono/multi-channel sample ports are rejected by the initial
   promoted-node model;
 - later native-channel extensions materialize once at matching requested width

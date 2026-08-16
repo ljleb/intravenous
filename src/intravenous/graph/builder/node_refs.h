@@ -15,12 +15,26 @@
 #include <utility>
 
 namespace iv {
+    namespace details {
+        template<class Value, class ChannelType>
+        inline constexpr bool is_typed_sample_port_for_v = false;
+
+        template<class ValueChannelType, SampleStreamLayout Layout,
+                 class ChannelType>
+        inline constexpr bool is_typed_sample_port_for_v<
+            TypedSamplePortRef<ValueChannelType, Layout>, ChannelType> =
+            std::same_as<ValueChannelType, ChannelType>;
+    }
+
     class GraphBuilder;
     class GraphBuilderAnnotations;
     class NodeRef;
-    template<class Node>
+    struct ConcretePortProjection {};
+    template<class ChannelType>
+    struct TiledPortProjection { using channel_type = ChannelType; };
+    template<class Node, class PortProjection = ConcretePortProjection>
     class TypedNodeRef;
-    template<class Node>
+    template<class Node, class PortProjection = ConcretePortProjection>
     class StructuredNodeRef;
 
     struct VirtualEmptyTag {
@@ -29,7 +43,10 @@ namespace iv {
 
     inline constexpr VirtualEmptyTag virtual_empty_tag {};
 
-    template<class Derived, class Node = void>
+    // Owns the builder-visible NodeBundle handle and the move-only source
+    // declaration state. It intentionally has no port operations: a bundle
+    // may be concrete, tiled, or subgraph-backed.
+    template<class Derived>
     class NodeRefBase {
     protected:
         GraphBuilder* _graph_builder{};
@@ -81,9 +98,40 @@ namespace iv {
         Derived& operator=(Derived const& rhs);
         Derived& operator=(Derived&& rhs);
 
-        NodePorts const& ports() const;
         NodeRef node_ref() const;
+        size_t node_bundle_handle() const
+        {
+            if (!_graph_builder) {
+                details::error("attempted to use a null NodeRef");
+            }
+            return _index;
+        }
         Derived _clone_handle() const;
+        void _annotate_source_info(
+            std::string_view declaration_identity,
+            std::string_view file_path,
+            uint32_t begin,
+            uint32_t end
+        ) const;
+
+    };
+
+    // ConcretePortProjection is the current one-ConcreteNode-per-bundle
+    // behavior. TiledPortProjection will provide the same typed surface while
+    // resolving a port through explicit channel-member mappings instead.
+    template<class Derived, class Node = void>
+    class ConcreteNodeRefBase : public NodeRefBase<Derived> {
+        using Base = NodeRefBase<Derived>;
+
+    protected:
+        using Base::_graph_builder;
+        using Base::_index;
+
+    public:
+        using Base::Base;
+        using Base::operator=;
+
+        NodePorts const& ports() const;
 
         SamplePortRef operator[](size_t output_index) const;
         SamplePortRef operator[](std::string_view output_name) const;
@@ -98,7 +146,7 @@ namespace iv {
             constexpr auto output_index = details::static_output_port_index<Node, Name>();
             constexpr auto layout = details::static_output_port_layout<Node, Name>();
             using ChannelType = typename RuntimeChannelTypeTraits<layout.channel_type>::type;
-            if (!_graph_builder) {
+            if (!this->_graph_builder) {
                 details::error("attempted to use a null NodeRef");
             }
             return TypedSamplePortRef<ChannelType, layout.sample_layout>{
@@ -129,20 +177,13 @@ namespace iv {
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
         Derived ttl(size_t samples) const;
         Derived no_ttl() const;
-        void _annotate_source_info(
-            std::string_view declaration_identity,
-            std::string_view file_path,
-            uint32_t begin,
-            uint32_t end
-        ) const;
-
         std::string to_string() const;
     };
 
-    class NodeRef : public NodeRefBase<NodeRef> {
+    class NodeRef : public ConcreteNodeRefBase<NodeRef> {
     public:
-        using NodeRefBase<NodeRef>::NodeRefBase;
-        using NodeRefBase<NodeRef>::operator=;
+        using ConcreteNodeRefBase<NodeRef>::ConcreteNodeRefBase;
+        using ConcreteNodeRefBase<NodeRef>::operator=;
 
         NodeRef(NodeRef const&) = delete;
         NodeRef(NodeRef&&) noexcept = default;
@@ -155,9 +196,11 @@ namespace iv {
         }
     };
 
-    template<class Node>
-    class TypedNodeRef : public NodeRefBase<TypedNodeRef<Node>, std::remove_cvref_t<Node>> {
-        using Base = NodeRefBase<TypedNodeRef<Node>, std::remove_cvref_t<Node>>;
+    template<class Node, class PortProjection>
+    class TypedNodeRef : public ConcreteNodeRefBase<TypedNodeRef<Node, PortProjection>, std::remove_cvref_t<Node>> {
+        static_assert(std::same_as<PortProjection, ConcretePortProjection>,
+                      "TiledPortProjection requires its tiled TypedNodeRef specialization");
+        using Base = ConcreteNodeRefBase<TypedNodeRef<Node, PortProjection>, std::remove_cvref_t<Node>>;
 
     public:
         using NodeType = std::remove_cvref_t<Node>;
@@ -189,13 +232,147 @@ namespace iv {
             }
             return NodeRef(*this->_graph_builder, this->_index);
         }
+
+        template<size_t I>
+        auto static_output() const
+        {
+            constexpr auto layout = details::static_output_port_layout_at<NodeType, I>();
+            using ChannelType = typename RuntimeChannelTypeTraits<layout.channel_type>::type;
+            return TypedSamplePortRef<ChannelType, layout.sample_layout>{
+                this->operator[](I)};
+        }
+
     };
 
-    template<class Node>
-    class StructuredNodeRef : public TypedNodeRef<Node> {
+    template<class Node, class ChannelType>
+    class TypedNodeRef<Node, TiledPortProjection<ChannelType>>
+        : public NodeRefBase<TypedNodeRef<Node, TiledPortProjection<ChannelType>>> {
+        using Self = TypedNodeRef<Node, TiledPortProjection<ChannelType>>;
+        using Base = NodeRefBase<Self>;
+
+    public:
+        using NodeType = std::remove_cvref_t<Node>;
+        using requested_channel_type = ChannelType;
+        using Base::Base;
+        using Base::operator=;
+
+        TypedNodeRef(TypedNodeRef const&) = delete;
+        TypedNodeRef(TypedNodeRef&&) noexcept = default;
+
+        TypedNodeRef& operator=(TypedNodeRef const&) = delete;
+        TypedNodeRef& operator=(TypedNodeRef&& rhs)
+        {
+            return Base::operator=(std::move(rhs));
+        }
+
+        template<fixed_string Name, NamedPortKind Kind>
+        auto operator[](PortName<Name, Kind>) const
+        requires (Kind == NamedPortKind::sample
+                  && details::has_constexpr_sample_port_configs<NodeType>)
+        {
+            return static_output<details::static_output_port_index<NodeType, Name>()>();
+        }
+
+        template<size_t I>
+        auto static_output() const
+        {
+            static_assert(I < details::fixed_output_count_v<NodeType>);
+            if (!this->_graph_builder) {
+                details::error("attempted to use a null tiled TypedNodeRef");
+            }
+            return this->_graph_builder->template tiled_sample_output<ChannelType>(
+                this->_index, I);
+        }
+
+        EventPortRef event_port(size_t output_ordinal) const
+        {
+            if (!this->_graph_builder) {
+                details::error("attempted to use a null tiled TypedNodeRef");
+            }
+            return this->_graph_builder->event_output(
+                {this->_index, PortKind::event, output_ordinal});
+        }
+
+        EventPortRef event_port(std::string_view name) const
+        {
+            return event_port(this->_graph_builder->event_port_index(
+                this->_index, false, name));
+        }
+
+        Self connect_event_input(size_t input_ordinal, EventPortRef source) const
+        {
+            if (!this->_graph_builder) {
+                details::error("attempted to use a null tiled TypedNodeRef");
+            }
+            this->_graph_builder->connect_event_input(
+                {this->_index, PortKind::event, input_ordinal}, source);
+            return Self(*this->_graph_builder, this->_index);
+        }
+
+        Self connect_event_input(std::string_view name, EventPortRef source) const
+        {
+            if (!this->_graph_builder) {
+                details::error("attempted to use a null tiled TypedNodeRef");
+            }
+            return connect_event_input(this->_graph_builder->event_port_index(
+                this->_index, true, name), source);
+        }
+
+        template<class... Args>
+        requires details::valid_node_call_args_v<Args...>
+        Self operator()(Args&&... args) const
+        {
+            if (!this->_graph_builder) {
+                details::error("attempted to use a null tiled TypedNodeRef");
+            }
+            static constexpr auto inputs = NodeType::inputs();
+            size_t positional_input = 0;
+            auto connect_input = [&]<class Value>(size_t input_ordinal,
+                                                   Value&& value) {
+                if (input_ordinal >= inputs.size()) {
+                    details::error("too many sample inputs for tiled node");
+                }
+                using ValueType = std::remove_cvref_t<Value>;
+                if constexpr (std::same_as<ValueType,
+                                           TypedSamplePortTileRef<ChannelType>>) {
+                    this->_graph_builder->template connect_tiled_sample_input<
+                        ChannelType>(this->_index, input_ordinal, value);
+                } else if constexpr (
+                    details::is_typed_sample_port_for_v<ValueType, ChannelType>) {
+                    this->_graph_builder->template connect_tiled_sample_input<
+                        ChannelType>(this->_index, input_ordinal, value);
+                } else {
+                    auto source = this->_graph_builder->lift_to_sample_port(
+                        std::forward<Value>(value));
+                    this->_graph_builder->template broadcast_to_tiled_sample_input<
+                        ChannelType>(this->_index, input_ordinal, source);
+                }
+            };
+            auto process = [&](auto&& arg) {
+                using Arg = std::remove_cvref_t<decltype(arg)>;
+                if constexpr (details::is_named_arg_v<Arg>) {
+                    if constexpr (Arg::kind == NamedPortKind::sample) {
+                        constexpr auto input_ordinal =
+                            details::static_input_port_index<NodeType, Arg::name>();
+                        connect_input(input_ordinal, std::forward<decltype(arg)>(arg).value);
+                    } else {
+                        connect_event_input(std::string_view{Arg::name.value},
+                                            std::forward<decltype(arg)>(arg).value);
+                    }
+                } else {
+                    connect_input(positional_input++, std::forward<decltype(arg)>(arg));
+                }
+            };
+            (process(std::forward<Args>(args)), ...);
+            return Self(*this->_graph_builder, this->_index);
+        }
+    };
+
+    template<class Node, class PortProjection>
+    class StructuredNodeRef : public TypedNodeRef<Node, PortProjection> {
         static constexpr size_t output_count = details::fixed_output_count_v<Node>;
         static_assert(details::has_fixed_output_count_v<Node>, "StructuredNodeRef requires a fixed output count");
-        using Base = TypedNodeRef<Node>;
+        using Base = TypedNodeRef<Node, PortProjection>;
 
     public:
         using NodeType = std::remove_cvref_t<Node>;
@@ -232,10 +409,7 @@ namespace iv {
             if (!this->_graph_builder) {
                 details::error("attempted to use a null NodeRef");
             }
-            constexpr auto layout = details::static_output_port_layout_at<NodeType, I>();
-            using ChannelType = typename RuntimeChannelTypeTraits<layout.channel_type>::type;
-            return TypedSamplePortRef<ChannelType, layout.sample_layout>{
-                this->operator[](I)};
+            return this->template static_output<I>();
         }
     };
 

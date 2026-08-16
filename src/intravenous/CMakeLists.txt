@@ -310,6 +310,11 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/audio_input_synchronizer.cpp
     runtime/config.cpp
     runtime/graph_input_lanes.cpp
+    runtime/graph_input_lanes/block_store.cpp
+    runtime/graph_input_lanes/authored_state.cpp
+    runtime/graph_input_lanes/builder_completion.cpp
+    runtime/graph_input_lanes/lane_reconciler.cpp
+    runtime/graph_input_lanes/port_catalog.cpp
     runtime/graph_input_lanes_events.cpp
     runtime/graph_input_lanes_iv_module_instances_bridge.cpp
     runtime/graph_input_lanes_timeline_bridge.cpp

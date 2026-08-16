@@ -21,13 +21,13 @@ namespace iv {
         std::vector<InputConfig> input_configs {};
         // Side-table port identities used only while this scope is open.
         // They become ports of the finished SubgraphNode at close.
-        std::vector<PortId> input_boundary_ports {};
+        std::vector<ConcretePortId> input_boundary_ports {};
         std::vector<OutputConfig> output_configs {};
-        std::vector<PortId> output_sources {};
+        std::vector<ConcretePortId> output_sources {};
         std::vector<EventInputConfig> event_input_configs {};
-        std::vector<PortId> event_input_boundary_ports {};
+        std::vector<ConcretePortId> event_input_boundary_ports {};
         std::vector<EventOutputConfig> event_output_configs {};
-        std::vector<PortId> event_output_sources {};
+        std::vector<ConcretePortId> event_output_sources {};
         bool outputs_defined = false;
         bool event_outputs_defined = false;
     };

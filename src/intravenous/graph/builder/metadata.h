@@ -12,7 +12,11 @@
 #include <utility>
 #include <vector>
 
-namespace iv::details {
+namespace iv {
+class GraphBuilderTopology;
+class GraphBuilderNodeBundles;
+class GraphBuilderVirtualNodes;
+namespace details {
     struct VirtualConcretePortInfo {
         std::string name;
         std::string type;
@@ -113,4 +117,9 @@ namespace iv::details {
         PreparedGraph const& g,
         std::span<LoweredSubgraphSpec const> lowered_scopes
     );
-}
+    void apply_virtual_port_metadata(
+        GraphIntrospectionMetadata&, GraphBuilderTopology const&,
+        GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&
+    );
+} // namespace details
+} // namespace iv

@@ -97,10 +97,10 @@ namespace iv::details {
         std::vector<std::string> node_type_identities;
         std::unordered_set<GraphEdge> edges;
         std::unordered_set<GraphEventEdge> event_edges;
-        std::unordered_set<PortId> timeline_filled_input_ports;
-        std::unordered_set<PortId> timeline_filled_event_input_ports;
-        std::unordered_map<PortId, DetachedInfo> detached_info_by_source;
-        std::unordered_set<PortId> detached_reader_outputs;
+        std::unordered_set<ConcretePortId> timeline_filled_input_ports;
+        std::unordered_set<ConcretePortId> timeline_filled_event_input_ports;
+        std::unordered_map<ConcretePortId, DetachedInfo> detached_info_by_source;
+        std::unordered_set<ConcretePortId> detached_reader_outputs;
     };
 
     inline std::string generated_node_id(std::string_view builder_id, size_t generated_index)
@@ -123,10 +123,10 @@ namespace iv::details {
 
     inline auto make_source_target_edge_maps(PreparedGraph const& g)
     {
-        std::unordered_map<PortId, PortId> source_of;
-        std::unordered_map<PortId, PortId> target_of;
-        std::unordered_map<PortId, GraphEventEdge> event_source_of;
-        std::unordered_map<PortId, GraphEventEdge> event_target_of;
+        std::unordered_map<ConcretePortId, ConcretePortId> source_of;
+        std::unordered_map<ConcretePortId, ConcretePortId> target_of;
+        std::unordered_map<ConcretePortId, GraphEventEdge> event_source_of;
+        std::unordered_map<ConcretePortId, GraphEventEdge> event_target_of;
 
         for (GraphEdge const& edge : g.edges)
         {
@@ -308,13 +308,13 @@ namespace iv::details {
 
             auto remap_port = [&](LoweredSubgraphSpec::PortRef const& port) {
                 if (port.is_graph_port) {
-                    return PortId{ GRAPH_ID, port.port };
+                    return ConcretePortId{ GRAPH_ID, port.port };
                 }
                 auto const it = runtime_index_by_node_id.find(port.node_id);
                 if (it == runtime_index_by_node_id.end()) {
-                    return PortId{ GRAPH_ID, port.port };
+                    return ConcretePortId{ GRAPH_ID, port.port };
                 }
-                return PortId{ it->second, port.port };
+                return ConcretePortId{ it->second, port.port };
             };
 
             for (auto const& node_id : scope.member_node_ids) {
@@ -327,7 +327,7 @@ namespace iv::details {
 
             lowered.sample_input_targets.reserve(scope.sample_input_targets.size());
             for (auto const& targets : scope.sample_input_targets) {
-                std::vector<PortId> remapped_targets;
+                std::vector<ConcretePortId> remapped_targets;
                 remapped_targets.reserve(targets.size());
                 for (auto const& target : targets) {
                     remapped_targets.push_back(remap_port(target));
@@ -340,7 +340,7 @@ namespace iv::details {
             }
             lowered.event_input_targets.reserve(scope.event_input_targets.size());
             for (auto const& targets : scope.event_input_targets) {
-                std::vector<PortId> remapped_targets;
+                std::vector<ConcretePortId> remapped_targets;
                 remapped_targets.reserve(targets.size());
                 for (auto const& target : targets) {
                     remapped_targets.push_back(remap_port(target));
@@ -372,12 +372,12 @@ namespace iv::details {
         std::span<OutputConfig const> public_outputs,
         std::string_view builder_id)
     {
-        std::unordered_map<PortId, std::vector<GraphEdge>> reverse_edges_map;
+        std::unordered_map<ConcretePortId, std::vector<GraphEdge>> reverse_edges_map;
         for (GraphEdge const& edge : g.edges)
         {
             reverse_edges_map[edge.target].push_back(edge);
         }
-        std::unordered_map<PortId, std::vector<GraphEventEdge>> reverse_event_edges_map;
+        std::unordered_map<ConcretePortId, std::vector<GraphEventEdge>> reverse_event_edges_map;
         for (GraphEventEdge const& edge : g.event_edges)
         {
             reverse_event_edges_map[edge.target].push_back(edge);
@@ -480,12 +480,12 @@ namespace iv::details {
             }
         }
 
-        std::unordered_map<PortId, std::vector<GraphEdge>> edges_map;
+        std::unordered_map<ConcretePortId, std::vector<GraphEdge>> edges_map;
         for (GraphEdge const& edge : g.edges)
         {
             edges_map[edge.source].push_back(edge);
         }
-        std::unordered_map<PortId, std::vector<GraphEventEdge>> event_edges_map;
+        std::unordered_map<ConcretePortId, std::vector<GraphEventEdge>> event_edges_map;
         for (GraphEventEdge const& edge : g.event_edges)
         {
             event_edges_map[edge.source].push_back(edge);
@@ -572,7 +572,7 @@ namespace iv::details {
 
             for (size_t output_port = 0; output_port < num_outputs; ++output_port)
             {
-                PortId const this_port{ node, output_port };
+                ConcretePortId const this_port{ node, output_port };
                 if (auto it = target_of.find(this_port); it == target_of.end())
                 {
                     g.nodes.emplace_back(DummySink());
@@ -588,7 +588,7 @@ namespace iv::details {
 
             for (size_t output_port = 0; output_port < num_event_outputs; ++output_port)
             {
-                PortId const this_port{ node, output_port };
+                ConcretePortId const this_port{ node, output_port };
                 if (auto it = event_target_of.find(this_port); it == event_target_of.end())
                 {
                     g.nodes.emplace_back(DummyEventSink());
@@ -726,9 +726,9 @@ namespace iv::details {
         }
         g.event_edges.swap(sorted_event_edges);
 
-        std::unordered_set<PortId> sorted_timeline_filled_input_ports;
+        std::unordered_set<ConcretePortId> sorted_timeline_filled_input_ports;
         sorted_timeline_filled_input_ports.reserve(g.timeline_filled_input_ports.size());
-        for (PortId port : g.timeline_filled_input_ports) {
+        for (ConcretePortId port : g.timeline_filled_input_ports) {
             if (port.node != GRAPH_ID) {
                 port.node = reverse_sorted[port.node];
             }
@@ -736,9 +736,9 @@ namespace iv::details {
         }
         g.timeline_filled_input_ports.swap(sorted_timeline_filled_input_ports);
 
-        std::unordered_set<PortId> sorted_timeline_filled_event_input_ports;
+        std::unordered_set<ConcretePortId> sorted_timeline_filled_event_input_ports;
         sorted_timeline_filled_event_input_ports.reserve(g.timeline_filled_event_input_ports.size());
-        for (PortId port : g.timeline_filled_event_input_ports) {
+        for (ConcretePortId port : g.timeline_filled_event_input_ports) {
             if (port.node != GRAPH_ID) {
                 port.node = reverse_sorted[port.node];
             }
@@ -833,7 +833,7 @@ namespace iv::details {
         size_t const num_nodes = g.nodes.size();
 
         std::vector<std::unordered_set<size_t>> explicit_outgoing(num_nodes);
-        std::unordered_map<PortId, std::vector<PortId>> consumers_of_output;
+        std::unordered_map<ConcretePortId, std::vector<ConcretePortId>> consumers_of_output;
 
         for (GraphEdge const& edge : g.edges)
         {
@@ -856,7 +856,7 @@ namespace iv::details {
                 continue;
             }
 
-            for (PortId target_port : it->second)
+            for (ConcretePortId target_port : it->second)
             {
                 if (target_port.node == GRAPH_ID) {
                     continue;
@@ -892,7 +892,7 @@ namespace iv::details {
         }
 
         std::vector<std::vector<size_t>> outgoing(num_nodes);
-        std::unordered_map<PortId, std::vector<PortId>> consumers;
+        std::unordered_map<ConcretePortId, std::vector<ConcretePortId>> consumers;
         for (auto const& edge : edges) {
             consumers[edge.source].push_back(edge.target);
             if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
@@ -980,7 +980,7 @@ namespace iv::details {
             if (it == consumers.end()) {
                 continue;
             }
-            for (PortId consumer : it->second) {
+            for (ConcretePortId consumer : it->second) {
                 if (consumer.node == GRAPH_ID) {
                     continue;
                 }
@@ -1113,7 +1113,7 @@ namespace iv::details {
     }
 
     class LatencyAccumulator {
-        std::unordered_map<PortId, size_t> _input_port_global_latencies;
+        std::unordered_map<ConcretePortId, size_t> _input_port_global_latencies;
 
     public:
         template<typename NodeLike, typename TargetMap>
@@ -1143,7 +1143,7 @@ namespace iv::details {
             }
         }
 
-        size_t delay_input(PortId input, size_t extra_delay)
+        size_t delay_input(ConcretePortId input, size_t extra_delay)
         {
             return _input_port_global_latencies.at(input) += extra_delay;
         }
@@ -1171,8 +1171,8 @@ namespace iv::details {
     }
 
     inline size_t connection_block_size(
-        PortId source,
-        PortId target,
+        ConcretePortId source,
+        ConcretePortId target,
         size_t host_block_size,
         GraphExecutionPlan const& plan
     )
@@ -1193,7 +1193,7 @@ namespace iv::details {
     )
     {
         std::unordered_set<size_t> region_nodes(region.nodes.begin(), region.nodes.end());
-        std::unordered_map<PortId, PortId> target_of;
+        std::unordered_map<ConcretePortId, ConcretePortId> target_of;
         for (GraphEdge const& edge : edges) {
             if (
                 edge.source.node == GRAPH_ID
@@ -1206,7 +1206,7 @@ namespace iv::details {
             target_of[edge.source] = edge.target;
         }
 
-        std::unordered_map<PortId, size_t> input_latencies;
+        std::unordered_map<ConcretePortId, size_t> input_latencies;
         size_t max_latency = 0;
         for (size_t const node_i : region.execution_order) {
             size_t node_latency = 0;
@@ -1251,12 +1251,12 @@ namespace iv::details {
         // than relying on every topology transform to preserve it.
         std::unordered_set<GraphEdge> resolved_edges;
         resolved_edges.reserve(edges.size());
-        auto output_layout_for = [&](PortId port) {
+        auto output_layout_for = [&](ConcretePortId port) {
             return port.node == GRAPH_ID
                 ? effective_channel_layout(public_inputs[port.port])
                 : effective_channel_layout(nodes[port.node].outputs()[port.port]);
         };
-        auto input_layout_for = [&](PortId port) {
+        auto input_layout_for = [&](ConcretePortId port) {
             return port.node == GRAPH_ID
                 ? effective_channel_layout(public_outputs[port.port])
                 : effective_channel_layout(nodes[port.node].inputs()[port.port]);
@@ -1271,8 +1271,8 @@ namespace iv::details {
         edges = std::move(resolved_edges);
 
         auto [source_of, target_of] = [&] {
-            std::unordered_map<PortId, PortId> source_of_;
-            std::unordered_map<PortId, PortId> target_of_;
+            std::unordered_map<ConcretePortId, ConcretePortId> source_of_;
+            std::unordered_map<ConcretePortId, ConcretePortId> target_of_;
             for (GraphEdge const& edge : edges) {
                 source_of_[edge.target] = edge.source;
                 target_of_[edge.source] = edge.target;
@@ -1298,7 +1298,7 @@ namespace iv::details {
                 latency_accumulator.align_latencies(nodes[node_i], node_i, input_configs, output_configs, target_of);
 
                 for (size_t input_i = 0; input_i < input_configs.size(); ++input_i) {
-                    PortId const this_input { node_i, input_i };
+                    ConcretePortId const this_input { node_i, input_i };
 
                     if (auto it = source_of.find(this_input); it != source_of.end()) {
                         size_t const output_node_i = it->second.node;
@@ -1329,7 +1329,7 @@ namespace iv::details {
                 std::vector<InputConfig> input_configs = private_input_configs;
 
                 for (size_t input_i = 0; input_i < input_configs.size(); ++input_i) {
-                    PortId const this_input { GRAPH_ID, input_i };
+                    ConcretePortId const this_input { GRAPH_ID, input_i };
                     if (auto it = source_of.find(this_input); it != source_of.end()) {
                         size_t const output_node_i = it->second.node;
                         size_t const output_port_i = it->second.port;
@@ -1375,12 +1375,12 @@ namespace iv::details {
             .node_ids = std::move(node_ids),
         };
         {
-            std::unordered_map<PortId, PortId> artifact_target_of;
+            std::unordered_map<ConcretePortId, ConcretePortId> artifact_target_of;
             for (GraphEdge const& edge : artifact.edges) {
                 artifact_target_of[edge.source] = edge.target;
             }
 
-            std::unordered_map<PortId, size_t> input_global_latencies;
+            std::unordered_map<ConcretePortId, size_t> input_global_latencies;
             size_t max_latency = 0;
 
             auto process_node = [&](TypeErasedNode const& node, size_t node_i) {
@@ -1439,7 +1439,7 @@ namespace iv::details {
                                     it->second.port
                                 ),
                                 .conversion = std::find_if(artifact.edges.begin(), artifact.edges.end(), [&](GraphEdge const& edge) {
-                                    return edge.source == PortId{ global_i, output_i };
+                                    return edge.source == ConcretePortId{ global_i, output_i };
                                 })->conversion,
                             });
                         } else {
@@ -1449,7 +1449,7 @@ namespace iv::details {
                                     it->second.port
                                 ),
                                 .conversion = std::find_if(artifact.edges.begin(), artifact.edges.end(), [&](GraphEdge const& edge) {
-                                    return edge.source == PortId{ global_i, output_i };
+                                    return edge.source == ConcretePortId{ global_i, output_i };
                                 })->conversion,
                             });
                         }
@@ -1462,7 +1462,7 @@ namespace iv::details {
                         artifact.event_edges.begin(),
                         artifact.event_edges.end(),
                         [&](GraphEventEdge const& edge) {
-                            return edge.source == PortId{ global_i, output_i };
+                            return edge.source == ConcretePortId{ global_i, output_i };
                         }
                     );
                     if (it != artifact.event_edges.end()) {

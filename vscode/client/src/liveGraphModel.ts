@@ -438,10 +438,12 @@ export function serializeLiveGraphNodes(nodes: VirtualNode[]): SerializedLiveGra
         description: Number(node.memberCount || 0) > 1
             ? (() => {
                 const identity = virtualIdentitySummary(node);
-                return identity ? `${identity} • ${node.memberCount} nodes` : `${node.memberCount} nodes`;
+                return identity
+                    ? `virtual • ${identity} • ${node.memberCount} concrete nodes`
+                    : `virtual • ${node.memberCount} concrete nodes`;
             })()
-            : (virtualIdentitySummary(node) || node.id || ""),
-        tooltip: `${node.kind || "node"}${virtualIdentitySummary(node) ? ` • ${virtualIdentitySummary(node)}` : ""}${Number(node.memberCount || 0) > 1 ? ` • ${node.memberCount} members` : ""}`,
+            : `virtual • ${virtualIdentitySummary(node) || node.id || ""}`,
+        tooltip: `virtual node • ${node.kind || "node"}${virtualIdentitySummary(node) ? ` • ${virtualIdentitySummary(node)}` : ""}${Number(node.memberCount || 0) > 1 ? ` • ${node.memberCount} concrete nodes` : ""}`,
         memberCount: Number(node.memberCount || 0),
         icon: Number(node.memberCount || 0) > 1 ? "merged" : "single",
         groups: [
@@ -459,7 +461,7 @@ export function serializeLiveGraphNodes(nodes: VirtualNode[]): SerializedLiveGra
                 ordinal: Number(member.ordinal || 0),
                 backingNodeId: member.backingNodeId || "",
                 kind: member.kind || node.kind || "",
-                description: `member ${Number(member.ordinal || 0)}`,
+                description: `concrete ${Number(member.ordinal || 0)}`,
                 groups: [
                     makePortGroup(
                         "sample inputs",

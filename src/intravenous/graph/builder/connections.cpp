@@ -1,23 +1,78 @@
 #include <intravenous/graph/builder/connections.h>
 
 #include <intravenous/graph/builder/topology.h>
+#include <intravenous/graph/builder/node_bundles.h>
 #include <intravenous/graph/builder/virtual_nodes.h>
 
 #include <algorithm>
 #include <unordered_map>
 
 namespace iv {
-bool GraphBuilderConnections::sample_input_is_connected(PortId target) const {
+namespace {
+std::vector<ConcretePortId> resolve_bundle_sample_port(
+    GraphBuilderNodeBundles const &node_bundles,
+    NodeBundlePortId address, bool inputs) {
+  auto const &bundle = node_bundles.bundle(address.node_bundle_handle);
+  auto const &mappings = inputs ? bundle.sample_inputs : bundle.sample_outputs;
+  if (address.port_ordinal >= mappings.size()) {
+    details::error("virtual port references an out-of-bounds NodeBundle port");
+  }
+  return std::visit(
+      [](auto const &mapping) -> std::vector<ConcretePortId> {
+        using Mapping = std::remove_cvref_t<decltype(mapping)>;
+        if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>) {
+          return {mapping.concrete_port};
+        } else if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>) {
+          std::vector<ConcretePortId> ports(mapping.channel_ports.size());
+          for (auto const &channel : mapping.channel_ports) {
+            if (channel.channel_ordinal >= ports.size()) {
+              details::error("tiled NodeBundle port has an invalid channel ordinal");
+            }
+            ports[channel.channel_ordinal] = channel.concrete_port;
+          }
+          return ports;
+        } else {
+          return {mapping.subgraph_port};
+        }
+      }, mappings[address.port_ordinal]);
+}
+
+template <class Channel>
+void append_resolved_channels(std::vector<Channel> &channels,
+                              std::vector<ConcretePortId> const &ports,
+                              ChannelLayout layout, auto connected) {
+  auto const channel_total = channel_count(layout.channel_type);
+  if (ports.size() != 1 && ports.size() != channel_total) {
+    details::error("NodeBundle port does not match its declared channel layout");
+  }
+  for (size_t channel = 0; channel < channel_total; ++channel) {
+    auto const port = ports.size() == 1 ? ports.front() : ports[channel];
+    if constexpr (requires { channels[channel].targets; }) {
+      channels[channel].targets.push_back(port);
+    } else {
+      channels[channel].sources.push_back(port);
+    }
+    if constexpr (requires { channels[channel].has_existing_connection; }) {
+      channels[channel].has_existing_connection =
+          channels[channel].has_existing_connection || connected(port);
+    } else {
+      channels[channel].has_existing_downstream_connection =
+          channels[channel].has_existing_downstream_connection || connected(port);
+    }
+  }
+}
+} // namespace
+bool GraphBuilderConnections::sample_input_is_connected(ConcretePortId target) const {
   return _placed_sample_inputs.contains(target);
 }
 
-bool GraphBuilderConnections::event_input_is_connected(PortId target) const {
+bool GraphBuilderConnections::event_input_is_connected(ConcretePortId target) const {
   return _placed_event_inputs.contains(target);
 }
 
 void GraphBuilderConnections::connect_sample_input(
     GraphBuilderTopology &topology, GraphBuilderIdentity const &identity,
-    PortId target, SamplePortRef source) {
+    ConcretePortId target, SamplePortRef source) {
   if (source.graph_builder == nullptr) {
     details::error("builder " + identity.value + ": empty SamplePortRef");
   }
@@ -33,7 +88,7 @@ void GraphBuilderConnections::connect_sample_input(
 void GraphBuilderConnections::connect_event_input(
     GraphBuilderTopology &topology,
     std::span<EventInputConfig const> graph_event_inputs,
-    GraphBuilderIdentity const &identity, PortId target, EventPortRef source) {
+    GraphBuilderIdentity const &identity, ConcretePortId target, EventPortRef source) {
   if (source.graph_builder == nullptr) {
     details::error("builder " + identity.value + ": empty EventPortRef");
   }
@@ -45,9 +100,9 @@ void GraphBuilderConnections::connect_event_input(
   auto const source_type = source.node_index == GRAPH_ID
                                ? graph_event_inputs[source.output_port].type
                                : topology.is_scope_boundary_port(
-                                     PortId{source.node_index, source.output_port})
+                                     ConcretePortId{source.node_index, source.output_port})
                                      ? topology.scope_boundary_event_output(
-                                           PortId{source.node_index, source.output_port}).type
+                                           ConcretePortId{source.node_index, source.output_port}).type
                                      : topology.ports(source.node_index)
                                            .event_outputs()[source.output_port]
                                            .type;
@@ -55,15 +110,15 @@ void GraphBuilderConnections::connect_event_input(
       topology.ports(target.node).event_inputs()[target.port].type;
   _placed_event_inputs.insert(target);
   topology.add_event_edge(GraphEventEdge{
-      PortId{source.node_index, source.output_port}, target,
+      ConcretePortId{source.node_index, source.output_port}, target,
       EventConversionRegistry::instance().plan(source_type, target_type)});
 }
 
-void GraphBuilderConnections::mark_runtime_filled_sample_input(PortId target) {
+void GraphBuilderConnections::mark_runtime_filled_sample_input(ConcretePortId target) {
   _runtime_filled_sample_inputs.insert(target);
 }
 
-void GraphBuilderConnections::mark_runtime_filled_event_input(PortId target) {
+void GraphBuilderConnections::mark_runtime_filled_event_input(ConcretePortId target) {
   _runtime_filled_event_inputs.insert(target);
 }
 
@@ -78,7 +133,7 @@ GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
       size_t const node_i = virtual_node.concrete_node_indices[member_ordinal];
       auto const &node = topology.concrete_node(node_i);
       for (size_t input_i = 0; input_i < node.inputs().size(); ++input_i) {
-        PortId const target_port{node_i, input_i};
+        ConcretePortId const target_port{node_i, input_i};
         if (_placed_sample_inputs.contains(target_port)) {
           continue;
         }
@@ -91,7 +146,7 @@ GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
       }
       for (size_t input_i = 0; input_i < node.event_inputs().size();
            ++input_i) {
-        PortId const target_port{node_i, input_i};
+        ConcretePortId const target_port{node_i, input_i};
         if (_placed_event_inputs.contains(target_port)) {
           continue;
         }
@@ -118,7 +173,7 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
       size_t const node_i = virtual_node.concrete_node_indices[member_ordinal];
       auto const &node = topology.concrete_node(node_i);
       for (size_t input_i = 0; input_i < node.inputs().size(); ++input_i) {
-        PortId const target_port{node_i, input_i};
+        ConcretePortId const target_port{node_i, input_i};
         result.sample.push_back(GraphBuilderVirtualSampleInput{
             .target = target_port,
             .virtual_node_id = virtual_node.id,
@@ -132,7 +187,7 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
       }
       for (size_t input_i = 0; input_i < node.event_inputs().size();
            ++input_i) {
-        PortId const target_port{node_i, input_i};
+        ConcretePortId const target_port{node_i, input_i};
         result.event.push_back(GraphBuilderVirtualEventInput{
             .target = target_port,
             .virtual_node_id = virtual_node.id,
@@ -152,36 +207,38 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
 GraphBuilderVirtualSampleInputFamilies
 GraphBuilderConnections::collect_virtual_sample_input_families(
     GraphBuilderTopology const &topology,
+    GraphBuilderNodeBundles const &node_bundles,
     GraphBuilderVirtualNodes const &virtual_nodes) const {
   GraphBuilderVirtualSampleInputFamilies result;
   for (auto const &virtual_node : virtual_nodes.records()) {
-    for (size_t member_ordinal = 0;
-         member_ordinal < virtual_node.concrete_node_indices.size();
-         ++member_ordinal) {
-      size_t const node_i = virtual_node.concrete_node_indices[member_ordinal];
-      auto const &node = topology.concrete_node(node_i);
-      for (size_t input_i = 0; input_i < node.inputs().size(); ++input_i) {
-        auto const &config = node.inputs()[input_i];
-        PortId const target_port{node_i, input_i};
-        std::vector<GraphBuilderVirtualSampleInputChannel> channels(
-            channel_count(config.channel_layout.channel_type));
-        for (auto &channel : channels) {
-          channel.target = target_port;
-          channel.has_existing_connection =
-              _placed_sample_inputs.contains(target_port);
-          channel.runtime_filled =
-              _runtime_filled_sample_inputs.contains(target_port);
-        }
-        result.families.push_back(GraphBuilderVirtualSampleInputFamily{
-            .virtual_node_id = virtual_node.id,
-            .member_ordinal = member_ordinal,
-            .family_ordinal = input_i,
-            .family_name = config.name,
-            .config = config,
-            .channel_type = config.channel_layout.channel_type,
-            .channels = std::move(channels),
-        });
+    for (auto const &mapping : virtual_node.sample_inputs) {
+      if (mapping.node_bundle_ports.empty()) {
+        continue;
       }
+      auto const first_ports = resolve_bundle_sample_port(
+          node_bundles, mapping.node_bundle_ports.front(), true);
+      auto config = topology.ports(first_ports.front().node).inputs()[first_ports.front().port];
+      config.channel_layout = mapping.channel_layout;
+      auto const channel_total = channel_count(mapping.channel_layout.channel_type);
+      std::vector<GraphBuilderVirtualSampleInputChannel> channels(channel_total);
+      for (auto const bundle_port : mapping.node_bundle_ports) {
+        auto const ports = resolve_bundle_sample_port(node_bundles, bundle_port, true);
+        append_resolved_channels(channels, ports, mapping.channel_layout,
+                                 [&](ConcretePortId port) { return _placed_sample_inputs.contains(port); });
+        for (size_t channel = 0; channel < channel_total; ++channel) {
+          auto const port = ports.size() == 1 ? ports.front() : ports[channel];
+          channels[channel].runtime_filled = channels[channel].runtime_filled
+              || _runtime_filled_sample_inputs.contains(port);
+        }
+      }
+      result.families.push_back(GraphBuilderVirtualSampleInputFamily{
+          .virtual_node_id = virtual_node.id,
+          .family_ordinal = mapping.ordinal,
+          .family_name = mapping.name,
+          .config = std::move(config),
+          .channel_type = mapping.channel_layout.channel_type,
+          .channels = std::move(channels),
+      });
     }
   }
   return result;
@@ -192,8 +249,8 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
     GraphBuilderVirtualNodes const &virtual_nodes) const {
   GraphBuilderVirtualOutputs result;
 
-  std::unordered_set<PortId> connected_sample_sources;
-  std::unordered_set<PortId> connected_event_sources;
+  std::unordered_set<ConcretePortId> connected_sample_sources;
+  std::unordered_set<ConcretePortId> connected_event_sources;
   topology.for_each_sample_edge([&](GraphEdge const &edge) {
     connected_sample_sources.insert(edge.source);
   });
@@ -208,7 +265,7 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
       size_t const node_i = virtual_node.concrete_node_indices[member_ordinal];
       auto const &node = topology.concrete_node(node_i);
       for (size_t output_i = 0; output_i < node.outputs().size(); ++output_i) {
-        PortId const source_port{node_i, output_i};
+        ConcretePortId const source_port{node_i, output_i};
         result.sample.push_back(GraphBuilderVirtualSampleOutput{
             .source = source_port,
             .virtual_node_id = virtual_node.id,
@@ -220,7 +277,7 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
       }
       for (size_t output_i = 0; output_i < node.event_outputs().size();
            ++output_i) {
-        PortId const source_port{node_i, output_i};
+        ConcretePortId const source_port{node_i, output_i};
         result.event.push_back(GraphBuilderVirtualEventOutput{
             .source = source_port,
             .virtual_node_id = virtual_node.id,
@@ -238,39 +295,38 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
 GraphBuilderVirtualSampleOutputFamilies
 GraphBuilderConnections::collect_virtual_sample_output_families(
     GraphBuilderTopology const &topology,
+    GraphBuilderNodeBundles const &node_bundles,
     GraphBuilderVirtualNodes const &virtual_nodes) const {
-  std::unordered_set<PortId> connected_sample_sources;
+  std::unordered_set<ConcretePortId> connected_sample_sources;
   topology.for_each_sample_edge([&](GraphEdge const &edge) {
     connected_sample_sources.insert(edge.source);
   });
 
   GraphBuilderVirtualSampleOutputFamilies result;
   for (auto const &virtual_node : virtual_nodes.records()) {
-    for (size_t member_ordinal = 0;
-         member_ordinal < virtual_node.concrete_node_indices.size();
-         ++member_ordinal) {
-      size_t const node_i = virtual_node.concrete_node_indices[member_ordinal];
-      auto const &node = topology.concrete_node(node_i);
-      for (size_t output_i = 0; output_i < node.outputs().size(); ++output_i) {
-        auto const &config = node.outputs()[output_i];
-        PortId const source_port{node_i, output_i};
-        std::vector<GraphBuilderVirtualSampleOutputChannel> channels(
-            channel_count(config.channel_layout.channel_type));
-        for (auto &channel : channels) {
-          channel.source = source_port;
-          channel.has_existing_downstream_connection =
-              connected_sample_sources.contains(source_port);
-        }
-        result.families.push_back(GraphBuilderVirtualSampleOutputFamily{
-            .virtual_node_id = virtual_node.id,
-            .member_ordinal = member_ordinal,
-            .family_ordinal = output_i,
-            .family_name = config.name,
-            .config = config,
-            .channel_type = config.channel_layout.channel_type,
-            .channels = std::move(channels),
-        });
+    for (auto const &mapping : virtual_node.sample_outputs) {
+      if (mapping.node_bundle_ports.empty()) {
+        continue;
       }
+      auto const first_ports = resolve_bundle_sample_port(
+          node_bundles, mapping.node_bundle_ports.front(), false);
+      auto config = topology.ports(first_ports.front().node).outputs()[first_ports.front().port];
+      config.channel_layout = mapping.channel_layout;
+      auto const channel_total = channel_count(mapping.channel_layout.channel_type);
+      std::vector<GraphBuilderVirtualSampleOutputChannel> channels(channel_total);
+      for (auto const bundle_port : mapping.node_bundle_ports) {
+        auto const ports = resolve_bundle_sample_port(node_bundles, bundle_port, false);
+        append_resolved_channels(channels, ports, mapping.channel_layout,
+                                 [&](ConcretePortId port) { return connected_sample_sources.contains(port); });
+      }
+      result.families.push_back(GraphBuilderVirtualSampleOutputFamily{
+          .virtual_node_id = virtual_node.id,
+          .family_ordinal = mapping.ordinal,
+          .family_name = mapping.name,
+          .config = std::move(config),
+          .channel_type = mapping.channel_layout.channel_type,
+          .channels = std::move(channels),
+      });
     }
   }
   return result;
@@ -278,28 +334,28 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
 
 void GraphBuilderConnections::import_child(GraphBuilderConnections const &child,
                                            size_t child_node_offset) {
-  for (PortId const port : child._placed_sample_inputs) {
+  for (ConcretePortId const port : child._placed_sample_inputs) {
     if (port.node != GRAPH_ID) {
       _placed_sample_inputs.insert(
-          PortId{child_node_offset + port.node, port.port});
+          ConcretePortId{child_node_offset + port.node, port.port});
     }
   }
-  for (PortId const port : child._placed_event_inputs) {
+  for (ConcretePortId const port : child._placed_event_inputs) {
     if (port.node != GRAPH_ID) {
       _placed_event_inputs.insert(
-          PortId{child_node_offset + port.node, port.port});
+          ConcretePortId{child_node_offset + port.node, port.port});
     }
   }
-  for (PortId const port : child._runtime_filled_sample_inputs) {
+  for (ConcretePortId const port : child._runtime_filled_sample_inputs) {
     if (port.node != GRAPH_ID) {
       _runtime_filled_sample_inputs.insert(
-          PortId{child_node_offset + port.node, port.port});
+          ConcretePortId{child_node_offset + port.node, port.port});
     }
   }
-  for (PortId const port : child._runtime_filled_event_inputs) {
+  for (ConcretePortId const port : child._runtime_filled_event_inputs) {
     if (port.node != GRAPH_ID) {
       _runtime_filled_event_inputs.insert(
-          PortId{child_node_offset + port.node, port.port});
+          ConcretePortId{child_node_offset + port.node, port.port});
     }
   }
 }

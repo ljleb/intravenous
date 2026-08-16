@@ -18,7 +18,7 @@ struct VirtualSamplePortMapping {
   std::string name{};
   size_t ordinal = 0;
   ChannelLayout channel_layout{};
-  std::vector<PortId> concrete_ports{};
+  std::vector<NodeBundlePortId> node_bundle_ports{};
   bool operator==(VirtualSamplePortMapping const &) const = default;
 };
 
@@ -26,7 +26,7 @@ struct VirtualEventPortMapping {
   std::string name{};
   size_t ordinal = 0;
   EventTypeId type = EventTypeId::empty;
-  std::vector<PortId> concrete_ports{};
+  std::vector<NodeBundlePortId> node_bundle_ports{};
   bool operator==(VirtualEventPortMapping const &) const = default;
 };
 
@@ -41,6 +41,36 @@ struct VirtualNodeRecord {
   std::vector<VirtualSamplePortMapping> sample_outputs{};
   std::vector<VirtualEventPortMapping> event_inputs{};
   std::vector<VirtualEventPortMapping> event_outputs{};
+};
+
+// Builder-facing port snapshot for consumers such as GraphInputLanes.  It
+// deliberately stops at NodeBundlePortId: concrete ports are a lowering
+// detail and must be resolved by GraphBuilder operations, not by consumers.
+struct GraphBuilderVirtualSampleInputPort {
+  VirtualPortId id{};
+  InputConfig config{};
+  std::vector<NodeBundlePortId> node_bundle_ports{};
+};
+struct GraphBuilderVirtualSampleOutputPort {
+  VirtualPortId id{};
+  OutputConfig config{};
+  std::vector<NodeBundlePortId> node_bundle_ports{};
+};
+struct GraphBuilderVirtualEventInputPort {
+  VirtualPortId id{};
+  EventInputConfig config{};
+  std::vector<NodeBundlePortId> node_bundle_ports{};
+};
+struct GraphBuilderVirtualEventOutputPort {
+  VirtualPortId id{};
+  EventOutputConfig config{};
+  std::vector<NodeBundlePortId> node_bundle_ports{};
+};
+struct GraphBuilderVirtualPorts {
+  std::vector<GraphBuilderVirtualSampleInputPort> sample_inputs{};
+  std::vector<GraphBuilderVirtualSampleOutputPort> sample_outputs{};
+  std::vector<GraphBuilderVirtualEventInputPort> event_inputs{};
+  std::vector<GraphBuilderVirtualEventOutputPort> event_outputs{};
 };
 
 // Authoritative nominal relation between an authored virtual node and its
@@ -62,6 +92,8 @@ public:
                     size_t node_bundle_offset);
 
   std::vector<VirtualNodeRecord> const &records() const;
+  GraphBuilderVirtualPorts ports(GraphBuilderTopology const &,
+                                 GraphBuilderNodeBundles const &) const;
   VirtualNodeRecord const &record(VirtualNodeHandle) const;
   std::vector<std::string> ids_for_bundle(NodeBundle const &) const;
 

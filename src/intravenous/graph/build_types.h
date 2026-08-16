@@ -82,6 +82,9 @@ namespace iv {
 
     struct GraphBuildMetadata {
         std::vector<LoweredSubgraph> lowered_subgraphs;
+        // Type identities are build diagnostics.  They make generated routing
+        // nodes observable without exposing concrete execution nodes to UI code.
+        std::vector<std::string> concrete_node_type_identities;
         std::vector<std::vector<SourceInfo>> node_source_infos;
         std::unordered_map<std::string, std::vector<std::string>> virtual_node_ids_by_backing_node_id;
     };

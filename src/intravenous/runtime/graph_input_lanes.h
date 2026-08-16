@@ -8,6 +8,7 @@
 #include <intravenous/runtime/sample_stream_blocks.h>
 #include <intravenous/runtime/task_runner_events.h>
 #include <intravenous/runtime/lane_graph.h>
+#include <intravenous/runtime/graph_input_lanes/block_store.h>
 #include <intravenous/runtime/uuid.h>
 
 #include <functional>
@@ -29,14 +30,14 @@ public:
         timeline_lane,
     };
 
-    enum class ConcreteSampleInputState {
+    enum class NodeBundleSampleInputState {
         overridden,
         virtual_follow,
         timeline_lane,
         disconnected,
     };
 
-    enum class ConcreteEventInputState {
+    enum class NodeBundleEventInputState {
         default_,
         virtual_follow,
         timeline_lane,
@@ -47,7 +48,7 @@ public:
         timeline_lane,
     };
 
-    enum class ConcreteOutputState {
+    enum class NodeBundleOutputState {
         virtual_port,
         timeline_lane,
     };
@@ -80,7 +81,7 @@ public:
         std::string source_identity {};
         std::optional<int> source_identity_hash {};
         std::optional<int> public_port_name_hash {};
-        std::optional<size_t> concrete_member_ordinal {};
+        std::optional<size_t> node_bundle_port_ordinal {};
         bool graph_connected = false;
         std::vector<DesiredPublicGraphPortChannel> channels {};
     };
@@ -91,20 +92,8 @@ public:
         LaneMetadata metadata {};
     };
 
-    struct CompletedSampleInput {
-        GraphBuilder::VacantSampleInput input {};
-        LaneId lane {};
-    };
-
-    struct CompletedEventInput {
-        GraphBuilder::VacantEventInput input {};
-        LaneId lane {};
-    };
-
     struct BuilderCompletionDiff {
         TimelineLaneBatchUpdate timeline_batch {};
-        std::vector<CompletedSampleInput> sample_inputs {};
-        std::vector<CompletedEventInput> event_inputs {};
         std::vector<LaneId> prerequisite_lanes {};
     };
 
@@ -118,7 +107,7 @@ public:
 
 private:
     mutable std::mutex mutex;
-    mutable std::mutex output_blocks_mutex_;
+    GraphInputLanesBlockStore output_blocks_;
     LaneIdAllocator lane_ids;
     std::unordered_map<std::string, std::vector<DesiredGraphInputPort>> desired_ports_by_instance_id;
     std::vector<DesiredGraphInputPort> desired_ports;
@@ -129,21 +118,21 @@ private:
     std::unordered_map<std::string, std::vector<DesiredPublicGraphPort>> desired_public_output_ports_by_instance_id;
     std::vector<DesiredPublicGraphPort> desired_public_output_ports;
     std::unordered_map<std::string, VirtualOutputState> virtual_output_states_by_key;
-    std::unordered_map<std::string, ConcreteOutputState> concrete_output_states_by_key;
+    std::unordered_map<std::string, NodeBundleOutputState> node_bundle_output_states_by_key;
     std::vector<ExistingTrackedLane> tracked_lanes;
     std::unordered_map<std::string, std::vector<std::vector<Sample*>>> live_inputs;
     std::unordered_map<std::string, std::vector<std::unique_ptr<std::atomic<Sample::storage>>>> live_input_values;
     std::unordered_map<std::string, Sample> sample_input_default_values;
-    std::unordered_set<std::string> concrete_live_input_overrides;
+    std::unordered_set<std::string> node_bundle_live_input_overrides;
     std::unordered_map<std::string, VirtualSampleKnobState> virtual_sample_knob_states_by_key;
-    std::unordered_map<std::string, ConcreteSampleInputState> concrete_sample_input_states_by_key;
-    std::unordered_map<std::string, ConcreteEventInputState> concrete_event_input_states_by_key;
+    std::unordered_map<std::string, NodeBundleSampleInputState> node_bundle_sample_input_states_by_key;
+    std::unordered_map<std::string, NodeBundleEventInputState> node_bundle_event_input_states_by_key;
     std::unordered_map<std::string, InternedString> virtual_sample_knob_lane_ids_by_key;
-    std::unordered_map<std::string, InternedString> concrete_sample_input_lane_ids_by_key;
+    std::unordered_map<std::string, InternedString> node_bundle_sample_input_lane_ids_by_key;
     std::unordered_map<std::string, InternedString> virtual_event_input_lane_ids_by_key;
-    std::unordered_map<std::string, InternedString> concrete_event_input_lane_ids_by_key;
+    std::unordered_map<std::string, InternedString> node_bundle_event_input_lane_ids_by_key;
     std::unordered_map<std::string, InternedString> virtual_output_lane_ids_by_key;
-    std::unordered_map<std::string, InternedString> concrete_output_lane_ids_by_key;
+    std::unordered_map<std::string, InternedString> node_bundle_output_lane_ids_by_key;
     std::unordered_map<std::string, ProjectSampleInputState> public_sample_input_states_by_key;
     std::unordered_map<std::string, InternedString> public_sample_input_lane_ids_by_key;
     std::unordered_map<std::string, ProjectEventInputState> public_event_input_states_by_key;
@@ -154,8 +143,6 @@ private:
     std::unordered_set<std::string> pending_rebuild_instance_ids;
     std::vector<TimelineLaneBatchUpdate> pending_timeline_batches;
     std::uint64_t current_update_version_index_ = 1;
-    std::unordered_map<LaneId, OwnedSampleBlock, LaneIdHash> sample_output_blocks_;
-    std::unordered_map<LaneId, std::vector<TimedEvent>, LaneIdHash> event_output_blocks_;
 
     static std::vector<DesiredGraphInputPort> graph_input_port_descriptors_for(
         IvModuleInstance const &instance);
@@ -169,9 +156,9 @@ private:
         GraphBuilder const &builder);
     static int module_instance_numeric_id(std::string_view instance_id);
     static int hash_string(std::string const &value);
-    static std::string concrete_key(std::string_view virtual_node_id, size_t member_ordinal);
-    static std::string concrete_key_prefix(std::string_view virtual_node_id);
-    static std::string concrete_override_key(
+    static std::string node_bundle_key(std::string_view virtual_node_id, size_t member_ordinal);
+    static std::string node_bundle_key_prefix(std::string_view virtual_node_id);
+    static std::string node_bundle_override_key(
         std::string_view virtual_node_id,
         size_t member_ordinal,
         size_t input_ordinal);
@@ -204,7 +191,7 @@ private:
     static bool lane_metadata_matches_port(
         LaneMetadata const &metadata,
         DesiredGraphInputPort const &port);
-    static bool has_concrete_descriptor_for_port(
+    static bool has_node_bundle_descriptor_for_port(
         std::span<DesiredGraphInputPort const> ports,
         DesiredGraphInputPort const &virtual_port);
     static std::string public_port_key(DesiredPublicGraphPort const &port);
@@ -242,7 +229,7 @@ private:
         GraphInputPortDescriptor const &port) const;
     GraphInputLaneBindings reconcile_ports_locked(TimelineLaneBatchUpdate *batch = nullptr);
     void reconcile_output_ports_locked(TimelineLaneBatchUpdate *batch = nullptr);
-    std::optional<ConcreteOutputState> effective_concrete_output_state_locked(
+    std::optional<NodeBundleOutputState> effective_node_bundle_output_state_locked(
         DesiredGraphInputPort const &port) const;
     bool virtual_output_is_timeline_lane_locked(
         DesiredGraphInputPort const &port) const;

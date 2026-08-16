@@ -11,24 +11,34 @@
 #include <vector>
 
 namespace iv {
-    struct PortId {
+    struct ConcretePortId {
         size_t node;
         size_t port;
 
-        PortId(size_t node = 0, size_t port = 0) :
+        ConcretePortId(size_t node = 0, size_t port = 0) :
             node(node), port(port)
         {}
 
-        bool operator==(PortId const&) const = default;
+        bool operator==(ConcretePortId const&) const = default;
+    };
+
+    // Stable authored identity. It is intentionally independent of a
+    // NodeBundle or ConcreteNode so lane and persistence state survive rebuilds.
+    struct VirtualPortId {
+        std::string virtual_node_id {};
+        PortKind port_kind = PortKind::sample;
+        size_t port_ordinal = 0;
+
+        bool operator==(VirtualPortId const&) const = default;
     };
 
     struct GraphEdge {
-        PortId source, target;
+        ConcretePortId source, target;
         ChannelConversionPlan conversion;
 
         GraphEdge(
-            PortId source = {},
-            PortId target = {},
+            ConcretePortId source = {},
+            ConcretePortId target = {},
             ChannelConversionPlan conversion = {}
         ) :
             source(source), target(target), conversion(std::move(conversion))
@@ -43,12 +53,12 @@ namespace iv {
     };
 
     struct GraphEventEdge {
-        PortId source, target;
+        ConcretePortId source, target;
         EventConversionPlan conversion;
 
         GraphEventEdge(
-            PortId source = {},
-            PortId target = {},
+            ConcretePortId source = {},
+            ConcretePortId target = {},
             EventConversionPlan conversion = {}
         ) :
             source(source), target(target), conversion(std::move(conversion))
@@ -76,9 +86,9 @@ namespace iv {
 
     struct DetachedInfo {
         size_t detach_id = 0;
-        PortId original_source;
+        ConcretePortId original_source;
         size_t writer_node = std::numeric_limits<size_t>::max();
-        PortId reader_output;
+        ConcretePortId reader_output;
         size_t loop_extra_latency = 1;
 
         bool operator==(DetachedInfo const&) const = default;
@@ -162,10 +172,10 @@ namespace iv {
         std::vector<OutputConfig> sample_outputs;
         std::vector<EventInputConfig> event_inputs;
         std::vector<EventOutputConfig> event_outputs;
-        std::vector<std::vector<PortId>> sample_input_targets;
-        std::vector<PortId> sample_output_sources;
-        std::vector<std::vector<PortId>> event_input_targets;
-        std::vector<PortId> event_output_sources;
+        std::vector<std::vector<ConcretePortId>> sample_input_targets;
+        std::vector<ConcretePortId> sample_output_sources;
+        std::vector<std::vector<ConcretePortId>> event_input_targets;
+        std::vector<ConcretePortId> event_output_sources;
         std::optional<size_t> ttl_samples;
     };
 
@@ -177,11 +187,11 @@ namespace iv {
 }
 
 template<>
-struct std::hash<iv::PortId>
+struct std::hash<iv::ConcretePortId>
 {
     std::hash<size_t> size_t_hash;
 
-    std::size_t operator()(const iv::PortId& p) const
+    std::size_t operator()(const iv::ConcretePortId& p) const
     {
         return size_t_hash(p.node) ^ (~size_t_hash(p.port) - 1);
     }
@@ -190,7 +200,7 @@ struct std::hash<iv::PortId>
 template<>
 struct std::hash<iv::GraphEdge>
 {
-    std::hash<iv::PortId> port_id_hash;
+    std::hash<iv::ConcretePortId> port_id_hash;
 
     std::size_t operator()(const iv::GraphEdge& e) const
     {
@@ -201,7 +211,7 @@ struct std::hash<iv::GraphEdge>
 template<>
 struct std::hash<iv::GraphEventEdge>
 {
-    std::hash<iv::PortId> port_id_hash;
+    std::hash<iv::ConcretePortId> port_id_hash;
 
     std::size_t operator()(const iv::GraphEventEdge& e) const
     {

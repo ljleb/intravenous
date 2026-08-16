@@ -1,5 +1,9 @@
 #include <intravenous/graph/builder/metadata.h>
 
+#include <intravenous/graph/builder/node_bundles.h>
+#include <intravenous/graph/builder/topology.h>
+#include <intravenous/graph/builder/virtual_nodes.h>
+
 namespace iv::details {
 
 VirtualPortConnectivity
@@ -357,5 +361,250 @@ build_virtual_metadata(PreparedGraph const &g,
 
   return std::make_pair(std::move(virtual_nodes),
                         std::move(virtual_node_ids_by_backing_node_id));
+}
+
+namespace {
+std::vector<ConcretePortId> resolve_bundle_sample_port(
+    GraphBuilderNodeBundles const &node_bundles,
+    NodeBundlePortId address, bool inputs) {
+  auto const &bundle = node_bundles.bundle(address.node_bundle_handle);
+  auto const &mappings = inputs ? bundle.sample_inputs : bundle.sample_outputs;
+  if (address.port_ordinal >= mappings.size()) {
+    error("virtual metadata references an out-of-bounds NodeBundle port");
+  }
+  return std::visit([](auto const &mapping) -> std::vector<ConcretePortId> {
+    using Mapping = std::remove_cvref_t<decltype(mapping)>;
+    if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>) {
+      return {mapping.concrete_port};
+    } else if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>) {
+      std::vector<ConcretePortId> ports(mapping.channel_ports.size());
+      for (auto const &channel : mapping.channel_ports) {
+        ports.at(channel.channel_ordinal) = channel.concrete_port;
+      }
+      return ports;
+    } else {
+      return {mapping.subgraph_port};
+    }
+  }, mappings[address.port_ordinal]);
+}
+
+template <class Mapping>
+std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
+    std::vector<Mapping> const &mappings, GraphBuilderTopology const &topology,
+    GraphBuilderNodeBundles const &node_bundles, bool inputs) {
+  std::vector<IntrospectionPortInfo> result;
+  result.reserve(mappings.size());
+  for (auto const &mapping : mappings) {
+    if (mapping.node_bundle_ports.empty()) {
+      continue;
+    }
+    std::vector<ConcretePortId> ports;
+    for (auto const address : mapping.node_bundle_ports) {
+      auto const resolved = resolve_bundle_sample_port(node_bundles, address, inputs);
+      ports.insert(ports.end(), resolved.begin(), resolved.end());
+    }
+    auto const first = ports.front();
+    Sample default_value = 0.0f;
+    std::optional<Sample> min;
+    std::optional<Sample> max;
+    size_t history = 0;
+    size_t latency = 0;
+    if (inputs) {
+      auto const &config = topology.ports(first.node).inputs()[first.port];
+      default_value = config.default_value;
+      min = config.min;
+      max = config.max;
+      history = config.history;
+    } else {
+      latency = topology.ports(first.node).outputs()[first.port].latency;
+    }
+    bool any_connected = false;
+    bool any_disconnected = false;
+    for (auto const port : ports) {
+      bool connected = false;
+      if (inputs) {
+        topology.for_each_sample_edge([&](GraphEdge const &edge) {
+          connected = connected || edge.target == port;
+        });
+      } else {
+        topology.for_each_sample_edge([&](GraphEdge const &edge) {
+          connected = connected || edge.source == port;
+        });
+      }
+      any_connected = any_connected || connected;
+      any_disconnected = any_disconnected || !connected;
+    }
+    result.push_back(IntrospectionPortInfo{
+        .name = mapping.name,
+        .type = "sample",
+        .connectivity = any_connected && any_disconnected
+            ? VirtualPortConnectivity::mixed
+            : any_connected ? VirtualPortConnectivity::connected
+                            : VirtualPortConnectivity::disconnected,
+        .ordinal = mapping.ordinal,
+        .default_value = default_value,
+        .min = min,
+        .max = max,
+        .history = history,
+        .latency = latency,
+        .sample_channel_type = mapping.channel_layout.channel_type,
+    });
+  }
+  return result;
+}
+
+template <class Mapping>
+std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
+    std::vector<Mapping> const &mappings, GraphBuilderTopology const &topology,
+    GraphBuilderNodeBundles const &node_bundles, NodeBundleHandle bundle_handle,
+    bool inputs) {
+  std::vector<Mapping> bundle_mappings;
+  bundle_mappings.reserve(mappings.size());
+  for (auto const &mapping : mappings) {
+    auto const it = std::find_if(mapping.node_bundle_ports.begin(),
+                                 mapping.node_bundle_ports.end(),
+                                 [&](NodeBundlePortId port) {
+                                   return port.node_bundle_handle == bundle_handle;
+                                 });
+    if (it == mapping.node_bundle_ports.end()) continue;
+    auto projected = mapping;
+    projected.node_bundle_ports = {*it};
+    bundle_mappings.push_back(std::move(projected));
+  }
+  return project_virtual_sample_ports(bundle_mappings, topology, node_bundles,
+                                      inputs);
+}
+
+std::vector<IntrospectionPortInfo> project_bundle_event_ports(
+    NodeBundle const &bundle, GraphBuilderTopology const &topology,
+    bool inputs) {
+  auto project = [&](auto const &mappings) {
+    std::vector<IntrospectionPortInfo> result;
+    result.reserve(mappings.size());
+    for (size_t ordinal = 0; ordinal < mappings.size(); ++ordinal) {
+      auto const info = std::visit([&](auto const &mapping) {
+      auto const port = [&] {
+        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(mapping)>,
+                                     ConcreteEventPortMapping>)
+          return mapping.concrete_port;
+        else if constexpr (std::is_same_v<std::remove_cvref_t<decltype(mapping)>,
+                                          TiledEventPortMapping>)
+          return mapping.concrete_ports.front();
+        else
+          return mapping.subgraph_port;
+      }();
+      std::string name;
+      EventTypeId type = EventTypeId::empty;
+      if constexpr (std::is_same_v<std::remove_cvref_t<decltype(mapping)>,
+                                   ConcreteEventPortMapping> ||
+                    std::is_same_v<std::remove_cvref_t<decltype(mapping)>,
+                                   TiledEventPortMapping>) {
+        if (inputs) {
+          auto const &config = topology.concrete_node(port.node).event_inputs().at(port.port);
+          name = config.name;
+          type = config.type;
+        } else {
+          auto const &config = topology.concrete_node(port.node).event_outputs().at(port.port);
+          name = config.name;
+          type = config.type;
+        }
+      } else {
+        if (inputs) {
+          auto const &config = topology.subgraph_node(port.node).event_inputs().at(port.port);
+          name = config.name;
+          type = config.type;
+        } else {
+          auto const &config = topology.subgraph_node(port.node).event_outputs().at(port.port);
+          name = config.name;
+          type = config.type;
+        }
+      }
+      bool connected = false;
+      topology.for_each_event_edge([&](GraphEventEdge const &edge) {
+        connected = connected || (inputs ? edge.target == port : edge.source == port);
+      });
+      return IntrospectionPortInfo{
+          .name = std::move(name),
+          .type = event_type_name(type),
+          .connectivity = connected ? VirtualPortConnectivity::connected
+                                    : VirtualPortConnectivity::disconnected,
+          .ordinal = ordinal,
+      };
+      }, mappings[ordinal]);
+      result.push_back(info);
+    }
+    return result;
+  };
+  return inputs ? project(bundle.event_inputs) : project(bundle.event_outputs);
+}
+
+std::pair<std::string, std::string> bundle_display_type(
+    NodeBundle const &bundle, GraphBuilderTopology const &topology) {
+  if (bundle.subgraph_node_id.has_value()) {
+    auto const &node = topology.subgraph_node(*bundle.subgraph_node_id);
+    return {node.type_identity.value, node.type_identity.value};
+  }
+  if (bundle.concrete_node_ids.empty()) {
+    error("NodeBundle metadata has no backing node");
+  }
+  auto const &node = topology.concrete_node(bundle.concrete_node_ids.front());
+  return {node.type_identity.value, node.type_identity.value};
+}
+} // namespace
+
+void apply_virtual_port_metadata(
+    GraphIntrospectionMetadata &metadata, GraphBuilderTopology const &topology,
+    GraphBuilderNodeBundles const &node_bundles,
+    GraphBuilderVirtualNodes const &virtual_nodes) {
+  for (auto const &record : virtual_nodes.records()) {
+    auto it = std::find_if(metadata.virtual_nodes.begin(),
+                           metadata.virtual_nodes.end(),
+                           [&](auto const &node) { return node.id == record.id; });
+    if (it == metadata.virtual_nodes.end()) {
+      std::vector<SourceSpan> spans;
+      spans.reserve(record.source_infos.size());
+      for (auto const &info : record.source_infos) spans.push_back(info.span);
+      sort_and_deduplicate_spans(spans);
+      metadata.virtual_nodes.push_back(IntrospectionVirtualNode{
+          .id = record.id,
+          .source_identity = record.id,
+          .source_spans = std::move(spans),
+      });
+      it = std::prev(metadata.virtual_nodes.end());
+    }
+    it->sample_inputs = project_virtual_sample_ports<VirtualSamplePortMapping>(
+        record.sample_inputs, topology, node_bundles, true);
+    it->sample_outputs = project_virtual_sample_ports<VirtualSamplePortMapping>(
+        record.sample_outputs, topology, node_bundles, false);
+
+    // The execution graph may contain several concrete nodes for one tiled
+    // NodeBundle.  The UI's "concrete member" is deliberately the bundle,
+    // never one of those tiles.
+    it->members.clear();
+    it->backing_node_ids.clear();
+    for (size_t bundle_ordinal = 0;
+         bundle_ordinal < record.node_bundle_handles.size(); ++bundle_ordinal) {
+      auto const handle = record.node_bundle_handles[bundle_ordinal];
+      auto const &bundle = node_bundles.bundle(handle);
+      auto const [kind, type_identity] = bundle_display_type(bundle, topology);
+      if (it->kind.empty()) it->kind = kind;
+      if (it->type_identity.empty()) it->type_identity = type_identity;
+      auto const backing_id = "node-bundle:" + record.id + ":" +
+                              std::to_string(bundle_ordinal);
+      it->backing_node_ids.push_back(backing_id);
+      it->members.push_back(IntrospectionVirtualNode::Member{
+          .ordinal = bundle_ordinal,
+          .backing_node_id = backing_id,
+          .kind = kind,
+          .type_identity = type_identity,
+          .sample_inputs = project_bundle_sample_ports(
+              record.sample_inputs, topology, node_bundles, handle, true),
+          .sample_outputs = project_bundle_sample_ports(
+              record.sample_outputs, topology, node_bundles, handle, false),
+          .event_inputs = project_bundle_event_ports(bundle, topology, true),
+          .event_outputs = project_bundle_event_ports(bundle, topology, false),
+      });
+    }
+  }
 }
 } // namespace iv::details

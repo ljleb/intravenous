@@ -31,7 +31,7 @@ namespace iv {
         SamplePortRef(SamplePortRef const&) = default;
         SamplePortRef(SamplePortRef&&) noexcept = default;
         explicit SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
-        operator PortId() const { return { node_index, output_port }; }
+        operator ConcretePortId() const { return { node_index, output_port }; }
 
         SamplePortRef& operator=(SamplePortRef const&) = default;
         SamplePortRef& operator=(SamplePortRef&& rhs) = default;
@@ -93,6 +93,11 @@ namespace iv {
             std::array<SamplePortRef, ChannelType::channel_count> members)
             : _members(std::move(members)) {}
 
+        std::array<SamplePortRef, ChannelType::channel_count> const& members() const
+        {
+            return _members;
+        }
+
         template<class Member>
         auto operator[](Member) const
         requires std::same_as<typename std::remove_cvref_t<Member>::channel_type, ChannelType>;
@@ -144,7 +149,7 @@ namespace iv {
         explicit PublicSampleInputRef(SamplePortRef port_) : port(std::move(port_)) {}
 
         operator SamplePortRef() const { return port; }
-        operator PortId() const { return static_cast<PortId>(port); }
+        operator ConcretePortId() const { return static_cast<ConcretePortId>(port); }
 
         void _annotate_source_info(
             std::string_view declaration_identity,
@@ -160,7 +165,7 @@ namespace iv {
 
         EventPortRef() = default;
         explicit EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
-        operator PortId() const { return { node_index, output_port }; }
+        operator ConcretePortId() const { return { node_index, output_port }; }
 
         std::string to_string() const;
     };
@@ -170,7 +175,7 @@ namespace iv {
         PublicEventInputRef() = default;
         explicit PublicEventInputRef(EventPortRef port_) : port(std::move(port_)) {}
         operator EventPortRef() const { return port; }
-        operator PortId() const { return static_cast<PortId>(port); }
+        operator ConcretePortId() const { return static_cast<ConcretePortId>(port); }
         void _annotate_source_info(
             std::string_view declaration_identity, std::string_view file_path,
             uint32_t begin, uint32_t end) const;

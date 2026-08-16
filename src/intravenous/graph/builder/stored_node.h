@@ -35,10 +35,10 @@ struct NodeLifetime {
 struct LoweredSubgraphBinding {
   size_t begin = 0;
   size_t count = 0;
-  std::vector<std::vector<PortId>> sample_input_targets{};
-  std::vector<PortId> sample_output_sources{};
-  std::vector<std::vector<PortId>> event_input_targets{};
-  std::vector<PortId> event_output_sources{};
+  std::vector<std::vector<ConcretePortId>> sample_input_targets{};
+  std::vector<ConcretePortId> sample_output_sources{};
+  std::vector<std::vector<ConcretePortId>> event_input_targets{};
+  std::vector<ConcretePortId> event_output_sources{};
   std::string kind{};
 
   bool active() const;

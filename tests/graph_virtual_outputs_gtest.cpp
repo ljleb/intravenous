@@ -61,8 +61,8 @@ TEST(GraphVirtualOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
     EXPECT_EQ(family.family_ordinal, 0u);
     EXPECT_EQ(family.channel_type, ChannelTypeId::stereo);
     EXPECT_EQ(family.channels.size(), 2u);
-    ASSERT_TRUE(family.channels[0].source.has_value());
-    ASSERT_TRUE(family.channels[1].source.has_value());
+    ASSERT_EQ(family.channels[0].sources.size(), 1u);
+    ASSERT_EQ(family.channels[1].sources.size(), 1u);
 }
 
 TEST(GraphVirtualOutputsTest, NamedChannelOutputsKeepNameAndChannelAsSeparateIdentity)

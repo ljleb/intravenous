@@ -1467,7 +1467,7 @@ export class LiveGraphViewProvider {
             const memberEl = document.createElement("div");
             memberEl.className = isExpanded ? "group" : "group collapsed";
 
-            const header = row(member.kind || "member", member.description || \`member \${member.ordinal}\`);
+            const header = row(member.kind || "concrete", member.description || \`concrete \${member.ordinal}\`);
             header.classList.add("member-header");
             header.prepend(disclosure(isExpanded));
             header.addEventListener("click", () => toggleExpanded(memberKey, false));
@@ -1492,7 +1492,7 @@ export class LiveGraphViewProvider {
             const groupEl = document.createElement("div");
             groupEl.className = isExpanded ? "group" : "group collapsed";
 
-            const header = row("concrete members", String(node.members.length));
+            const header = row("concrete nodes", String(node.members.length));
             header.classList.add("members-header");
             header.prepend(disclosure(isExpanded));
             header.addEventListener("click", () => toggleExpanded(membersKey, false));

@@ -4,14 +4,25 @@
 
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <variant>
 #include <vector>
 
 namespace iv {
 using NodeBundleHandle = size_t;
 
+// An address in the builder-visible interface of one node insertion result.
+// It deliberately precedes any lowering to a ConcreteNode or SubgraphNode
+// port, so authored virtual ports can retain their structural membership.
+struct NodeBundlePortId {
+  NodeBundleHandle node_bundle_handle = 0;
+  PortKind port_kind = PortKind::sample;
+  size_t port_ordinal = 0;
+  bool operator==(NodeBundlePortId const &) const = default;
+};
+
 struct ConcreteSamplePortMapping {
-  PortId concrete_port{};
+  ConcretePortId concrete_port{};
   ChannelLayout channel_layout{};
 };
 
@@ -22,7 +33,7 @@ using SubgraphNodeId = size_t;
 
 struct TiledSamplePortChannelMapping {
   size_t channel_ordinal = 0;
-  PortId concrete_port{};
+  ConcretePortId concrete_port{};
 };
 
 struct TiledSamplePortMapping {
@@ -31,7 +42,7 @@ struct TiledSamplePortMapping {
 };
 
 struct SubgraphSamplePortMapping {
-  PortId subgraph_port{};
+  ConcretePortId subgraph_port{};
   ChannelLayout channel_layout{};
 };
 
@@ -40,17 +51,25 @@ using NodeBundleSamplePortMapping =
                  SubgraphSamplePortMapping>;
 
 struct ConcreteEventPortMapping {
-  PortId concrete_port{};
+  ConcretePortId concrete_port{};
   EventTypeId type = EventTypeId::empty;
 };
 
+// Event ports are not channelized. A tiled event port fans one input out to
+// every tile, or merges one output from every tile.
+struct TiledEventPortMapping {
+  EventTypeId type = EventTypeId::empty;
+  std::vector<ConcretePortId> concrete_ports{};
+};
+
 struct SubgraphEventPortMapping {
-  PortId subgraph_port{};
+  ConcretePortId subgraph_port{};
   EventTypeId type = EventTypeId::empty;
 };
 
 using NodeBundleEventPortMapping =
-    std::variant<ConcreteEventPortMapping, SubgraphEventPortMapping>;
+    std::variant<ConcreteEventPortMapping, TiledEventPortMapping,
+                 SubgraphEventPortMapping>;
 
 // A NodeBundle is the uniform builder-facing representation of a node. A
 // A bundle containing one ConcreteNode has one concrete port for each exposed
@@ -73,10 +92,17 @@ class GraphBuilderNodeBundles {
 public:
   NodeBundleHandle append_concrete(GraphBuilderTopology const &,
                                    size_t concrete_node_index);
+  NodeBundleHandle append_tiled(GraphBuilderTopology const &,
+                                std::span<size_t const> concrete_node_indices,
+                                ChannelLayout promoted_channel_layout);
   NodeBundleHandle append_subgraph(GraphBuilderTopology const &,
                                    size_t subgraph_node_index);
   NodeBundle const &bundle(NodeBundleHandle) const;
   NodeBundle &bundle(NodeBundleHandle);
+  TiledSamplePortMapping const &tiled_sample_output(
+      NodeBundleHandle, size_t output_ordinal) const;
+  TiledSamplePortMapping const &tiled_sample_input(
+      NodeBundleHandle, size_t input_ordinal) const;
   size_t concrete_node_index(NodeBundleHandle) const;
   size_t single_node_index(NodeBundleHandle) const;
   NodeBundleHandle bundle_for_concrete_node(size_t concrete_node_index) const;

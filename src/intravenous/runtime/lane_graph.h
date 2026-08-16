@@ -83,7 +83,11 @@ namespace iv {
 
     struct GraphInputPortDescriptor {
         std::string virtual_node_id {};
-        std::optional<size_t> concrete_member_ordinal {};
+        // This is the stable ordinal of a NodeBundlePort within a virtual
+        // port's builder mapping, not a concrete-node or tile ordinal.
+        // The matching NodeBundlePortId is used only while completing a
+        // particular builder instance.
+        std::optional<size_t> node_bundle_port_ordinal {};
         PortKind port_kind = PortKind::sample;
         size_t port_ordinal = 0;
         std::string port_name {};
@@ -113,8 +117,8 @@ namespace iv {
         {
             std::string key = port.virtual_node_id;
             key += "\x1fmember:";
-            if (port.concrete_member_ordinal.has_value()) {
-                key += std::to_string(*port.concrete_member_ordinal);
+            if (port.node_bundle_port_ordinal.has_value()) {
+                key += std::to_string(*port.node_bundle_port_ordinal);
             } else {
                 key += "virtual";
             }

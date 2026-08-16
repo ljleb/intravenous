@@ -313,15 +313,15 @@ TEST(Lanes, GraphInputPortsCanDescribeConcreteEventPorts)
 {
     iv::GraphInputPortDescriptor target {
         .virtual_node_id = "node",
-        .concrete_member_ordinal = 4u,
+        .node_bundle_port_ordinal = 4u,
         .port_kind = iv::PortKind::event,
         .port_ordinal = 5u,
         .port_name = "gate",
         .port_type = "trigger",
     };
 
-    ASSERT_TRUE(target.concrete_member_ordinal.has_value());
-    EXPECT_EQ(*target.concrete_member_ordinal, 4u);
+    ASSERT_TRUE(target.node_bundle_port_ordinal.has_value());
+    EXPECT_EQ(*target.node_bundle_port_ordinal, 4u);
     EXPECT_EQ(target.port_kind, iv::PortKind::event);
     EXPECT_EQ(target.port_ordinal, 5u);
 }
@@ -353,7 +353,7 @@ TEST(Lanes, GraphInputLanesDropMissingPortsWithoutDeletingConnections)
     auto const lanes = registry.reconcile({
         iv::GraphInputPortDescriptor {
             .virtual_node_id = "node",
-            .concrete_member_ordinal = 2u,
+            .node_bundle_port_ordinal = 2u,
             .port_kind = iv::PortKind::event,
             .port_ordinal = 0,
             .port_name = "gate",
@@ -382,8 +382,8 @@ TEST(Lanes, GraphInputLanesDropMissingPortsWithoutDeletingConnections)
     EXPECT_EQ(dangling[0].connection, connection);
     ASSERT_TRUE(dangling[0].missing_port.has_value());
     EXPECT_EQ(dangling[0].missing_port->virtual_node_id, "node");
-    ASSERT_TRUE(dangling[0].missing_port->concrete_member_ordinal.has_value());
-    EXPECT_EQ(*dangling[0].missing_port->concrete_member_ordinal, 2u);
+    ASSERT_TRUE(dangling[0].missing_port->node_bundle_port_ordinal.has_value());
+    EXPECT_EQ(*dangling[0].missing_port->node_bundle_port_ordinal, 2u);
 }
 
 TEST(Lanes, TypeErasedLaneNodeIntrospectsKnobLane)
@@ -828,7 +828,7 @@ TEST(Lanes, GraphInputLaneBindingsWireVirtualKnobsToConcreteKnobsToGraphInputs)
             },
             iv::GraphInputPortDescriptor {
                 .virtual_node_id = "osc",
-                .concrete_member_ordinal = 0u,
+                .node_bundle_port_ordinal = 0u,
                 .port_kind = iv::PortKind::sample,
                 .port_ordinal = 1,
                 .port_name = "frequency",
@@ -836,7 +836,7 @@ TEST(Lanes, GraphInputLaneBindingsWireVirtualKnobsToConcreteKnobsToGraphInputs)
             },
             iv::GraphInputPortDescriptor {
                 .virtual_node_id = "osc",
-                .concrete_member_ordinal = 1u,
+                .node_bundle_port_ordinal = 1u,
                 .port_kind = iv::PortKind::sample,
                 .port_ordinal = 1,
                 .port_name = "frequency",
@@ -875,7 +875,7 @@ TEST(Lanes, ConcreteKnobOwnershipIsJustDisconnectingTheOverrideInput)
             },
             iv::GraphInputPortDescriptor {
                 .virtual_node_id = "osc",
-                .concrete_member_ordinal = 0u,
+                .node_bundle_port_ordinal = 0u,
                 .port_kind = iv::PortKind::sample,
                 .port_ordinal = 1,
                 .port_name = "frequency",
@@ -906,7 +906,7 @@ TEST(Lanes, GraphInputLaneBindingReconciliationReusesSemanticKnobLaneIdentities)
         },
         iv::GraphInputPortDescriptor {
             .virtual_node_id = "osc",
-            .concrete_member_ordinal = 0u,
+            .node_bundle_port_ordinal = 0u,
             .port_kind = iv::PortKind::sample,
             .port_ordinal = 1,
             .port_name = "frequency",

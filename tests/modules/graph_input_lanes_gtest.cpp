@@ -236,6 +236,81 @@ TEST_F(GraphInputLanesTest, InstanceChangesPublishTimelineBatch)
     EXPECT_EQ(removal_count, 0u);
 }
 
+TEST_F(GraphInputLanesTest, TiledBundleUsesOneStereoVirtualPortAndOneConcreteMemberBinding)
+{
+    iv::GraphInputLanes lanes;
+    auto instance = make_instance_with_ports();
+    iv::GraphBuilder builder;
+    auto tiled = iv::_annotate_node_source_info(
+        builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>, iv::stereo>(),
+        "tiled-node");
+    (void)tiled;
+    builder.outputs({});
+
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
+    });
+    lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
+        .node_id = runtime_node_id(instance.instance_id, "tiled-node"),
+        .member_ordinal = std::nullopt,
+        .input_ordinal = 0,
+        .state = iv::ProjectSampleInputState::timeline_lane,
+    });
+    lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
+        .node_id = runtime_node_id(instance.instance_id, "tiled-node"),
+        .member_ordinal = 0,
+        .input_ordinal = 0,
+        .state = iv::ProjectSampleInputState::timeline_lane,
+    });
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
+
+    auto const virtual_id = runtime_node_id(instance.instance_id, "tiled-node");
+    auto const bindings = lanes.graph_input_lane_bindings(
+        iv::ProjectGraphInputLaneBindingsRequest{.ports = {
+            iv::GraphInputPortDescriptor{
+                .virtual_node_id = virtual_id,
+                .port_kind = iv::PortKind::sample,
+                .port_ordinal = 0,
+                .sample_channel_type = iv::ChannelTypeId::stereo,
+            },
+            iv::GraphInputPortDescriptor{
+                .virtual_node_id = virtual_id,
+                .node_bundle_port_ordinal = 0,
+                .port_kind = iv::PortKind::sample,
+                .port_ordinal = 0,
+                .sample_channel_type = iv::ChannelTypeId::stereo,
+            },
+        }});
+    ASSERT_EQ(bindings.virtual_sample_knobs.size(), 1u);
+    ASSERT_EQ(bindings.sample_inputs.size(), 1u);
+    EXPECT_EQ(bindings.virtual_sample_knobs.front().port.sample_channel_type,
+              iv::ChannelTypeId::stereo);
+    EXPECT_EQ(bindings.sample_inputs.front().port.node_bundle_port_ordinal, 0u);
+
+    iv::GraphBuilder rebuilt;
+    auto rebuilt_tiled = iv::_annotate_node_source_info(
+        rebuilt.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>, iv::stereo>(),
+        "tiled-node");
+    (void)rebuilt_tiled;
+    rebuilt.outputs({});
+    lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
+        .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &rebuilt}},
+    });
+    lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 2});
+    auto const rebuilt_bindings = lanes.graph_input_lane_bindings(
+        iv::ProjectGraphInputLaneBindingsRequest{.ports = {
+            iv::GraphInputPortDescriptor{
+                .virtual_node_id = virtual_id,
+                .port_kind = iv::PortKind::sample,
+                .port_ordinal = 0,
+                .sample_channel_type = iv::ChannelTypeId::stereo,
+            },
+        }});
+    ASSERT_EQ(rebuilt_bindings.virtual_sample_knobs.size(), 1u);
+    EXPECT_EQ(rebuilt_bindings.virtual_sample_knobs.front().knob_lane,
+              bindings.virtual_sample_knobs.front().knob_lane);
+}
+
 TEST_F(GraphInputLanesTest, AnnotatedPublicInputsGroupRepeatedSourceIntoOneVirtualLane)
 {
     iv::GraphInputLanes lanes;
