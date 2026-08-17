@@ -69,12 +69,12 @@ void GraphBuilderConnections::connect_event_input(
     details::error("event input target is out of bounds in builder " +
                    identity.value);
   }
-  auto const source_type = source.node_index == GRAPH_ID
-                               ? graph_event_inputs[source.output_port].type
-                               : topology.is_scope_boundary_port(
-                                     ConcretePortId{source.node_index, source.output_port})
+  auto const source_type = source.graph_input_port
+                               ? graph_event_inputs[
+                                     source.graph_input_port->port_ordinal].type
+                               : source.scope_boundary_port
                                      ? topology.scope_boundary_event_output(
-                                           ConcretePortId{source.node_index, source.output_port}).type
+                                           source.scope_boundary_port->legacy_port()).type
                                      : topology.ports(source.node_index)
                                            .event_outputs()[source.output_port]
                                            .type;
@@ -82,7 +82,7 @@ void GraphBuilderConnections::connect_event_input(
       topology.ports(target.node).event_inputs()[target.port].type;
   _placed_event_inputs.insert(target);
   topology.add_event_edge(GraphEventEdge{
-      ConcretePortId{source.node_index, source.output_port}, target,
+      static_cast<ConcretePortId>(source), target,
       EventConversionRegistry::instance().plan(source_type, target_type)});
 }
 

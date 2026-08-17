@@ -62,6 +62,7 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_, size_t node_index,
     : graph_builder(&graph_builder_), node_index(node_index),
       output_port(output_port) {
   if (node_index == GRAPH_ID) {
+    graph_input_port = GraphInputPortId{PortKind::sample, output_port};
     if (output_port >= graph_builder->_public_ports.sample_inputs().size()) {
       details::error(
           "graph input port " + std::to_string(output_port) +
@@ -74,8 +75,10 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_, size_t node_index,
     }
     return;
   }
-  if (graph_builder->_topology.is_scope_boundary_port(
-          ConcretePortId{node_index, output_port})) {
+  auto const topology_port = ConcretePortId{node_index, output_port};
+  if (graph_builder->_topology.is_scope_boundary_port(topology_port)) {
+    scope_boundary_port =
+        ScopeBoundaryPortId::from_legacy(topology_port, PortKind::sample);
     return;
   }
 
@@ -110,6 +113,7 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_, size_t node_index,
     : graph_builder(&graph_builder_), node_index(node_index),
       output_port(output_port) {
   if (node_index == GRAPH_ID) {
+    graph_input_port = GraphInputPortId{PortKind::event, output_port};
     if (output_port >= graph_builder->_public_ports.event_inputs().size()) {
       details::error("graph event input port " + std::to_string(output_port) +
                      " "
@@ -118,8 +122,10 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_, size_t node_index,
     }
     return;
   }
-  if (graph_builder->_topology.is_scope_boundary_port(
-          ConcretePortId{node_index, output_port})) {
+  auto const topology_port = ConcretePortId{node_index, output_port};
+  if (graph_builder->_topology.is_scope_boundary_port(topology_port)) {
+    scope_boundary_port =
+        ScopeBoundaryPortId::from_legacy(topology_port, PortKind::event);
     return;
   }
 
@@ -160,6 +166,8 @@ SamplePortRef::operator ConcretePortId() const {
   if (node_bundle_port) {
     details::error("a bundle-backed SamplePortRef must be materialized by GraphBuilder");
   }
+  if (graph_input_port) return graph_input_port->legacy_port();
+  if (scope_boundary_port) return scope_boundary_port->legacy_port();
   return {node_index, output_port};
 }
 
@@ -188,12 +196,11 @@ std::string SamplePortRef::to_string() const {
     return "sample output " + std::to_string(node_bundle_port->port_ordinal) +
            " of node bundle " + std::to_string(node_bundle_port->node_bundle_handle);
   }
-  if (node_index == GRAPH_ID) {
-    return "graph input " + std::to_string(output_port) + " in builder " +
-           graph_builder->_identity.value;
+  if (graph_input_port) {
+    return "graph input " + std::to_string(graph_input_port->port_ordinal) +
+           " in builder " + graph_builder->_identity.value;
   }
-  if (graph_builder->_topology.is_scope_boundary_port(
-          ConcretePortId{node_index, output_port})) {
+  if (scope_boundary_port) {
     return "subgraph sample input " + std::to_string(output_port) +
            " in builder " + graph_builder->_identity.value;
   }
@@ -205,12 +212,12 @@ std::string EventPortRef::to_string() const {
   if (!graph_builder) {
     return "empty event";
   }
-  if (node_index == GRAPH_ID) {
-    return "graph event input " + std::to_string(output_port) + " in builder " +
+  if (graph_input_port) {
+    return "graph event input " +
+           std::to_string(graph_input_port->port_ordinal) + " in builder " +
            graph_builder->_identity.value;
   }
-  if (graph_builder->_topology.is_scope_boundary_port(
-          ConcretePortId{node_index, output_port})) {
+  if (scope_boundary_port) {
     return "subgraph event input " + std::to_string(output_port) +
            " in builder " + graph_builder->_identity.value;
   }

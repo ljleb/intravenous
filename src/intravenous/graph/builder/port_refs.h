@@ -25,11 +25,49 @@ namespace iv {
              SampleStreamLayout Layout = SampleStreamLayout::planar>
     class TypedSamplePortTileChannelRef;
 
+    // Explicit builder-boundary addresses. Their legacy_port() projections are
+    // temporary bridges while GraphBuilderTopology still stores boundary edges
+    // in ConcretePortId. The semantic identity no longer depends on sentinel
+    // node indices in port-ref consumers.
+    struct GraphInputPortId {
+        PortKind port_kind = PortKind::sample;
+        size_t port_ordinal = 0;
+
+        ConcretePortId legacy_port() const noexcept
+        {
+            return {GRAPH_ID, port_ordinal};
+        }
+
+        bool operator==(GraphInputPortId const&) const = default;
+    };
+
+    struct ScopeBoundaryPortId {
+        PortKind port_kind = PortKind::sample;
+        size_t boundary_ordinal = 0;
+
+        ConcretePortId legacy_port() const noexcept
+        {
+            return {GRAPH_ID - 1 - boundary_ordinal, 0};
+        }
+
+        static ScopeBoundaryPortId from_legacy(ConcretePortId port, PortKind kind) noexcept
+        {
+            return ScopeBoundaryPortId{
+                .port_kind = kind,
+                .boundary_ordinal = GRAPH_ID - 1 - port.node,
+            };
+        }
+
+        bool operator==(ScopeBoundaryPortId const&) const = default;
+    };
+
     struct SamplePortRef {
         GraphBuilder* graph_builder{};
         size_t node_index{};
         size_t output_port{};
         std::optional<NodeBundlePortId> node_bundle_port{};
+        std::optional<GraphInputPortId> graph_input_port{};
+        std::optional<ScopeBoundaryPortId> scope_boundary_port{};
 
         SamplePortRef() = default;
         SamplePortRef(SamplePortRef const&) = default;
@@ -43,6 +81,8 @@ namespace iv {
         SamplePortRef _clone_handle() const;
 
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
+        bool is_graph_input() const { return graph_input_port.has_value(); }
+        bool is_scope_boundary() const { return scope_boundary_port.has_value(); }
         std::string to_string() const;
     };
 
@@ -177,11 +217,20 @@ namespace iv {
         GraphBuilder* graph_builder {};
         size_t node_index {};
         size_t output_port {};
+        std::optional<GraphInputPortId> graph_input_port {};
+        std::optional<ScopeBoundaryPortId> scope_boundary_port {};
 
         EventPortRef() = default;
         explicit EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
-        operator ConcretePortId() const { return { node_index, output_port }; }
+        operator ConcretePortId() const
+        {
+            if (graph_input_port) return graph_input_port->legacy_port();
+            if (scope_boundary_port) return scope_boundary_port->legacy_port();
+            return {node_index, output_port};
+        }
 
+        bool is_graph_input() const { return graph_input_port.has_value(); }
+        bool is_scope_boundary() const { return scope_boundary_port.has_value(); }
         std::string to_string() const;
     };
 
