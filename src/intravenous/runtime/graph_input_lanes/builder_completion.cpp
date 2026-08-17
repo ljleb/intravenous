@@ -385,11 +385,11 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
                         if (!port_ordinal.has_value()) {
                             continue;
                         }
-                        auto source = use_override_value
-                            ? static_cast<NodeRef>(execution_builder.node<ValueSource>(
+                        NodeRef source = use_override_value
+                            ? execution_builder.node<ValueSource>(
                                 &ensure_public_sample_input_value_locked(
-                                    port.instance_id, port.source_identity, port.default_value)))
-                            : execution_builder.node<LaneInputValue>(*lane, channel_index);
+                                    port.instance_id, port.source_identity, port.default_value)).node_ref()
+                            : execution_builder.node<LaneInputValue>(*lane, channel_index).node_ref();
                         embedded.connect_input(*port_ordinal, source);
                     }
                 } else if (port.event_type.has_value()) {

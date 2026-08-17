@@ -6,6 +6,16 @@
 #include <cstddef>
 
 namespace iv::details {
+    template<typename Node>
+    consteval size_t static_output_count()
+    {
+        static constexpr auto configs = Node::outputs();
+        return configs.size();
+    }
+
+    template<typename Node>
+    inline constexpr size_t static_output_count_v = static_output_count<Node>();
+
     template<typename Node, fixed_string Name>
     consteval size_t static_input_port_index()
     {

@@ -3,7 +3,6 @@
 #include <intravenous/graph/builder/topology.h>
 
 #include <algorithm>
-#include <type_traits>
 
 namespace iv {
 namespace {
@@ -31,31 +30,14 @@ void append_bundle_event_port_mappings(
     std::vector<VirtualEventPortMapping> &mappings, NodeBundle const &bundle,
     NodeBundleHandle bundle_handle, GraphBuilderTopology const &topology,
     bool inputs) {
-  auto const &bundle_mappings = inputs ? bundle.event_inputs : bundle.event_outputs;
-  for (size_t ordinal = 0; ordinal < bundle_mappings.size(); ++ordinal) {
-    std::visit([&](auto const &value) {
-      using Mapping = std::remove_cvref_t<decltype(value)>;
-      auto const port = [&] {
-        if constexpr (std::is_same_v<Mapping, ConcreteEventPortMapping>)
-          return value.concrete_port;
-        else if constexpr (std::is_same_v<Mapping, TiledEventPortMapping>)
-          return value.concrete_ports.front();
-        else
-          return value.subgraph_port;
-      }();
-      auto append = [&](auto const &config) {
-        append_virtual_event_port_mapping(
-            mappings, config, ordinal,
-            {bundle_handle, PortKind::event, ordinal});
-      };
-      if constexpr (std::is_same_v<Mapping, SubgraphEventPortMapping>) {
-        if (inputs) append(topology.subgraph_node(port.node).event_inputs()[port.port]);
-        else append(topology.subgraph_node(port.node).event_outputs()[port.port]);
-      } else {
-        if (inputs) append(topology.concrete_node(port.node).event_inputs()[port.port]);
-        else append(topology.concrete_node(port.node).event_outputs()[port.port]);
-      }
-    }, bundle_mappings[ordinal]);
+  auto const count = inputs ? bundle.event_input_count() : bundle.event_output_count();
+  for (size_t ordinal = 0; ordinal < count; ++ordinal) {
+    auto append = [&](auto const &config) {
+      append_virtual_event_port_mapping(mappings, config, ordinal,
+                                        {bundle_handle, PortKind::event, ordinal});
+    };
+    if (inputs) append(bundle.event_input_config(topology, ordinal));
+    else append(bundle.event_output_config(topology, ordinal));
   }
 }
 
@@ -88,58 +70,15 @@ void append_bundle_sample_port_mappings(
     std::vector<VirtualSamplePortMapping> &mappings,
     NodeBundle const &bundle, NodeBundleHandle bundle_handle,
     GraphBuilderTopology const &topology, bool inputs) {
-  auto const &bundle_mappings = inputs ? bundle.sample_inputs : bundle.sample_outputs;
-  for (size_t ordinal = 0; ordinal < bundle_mappings.size(); ++ordinal) {
-    std::visit(
-        [&](auto const &bundle_mapping) {
-          using Mapping = std::remove_cvref_t<decltype(bundle_mapping)>;
-          if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>) {
-            if (inputs) {
-              auto const &config = topology.concrete_node(bundle_mapping.concrete_port.node)
-                                       .inputs()[bundle_mapping.concrete_port.port];
-              append_virtual_sample_port_mapping(mappings, config, ordinal,
-                                                  bundle_mapping.channel_layout,
-                                                  {bundle_handle, PortKind::sample, ordinal});
-            } else {
-              auto const &config = topology.concrete_node(bundle_mapping.concrete_port.node)
-                                       .outputs()[bundle_mapping.concrete_port.port];
-              append_virtual_sample_port_mapping(mappings, config, ordinal,
-                                                  bundle_mapping.channel_layout,
-                                                  {bundle_handle, PortKind::sample, ordinal});
-            }
-          } else if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>) {
-            if (bundle_mapping.channel_ports.empty()) {
-              details::error("tiled virtual port has no concrete channel ports");
-            }
-            auto const first_port = bundle_mapping.channel_ports.front().concrete_port;
-            if (inputs) {
-              auto const &config = topology.concrete_node(first_port.node).inputs()[first_port.port];
-              append_virtual_sample_port_mapping(mappings, config, ordinal,
-                                                  bundle_mapping.channel_layout,
-                                                  {bundle_handle, PortKind::sample, ordinal});
-            } else {
-              auto const &config = topology.concrete_node(first_port.node).outputs()[first_port.port];
-              append_virtual_sample_port_mapping(mappings, config, ordinal,
-                                                  bundle_mapping.channel_layout,
-                                                  {bundle_handle, PortKind::sample, ordinal});
-            }
-          } else if constexpr (std::is_same_v<Mapping, SubgraphSamplePortMapping>) {
-            if (inputs) {
-              auto const &config = topology.subgraph_node(bundle_mapping.subgraph_port.node)
-                                       .inputs()[bundle_mapping.subgraph_port.port];
-              append_virtual_sample_port_mapping(mappings, config, ordinal,
-                                                  bundle_mapping.channel_layout,
-                                                  {bundle_handle, PortKind::sample, ordinal});
-            } else {
-              auto const &config = topology.subgraph_node(bundle_mapping.subgraph_port.node)
-                                       .outputs()[bundle_mapping.subgraph_port.port];
-              append_virtual_sample_port_mapping(mappings, config, ordinal,
-                                                  bundle_mapping.channel_layout,
-                                                  {bundle_handle, PortKind::sample, ordinal});
-            }
-          }
-        },
-        bundle_mappings[ordinal]);
+  auto const count = inputs ? bundle.sample_input_count() : bundle.sample_output_count();
+  for (size_t ordinal = 0; ordinal < count; ++ordinal) {
+    auto append = [&](auto const &config) {
+      append_virtual_sample_port_mapping(mappings, config, ordinal,
+          config.channel_layout,
+          {bundle_handle, PortKind::sample, ordinal});
+    };
+    if (inputs) append(bundle.sample_input_config(topology, ordinal));
+    else append(bundle.sample_output_config(topology, ordinal));
   }
 }
 } // namespace
@@ -167,31 +106,14 @@ void GraphBuilderVirtualNodes::attach_member(GraphBuilderTopology &topology,
                              node_bundle_handle)) {
     virtual_node.node_bundle_handles.push_back(node_bundle_handle);
   }
-  // A virtual node may name a SubgraphNode bundle. Its membership is fully
-  // represented by node_bundle_handles; the concrete-port projection below is
-  // only meaningful for a non-tiled ConcreteNode bundle.
-  if (bundle.subgraph_node_id) {
-    auto &bundle_handles =
-        node_bundles.bundle(node_bundle_handle).virtual_node_handles;
-    if (!std::ranges::contains(bundle_handles, handle)) {
-      bundle_handles.push_back(handle);
-    }
-    if (source_info &&
-        std::find(virtual_node.source_infos.begin(),
-                  virtual_node.source_infos.end(), *source_info) ==
-            virtual_node.source_infos.end()) {
-      virtual_node.source_infos.push_back(*source_info);
-    }
-    return;
-  }
   bool has_new_concrete_member = false;
-  for (auto const concrete_node_index : bundle.concrete_node_ids) {
+  bundle.for_each_concrete_node([&](size_t concrete_node_index) {
     if (!std::ranges::contains(virtual_node.concrete_node_indices,
                                concrete_node_index)) {
       virtual_node.concrete_node_indices.push_back(concrete_node_index);
       has_new_concrete_member = true;
     }
-  }
+  });
   if (has_new_concrete_member) {
     append_bundle_sample_port_mappings(virtual_node.sample_inputs, bundle,
                                        node_bundle_handle, topology, true);
@@ -202,7 +124,7 @@ void GraphBuilderVirtualNodes::attach_member(GraphBuilderTopology &topology,
     append_bundle_event_port_mappings(virtual_node.event_outputs, bundle,
                                       node_bundle_handle, topology, false);
   }
-  auto &bundle_handles = node_bundles.bundle(node_bundle_handle).virtual_node_handles;
+  auto &bundle_handles = node_bundles.bundle(node_bundle_handle).virtual_node_handles();
   if (!std::ranges::contains(bundle_handles, handle)) {
     bundle_handles.push_back(handle);
   }
@@ -297,58 +219,20 @@ GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
     GraphBuilderNodeBundles const &node_bundles) const {
   GraphBuilderVirtualPorts result;
   auto input_config = [&](NodeBundlePortId id) -> InputConfig {
-    auto const &mapping = node_bundles.bundle(id.node_bundle_handle).sample_inputs.at(id.port_ordinal);
-    return std::visit([&](auto const &value) -> InputConfig {
-      using M = std::remove_cvref_t<decltype(value)>;
-      if constexpr (std::is_same_v<M, ConcreteSamplePortMapping>)
-        return topology.concrete_node(value.concrete_port.node).inputs().at(value.concrete_port.port);
-      else if constexpr (std::is_same_v<M, TiledSamplePortMapping>) {
-        auto const port = value.channel_ports.front().concrete_port;
-        auto config = topology.concrete_node(port.node).inputs().at(port.port);
-        config.channel_layout = value.channel_layout;
-        return config;
-      } else
-        return topology.subgraph_node(value.subgraph_port.node).inputs().at(value.subgraph_port.port);
-    }, mapping);
+    return node_bundles.bundle(id.node_bundle_handle)
+        .sample_input_config(topology, id.port_ordinal);
   };
   auto output_config = [&](NodeBundlePortId id) -> OutputConfig {
-    auto const &mapping = node_bundles.bundle(id.node_bundle_handle).sample_outputs.at(id.port_ordinal);
-    return std::visit([&](auto const &value) -> OutputConfig {
-      using M = std::remove_cvref_t<decltype(value)>;
-      if constexpr (std::is_same_v<M, ConcreteSamplePortMapping>)
-        return topology.concrete_node(value.concrete_port.node).outputs().at(value.concrete_port.port);
-      else if constexpr (std::is_same_v<M, TiledSamplePortMapping>) {
-        auto const port = value.channel_ports.front().concrete_port;
-        auto config = topology.concrete_node(port.node).outputs().at(port.port);
-        config.channel_layout = value.channel_layout;
-        return config;
-      } else
-        return topology.subgraph_node(value.subgraph_port.node).outputs().at(value.subgraph_port.port);
-    }, mapping);
+    return node_bundles.bundle(id.node_bundle_handle)
+        .sample_output_config(topology, id.port_ordinal);
   };
   auto event_input_config = [&](NodeBundlePortId id) -> EventInputConfig {
-    auto const &mapping = node_bundles.bundle(id.node_bundle_handle).event_inputs.at(id.port_ordinal);
-    return std::visit([&](auto const &value) -> EventInputConfig {
-      using M = std::remove_cvref_t<decltype(value)>;
-      if constexpr (std::is_same_v<M, ConcreteEventPortMapping>)
-        return topology.concrete_node(value.concrete_port.node).event_inputs().at(value.concrete_port.port);
-      else if constexpr (std::is_same_v<M, TiledEventPortMapping>)
-        return topology.concrete_node(value.concrete_ports.front().node).event_inputs().at(value.concrete_ports.front().port);
-      else
-        return topology.subgraph_node(value.subgraph_port.node).event_inputs().at(value.subgraph_port.port);
-    }, mapping);
+    return node_bundles.bundle(id.node_bundle_handle)
+        .event_input_config(topology, id.port_ordinal);
   };
   auto event_output_config = [&](NodeBundlePortId id) -> EventOutputConfig {
-    auto const &mapping = node_bundles.bundle(id.node_bundle_handle).event_outputs.at(id.port_ordinal);
-    return std::visit([&](auto const &value) -> EventOutputConfig {
-      using M = std::remove_cvref_t<decltype(value)>;
-      if constexpr (std::is_same_v<M, ConcreteEventPortMapping>)
-        return topology.concrete_node(value.concrete_port.node).event_outputs().at(value.concrete_port.port);
-      else if constexpr (std::is_same_v<M, TiledEventPortMapping>)
-        return topology.concrete_node(value.concrete_ports.front().node).event_outputs().at(value.concrete_ports.front().port);
-      else
-        return topology.subgraph_node(value.subgraph_port.node).event_outputs().at(value.subgraph_port.port);
-    }, mapping);
+    return node_bundles.bundle(id.node_bundle_handle)
+        .event_output_config(topology, id.port_ordinal);
   };
   for (auto const &node : _records) {
     for (auto const &mapping : node.sample_inputs) {
@@ -386,8 +270,8 @@ GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
 std::vector<std::string>
 GraphBuilderVirtualNodes::ids_for_bundle(NodeBundle const &bundle) const {
   std::vector<std::string> ids;
-  ids.reserve(bundle.virtual_node_handles.size());
-  for (auto const handle : bundle.virtual_node_handles) {
+  ids.reserve(bundle.virtual_node_handles().size());
+  for (auto const handle : bundle.virtual_node_handles()) {
     ids.push_back(record(handle).id);
   }
   return ids;

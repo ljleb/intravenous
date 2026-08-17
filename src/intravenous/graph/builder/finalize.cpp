@@ -92,8 +92,8 @@ struct PreparedBuilderGraph {
     auto const &bundle = node_bundles.bundle(
         node_bundles.bundle_for_concrete_node(node_i));
     graph.node_virtual_ids.push_back(virtual_nodes.ids_for_bundle(bundle));
-    auto source_infos = bundle.source_annotations.infos;
-    for (auto const handle : bundle.virtual_node_handles) {
+    auto source_infos = bundle.source_annotations().infos;
+    for (auto const handle : bundle.virtual_node_handles()) {
       for (auto const &info : virtual_nodes.record(handle).source_infos) {
         if (std::find(source_infos.begin(), source_infos.end(), info) ==
             source_infos.end()) {
@@ -337,7 +337,7 @@ struct PreparedBuilderGraph {
       scope.backing_node_id = identity.child_id(subgraph_i);
       auto const &subgraph_bundle = node_bundles.bundle(
           node_bundles.bundle_for_concrete_node(subgraph_i));
-      for (auto const &info : subgraph_bundle.source_annotations.infos) {
+      for (auto const &info : subgraph_bundle.source_annotations().infos) {
         scope.source_infos.push_back(info);
         if (info.span.file_path.empty() || info.span.begin > info.span.end) {
           continue;

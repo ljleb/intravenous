@@ -6,50 +6,37 @@
 namespace iv {
 namespace {
 std::vector<SamplePortRef> bundle_sample_output_channels(
-    GraphBuilder &builder, GraphBuilderTopology const &topology,
+    GraphBuilder &builder, GraphBuilderTopology const &,
     GraphBuilderNodeBundles const &node_bundles, NodeBundlePortId source) {
   if (source.port_kind != PortKind::sample) {
     details::error("attempted to read a sample output from an event NodeBundle port");
   }
-  auto const &mapping = node_bundles.bundle(source.node_bundle_handle)
-                            .sample_outputs.at(source.port_ordinal);
-  return std::visit([&](auto const &value) -> std::vector<SamplePortRef> {
-    using Mapping = std::remove_cvref_t<decltype(value)>;
-    if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>) {
-      std::vector<SamplePortRef> result(value.channel_ports.size());
-      for (auto const &channel : value.channel_ports) {
-        result.at(channel.channel_ordinal) = SamplePortRef(
-            builder, channel.concrete_port.node, channel.concrete_port.port);
-      }
-      return result;
-    } else {
-      auto const port = [&] {
-        if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>)
-          return value.concrete_port;
-        else
-          return value.subgraph_port;
-      }();
-      auto const layout = [&] {
-        if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>)
-          return topology.concrete_node(port.node).outputs().at(port.port).channel_layout;
-        else
-          return topology.subgraph_node(port.node).outputs().at(port.port).channel_layout;
-      }();
-      auto packed = SamplePortRef(builder, port.node, port.port);
-      switch (layout.channel_type) {
-      case ChannelTypeId::mono:
-        return {packed};
-      case ChannelTypeId::stereo: {
-        auto unpack = builder.node<ChannelUnpack<stereo>>();
-        unpack.connect_input(0, packed);
-        return {unpack[0], unpack[1]};
-      }
-      case ChannelTypeId::count:
-        break;
-      }
-      details::error("invalid channel type for NodeBundle sample output");
-    }
-  }, mapping);
+  auto const &bundle = node_bundles.bundle(source.node_bundle_handle);
+  std::vector<TopologyPortId> ports;
+  bundle.for_each_sample_output(source.port_ordinal,
+                                [&](TopologyPortId port) { ports.push_back(port); });
+  if (ports.empty()) {
+    details::error("NodeBundle sample output has no topology endpoint");
+  }
+  if (ports.size() > 1) {
+    std::vector<SamplePortRef> result;
+    result.reserve(ports.size());
+    for (auto const port : ports) result.emplace_back(builder, port.node, port.port);
+    return result;
+  }
+  auto const packed = SamplePortRef(builder, ports.front().node, ports.front().port);
+  switch (bundle.sample_output_layout(source.port_ordinal).channel_type) {
+  case ChannelTypeId::mono: return {packed};
+  case ChannelTypeId::stereo: {
+    auto unpack = builder.node<ChannelUnpack<stereo>>();
+    unpack.connect_input(0, packed);
+    return {
+        builder.materialize_sample_output(static_cast<SamplePortRef>(unpack[0])),
+        builder.materialize_sample_output(static_cast<SamplePortRef>(unpack[1]))};
+  }
+  case ChannelTypeId::count: break;
+  }
+  details::error("invalid channel type for NodeBundle sample output");
 }
 
 SamplePortRef pack_sample_channels(GraphBuilder &builder, ChannelLayout layout,
@@ -59,12 +46,12 @@ SamplePortRef pack_sample_channels(GraphBuilder &builder, ChannelLayout layout,
   }
   switch (layout.channel_type) {
   case ChannelTypeId::mono:
-    return sources.front();
+    return builder.materialize_sample_output(sources.front());
   case ChannelTypeId::stereo: {
     auto pack = builder.node<ChannelPack<stereo>>();
     for (size_t channel = 0; channel < sources.size(); ++channel)
       pack.connect_input(channel, sources[channel]);
-    return static_cast<SamplePortRef>(pack);
+    return builder.materialize_sample_output(static_cast<SamplePortRef>(pack));
   }
   case ChannelTypeId::count:
     break;
@@ -160,9 +147,31 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_, size_t node_index,
   }
 }
 
+SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
+                             NodeBundlePortId bundle_port)
+    : graph_builder(&graph_builder_),
+      output_port(bundle_port.port_ordinal),
+      node_bundle_port(bundle_port) {
+  if (bundle_port.port_kind != PortKind::sample) {
+    details::error("attempted to create a SamplePortRef from an event NodeBundle port");
+  }
+  (void)graph_builder_._node_bundles.bundle(bundle_port.node_bundle_handle)
+      .sample_output_layout(bundle_port.port_ordinal);
+}
+
+SamplePortRef::operator ConcretePortId() const {
+  if (node_bundle_port) {
+    details::error("a bundle-backed SamplePortRef must be materialized by GraphBuilder");
+  }
+  return {node_index, output_port};
+}
+
 SamplePortRef SamplePortRef::_clone_handle() const {
   if (!graph_builder) {
     return SamplePortRef{};
+  }
+  if (node_bundle_port) {
+    return SamplePortRef(*graph_builder, *node_bundle_port);
   }
   return SamplePortRef(*graph_builder, node_index, output_port);
 }
@@ -177,6 +186,10 @@ SamplePortRef SamplePortRef::detach(size_t loop_extra_latency) const {
 std::string SamplePortRef::to_string() const {
   if (!graph_builder) {
     return "empty sample port";
+  }
+  if (node_bundle_port) {
+    return "sample output " + std::to_string(node_bundle_port->port_ordinal) +
+           " of node bundle " + std::to_string(node_bundle_port->node_bundle_handle);
   }
   if (node_index == GRAPH_ID) {
     return "graph input " + std::to_string(output_port) + " in builder " +
@@ -448,9 +461,10 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
                    " because it belongs to another builder");
   }
 
-  ConcretePortId const source = sample_port;
+  auto const resolved_source = materialize_sample_output(sample_port);
+  ConcretePortId const source = resolved_source;
   if (_detach.reader_output_exists(source)) {
-    return sample_port;
+    return resolved_source;
   }
   if (auto const *existing = _detach.info_for_source(source)) {
     if (existing->loop_extra_latency != loop_extra_latency) {
@@ -470,17 +484,18 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
   auto writer = node<DetachWriterNode>(detach_id, loop_extra_latency);
   (void)writer;
   size_t const writer_node = _topology.node_count() - 1;
-  connect_sample_input(ConcretePortId{writer_node, 0}, sample_port);
+  connect_sample_input(ConcretePortId{writer_node, 0}, resolved_source);
 
   auto reader = node<DetachReaderNode>(detach_id, loop_extra_latency);
-  SamplePortRef detached = reader;
+  SamplePortRef detached = materialize_sample_output(
+      static_cast<SamplePortRef>(reader));
 
   _detach.record_detached_source(source,
                                  DetachedSamplePortInfo{
                                      .detach_id = detach_id,
                                      .original_source = source,
                                      .writer_node = writer_node,
-                                     .reader_output = detached,
+                                     .reader_output = static_cast<ConcretePortId>(detached),
                                      .loop_extra_latency = loop_extra_latency,
                                  });
   return detached;
@@ -558,27 +573,43 @@ GraphBuilder::public_event_outputs() const {
 }
 
 void GraphBuilder::connect_sample_input(ConcretePortId target, SamplePortRef source) {
+  source = materialize_sample_output(std::move(source));
   _connections.connect_sample_input(_topology, _identity, target, source);
+}
+
+SamplePortRef GraphBuilder::materialize_sample_output(SamplePortRef source) {
+  if (!source.node_bundle_port) return source;
+  if (source.graph_builder != this) {
+    details::error("cannot materialize a sample output from another builder");
+  }
+
+  auto const address = *source.node_bundle_port;
+  auto const &bundle = _node_bundles.bundle(address.node_bundle_handle);
+  std::vector<TopologyPortId> ports;
+  bundle.for_each_sample_output(address.port_ordinal,
+      [&](TopologyPortId port) { ports.push_back(port); });
+  if (ports.empty()) {
+    details::error("NodeBundle sample output has no topology endpoint");
+  }
+  if (ports.size() == 1) {
+    return SamplePortRef(*this, ports.front().node, ports.front().port);
+  }
+
+  std::vector<SamplePortRef> channels;
+  channels.reserve(ports.size());
+  for (auto const port : ports) {
+    channels.emplace_back(*this, port.node, port.port);
+  }
+  return pack_sample_channels(*this, bundle.sample_output_layout(address.port_ordinal),
+                              channels);
 }
 
 void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef source) {
   if (target.port_kind != PortKind::sample) {
     details::error("attempted to connect a sample source to an event NodeBundle port");
   }
-  auto const &mapping = _node_bundles.bundle(target.node_bundle_handle)
-                            .sample_inputs.at(target.port_ordinal);
-  std::visit([&](auto const &value) {
-    using Mapping = std::remove_cvref_t<decltype(value)>;
-    if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>) {
-      connect_sample_input(value.concrete_port, source);
-    } else if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>) {
-      for (auto const &channel : value.channel_ports) {
-        connect_sample_input(channel.concrete_port, source);
-      }
-    } else {
-      connect_sample_input(value.subgraph_port, source);
-    }
-  }, mapping);
+  _node_bundles.bundle(target.node_bundle_handle).for_each_sample_input(
+      target.port_ordinal, [&](ConcretePortId port) { connect_sample_input(port, source); });
 }
 
 void GraphBuilder::connect_sample_input(
@@ -586,27 +617,23 @@ void GraphBuilder::connect_sample_input(
   if (target.port_kind != PortKind::sample) {
     details::error("attempted to connect sample channels to an event NodeBundle port");
   }
-  auto const &mapping = _node_bundles.bundle(target.node_bundle_handle)
-                            .sample_inputs.at(target.port_ordinal);
-  std::visit([&](auto const &value) {
-    using Mapping = std::remove_cvref_t<decltype(value)>;
-    if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>) {
-      if (sources.size() != value.channel_ports.size()) {
-        details::error("tiled NodeBundle input has an unexpected channel count");
-      }
-      for (auto const &channel : value.channel_ports) {
-        connect_sample_input(channel.concrete_port, sources[channel.channel_ordinal]);
-      }
-    } else {
-      auto const port = [&] {
-        if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>)
-          return value.concrete_port;
-        else
-          return value.subgraph_port;
-      }();
-      connect_sample_input(port, pack_sample_channels(*this, value.channel_layout, sources));
-    }
-  }, mapping);
+  auto const &bundle = _node_bundles.bundle(target.node_bundle_handle);
+  std::vector<ConcretePortId> ports;
+  bundle.for_each_sample_input(target.port_ordinal,
+                               [&](ConcretePortId port) { ports.push_back(port); });
+  if (ports.size() == 1) {
+    connect_sample_input(ports.front(),
+                         pack_sample_channels(*this,
+                                              bundle.sample_input_layout(target.port_ordinal),
+                                              sources));
+    return;
+  }
+  if (sources.size() != ports.size()) {
+    details::error("tiled NodeBundle input has an unexpected channel count");
+  }
+  for (size_t channel = 0; channel < ports.size(); ++channel) {
+    connect_sample_input(ports[channel], sources[channel]);
+  }
 }
 
 void GraphBuilder::connect_event_input(ConcretePortId target, EventPortRef source) {
@@ -618,20 +645,8 @@ void GraphBuilder::connect_event_input(NodeBundlePortId target, EventPortRef sou
   if (target.port_kind != PortKind::event) {
     details::error("attempted to connect an event source to a sample NodeBundle port");
   }
-  auto const &mapping = _node_bundles.bundle(target.node_bundle_handle)
-                            .event_inputs.at(target.port_ordinal);
-  std::visit([&](auto const &value) {
-    using Mapping = std::remove_cvref_t<decltype(value)>;
-    if constexpr (std::is_same_v<Mapping, ConcreteEventPortMapping>) {
-      connect_event_input(value.concrete_port, source);
-    } else if constexpr (std::is_same_v<Mapping, TiledEventPortMapping>) {
-      for (auto const port : value.concrete_ports) {
-        connect_event_input(port, source);
-      }
-    } else {
-      connect_event_input(value.subgraph_port, source);
-    }
-  }, mapping);
+  _node_bundles.bundle(target.node_bundle_handle).for_each_event_input(
+      target.port_ordinal, [&](ConcretePortId port) { connect_event_input(port, source); });
 }
 
 void GraphBuilder::mark_runtime_filled_sample_input(ConcretePortId target) {
@@ -639,18 +654,9 @@ void GraphBuilder::mark_runtime_filled_sample_input(ConcretePortId target) {
 }
 
 void GraphBuilder::mark_runtime_filled_sample_input(NodeBundlePortId target) {
-  auto const &mapping = _node_bundles.bundle(target.node_bundle_handle)
-                            .sample_inputs.at(target.port_ordinal);
-  std::visit([&](auto const &value) {
-    using Mapping = std::remove_cvref_t<decltype(value)>;
-    if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>)
-      mark_runtime_filled_sample_input(value.concrete_port);
-    else if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>)
-      for (auto const &channel : value.channel_ports)
-        mark_runtime_filled_sample_input(channel.concrete_port);
-    else
-      mark_runtime_filled_sample_input(value.subgraph_port);
-  }, mapping);
+  _node_bundles.bundle(target.node_bundle_handle).for_each_sample_input(
+      target.port_ordinal,
+      [&](ConcretePortId port) { mark_runtime_filled_sample_input(port); });
 }
 
 void GraphBuilder::mark_runtime_filled_event_input(ConcretePortId target) {
@@ -658,64 +664,46 @@ void GraphBuilder::mark_runtime_filled_event_input(ConcretePortId target) {
 }
 
 void GraphBuilder::mark_runtime_filled_event_input(NodeBundlePortId target) {
-  auto const &mapping = _node_bundles.bundle(target.node_bundle_handle)
-                            .event_inputs.at(target.port_ordinal);
-  std::visit([&](auto const &value) {
-    using Mapping = std::remove_cvref_t<decltype(value)>;
-    if constexpr (std::is_same_v<Mapping, ConcreteEventPortMapping>)
-      mark_runtime_filled_event_input(value.concrete_port);
-    else if constexpr (std::is_same_v<Mapping, TiledEventPortMapping>)
-      for (auto const port : value.concrete_ports)
-        mark_runtime_filled_event_input(port);
-    else
-      mark_runtime_filled_event_input(value.subgraph_port);
-  }, mapping);
+  _node_bundles.bundle(target.node_bundle_handle).for_each_event_input(
+      target.port_ordinal,
+      [&](ConcretePortId port) { mark_runtime_filled_event_input(port); });
 }
 
 bool GraphBuilder::sample_input_is_connected(NodeBundlePortId target) const {
   if (target.port_kind != PortKind::sample) {
     details::error("attempted to inspect a sample connection on an event NodeBundle port");
   }
-  auto const &mapping = _node_bundles.bundle(target.node_bundle_handle)
-                            .sample_inputs.at(target.port_ordinal);
-  return std::visit([&](auto const &value) {
-    using Mapping = std::remove_cvref_t<decltype(value)>;
-    if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>) {
-      return std::ranges::any_of(value.channel_ports, [&](auto const &channel) {
-        return _connections.sample_input_is_connected(channel.concrete_port);
+  bool connected = false;
+  _node_bundles.bundle(target.node_bundle_handle).for_each_sample_input(
+      target.port_ordinal, [&](ConcretePortId port) {
+        connected = connected || _connections.sample_input_is_connected(port);
       });
-    } else if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>) {
-      return _connections.sample_input_is_connected(value.concrete_port);
-    } else {
-      return _connections.sample_input_is_connected(value.subgraph_port);
-    }
-  }, mapping);
+  return connected;
 }
 
 bool GraphBuilder::event_input_is_connected(NodeBundlePortId target) const {
   if (target.port_kind != PortKind::event) {
     details::error("attempted to inspect an event connection on a sample NodeBundle port");
   }
-  auto const &mapping = _node_bundles.bundle(target.node_bundle_handle)
-                            .event_inputs.at(target.port_ordinal);
-  return std::visit([&](auto const &value) {
-    using Mapping = std::remove_cvref_t<decltype(value)>;
-    if constexpr (std::is_same_v<Mapping, ConcreteEventPortMapping>)
-      return _connections.event_input_is_connected(value.concrete_port);
-    else if constexpr (std::is_same_v<Mapping, TiledEventPortMapping>)
-      return std::ranges::any_of(value.concrete_ports, [&](auto const port) {
-        return _connections.event_input_is_connected(port);
+  bool connected = false;
+  _node_bundles.bundle(target.node_bundle_handle).for_each_event_input(
+      target.port_ordinal, [&](ConcretePortId port) {
+        connected = connected || _connections.event_input_is_connected(port);
       });
-    else
-      return _connections.event_input_is_connected(value.subgraph_port);
-  }, mapping);
+  return connected;
 }
 
 void GraphBuilder::connect_sample_output(NodeBundlePortId source,
                                          NodeRef const &target) {
   auto const channels = bundle_sample_output_channels(
       *this, _topology, _node_bundles, source);
-  auto const target_node = _node_bundles.single_node_index(target.node_bundle_handle());
+  std::vector<size_t> target_nodes;
+  _node_bundles.bundle(target.node_bundle_handle()).for_each_topology_node(
+      [&](size_t node) { target_nodes.push_back(node); });
+  if (target_nodes.size() != 1) {
+    details::error("a graph-service sink must contain exactly one concrete node");
+  }
+  auto const target_node = target_nodes.front();
   auto const &inputs = _topology.concrete_node(target_node).inputs();
   if (channels.size() != inputs.size()) {
     details::error("NodeBundle output does not match graph-service sink channel count");
@@ -729,68 +717,35 @@ EventPortRef GraphBuilder::event_output(NodeBundlePortId source) const {
   if (source.port_kind != PortKind::event) {
     details::error("attempted to read an event output from a sample NodeBundle port");
   }
-  auto const &mapping = _node_bundles.bundle(source.node_bundle_handle)
-                            .event_outputs.at(source.port_ordinal);
-  return std::visit([&](auto const &value) {
-    using Mapping = std::remove_cvref_t<decltype(value)>;
-    if constexpr (std::is_same_v<Mapping, ConcreteEventPortMapping>)
-      return EventPortRef(const_cast<GraphBuilder &>(*this), value.concrete_port.node,
-                          value.concrete_port.port);
-    else if constexpr (std::is_same_v<Mapping, TiledEventPortMapping>) {
-      if (value.concrete_ports.empty()) {
-        details::error("tiled event output has no concrete ports");
-      }
-      if (value.concrete_ports.size() == 1) {
-        auto const port = value.concrete_ports.front();
-        return EventPortRef(const_cast<GraphBuilder &>(*this), port.node, port.port);
-      }
-      auto merge = const_cast<GraphBuilder &>(*this).node<EventConcatenation>(
-          value.concrete_ports.size(), value.type);
-      for (size_t index = 0; index < value.concrete_ports.size(); ++index) {
-        auto const port = value.concrete_ports[index];
-        merge.connect_event_input(index,
-            EventPortRef(const_cast<GraphBuilder &>(*this), port.node, port.port));
-      }
-      return merge.event_port(0);
-    } else
-      return EventPortRef(const_cast<GraphBuilder &>(*this), value.subgraph_port.node,
-                          value.subgraph_port.port);
-  }, mapping);
+  auto const &bundle = _node_bundles.bundle(source.node_bundle_handle);
+  std::vector<TopologyPortId> ports;
+  bundle.for_each_event_output(
+      source.port_ordinal, [&](TopologyPortId port) { ports.push_back(port); });
+  if (ports.empty()) details::error("event output has no concrete ports");
+  if (ports.size() == 1) {
+    auto const port = ports.front();
+    return EventPortRef(const_cast<GraphBuilder &>(*this), port.node, port.port);
+  }
+  auto const type = bundle.event_output_config(_topology, source.port_ordinal).type;
+  auto merge = const_cast<GraphBuilder &>(*this).node<EventConcatenation>(ports.size(), type);
+  for (size_t index = 0; index < ports.size(); ++index) {
+    auto const port = ports[index];
+    merge.connect_event_input(index,
+        EventPortRef(const_cast<GraphBuilder &>(*this), port.node, port.port));
+  }
+  return merge.event_port(0);
+}
+
+size_t GraphBuilder::sample_port_index(NodeBundleHandle handle, bool inputs,
+                                       std::string_view name) const {
+  auto const &bundle = _node_bundles.bundle(handle);
+  return inputs ? bundle.sample_input_index(name) : bundle.sample_output_index(name);
 }
 
 size_t GraphBuilder::event_port_index(NodeBundleHandle handle, bool inputs,
                                       std::string_view name) const {
   auto const &bundle = _node_bundles.bundle(handle);
-  auto const &mappings = inputs ? bundle.event_inputs : bundle.event_outputs;
-  std::optional<size_t> result;
-  for (size_t ordinal = 0; ordinal < mappings.size(); ++ordinal) {
-    auto const matches = std::visit([&](auto const &value) {
-      using Mapping = std::remove_cvref_t<decltype(value)>;
-      auto const port = [&] {
-        if constexpr (std::is_same_v<Mapping, ConcreteEventPortMapping>)
-          return value.concrete_port;
-        else if constexpr (std::is_same_v<Mapping, TiledEventPortMapping>)
-          return value.concrete_ports.front();
-        else
-          return value.subgraph_port;
-      }();
-      if constexpr (std::is_same_v<Mapping, SubgraphEventPortMapping>)
-        return inputs ? _topology.subgraph_node(port.node).event_inputs()[port.port].name == name
-                      : _topology.subgraph_node(port.node).event_outputs()[port.port].name == name;
-      else
-        return inputs ? _topology.concrete_node(port.node).event_inputs()[port.port].name == name
-                      : _topology.concrete_node(port.node).event_outputs()[port.port].name == name;
-    }, mappings[ordinal]);
-    if (!matches) continue;
-    if (result.has_value()) {
-      details::error("event port name '" + std::string(name) + "' is ambiguous");
-    }
-    result = ordinal;
-  }
-  if (!result.has_value()) {
-    details::error("event port name '" + std::string(name) + "' does not exist");
-  }
-  return *result;
+  return inputs ? bundle.event_input_index(name) : bundle.event_output_index(name);
 }
 
 SamplePortRef
@@ -799,7 +754,7 @@ GraphBuilder::lift_to_sample_port(SamplePortRef const &sample_port) {
     details::error("builder " + _identity.value + ": sample port " +
                    sample_port.to_string() + " belongs to another builder");
   }
-  return sample_port;
+  return materialize_sample_output(sample_port);
 }
 
 SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef &&sample_port) {
@@ -807,7 +762,7 @@ SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef &&sample_port) {
     details::error("builder " + _identity.value + ": sample port " +
                    sample_port.to_string() + " belongs to another builder");
   }
-  return std::move(sample_port);
+  return lift_to_sample_port(static_cast<SamplePortRef const &>(sample_port));
 }
 
 SamplePortRef GraphBuilder::lift_to_sample_port(NamedRef const &ref) {

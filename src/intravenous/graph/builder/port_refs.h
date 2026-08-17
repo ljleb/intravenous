@@ -1,12 +1,14 @@
 #pragma once
 
 #include <intravenous/graph/node.h>
+#include <intravenous/graph/builder/node_bundles.h>
 #include <intravenous/channel_ports.h>
 
 #include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -17,21 +19,24 @@ namespace iv {
     class TypedSamplePortRef;
     template<class ChannelType, SampleStreamLayout Layout, class Member>
     class TypedSamplePortChannelRef;
-    template<class ChannelType>
+    template<class ChannelType, SampleStreamLayout Layout = SampleStreamLayout::planar>
     class TypedSamplePortTileRef;
-    template<class ChannelType, class Member>
+    template<class ChannelType, class Member,
+             SampleStreamLayout Layout = SampleStreamLayout::planar>
     class TypedSamplePortTileChannelRef;
 
     struct SamplePortRef {
         GraphBuilder* graph_builder{};
         size_t node_index{};
         size_t output_port{};
+        std::optional<NodeBundlePortId> node_bundle_port{};
 
         SamplePortRef() = default;
         SamplePortRef(SamplePortRef const&) = default;
         SamplePortRef(SamplePortRef&&) noexcept = default;
         explicit SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
-        operator ConcretePortId() const { return { node_index, output_port }; }
+        explicit SamplePortRef(GraphBuilder& graph_builder_, NodeBundlePortId bundle_port);
+        operator ConcretePortId() const;
 
         SamplePortRef& operator=(SamplePortRef const&) = default;
         SamplePortRef& operator=(SamplePortRef&& rhs) = default;
@@ -63,7 +68,6 @@ namespace iv {
     template<class ChannelType, SampleStreamLayout Layout, class Member>
     class TypedSamplePortChannelRef {
         static_assert(std::same_as<typename Member::channel_type, ChannelType>);
-
         TypedSamplePortRef<ChannelType, Layout> _port;
 
     public:
@@ -81,17 +85,28 @@ namespace iv {
     // A promoted tiled port. Unlike TypedSamplePortRef<C, Layout>, this is
     // not one native C-channel concrete port: every member names a distinct
     // mono concrete endpoint.
-    template<class ChannelType>
+    template<class ChannelType, SampleStreamLayout Layout>
     class TypedSamplePortTileRef {
+        SamplePortRef _promoted {};
         std::array<SamplePortRef, ChannelType::channel_count> _members {};
 
     public:
         using channel_type = ChannelType;
+        static constexpr auto sample_layout = Layout;
 
         TypedSamplePortTileRef() = default;
+
         explicit TypedSamplePortTileRef(
             std::array<SamplePortRef, ChannelType::channel_count> members)
             : _members(std::move(members)) {}
+
+            TypedSamplePortTileRef(
+            SamplePortRef promoted,
+            std::array<SamplePortRef, ChannelType::channel_count> members)
+            : _promoted(std::move(promoted)), _members(std::move(members)) {}
+
+        operator SamplePortRef() const { return _promoted; }
+        SamplePortRef const& erased() const { return _promoted; }
 
         std::array<SamplePortRef, ChannelType::channel_count> const& members() const
         {
@@ -103,19 +118,19 @@ namespace iv {
         requires std::same_as<typename std::remove_cvref_t<Member>::channel_type, ChannelType>;
 
     private:
-        template<class, class>
+        template<class, class, SampleStreamLayout>
         friend class TypedSamplePortTileChannelRef;
     };
 
-    template<class ChannelType, class Member>
+    template<class ChannelType, class Member, SampleStreamLayout Layout>
     class TypedSamplePortTileChannelRef {
         static_assert(std::same_as<typename Member::channel_type, ChannelType>);
-
         SamplePortRef _port {};
 
     public:
         using channel_type = ChannelType;
         using member_type = Member;
+        static constexpr auto sample_layout = Layout;
 
         explicit TypedSamplePortTileChannelRef(SamplePortRef port) : _port(std::move(port)) {}
 
@@ -123,13 +138,13 @@ namespace iv {
         SamplePortRef const& erased() const { return _port; }
     };
 
-    template<class ChannelType>
+    template<class ChannelType, SampleStreamLayout Layout>
     template<class Member>
-    auto TypedSamplePortTileRef<ChannelType>::operator[](Member) const
+    auto TypedSamplePortTileRef<ChannelType, Layout>::operator[](Member) const
     requires std::same_as<typename std::remove_cvref_t<Member>::channel_type, ChannelType>
     {
         using MemberType = std::remove_cvref_t<Member>;
-        return TypedSamplePortTileChannelRef<ChannelType, MemberType>{
+        return TypedSamplePortTileChannelRef<ChannelType, MemberType, Layout>{
             _members[MemberType::channel_ordinal]};
     }
 

@@ -368,24 +368,11 @@ std::vector<ConcretePortId> resolve_bundle_sample_port(
     GraphBuilderNodeBundles const &node_bundles,
     NodeBundlePortId address, bool inputs) {
   auto const &bundle = node_bundles.bundle(address.node_bundle_handle);
-  auto const &mappings = inputs ? bundle.sample_inputs : bundle.sample_outputs;
-  if (address.port_ordinal >= mappings.size()) {
-    error("virtual metadata references an out-of-bounds NodeBundle port");
-  }
-  return std::visit([](auto const &mapping) -> std::vector<ConcretePortId> {
-    using Mapping = std::remove_cvref_t<decltype(mapping)>;
-    if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>) {
-      return {mapping.concrete_port};
-    } else if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>) {
-      std::vector<ConcretePortId> ports(mapping.channel_ports.size());
-      for (auto const &channel : mapping.channel_ports) {
-        ports.at(channel.channel_ordinal) = channel.concrete_port;
-      }
-      return ports;
-    } else {
-      return {mapping.subgraph_port};
-    }
-  }, mappings[address.port_ordinal]);
+  std::vector<ConcretePortId> ports;
+  auto collect = [&](ConcretePortId port) { ports.push_back(port); };
+  if (inputs) bundle.for_each_sample_input(address.port_ordinal, collect);
+  else bundle.for_each_sample_output(address.port_ordinal, collect);
+  return ports;
 }
 
 template <class Mapping>
@@ -478,77 +465,52 @@ std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
 std::vector<IntrospectionPortInfo> project_bundle_event_ports(
     NodeBundle const &bundle, GraphBuilderTopology const &topology,
     bool inputs) {
-  auto project = [&](auto const &mappings) {
+  auto project = [&](size_t count) {
     std::vector<IntrospectionPortInfo> result;
-    result.reserve(mappings.size());
-    for (size_t ordinal = 0; ordinal < mappings.size(); ++ordinal) {
-      auto const info = std::visit([&](auto const &mapping) {
-      auto const port = [&] {
-        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(mapping)>,
-                                     ConcreteEventPortMapping>)
-          return mapping.concrete_port;
-        else if constexpr (std::is_same_v<std::remove_cvref_t<decltype(mapping)>,
-                                          TiledEventPortMapping>)
-          return mapping.concrete_ports.front();
-        else
-          return mapping.subgraph_port;
-      }();
+    result.reserve(count);
+    for (size_t ordinal = 0; ordinal < count; ++ordinal) {
       std::string name;
       EventTypeId type = EventTypeId::empty;
-      if constexpr (std::is_same_v<std::remove_cvref_t<decltype(mapping)>,
-                                   ConcreteEventPortMapping> ||
-                    std::is_same_v<std::remove_cvref_t<decltype(mapping)>,
-                                   TiledEventPortMapping>) {
-        if (inputs) {
-          auto const &config = topology.concrete_node(port.node).event_inputs().at(port.port);
-          name = config.name;
-          type = config.type;
-        } else {
-          auto const &config = topology.concrete_node(port.node).event_outputs().at(port.port);
-          name = config.name;
-          type = config.type;
-        }
+      if (inputs) {
+        auto const config = bundle.event_input_config(topology, ordinal);
+        name = config.name;
+        type = config.type;
       } else {
-        if (inputs) {
-          auto const &config = topology.subgraph_node(port.node).event_inputs().at(port.port);
-          name = config.name;
-          type = config.type;
-        } else {
-          auto const &config = topology.subgraph_node(port.node).event_outputs().at(port.port);
-          name = config.name;
-          type = config.type;
-        }
+        auto const config = bundle.event_output_config(topology, ordinal);
+        name = config.name;
+        type = config.type;
       }
-      bool connected = false;
-      topology.for_each_event_edge([&](GraphEventEdge const &edge) {
-        connected = connected || (inputs ? edge.target == port : edge.source == port);
-      });
-      return IntrospectionPortInfo{
-          .name = std::move(name),
-          .type = event_type_name(type),
-          .connectivity = connected ? VirtualPortConnectivity::connected
-                                    : VirtualPortConnectivity::disconnected,
-          .ordinal = ordinal,
+
+      bool any_connected = false;
+      bool any_disconnected = false;
+      auto inspect = [&](TopologyPortId port) {
+        bool connected = false;
+        topology.for_each_event_edge([&](GraphEventEdge const &edge) {
+          connected = connected || (inputs ? edge.target == port : edge.source == port);
+        });
+        any_connected = any_connected || connected;
+        any_disconnected = any_disconnected || !connected;
       };
-      }, mappings[ordinal]);
-      result.push_back(info);
+      if (inputs) bundle.for_each_event_input(ordinal, inspect);
+      else bundle.for_each_event_output(ordinal, inspect);
+
+      result.push_back(IntrospectionPortInfo{
+          .name = std::move(name), .type = event_type_name(type),
+          .connectivity = any_connected && any_disconnected
+              ? VirtualPortConnectivity::mixed
+              : any_connected ? VirtualPortConnectivity::connected
+                              : VirtualPortConnectivity::disconnected,
+          .ordinal = ordinal});
     }
     return result;
   };
-  return inputs ? project(bundle.event_inputs) : project(bundle.event_outputs);
+  return project(inputs ? bundle.event_input_count() : bundle.event_output_count());
 }
 
 std::pair<std::string, std::string> bundle_display_type(
     NodeBundle const &bundle, GraphBuilderTopology const &topology) {
-  if (bundle.subgraph_node_id.has_value()) {
-    auto const &node = topology.subgraph_node(*bundle.subgraph_node_id);
-    return {node.type_identity.value, node.type_identity.value};
-  }
-  if (bundle.concrete_node_ids.empty()) {
-    error("NodeBundle metadata has no backing node");
-  }
-  auto const &node = topology.concrete_node(bundle.concrete_node_ids.front());
-  return {node.type_identity.value, node.type_identity.value};
+  auto const type = std::string(bundle.type_identity(topology));
+  return {type, type};
 }
 } // namespace
 

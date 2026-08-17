@@ -26,7 +26,7 @@ void GraphBuilderAnnotations::annotate_node_source_info(
     details::error("builder " + identity.value +
                    ": cannot record source info for an unknown NodeBundle");
   }
-  auto &infos = node_bundles.bundle(node_bundle_handle).source_annotations.infos;
+  auto &infos = node_bundles.bundle(node_bundle_handle).source_annotations().infos;
   SourceInfo info{
       .declaration_identity = std::string(declaration_identity),
       .span =

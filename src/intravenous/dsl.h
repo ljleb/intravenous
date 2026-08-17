@@ -177,6 +177,12 @@ namespace iv {
         static constexpr auto sample_layout = Layout;
     };
 
+    template<class ChannelType, SampleStreamLayout Layout>
+    struct typed_sample_port_traits<TypedSamplePortTileRef<ChannelType, Layout>> {
+        using channel_type = ChannelType;
+        static constexpr auto sample_layout = Layout;
+    };
+
     template<class T>
     concept TypedSamplePortLike = requires {
         typename typed_sample_port_traits<std::remove_cvref_t<T>>::channel_type;
@@ -199,17 +205,15 @@ namespace iv {
     concept EventPortLike = std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
 
     template<class T>
-    concept NodeLike = std::convertible_to<std::remove_cvref_t<T>, NodeRef>;
+    concept NodeLike = requires(std::remove_cvref_t<T> const& ref) {
+        { ref.node_ref() } -> std::same_as<NodeRef>;
+    };
 
     template<class T>
     requires NodeLike<T>
     NodeRef _materialize_node_ref(T&& value)
     {
-        if constexpr (requires(std::remove_cvref_t<T> const& ref) { ref.node_ref(); }) {
-            return value.node_ref();
-        } else {
-            return static_cast<NodeRef>(std::forward<T>(value));
-        }
+        return value.node_ref();
     }
 
     template<class T>
@@ -381,6 +385,14 @@ namespace iv {
         return TypedSamplePortRef<ChannelType, Layout>{value.erased().detach()};
     }
 
+    template<class ChannelType, SampleStreamLayout Layout>
+    TypedSamplePortRef<ChannelType, Layout> operator~(
+        TypedSamplePortTileRef<ChannelType, Layout> const& value)
+    {
+        return TypedSamplePortRef<ChannelType, Layout>{
+            static_cast<SamplePortRef>(value).detach()};
+    }
+
     template<class L, class R>
     requires (
         SamplePortLike<L> &&
@@ -391,28 +403,28 @@ namespace iv {
         SamplePortRef source = static_cast<SamplePortRef>(std::forward<L>(lhs));
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
 
-        auto const inputs = get_inputs(target.ports());
-        auto const outputs = get_outputs(target.ports());
+        auto const input_count = target.sample_input_count();
+        auto const output_count = target.sample_output_count();
 
-        if (inputs.size() != 1) {
+        if (input_count != 1) {
             details::error(
                 std::string(op_name) + " requires target to have exactly 1 input; got " +
-                std::to_string(inputs.size()) + " inputs on " + target.to_string()
+                std::to_string(input_count) + " inputs on " + target.to_string()
             );
         }
 
-        target(source);
-        if (outputs.empty()) {
+        target.connect_input(0, source);
+        if (output_count == 0) {
             if constexpr (NodeLike<L>) {
                 return target;
             } else {
                 return source;
             }
         }
-        if (outputs.size() != 1) {
+        if (output_count != 1) {
             details::error(
                 std::string(op_name) + " requires target to have at most 1 output when used as an expression; got " +
-                std::to_string(outputs.size()) + " outputs on " + target.to_string()
+                std::to_string(output_count) + " outputs on " + target.to_string()
             );
         }
         if constexpr (NodeLike<L>) {
@@ -452,24 +464,24 @@ namespace iv {
         EventPortRef source = std::forward<L>(lhs);
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
 
-        auto const event_inputs = get_event_inputs(target.ports());
-        auto const event_outputs = get_event_outputs(target.ports());
+        auto const event_input_count = target.event_input_count();
+        auto const event_output_count = target.event_output_count();
 
-        if (event_inputs.size() != 1) {
+        if (event_input_count != 1) {
             details::error(
                 std::string(op_name) + " requires target to have exactly 1 event input; got " +
-                std::to_string(event_inputs.size()) + " event inputs on " + target.to_string()
+                std::to_string(event_input_count) + " event inputs on " + target.to_string()
             );
         }
 
         target.connect_event_input(0, source);
-        if (event_outputs.empty()) {
+        if (event_output_count == 0) {
             return source;
         }
-        if (event_outputs.size() != 1) {
+        if (event_output_count != 1) {
             details::error(
                 std::string(op_name) + " requires target to have at most 1 event output when used as an expression; got " +
-                std::to_string(event_outputs.size()) + " event outputs on " + target.to_string()
+                std::to_string(event_output_count) + " event outputs on " + target.to_string()
             );
         }
         return target.event_port(0);
@@ -499,20 +511,20 @@ namespace iv {
         );
     }
 
-    template<size_t I, class Node>
-    auto get(StructuredNodeRef<Node> const& node_ref)
+    template<size_t I, class Node, class PortProjection>
+    auto get(TypedNodeRef<Node, PortProjection> const& node_ref)
     {
         return node_ref.template get<I>();
     }
 
-    template<size_t I, class Node>
-    auto get(StructuredNodeRef<Node>& node_ref)
+    template<size_t I, class Node, class PortProjection>
+    auto get(TypedNodeRef<Node, PortProjection>& node_ref)
     {
         return node_ref.template get<I>();
     }
 
-    template<size_t I, class Node>
-    auto get(StructuredNodeRef<Node>&& node_ref)
+    template<size_t I, class Node, class PortProjection>
+    auto get(TypedNodeRef<Node, PortProjection>&& node_ref)
     {
         return node_ref.template get<I>();
     }
@@ -543,12 +555,12 @@ namespace iv {
 }
 
 namespace std {
-    template<class Node>
-    struct tuple_size<iv::StructuredNodeRef<Node>> :
-        std::integral_constant<size_t, iv::details::fixed_output_count_v<Node>> {};
+    template<class Node, class PortProjection>
+    struct tuple_size<iv::TypedNodeRef<Node, PortProjection>> :
+        std::integral_constant<size_t, iv::details::static_output_count_v<Node>> {};
 
-    template<size_t I, class Node>
-    struct tuple_element<I, iv::StructuredNodeRef<Node>> {
+    template<size_t I, class Node, class PortProjection>
+    struct tuple_element<I, iv::TypedNodeRef<Node, PortProjection>> {
         using type = iv::SamplePortRef;
     };
 }

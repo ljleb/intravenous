@@ -13,28 +13,13 @@ std::vector<ConcretePortId> resolve_bundle_sample_port(
     GraphBuilderNodeBundles const &node_bundles,
     NodeBundlePortId address, bool inputs) {
   auto const &bundle = node_bundles.bundle(address.node_bundle_handle);
-  auto const &mappings = inputs ? bundle.sample_inputs : bundle.sample_outputs;
-  if (address.port_ordinal >= mappings.size()) {
-    details::error("virtual port references an out-of-bounds NodeBundle port");
-  }
-  return std::visit(
-      [](auto const &mapping) -> std::vector<ConcretePortId> {
-        using Mapping = std::remove_cvref_t<decltype(mapping)>;
-        if constexpr (std::is_same_v<Mapping, ConcreteSamplePortMapping>) {
-          return {mapping.concrete_port};
-        } else if constexpr (std::is_same_v<Mapping, TiledSamplePortMapping>) {
-          std::vector<ConcretePortId> ports(mapping.channel_ports.size());
-          for (auto const &channel : mapping.channel_ports) {
-            if (channel.channel_ordinal >= ports.size()) {
-              details::error("tiled NodeBundle port has an invalid channel ordinal");
-            }
-            ports[channel.channel_ordinal] = channel.concrete_port;
-          }
-          return ports;
-        } else {
-          return {mapping.subgraph_port};
-        }
-      }, mappings[address.port_ordinal]);
+  std::vector<ConcretePortId> result;
+  auto append = [&](ConcretePortId port) { result.push_back(port); };
+  if (inputs)
+    bundle.for_each_sample_input(address.port_ordinal, append);
+  else
+    bundle.for_each_sample_output(address.port_ordinal, append);
+  return result;
 }
 
 template <class Channel>

@@ -3,17 +3,14 @@
 #include <intravenous/graph/builder/stored_node.h>
 
 #include <cstddef>
-#include <optional>
+#include <functional>
+#include <string_view>
 #include <span>
-#include <variant>
 #include <vector>
 
 namespace iv {
 using NodeBundleHandle = size_t;
 
-// An address in the builder-visible interface of one node insertion result.
-// It deliberately precedes any lowering to a ConcreteNode or SubgraphNode
-// port, so authored virtual ports can retain their structural membership.
 struct NodeBundlePortId {
   NodeBundleHandle node_bundle_handle = 0;
   PortKind port_kind = PortKind::sample;
@@ -21,93 +18,81 @@ struct NodeBundlePortId {
   bool operator==(NodeBundlePortId const &) const = default;
 };
 
-struct ConcreteSamplePortMapping {
-  ConcretePortId concrete_port{};
-  ChannelLayout channel_layout{};
-};
+// Transitional name for a port in GraphBuilderTopology.  The topology still
+// stores these addresses in ConcretePortId today, even when the node is a
+// SubgraphNode.  Keep that legacy representation local to the bundle/lowering
+// boundary instead of teaching callers to infer a node kind from the ID.
+using TopologyPortId = ConcretePortId;
 
-// These are topology storage indices, not additional node types. The node
-// types themselves are declared in stored_node.h.
 using ConcreteNodeId = size_t;
 using SubgraphNodeId = size_t;
 
-struct TiledSamplePortChannelMapping {
-  size_t channel_ordinal = 0;
-  ConcretePortId concrete_port{};
-};
-
-struct TiledSamplePortMapping {
-  ChannelLayout channel_layout{};
-  std::vector<TiledSamplePortChannelMapping> channel_ports{};
-};
-
-struct SubgraphSamplePortMapping {
-  ConcretePortId subgraph_port{};
-  ChannelLayout channel_layout{};
-};
-
-using NodeBundleSamplePortMapping =
-    std::variant<ConcreteSamplePortMapping, TiledSamplePortMapping,
-                 SubgraphSamplePortMapping>;
-
-struct ConcreteEventPortMapping {
-  ConcretePortId concrete_port{};
-  EventTypeId type = EventTypeId::empty;
-};
-
-// Event ports are not channelized. A tiled event port fans one input out to
-// every tile, or merges one output from every tile.
-struct TiledEventPortMapping {
-  EventTypeId type = EventTypeId::empty;
-  std::vector<ConcretePortId> concrete_ports{};
-};
-
-struct SubgraphEventPortMapping {
-  ConcretePortId subgraph_port{};
-  EventTypeId type = EventTypeId::empty;
-};
-
-using NodeBundleEventPortMapping =
-    std::variant<ConcreteEventPortMapping, TiledEventPortMapping,
-                 SubgraphEventPortMapping>;
-
-// A NodeBundle is the uniform builder-facing representation of a node. A
-// A bundle containing one ConcreteNode has one concrete port for each exposed
-// port. A tiled bundle uses the same record but replaces the concrete sample
-// mappings with explicit channel-member mappings.
-struct NodeBundle {
-  std::vector<ConcreteNodeId> concrete_node_ids{};
-  std::optional<SubgraphNodeId> subgraph_node_id{};
-  std::vector<NodeBundleSamplePortMapping> sample_inputs{};
-  std::vector<NodeBundleSamplePortMapping> sample_outputs{};
-  std::vector<NodeBundleEventPortMapping> event_inputs{};
-  std::vector<NodeBundleEventPortMapping> event_outputs{};
-  std::vector<size_t> virtual_node_handles{};
-  NodeSourceAnnotations source_annotations{};
-};
-
 class GraphBuilderTopology;
+
+// Manual type erasure for one node insertion result. Its private payload is a
+// concrete, tiled, or subgraph bundle. There is no kind tag: each operation
+// lowers directly through the payload that implements it.
+class NodeBundle {
+public:
+  struct Ops;
+  NodeBundle();
+  NodeBundle(NodeBundle const &);
+  NodeBundle(NodeBundle &&) noexcept;
+  NodeBundle &operator=(NodeBundle const &);
+  NodeBundle &operator=(NodeBundle &&) noexcept;
+  ~NodeBundle();
+
+  // Used only by the private payload factories in node_bundles.cpp. Ops and
+  // payload types are not exposed to callers.
+  NodeBundle(void *, Ops const *);
+
+  void for_each_sample_input(size_t, std::function<void(TopologyPortId)> const &) const;
+  void for_each_sample_output(size_t, std::function<void(TopologyPortId)> const &) const;
+  void for_each_event_input(size_t, std::function<void(TopologyPortId)> const &) const;
+  void for_each_event_output(size_t, std::function<void(TopologyPortId)> const &) const;
+  ChannelLayout sample_input_layout(size_t) const;
+  ChannelLayout sample_output_layout(size_t) const;
+  InputConfig sample_input_config(GraphBuilderTopology const &, size_t) const;
+  OutputConfig sample_output_config(GraphBuilderTopology const &, size_t) const;
+  EventInputConfig event_input_config(GraphBuilderTopology const &, size_t) const;
+  EventOutputConfig event_output_config(GraphBuilderTopology const &, size_t) const;
+  std::string_view type_identity(GraphBuilderTopology const &) const;
+  size_t sample_input_count() const;
+  size_t sample_output_count() const;
+  size_t event_input_count() const;
+  size_t event_output_count() const;
+  size_t sample_input_index(std::string_view) const;
+  size_t sample_output_index(std::string_view) const;
+  size_t event_input_index(std::string_view) const;
+  size_t event_output_index(std::string_view) const;
+  void for_each_topology_node(std::function<void(size_t)> const &) const;
+  void for_each_concrete_node(std::function<void(size_t)> const &) const;
+  size_t single_concrete_node() const;
+  void import_into(size_t topology_node_offset);
+
+  std::vector<size_t> &virtual_node_handles();
+  std::vector<size_t> const &virtual_node_handles() const;
+  NodeSourceAnnotations &source_annotations();
+  NodeSourceAnnotations const &source_annotations() const;
+
+private:
+  void *_payload = nullptr;
+  Ops const *_ops = nullptr;
+  std::vector<size_t> _virtual_node_handles{};
+  NodeSourceAnnotations _source_annotations{};
+  friend class GraphBuilderNodeBundles;
+};
 
 class GraphBuilderNodeBundles {
 public:
-  NodeBundleHandle append_concrete(GraphBuilderTopology const &,
-                                   size_t concrete_node_index);
-  NodeBundleHandle append_tiled(GraphBuilderTopology const &,
-                                std::span<size_t const> concrete_node_indices,
+  NodeBundleHandle append_concrete(GraphBuilderTopology const &, size_t concrete_node_index);
+  NodeBundleHandle append_tiled(GraphBuilderTopology const &, std::span<size_t const>,
                                 ChannelLayout promoted_channel_layout);
-  NodeBundleHandle append_subgraph(GraphBuilderTopology const &,
-                                   size_t subgraph_node_index);
+  NodeBundleHandle append_subgraph(GraphBuilderTopology const &, size_t subgraph_node_index);
   NodeBundle const &bundle(NodeBundleHandle) const;
   NodeBundle &bundle(NodeBundleHandle);
-  TiledSamplePortMapping const &tiled_sample_output(
-      NodeBundleHandle, size_t output_ordinal) const;
-  TiledSamplePortMapping const &tiled_sample_input(
-      NodeBundleHandle, size_t input_ordinal) const;
-  size_t concrete_node_index(NodeBundleHandle) const;
-  size_t single_node_index(NodeBundleHandle) const;
   NodeBundleHandle bundle_for_concrete_node(size_t concrete_node_index) const;
   size_t size() const;
-
   void import_child(GraphBuilderNodeBundles const &, size_t concrete_node_offset);
 
 private:
