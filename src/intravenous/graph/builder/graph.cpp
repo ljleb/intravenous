@@ -21,7 +21,7 @@ std::vector<MaterializedSamplePort> bundle_sample_output_channels(
     result.reserve(ports.size());
     for (auto const port : ports) {
       result.push_back(MaterializedSamplePort{
-          .port = static_cast<ConcretePortId>(port)});
+          .port = port});
     }
     return result;
   }
@@ -71,11 +71,11 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_, size_t node_index,
         graph_builder_, GraphInputPortId{PortKind::sample, output_port});
     return;
   }
-  auto const topology_port = ConcretePortId{node_index, output_port};
+  auto const topology_port = TopologyPortId{node_index, output_port};
   if (graph_builder_._topology.is_scope_boundary_port(topology_port)) {
     *this = SamplePortRef(
         graph_builder_,
-        ScopeBoundaryPortId::from_legacy(topology_port, PortKind::sample));
+        ScopeBoundaryPortId::from_topology(topology_port, PortKind::sample));
     return;
   }
 
@@ -117,7 +117,7 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
     details::error("attempted to create a sample ref from an event scope boundary");
   }
   if (!graph_builder_._topology.is_scope_boundary_port(
-          scope_boundary.legacy_port())) {
+          scope_boundary.topology_port())) {
     details::error("attempted to create a sample ref from an unknown scope boundary");
   }
 }
@@ -133,11 +133,11 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_, size_t node_index,
         graph_builder_, GraphInputPortId{PortKind::event, output_port});
     return;
   }
-  auto const topology_port = ConcretePortId{node_index, output_port};
+  auto const topology_port = TopologyPortId{node_index, output_port};
   if (graph_builder_._topology.is_scope_boundary_port(topology_port)) {
     *this = EventPortRef(
         graph_builder_,
-        ScopeBoundaryPortId::from_legacy(topology_port, PortKind::event));
+        ScopeBoundaryPortId::from_topology(topology_port, PortKind::event));
     return;
   }
 
@@ -166,8 +166,8 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_, size_t node_index,
 EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
                            GraphInputPortId graph_input)
     : graph_builder(&graph_builder_),
-      node_index(graph_input.legacy_port().node),
-      output_port(graph_input.legacy_port().port),
+      node_index(graph_input.topology_port().node),
+      output_port(graph_input.topology_port().port),
       graph_input_port(graph_input) {
   if (graph_input.port_kind != PortKind::event) {
     details::error("attempted to create an event ref from a graph sample input");
@@ -183,8 +183,8 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
 EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
                            ScopeBoundaryPortId scope_boundary)
     : graph_builder(&graph_builder_),
-      node_index(scope_boundary.legacy_port().node),
-      output_port(scope_boundary.legacy_port().port),
+      node_index(scope_boundary.topology_port().node),
+      output_port(scope_boundary.topology_port().port),
       scope_boundary_port(scope_boundary) {
   if (scope_boundary.port_kind != PortKind::event) {
     details::error("attempted to create an event ref from a sample scope boundary");
@@ -201,9 +201,9 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
   (void)graph_builder_._node_bundles.resolve_sample_output(bundle_port);
 }
 
-SamplePortRef::operator ConcretePortId() const {
-  if (graph_input_port) return graph_input_port->legacy_port();
-  if (scope_boundary_port) return scope_boundary_port->legacy_port();
+SamplePortRef::operator TopologyPortId() const {
+  if (graph_input_port) return graph_input_port->topology_port();
+  if (scope_boundary_port) return scope_boundary_port->topology_port();
   details::error(
       "a logical node output SamplePortRef must be materialized by GraphBuilder");
 }
@@ -528,7 +528,7 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
   }
 
   auto const resolved_source = materialize_sample_output(sample_port);
-  ConcretePortId const source = resolved_source.port;
+  TopologyPortId const source = resolved_source.port;
   if (_detach.reader_output_exists(source)) {
     return sample_port;
   }
@@ -538,7 +538,7 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
                      ": detach loop extra latency conflict on " +
                      sample_port.to_string());
     }
-    ConcretePortId const reader = existing->reader_output;
+    TopologyPortId const reader = existing->reader_output;
     auto const reader_bundle =
         _node_bundles.bundle_for_concrete_node(reader.node);
     return SamplePortRef(
@@ -553,7 +553,7 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
   auto writer = node<DetachWriterNode>(detach_id, loop_extra_latency);
   (void)writer;
   size_t const writer_node = _topology.node_count() - 1;
-  connect_sample_input(ConcretePortId{writer_node, 0}, resolved_source);
+  connect_sample_input(TopologyPortId{writer_node, 0}, resolved_source);
 
   auto reader = node<DetachReaderNode>(detach_id, loop_extra_latency);
   SamplePortRef detached = static_cast<SamplePortRef>(reader);
@@ -606,9 +606,9 @@ GraphBuilder::public_sample_input_families() const {
 
 bool GraphBuilder::public_sample_input_is_connected(size_t port_ordinal) const {
   auto const source =
-      GraphInputPortId{PortKind::sample, port_ordinal}.legacy_port();
+      GraphInputPortId{PortKind::sample, port_ordinal}.topology_port();
   bool connected = false;
-  _topology.for_each_sample_edge([&](GraphEdge const &edge) {
+  _topology.for_each_sample_edge([&](TopologyEdge const &edge) {
     connected = connected || (edge.source == source);
   });
   return connected;
@@ -621,9 +621,9 @@ GraphBuilder::public_event_inputs() const {
 
 bool GraphBuilder::public_event_input_is_connected(size_t port_ordinal) const {
   auto const source =
-      GraphInputPortId{PortKind::event, port_ordinal}.legacy_port();
+      GraphInputPortId{PortKind::event, port_ordinal}.topology_port();
   bool connected = false;
-  _topology.for_each_event_edge([&](GraphEventEdge const &edge) {
+  _topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
     connected = connected || (edge.source == source);
   });
   return connected;
@@ -644,12 +644,12 @@ GraphBuilder::public_event_outputs() const {
   return _public_ports.collected_event_outputs();
 }
 
-void GraphBuilder::connect_sample_input(ConcretePortId target,
+void GraphBuilder::connect_sample_input(TopologyPortId target,
                                         MaterializedSamplePort source) {
   _connections.connect_sample_input(_topology, _identity, target, source.port);
 }
 
-void GraphBuilder::connect_sample_input(ConcretePortId target, SamplePortRef source) {
+void GraphBuilder::connect_sample_input(TopologyPortId target, SamplePortRef source) {
   connect_sample_input(target, materialize_sample_output(std::move(source)));
 }
 
@@ -689,7 +689,7 @@ SamplePortRef GraphBuilder::normalize_sample_output(SamplePortRef source) {
       connect_sample_input(
           target.endpoints.front(),
           MaterializedSamplePort{
-              .port = static_cast<ConcretePortId>(ports[channel])});
+              .port = ports[channel]});
     }
     return static_cast<SamplePortRef>(pack);
   }
@@ -709,11 +709,11 @@ GraphBuilder::materialize_sample_output(SamplePortRef source) {
   }
   if (source.graph_input_port) {
     return MaterializedSamplePort{
-        .port = source.graph_input_port->legacy_port()};
+        .port = source.graph_input_port->topology_port()};
   }
   if (source.scope_boundary_port) {
     return MaterializedSamplePort{
-        .port = source.scope_boundary_port->legacy_port()};
+        .port = source.scope_boundary_port->topology_port()};
   }
 
   source = normalize_sample_output(std::move(source));
@@ -727,7 +727,7 @@ GraphBuilder::materialize_sample_output(SamplePortRef source) {
         "normalized sample output does not have exactly one topology endpoint");
   }
   return MaterializedSamplePort{
-      .port = static_cast<ConcretePortId>(descriptor.endpoints.front())};
+      .port = descriptor.endpoints.front()};
 }
 
 void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef source) {
@@ -777,7 +777,7 @@ void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef s
       connect_sample_input(
           ports[channel],
           MaterializedSamplePort{
-              .port = static_cast<ConcretePortId>(source_ports[channel])});
+              .port = source_ports[channel]});
     }
     return;
   }
@@ -825,7 +825,7 @@ void GraphBuilder::connect_sample_input(
   }
 }
 
-void GraphBuilder::connect_event_input(ConcretePortId target, EventPortRef source) {
+void GraphBuilder::connect_event_input(TopologyPortId target, EventPortRef source) {
   _connections.connect_event_input(_topology, _public_ports.event_inputs(),
                                    _identity, target, source);
 }
@@ -838,7 +838,7 @@ void GraphBuilder::connect_event_input(NodeBundlePortId target, EventPortRef sou
   for (auto const port : descriptor.endpoints) connect_event_input(port, source);
 }
 
-void GraphBuilder::mark_runtime_filled_sample_input(ConcretePortId target) {
+void GraphBuilder::mark_runtime_filled_sample_input(TopologyPortId target) {
   _connections.mark_runtime_filled_sample_input(target);
 }
 
@@ -847,7 +847,7 @@ void GraphBuilder::mark_runtime_filled_sample_input(NodeBundlePortId target) {
   for (auto const port : descriptor.endpoints) mark_runtime_filled_sample_input(port);
 }
 
-void GraphBuilder::mark_runtime_filled_event_input(ConcretePortId target) {
+void GraphBuilder::mark_runtime_filled_event_input(TopologyPortId target) {
   _connections.mark_runtime_filled_event_input(target);
 }
 
@@ -896,7 +896,7 @@ void GraphBuilder::connect_sample_output(NodeBundlePortId source,
     details::error("NodeBundle output does not match graph-service sink channel count");
   }
   for (size_t channel = 0; channel < channels.size(); ++channel) {
-    connect_sample_input(ConcretePortId{target_node, channel}, channels[channel]);
+    connect_sample_input(TopologyPortId{target_node, channel}, channels[channel]);
   }
 }
 

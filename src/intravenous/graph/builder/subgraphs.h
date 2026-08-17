@@ -23,11 +23,11 @@ namespace iv {
         // They become ports of the finished SubgraphNode at close.
         std::vector<ScopeBoundaryPortId> input_boundary_ports {};
         std::vector<OutputConfig> output_configs {};
-        std::vector<ConcretePortId> output_sources {};
+        std::vector<TopologyPortId> output_sources {};
         std::vector<EventInputConfig> event_input_configs {};
         std::vector<ScopeBoundaryPortId> event_input_boundary_ports {};
         std::vector<EventOutputConfig> event_output_configs {};
-        std::vector<ConcretePortId> event_output_sources {};
+        std::vector<TopologyPortId> event_output_sources {};
         std::vector<SourceInfo> source_infos {};
         bool outputs_defined = false;
         bool event_outputs_defined = false;

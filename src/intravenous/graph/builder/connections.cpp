@@ -34,30 +34,30 @@ void append_resolved_channels(std::vector<Channel> &channels,
   }
 }
 } // namespace
-bool GraphBuilderConnections::sample_input_is_connected(ConcretePortId target) const {
+bool GraphBuilderConnections::sample_input_is_connected(TopologyPortId target) const {
   return _placed_sample_inputs.contains(target);
 }
 
-bool GraphBuilderConnections::event_input_is_connected(ConcretePortId target) const {
+bool GraphBuilderConnections::event_input_is_connected(TopologyPortId target) const {
   return _placed_event_inputs.contains(target);
 }
 
 void GraphBuilderConnections::connect_sample_input(
     GraphBuilderTopology &topology, GraphBuilderIdentity const &identity,
-    ConcretePortId target, ConcretePortId source) {
+    TopologyPortId target, TopologyPortId source) {
   if (target.node >= topology.node_count() ||
       target.port >= topology.ports(target.node).inputs().size()) {
     details::error("sample input target is out of bounds in builder " +
                    identity.value);
   }
   _placed_sample_inputs.insert(target);
-  topology.add_sample_edge(GraphEdge{source, target});
+  topology.add_sample_edge(TopologyEdge{source, target});
 }
 
 void GraphBuilderConnections::connect_event_input(
     GraphBuilderTopology &topology,
     std::span<EventInputConfig const> graph_event_inputs,
-    GraphBuilderIdentity const &identity, ConcretePortId target, EventPortRef source) {
+    GraphBuilderIdentity const &identity, TopologyPortId target, EventPortRef source) {
   if (source.graph_builder == nullptr) {
     details::error("builder " + identity.value + ": empty EventPortRef");
   }
@@ -78,16 +78,16 @@ void GraphBuilderConnections::connect_event_input(
   auto const target_type =
       topology.ports(target.node).event_inputs()[target.port].type;
   _placed_event_inputs.insert(target);
-  topology.add_event_edge(GraphEventEdge{
-      static_cast<ConcretePortId>(source), target,
+  topology.add_event_edge(TopologyEventEdge{
+      static_cast<TopologyPortId>(source), target,
       EventConversionRegistry::instance().plan(source_type, target_type)});
 }
 
-void GraphBuilderConnections::mark_runtime_filled_sample_input(ConcretePortId target) {
+void GraphBuilderConnections::mark_runtime_filled_sample_input(TopologyPortId target) {
   _runtime_filled_sample_inputs.insert(target);
 }
 
-void GraphBuilderConnections::mark_runtime_filled_event_input(ConcretePortId target) {
+void GraphBuilderConnections::mark_runtime_filled_event_input(TopologyPortId target) {
   _runtime_filled_event_inputs.insert(target);
 }
 
@@ -102,7 +102,7 @@ GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
       size_t const node_i = virtual_node.concrete_node_indices[member_ordinal];
       auto const &node = topology.concrete_node(node_i);
       for (size_t input_i = 0; input_i < node.inputs().size(); ++input_i) {
-        ConcretePortId const target_port{node_i, input_i};
+        TopologyPortId const target_port{node_i, input_i};
         if (_placed_sample_inputs.contains(target_port)) {
           continue;
         }
@@ -115,7 +115,7 @@ GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
       }
       for (size_t input_i = 0; input_i < node.event_inputs().size();
            ++input_i) {
-        ConcretePortId const target_port{node_i, input_i};
+        TopologyPortId const target_port{node_i, input_i};
         if (_placed_event_inputs.contains(target_port)) {
           continue;
         }
@@ -142,7 +142,7 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
       size_t const node_i = virtual_node.concrete_node_indices[member_ordinal];
       auto const &node = topology.concrete_node(node_i);
       for (size_t input_i = 0; input_i < node.inputs().size(); ++input_i) {
-        ConcretePortId const target_port{node_i, input_i};
+        TopologyPortId const target_port{node_i, input_i};
         result.sample.push_back(GraphBuilderVirtualSampleInput{
             .target = target_port,
             .virtual_node_id = virtual_node.id,
@@ -156,7 +156,7 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
       }
       for (size_t input_i = 0; input_i < node.event_inputs().size();
            ++input_i) {
-        ConcretePortId const target_port{node_i, input_i};
+        TopologyPortId const target_port{node_i, input_i};
         result.event.push_back(GraphBuilderVirtualEventInput{
             .target = target_port,
             .virtual_node_id = virtual_node.id,
@@ -192,7 +192,7 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
         auto const descriptor = node_bundles.resolve_sample_input(bundle_port);
         auto const &ports = descriptor.endpoints;
         append_resolved_channels(channels, ports, mapping.channel_layout,
-                                 [&](ConcretePortId port) { return _placed_sample_inputs.contains(port); });
+                                 [&](TopologyPortId port) { return _placed_sample_inputs.contains(port); });
         for (size_t channel = 0; channel < channel_total; ++channel) {
           auto const port = ports.size() == 1 ? ports.front() : ports[channel];
           channels[channel].runtime_filled = channels[channel].runtime_filled
@@ -217,12 +217,12 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
     GraphBuilderVirtualNodes const &virtual_nodes) const {
   GraphBuilderVirtualOutputs result;
 
-  std::unordered_set<ConcretePortId> connected_sample_sources;
-  std::unordered_set<ConcretePortId> connected_event_sources;
-  topology.for_each_sample_edge([&](GraphEdge const &edge) {
+  std::unordered_set<TopologyPortId> connected_sample_sources;
+  std::unordered_set<TopologyPortId> connected_event_sources;
+  topology.for_each_sample_edge([&](TopologyEdge const &edge) {
     connected_sample_sources.insert(edge.source);
   });
-  topology.for_each_event_edge([&](GraphEventEdge const &edge) {
+  topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
     connected_event_sources.insert(edge.source);
   });
 
@@ -233,7 +233,7 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
       size_t const node_i = virtual_node.concrete_node_indices[member_ordinal];
       auto const &node = topology.concrete_node(node_i);
       for (size_t output_i = 0; output_i < node.outputs().size(); ++output_i) {
-        ConcretePortId const source_port{node_i, output_i};
+        TopologyPortId const source_port{node_i, output_i};
         result.sample.push_back(GraphBuilderVirtualSampleOutput{
             .source = source_port,
             .virtual_node_id = virtual_node.id,
@@ -245,7 +245,7 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
       }
       for (size_t output_i = 0; output_i < node.event_outputs().size();
            ++output_i) {
-        ConcretePortId const source_port{node_i, output_i};
+        TopologyPortId const source_port{node_i, output_i};
         result.event.push_back(GraphBuilderVirtualEventOutput{
             .source = source_port,
             .virtual_node_id = virtual_node.id,
@@ -265,8 +265,8 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
     GraphBuilderTopology const &topology,
     GraphBuilderNodeBundles const &node_bundles,
     GraphBuilderVirtualNodes const &virtual_nodes) const {
-  std::unordered_set<ConcretePortId> connected_sample_sources;
-  topology.for_each_sample_edge([&](GraphEdge const &edge) {
+  std::unordered_set<TopologyPortId> connected_sample_sources;
+  topology.for_each_sample_edge([&](TopologyEdge const &edge) {
     connected_sample_sources.insert(edge.source);
   });
 
@@ -285,7 +285,7 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
         auto const descriptor = node_bundles.resolve_sample_output(bundle_port);
         append_resolved_channels(channels, descriptor.endpoints,
                                  mapping.channel_layout,
-                                 [&](ConcretePortId port) { return connected_sample_sources.contains(port); });
+                                 [&](TopologyPortId port) { return connected_sample_sources.contains(port); });
       }
       result.families.push_back(GraphBuilderVirtualSampleOutputFamily{
           .virtual_node_id = virtual_node.id,
@@ -302,28 +302,28 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
 
 void GraphBuilderConnections::import_child(GraphBuilderConnections const &child,
                                            size_t child_node_offset) {
-  for (ConcretePortId const port : child._placed_sample_inputs) {
+  for (TopologyPortId const port : child._placed_sample_inputs) {
     if (port.node != GRAPH_ID) {
       _placed_sample_inputs.insert(
-          ConcretePortId{child_node_offset + port.node, port.port});
+          TopologyPortId{child_node_offset + port.node, port.port});
     }
   }
-  for (ConcretePortId const port : child._placed_event_inputs) {
+  for (TopologyPortId const port : child._placed_event_inputs) {
     if (port.node != GRAPH_ID) {
       _placed_event_inputs.insert(
-          ConcretePortId{child_node_offset + port.node, port.port});
+          TopologyPortId{child_node_offset + port.node, port.port});
     }
   }
-  for (ConcretePortId const port : child._runtime_filled_sample_inputs) {
+  for (TopologyPortId const port : child._runtime_filled_sample_inputs) {
     if (port.node != GRAPH_ID) {
       _runtime_filled_sample_inputs.insert(
-          ConcretePortId{child_node_offset + port.node, port.port});
+          TopologyPortId{child_node_offset + port.node, port.port});
     }
   }
-  for (ConcretePortId const port : child._runtime_filled_event_inputs) {
+  for (TopologyPortId const port : child._runtime_filled_event_inputs) {
     if (port.node != GRAPH_ID) {
       _runtime_filled_event_inputs.insert(
-          ConcretePortId{child_node_offset + port.node, port.port});
+          TopologyPortId{child_node_offset + port.node, port.port});
     }
   }
 }

@@ -177,7 +177,7 @@ public:
   public_event_input_source_infos(size_t port_ordinal) const;
   GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
   std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
-  void connect_sample_input(ConcretePortId target, SamplePortRef source);
+  void connect_sample_input(TopologyPortId target, SamplePortRef source);
   void connect_sample_input(NodeBundlePortId target, SamplePortRef source);
   // Connect one mono source per channel of a builder-visible port.  The
   // builder performs packing or tiled-port expansion as needed.
@@ -185,15 +185,15 @@ public:
                             std::span<SamplePortRef const> sources);
   // Explicitly cross the logical sample-ref -> topology-port boundary.
   MaterializedSamplePort materialize_sample_output(SamplePortRef source);
-  void connect_event_input(ConcretePortId target, EventPortRef source);
+  void connect_event_input(TopologyPortId target, EventPortRef source);
   void connect_event_input(NodeBundlePortId target, EventPortRef source);
-  void mark_runtime_filled_sample_input(ConcretePortId target);
+  void mark_runtime_filled_sample_input(TopologyPortId target);
   void mark_runtime_filled_sample_input(NodeBundlePortId target);
-  void mark_runtime_filled_event_input(ConcretePortId target);
+  void mark_runtime_filled_event_input(TopologyPortId target);
   void mark_runtime_filled_event_input(NodeBundlePortId target);
   bool sample_input_is_connected(NodeBundlePortId target) const;
   bool event_input_is_connected(NodeBundlePortId target) const;
-  // Keep concrete-port resolution inside GraphBuilder when a graph-service
+  // Keep topology-port resolution inside GraphBuilder when a graph-service
   // node consumes a bundle output.
   void connect_sample_output(NodeBundlePortId source, NodeRef const &target);
   EventPortRef event_output(NodeBundlePortId source) const;
@@ -208,7 +208,7 @@ private:
   static std::string allocate_root_builder_id();
   SamplePortRef detach_sample_port(SamplePortRef const &sample_port,
                                    size_t loop_extra_latency);
-  void connect_sample_input(ConcretePortId target, MaterializedSamplePort source);
+  void connect_sample_input(TopologyPortId target, MaterializedSamplePort source);
   SamplePortRef normalize_sample_output(SamplePortRef source);
   SamplePortRef lift_to_sample_port(SamplePortRef const &sample_port);
   SamplePortRef lift_to_sample_port(SamplePortRef &&sample_port);

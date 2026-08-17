@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/builder/stored_node.h>
+#include <intravenous/graph/builder/topology_port.h>
 
 #include <cstddef>
 #include <functional>
@@ -16,26 +17,6 @@ struct NodeBundlePortId {
   PortKind port_kind = PortKind::sample;
   size_t port_ordinal = 0;
   bool operator==(NodeBundlePortId const &) const = default;
-};
-
-// A port on a node stored in GraphBuilderTopology. The node may be either a
-// ConcreteNode or a SubgraphNode; the address itself does not imply a node
-// kind. Keep this distinct from ConcretePortId, which is the execution-graph
-// port type after lowering.
-//
-// The conversion is a temporary migration bridge for builder services that
-// still store topology edges in ConcretePortId. Remove it once those services
-// consume TopologyPortId directly.
-struct TopologyPortId {
-  size_t node = 0;
-  size_t port = 0;
-
-  constexpr TopologyPortId() = default;
-  constexpr TopologyPortId(size_t node_, size_t port_) : node(node_), port(port_) {}
-
-  operator ConcretePortId() const noexcept { return {node, port}; }
-
-  bool operator==(TopologyPortId const &) const = default;
 };
 
 template<class Config>

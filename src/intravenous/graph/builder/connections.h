@@ -16,14 +16,14 @@ namespace iv {
     class GraphBuilderVirtualNodes;
 
     struct GraphBuilderVacantSampleInput {
-        ConcretePortId target {};
+        TopologyPortId target {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         InputConfig config {};
     };
 
     struct GraphBuilderVacantEventInput {
-        ConcretePortId target {};
+        TopologyPortId target {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         EventInputConfig config {};
@@ -35,7 +35,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleInput {
-        ConcretePortId target {};
+        TopologyPortId target {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         InputConfig config {};
@@ -44,7 +44,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualEventInput {
-        ConcretePortId target {};
+        TopologyPortId target {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         EventInputConfig config {};
@@ -58,7 +58,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleInputChannel {
-        std::vector<ConcretePortId> targets {};
+        std::vector<TopologyPortId> targets {};
         bool has_existing_connection = false;
         bool runtime_filled = false;
     };
@@ -78,7 +78,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleOutput {
-        ConcretePortId source {};
+        TopologyPortId source {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         OutputConfig config {};
@@ -86,7 +86,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualEventOutput {
-        ConcretePortId source {};
+        TopologyPortId source {};
         std::string virtual_node_id {};
         size_t member_ordinal = 0;
         EventOutputConfig config {};
@@ -99,7 +99,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleOutputChannel {
-        std::vector<ConcretePortId> sources {};
+        std::vector<TopologyPortId> sources {};
         bool has_existing_downstream_connection = false;
     };
 
@@ -119,23 +119,23 @@ namespace iv {
 
     class GraphBuilderConnections {
     public:
-        bool sample_input_is_connected(ConcretePortId target) const;
-        bool event_input_is_connected(ConcretePortId target) const;
+        bool sample_input_is_connected(TopologyPortId target) const;
+        bool event_input_is_connected(TopologyPortId target) const;
         void connect_sample_input(
             GraphBuilderTopology&,
             GraphBuilderIdentity const&,
-            ConcretePortId target,
-            ConcretePortId source
+            TopologyPortId target,
+            TopologyPortId source
         );
         void connect_event_input(
             GraphBuilderTopology&,
             std::span<EventInputConfig const> graph_event_inputs,
             GraphBuilderIdentity const&,
-            ConcretePortId target,
+            TopologyPortId target,
             EventPortRef source
         );
-        void mark_runtime_filled_sample_input(ConcretePortId target);
-        void mark_runtime_filled_event_input(ConcretePortId target);
+        void mark_runtime_filled_sample_input(TopologyPortId target);
+        void mark_runtime_filled_event_input(TopologyPortId target);
         GraphBuilderVacantInputs collect_vacant_inputs(
             GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualInputs collect_virtual_inputs(
@@ -151,22 +151,22 @@ namespace iv {
         template<class Fn>
         void for_each_runtime_filled_sample_input(Fn&& fn) const
         {
-            for (ConcretePortId const port : _runtime_filled_sample_inputs) {
+            for (TopologyPortId const port : _runtime_filled_sample_inputs) {
                 fn(port);
             }
         }
         template<class Fn>
         void for_each_runtime_filled_event_input(Fn&& fn) const
         {
-            for (ConcretePortId const port : _runtime_filled_event_inputs) {
+            for (TopologyPortId const port : _runtime_filled_event_inputs) {
                 fn(port);
             }
         }
 
     private:
-        std::unordered_set<ConcretePortId> _placed_sample_inputs {};
-        std::unordered_set<ConcretePortId> _placed_event_inputs {};
-        std::unordered_set<ConcretePortId> _runtime_filled_sample_inputs {};
-        std::unordered_set<ConcretePortId> _runtime_filled_event_inputs {};
+        std::unordered_set<TopologyPortId> _placed_sample_inputs {};
+        std::unordered_set<TopologyPortId> _placed_event_inputs {};
+        std::unordered_set<TopologyPortId> _runtime_filled_sample_inputs {};
+        std::unordered_set<TopologyPortId> _runtime_filled_event_inputs {};
     };
 }

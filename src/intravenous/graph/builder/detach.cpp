@@ -8,12 +8,12 @@ size_t GraphBuilderDetach::reserve_child_offset(GraphBuilderDetach const& child)
     return child_detach_offset;
 }
 
-bool GraphBuilderDetach::reader_output_exists(ConcretePortId source) const
+bool GraphBuilderDetach::reader_output_exists(TopologyPortId source) const
 {
     return _reader_outputs.contains(source);
 }
 
-DetachedSamplePortInfo const* GraphBuilderDetach::info_for_source(ConcretePortId source) const
+DetachedSamplePortInfo const* GraphBuilderDetach::info_for_source(TopologyPortId source) const
 {
     if (auto it = _info_by_source.find(source); it != _info_by_source.end()) {
         return &it->second;
@@ -26,7 +26,7 @@ size_t GraphBuilderDetach::allocate_detach_id()
     return _next_detach_id++;
 }
 
-void GraphBuilderDetach::record_detached_source(ConcretePortId source, DetachedSamplePortInfo info)
+void GraphBuilderDetach::record_detached_source(TopologyPortId source, DetachedSamplePortInfo info)
 {
     _reader_outputs.insert(info.reader_output);
     _info_by_source.emplace(source, std::move(info));
@@ -34,11 +34,11 @@ void GraphBuilderDetach::record_detached_source(ConcretePortId source, DetachedS
 
 void GraphBuilderDetach::import_child(GraphBuilderDetach const& child, size_t child_node_offset, size_t child_detach_offset)
 {
-    auto remap_child_port = [&](ConcretePortId port) {
+    auto remap_child_port = [&](TopologyPortId port) {
         if (port.node == GRAPH_ID) {
-            return ConcretePortId{ child_node_offset - 1, port.port };
+            return TopologyPortId{ child_node_offset - 1, port.port };
         }
-        return ConcretePortId{ child_node_offset + port.node, port.port };
+        return TopologyPortId{ child_node_offset + port.node, port.port };
     };
 
     for (auto const& [source, info] : child._info_by_source) {
@@ -54,7 +54,7 @@ void GraphBuilderDetach::import_child(GraphBuilderDetach const& child, size_t ch
         );
     }
 
-    for (ConcretePortId const reader_output : child._reader_outputs) {
+    for (TopologyPortId const reader_output : child._reader_outputs) {
         _reader_outputs.insert(remap_child_port(reader_output));
     }
 }
