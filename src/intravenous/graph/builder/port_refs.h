@@ -25,15 +25,14 @@ namespace iv {
              SampleStreamLayout Layout = SampleStreamLayout::planar>
     class TypedSamplePortTileChannelRef;
 
-    // Explicit builder-boundary addresses. Their legacy_port() projections are
-    // temporary bridges while GraphBuilderTopology still stores boundary edges
-    // in ConcretePortId. The semantic identity no longer depends on sentinel
-    // node indices in port-ref consumers.
+    // Explicit builder-boundary addresses. Their topology_port() projections
+    // are used only when a logical boundary is recorded in GraphBuilderTopology;
+    // the semantic identity itself never depends on a sentinel node index.
     struct GraphInputPortId {
         PortKind port_kind = PortKind::sample;
         size_t port_ordinal = 0;
 
-        ConcretePortId legacy_port() const noexcept
+        TopologyPortId topology_port() const noexcept
         {
             return {GRAPH_ID, port_ordinal};
         }
@@ -45,12 +44,12 @@ namespace iv {
         PortKind port_kind = PortKind::sample;
         size_t boundary_ordinal = 0;
 
-        ConcretePortId legacy_port() const noexcept
+        TopologyPortId topology_port() const noexcept
         {
             return {GRAPH_ID - 1 - boundary_ordinal, 0};
         }
 
-        static ScopeBoundaryPortId from_legacy(ConcretePortId port, PortKind kind) noexcept
+        static ScopeBoundaryPortId from_topology(TopologyPortId port, PortKind kind) noexcept
         {
             return ScopeBoundaryPortId{
                 .port_kind = kind,
@@ -63,9 +62,9 @@ namespace iv {
 
     // Internal result of crossing the logical sample-reference boundary.
     // It is intentionally distinct from SamplePortRef: callers that hold one
-    // have already chosen a concrete topology edge source.
+    // have already chosen a builder-topology edge source.
     struct MaterializedSamplePort {
-        ConcretePortId port{};
+        TopologyPortId port{};
     };
 
     struct SamplePortRef {
@@ -81,7 +80,7 @@ namespace iv {
         explicit SamplePortRef(GraphBuilder& graph_builder_, GraphInputPortId graph_input);
         explicit SamplePortRef(GraphBuilder& graph_builder_, ScopeBoundaryPortId scope_boundary);
         explicit SamplePortRef(GraphBuilder& graph_builder_, NodeBundlePortId bundle_port);
-        operator ConcretePortId() const;
+        operator TopologyPortId() const;
 
         SamplePortRef& operator=(SamplePortRef const&) = default;
         SamplePortRef& operator=(SamplePortRef&& rhs) = default;
@@ -212,7 +211,7 @@ namespace iv {
         explicit PublicSampleInputRef(SamplePortRef port_) : port(std::move(port_)) {}
 
         operator SamplePortRef() const { return port; }
-        operator ConcretePortId() const { return static_cast<ConcretePortId>(port); }
+        operator TopologyPortId() const { return static_cast<TopologyPortId>(port); }
 
         void _annotate_source_info(
             std::string_view declaration_identity,
@@ -232,10 +231,10 @@ namespace iv {
         explicit EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
         explicit EventPortRef(GraphBuilder& graph_builder_, GraphInputPortId graph_input);
         explicit EventPortRef(GraphBuilder& graph_builder_, ScopeBoundaryPortId scope_boundary);
-        operator ConcretePortId() const
+        operator TopologyPortId() const
         {
-            if (graph_input_port) return graph_input_port->legacy_port();
-            if (scope_boundary_port) return scope_boundary_port->legacy_port();
+            if (graph_input_port) return graph_input_port->topology_port();
+            if (scope_boundary_port) return scope_boundary_port->topology_port();
             return {node_index, output_port};
         }
 
@@ -249,7 +248,7 @@ namespace iv {
         PublicEventInputRef() = default;
         explicit PublicEventInputRef(EventPortRef port_) : port(std::move(port_)) {}
         operator EventPortRef() const { return port; }
-        operator ConcretePortId() const { return static_cast<ConcretePortId>(port); }
+        operator TopologyPortId() const { return static_cast<TopologyPortId>(port); }
         void _annotate_source_info(
             std::string_view declaration_identity, std::string_view file_path,
             uint32_t begin, uint32_t end) const;

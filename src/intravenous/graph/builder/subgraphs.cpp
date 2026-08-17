@@ -173,7 +173,7 @@ void SubgraphScopeManager::define_event_outputs(
             : ref.scope_boundary_port
                 ? topology.scope_boundary_event_output(*ref.scope_boundary_port).type
                 : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
-        scope.event_output_sources.push_back(static_cast<ConcretePortId>(ref));
+        scope.event_output_sources.push_back(static_cast<TopologyPortId>(ref));
         scope.event_output_configs.emplace_back(config);
         scope.event_output_configs.back().type = source_type;
     }
@@ -186,58 +186,58 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
                                               ScopedSubgraph scope)
 {
     size_t const subgraph_node_index = topology.node_count();
-    std::unordered_map<ConcretePortId, size_t> sample_input_index_by_boundary;
+    std::unordered_map<TopologyPortId, size_t> sample_input_index_by_boundary;
     sample_input_index_by_boundary.reserve(scope.input_boundary_ports.size());
     for (size_t i = 0; i < scope.input_boundary_ports.size(); ++i) {
         sample_input_index_by_boundary.emplace(
-            scope.input_boundary_ports[i].legacy_port(), i);
+            scope.input_boundary_ports[i].topology_port(), i);
     }
 
-    std::unordered_map<ConcretePortId, size_t> event_input_index_by_boundary;
+    std::unordered_map<TopologyPortId, size_t> event_input_index_by_boundary;
     event_input_index_by_boundary.reserve(scope.event_input_boundary_ports.size());
     for (size_t i = 0; i < scope.event_input_boundary_ports.size(); ++i) {
         event_input_index_by_boundary.emplace(
-            scope.event_input_boundary_ports[i].legacy_port(), i);
+            scope.event_input_boundary_ports[i].topology_port(), i);
     }
 
-    std::vector<std::vector<ConcretePortId>> subgraph_input_targets(scope.input_configs.size());
-    std::vector<std::vector<ConcretePortId>> subgraph_event_input_targets(scope.event_input_configs.size());
+    std::vector<std::vector<TopologyPortId>> subgraph_input_targets(scope.input_configs.size());
+    std::vector<std::vector<TopologyPortId>> subgraph_event_input_targets(scope.event_input_configs.size());
 
-    auto translate_sample_source = [&](ConcretePortId source) {
+    auto translate_sample_source = [&](TopologyPortId source) {
         if (auto const it = sample_input_index_by_boundary.find(source);
             it != sample_input_index_by_boundary.end()) {
-            return ConcretePortId{ subgraph_node_index, it->second };
+            return TopologyPortId{ subgraph_node_index, it->second };
         }
         return source;
     };
 
-    auto translate_event_source = [&](ConcretePortId source) {
+    auto translate_event_source = [&](TopologyPortId source) {
         if (auto const it = event_input_index_by_boundary.find(source);
             it != event_input_index_by_boundary.end()) {
-            return ConcretePortId{ subgraph_node_index, it->second };
+            return TopologyPortId{ subgraph_node_index, it->second };
         }
         return source;
     };
 
-    topology.for_each_sample_edge([&](GraphEdge const& edge) {
+    topology.for_each_sample_edge([&](TopologyEdge const& edge) {
         auto const it = sample_input_index_by_boundary.find(edge.source);
         if (it == sample_input_index_by_boundary.end()) {
             return;
         }
         subgraph_input_targets[it->second].push_back(edge.target);
     });
-    topology.erase_sample_edges_matching([&](GraphEdge const& edge) {
+    topology.erase_sample_edges_matching([&](TopologyEdge const& edge) {
         return sample_input_index_by_boundary.contains(edge.source);
     });
 
-    topology.for_each_event_edge([&](GraphEventEdge const& edge) {
+    topology.for_each_event_edge([&](TopologyEventEdge const& edge) {
         auto const it = event_input_index_by_boundary.find(edge.source);
         if (it == event_input_index_by_boundary.end()) {
             return;
         }
         subgraph_event_input_targets[it->second].push_back(edge.target);
     });
-    topology.erase_event_edges_matching([&](GraphEventEdge const& edge) {
+    topology.erase_event_edges_matching([&](TopologyEventEdge const& edge) {
         return event_input_index_by_boundary.contains(edge.source);
     });
 

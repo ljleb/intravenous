@@ -3,20 +3,27 @@
 #include <intravenous/graph/builder/port_refs.h>
 #include <intravenous/graph/types.h>
 
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace iv {
-    using DetachedSamplePortInfo = DetachedInfo;
+    struct DetachedSamplePortInfo {
+        size_t detach_id = 0;
+        TopologyPortId original_source {};
+        size_t writer_node = std::numeric_limits<size_t>::max();
+        TopologyPortId reader_output {};
+        size_t loop_extra_latency = 1;
+    };
 
     class GraphBuilderDetach {
     public:
         size_t reserve_child_offset(GraphBuilderDetach const& child);
         void import_child(GraphBuilderDetach const& child, size_t child_node_offset, size_t child_detach_offset);
-        bool reader_output_exists(ConcretePortId source) const;
-        DetachedSamplePortInfo const* info_for_source(ConcretePortId source) const;
+        bool reader_output_exists(TopologyPortId source) const;
+        DetachedSamplePortInfo const* info_for_source(TopologyPortId source) const;
         size_t allocate_detach_id();
-        void record_detached_source(ConcretePortId source, DetachedSamplePortInfo info);
+        void record_detached_source(TopologyPortId source, DetachedSamplePortInfo info);
         template<class Fn>
         void for_each_info(Fn&& fn) const
         {
@@ -27,14 +34,14 @@ namespace iv {
         template<class Fn>
         void for_each_reader_output(Fn&& fn) const
         {
-            for (ConcretePortId const output : _reader_outputs) {
+            for (TopologyPortId const output : _reader_outputs) {
                 fn(output);
             }
         }
 
     private:
         size_t _next_detach_id = 0;
-        std::unordered_map<ConcretePortId, DetachedSamplePortInfo> _info_by_source {};
-        std::unordered_set<ConcretePortId> _reader_outputs {};
+        std::unordered_map<TopologyPortId, DetachedSamplePortInfo> _info_by_source {};
+        std::unordered_set<TopologyPortId> _reader_outputs {};
     };
 }

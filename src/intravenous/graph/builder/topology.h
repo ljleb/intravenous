@@ -11,6 +11,38 @@
 #include <vector>
 
 namespace iv {
+    struct TopologyEdge {
+        TopologyPortId source {}, target {};
+
+        bool operator==(TopologyEdge const& other) const
+        {
+            return source == other.source && target == other.target;
+        }
+    };
+
+    struct TopologyEventEdge {
+        TopologyPortId source {}, target {};
+        EventConversionPlan conversion {};
+
+        bool operator==(TopologyEventEdge const&) const = default;
+    };
+
+    struct TopologyEdgeHash {
+        size_t operator()(TopologyEdge const& edge) const
+        {
+            auto hash = std::hash<TopologyPortId>{};
+            return hash(edge.source) ^ (~hash(edge.target) - 1);
+        }
+    };
+
+    struct TopologyEventEdgeHash {
+        size_t operator()(TopologyEventEdge const& edge) const
+        {
+            auto hash = std::hash<TopologyPortId>{};
+            return hash(edge.source) ^ (~hash(edge.target) - 1);
+        }
+    };
+
     class GraphBuilderTopology {
     public:
         size_t node_count() const;
@@ -27,8 +59,8 @@ namespace iv {
         size_t append_node(ConcreteNode node);
         size_t append_node(SubgraphNode node);
         void apply_ttl(size_t node_index, size_t ttl_samples);
-        void add_sample_edge(GraphEdge edge);
-        void add_event_edge(GraphEventEdge edge);
+        void add_sample_edge(TopologyEdge edge);
+        void add_event_edge(TopologyEventEdge edge);
         void erase_sample_edges_matching(auto&& predicate);
         void erase_event_edges_matching(auto&& predicate);
         template<class Fn>
@@ -47,9 +79,9 @@ namespace iv {
         }
         ScopeBoundaryPortId append_scope_sample_input(OutputConfig);
         ScopeBoundaryPortId append_scope_event_input(EventOutputConfig);
-        bool is_scope_boundary_port(ConcretePortId) const;
+        bool is_scope_boundary_port(TopologyPortId) const;
         EventOutputConfig const& scope_boundary_event_output(ScopeBoundaryPortId) const;
-        EventOutputConfig const& scope_boundary_event_output(ConcretePortId) const;
+        EventOutputConfig const& scope_boundary_event_output(TopologyPortId) const;
         template<class Config>
         static void validate_output_port_configs(
             std::span<Config const> configs,
@@ -66,10 +98,10 @@ namespace iv {
             std::vector<EventOutputConfig> event_output_configs,
             size_t lowered_subgraph_begin,
             size_t lowered_subgraph_count,
-            std::vector<std::vector<ConcretePortId>> subgraph_input_targets,
-            std::vector<ConcretePortId> subgraph_output_sources,
-            std::vector<std::vector<ConcretePortId>> subgraph_event_input_targets,
-            std::vector<ConcretePortId> subgraph_event_output_sources
+            std::vector<std::vector<TopologyPortId>> subgraph_input_targets,
+            std::vector<TopologyPortId> subgraph_output_sources,
+            std::vector<std::vector<TopologyPortId>> subgraph_event_input_targets,
+            std::vector<TopologyPortId> subgraph_event_output_sources
         );
         size_t append_embedded_child(
             GraphBuilderTopology const& child,
@@ -87,8 +119,8 @@ namespace iv {
             std::optional<EventOutputConfig> event_output {};
         };
         std::vector<ScopeBoundaryPort> _scope_boundary_ports {};
-        std::unordered_set<GraphEdge> _edges {};
-        std::unordered_set<GraphEventEdge> _event_edges {};
+        std::unordered_set<TopologyEdge, TopologyEdgeHash> _edges {};
+        std::unordered_set<TopologyEventEdge, TopologyEventEdgeHash> _event_edges {};
     };
 
     template<class Predicate>

@@ -201,9 +201,9 @@ void GraphBuilderPublicPorts::define_sample_outputs(
             ? _sample_outputs.size()
             : static_cast<size_t>(existing - _sample_output_members.begin());
         auto const source = builder.materialize_sample_output(ref).port;
-        topology.add_sample_edge(GraphEdge{
+        topology.add_sample_edge(TopologyEdge{
             source,
-            ConcretePortId{ GRAPH_ID, output_ordinal },
+            TopologyPortId{ GRAPH_ID, output_ordinal },
         });
         if (existing == _sample_output_members.end()) {
             _sample_outputs.push_back(config);
@@ -253,9 +253,9 @@ void GraphBuilderPublicPorts::define_event_outputs(
             : ref.scope_boundary_port
                 ? topology.scope_boundary_event_output(*ref.scope_boundary_port).type
                 : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
-        topology.add_event_edge(GraphEventEdge{
-            static_cast<ConcretePortId>(ref),
-            ConcretePortId{ GRAPH_ID, i },
+        topology.add_event_edge(TopologyEventEdge{
+            static_cast<TopologyPortId>(ref),
+            TopologyPortId{ GRAPH_ID, i },
             EventConversionRegistry::instance().plan(source_type, source_type)
         });
         _event_outputs.emplace_back(config);

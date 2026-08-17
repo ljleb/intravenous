@@ -37,8 +37,8 @@ struct PreparedBuilderGraph {
       .detached_reader_outputs = {},
   };
   std::vector<size_t> runtime_node_indices;
-  std::unordered_map<ConcretePortId, ConcretePortId> source_of;
-  std::unordered_map<ConcretePortId, GraphEventEdge> event_source_of;
+  std::unordered_map<TopologyPortId, TopologyPortId> source_of;
+  std::unordered_map<TopologyPortId, TopologyEventEdge> event_source_of;
 
   PreparedBuilderGraph(GraphBuilderIdentity const &identity_,
                        GraphBuilderTopology const &topology_,
@@ -50,8 +50,8 @@ struct PreparedBuilderGraph {
         connections(connections_), detach(detach_),
         runtime_node_indices(topology_.node_count(), GRAPH_ID) {
     topology.for_each_sample_edge(
-        [&](GraphEdge const &edge) { source_of[edge.target] = edge.source; });
-    topology.for_each_event_edge([&](GraphEventEdge const &edge) {
+        [&](TopologyEdge const &edge) { source_of[edge.target] = edge.source; });
+    topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
       event_source_of[edge.target] = edge;
     });
   }
@@ -107,15 +107,15 @@ struct PreparedBuilderGraph {
     graph.node_type_identities.push_back(node.type_identity.value);
   }
 
-  ConcretePortId resolve_sample_source(ConcretePortId source) const {
+  ConcretePortId resolve_sample_source(TopologyPortId source) const {
     if (source.node == GRAPH_ID) {
-      return source;
+      return ConcretePortId{GRAPH_ID, source.port};
     }
     if (!topology.is_subgraph_node(source.node)) {
       return ConcretePortId{runtime_node_indices[source.node], source.port};
     }
     auto const &node = topology.subgraph_node(source.node);
-    ConcretePortId const passthrough_source =
+    TopologyPortId const passthrough_source =
         node.lowered_subgraph.sample_output_sources[source.port];
     if (passthrough_source.node == source.node) {
       return resolve_sample_source(source_of.at(passthrough_source));
@@ -123,15 +123,15 @@ struct PreparedBuilderGraph {
     return resolve_sample_source(passthrough_source);
   }
 
-  ConcretePortId resolve_event_source(ConcretePortId source) const {
+  ConcretePortId resolve_event_source(TopologyPortId source) const {
     if (source.node == GRAPH_ID) {
-      return source;
+      return ConcretePortId{GRAPH_ID, source.port};
     }
     if (!topology.is_subgraph_node(source.node)) {
       return ConcretePortId{runtime_node_indices[source.node], source.port};
     }
     auto const &node = topology.subgraph_node(source.node);
-    ConcretePortId const passthrough_source =
+    TopologyPortId const passthrough_source =
         node.lowered_subgraph.event_output_sources[source.port];
     if (passthrough_source.node == source.node) {
       return resolve_event_source(
@@ -140,9 +140,9 @@ struct PreparedBuilderGraph {
     return resolve_event_source(passthrough_source);
   }
 
-  void add_sample_target_edges(ConcretePortId source, ConcretePortId target) {
+  void add_sample_target_edges(ConcretePortId source, TopologyPortId target) {
     if (target.node == GRAPH_ID) {
-      graph.edges.emplace(GraphEdge{source, target});
+      graph.edges.emplace(GraphEdge{source, ConcretePortId{GRAPH_ID, target.port}});
       return;
     }
 
@@ -153,16 +153,16 @@ struct PreparedBuilderGraph {
     }
     auto const &target_node = topology.subgraph_node(target.node);
 
-    for (ConcretePortId const child_target :
+    for (TopologyPortId const child_target :
          target_node.lowered_subgraph.sample_input_targets[target.port]) {
       add_sample_target_edges(source, child_target);
     }
   }
 
-  void add_event_target_edges(GraphEventEdge edge, ConcretePortId target) {
+  void add_event_target_edges(GraphEventEdge edge, TopologyPortId target) {
     if (target.node == GRAPH_ID) {
       graph.event_edges.emplace(
-          GraphEventEdge{edge.source, target, std::move(edge.conversion)});
+          GraphEventEdge{edge.source, ConcretePortId{GRAPH_ID, target.port}, std::move(edge.conversion)});
       return;
     }
 
@@ -175,29 +175,29 @@ struct PreparedBuilderGraph {
     }
     auto const &target_node = topology.subgraph_node(target.node);
 
-    for (ConcretePortId const child_target :
+    for (TopologyPortId const child_target :
          target_node.lowered_subgraph.event_input_targets[target.port]) {
       add_event_target_edges(
-          GraphEventEdge{edge.source, child_target, edge.conversion},
+          GraphEventEdge{edge.source, {}, edge.conversion},
           child_target);
     }
   }
 
   void lower_edges() {
-    topology.for_each_sample_edge([&](GraphEdge const &edge) {
+    topology.for_each_sample_edge([&](TopologyEdge const &edge) {
       add_sample_target_edges(resolve_sample_source(edge.source), edge.target);
     });
-    topology.for_each_event_edge([&](GraphEventEdge const &edge) {
-      GraphEventEdge resolved = edge;
-      resolved.source = resolve_event_source(edge.source);
-      add_event_target_edges(std::move(resolved), edge.target);
+    topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
+      add_event_target_edges(
+          GraphEventEdge{resolve_event_source(edge.source), {}, edge.conversion},
+          edge.target);
     });
   }
 
   void copy_runtime_filled_inputs() {
     IV_ASSERT(connections != nullptr,
               "copy_runtime_filled_inputs requires GraphBuilderConnections");
-    connections->for_each_runtime_filled_sample_input([&](ConcretePortId port) {
+    connections->for_each_runtime_filled_sample_input([&](TopologyPortId port) {
       if (port.node == GRAPH_ID ||
           topology.is_subgraph_node(port.node)) {
         return;
@@ -205,7 +205,7 @@ struct PreparedBuilderGraph {
       graph.timeline_filled_input_ports.insert(
           ConcretePortId{runtime_node_indices[port.node], port.port});
     });
-    connections->for_each_runtime_filled_event_input([&](ConcretePortId port) {
+    connections->for_each_runtime_filled_event_input([&](TopologyPortId port) {
       if (port.node == GRAPH_ID ||
           topology.is_subgraph_node(port.node)) {
         return;
@@ -237,13 +237,13 @@ struct PreparedBuilderGraph {
       auto const &node = topology.subgraph_node(node_i);
       for (size_t input_port = 0; input_port < node.inputs().size();
            ++input_port) {
-        ConcretePortId const subgraph_input{node_i, input_port};
+        TopologyPortId const subgraph_input{node_i, input_port};
         if (source_of.contains(subgraph_input)) {
           continue;
         }
         ConcretePortId const default_source =
             materialize_subgraph_default(node_i, input_port);
-        for (ConcretePortId const child_target :
+        for (TopologyPortId const child_target :
              node.lowered_subgraph.sample_input_targets[input_port]) {
           add_sample_target_edges(default_source, child_target);
         }
@@ -255,11 +255,11 @@ struct PreparedBuilderGraph {
     IV_ASSERT(detach != nullptr,
               "copy_detach_info requires GraphBuilderDetach");
     detach->for_each_info(
-        [&](ConcretePortId source, DetachedSamplePortInfo const &info) {
+        [&](TopologyPortId source, DetachedSamplePortInfo const &info) {
           ConcretePortId const remapped_source = resolve_sample_source(source);
           graph.detached_info_by_source.emplace(
               remapped_source,
-              DetachedSamplePortInfo{
+              DetachedInfo{
                   .detach_id = info.detach_id,
                   .original_source = remapped_source,
                   .writer_node = runtime_node_indices[info.writer_node],
@@ -267,7 +267,7 @@ struct PreparedBuilderGraph {
                   .loop_extra_latency = info.loop_extra_latency,
               });
         });
-    detach->for_each_reader_output([&](ConcretePortId reader_output) {
+    detach->for_each_reader_output([&](TopologyPortId reader_output) {
       graph.detached_reader_outputs.insert(
           resolve_sample_source(reader_output));
     });
@@ -283,12 +283,12 @@ struct PreparedBuilderGraph {
   }
 
   void collect_scope_targets(
-      ConcretePortId target, std::vector<iv::LoweredSubgraphSpec::PortRef> &out) const {
+      TopologyPortId target, std::vector<iv::LoweredSubgraphSpec::PortRef> &out) const {
     if (target.node == GRAPH_ID || !topology.is_subgraph_node(target.node)) {
-      out.push_back(make_scope_port_ref(target));
+      out.push_back(make_scope_port_ref(ConcretePortId{target.node, target.port}));
       return;
     }
-    for (ConcretePortId const child_target :
+    for (TopologyPortId const child_target :
          topology.subgraph_node(target.node)
              .lowered_subgraph.sample_input_targets[target.port]) {
       collect_scope_targets(child_target, out);
@@ -296,12 +296,12 @@ struct PreparedBuilderGraph {
   }
 
   void collect_scope_event_targets(
-      ConcretePortId target, std::vector<iv::LoweredSubgraphSpec::PortRef> &out) const {
+      TopologyPortId target, std::vector<iv::LoweredSubgraphSpec::PortRef> &out) const {
     if (target.node == GRAPH_ID || !topology.is_subgraph_node(target.node)) {
-      out.push_back(make_scope_port_ref(target));
+      out.push_back(make_scope_port_ref(ConcretePortId{target.node, target.port}));
       return;
     }
-    for (ConcretePortId const child_target :
+    for (TopologyPortId const child_target :
          topology.subgraph_node(target.node)
              .lowered_subgraph.event_input_targets[target.port]) {
       collect_scope_event_targets(child_target, out);
@@ -367,7 +367,7 @@ struct PreparedBuilderGraph {
       for (auto const &targets :
            subgraph.lowered_subgraph.sample_input_targets) {
         std::vector<iv::LoweredSubgraphSpec::PortRef> flattened_targets;
-        for (ConcretePortId const target : targets) {
+        for (TopologyPortId const target : targets) {
           collect_scope_targets(target, flattened_targets);
         }
         scope.sample_input_targets.push_back(std::move(flattened_targets));
@@ -375,7 +375,7 @@ struct PreparedBuilderGraph {
 
       scope.sample_output_sources.reserve(
           subgraph.lowered_subgraph.sample_output_sources.size());
-      for (ConcretePortId const source :
+      for (TopologyPortId const source :
            subgraph.lowered_subgraph.sample_output_sources) {
         scope.sample_output_sources.push_back(
             make_scope_port_ref(resolve_sample_source(source)));
@@ -386,7 +386,7 @@ struct PreparedBuilderGraph {
       for (auto const &targets :
            subgraph.lowered_subgraph.event_input_targets) {
         std::vector<iv::LoweredSubgraphSpec::PortRef> flattened_targets;
-        for (ConcretePortId const target : targets) {
+        for (TopologyPortId const target : targets) {
           collect_scope_event_targets(target, flattened_targets);
         }
         scope.event_input_targets.push_back(std::move(flattened_targets));
@@ -394,7 +394,7 @@ struct PreparedBuilderGraph {
 
       scope.event_output_sources.reserve(
           subgraph.lowered_subgraph.event_output_sources.size());
-      for (ConcretePortId const source :
+      for (TopologyPortId const source :
            subgraph.lowered_subgraph.event_output_sources) {
         scope.event_output_sources.push_back(
             make_scope_port_ref(resolve_event_source(source)));
