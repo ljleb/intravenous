@@ -874,7 +874,7 @@ GraphBuilder::lift_to_sample_port(SamplePortRef const &sample_port) {
     details::error("builder " + _identity.value + ": sample port " +
                    sample_port.to_string() + " belongs to another builder");
   }
-  return normalize_sample_output(sample_port);
+  return sample_port;
 }
 
 SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef &&sample_port) {
@@ -882,7 +882,7 @@ SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef &&sample_port) {
     details::error("builder " + _identity.value + ": sample port " +
                    sample_port.to_string() + " belongs to another builder");
   }
-  return lift_to_sample_port(static_cast<SamplePortRef const &>(sample_port));
+  return std::move(sample_port);
 }
 
 SamplePortRef GraphBuilder::lift_to_sample_port(NamedRef const &ref) {
