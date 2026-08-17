@@ -1,5 +1,6 @@
 #include <intravenous/graph/builder/public_ports.h>
 
+#include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/topology.h>
 
 #include <algorithm>
@@ -159,7 +160,7 @@ bool GraphBuilderPublicPorts::sample_outputs_defined() const
 }
 
 void GraphBuilderPublicPorts::define_sample_outputs(
-    GraphBuilder const& builder,
+    GraphBuilder& builder,
     GraphBuilderTopology& topology,
     GraphBuilderIdentity const& identity,
     std::span<OutputRefConfig const> refs
@@ -199,11 +200,7 @@ void GraphBuilderPublicPorts::define_sample_outputs(
         auto const output_ordinal = existing == _sample_output_members.end()
             ? _sample_outputs.size()
             : static_cast<size_t>(existing - _sample_output_members.begin());
-        auto const source = ref.graph_input_port
-            ? ref.graph_input_port->legacy_port()
-            : ref.scope_boundary_port
-                ? ref.scope_boundary_port->legacy_port()
-                : ConcretePortId{ref.node_index, ref.output_port};
+        auto const source = builder.materialize_sample_output(ref).port;
         topology.add_sample_edge(GraphEdge{
             source,
             ConcretePortId{ GRAPH_ID, output_ordinal },

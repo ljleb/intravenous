@@ -154,7 +154,7 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
         queue_timeline_batch_locked(diff.timeline_batch);
     }
 
-    std::unordered_map<std::string, size_t> sample_control_node_indices;
+    std::unordered_map<std::string, SamplePortRef> sample_control_sources;
     for (auto const &input : virtual_ports.sample_inputs) {
         auto const descriptor = qualify_descriptor(GraphInputPortDescriptor{
             .virtual_node_id = input.id.virtual_node_id,
@@ -217,13 +217,13 @@ GraphInputLanes::BuilderCompletionDiff GraphInputLanes::complete_builder(
             for (size_t channel = 0; channel < channel_total; ++channel) {
                 if (prerequisite_lane) {
                     auto const identity = LaneInputValue::nominal_identity(prerequisite_lane, channel);
-                    if (auto const existing = sample_control_node_indices.find(identity);
-                        existing != sample_control_node_indices.end()) {
-                        sources.emplace_back(builder, existing->second, 0);
+                    if (auto const existing = sample_control_sources.find(identity);
+                        existing != sample_control_sources.end()) {
+                        sources.push_back(existing->second);
                     } else {
                         auto lane_input = builder.node<LaneInputValue>(prerequisite_lane, channel);
                         auto source = static_cast<SamplePortRef>(lane_input);
-                        sample_control_node_indices.emplace(identity, source.node_index);
+                        sample_control_sources.emplace(identity, source);
                         sources.push_back(std::move(source));
                     }
                 } else if (state == NodeBundleSampleInputState::overridden) {

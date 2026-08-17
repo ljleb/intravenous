@@ -183,8 +183,8 @@ public:
   // builder performs packing or tiled-port expansion as needed.
   void connect_sample_input(NodeBundlePortId target,
                             std::span<SamplePortRef const> sources);
-  // Explicitly cross the logical NodeBundle -> topology-port boundary.
-  SamplePortRef materialize_sample_output(SamplePortRef source);
+  // Explicitly cross the logical sample-ref -> topology-port boundary.
+  MaterializedSamplePort materialize_sample_output(SamplePortRef source);
   void connect_event_input(ConcretePortId target, EventPortRef source);
   void connect_event_input(NodeBundlePortId target, EventPortRef source);
   void mark_runtime_filled_sample_input(ConcretePortId target);
@@ -208,6 +208,8 @@ private:
   static std::string allocate_root_builder_id();
   SamplePortRef detach_sample_port(SamplePortRef const &sample_port,
                                    size_t loop_extra_latency);
+  void connect_sample_input(ConcretePortId target, MaterializedSamplePort source);
+  SamplePortRef normalize_sample_output(SamplePortRef source);
   SamplePortRef lift_to_sample_port(SamplePortRef const &sample_port);
   SamplePortRef lift_to_sample_port(SamplePortRef &&sample_port);
 
@@ -238,7 +240,7 @@ private:
              std::is_same_v<std::remove_cvref_t<T>, Sample>
   SamplePortRef lift_to_sample_port(T value) {
     auto constant = node<Constant>(static_cast<Sample>(value));
-    return materialize_sample_output(static_cast<SamplePortRef>(constant));
+    return static_cast<SamplePortRef>(constant);
   }
 
   SamplePortRef lift_to_sample_port(NamedRef const &ref);
@@ -249,7 +251,7 @@ SamplePortRef make_channel_pack(GraphBuilder &builder, size_t channel,
                                 SamplePortRef source) {
   auto pack = builder.template node<ChannelPack<ChannelType>>();
   pack.connect_input(channel, source);
-  return builder.materialize_sample_output(static_cast<SamplePortRef>(pack));
+  return static_cast<SamplePortRef>(pack);
 }
 
 template <class ChannelType, SampleStreamLayout Layout>
@@ -263,8 +265,8 @@ SamplePortRef GraphBuilder::lift_to_sample_port(
     TypedSamplePortChannelRef<ChannelType, Layout, Member> const &sample_port) {
   auto unpack = node<ChannelUnpack<ChannelType>>();
   unpack.connect_input("in", sample_port.port());
-  return materialize_sample_output(
-      static_cast<SamplePortRef>(unpack[port_index(Member{})]));
+  return static_cast<SamplePortRef>(
+      unpack[port_index(Member{})]);
 }
 
 template <class ChannelType, SampleStreamLayout Layout>
@@ -274,7 +276,7 @@ SamplePortRef GraphBuilder::lift_to_sample_port(
   for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
     pack.connect_input(channel, sample_port.members()[channel]);
   }
-  return materialize_sample_output(static_cast<SamplePortRef>(pack));
+  return static_cast<SamplePortRef>(pack);
 }
 
 template <class Config>
@@ -391,7 +393,7 @@ NodeRef GraphBuilder::subgraph(Fn &&fn, std::string_view kind) {
 
 template <class... Refs> void GraphBuilder::outputs(Refs &&...refs) {
   _public_ports.define_sample_outputs_from_args(
-      *this, _topology, _identity,
+      *this, _topology, _node_bundles, _identity,
       [&](auto &&value) {
         return lift_to_sample_port(std::forward<decltype(value)>(value));
       },

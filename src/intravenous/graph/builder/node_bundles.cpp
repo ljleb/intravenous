@@ -264,7 +264,15 @@ NodeSourceAnnotations const &NodeBundle::source_annotations() const { return _so
 NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
     GraphBuilderTopology const &topology, size_t node) {
   auto const &n = topology.concrete_node(node);
-  ConcreteNodeBundle p{.node = node};
+  ConcreteNodeBundle p{
+    .node = node,
+    .sample_inputs{}, .sample_outputs{},
+    .event_inputs{}, .event_outputs{},
+    .sample_input_configs{},
+    .sample_output_configs{},
+    .event_input_configs{},
+    .event_output_configs{},
+  };
   p.sample_input_configs = n.inputs();
   p.sample_output_configs = n.outputs();
   p.event_input_configs = n.event_inputs();
@@ -290,7 +298,15 @@ NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     ChannelLayout promoted) {
   if (nodes.empty()) details::error("a tiled NodeBundle requires at least one ConcreteNode");
   auto const &first = topology.concrete_node(nodes.front());
-  TiledNodeBundle p{.nodes = {nodes.begin(), nodes.end()}};
+  TiledNodeBundle p{
+    .nodes = {nodes.begin(), nodes.end()},
+    .sample_inputs{}, .sample_outputs{},
+    .event_inputs{}, .event_outputs{},
+    .sample_input_configs{},
+    .sample_output_configs{},
+    .event_input_configs{},
+    .event_output_configs{},
+  };
 
   auto append_sample = [&](auto const &configs, auto &dest_ports,
                            auto &dest_configs) {
@@ -335,7 +351,15 @@ NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
 NodeBundleHandle GraphBuilderNodeBundles::append_subgraph(
     GraphBuilderTopology const &topology, size_t node) {
   auto const &n = topology.subgraph_node(node);
-  SubgraphNodeBundle p{.node = node};
+  SubgraphNodeBundle p{
+    .node = node,
+    .sample_inputs{}, .sample_outputs{},
+    .event_inputs{}, .event_outputs{},
+    .sample_input_configs{},
+    .sample_output_configs{},
+    .event_input_configs{},
+    .event_output_configs{},
+  };
   p.sample_input_configs = n.inputs();
   p.sample_output_configs = n.outputs();
   p.event_input_configs = n.event_inputs();

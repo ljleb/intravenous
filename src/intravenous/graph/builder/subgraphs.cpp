@@ -100,7 +100,7 @@ void SubgraphScopeManager::annotate_scope_input_source_info(
 
 void SubgraphScopeManager::define_sample_outputs(
     std::span<OutputRefConfig const> refs,
-    GraphBuilder const& builder,
+    GraphBuilder& builder,
     GraphBuilderTopology const&,
     GraphBuilderIdentity const& identity
 )
@@ -126,12 +126,8 @@ void SubgraphScopeManager::define_sample_outputs(
                 + ": subgraph outputs(...) requires names when exposing more than one sample output"
             );
         }
-        auto const source = ref.graph_input_port
-            ? ref.graph_input_port->legacy_port()
-            : ref.scope_boundary_port
-                ? ref.scope_boundary_port->legacy_port()
-                : ConcretePortId{ref.node_index, ref.output_port};
-        scope.output_sources.push_back(source);
+        scope.output_sources.push_back(
+            builder.materialize_sample_output(ref).port);
         scope.output_configs.push_back(config);
     }
     scope.outputs_defined = true;

@@ -61,10 +61,15 @@ namespace iv {
         bool operator==(ScopeBoundaryPortId const&) const = default;
     };
 
+    // Internal result of crossing the logical sample-reference boundary.
+    // It is intentionally distinct from SamplePortRef: callers that hold one
+    // have already chosen a concrete topology edge source.
+    struct MaterializedSamplePort {
+        ConcretePortId port{};
+    };
+
     struct SamplePortRef {
         GraphBuilder* graph_builder{};
-        size_t node_index{};
-        size_t output_port{};
         std::optional<NodeBundlePortId> node_bundle_port{};
         std::optional<GraphInputPortId> graph_input_port{};
         std::optional<ScopeBoundaryPortId> scope_boundary_port{};

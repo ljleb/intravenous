@@ -125,7 +125,7 @@ namespace iv {
             GraphBuilderTopology&,
             GraphBuilderIdentity const&,
             ConcretePortId target,
-            SamplePortRef source
+            ConcretePortId source
         );
         void connect_event_input(
             GraphBuilderTopology&,

@@ -3,6 +3,7 @@
 #include <intravenous/graph/compiler.h>
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_call.h>
+#include <intravenous/graph/builder/node_bundles.h>
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/builder/topology.h>
 #include <intravenous/basic_nodes/routing.h>
@@ -62,7 +63,7 @@ namespace iv {
         EventPortRef add_event_input(GraphBuilder&, std::string_view name, EventTypeId type);
         bool sample_outputs_defined() const;
         void define_sample_outputs(
-            GraphBuilder const&,
+            GraphBuilder&,
             GraphBuilderTopology&,
             GraphBuilderIdentity const&,
             std::span<OutputRefConfig const> refs
@@ -77,6 +78,7 @@ namespace iv {
         void define_sample_outputs_from_args(
             GraphBuilder&,
             GraphBuilderTopology&,
+            GraphBuilderNodeBundles const&,
             GraphBuilderIdentity const&,
             LiftSample&& lift_sample,
             Refs&&... refs
@@ -85,6 +87,7 @@ namespace iv {
         void define_sample_outputs_from_named_refs(
             GraphBuilder&,
             GraphBuilderTopology&,
+            GraphBuilderNodeBundles const&,
             GraphBuilderIdentity const&,
             LiftSample&& lift_sample,
             std::span<NamedRef const> refs
@@ -137,6 +140,7 @@ namespace iv {
     void GraphBuilderPublicPorts::define_sample_outputs_from_args(
         GraphBuilder& builder,
         GraphBuilderTopology& topology,
+        GraphBuilderNodeBundles const& node_bundles,
         GraphBuilderIdentity const& identity,
         LiftSample&& lift_sample,
         Refs&&... refs
@@ -146,10 +150,15 @@ namespace iv {
         output_refs.reserve(sizeof...(Refs));
         constexpr bool require_names = (sizeof...(Refs) > 1);
         auto const source_config = [&](SamplePortRef const& source) {
-            if (source.node_index == GRAPH_ID) {
+            if (source.node_bundle_port) {
+                return node_bundles
+                    .resolve_sample_output(*source.node_bundle_port)
+                    .config;
+            }
+            if (source.graph_input_port || source.scope_boundary_port) {
                 return OutputConfig{};
             }
-            return topology.ports(source.node_index).outputs()[source.output_port];
+            details::error("sample output source has no logical address");
         };
         auto const public_output_config = [&](SamplePortRef const& source, std::string_view name) {
             auto config = source_config(source);
@@ -241,6 +250,7 @@ namespace iv {
     void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
         GraphBuilder& builder,
         GraphBuilderTopology& topology,
+        GraphBuilderNodeBundles const& node_bundles,
         GraphBuilderIdentity const& identity,
         LiftSample&& lift_sample,
         std::span<NamedRef const> refs
@@ -257,9 +267,9 @@ namespace iv {
                 );
             }
             auto source = lift_sample(ref);
-            auto config = source.node_index == GRAPH_ID
-                ? OutputConfig{}
-                : topology.ports(source.node_index).outputs()[source.output_port];
+            auto config = source.node_bundle_port
+                ? node_bundles.resolve_sample_output(*source.node_bundle_port).config
+                : OutputConfig{};
             config.name = std::string(ref.name);
             config.channel_layout.sample_layout = SampleStreamLayout::planar;
             output_refs.push_back(OutputRefConfig{ .ref = source, .config = std::move(config) });

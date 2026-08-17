@@ -44,10 +44,7 @@ bool GraphBuilderConnections::event_input_is_connected(ConcretePortId target) co
 
 void GraphBuilderConnections::connect_sample_input(
     GraphBuilderTopology &topology, GraphBuilderIdentity const &identity,
-    ConcretePortId target, SamplePortRef source) {
-  if (source.graph_builder == nullptr) {
-    details::error("builder " + identity.value + ": empty SamplePortRef");
-  }
+    ConcretePortId target, ConcretePortId source) {
   if (target.node >= topology.node_count() ||
       target.port >= topology.ports(target.node).inputs().size()) {
     details::error("sample input target is out of bounds in builder " +

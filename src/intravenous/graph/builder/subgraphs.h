@@ -61,13 +61,13 @@ namespace iv {
         );
         void define_sample_outputs(
             std::span<OutputRefConfig const> refs,
-            GraphBuilder const&,
+            GraphBuilder&,
             GraphBuilderTopology const&,
             GraphBuilderIdentity const&
         );
         template<class LiftSample>
         void define_sample_outputs_from_named_refs(
-            GraphBuilder const&,
+            GraphBuilder&,
             GraphBuilderTopology const&,
             GraphBuilderIdentity const&,
             LiftSample&& lift_sample,
@@ -127,7 +127,7 @@ namespace iv {
 
     template<class LiftSample>
     void SubgraphScopeManager::define_sample_outputs_from_named_refs(
-        GraphBuilder const& builder,
+        GraphBuilder& builder,
         GraphBuilderTopology const& topology,
         GraphBuilderIdentity const& identity,
         LiftSample&& lift_sample,

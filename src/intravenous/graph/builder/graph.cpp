@@ -5,7 +5,7 @@
 
 namespace iv {
 namespace {
-std::vector<SamplePortRef> bundle_sample_output_channels(
+std::vector<MaterializedSamplePort> bundle_sample_output_channels(
     GraphBuilder &builder, GraphBuilderNodeBundles const &node_bundles,
     NodeBundlePortId source) {
   if (source.port_kind != PortKind::sample) {
@@ -17,14 +17,18 @@ std::vector<SamplePortRef> bundle_sample_output_channels(
     details::error("NodeBundle sample output has no topology endpoint");
   }
   if (ports.size() > 1) {
-    std::vector<SamplePortRef> result;
+    std::vector<MaterializedSamplePort> result;
     result.reserve(ports.size());
-    for (auto const port : ports) result.emplace_back(builder, port.node, port.port);
+    for (auto const port : ports) {
+      result.push_back(MaterializedSamplePort{
+          .port = static_cast<ConcretePortId>(port)});
+    }
     return result;
   }
-  auto const packed = SamplePortRef(builder, ports.front().node, ports.front().port);
+  auto const packed = SamplePortRef(builder, source);
   switch (descriptor.config.channel_layout.channel_type) {
-  case ChannelTypeId::mono: return {packed};
+  case ChannelTypeId::mono:
+    return {builder.materialize_sample_output(packed)};
   case ChannelTypeId::stereo: {
     auto unpack = builder.node<ChannelUnpack<stereo>>();
     unpack.connect_input(0, packed);
@@ -44,12 +48,12 @@ SamplePortRef pack_sample_channels(GraphBuilder &builder, ChannelLayout layout,
   }
   switch (layout.channel_type) {
   case ChannelTypeId::mono:
-    return builder.materialize_sample_output(sources.front());
+    return sources.front();
   case ChannelTypeId::stereo: {
     auto pack = builder.node<ChannelPack<stereo>>();
     for (size_t channel = 0; channel < sources.size(); ++channel)
       pack.connect_input(channel, sources[channel]);
-    return builder.materialize_sample_output(static_cast<SamplePortRef>(pack));
+    return static_cast<SamplePortRef>(pack);
   }
   case ChannelTypeId::count:
     break;
@@ -59,10 +63,9 @@ SamplePortRef pack_sample_channels(GraphBuilder &builder, ChannelLayout layout,
 } // namespace
 SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_, size_t node_index,
                              size_t output_port)
-    : graph_builder(&graph_builder_), node_index(node_index),
-      output_port(output_port) {
-  // Compatibility adapter for legacy boundary addresses. Normal graph/scope
-  // input construction uses the explicit boundary-id constructors below.
+    : graph_builder(&graph_builder_) {
+  // Compatibility adapter only: translate a topology address immediately to
+  // a logical identity when that mapping is unambiguous.
   if (node_index == GRAPH_ID) {
     *this = SamplePortRef(
         graph_builder_, GraphInputPortId{PortKind::sample, output_port});
@@ -76,38 +79,27 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_, size_t node_index,
     return;
   }
 
-  if (node_index >= graph_builder->_topology.node_count()) {
+  if (node_index >= graph_builder_._topology.node_count()) {
     details::error("node at index " + std::to_string(node_index) +
-                   " "
-                   "is out of bounds in builder " +
-                   graph_builder->_identity.value +
-                   ", "
-                   "nodes.size() = " +
-                   std::to_string(graph_builder->_topology.node_count()));
+                   " is out of bounds in builder " +
+                   graph_builder_._identity.value);
   }
-
-  auto const &ports = graph_builder->_topology.ports(node_index);
-  size_t num_outputs = ports.outputs().size();
-  if (output_port >= num_outputs) {
-    details::error("output port " + std::to_string(output_port) +
-                   " of "
-                   "node at index " +
-                   std::to_string(node_index) +
-                   " in "
-                   "builder " +
-                   graph_builder->_identity.value +
-                   " "
-                   "is out of bounds, get_num_outputs(node) = " +
-                   std::to_string(num_outputs));
+  auto const bundle =
+      graph_builder_._node_bundles.bundle_for_concrete_node(node_index);
+  NodeBundlePortId const logical{bundle, PortKind::sample, output_port};
+  auto const descriptor = graph_builder_._node_bundles.resolve_sample_output(logical);
+  if (descriptor.endpoints.size() != 1 ||
+      descriptor.endpoints.front() != TopologyPortId{node_index, output_port}) {
+    details::error(
+        "raw topology sample output does not uniquely identify a logical "
+        "NodeBundle output; use NodeBundlePortId");
   }
+  *this = SamplePortRef(graph_builder_, logical);
 }
 
 SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
                              GraphInputPortId graph_input)
-    : graph_builder(&graph_builder_),
-      node_index(graph_input.legacy_port().node),
-      output_port(graph_input.legacy_port().port),
-      graph_input_port(graph_input) {
+    : graph_builder(&graph_builder_), graph_input_port(graph_input) {
   if (graph_input.port_kind != PortKind::sample) {
     details::error("attempted to create a sample ref from a graph event input");
   }
@@ -120,10 +112,7 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
 
 SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
                              ScopeBoundaryPortId scope_boundary)
-    : graph_builder(&graph_builder_),
-      node_index(scope_boundary.legacy_port().node),
-      output_port(scope_boundary.legacy_port().port),
-      scope_boundary_port(scope_boundary) {
+    : graph_builder(&graph_builder_), scope_boundary_port(scope_boundary) {
   if (scope_boundary.port_kind != PortKind::sample) {
     details::error("attempted to create a sample ref from an event scope boundary");
   }
@@ -205,9 +194,7 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
 
 SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
                              NodeBundlePortId bundle_port)
-    : graph_builder(&graph_builder_),
-      output_port(bundle_port.port_ordinal),
-      node_bundle_port(bundle_port) {
+    : graph_builder(&graph_builder_), node_bundle_port(bundle_port) {
   if (bundle_port.port_kind != PortKind::sample) {
     details::error("attempted to create a SamplePortRef from an event NodeBundle port");
   }
@@ -215,12 +202,10 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
 }
 
 SamplePortRef::operator ConcretePortId() const {
-  if (node_bundle_port) {
-    details::error("a bundle-backed SamplePortRef must be materialized by GraphBuilder");
-  }
   if (graph_input_port) return graph_input_port->legacy_port();
   if (scope_boundary_port) return scope_boundary_port->legacy_port();
-  return {node_index, output_port};
+  details::error(
+      "a logical node output SamplePortRef must be materialized by GraphBuilder");
 }
 
 SamplePortRef SamplePortRef::_clone_handle() const {
@@ -236,7 +221,7 @@ SamplePortRef SamplePortRef::_clone_handle() const {
   if (scope_boundary_port) {
     return SamplePortRef(*graph_builder, *scope_boundary_port);
   }
-  return SamplePortRef(*graph_builder, node_index, output_port);
+  details::error("invalid SamplePortRef address");
 }
 
 SamplePortRef SamplePortRef::detach(size_t loop_extra_latency) const {
@@ -263,8 +248,7 @@ std::string SamplePortRef::to_string() const {
            std::to_string(scope_boundary_port->boundary_ordinal) +
            " in builder " + graph_builder->_identity.value;
   }
-  return "sample port at address " + graph_builder->node_id(node_index) + ":" +
-         std::to_string(output_port);
+  return "invalid sample port in builder " + graph_builder->_identity.value;
 }
 
 std::string EventPortRef::to_string() const {
@@ -472,7 +456,7 @@ void GraphBuilder::event_outputs(std::span<EventOutputRefConfig const> refs) {
 
 void GraphBuilder::outputs(std::initializer_list<NamedRef> refs) {
   _public_ports.define_sample_outputs_from_named_refs(
-      *this, _topology, _identity,
+      *this, _topology, _node_bundles, _identity,
       [&](auto &&value) {
         return lift_to_sample_port(std::forward<decltype(value)>(value));
       },
@@ -485,7 +469,7 @@ void GraphBuilder::outputs(std::span<OutputRefConfig const> refs) {
 
 void GraphBuilder::outputs(std::span<NamedRef const> refs) {
   _public_ports.define_sample_outputs_from_named_refs(
-      *this, _topology, _identity,
+      *this, _topology, _node_bundles, _identity,
       [&](auto &&value) {
         return lift_to_sample_port(std::forward<decltype(value)>(value));
       },
@@ -544,9 +528,9 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
   }
 
   auto const resolved_source = materialize_sample_output(sample_port);
-  ConcretePortId const source = resolved_source;
+  ConcretePortId const source = resolved_source.port;
   if (_detach.reader_output_exists(source)) {
-    return resolved_source;
+    return sample_port;
   }
   if (auto const *existing = _detach.info_for_source(source)) {
     if (existing->loop_extra_latency != loop_extra_latency) {
@@ -555,7 +539,10 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
                      sample_port.to_string());
     }
     ConcretePortId const reader = existing->reader_output;
-    return SamplePortRef(*this, reader.node, reader.port);
+    auto const reader_bundle =
+        _node_bundles.bundle_for_concrete_node(reader.node);
+    return SamplePortRef(
+        *this, NodeBundlePortId{reader_bundle, PortKind::sample, reader.port});
   }
   if (loop_extra_latency < 1) {
     details::error("builder " + _identity.value +
@@ -569,15 +556,15 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
   connect_sample_input(ConcretePortId{writer_node, 0}, resolved_source);
 
   auto reader = node<DetachReaderNode>(detach_id, loop_extra_latency);
-  SamplePortRef detached = materialize_sample_output(
-      static_cast<SamplePortRef>(reader));
+  SamplePortRef detached = static_cast<SamplePortRef>(reader);
+  auto const detached_source = materialize_sample_output(detached);
 
   _detach.record_detached_source(source,
                                  DetachedSamplePortInfo{
                                      .detach_id = detach_id,
                                      .original_source = source,
                                      .writer_node = writer_node,
-                                     .reader_output = static_cast<ConcretePortId>(detached),
+                                     .reader_output = detached_source.port,
                                      .loop_extra_latency = loop_extra_latency,
                                  });
   return detached;
@@ -657,32 +644,90 @@ GraphBuilder::public_event_outputs() const {
   return _public_ports.collected_event_outputs();
 }
 
-void GraphBuilder::connect_sample_input(ConcretePortId target, SamplePortRef source) {
-  source = materialize_sample_output(std::move(source));
-  _connections.connect_sample_input(_topology, _identity, target, source);
+void GraphBuilder::connect_sample_input(ConcretePortId target,
+                                        MaterializedSamplePort source) {
+  _connections.connect_sample_input(_topology, _identity, target, source.port);
 }
 
-SamplePortRef GraphBuilder::materialize_sample_output(SamplePortRef source) {
-  if (!source.node_bundle_port) return source;
-  if (source.graph_builder != this) {
-    details::error("cannot materialize a sample output from another builder");
-  }
+void GraphBuilder::connect_sample_input(ConcretePortId target, SamplePortRef source) {
+  connect_sample_input(target, materialize_sample_output(std::move(source)));
+}
 
-  auto const descriptor = _node_bundles.resolve_sample_output(*source.node_bundle_port);
+SamplePortRef GraphBuilder::normalize_sample_output(SamplePortRef source) {
+  if (!source.graph_builder) {
+    details::error("cannot normalize an empty sample output");
+  }
+  if (source.graph_builder != this) {
+    details::error("cannot normalize a sample output from another builder");
+  }
+  if (!source.node_bundle_port) return source;
+
+  auto const descriptor =
+      _node_bundles.resolve_sample_output(*source.node_bundle_port);
   auto const &ports = descriptor.endpoints;
   if (ports.empty()) {
     details::error("NodeBundle sample output has no topology endpoint");
   }
-  if (ports.size() == 1) {
-    return SamplePortRef(*this, ports.front().node, ports.front().port);
+  if (ports.size() == 1) return source;
+
+  if (ports.size() != channel_count(descriptor.config.channel_layout.channel_type)) {
+    details::error(
+        "NodeBundle sample output does not match its declared channel layout");
+  }
+  switch (descriptor.config.channel_layout.channel_type) {
+  case ChannelTypeId::mono:
+    break;
+  case ChannelTypeId::stereo: {
+    auto pack = node<ChannelPack<stereo>>();
+    auto const pack_handle = pack.node_bundle_handle();
+    for (size_t channel = 0; channel < ports.size(); ++channel) {
+      auto const target = _node_bundles.resolve_sample_input(
+          NodeBundlePortId{pack_handle, PortKind::sample, channel});
+      if (target.endpoints.size() != 1) {
+        details::error("channel pack input must have one topology endpoint");
+      }
+      connect_sample_input(
+          target.endpoints.front(),
+          MaterializedSamplePort{
+              .port = static_cast<ConcretePortId>(ports[channel])});
+    }
+    return static_cast<SamplePortRef>(pack);
+  }
+  case ChannelTypeId::count:
+    break;
+  }
+  details::error("invalid channel type for NodeBundle sample output");
+}
+
+MaterializedSamplePort
+GraphBuilder::materialize_sample_output(SamplePortRef source) {
+  if (!source.graph_builder) {
+    details::error("cannot materialize an empty sample output");
+  }
+  if (source.graph_builder != this) {
+    details::error("cannot materialize a sample output from another builder");
+  }
+  if (source.graph_input_port) {
+    return MaterializedSamplePort{
+        .port = source.graph_input_port->legacy_port()};
+  }
+  if (source.scope_boundary_port) {
+    return MaterializedSamplePort{
+        .port = source.scope_boundary_port->legacy_port()};
   }
 
-  std::vector<SamplePortRef> channels;
-  channels.reserve(ports.size());
-  for (auto const port : ports) {
-    channels.emplace_back(*this, port.node, port.port);
+  source = normalize_sample_output(std::move(source));
+  if (!source.node_bundle_port) {
+    details::error("SamplePortRef has no logical sample-output address");
   }
-  return pack_sample_channels(*this, descriptor.config.channel_layout, channels);
+  auto const descriptor =
+      _node_bundles.resolve_sample_output(*source.node_bundle_port);
+  if (descriptor.endpoints.size() != 1) {
+    details::error(
+        "normalized sample output does not have exactly one topology endpoint");
+  }
+  return MaterializedSamplePort{
+      .port = static_cast<ConcretePortId>(descriptor.endpoints.front())};
 }
 
 void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef source) {
@@ -829,7 +874,7 @@ GraphBuilder::lift_to_sample_port(SamplePortRef const &sample_port) {
     details::error("builder " + _identity.value + ": sample port " +
                    sample_port.to_string() + " belongs to another builder");
   }
-  return materialize_sample_output(sample_port);
+  return normalize_sample_output(sample_port);
 }
 
 SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef &&sample_port) {
