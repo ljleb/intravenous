@@ -38,6 +38,23 @@ struct TopologyPortId {
   bool operator==(TopologyPortId const &) const = default;
 };
 
+template<class Config>
+struct SamplePortDescriptor {
+  Config config{};
+  std::vector<TopologyPortId> endpoints{};
+};
+
+template<class Config>
+struct EventPortDescriptor {
+  Config config{};
+  std::vector<TopologyPortId> endpoints{};
+};
+
+using SampleInputPortDescriptor = SamplePortDescriptor<InputConfig>;
+using SampleOutputPortDescriptor = SamplePortDescriptor<OutputConfig>;
+using EventInputPortDescriptor = EventPortDescriptor<EventInputConfig>;
+using EventOutputPortDescriptor = EventPortDescriptor<EventOutputConfig>;
+
 using ConcreteNodeId = size_t;
 using SubgraphNodeId = size_t;
 
@@ -60,6 +77,12 @@ public:
   // payload types are not exposed to callers.
   NodeBundle(void *, Ops const *);
 
+  SampleInputPortDescriptor sample_input_descriptor(size_t) const;
+  SampleOutputPortDescriptor sample_output_descriptor(size_t) const;
+  EventInputPortDescriptor event_input_descriptor(size_t) const;
+  EventOutputPortDescriptor event_output_descriptor(size_t) const;
+
+  // Compatibility projection APIs. Consumers should migrate to descriptors.
   void for_each_sample_input(size_t, std::function<void(TopologyPortId)> const &) const;
   void for_each_sample_output(size_t, std::function<void(TopologyPortId)> const &) const;
   void for_each_event_input(size_t, std::function<void(TopologyPortId)> const &) const;

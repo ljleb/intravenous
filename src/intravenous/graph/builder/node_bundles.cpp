@@ -13,27 +13,30 @@ struct ConcreteNodeBundle {
   size_t node{};
   std::vector<TopologyPortId> sample_inputs, sample_outputs{};
   std::vector<TopologyPortId> event_inputs, event_outputs{};
-  std::vector<ChannelLayout> sample_input_layouts, sample_output_layouts{};
-  std::vector<std::string> sample_input_names, sample_output_names{};
-  std::vector<std::string> event_input_names, event_output_names{};
+  std::vector<InputConfig> sample_input_configs{};
+  std::vector<OutputConfig> sample_output_configs{};
+  std::vector<EventInputConfig> event_input_configs{};
+  std::vector<EventOutputConfig> event_output_configs{};
 };
 
 struct TiledNodeBundle {
   std::vector<size_t> nodes{};
   std::vector<std::vector<TopologyPortId>> sample_inputs, sample_outputs{};
   std::vector<std::vector<TopologyPortId>> event_inputs, event_outputs{};
-  std::vector<ChannelLayout> sample_input_layouts, sample_output_layouts{};
-  std::vector<std::string> sample_input_names, sample_output_names{};
-  std::vector<std::string> event_input_names, event_output_names{};
+  std::vector<InputConfig> sample_input_configs{};
+  std::vector<OutputConfig> sample_output_configs{};
+  std::vector<EventInputConfig> event_input_configs{};
+  std::vector<EventOutputConfig> event_output_configs{};
 };
 
 struct SubgraphNodeBundle {
   size_t node{};
   std::vector<TopologyPortId> sample_inputs, sample_outputs{};
   std::vector<TopologyPortId> event_inputs, event_outputs{};
-  std::vector<ChannelLayout> sample_input_layouts, sample_output_layouts{};
-  std::vector<std::string> sample_input_names, sample_output_names{};
-  std::vector<std::string> event_input_names, event_output_names{};
+  std::vector<InputConfig> sample_input_configs{};
+  std::vector<OutputConfig> sample_output_configs{};
+  std::vector<EventInputConfig> event_input_configs{};
+  std::vector<EventOutputConfig> event_output_configs{};
 };
 
 template <class Payload> void destroy(void *payload) { delete static_cast<Payload *>(payload); }
@@ -57,37 +60,31 @@ template <class Payload> void import(void *payload, size_t offset) {
   }
 }
 
-template <class Payload, auto Member>
-void each_ports(void const *payload, size_t ordinal,
-                std::function<void(TopologyPortId)> const &fn) {
-  auto const &values = static_cast<Payload const *>(payload)->*Member;
-  if (ordinal >= values.size()) details::error("NodeBundle port ordinal is out of bounds");
+template <class Descriptor, class Payload, auto PortsMember, auto ConfigsMember>
+Descriptor descriptor(void const *payload, size_t ordinal) {
+  auto const &p = *static_cast<Payload const *>(payload);
+  auto const &ports = p.*PortsMember;
+  auto const &configs = p.*ConfigsMember;
+  if (ordinal >= ports.size() || ordinal >= configs.size())
+    details::error("NodeBundle port ordinal is out of bounds");
+
+  Descriptor result{.config = configs[ordinal]};
   if constexpr (std::is_same_v<Payload, TiledNodeBundle>)
-    for (auto const port : values[ordinal]) fn(port);
+    result.endpoints = ports[ordinal];
   else
-    fn(values[ordinal]);
+    result.endpoints.push_back(ports[ordinal]);
+  return result;
 }
-template <class Payload>
-ChannelLayout input_layout(void const *payload, size_t ordinal) {
-  auto const &layouts = static_cast<Payload const *>(payload)->sample_input_layouts;
-  if (ordinal >= layouts.size()) details::error("NodeBundle sample input ordinal is out of bounds");
-  return layouts[ordinal];
+
+template <class Payload, auto ConfigsMember> size_t count(void const *payload) {
+  return (static_cast<Payload const *>(payload)->*ConfigsMember).size();
 }
-template <class Payload>
-ChannelLayout output_layout(void const *payload, size_t ordinal) {
-  auto const &layouts = static_cast<Payload const *>(payload)->sample_output_layouts;
-  if (ordinal >= layouts.size()) details::error("NodeBundle sample output ordinal is out of bounds");
-  return layouts[ordinal];
-}
-template <class Payload, auto Member> size_t count(void const *payload) {
-  return (static_cast<Payload const *>(payload)->*Member).size();
-}
-template <class Payload, auto Member>
+template <class Payload, auto ConfigsMember>
 size_t index_for_name(void const *payload, std::string_view name) {
-  auto const &names = static_cast<Payload const *>(payload)->*Member;
+  auto const &configs = static_cast<Payload const *>(payload)->*ConfigsMember;
   std::optional<size_t> result;
-  for (size_t ordinal = 0; ordinal < names.size(); ++ordinal) {
-    if (names[ordinal] != name) continue;
+  for (size_t ordinal = 0; ordinal < configs.size(); ++ordinal) {
+    if (configs[ordinal].name != name) continue;
     if (result) details::error("NodeBundle port name '" + std::string(name) + "' is ambiguous");
     result = ordinal;
   }
@@ -109,12 +106,10 @@ template <class Payload> NodeBundle::Ops const &ops_for();
 struct NodeBundle::Ops {
   void (*destroy)(void *);
   void *(*clone)(void const *);
-  void (*sample_input)(void const *, size_t, std::function<void(TopologyPortId)> const &);
-  void (*sample_output)(void const *, size_t, std::function<void(TopologyPortId)> const &);
-  void (*event_input)(void const *, size_t, std::function<void(TopologyPortId)> const &);
-  void (*event_output)(void const *, size_t, std::function<void(TopologyPortId)> const &);
-  ChannelLayout (*input_layout)(void const *, size_t);
-  ChannelLayout (*output_layout)(void const *, size_t);
+  SampleInputPortDescriptor (*sample_input_descriptor)(void const *, size_t);
+  SampleOutputPortDescriptor (*sample_output_descriptor)(void const *, size_t);
+  EventInputPortDescriptor (*event_input_descriptor)(void const *, size_t);
+  EventOutputPortDescriptor (*event_output_descriptor)(void const *, size_t);
   size_t (*sample_input_count)(void const *);
   size_t (*sample_output_count)(void const *);
   size_t (*event_input_count)(void const *);
@@ -132,19 +127,22 @@ namespace {
 template <class Payload> NodeBundle::Ops const &ops_for() {
   static NodeBundle::Ops const ops{
       .destroy = destroy<Payload>, .clone = clone<Payload>,
-      .sample_input = each_ports<Payload, &Payload::sample_inputs>,
-      .sample_output = each_ports<Payload, &Payload::sample_outputs>,
-      .event_input = each_ports<Payload, &Payload::event_inputs>,
-      .event_output = each_ports<Payload, &Payload::event_outputs>,
-      .input_layout = input_layout<Payload>, .output_layout = output_layout<Payload>,
-      .sample_input_count = count<Payload, &Payload::sample_inputs>,
-      .sample_output_count = count<Payload, &Payload::sample_outputs>,
-      .event_input_count = count<Payload, &Payload::event_inputs>,
-      .event_output_count = count<Payload, &Payload::event_outputs>,
-      .sample_input_index = index_for_name<Payload, &Payload::sample_input_names>,
-      .sample_output_index = index_for_name<Payload, &Payload::sample_output_names>,
-      .event_input_index = index_for_name<Payload, &Payload::event_input_names>,
-      .event_output_index = index_for_name<Payload, &Payload::event_output_names>,
+      .sample_input_descriptor = descriptor<SampleInputPortDescriptor, Payload,
+          &Payload::sample_inputs, &Payload::sample_input_configs>,
+      .sample_output_descriptor = descriptor<SampleOutputPortDescriptor, Payload,
+          &Payload::sample_outputs, &Payload::sample_output_configs>,
+      .event_input_descriptor = descriptor<EventInputPortDescriptor, Payload,
+          &Payload::event_inputs, &Payload::event_input_configs>,
+      .event_output_descriptor = descriptor<EventOutputPortDescriptor, Payload,
+          &Payload::event_outputs, &Payload::event_output_configs>,
+      .sample_input_count = count<Payload, &Payload::sample_input_configs>,
+      .sample_output_count = count<Payload, &Payload::sample_output_configs>,
+      .event_input_count = count<Payload, &Payload::event_input_configs>,
+      .event_output_count = count<Payload, &Payload::event_output_configs>,
+      .sample_input_index = index_for_name<Payload, &Payload::sample_input_configs>,
+      .sample_output_index = index_for_name<Payload, &Payload::sample_output_configs>,
+      .event_input_index = index_for_name<Payload, &Payload::event_input_configs>,
+      .event_output_index = index_for_name<Payload, &Payload::event_output_configs>,
       .each_node = each_node<Payload>, .each_concrete_node = each_concrete_node<Payload>,
       .import_into = import<Payload>};
   return ops;
@@ -171,63 +169,60 @@ NodeBundle &NodeBundle::operator=(NodeBundle &&other) noexcept {
   return *this;
 }
 NodeBundle::~NodeBundle() { if (_payload) _ops->destroy(_payload); }
-void NodeBundle::for_each_sample_input(size_t i, std::function<void(TopologyPortId)> const &fn) const { _ops->sample_input(_payload, i, fn); }
-void NodeBundle::for_each_sample_output(size_t i, std::function<void(TopologyPortId)> const &fn) const { _ops->sample_output(_payload, i, fn); }
-void NodeBundle::for_each_event_input(size_t i, std::function<void(TopologyPortId)> const &fn) const { _ops->event_input(_payload, i, fn); }
-void NodeBundle::for_each_event_output(size_t i, std::function<void(TopologyPortId)> const &fn) const { _ops->event_output(_payload, i, fn); }
-ChannelLayout NodeBundle::sample_input_layout(size_t i) const { return _ops->input_layout(_payload, i); }
-ChannelLayout NodeBundle::sample_output_layout(size_t i) const { return _ops->output_layout(_payload, i); }
+SampleInputPortDescriptor NodeBundle::sample_input_descriptor(size_t i) const {
+  return _ops->sample_input_descriptor(_payload, i);
+}
+SampleOutputPortDescriptor NodeBundle::sample_output_descriptor(size_t i) const {
+  return _ops->sample_output_descriptor(_payload, i);
+}
+EventInputPortDescriptor NodeBundle::event_input_descriptor(size_t i) const {
+  return _ops->event_input_descriptor(_payload, i);
+}
+EventOutputPortDescriptor NodeBundle::event_output_descriptor(size_t i) const {
+  return _ops->event_output_descriptor(_payload, i);
+}
+
+void NodeBundle::for_each_sample_input(
+    size_t i, std::function<void(TopologyPortId)> const &fn) const {
+  for (auto const port : sample_input_descriptor(i).endpoints) fn(port);
+}
+void NodeBundle::for_each_sample_output(
+    size_t i, std::function<void(TopologyPortId)> const &fn) const {
+  for (auto const port : sample_output_descriptor(i).endpoints) fn(port);
+}
+void NodeBundle::for_each_event_input(
+    size_t i, std::function<void(TopologyPortId)> const &fn) const {
+  for (auto const port : event_input_descriptor(i).endpoints) fn(port);
+}
+void NodeBundle::for_each_event_output(
+    size_t i, std::function<void(TopologyPortId)> const &fn) const {
+  for (auto const port : event_output_descriptor(i).endpoints) fn(port);
+}
+ChannelLayout NodeBundle::sample_input_layout(size_t i) const {
+  return sample_input_descriptor(i).config.channel_layout;
+}
+ChannelLayout NodeBundle::sample_output_layout(size_t i) const {
+  return sample_output_descriptor(i).config.channel_layout;
+}
 
 InputConfig NodeBundle::sample_input_config(
-    GraphBuilderTopology const &topology, size_t ordinal) const {
-  std::optional<TopologyPortId> port;
-  for_each_sample_input(ordinal, [&](TopologyPortId value) {
-    if (!port) port = value;
-  });
-  if (!port) details::error("NodeBundle sample input has no topology endpoint");
-  auto config = topology.is_subgraph_node(port->node)
-      ? topology.subgraph_node(port->node).inputs().at(port->port)
-      : topology.concrete_node(port->node).inputs().at(port->port);
-  config.channel_layout = sample_input_layout(ordinal);
-  return config;
+    GraphBuilderTopology const &, size_t ordinal) const {
+  return sample_input_descriptor(ordinal).config;
 }
 
 OutputConfig NodeBundle::sample_output_config(
-    GraphBuilderTopology const &topology, size_t ordinal) const {
-  std::optional<TopologyPortId> port;
-  for_each_sample_output(ordinal, [&](TopologyPortId value) {
-    if (!port) port = value;
-  });
-  if (!port) details::error("NodeBundle sample output has no topology endpoint");
-  auto config = topology.is_subgraph_node(port->node)
-      ? topology.subgraph_node(port->node).outputs().at(port->port)
-      : topology.concrete_node(port->node).outputs().at(port->port);
-  config.channel_layout = sample_output_layout(ordinal);
-  return config;
+    GraphBuilderTopology const &, size_t ordinal) const {
+  return sample_output_descriptor(ordinal).config;
 }
 
 EventInputConfig NodeBundle::event_input_config(
-    GraphBuilderTopology const &topology, size_t ordinal) const {
-  std::optional<TopologyPortId> port;
-  for_each_event_input(ordinal, [&](TopologyPortId value) {
-    if (!port) port = value;
-  });
-  if (!port) details::error("NodeBundle event input has no topology endpoint");
-  return topology.is_subgraph_node(port->node)
-      ? topology.subgraph_node(port->node).event_inputs().at(port->port)
-      : topology.concrete_node(port->node).event_inputs().at(port->port);
+    GraphBuilderTopology const &, size_t ordinal) const {
+  return event_input_descriptor(ordinal).config;
 }
 
 EventOutputConfig NodeBundle::event_output_config(
-    GraphBuilderTopology const &topology, size_t ordinal) const {
-  std::optional<TopologyPortId> port;
-  for_each_event_output(ordinal, [&](TopologyPortId value) {
-    if (!port) port = value;
-  });
-  if (!port) details::error("NodeBundle event output has no topology endpoint");
-  return topology.is_subgraph_node(port->node)
-      ? topology.subgraph_node(port->node).event_outputs().at(port->port)
-      : topology.concrete_node(port->node).event_outputs().at(port->port);
+    GraphBuilderTopology const &, size_t ordinal) const {
+  return event_output_descriptor(ordinal).config;
 }
 
 std::string_view NodeBundle::type_identity(GraphBuilderTopology const &topology) const {
@@ -266,35 +261,99 @@ std::vector<size_t> const &NodeBundle::virtual_node_handles() const { return _vi
 NodeSourceAnnotations &NodeBundle::source_annotations() { return _source_annotations; }
 NodeSourceAnnotations const &NodeBundle::source_annotations() const { return _source_annotations; }
 
-NodeBundleHandle GraphBuilderNodeBundles::append_concrete(GraphBuilderTopology const &topology, size_t node) {
-  auto const &n = topology.concrete_node(node); ConcreteNodeBundle p{.node = node};
-  for (size_t i = 0; i < n.inputs().size(); ++i) { p.sample_inputs.push_back({node, i}); p.sample_input_layouts.push_back(n.inputs()[i].channel_layout); p.sample_input_names.push_back(n.inputs()[i].name); }
-  for (size_t i = 0; i < n.outputs().size(); ++i) { p.sample_outputs.push_back({node, i}); p.sample_output_layouts.push_back(n.outputs()[i].channel_layout); p.sample_output_names.push_back(n.outputs()[i].name); }
-  for (size_t i = 0; i < n.event_inputs().size(); ++i) { p.event_inputs.push_back({node, i}); p.event_input_names.push_back(n.event_inputs()[i].name); }
-  for (size_t i = 0; i < n.event_outputs().size(); ++i) { p.event_outputs.push_back({node, i}); p.event_output_names.push_back(n.event_outputs()[i].name); }
-  auto handle = _bundles.size(); _bundles.push_back(make_bundle(std::move(p))); if (_bundle_by_concrete_node.size() <= node) _bundle_by_concrete_node.resize(node + 1, GRAPH_ID); _bundle_by_concrete_node[node] = handle; return handle;
+NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
+    GraphBuilderTopology const &topology, size_t node) {
+  auto const &n = topology.concrete_node(node);
+  ConcreteNodeBundle p{.node = node};
+  p.sample_input_configs = n.inputs();
+  p.sample_output_configs = n.outputs();
+  p.event_input_configs = n.event_inputs();
+  p.event_output_configs = n.event_outputs();
+  for (size_t i = 0; i < p.sample_input_configs.size(); ++i)
+    p.sample_inputs.push_back({node, i});
+  for (size_t i = 0; i < p.sample_output_configs.size(); ++i)
+    p.sample_outputs.push_back({node, i});
+  for (size_t i = 0; i < p.event_input_configs.size(); ++i)
+    p.event_inputs.push_back({node, i});
+  for (size_t i = 0; i < p.event_output_configs.size(); ++i)
+    p.event_outputs.push_back({node, i});
+  auto handle = _bundles.size();
+  _bundles.push_back(make_bundle(std::move(p)));
+  if (_bundle_by_concrete_node.size() <= node)
+    _bundle_by_concrete_node.resize(node + 1, GRAPH_ID);
+  _bundle_by_concrete_node[node] = handle;
+  return handle;
 }
 
-NodeBundleHandle GraphBuilderNodeBundles::append_tiled(GraphBuilderTopology const &topology, std::span<size_t const> nodes, ChannelLayout promoted) {
+NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
+    GraphBuilderTopology const &topology, std::span<size_t const> nodes,
+    ChannelLayout promoted) {
   if (nodes.empty()) details::error("a tiled NodeBundle requires at least one ConcreteNode");
-  auto const &first = topology.concrete_node(nodes.front()); TiledNodeBundle p{.nodes = {nodes.begin(), nodes.end()}};
-  auto append_sample = [&](auto const &configs, auto &dest, auto &layouts) {
-    for (size_t port = 0; port < configs.size(); ++port) { if (configs[port].channel_layout.channel_type != ChannelTypeId::mono) details::error("a tiled NodeBundle requires mono concrete sample ports"); std::vector<TopologyPortId> ports; for (auto node : nodes) ports.push_back({node, port}); dest.push_back(std::move(ports)); layouts.push_back({promoted.channel_type, configs[port].channel_layout.sample_layout}); }
+  auto const &first = topology.concrete_node(nodes.front());
+  TiledNodeBundle p{.nodes = {nodes.begin(), nodes.end()}};
+
+  auto append_sample = [&](auto const &configs, auto &dest_ports,
+                           auto &dest_configs) {
+    for (size_t port = 0; port < configs.size(); ++port) {
+      if (configs[port].channel_layout.channel_type != ChannelTypeId::mono)
+        details::error("a tiled NodeBundle requires mono concrete sample ports");
+      std::vector<TopologyPortId> ports;
+      for (auto node : nodes) ports.push_back({node, port});
+      dest_ports.push_back(std::move(ports));
+      auto config = configs[port];
+      config.channel_layout = {promoted.channel_type,
+                               config.channel_layout.sample_layout};
+      dest_configs.push_back(std::move(config));
+    }
   };
-  append_sample(first.inputs(), p.sample_inputs, p.sample_input_layouts); append_sample(first.outputs(), p.sample_outputs, p.sample_output_layouts);
-  for (auto const &config : first.inputs()) p.sample_input_names.push_back(config.name);
-  for (auto const &config : first.outputs()) p.sample_output_names.push_back(config.name);
-  for (size_t port = 0; port < first.event_inputs().size(); ++port) { std::vector<TopologyPortId> ports; for (auto node : nodes) ports.push_back({node, port}); p.event_inputs.push_back(std::move(ports)); p.event_input_names.push_back(first.event_inputs()[port].name); }
-  for (size_t port = 0; port < first.event_outputs().size(); ++port) { std::vector<TopologyPortId> ports; for (auto node : nodes) ports.push_back({node, port}); p.event_outputs.push_back(std::move(ports)); p.event_output_names.push_back(first.event_outputs()[port].name); }
-  auto handle = _bundles.size(); _bundles.push_back(make_bundle(std::move(p))); for (auto node : nodes) { if (_bundle_by_concrete_node.size() <= node) _bundle_by_concrete_node.resize(node + 1, GRAPH_ID); _bundle_by_concrete_node[node] = handle; } return handle;
+  append_sample(first.inputs(), p.sample_inputs, p.sample_input_configs);
+  append_sample(first.outputs(), p.sample_outputs, p.sample_output_configs);
+
+  p.event_input_configs = first.event_inputs();
+  p.event_output_configs = first.event_outputs();
+  for (size_t port = 0; port < p.event_input_configs.size(); ++port) {
+    std::vector<TopologyPortId> ports;
+    for (auto node : nodes) ports.push_back({node, port});
+    p.event_inputs.push_back(std::move(ports));
+  }
+  for (size_t port = 0; port < p.event_output_configs.size(); ++port) {
+    std::vector<TopologyPortId> ports;
+    for (auto node : nodes) ports.push_back({node, port});
+    p.event_outputs.push_back(std::move(ports));
+  }
+
+  auto handle = _bundles.size();
+  _bundles.push_back(make_bundle(std::move(p)));
+  for (auto node : nodes) {
+    if (_bundle_by_concrete_node.size() <= node)
+      _bundle_by_concrete_node.resize(node + 1, GRAPH_ID);
+    _bundle_by_concrete_node[node] = handle;
+  }
+  return handle;
 }
 
-NodeBundleHandle GraphBuilderNodeBundles::append_subgraph(GraphBuilderTopology const &topology, size_t node) {
-  auto const &n = topology.subgraph_node(node); SubgraphNodeBundle p{.node = node};
-  for (size_t i = 0; i < n.inputs().size(); ++i) { p.sample_inputs.push_back({node, i}); p.sample_input_layouts.push_back(n.inputs()[i].channel_layout); p.sample_input_names.push_back(n.inputs()[i].name); }
-  for (size_t i = 0; i < n.outputs().size(); ++i) { p.sample_outputs.push_back({node, i}); p.sample_output_layouts.push_back(n.outputs()[i].channel_layout); p.sample_output_names.push_back(n.outputs()[i].name); }
-  for (size_t i = 0; i < n.event_inputs().size(); ++i) { p.event_inputs.push_back({node, i}); p.event_input_names.push_back(n.event_inputs()[i].name); } for (size_t i = 0; i < n.event_outputs().size(); ++i) { p.event_outputs.push_back({node, i}); p.event_output_names.push_back(n.event_outputs()[i].name); }
-  auto handle = _bundles.size(); _bundles.push_back(make_bundle(std::move(p))); if (_bundle_by_concrete_node.size() <= node) _bundle_by_concrete_node.resize(node + 1, GRAPH_ID); _bundle_by_concrete_node[node] = handle; return handle;
+NodeBundleHandle GraphBuilderNodeBundles::append_subgraph(
+    GraphBuilderTopology const &topology, size_t node) {
+  auto const &n = topology.subgraph_node(node);
+  SubgraphNodeBundle p{.node = node};
+  p.sample_input_configs = n.inputs();
+  p.sample_output_configs = n.outputs();
+  p.event_input_configs = n.event_inputs();
+  p.event_output_configs = n.event_outputs();
+  for (size_t i = 0; i < p.sample_input_configs.size(); ++i)
+    p.sample_inputs.push_back({node, i});
+  for (size_t i = 0; i < p.sample_output_configs.size(); ++i)
+    p.sample_outputs.push_back({node, i});
+  for (size_t i = 0; i < p.event_input_configs.size(); ++i)
+    p.event_inputs.push_back({node, i});
+  for (size_t i = 0; i < p.event_output_configs.size(); ++i)
+    p.event_outputs.push_back({node, i});
+  auto handle = _bundles.size();
+  _bundles.push_back(make_bundle(std::move(p)));
+  if (_bundle_by_concrete_node.size() <= node)
+    _bundle_by_concrete_node.resize(node + 1, GRAPH_ID);
+  _bundle_by_concrete_node[node] = handle;
+  return handle;
 }
 NodeBundle const &GraphBuilderNodeBundles::bundle(NodeBundleHandle h) const { return _bundles.at(h); }
 NodeBundle &GraphBuilderNodeBundles::bundle(NodeBundleHandle h) { return _bundles.at(h); }
