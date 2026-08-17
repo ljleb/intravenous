@@ -6,13 +6,12 @@
 namespace iv {
 namespace {
 std::vector<SamplePortRef> bundle_sample_output_channels(
-    GraphBuilder &builder, GraphBuilderTopology const &,
-    GraphBuilderNodeBundles const &node_bundles, NodeBundlePortId source) {
+    GraphBuilder &builder, GraphBuilderNodeBundles const &node_bundles,
+    NodeBundlePortId source) {
   if (source.port_kind != PortKind::sample) {
     details::error("attempted to read a sample output from an event NodeBundle port");
   }
-  auto const &bundle = node_bundles.bundle(source.node_bundle_handle);
-  auto const descriptor = bundle.sample_output_descriptor(source.port_ordinal);
+  auto const descriptor = node_bundles.resolve_sample_output(source);
   auto const &ports = descriptor.endpoints;
   if (ports.empty()) {
     details::error("NodeBundle sample output has no topology endpoint");
@@ -154,8 +153,7 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
   if (bundle_port.port_kind != PortKind::sample) {
     details::error("attempted to create a SamplePortRef from an event NodeBundle port");
   }
-  (void)graph_builder_._node_bundles.bundle(bundle_port.node_bundle_handle)
-      .sample_output_layout(bundle_port.port_ordinal);
+  (void)graph_builder_._node_bundles.resolve_sample_output(bundle_port);
 }
 
 SamplePortRef::operator ConcretePortId() const {
@@ -510,8 +508,7 @@ GraphBuilder::VirtualInputs GraphBuilder::virtual_inputs() const {
 
 GraphBuilder::VirtualSampleInputFamilies
 GraphBuilder::virtual_sample_input_families() const {
-  return _connections.collect_virtual_sample_input_families(_topology,
-                                                            _node_bundles,
+  return _connections.collect_virtual_sample_input_families(_node_bundles,
                                                             _virtual_nodes);
 }
 
@@ -582,9 +579,7 @@ SamplePortRef GraphBuilder::materialize_sample_output(SamplePortRef source) {
     details::error("cannot materialize a sample output from another builder");
   }
 
-  auto const address = *source.node_bundle_port;
-  auto const &bundle = _node_bundles.bundle(address.node_bundle_handle);
-  auto const descriptor = bundle.sample_output_descriptor(address.port_ordinal);
+  auto const descriptor = _node_bundles.resolve_sample_output(*source.node_bundle_port);
   auto const &ports = descriptor.endpoints;
   if (ports.empty()) {
     details::error("NodeBundle sample output has no topology endpoint");
@@ -605,8 +600,7 @@ void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef s
   if (target.port_kind != PortKind::sample) {
     details::error("attempted to connect a sample source to an event NodeBundle port");
   }
-  auto const descriptor = _node_bundles.bundle(target.node_bundle_handle)
-                              .sample_input_descriptor(target.port_ordinal);
+  auto const descriptor = _node_bundles.resolve_sample_input(target);
   for (auto const port : descriptor.endpoints) connect_sample_input(port, source);
 }
 
@@ -615,8 +609,7 @@ void GraphBuilder::connect_sample_input(
   if (target.port_kind != PortKind::sample) {
     details::error("attempted to connect sample channels to an event NodeBundle port");
   }
-  auto const &bundle = _node_bundles.bundle(target.node_bundle_handle);
-  auto const descriptor = bundle.sample_input_descriptor(target.port_ordinal);
+  auto const descriptor = _node_bundles.resolve_sample_input(target);
   auto const &ports = descriptor.endpoints;
   if (ports.size() == 1) {
     connect_sample_input(ports.front(),
@@ -642,8 +635,7 @@ void GraphBuilder::connect_event_input(NodeBundlePortId target, EventPortRef sou
   if (target.port_kind != PortKind::event) {
     details::error("attempted to connect an event source to a sample NodeBundle port");
   }
-  auto const descriptor = _node_bundles.bundle(target.node_bundle_handle)
-                              .event_input_descriptor(target.port_ordinal);
+  auto const descriptor = _node_bundles.resolve_event_input(target);
   for (auto const port : descriptor.endpoints) connect_event_input(port, source);
 }
 
@@ -652,8 +644,7 @@ void GraphBuilder::mark_runtime_filled_sample_input(ConcretePortId target) {
 }
 
 void GraphBuilder::mark_runtime_filled_sample_input(NodeBundlePortId target) {
-  auto const descriptor = _node_bundles.bundle(target.node_bundle_handle)
-                              .sample_input_descriptor(target.port_ordinal);
+  auto const descriptor = _node_bundles.resolve_sample_input(target);
   for (auto const port : descriptor.endpoints) mark_runtime_filled_sample_input(port);
 }
 
@@ -662,8 +653,7 @@ void GraphBuilder::mark_runtime_filled_event_input(ConcretePortId target) {
 }
 
 void GraphBuilder::mark_runtime_filled_event_input(NodeBundlePortId target) {
-  auto const descriptor = _node_bundles.bundle(target.node_bundle_handle)
-                              .event_input_descriptor(target.port_ordinal);
+  auto const descriptor = _node_bundles.resolve_event_input(target);
   for (auto const port : descriptor.endpoints) mark_runtime_filled_event_input(port);
 }
 
@@ -671,8 +661,7 @@ bool GraphBuilder::sample_input_is_connected(NodeBundlePortId target) const {
   if (target.port_kind != PortKind::sample) {
     details::error("attempted to inspect a sample connection on an event NodeBundle port");
   }
-  auto const descriptor = _node_bundles.bundle(target.node_bundle_handle)
-                              .sample_input_descriptor(target.port_ordinal);
+  auto const descriptor = _node_bundles.resolve_sample_input(target);
   bool connected = false;
   for (auto const port : descriptor.endpoints) {
     connected = connected || _connections.sample_input_is_connected(port);
@@ -684,8 +673,7 @@ bool GraphBuilder::event_input_is_connected(NodeBundlePortId target) const {
   if (target.port_kind != PortKind::event) {
     details::error("attempted to inspect an event connection on a sample NodeBundle port");
   }
-  auto const descriptor = _node_bundles.bundle(target.node_bundle_handle)
-                              .event_input_descriptor(target.port_ordinal);
+  auto const descriptor = _node_bundles.resolve_event_input(target);
   bool connected = false;
   for (auto const port : descriptor.endpoints) {
     connected = connected || _connections.event_input_is_connected(port);
@@ -696,7 +684,7 @@ bool GraphBuilder::event_input_is_connected(NodeBundlePortId target) const {
 void GraphBuilder::connect_sample_output(NodeBundlePortId source,
                                          NodeRef const &target) {
   auto const channels = bundle_sample_output_channels(
-      *this, _topology, _node_bundles, source);
+      *this, _node_bundles, source);
   std::vector<size_t> target_nodes;
   _node_bundles.bundle(target.node_bundle_handle()).for_each_topology_node(
       [&](size_t node) { target_nodes.push_back(node); });
@@ -717,8 +705,7 @@ EventPortRef GraphBuilder::event_output(NodeBundlePortId source) const {
   if (source.port_kind != PortKind::event) {
     details::error("attempted to read an event output from a sample NodeBundle port");
   }
-  auto const &bundle = _node_bundles.bundle(source.node_bundle_handle);
-  auto const descriptor = bundle.event_output_descriptor(source.port_ordinal);
+  auto const descriptor = _node_bundles.resolve_event_output(source);
   auto const &ports = descriptor.endpoints;
   if (ports.empty()) details::error("event output has no topology endpoints");
   if (ports.size() == 1) {

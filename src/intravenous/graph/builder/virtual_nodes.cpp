@@ -222,20 +222,16 @@ GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
   (void)topology;
   GraphBuilderVirtualPorts result;
   auto input_config = [&](NodeBundlePortId id) -> InputConfig {
-    return node_bundles.bundle(id.node_bundle_handle)
-        .sample_input_descriptor(id.port_ordinal).config;
+    return node_bundles.resolve_sample_input(id).config;
   };
   auto output_config = [&](NodeBundlePortId id) -> OutputConfig {
-    return node_bundles.bundle(id.node_bundle_handle)
-        .sample_output_descriptor(id.port_ordinal).config;
+    return node_bundles.resolve_sample_output(id).config;
   };
   auto event_input_config = [&](NodeBundlePortId id) -> EventInputConfig {
-    return node_bundles.bundle(id.node_bundle_handle)
-        .event_input_descriptor(id.port_ordinal).config;
+    return node_bundles.resolve_event_input(id).config;
   };
   auto event_output_config = [&](NodeBundlePortId id) -> EventOutputConfig {
-    return node_bundles.bundle(id.node_bundle_handle)
-        .event_output_descriptor(id.port_ordinal).config;
+    return node_bundles.resolve_event_output(id).config;
   };
   for (auto const &node : _records) {
     for (auto const &mapping : node.sample_inputs) {

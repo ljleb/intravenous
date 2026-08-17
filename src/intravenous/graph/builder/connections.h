@@ -141,8 +141,7 @@ namespace iv {
         GraphBuilderVirtualInputs collect_virtual_inputs(
             GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualSampleInputFamilies collect_virtual_sample_input_families(
-            GraphBuilderTopology const&, GraphBuilderNodeBundles const&,
-            GraphBuilderVirtualNodes const&) const;
+            GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualOutputs collect_virtual_outputs(
             GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualSampleOutputFamilies collect_virtual_sample_output_families(

@@ -9,22 +9,9 @@
 
 namespace iv {
 namespace {
-std::vector<ConcretePortId> resolve_bundle_sample_port(
-    GraphBuilderNodeBundles const &node_bundles,
-    NodeBundlePortId address, bool inputs) {
-  auto const &bundle = node_bundles.bundle(address.node_bundle_handle);
-  auto const endpoints = inputs
-      ? bundle.sample_input_descriptor(address.port_ordinal).endpoints
-      : bundle.sample_output_descriptor(address.port_ordinal).endpoints;
-  std::vector<ConcretePortId> result;
-  result.reserve(endpoints.size());
-  for (auto const endpoint : endpoints) result.push_back(endpoint);
-  return result;
-}
-
-template <class Channel>
+template <class Channel, class Ports>
 void append_resolved_channels(std::vector<Channel> &channels,
-                              std::vector<ConcretePortId> const &ports,
+                              Ports const &ports,
                               ChannelLayout layout, auto connected) {
   auto const channel_total = channel_count(layout.channel_type);
   if (ports.size() != 1 && ports.size() != channel_total) {
@@ -191,7 +178,6 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
 
 GraphBuilderVirtualSampleInputFamilies
 GraphBuilderConnections::collect_virtual_sample_input_families(
-    GraphBuilderTopology const &topology,
     GraphBuilderNodeBundles const &node_bundles,
     GraphBuilderVirtualNodes const &virtual_nodes) const {
   GraphBuilderVirtualSampleInputFamilies result;
@@ -200,14 +186,14 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
       if (mapping.node_bundle_ports.empty()) {
         continue;
       }
-      auto const first_address = mapping.node_bundle_ports.front();
-      auto config = node_bundles.bundle(first_address.node_bundle_handle)
-                        .sample_input_descriptor(first_address.port_ordinal).config;
+      auto config =
+          node_bundles.resolve_sample_input(mapping.node_bundle_ports.front()).config;
       config.channel_layout = mapping.channel_layout;
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleInputChannel> channels(channel_total);
       for (auto const bundle_port : mapping.node_bundle_ports) {
-        auto const ports = resolve_bundle_sample_port(node_bundles, bundle_port, true);
+        auto const descriptor = node_bundles.resolve_sample_input(bundle_port);
+        auto const &ports = descriptor.endpoints;
         append_resolved_channels(channels, ports, mapping.channel_layout,
                                  [&](ConcretePortId port) { return _placed_sample_inputs.contains(port); });
         for (size_t channel = 0; channel < channel_total; ++channel) {
@@ -293,15 +279,15 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
       if (mapping.node_bundle_ports.empty()) {
         continue;
       }
-      auto const first_address = mapping.node_bundle_ports.front();
-      auto config = node_bundles.bundle(first_address.node_bundle_handle)
-                        .sample_output_descriptor(first_address.port_ordinal).config;
+      auto config =
+          node_bundles.resolve_sample_output(mapping.node_bundle_ports.front()).config;
       config.channel_layout = mapping.channel_layout;
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleOutputChannel> channels(channel_total);
       for (auto const bundle_port : mapping.node_bundle_ports) {
-        auto const ports = resolve_bundle_sample_port(node_bundles, bundle_port, false);
-        append_resolved_channels(channels, ports, mapping.channel_layout,
+        auto const descriptor = node_bundles.resolve_sample_output(bundle_port);
+        append_resolved_channels(channels, descriptor.endpoints,
+                                 mapping.channel_layout,
                                  [&](ConcretePortId port) { return connected_sample_sources.contains(port); });
       }
       result.families.push_back(GraphBuilderVirtualSampleOutputFamily{

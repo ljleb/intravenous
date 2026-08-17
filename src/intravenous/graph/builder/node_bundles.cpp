@@ -357,6 +357,35 @@ NodeBundleHandle GraphBuilderNodeBundles::append_subgraph(
 }
 NodeBundle const &GraphBuilderNodeBundles::bundle(NodeBundleHandle h) const { return _bundles.at(h); }
 NodeBundle &GraphBuilderNodeBundles::bundle(NodeBundleHandle h) { return _bundles.at(h); }
+
+SampleInputPortDescriptor GraphBuilderNodeBundles::resolve_sample_input(
+    NodeBundlePortId address) const {
+  if (address.port_kind != PortKind::sample)
+    details::error("attempted to resolve a sample input from an event NodeBundle port");
+  return bundle(address.node_bundle_handle).sample_input_descriptor(address.port_ordinal);
+}
+
+SampleOutputPortDescriptor GraphBuilderNodeBundles::resolve_sample_output(
+    NodeBundlePortId address) const {
+  if (address.port_kind != PortKind::sample)
+    details::error("attempted to resolve a sample output from an event NodeBundle port");
+  return bundle(address.node_bundle_handle).sample_output_descriptor(address.port_ordinal);
+}
+
+EventInputPortDescriptor GraphBuilderNodeBundles::resolve_event_input(
+    NodeBundlePortId address) const {
+  if (address.port_kind != PortKind::event)
+    details::error("attempted to resolve an event input from a sample NodeBundle port");
+  return bundle(address.node_bundle_handle).event_input_descriptor(address.port_ordinal);
+}
+
+EventOutputPortDescriptor GraphBuilderNodeBundles::resolve_event_output(
+    NodeBundlePortId address) const {
+  if (address.port_kind != PortKind::event)
+    details::error("attempted to resolve an event output from a sample NodeBundle port");
+  return bundle(address.node_bundle_handle).event_output_descriptor(address.port_ordinal);
+}
+
 NodeBundleHandle GraphBuilderNodeBundles::bundle_for_concrete_node(size_t node) const { if (node >= _bundle_by_concrete_node.size() || _bundle_by_concrete_node[node] == GRAPH_ID) details::error("concrete node has no NodeBundle"); return _bundle_by_concrete_node[node]; }
 size_t GraphBuilderNodeBundles::size() const { return _bundles.size(); }
 void GraphBuilderNodeBundles::import_child(GraphBuilderNodeBundles const &child, size_t offset) { for (auto bundle : child._bundles) { bundle.import_into(offset); auto handle = _bundles.size(); bundle.for_each_topology_node([&](size_t node) { if (_bundle_by_concrete_node.size() <= node) _bundle_by_concrete_node.resize(node + 1, GRAPH_ID); _bundle_by_concrete_node[node] = handle; }); _bundles.push_back(std::move(bundle)); } }

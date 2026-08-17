@@ -128,6 +128,14 @@ public:
   NodeBundleHandle append_subgraph(GraphBuilderTopology const &, size_t subgraph_node_index);
   NodeBundle const &bundle(NodeBundleHandle) const;
   NodeBundle &bundle(NodeBundleHandle);
+
+  // Central builder/lowering boundary for logical bundle ports. Callers should
+  // resolve NodeBundlePortId here instead of reaching into a bundle payload.
+  SampleInputPortDescriptor resolve_sample_input(NodeBundlePortId) const;
+  SampleOutputPortDescriptor resolve_sample_output(NodeBundlePortId) const;
+  EventInputPortDescriptor resolve_event_input(NodeBundlePortId) const;
+  EventOutputPortDescriptor resolve_event_output(NodeBundlePortId) const;
+
   NodeBundleHandle bundle_for_concrete_node(size_t concrete_node_index) const;
   size_t size() const;
   void import_child(GraphBuilderNodeBundles const &, size_t concrete_node_offset);

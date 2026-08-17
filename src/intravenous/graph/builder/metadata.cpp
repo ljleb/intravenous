@@ -364,15 +364,6 @@ build_virtual_metadata(PreparedGraph const &g,
 }
 
 namespace {
-std::vector<TopologyPortId> resolve_bundle_sample_port(
-    GraphBuilderNodeBundles const &node_bundles,
-    NodeBundlePortId address, bool inputs) {
-  auto const &bundle = node_bundles.bundle(address.node_bundle_handle);
-  return inputs
-      ? bundle.sample_input_descriptor(address.port_ordinal).endpoints
-      : bundle.sample_output_descriptor(address.port_ordinal).endpoints;
-}
-
 template <class Mapping>
 std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
     std::vector<Mapping> const &mappings, GraphBuilderTopology const &topology,
@@ -385,32 +376,34 @@ std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
     }
     std::vector<TopologyPortId> ports;
     for (auto const address : mapping.node_bundle_ports) {
-      auto const resolved = resolve_bundle_sample_port(node_bundles, address, inputs);
-      ports.insert(ports.end(), resolved.begin(), resolved.end());
+      if (inputs) {
+        auto const descriptor = node_bundles.resolve_sample_input(address);
+        ports.insert(ports.end(), descriptor.endpoints.begin(),
+                     descriptor.endpoints.end());
+      } else {
+        auto const descriptor = node_bundles.resolve_sample_output(address);
+        ports.insert(ports.end(), descriptor.endpoints.begin(),
+                     descriptor.endpoints.end());
+      }
     }
     if (ports.empty()) {
       details::error("virtual sample port has no topology endpoint");
     }
 
     auto const first_address = mapping.node_bundle_ports.front();
-    auto const &first_bundle =
-        node_bundles.bundle(first_address.node_bundle_handle);
     Sample default_value = 0.0f;
     std::optional<Sample> min;
     std::optional<Sample> max;
     size_t history = 0;
     size_t latency = 0;
     if (inputs) {
-      auto const config =
-          first_bundle.sample_input_descriptor(first_address.port_ordinal).config;
+      auto const config = node_bundles.resolve_sample_input(first_address).config;
       default_value = config.default_value;
       min = config.min;
       max = config.max;
       history = config.history;
     } else {
-      latency =
-          first_bundle.sample_output_descriptor(first_address.port_ordinal)
-              .config.latency;
+      latency = node_bundles.resolve_sample_output(first_address).config.latency;
     }
     bool any_connected = false;
     bool any_disconnected = false;
@@ -470,8 +463,9 @@ std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
 }
 
 std::vector<IntrospectionPortInfo> project_bundle_event_ports(
-    NodeBundle const &bundle, GraphBuilderTopology const &topology,
-    bool inputs) {
+    GraphBuilderNodeBundles const &node_bundles, NodeBundleHandle bundle_handle,
+    GraphBuilderTopology const &topology, bool inputs) {
+  auto const &bundle = node_bundles.bundle(bundle_handle);
   auto project = [&](size_t count) {
     std::vector<IntrospectionPortInfo> result;
     result.reserve(count);
@@ -480,12 +474,14 @@ std::vector<IntrospectionPortInfo> project_bundle_event_ports(
       EventTypeId type = EventTypeId::empty;
       std::vector<TopologyPortId> endpoints;
       if (inputs) {
-        auto descriptor = bundle.event_input_descriptor(ordinal);
+        auto descriptor = node_bundles.resolve_event_input(
+            {bundle_handle, PortKind::event, ordinal});
         name = descriptor.config.name;
         type = descriptor.config.type;
         endpoints = std::move(descriptor.endpoints);
       } else {
-        auto descriptor = bundle.event_output_descriptor(ordinal);
+        auto descriptor = node_bundles.resolve_event_output(
+            {bundle_handle, PortKind::event, ordinal});
         name = descriptor.config.name;
         type = descriptor.config.type;
         endpoints = std::move(descriptor.endpoints);
@@ -571,8 +567,10 @@ void apply_virtual_port_metadata(
               record.sample_inputs, topology, node_bundles, handle, true),
           .sample_outputs = project_bundle_sample_ports(
               record.sample_outputs, topology, node_bundles, handle, false),
-          .event_inputs = project_bundle_event_ports(bundle, topology, true),
-          .event_outputs = project_bundle_event_ports(bundle, topology, false),
+          .event_inputs = project_bundle_event_ports(
+              node_bundles, handle, topology, true),
+          .event_outputs = project_bundle_event_ports(
+              node_bundles, handle, topology, false),
       });
     }
   }
