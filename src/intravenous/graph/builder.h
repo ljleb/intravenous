@@ -272,6 +272,9 @@ SamplePortRef GraphBuilder::lift_to_sample_port(
 template <class ChannelType, SampleStreamLayout Layout>
 SamplePortRef GraphBuilder::lift_to_sample_port(
     TypedSamplePortTileRef<ChannelType, Layout> const &sample_port) {
+  if (sample_port.has_promoted_port()) {
+    return lift_to_sample_port(sample_port.erased());
+  }
   auto pack = node<ChannelPack<ChannelType>>();
   for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
     pack.connect_input(channel, sample_port.members()[channel]);

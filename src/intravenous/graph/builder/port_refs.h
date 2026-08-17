@@ -129,9 +129,9 @@ namespace iv {
         TypedSamplePortRef<ChannelType, Layout> const& port() const { return _port; }
     };
 
-    // A promoted tiled port. Unlike TypedSamplePortRef<C, Layout>, this is
-    // not one native C-channel concrete port: every member names a distinct
-    // mono concrete endpoint.
+    // A tiled node output keeps its promoted logical bundle port separate
+    // from the per-channel refs used to preserve physical tiling. Member-only
+    // construction represents an aggregate with no promoted bundle identity.
     template<class ChannelType, SampleStreamLayout Layout>
     class TypedSamplePortTileRef {
         SamplePortRef _promoted {};
@@ -152,6 +152,7 @@ namespace iv {
             std::array<SamplePortRef, ChannelType::channel_count> members)
             : _promoted(std::move(promoted)), _members(std::move(members)) {}
 
+        bool has_promoted_port() const { return _promoted.graph_builder != nullptr; }
         operator SamplePortRef() const { return _promoted; }
         SamplePortRef const& erased() const { return _promoted; }
 

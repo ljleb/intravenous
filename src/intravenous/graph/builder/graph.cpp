@@ -735,7 +735,72 @@ void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef s
     details::error("attempted to connect a sample source to an event NodeBundle port");
   }
   auto const descriptor = _node_bundles.resolve_sample_input(target);
-  for (auto const port : descriptor.endpoints) connect_sample_input(port, source);
+  auto const &ports = descriptor.endpoints;
+  if (ports.size() <= 1) {
+    for (auto const port : ports) connect_sample_input(port, source);
+    return;
+  }
+  if (!source.graph_builder) {
+    details::error("cannot connect an empty sample output");
+  }
+  if (source.graph_builder != this) {
+    details::error("cannot connect a sample output from another builder");
+  }
+  if (ports.size() !=
+      channel_count(descriptor.config.channel_layout.channel_type)) {
+    details::error(
+        "tiled NodeBundle input does not match its declared channel layout");
+  }
+
+  // Graph and scope boundaries are mono today; preserve the existing
+  // broadcast semantics for them and for ordinary mono bundle outputs.
+  if (!source.node_bundle_port) {
+    for (auto const port : ports) connect_sample_input(port, source);
+    return;
+  }
+
+  auto const source_descriptor =
+      _node_bundles.resolve_sample_output(*source.node_bundle_port);
+  auto const source_channel_type =
+      source_descriptor.config.channel_layout.channel_type;
+  if (source_channel_type == ChannelTypeId::mono) {
+    for (auto const port : ports) connect_sample_input(port, source);
+    return;
+  }
+  if (source_channel_type != descriptor.config.channel_layout.channel_type) {
+    details::error("sample source and tiled input channel layouts do not match");
+  }
+
+  auto const &source_ports = source_descriptor.endpoints;
+  if (source_ports.size() == ports.size()) {
+    for (size_t channel = 0; channel < ports.size(); ++channel) {
+      connect_sample_input(
+          ports[channel],
+          MaterializedSamplePort{
+              .port = static_cast<ConcretePortId>(source_ports[channel])});
+    }
+    return;
+  }
+  if (source_ports.size() != 1) {
+    details::error(
+        "sample source cannot be projected onto the tiled input channels");
+  }
+
+  switch (source_channel_type) {
+  case ChannelTypeId::stereo: {
+    auto unpack = node<ChannelUnpack<stereo>>();
+    unpack.connect_input(0, source);
+    for (size_t channel = 0; channel < ports.size(); ++channel) {
+      connect_sample_input(ports[channel], unpack[channel]);
+    }
+    return;
+  }
+  case ChannelTypeId::mono:
+    break;
+  case ChannelTypeId::count:
+    break;
+  }
+  details::error("invalid channel type for tiled NodeBundle sample input");
 }
 
 void GraphBuilder::connect_sample_input(

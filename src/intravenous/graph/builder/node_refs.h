@@ -10,6 +10,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -17,15 +18,6 @@
 
 namespace iv {
     namespace details {
-        template<class Value, class ChannelType>
-        inline constexpr bool is_typed_sample_port_for_v = false;
-
-        template<class ValueChannelType, SampleStreamLayout Layout,
-                 class ChannelType>
-        inline constexpr bool is_typed_sample_port_for_v<
-            TypedSamplePortRef<ValueChannelType, Layout>, ChannelType> =
-            std::same_as<ValueChannelType, ChannelType>;
-
         template<class Value, class ChannelType>
         inline constexpr bool is_typed_sample_port_tile_for_v = false;
 
@@ -425,26 +417,15 @@ namespace iv {
                 using ValueType = std::remove_cvref_t<Value>;
                 if constexpr (details::is_typed_sample_port_tile_for_v<ValueType,
                                                                          ChannelType>) {
-                    for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
-                        TypedNodeRef<NodeType>{*this->_graph_builder, _member_bundles[channel]}
-                            .connect_input(input_ordinal, value.members()[channel]);
-                    }
-                } else if constexpr (
-                    details::is_typed_sample_port_for_v<ValueType, ChannelType>) {
-                    auto unpack = this->_graph_builder->template node<ChannelUnpack<ChannelType>>();
-                    unpack.connect_input(0, static_cast<SamplePortRef>(value));
-                    for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
-                        TypedNodeRef<NodeType>{*this->_graph_builder, _member_bundles[channel]}
-                            .connect_input(input_ordinal,
-                                static_cast<SamplePortRef>(unpack[channel]));
-                    }
+                    this->_graph_builder->connect_sample_input(
+                        {this->_index, PortKind::sample, input_ordinal},
+                        std::span<SamplePortRef const>{value.members()});
                 } else {
                     auto source = this->_graph_builder->lift_to_sample_port(
                         std::forward<Value>(value));
-                    for (auto const member : _member_bundles) {
-                        TypedNodeRef<NodeType>{*this->_graph_builder, member}
-                            .connect_input(input_ordinal, source);
-                    }
+                    this->_graph_builder->connect_sample_input(
+                        {this->_index, PortKind::sample, input_ordinal},
+                        std::move(source));
                 }
             };
             auto process = [&](auto&& arg) {
