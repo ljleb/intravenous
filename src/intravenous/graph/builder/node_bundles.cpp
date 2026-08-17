@@ -11,8 +11,8 @@ namespace iv {
 namespace {
 struct ConcreteNodeBundle {
   size_t node{};
-  std::vector<ConcretePortId> sample_inputs, sample_outputs{};
-  std::vector<ConcretePortId> event_inputs, event_outputs{};
+  std::vector<TopologyPortId> sample_inputs, sample_outputs{};
+  std::vector<TopologyPortId> event_inputs, event_outputs{};
   std::vector<ChannelLayout> sample_input_layouts, sample_output_layouts{};
   std::vector<std::string> sample_input_names, sample_output_names{};
   std::vector<std::string> event_input_names, event_output_names{};
@@ -20,8 +20,8 @@ struct ConcreteNodeBundle {
 
 struct TiledNodeBundle {
   std::vector<size_t> nodes{};
-  std::vector<std::vector<ConcretePortId>> sample_inputs, sample_outputs{};
-  std::vector<std::vector<ConcretePortId>> event_inputs, event_outputs{};
+  std::vector<std::vector<TopologyPortId>> sample_inputs, sample_outputs{};
+  std::vector<std::vector<TopologyPortId>> event_inputs, event_outputs{};
   std::vector<ChannelLayout> sample_input_layouts, sample_output_layouts{};
   std::vector<std::string> sample_input_names, sample_output_names{};
   std::vector<std::string> event_input_names, event_output_names{};
@@ -29,8 +29,8 @@ struct TiledNodeBundle {
 
 struct SubgraphNodeBundle {
   size_t node{};
-  std::vector<ConcretePortId> sample_inputs, sample_outputs{};
-  std::vector<ConcretePortId> event_inputs, event_outputs{};
+  std::vector<TopologyPortId> sample_inputs, sample_outputs{};
+  std::vector<TopologyPortId> event_inputs, event_outputs{};
   std::vector<ChannelLayout> sample_input_layouts, sample_output_layouts{};
   std::vector<std::string> sample_input_names, sample_output_names{};
   std::vector<std::string> event_input_names, event_output_names{};
@@ -59,7 +59,7 @@ template <class Payload> void import(void *payload, size_t offset) {
 
 template <class Payload, auto Member>
 void each_ports(void const *payload, size_t ordinal,
-                std::function<void(ConcretePortId)> const &fn) {
+                std::function<void(TopologyPortId)> const &fn) {
   auto const &values = static_cast<Payload const *>(payload)->*Member;
   if (ordinal >= values.size()) details::error("NodeBundle port ordinal is out of bounds");
   if constexpr (std::is_same_v<Payload, TiledNodeBundle>)
@@ -109,10 +109,10 @@ template <class Payload> NodeBundle::Ops const &ops_for();
 struct NodeBundle::Ops {
   void (*destroy)(void *);
   void *(*clone)(void const *);
-  void (*sample_input)(void const *, size_t, std::function<void(ConcretePortId)> const &);
-  void (*sample_output)(void const *, size_t, std::function<void(ConcretePortId)> const &);
-  void (*event_input)(void const *, size_t, std::function<void(ConcretePortId)> const &);
-  void (*event_output)(void const *, size_t, std::function<void(ConcretePortId)> const &);
+  void (*sample_input)(void const *, size_t, std::function<void(TopologyPortId)> const &);
+  void (*sample_output)(void const *, size_t, std::function<void(TopologyPortId)> const &);
+  void (*event_input)(void const *, size_t, std::function<void(TopologyPortId)> const &);
+  void (*event_output)(void const *, size_t, std::function<void(TopologyPortId)> const &);
   ChannelLayout (*input_layout)(void const *, size_t);
   ChannelLayout (*output_layout)(void const *, size_t);
   size_t (*sample_input_count)(void const *);
@@ -279,13 +279,13 @@ NodeBundleHandle GraphBuilderNodeBundles::append_tiled(GraphBuilderTopology cons
   if (nodes.empty()) details::error("a tiled NodeBundle requires at least one ConcreteNode");
   auto const &first = topology.concrete_node(nodes.front()); TiledNodeBundle p{.nodes = {nodes.begin(), nodes.end()}};
   auto append_sample = [&](auto const &configs, auto &dest, auto &layouts) {
-    for (size_t port = 0; port < configs.size(); ++port) { if (configs[port].channel_layout.channel_type != ChannelTypeId::mono) details::error("a tiled NodeBundle requires mono concrete sample ports"); std::vector<ConcretePortId> ports; for (auto node : nodes) ports.push_back({node, port}); dest.push_back(std::move(ports)); layouts.push_back({promoted.channel_type, configs[port].channel_layout.sample_layout}); }
+    for (size_t port = 0; port < configs.size(); ++port) { if (configs[port].channel_layout.channel_type != ChannelTypeId::mono) details::error("a tiled NodeBundle requires mono concrete sample ports"); std::vector<TopologyPortId> ports; for (auto node : nodes) ports.push_back({node, port}); dest.push_back(std::move(ports)); layouts.push_back({promoted.channel_type, configs[port].channel_layout.sample_layout}); }
   };
   append_sample(first.inputs(), p.sample_inputs, p.sample_input_layouts); append_sample(first.outputs(), p.sample_outputs, p.sample_output_layouts);
   for (auto const &config : first.inputs()) p.sample_input_names.push_back(config.name);
   for (auto const &config : first.outputs()) p.sample_output_names.push_back(config.name);
-  for (size_t port = 0; port < first.event_inputs().size(); ++port) { std::vector<ConcretePortId> ports; for (auto node : nodes) ports.push_back({node, port}); p.event_inputs.push_back(std::move(ports)); p.event_input_names.push_back(first.event_inputs()[port].name); }
-  for (size_t port = 0; port < first.event_outputs().size(); ++port) { std::vector<ConcretePortId> ports; for (auto node : nodes) ports.push_back({node, port}); p.event_outputs.push_back(std::move(ports)); p.event_output_names.push_back(first.event_outputs()[port].name); }
+  for (size_t port = 0; port < first.event_inputs().size(); ++port) { std::vector<TopologyPortId> ports; for (auto node : nodes) ports.push_back({node, port}); p.event_inputs.push_back(std::move(ports)); p.event_input_names.push_back(first.event_inputs()[port].name); }
+  for (size_t port = 0; port < first.event_outputs().size(); ++port) { std::vector<TopologyPortId> ports; for (auto node : nodes) ports.push_back({node, port}); p.event_outputs.push_back(std::move(ports)); p.event_output_names.push_back(first.event_outputs()[port].name); }
   auto handle = _bundles.size(); _bundles.push_back(make_bundle(std::move(p))); for (auto node : nodes) { if (_bundle_by_concrete_node.size() <= node) _bundle_by_concrete_node.resize(node + 1, GRAPH_ID); _bundle_by_concrete_node[node] = handle; } return handle;
 }
 

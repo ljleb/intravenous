@@ -18,11 +18,25 @@ struct NodeBundlePortId {
   bool operator==(NodeBundlePortId const &) const = default;
 };
 
-// Transitional name for a port in GraphBuilderTopology.  The topology still
-// stores these addresses in ConcretePortId today, even when the node is a
-// SubgraphNode.  Keep that legacy representation local to the bundle/lowering
-// boundary instead of teaching callers to infer a node kind from the ID.
-using TopologyPortId = ConcretePortId;
+// A port on a node stored in GraphBuilderTopology. The node may be either a
+// ConcreteNode or a SubgraphNode; the address itself does not imply a node
+// kind. Keep this distinct from ConcretePortId, which is the execution-graph
+// port type after lowering.
+//
+// The conversion is a temporary migration bridge for builder services that
+// still store topology edges in ConcretePortId. Remove it once those services
+// consume TopologyPortId directly.
+struct TopologyPortId {
+  size_t node = 0;
+  size_t port = 0;
+
+  constexpr TopologyPortId() = default;
+  constexpr TopologyPortId(size_t node_, size_t port_) : node(node_), port(port_) {}
+
+  operator ConcretePortId() const noexcept { return {node, port}; }
+
+  bool operator==(TopologyPortId const &) const = default;
+};
 
 using ConcreteNodeId = size_t;
 using SubgraphNodeId = size_t;
