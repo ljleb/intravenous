@@ -30,14 +30,15 @@ void append_bundle_event_port_mappings(
     std::vector<VirtualEventPortMapping> &mappings, NodeBundle const &bundle,
     NodeBundleHandle bundle_handle, GraphBuilderTopology const &topology,
     bool inputs) {
+  (void)topology;
   auto const count = inputs ? bundle.event_input_count() : bundle.event_output_count();
   for (size_t ordinal = 0; ordinal < count; ++ordinal) {
     auto append = [&](auto const &config) {
       append_virtual_event_port_mapping(mappings, config, ordinal,
                                         {bundle_handle, PortKind::event, ordinal});
     };
-    if (inputs) append(bundle.event_input_config(topology, ordinal));
-    else append(bundle.event_output_config(topology, ordinal));
+    if (inputs) append(bundle.event_input_descriptor(ordinal).config);
+    else append(bundle.event_output_descriptor(ordinal).config);
   }
 }
 
@@ -70,6 +71,7 @@ void append_bundle_sample_port_mappings(
     std::vector<VirtualSamplePortMapping> &mappings,
     NodeBundle const &bundle, NodeBundleHandle bundle_handle,
     GraphBuilderTopology const &topology, bool inputs) {
+  (void)topology;
   auto const count = inputs ? bundle.sample_input_count() : bundle.sample_output_count();
   for (size_t ordinal = 0; ordinal < count; ++ordinal) {
     auto append = [&](auto const &config) {
@@ -77,8 +79,8 @@ void append_bundle_sample_port_mappings(
           config.channel_layout,
           {bundle_handle, PortKind::sample, ordinal});
     };
-    if (inputs) append(bundle.sample_input_config(topology, ordinal));
-    else append(bundle.sample_output_config(topology, ordinal));
+    if (inputs) append(bundle.sample_input_descriptor(ordinal).config);
+    else append(bundle.sample_output_descriptor(ordinal).config);
   }
 }
 } // namespace
@@ -217,22 +219,23 @@ GraphBuilderVirtualNodes::record(VirtualNodeHandle handle) const {
 GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
     GraphBuilderTopology const &topology,
     GraphBuilderNodeBundles const &node_bundles) const {
+  (void)topology;
   GraphBuilderVirtualPorts result;
   auto input_config = [&](NodeBundlePortId id) -> InputConfig {
     return node_bundles.bundle(id.node_bundle_handle)
-        .sample_input_config(topology, id.port_ordinal);
+        .sample_input_descriptor(id.port_ordinal).config;
   };
   auto output_config = [&](NodeBundlePortId id) -> OutputConfig {
     return node_bundles.bundle(id.node_bundle_handle)
-        .sample_output_config(topology, id.port_ordinal);
+        .sample_output_descriptor(id.port_ordinal).config;
   };
   auto event_input_config = [&](NodeBundlePortId id) -> EventInputConfig {
     return node_bundles.bundle(id.node_bundle_handle)
-        .event_input_config(topology, id.port_ordinal);
+        .event_input_descriptor(id.port_ordinal).config;
   };
   auto event_output_config = [&](NodeBundlePortId id) -> EventOutputConfig {
     return node_bundles.bundle(id.node_bundle_handle)
-        .event_output_config(topology, id.port_ordinal);
+        .event_output_descriptor(id.port_ordinal).config;
   };
   for (auto const &node : _records) {
     for (auto const &mapping : node.sample_inputs) {

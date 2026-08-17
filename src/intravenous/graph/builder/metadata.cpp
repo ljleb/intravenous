@@ -364,15 +364,13 @@ build_virtual_metadata(PreparedGraph const &g,
 }
 
 namespace {
-std::vector<ConcretePortId> resolve_bundle_sample_port(
+std::vector<TopologyPortId> resolve_bundle_sample_port(
     GraphBuilderNodeBundles const &node_bundles,
     NodeBundlePortId address, bool inputs) {
   auto const &bundle = node_bundles.bundle(address.node_bundle_handle);
-  std::vector<ConcretePortId> ports;
-  auto collect = [&](ConcretePortId port) { ports.push_back(port); };
-  if (inputs) bundle.for_each_sample_input(address.port_ordinal, collect);
-  else bundle.for_each_sample_output(address.port_ordinal, collect);
-  return ports;
+  return inputs
+      ? bundle.sample_input_descriptor(address.port_ordinal).endpoints
+      : bundle.sample_output_descriptor(address.port_ordinal).endpoints;
 }
 
 template <class Mapping>
@@ -385,25 +383,34 @@ std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
     if (mapping.node_bundle_ports.empty()) {
       continue;
     }
-    std::vector<ConcretePortId> ports;
+    std::vector<TopologyPortId> ports;
     for (auto const address : mapping.node_bundle_ports) {
       auto const resolved = resolve_bundle_sample_port(node_bundles, address, inputs);
       ports.insert(ports.end(), resolved.begin(), resolved.end());
     }
-    auto const first = ports.front();
+    if (ports.empty()) {
+      details::error("virtual sample port has no topology endpoint");
+    }
+
+    auto const first_address = mapping.node_bundle_ports.front();
+    auto const &first_bundle =
+        node_bundles.bundle(first_address.node_bundle_handle);
     Sample default_value = 0.0f;
     std::optional<Sample> min;
     std::optional<Sample> max;
     size_t history = 0;
     size_t latency = 0;
     if (inputs) {
-      auto const &config = topology.ports(first.node).inputs()[first.port];
+      auto const config =
+          first_bundle.sample_input_descriptor(first_address.port_ordinal).config;
       default_value = config.default_value;
       min = config.min;
       max = config.max;
       history = config.history;
     } else {
-      latency = topology.ports(first.node).outputs()[first.port].latency;
+      latency =
+          first_bundle.sample_output_descriptor(first_address.port_ordinal)
+              .config.latency;
     }
     bool any_connected = false;
     bool any_disconnected = false;
@@ -471,28 +478,29 @@ std::vector<IntrospectionPortInfo> project_bundle_event_ports(
     for (size_t ordinal = 0; ordinal < count; ++ordinal) {
       std::string name;
       EventTypeId type = EventTypeId::empty;
+      std::vector<TopologyPortId> endpoints;
       if (inputs) {
-        auto const config = bundle.event_input_config(topology, ordinal);
-        name = config.name;
-        type = config.type;
+        auto descriptor = bundle.event_input_descriptor(ordinal);
+        name = descriptor.config.name;
+        type = descriptor.config.type;
+        endpoints = std::move(descriptor.endpoints);
       } else {
-        auto const config = bundle.event_output_config(topology, ordinal);
-        name = config.name;
-        type = config.type;
+        auto descriptor = bundle.event_output_descriptor(ordinal);
+        name = descriptor.config.name;
+        type = descriptor.config.type;
+        endpoints = std::move(descriptor.endpoints);
       }
 
       bool any_connected = false;
       bool any_disconnected = false;
-      auto inspect = [&](TopologyPortId port) {
+      for (auto const port : endpoints) {
         bool connected = false;
         topology.for_each_event_edge([&](GraphEventEdge const &edge) {
           connected = connected || (inputs ? edge.target == port : edge.source == port);
         });
         any_connected = any_connected || connected;
         any_disconnected = any_disconnected || !connected;
-      };
-      if (inputs) bundle.for_each_event_input(ordinal, inspect);
-      else bundle.for_each_event_output(ordinal, inspect);
+      }
 
       result.push_back(IntrospectionPortInfo{
           .name = std::move(name), .type = event_type_name(type),

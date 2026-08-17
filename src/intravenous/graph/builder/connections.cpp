@@ -13,12 +13,12 @@ std::vector<ConcretePortId> resolve_bundle_sample_port(
     GraphBuilderNodeBundles const &node_bundles,
     NodeBundlePortId address, bool inputs) {
   auto const &bundle = node_bundles.bundle(address.node_bundle_handle);
+  auto const endpoints = inputs
+      ? bundle.sample_input_descriptor(address.port_ordinal).endpoints
+      : bundle.sample_output_descriptor(address.port_ordinal).endpoints;
   std::vector<ConcretePortId> result;
-  auto append = [&](ConcretePortId port) { result.push_back(port); };
-  if (inputs)
-    bundle.for_each_sample_input(address.port_ordinal, append);
-  else
-    bundle.for_each_sample_output(address.port_ordinal, append);
+  result.reserve(endpoints.size());
+  for (auto const endpoint : endpoints) result.push_back(endpoint);
   return result;
 }
 
@@ -200,9 +200,9 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
       if (mapping.node_bundle_ports.empty()) {
         continue;
       }
-      auto const first_ports = resolve_bundle_sample_port(
-          node_bundles, mapping.node_bundle_ports.front(), true);
-      auto config = topology.ports(first_ports.front().node).inputs()[first_ports.front().port];
+      auto const first_address = mapping.node_bundle_ports.front();
+      auto config = node_bundles.bundle(first_address.node_bundle_handle)
+                        .sample_input_descriptor(first_address.port_ordinal).config;
       config.channel_layout = mapping.channel_layout;
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleInputChannel> channels(channel_total);
@@ -293,9 +293,9 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
       if (mapping.node_bundle_ports.empty()) {
         continue;
       }
-      auto const first_ports = resolve_bundle_sample_port(
-          node_bundles, mapping.node_bundle_ports.front(), false);
-      auto config = topology.ports(first_ports.front().node).outputs()[first_ports.front().port];
+      auto const first_address = mapping.node_bundle_ports.front();
+      auto config = node_bundles.bundle(first_address.node_bundle_handle)
+                        .sample_output_descriptor(first_address.port_ordinal).config;
       config.channel_layout = mapping.channel_layout;
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleOutputChannel> channels(channel_total);
