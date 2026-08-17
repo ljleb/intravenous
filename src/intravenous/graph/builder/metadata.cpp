@@ -410,11 +410,11 @@ std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
     for (auto const port : ports) {
       bool connected = false;
       if (inputs) {
-        topology.for_each_sample_edge([&](GraphEdge const &edge) {
+        topology.for_each_sample_edge([&](TopologyEdge const &edge) {
           connected = connected || edge.target == port;
         });
       } else {
-        topology.for_each_sample_edge([&](GraphEdge const &edge) {
+        topology.for_each_sample_edge([&](TopologyEdge const &edge) {
           connected = connected || edge.source == port;
         });
       }
@@ -491,7 +491,7 @@ std::vector<IntrospectionPortInfo> project_bundle_event_ports(
       bool any_disconnected = false;
       for (auto const port : endpoints) {
         bool connected = false;
-        topology.for_each_event_edge([&](GraphEventEdge const &edge) {
+        topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
           connected = connected || (inputs ? edge.target == port : edge.source == port);
         });
         any_connected = any_connected || connected;
