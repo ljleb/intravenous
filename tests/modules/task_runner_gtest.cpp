@@ -10,6 +10,7 @@
 #include <future>
 #include <functional>
 #include <latch>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -518,16 +519,18 @@ namespace {
         LogState log;
         RecordingContext a{ .name = "a", .log = &log };
         RecordingContext b{ .name = "b", .log = &log };
-        iv::TasksRunner runner(1);
+        {
+            iv::TasksRunner runner(1);
+            runner.update_tasks(iv::TaskGraphUpdate{
+                .to_create = {
+                    task("a", {}, &record_callback, &a),
+                    task("b", { "a" }, &record_callback, &b),
+                },
+            });
 
-        runner.update_tasks(iv::TaskGraphUpdate{
-            .to_create = {
-                task("a", {}, &record_callback, &a),
-                task("b", { "a" }, &record_callback, &b),
-            },
-        });
+            ASSERT_TRUE(wait_until([&] { return b.invocations.load() >= 2; }));
+        }
 
-        ASSERT_TRUE(wait_until([&] { return b.invocations.load() >= 2; }));
         EXPECT_GE(a.invocations.load(), 2);
         EXPECT_EQ(a.invocations.load(), b.invocations.load());
     }
