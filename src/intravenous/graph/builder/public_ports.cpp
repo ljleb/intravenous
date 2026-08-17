@@ -95,7 +95,8 @@ SamplePortRef GraphBuilderPublicPorts::add_sample_input(
         .max = max.value_or(std::numeric_limits<Sample::storage>::infinity()),
     });
     _sample_input_source_infos.emplace_back();
-    return SamplePortRef(builder, GRAPH_ID, _sample_inputs.size() - 1);
+    return SamplePortRef(
+        builder, GraphInputPortId{PortKind::sample, _sample_inputs.size() - 1});
 }
 
 void GraphBuilderPublicPorts::annotate_sample_input_source_info(
@@ -134,7 +135,8 @@ EventPortRef GraphBuilderPublicPorts::add_event_input(GraphBuilder& builder, std
         _event_inputs.emplace_back(EventInputConfig{ .type = type });
     }
     _event_input_source_infos.emplace_back();
-    return EventPortRef(builder, GRAPH_ID, _event_inputs.size() - 1);
+    return EventPortRef(
+        builder, GraphInputPortId{PortKind::event, _event_inputs.size() - 1});
 }
 
 void GraphBuilderPublicPorts::annotate_event_input_source_info(size_t ordinal, std::string_view identity,
@@ -197,8 +199,13 @@ void GraphBuilderPublicPorts::define_sample_outputs(
         auto const output_ordinal = existing == _sample_output_members.end()
             ? _sample_outputs.size()
             : static_cast<size_t>(existing - _sample_output_members.begin());
+        auto const source = ref.graph_input_port
+            ? ref.graph_input_port->legacy_port()
+            : ref.scope_boundary_port
+                ? ref.scope_boundary_port->legacy_port()
+                : ConcretePortId{ref.node_index, ref.output_port};
         topology.add_sample_edge(GraphEdge{
-            ConcretePortId{ ref.node_index, ref.output_port },
+            source,
             ConcretePortId{ GRAPH_ID, output_ordinal },
         });
         if (existing == _sample_output_members.end()) {
@@ -244,11 +251,13 @@ void GraphBuilderPublicPorts::define_event_outputs(
             );
         }
 
-        auto const source_type = (ref.node_index == GRAPH_ID)
-            ? _event_inputs[ref.output_port].type
-            : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
+        auto const source_type = ref.graph_input_port
+            ? _event_inputs[ref.graph_input_port->port_ordinal].type
+            : ref.scope_boundary_port
+                ? topology.scope_boundary_event_output(*ref.scope_boundary_port).type
+                : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
         topology.add_event_edge(GraphEventEdge{
-            ConcretePortId{ ref.node_index, ref.output_port },
+            static_cast<ConcretePortId>(ref),
             ConcretePortId{ GRAPH_ID, i },
             EventConversionRegistry::instance().plan(source_type, source_type)
         });

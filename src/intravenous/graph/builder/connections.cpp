@@ -74,7 +74,7 @@ void GraphBuilderConnections::connect_event_input(
                                      source.graph_input_port->port_ordinal].type
                                : source.scope_boundary_port
                                      ? topology.scope_boundary_event_output(
-                                           source.scope_boundary_port->legacy_port()).type
+                                           *source.scope_boundary_port).type
                                      : topology.ports(source.node_index)
                                            .event_outputs()[source.output_port]
                                            .type;

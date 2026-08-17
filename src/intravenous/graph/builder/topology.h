@@ -45,9 +45,10 @@ namespace iv {
                 fn(edge);
             }
         }
-        ConcretePortId append_scope_sample_input(OutputConfig);
-        ConcretePortId append_scope_event_input(EventOutputConfig);
+        ScopeBoundaryPortId append_scope_sample_input(OutputConfig);
+        ScopeBoundaryPortId append_scope_event_input(EventOutputConfig);
         bool is_scope_boundary_port(ConcretePortId) const;
+        EventOutputConfig const& scope_boundary_event_output(ScopeBoundaryPortId) const;
         EventOutputConfig const& scope_boundary_event_output(ConcretePortId) const;
         template<class Config>
         static void validate_output_port_configs(

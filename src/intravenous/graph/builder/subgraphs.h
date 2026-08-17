@@ -21,13 +21,14 @@ namespace iv {
         std::vector<InputConfig> input_configs {};
         // Side-table port identities used only while this scope is open.
         // They become ports of the finished SubgraphNode at close.
-        std::vector<ConcretePortId> input_boundary_ports {};
+        std::vector<ScopeBoundaryPortId> input_boundary_ports {};
         std::vector<OutputConfig> output_configs {};
         std::vector<ConcretePortId> output_sources {};
         std::vector<EventInputConfig> event_input_configs {};
-        std::vector<ConcretePortId> event_input_boundary_ports {};
+        std::vector<ScopeBoundaryPortId> event_input_boundary_ports {};
         std::vector<EventOutputConfig> event_output_configs {};
         std::vector<ConcretePortId> event_output_sources {};
+        std::vector<SourceInfo> source_infos {};
         bool outputs_defined = false;
         bool event_outputs_defined = false;
     };
@@ -39,6 +40,7 @@ namespace iv {
         void begin(size_t start_node_index, std::string_view kind);
         ScopedSubgraph finish();
         void abandon_top();
+        void annotate_scope_input_source_info(ScopeBoundaryPortId, SourceInfo);
         SamplePortRef add_scope_sample_input(
             GraphBuilder&,
             GraphBuilderTopology&,

@@ -1,5 +1,7 @@
 #include <intravenous/graph/builder/subgraphs.h>
+#include <intravenous/graph/builder.h>
 
+#include <algorithm>
 #include <limits>
 
 namespace iv {
@@ -52,10 +54,10 @@ SamplePortRef SubgraphScopeManager::add_scope_sample_input(
         .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
         .max = max.value_or(std::numeric_limits<Sample::storage>::infinity()),
     });
-    ConcretePortId const boundary = topology.append_scope_sample_input(
+    ScopeBoundaryPortId const boundary = topology.append_scope_sample_input(
         OutputConfig{ .name = has_name ? std::string(name) : std::string{} });
     scope.input_boundary_ports.push_back(boundary);
-    return SamplePortRef(builder, boundary.node, boundary.port);
+    return SamplePortRef(builder, boundary);
 }
 
 EventPortRef SubgraphScopeManager::add_scope_event_input(
@@ -73,10 +75,27 @@ EventPortRef SubgraphScopeManager::add_scope_event_input(
     } else {
         scope.event_input_configs.emplace_back(EventInputConfig{ .type = type });
     }
-    ConcretePortId const boundary = topology.append_scope_event_input(
+    ScopeBoundaryPortId const boundary = topology.append_scope_event_input(
         EventOutputConfig{ .name = has_name ? std::string(name) : std::string{}, .type = type });
     scope.event_input_boundary_ports.push_back(boundary);
-    return EventPortRef(builder, boundary.node, boundary.port);
+    return EventPortRef(builder, boundary);
+}
+
+void SubgraphScopeManager::annotate_scope_input_source_info(
+    ScopeBoundaryPortId boundary, SourceInfo info)
+{
+    auto& scope = current();
+    auto const& boundaries = boundary.port_kind == PortKind::sample
+        ? scope.input_boundary_ports
+        : scope.event_input_boundary_ports;
+    if (std::find(boundaries.begin(), boundaries.end(), boundary)
+        == boundaries.end()) {
+        details::error("attempted to annotate a scope input from another scope");
+    }
+    if (std::find(scope.source_infos.begin(), scope.source_infos.end(), info)
+        == scope.source_infos.end()) {
+        scope.source_infos.push_back(std::move(info));
+    }
 }
 
 void SubgraphScopeManager::define_sample_outputs(
@@ -107,7 +126,12 @@ void SubgraphScopeManager::define_sample_outputs(
                 + ": subgraph outputs(...) requires names when exposing more than one sample output"
             );
         }
-        scope.output_sources.push_back(ConcretePortId{ ref.node_index, ref.output_port });
+        auto const source = ref.graph_input_port
+            ? ref.graph_input_port->legacy_port()
+            : ref.scope_boundary_port
+                ? ref.scope_boundary_port->legacy_port()
+                : ConcretePortId{ref.node_index, ref.output_port};
+        scope.output_sources.push_back(source);
         scope.output_configs.push_back(config);
     }
     scope.outputs_defined = true;
@@ -148,10 +172,12 @@ void SubgraphScopeManager::define_event_outputs(
                 + ": subgraph event_outputs(...) requires names when exposing more than one event output"
             );
         }
-        auto source_type = (ref.node_index == GRAPH_ID)
-            ? graph_event_inputs[ref.output_port].type
-            : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
-        scope.event_output_sources.push_back(ConcretePortId{ ref.node_index, ref.output_port });
+        auto const source_type = ref.graph_input_port
+            ? graph_event_inputs[ref.graph_input_port->port_ordinal].type
+            : ref.scope_boundary_port
+                ? topology.scope_boundary_event_output(*ref.scope_boundary_port).type
+                : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
+        scope.event_output_sources.push_back(static_cast<ConcretePortId>(ref));
         scope.event_output_configs.emplace_back(config);
         scope.event_output_configs.back().type = source_type;
     }
@@ -164,55 +190,59 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
                                               ScopedSubgraph scope)
 {
     size_t const subgraph_node_index = topology.node_count();
-    std::unordered_map<size_t, size_t> sample_input_index_by_boundary;
+    std::unordered_map<ConcretePortId, size_t> sample_input_index_by_boundary;
     sample_input_index_by_boundary.reserve(scope.input_boundary_ports.size());
     for (size_t i = 0; i < scope.input_boundary_ports.size(); ++i) {
-        sample_input_index_by_boundary.emplace(scope.input_boundary_ports[i].node, i);
+        sample_input_index_by_boundary.emplace(
+            scope.input_boundary_ports[i].legacy_port(), i);
     }
 
-    std::unordered_map<size_t, size_t> event_input_index_by_boundary;
+    std::unordered_map<ConcretePortId, size_t> event_input_index_by_boundary;
     event_input_index_by_boundary.reserve(scope.event_input_boundary_ports.size());
     for (size_t i = 0; i < scope.event_input_boundary_ports.size(); ++i) {
-        event_input_index_by_boundary.emplace(scope.event_input_boundary_ports[i].node, i);
+        event_input_index_by_boundary.emplace(
+            scope.event_input_boundary_ports[i].legacy_port(), i);
     }
 
     std::vector<std::vector<ConcretePortId>> subgraph_input_targets(scope.input_configs.size());
     std::vector<std::vector<ConcretePortId>> subgraph_event_input_targets(scope.event_input_configs.size());
 
     auto translate_sample_source = [&](ConcretePortId source) {
-        if (auto const it = sample_input_index_by_boundary.find(source.node); it != sample_input_index_by_boundary.end()) {
+        if (auto const it = sample_input_index_by_boundary.find(source);
+            it != sample_input_index_by_boundary.end()) {
             return ConcretePortId{ subgraph_node_index, it->second };
         }
         return source;
     };
 
     auto translate_event_source = [&](ConcretePortId source) {
-        if (auto const it = event_input_index_by_boundary.find(source.node); it != event_input_index_by_boundary.end()) {
+        if (auto const it = event_input_index_by_boundary.find(source);
+            it != event_input_index_by_boundary.end()) {
             return ConcretePortId{ subgraph_node_index, it->second };
         }
         return source;
     };
 
     topology.for_each_sample_edge([&](GraphEdge const& edge) {
-        auto const it = sample_input_index_by_boundary.find(edge.source.node);
+        auto const it = sample_input_index_by_boundary.find(edge.source);
         if (it == sample_input_index_by_boundary.end()) {
             return;
         }
         subgraph_input_targets[it->second].push_back(edge.target);
     });
     topology.erase_sample_edges_matching([&](GraphEdge const& edge) {
-        return sample_input_index_by_boundary.contains(edge.source.node);
+        return sample_input_index_by_boundary.contains(edge.source);
     });
 
     topology.for_each_event_edge([&](GraphEventEdge const& edge) {
-        auto const it = event_input_index_by_boundary.find(edge.source.node);
+        auto const it = event_input_index_by_boundary.find(edge.source);
         if (it == event_input_index_by_boundary.end()) {
             return;
         }
         subgraph_event_input_targets[it->second].push_back(edge.target);
     });
     topology.erase_event_edges_matching([&](GraphEventEdge const& edge) {
-        return event_input_index_by_boundary.contains(edge.source.node);
+        return event_input_index_by_boundary.contains(edge.source);
     });
 
     for (auto& source : scope.output_sources) {
@@ -236,7 +266,14 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
         std::move(scope.event_output_sources)
     );
 
-    return NodeRef(builder, node_bundles.append_subgraph(topology, subgraph_node));
+    NodeRef result(
+        builder, node_bundles.append_subgraph(topology, subgraph_node));
+    for (auto const& info : scope.source_infos) {
+        result._annotate_source_info(
+            info.declaration_identity, info.span.file_path,
+            info.span.begin, info.span.end);
+    }
+    return result;
 }
 
 size_t SubgraphScopeManager::current_start_node_index() const

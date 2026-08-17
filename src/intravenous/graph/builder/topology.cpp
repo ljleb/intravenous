@@ -65,18 +65,20 @@ void GraphBuilderTopology::add_event_edge(GraphEventEdge edge) {
   _event_edges.emplace(std::move(edge));
 }
 
-ConcretePortId GraphBuilderTopology::append_scope_sample_input(OutputConfig output) {
+ScopeBoundaryPortId
+GraphBuilderTopology::append_scope_sample_input(OutputConfig output) {
   auto const boundary_index = _scope_boundary_ports.size();
   _scope_boundary_ports.push_back(
       ScopeBoundaryPort{.sample_output = std::move(output)});
-  return ConcretePortId{GRAPH_ID - 1 - boundary_index, 0};
+  return ScopeBoundaryPortId{PortKind::sample, boundary_index};
 }
 
-ConcretePortId GraphBuilderTopology::append_scope_event_input(EventOutputConfig output) {
+ScopeBoundaryPortId
+GraphBuilderTopology::append_scope_event_input(EventOutputConfig output) {
   auto const boundary_index = _scope_boundary_ports.size();
   _scope_boundary_ports.push_back(
       ScopeBoundaryPort{.event_output = std::move(output)});
-  return ConcretePortId{GRAPH_ID - 1 - boundary_index, 0};
+  return ScopeBoundaryPortId{PortKind::event, boundary_index};
 }
 
 bool GraphBuilderTopology::is_scope_boundary_port(ConcretePortId port) const {
@@ -88,14 +90,23 @@ bool GraphBuilderTopology::is_scope_boundary_port(ConcretePortId port) const {
 }
 
 EventOutputConfig const&
-GraphBuilderTopology::scope_boundary_event_output(ConcretePortId port) const {
-  IV_ASSERT(is_scope_boundary_port(port),
-            "scope_boundary_event_output requires a boundary port");
-  auto const boundary_index = GRAPH_ID - 1 - port.node;
-  auto const& boundary = _scope_boundary_ports[boundary_index];
+GraphBuilderTopology::scope_boundary_event_output(ScopeBoundaryPortId port) const {
+  IV_ASSERT(port.port_kind == PortKind::event,
+            "scope_boundary_event_output requires an event boundary port");
+  IV_ASSERT(port.boundary_ordinal < _scope_boundary_ports.size(),
+            "scope_boundary_event_output requires a valid boundary port");
+  auto const& boundary = _scope_boundary_ports[port.boundary_ordinal];
   IV_ASSERT(boundary.event_output.has_value(),
             "scope boundary port is not an event output");
   return *boundary.event_output;
+}
+
+EventOutputConfig const&
+GraphBuilderTopology::scope_boundary_event_output(ConcretePortId port) const {
+  IV_ASSERT(is_scope_boundary_port(port),
+            "scope_boundary_event_output requires a boundary port");
+  return scope_boundary_event_output(
+      ScopeBoundaryPortId::from_legacy(port, PortKind::event));
 }
 
 size_t GraphBuilderTopology::append_lowered_subgraph_node(

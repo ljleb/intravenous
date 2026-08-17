@@ -73,6 +73,8 @@ namespace iv {
         SamplePortRef(SamplePortRef const&) = default;
         SamplePortRef(SamplePortRef&&) noexcept = default;
         explicit SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
+        explicit SamplePortRef(GraphBuilder& graph_builder_, GraphInputPortId graph_input);
+        explicit SamplePortRef(GraphBuilder& graph_builder_, ScopeBoundaryPortId scope_boundary);
         explicit SamplePortRef(GraphBuilder& graph_builder_, NodeBundlePortId bundle_port);
         operator ConcretePortId() const;
 
@@ -222,6 +224,8 @@ namespace iv {
 
         EventPortRef() = default;
         explicit EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
+        explicit EventPortRef(GraphBuilder& graph_builder_, GraphInputPortId graph_input);
+        explicit EventPortRef(GraphBuilder& graph_builder_, ScopeBoundaryPortId scope_boundary);
         operator ConcretePortId() const
         {
             if (graph_input_port) return graph_input_port->legacy_port();
