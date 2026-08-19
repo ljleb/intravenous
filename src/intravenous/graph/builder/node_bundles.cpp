@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/builder/topology.h>
 
+#include <algorithm>
 #include <utility>
 #include <type_traits>
 #include <optional>
@@ -683,6 +684,56 @@ GraphBuilderNodeBundles::sample_output_channels(NodeBundlePortId address) const 
     });
   }
   return result;
+}
+
+namespace {
+template<class Channel>
+std::vector<Channel> channels_for_topology_projection(
+    TopologyPortId topology_port,
+    std::vector<TopologyPortId> const& endpoints,
+    std::vector<Channel> channels) {
+  if (endpoints.empty()) {
+    details::error("NodeBundle sample port has no topology endpoint");
+  }
+  if (endpoints.size() == 1) {
+    if (endpoints.front() != topology_port) {
+      details::error("topology port does not belong to the resolved NodeBundle port");
+    }
+    return channels;
+  }
+  if (endpoints.size() != channels.size()) {
+    details::error(
+        "NodeBundle sample topology projection does not match its semantic channels");
+  }
+  auto const it = std::find(endpoints.begin(), endpoints.end(), topology_port);
+  if (it == endpoints.end()) {
+    details::error("topology port does not belong to the resolved NodeBundle port");
+  }
+  auto const channel = static_cast<size_t>(it - endpoints.begin());
+  return {channels[channel]};
+}
+} // namespace
+
+std::vector<SampleInputChannelId>
+GraphBuilderNodeBundles::sample_input_channels_for_topology_port(
+    TopologyPortId topology_port) const {
+  auto const bundle_handle = bundle_for_concrete_node(topology_port.node);
+  NodeBundlePortId const logical{
+      bundle_handle, PortKind::sample, topology_port.port};
+  auto const descriptor = resolve_sample_input(logical);
+  return channels_for_topology_projection(
+      topology_port, descriptor.endpoints, sample_input_channels(logical));
+}
+
+std::vector<SampleOutputChannelId>
+GraphBuilderNodeBundles::sample_output_channels_for_topology_port(
+    TopologyPortId topology_port) const {
+  auto const bundle_handle = bundle_for_concrete_node(topology_port.node);
+  NodeBundlePortId const logical{
+      bundle_handle, PortKind::sample, topology_port.port};
+  auto const descriptor = resolve_sample_output(logical);
+  return channels_for_topology_projection(
+      topology_port, descriptor.endpoints, sample_output_channels(logical));
 }
 
 EventInputPortDescriptor GraphBuilderNodeBundles::resolve_event_input(

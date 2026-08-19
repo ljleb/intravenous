@@ -16,6 +16,7 @@ namespace iv {
 class GraphBuilderTopology;
 class GraphBuilderNodeBundles;
 class GraphBuilderVirtualNodes;
+class GraphBuilderConnections;
 namespace details {
     struct VirtualConcretePortInfo {
         std::string name;
@@ -119,7 +120,8 @@ namespace details {
     );
     void apply_virtual_port_metadata(
         GraphIntrospectionMetadata&, GraphBuilderTopology const&,
-        GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&
+        GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
+        GraphBuilderConnections const&
     );
 } // namespace details
 } // namespace iv

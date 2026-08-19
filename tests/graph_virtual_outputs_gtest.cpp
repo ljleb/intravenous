@@ -65,6 +65,61 @@ TEST(GraphVirtualOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
     ASSERT_EQ(family.channels[1].sources.size(), 1u);
 }
 
+TEST(GraphVirtualOutputsTest, ReportsAuthoredStereoChannelConnectivity)
+{
+    GraphBuilder g;
+    auto source = g.node<Sum<stereo, SampleStreamLayout::planar, 1>>();
+    auto annotated = _annotate_node_source_info(source.node_ref(), "stereo");
+    (void)annotated;
+    auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+    sink(source.static_output<0>()[stereo::left]);
+
+    auto const families = g.virtual_sample_output_families();
+    ASSERT_EQ(families.families.size(), 1u);
+    auto const& family = families.families.front();
+    ASSERT_EQ(family.channels.size(), 2u);
+    EXPECT_TRUE(family.channels[stereo::left.channel_ordinal]
+                    .has_existing_downstream_connection);
+    EXPECT_FALSE(family.channels[stereo::right.channel_ordinal]
+                     .has_existing_downstream_connection);
+}
+
+TEST(GraphVirtualOutputsTest, MetadataReportsMixedAuthoredStereoConnectivity)
+{
+    GraphBuilder g;
+    auto source = g.node<Sum<stereo, SampleStreamLayout::planar, 1>>();
+    auto annotated = _annotate_node_source_info(source.node_ref(), "stereo");
+    (void)annotated;
+    auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+    sink(source.static_output<0>()[stereo::left]);
+
+    auto const metadata = g.build_metadata();
+    auto const it = std::find_if(
+        metadata.virtual_nodes.begin(), metadata.virtual_nodes.end(),
+        [](auto const& node) { return node.id == "stereo"; });
+    ASSERT_NE(it, metadata.virtual_nodes.end());
+    ASSERT_EQ(it->sample_outputs.size(), 1u);
+    EXPECT_EQ(it->sample_outputs.front().connectivity,
+              VirtualPortConnectivity::mixed);
+}
+
+TEST(GraphVirtualOutputsTest, RuntimeFilledTiledInputsAreTrackedSemantically)
+{
+    GraphBuilder g;
+    auto tiled = g.node<Sum<mono, SampleStreamLayout::planar, 1>, stereo>();
+    auto annotated = _annotate_node_source_info(tiled.node_ref(), "tiled");
+    (void)annotated;
+    g.mark_runtime_filled_sample_input(
+        {tiled.node_bundle_handle(), PortKind::sample, 0});
+
+    auto const families = g.virtual_sample_input_families();
+    ASSERT_EQ(families.families.size(), 1u);
+    auto const& family = families.families.front();
+    ASSERT_EQ(family.channels.size(), 2u);
+    EXPECT_TRUE(family.channels[0].runtime_filled);
+    EXPECT_TRUE(family.channels[1].runtime_filled);
+}
+
 TEST(GraphVirtualOutputsTest, NamedChannelOutputsKeepNameAndChannelAsSeparateIdentity)
 {
     GraphBuilder g;

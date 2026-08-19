@@ -448,7 +448,8 @@ struct PreparedBuilderGraph {
 GraphIntrospectionMetadata GraphBuilderFinalizer::build_metadata(
     GraphBuilderIdentity const &identity, GraphBuilderTopology const &topology,
     GraphBuilderNodeBundles const &node_bundles,
-    GraphBuilderVirtualNodes const &virtual_nodes, size_t detach_id_offset) {
+    GraphBuilderVirtualNodes const &virtual_nodes,
+    GraphBuilderConnections const &connections, size_t detach_id_offset) {
   (void)detach_id_offset;
   PreparedBuilderGraph prepared(identity, topology, node_bundles, virtual_nodes);
   prepared.append_metadata_nodes();
@@ -459,8 +460,8 @@ GraphIntrospectionMetadata GraphBuilderFinalizer::build_metadata(
       details::build_virtual_metadata(prepared.graph, lowered_scopes);
   GraphIntrospectionMetadata metadata{
       .virtual_nodes = std::move(introspection_virtual_nodes)};
-  details::apply_virtual_port_metadata(metadata, topology, node_bundles,
-                                       virtual_nodes);
+  details::apply_virtual_port_metadata(
+      metadata, topology, node_bundles, virtual_nodes, connections);
   return metadata;
 }
 

@@ -599,11 +599,13 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
 }
 
 GraphBuilder::VacantInputs GraphBuilder::vacant_inputs() const {
-  return _connections.collect_vacant_inputs(_topology, _virtual_nodes);
+  return _connections.collect_vacant_inputs(
+      _topology, _node_bundles, _virtual_nodes);
 }
 
 GraphBuilder::VirtualInputs GraphBuilder::virtual_inputs() const {
-  return _connections.collect_virtual_inputs(_topology, _virtual_nodes);
+  return _connections.collect_virtual_inputs(
+      _topology, _node_bundles, _virtual_nodes);
 }
 
 GraphBuilder::VirtualSampleInputFamilies
@@ -613,14 +615,14 @@ GraphBuilder::virtual_sample_input_families() const {
 }
 
 GraphBuilder::VirtualOutputs GraphBuilder::virtual_outputs() const {
-  return _connections.collect_virtual_outputs(_topology, _virtual_nodes);
+  return _connections.collect_virtual_outputs(
+      _topology, _node_bundles, _virtual_nodes);
 }
 
 GraphBuilder::VirtualSampleOutputFamilies
 GraphBuilder::virtual_sample_output_families() const {
-  return _connections.collect_virtual_sample_output_families(_topology,
-                                                             _node_bundles,
-                                                             _virtual_nodes);
+  return _connections.collect_virtual_sample_output_families(
+      _node_bundles, _virtual_nodes);
 }
 
 GraphBuilder::VirtualPorts GraphBuilder::virtual_ports() const {
@@ -633,13 +635,12 @@ GraphBuilder::public_sample_input_families() const {
 }
 
 bool GraphBuilder::public_sample_input_is_connected(size_t port_ordinal) const {
-  auto const source =
-      GraphInputPortId{PortKind::sample, port_ordinal}.topology_port();
-  bool connected = false;
-  _topology.for_each_sample_edge([&](TopologyEdge const &edge) {
-    connected = connected || (edge.source == source);
+  auto const source = NodeBundlePortId{
+      _public_ports.boundary_handle(), PortKind::sample, port_ordinal};
+  auto const channels = _node_bundles.sample_output_channels(source);
+  return std::ranges::any_of(channels, [&](auto channel) {
+    return _connections.sample_output_is_connected(channel);
   });
-  return connected;
 }
 
 std::vector<GraphBuilderPublicEventInput>
@@ -1047,11 +1048,23 @@ void GraphBuilder::connect_event_input(NodeBundlePortId target, EventPortRef sou
 
 void GraphBuilder::mark_runtime_filled_sample_input(TopologyPortId target) {
   _connections.mark_runtime_filled_sample_input(target);
+  if (target.node >= _topology.node_count()) return;
+  for (auto const channel :
+       _node_bundles.sample_input_channels_for_topology_port(target)) {
+    _connections.mark_runtime_filled_sample_input(channel);
+  }
 }
 
 void GraphBuilder::mark_runtime_filled_sample_input(NodeBundlePortId target) {
+  for (auto const channel : _node_bundles.sample_input_channels(target)) {
+    _connections.mark_runtime_filled_sample_input(channel);
+  }
+  // Preserve the topology-addressed compatibility state consumed by the
+  // current finalizer until sample lowering moves to completion.
   auto const descriptor = _node_bundles.resolve_sample_input(target);
-  for (auto const port : descriptor.endpoints) mark_runtime_filled_sample_input(port);
+  for (auto const port : descriptor.endpoints) {
+    _connections.mark_runtime_filled_sample_input(port);
+  }
 }
 
 void GraphBuilder::mark_runtime_filled_event_input(TopologyPortId target) {
@@ -1067,12 +1080,10 @@ bool GraphBuilder::sample_input_is_connected(NodeBundlePortId target) const {
   if (target.port_kind != PortKind::sample) {
     details::error("attempted to inspect a sample connection on an event NodeBundle port");
   }
-  auto const descriptor = _node_bundles.resolve_sample_input(target);
-  bool connected = false;
-  for (auto const port : descriptor.endpoints) {
-    connected = connected || _connections.sample_input_is_connected(port);
-  }
-  return connected;
+  auto const channels = _node_bundles.sample_input_channels(target);
+  return std::ranges::any_of(channels, [&](auto channel) {
+    return _connections.sample_input_is_connected(channel);
+  });
 }
 
 bool GraphBuilder::event_input_is_connected(NodeBundlePortId target) const {
@@ -1223,7 +1234,8 @@ SamplePortRef GraphBuilder::lift_to_sample_port(NamedRef const &ref) {
 GraphIntrospectionMetadata
 GraphBuilder::build_metadata(size_t detach_id_offset) const {
   return GraphBuilderFinalizer::build_metadata(
-      _identity, _topology, _node_bundles, _virtual_nodes, detach_id_offset);
+      _identity, _topology, _node_bundles, _virtual_nodes, _connections,
+      detach_id_offset);
 }
 
 GraphBuilder::RootNodeBuildResult

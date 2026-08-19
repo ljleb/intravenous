@@ -5,35 +5,63 @@
 #include <intravenous/graph/builder/virtual_nodes.h>
 
 #include <algorithm>
+#include <ranges>
 #include <unordered_map>
 
 namespace iv {
 namespace {
-template <class Channel, class Ports>
-void append_resolved_channels(std::vector<Channel> &channels,
-                              Ports const &ports,
-                              ChannelLayout layout, auto connected) {
-  auto const channel_total = channel_count(layout.channel_type);
-  if (ports.size() != 1 && ports.size() != channel_total) {
-    details::error("NodeBundle port does not match its declared channel layout");
-  }
-  for (size_t channel = 0; channel < channel_total; ++channel) {
-    auto const port = ports.size() == 1 ? ports.front() : ports[channel];
-    if constexpr (requires { channels[channel].targets; }) {
-      channels[channel].targets.push_back(port);
-    } else {
-      channels[channel].sources.push_back(port);
-    }
-    if constexpr (requires { channels[channel].has_existing_connection; }) {
-      channels[channel].has_existing_connection =
-          channels[channel].has_existing_connection || connected(port);
-    } else {
-      channels[channel].has_existing_downstream_connection =
-          channels[channel].has_existing_downstream_connection || connected(port);
-    }
-  }
+bool topology_sample_input_is_connected(
+    GraphBuilderConnections const& connections,
+    GraphBuilderNodeBundles const& node_bundles, TopologyPortId target) {
+  auto const channels =
+      node_bundles.sample_input_channels_for_topology_port(target);
+  return std::ranges::any_of(channels, [&](auto channel) {
+    return connections.sample_input_is_connected(channel);
+  });
+}
+
+bool topology_sample_input_is_runtime_filled(
+    GraphBuilderConnections const& connections,
+    GraphBuilderNodeBundles const& node_bundles, TopologyPortId target) {
+  auto const channels =
+      node_bundles.sample_input_channels_for_topology_port(target);
+  return std::ranges::any_of(channels, [&](auto channel) {
+    return connections.sample_input_is_runtime_filled(channel);
+  });
+}
+
+bool topology_sample_output_is_connected(
+    GraphBuilderConnections const& connections,
+    GraphBuilderNodeBundles const& node_bundles, TopologyPortId source) {
+  auto const channels =
+      node_bundles.sample_output_channels_for_topology_port(source);
+  return std::ranges::any_of(channels, [&](auto channel) {
+    return connections.sample_output_is_connected(channel);
+  });
 }
 } // namespace
+
+bool GraphBuilderConnections::sample_input_is_connected(
+    SampleInputChannelId target) const {
+  return std::ranges::any_of(
+      _authored_sample_connections, [&](auto const& connection) {
+        return std::ranges::contains(connection.target_channels, target);
+      });
+}
+
+bool GraphBuilderConnections::sample_output_is_connected(
+    SampleOutputChannelId source) const {
+  return std::ranges::any_of(
+      _authored_sample_connections, [&](auto const& connection) {
+        return std::ranges::contains(connection.source_channels, source);
+      });
+}
+
+bool GraphBuilderConnections::sample_input_is_runtime_filled(
+    SampleInputChannelId target) const {
+  return std::ranges::contains(_runtime_filled_sample_channels, target);
+}
+
 bool GraphBuilderConnections::sample_input_is_connected(TopologyPortId target) const {
   return _placed_sample_inputs.contains(target);
 }
@@ -103,6 +131,13 @@ void GraphBuilderConnections::connect_event_input(
       EventConversionRegistry::instance().plan(source_type, target_type)});
 }
 
+void GraphBuilderConnections::mark_runtime_filled_sample_input(
+    SampleInputChannelId target) {
+  if (!std::ranges::contains(_runtime_filled_sample_channels, target)) {
+    _runtime_filled_sample_channels.push_back(target);
+  }
+}
+
 void GraphBuilderConnections::mark_runtime_filled_sample_input(TopologyPortId target) {
   _runtime_filled_sample_inputs.insert(target);
 }
@@ -113,6 +148,7 @@ void GraphBuilderConnections::mark_runtime_filled_event_input(TopologyPortId tar
 
 GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
     GraphBuilderTopology const &topology,
+    GraphBuilderNodeBundles const &node_bundles,
     GraphBuilderVirtualNodes const &virtual_nodes) const {
   GraphBuilderVacantInputs result;
   for (auto const &virtual_node : virtual_nodes.records()) {
@@ -123,7 +159,8 @@ GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
       auto const &node = topology.concrete_node(node_i);
       for (size_t input_i = 0; input_i < node.inputs().size(); ++input_i) {
         TopologyPortId const target_port{node_i, input_i};
-        if (_placed_sample_inputs.contains(target_port)) {
+        if (topology_sample_input_is_connected(
+                *this, node_bundles, target_port)) {
           continue;
         }
         result.sample.push_back(GraphBuilderVacantSampleInput{
@@ -153,6 +190,7 @@ GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
 
 GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
     GraphBuilderTopology const &topology,
+    GraphBuilderNodeBundles const &node_bundles,
     GraphBuilderVirtualNodes const &virtual_nodes) const {
   GraphBuilderVirtualInputs result;
   for (auto const &virtual_node : virtual_nodes.records()) {
@@ -168,10 +206,10 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
             .virtual_node_id = virtual_node.id,
             .member_ordinal = member_ordinal,
             .config = node.inputs()[input_i],
-            .has_existing_connection =
-                _placed_sample_inputs.contains(target_port),
-            .runtime_filled =
-                _runtime_filled_sample_inputs.contains(target_port),
+            .has_existing_connection = topology_sample_input_is_connected(
+                *this, node_bundles, target_port),
+            .runtime_filled = topology_sample_input_is_runtime_filled(
+                *this, node_bundles, target_port),
         });
       }
       for (size_t input_i = 0; input_i < node.event_inputs().size();
@@ -200,24 +238,28 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
   GraphBuilderVirtualSampleInputFamilies result;
   for (auto const &virtual_node : virtual_nodes.records()) {
     for (auto const &mapping : virtual_node.sample_inputs) {
-      if (mapping.node_bundle_ports.empty()) {
+      if (mapping.channels.empty()) {
         continue;
       }
-      auto config =
-          node_bundles.resolve_sample_input(mapping.node_bundle_ports.front()).config;
+      auto const first = mapping.channels.front();
+      auto config = node_bundles.resolve_sample_input(
+          {first.bundle, PortKind::sample, first.port}).config;
       config.channel_layout = mapping.channel_layout;
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleInputChannel> channels(channel_total);
-      for (auto const bundle_port : mapping.node_bundle_ports) {
-        auto const descriptor = node_bundles.resolve_sample_input(bundle_port);
-        auto const &ports = descriptor.endpoints;
-        append_resolved_channels(channels, ports, mapping.channel_layout,
-                                 [&](TopologyPortId port) { return _placed_sample_inputs.contains(port); });
-        for (size_t channel = 0; channel < channel_total; ++channel) {
-          auto const port = ports.size() == 1 ? ports.front() : ports[channel];
-          channels[channel].runtime_filled = channels[channel].runtime_filled
-              || _runtime_filled_sample_inputs.contains(port);
+      for (auto const target : mapping.channels) {
+        if (target.channel >= channel_total) {
+          details::error(
+              "virtual sample input channel does not match its declared layout");
         }
+        auto& channel = channels[target.channel];
+        if (!std::ranges::contains(channel.targets, target)) {
+          channel.targets.push_back(target);
+        }
+        channel.has_existing_connection = channel.has_existing_connection
+            || sample_input_is_connected(target);
+        channel.runtime_filled = channel.runtime_filled
+            || sample_input_is_runtime_filled(target);
       }
       result.families.push_back(GraphBuilderVirtualSampleInputFamily{
           .virtual_node_id = virtual_node.id,
@@ -234,14 +276,11 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
 
 GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
     GraphBuilderTopology const &topology,
+    GraphBuilderNodeBundles const &node_bundles,
     GraphBuilderVirtualNodes const &virtual_nodes) const {
   GraphBuilderVirtualOutputs result;
 
-  std::unordered_set<TopologyPortId> connected_sample_sources;
   std::unordered_set<TopologyPortId> connected_event_sources;
-  topology.for_each_sample_edge([&](TopologyEdge const &edge) {
-    connected_sample_sources.insert(edge.source);
-  });
   topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
     connected_event_sources.insert(edge.source);
   });
@@ -260,7 +299,8 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
             .member_ordinal = member_ordinal,
             .config = node.outputs()[output_i],
             .has_existing_downstream_connection =
-                connected_sample_sources.contains(source_port),
+                topology_sample_output_is_connected(
+                    *this, node_bundles, source_port),
         });
       }
       for (size_t output_i = 0; output_i < node.event_outputs().size();
@@ -282,30 +322,32 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
 
 GraphBuilderVirtualSampleOutputFamilies
 GraphBuilderConnections::collect_virtual_sample_output_families(
-    GraphBuilderTopology const &topology,
     GraphBuilderNodeBundles const &node_bundles,
     GraphBuilderVirtualNodes const &virtual_nodes) const {
-  std::unordered_set<TopologyPortId> connected_sample_sources;
-  topology.for_each_sample_edge([&](TopologyEdge const &edge) {
-    connected_sample_sources.insert(edge.source);
-  });
-
   GraphBuilderVirtualSampleOutputFamilies result;
   for (auto const &virtual_node : virtual_nodes.records()) {
     for (auto const &mapping : virtual_node.sample_outputs) {
-      if (mapping.node_bundle_ports.empty()) {
+      if (mapping.channels.empty()) {
         continue;
       }
-      auto config =
-          node_bundles.resolve_sample_output(mapping.node_bundle_ports.front()).config;
+      auto const first = mapping.channels.front();
+      auto config = node_bundles.resolve_sample_output(
+          {first.bundle, PortKind::sample, first.port}).config;
       config.channel_layout = mapping.channel_layout;
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleOutputChannel> channels(channel_total);
-      for (auto const bundle_port : mapping.node_bundle_ports) {
-        auto const descriptor = node_bundles.resolve_sample_output(bundle_port);
-        append_resolved_channels(channels, descriptor.endpoints,
-                                 mapping.channel_layout,
-                                 [&](TopologyPortId port) { return connected_sample_sources.contains(port); });
+      for (auto const source : mapping.channels) {
+        if (source.channel >= channel_total) {
+          details::error(
+              "virtual sample output channel does not match its declared layout");
+        }
+        auto& channel = channels[source.channel];
+        if (!std::ranges::contains(channel.sources, source)) {
+          channel.sources.push_back(source);
+        }
+        channel.has_existing_downstream_connection =
+            channel.has_existing_downstream_connection
+            || sample_output_is_connected(source);
       }
       result.families.push_back(GraphBuilderVirtualSampleOutputFamily{
           .virtual_node_id = virtual_node.id,
@@ -331,6 +373,12 @@ void GraphBuilderConnections::import_child(
       channel.bundle += child_node_bundle_offset;
     }
     _authored_sample_connections.push_back(std::move(connection));
+  }
+  for (auto channel : child._runtime_filled_sample_channels) {
+    channel.bundle += child_node_bundle_offset;
+    if (!std::ranges::contains(_runtime_filled_sample_channels, channel)) {
+      _runtime_filled_sample_channels.push_back(channel);
+    }
   }
 
   for (TopologyPortId const port : child._placed_sample_inputs) {

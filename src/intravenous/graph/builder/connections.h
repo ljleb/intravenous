@@ -58,7 +58,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleInputChannel {
-        std::vector<TopologyPortId> targets {};
+        std::vector<SampleInputChannelId> targets {};
         bool has_existing_connection = false;
         bool runtime_filled = false;
     };
@@ -99,7 +99,7 @@ namespace iv {
     };
 
     struct GraphBuilderVirtualSampleOutputChannel {
-        std::vector<TopologyPortId> sources {};
+        std::vector<SampleOutputChannelId> sources {};
         bool has_existing_downstream_connection = false;
     };
 
@@ -133,6 +133,11 @@ namespace iv {
     public:
         void record_authored_sample_connection(AuthoredSampleConnection);
         std::span<AuthoredSampleConnection const> authored_sample_connections() const;
+        bool sample_input_is_connected(SampleInputChannelId target) const;
+        bool sample_output_is_connected(SampleOutputChannelId source) const;
+        bool sample_input_is_runtime_filled(SampleInputChannelId target) const;
+        // Compatibility topology state remains until sample lowering moves to
+        // completion in the next migration step.
         bool sample_input_is_connected(TopologyPortId target) const;
         bool event_input_is_connected(TopologyPortId target) const;
         void connect_sample_input(
@@ -148,19 +153,22 @@ namespace iv {
             TopologyPortId target,
             EventPortRef source
         );
+        void mark_runtime_filled_sample_input(SampleInputChannelId target);
         void mark_runtime_filled_sample_input(TopologyPortId target);
         void mark_runtime_filled_event_input(TopologyPortId target);
         GraphBuilderVacantInputs collect_vacant_inputs(
-            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
+            GraphBuilderTopology const&, GraphBuilderNodeBundles const&,
+            GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualInputs collect_virtual_inputs(
-            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
+            GraphBuilderTopology const&, GraphBuilderNodeBundles const&,
+            GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualSampleInputFamilies collect_virtual_sample_input_families(
             GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
         GraphBuilderVirtualOutputs collect_virtual_outputs(
-            GraphBuilderTopology const&, GraphBuilderVirtualNodes const&) const;
-        GraphBuilderVirtualSampleOutputFamilies collect_virtual_sample_output_families(
             GraphBuilderTopology const&, GraphBuilderNodeBundles const&,
             GraphBuilderVirtualNodes const&) const;
+        GraphBuilderVirtualSampleOutputFamilies collect_virtual_sample_output_families(
+            GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
         void import_child(GraphBuilderConnections const& child,
                           size_t child_node_offset,
                           size_t child_node_bundle_offset);
@@ -181,6 +189,9 @@ namespace iv {
 
     private:
         std::vector<AuthoredSampleConnection> _authored_sample_connections {};
+        std::vector<SampleInputChannelId> _runtime_filled_sample_channels {};
+        // Compatibility lowering state. Sample-side builder introspection must
+        // not consult these topology-addressed sets.
         std::unordered_set<TopologyPortId> _placed_sample_inputs {};
         std::unordered_set<TopologyPortId> _placed_event_inputs {};
         std::unordered_set<TopologyPortId> _runtime_filled_sample_inputs {};

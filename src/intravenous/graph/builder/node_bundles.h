@@ -211,6 +211,15 @@ public:
   std::vector<SampleInputChannelId> sample_input_channels(NodeBundlePortId) const;
   std::vector<SampleOutputChannelId> sample_output_channels(NodeBundlePortId) const;
 
+  // Compatibility projection used by topology-backed builder services while
+  // authored connectivity is channel-based. A native multichannel topology
+  // endpoint can represent several semantic channels; a tiled endpoint maps
+  // to exactly the channel it backs.
+  std::vector<SampleInputChannelId>
+  sample_input_channels_for_topology_port(TopologyPortId) const;
+  std::vector<SampleOutputChannelId>
+  sample_output_channels_for_topology_port(TopologyPortId) const;
+
   NodeBundleHandle bundle_for_concrete_node(size_t concrete_node_index) const;
   size_t size() const;
   void import_child(GraphBuilderNodeBundles const &, size_t concrete_node_offset);

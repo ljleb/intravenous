@@ -14,13 +14,19 @@ class GraphBuilderTopology;
 
 using VirtualNodeHandle = size_t;
 
+template<class ChannelId>
 struct VirtualSamplePortMapping {
   std::string name{};
   size_t ordinal = 0;
   ChannelLayout channel_layout{};
-  std::vector<NodeBundlePortId> node_bundle_ports{};
+  std::vector<ChannelId> channels{};
   bool operator==(VirtualSamplePortMapping const &) const = default;
 };
+
+using VirtualSampleInputPortMapping =
+    VirtualSamplePortMapping<SampleInputChannelId>;
+using VirtualSampleOutputPortMapping =
+    VirtualSamplePortMapping<SampleOutputChannelId>;
 
 struct VirtualEventPortMapping {
   std::string name{};
@@ -37,23 +43,26 @@ struct VirtualNodeRecord {
   // lowering details, not the authored membership relation.
   std::vector<NodeBundleHandle> node_bundle_handles{};
   std::vector<size_t> concrete_node_indices{};
-  std::vector<VirtualSamplePortMapping> sample_inputs{};
-  std::vector<VirtualSamplePortMapping> sample_outputs{};
+  std::vector<VirtualSampleInputPortMapping> sample_inputs{};
+  std::vector<VirtualSampleOutputPortMapping> sample_outputs{};
   std::vector<VirtualEventPortMapping> event_inputs{};
   std::vector<VirtualEventPortMapping> event_outputs{};
 };
 
-// Builder-facing port snapshot for consumers such as GraphInputLanes.  It
-// deliberately stops at NodeBundlePortId: concrete ports are a lowering
-// detail and must be resolved by GraphBuilder operations, not by consumers.
+// Builder-facing port snapshot for consumers such as GraphInputLanes.
+// Semantic sample channels are authoritative. node_bundle_ports is retained
+// as a compatibility projection for graph services that still address whole
+// bundle ports while the topology lowering migration is in progress.
 struct GraphBuilderVirtualSampleInputPort {
   VirtualPortId id{};
   InputConfig config{};
+  std::vector<SampleInputChannelId> channels{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
 };
 struct GraphBuilderVirtualSampleOutputPort {
   VirtualPortId id{};
   OutputConfig config{};
+  std::vector<SampleOutputChannelId> channels{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
 };
 struct GraphBuilderVirtualEventInputPort {

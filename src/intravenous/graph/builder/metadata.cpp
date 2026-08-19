@@ -1,5 +1,6 @@
 #include <intravenous/graph/builder/metadata.h>
 
+#include <intravenous/graph/builder/connections.h>
 #include <intravenous/graph/builder/node_bundles.h>
 #include <intravenous/graph/builder/topology.h>
 #include <intravenous/graph/builder/virtual_nodes.h>
@@ -364,33 +365,31 @@ build_virtual_metadata(PreparedGraph const &g,
 }
 
 namespace {
+bool sample_channel_is_connected(
+    GraphBuilderConnections const& connections, SampleInputChannelId channel) {
+  return connections.sample_input_is_connected(channel);
+}
+
+bool sample_channel_is_connected(
+    GraphBuilderConnections const& connections, SampleOutputChannelId channel) {
+  return connections.sample_output_is_connected(channel);
+}
+
 template <class Mapping>
 std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
-    std::vector<Mapping> const &mappings, GraphBuilderTopology const &topology,
-    GraphBuilderNodeBundles const &node_bundles, bool inputs) {
+    std::vector<Mapping> const &mappings,
+    GraphBuilderNodeBundles const &node_bundles,
+    GraphBuilderConnections const &connections, bool inputs) {
   std::vector<IntrospectionPortInfo> result;
   result.reserve(mappings.size());
   for (auto const &mapping : mappings) {
-    if (mapping.node_bundle_ports.empty()) {
+    if (mapping.channels.empty()) {
       continue;
     }
-    std::vector<TopologyPortId> ports;
-    for (auto const address : mapping.node_bundle_ports) {
-      if (inputs) {
-        auto const descriptor = node_bundles.resolve_sample_input(address);
-        ports.insert(ports.end(), descriptor.endpoints.begin(),
-                     descriptor.endpoints.end());
-      } else {
-        auto const descriptor = node_bundles.resolve_sample_output(address);
-        ports.insert(ports.end(), descriptor.endpoints.begin(),
-                     descriptor.endpoints.end());
-      }
-    }
-    if (ports.empty()) {
-      details::error("virtual sample port has no topology endpoint");
-    }
 
-    auto const first_address = mapping.node_bundle_ports.front();
+    auto const first_channel = mapping.channels.front();
+    NodeBundlePortId const first_address{
+        first_channel.bundle, PortKind::sample, first_channel.port};
     Sample default_value = 0.0f;
     std::optional<Sample> min;
     std::optional<Sample> max;
@@ -407,17 +406,8 @@ std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
     }
     bool any_connected = false;
     bool any_disconnected = false;
-    for (auto const port : ports) {
-      bool connected = false;
-      if (inputs) {
-        topology.for_each_sample_edge([&](TopologyEdge const &edge) {
-          connected = connected || edge.target == port;
-        });
-      } else {
-        topology.for_each_sample_edge([&](TopologyEdge const &edge) {
-          connected = connected || edge.source == port;
-        });
-      }
+    for (auto const channel : mapping.channels) {
+      bool const connected = sample_channel_is_connected(connections, channel);
       any_connected = any_connected || connected;
       any_disconnected = any_disconnected || !connected;
     }
@@ -442,24 +432,22 @@ std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
 
 template <class Mapping>
 std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
-    std::vector<Mapping> const &mappings, GraphBuilderTopology const &topology,
-    GraphBuilderNodeBundles const &node_bundles, NodeBundleHandle bundle_handle,
+    std::vector<Mapping> const &mappings,
+    GraphBuilderNodeBundles const &node_bundles,
+    GraphBuilderConnections const &connections, NodeBundleHandle bundle_handle,
     bool inputs) {
   std::vector<Mapping> bundle_mappings;
   bundle_mappings.reserve(mappings.size());
   for (auto const &mapping : mappings) {
-    auto const it = std::find_if(mapping.node_bundle_ports.begin(),
-                                 mapping.node_bundle_ports.end(),
-                                 [&](NodeBundlePortId port) {
-                                   return port.node_bundle_handle == bundle_handle;
-                                 });
-    if (it == mapping.node_bundle_ports.end()) continue;
     auto projected = mapping;
-    projected.node_bundle_ports = {*it};
+    std::erase_if(projected.channels, [&](auto const channel) {
+      return channel.bundle != bundle_handle;
+    });
+    if (projected.channels.empty()) continue;
     bundle_mappings.push_back(std::move(projected));
   }
-  return project_virtual_sample_ports(bundle_mappings, topology, node_bundles,
-                                      inputs);
+  return project_virtual_sample_ports(
+      bundle_mappings, node_bundles, connections, inputs);
 }
 
 std::vector<IntrospectionPortInfo> project_bundle_event_ports(
@@ -521,7 +509,8 @@ std::pair<std::string, std::string> bundle_display_type(
 void apply_virtual_port_metadata(
     GraphIntrospectionMetadata &metadata, GraphBuilderTopology const &topology,
     GraphBuilderNodeBundles const &node_bundles,
-    GraphBuilderVirtualNodes const &virtual_nodes) {
+    GraphBuilderVirtualNodes const &virtual_nodes,
+    GraphBuilderConnections const &connections) {
   for (auto const &record : virtual_nodes.records()) {
     auto it = std::find_if(metadata.virtual_nodes.begin(),
                            metadata.virtual_nodes.end(),
@@ -538,10 +527,10 @@ void apply_virtual_port_metadata(
       });
       it = std::prev(metadata.virtual_nodes.end());
     }
-    it->sample_inputs = project_virtual_sample_ports<VirtualSamplePortMapping>(
-        record.sample_inputs, topology, node_bundles, true);
-    it->sample_outputs = project_virtual_sample_ports<VirtualSamplePortMapping>(
-        record.sample_outputs, topology, node_bundles, false);
+    it->sample_inputs = project_virtual_sample_ports(
+        record.sample_inputs, node_bundles, connections, true);
+    it->sample_outputs = project_virtual_sample_ports(
+        record.sample_outputs, node_bundles, connections, false);
 
     // The execution graph may contain several concrete nodes for one tiled
     // NodeBundle.  The UI's "concrete member" is deliberately the bundle,
@@ -564,9 +553,9 @@ void apply_virtual_port_metadata(
           .kind = kind,
           .type_identity = type_identity,
           .sample_inputs = project_bundle_sample_ports(
-              record.sample_inputs, topology, node_bundles, handle, true),
+              record.sample_inputs, node_bundles, connections, handle, true),
           .sample_outputs = project_bundle_sample_ports(
-              record.sample_outputs, topology, node_bundles, handle, false),
+              record.sample_outputs, node_bundles, connections, handle, false),
           .event_inputs = project_bundle_event_ports(
               node_bundles, handle, topology, true),
           .event_outputs = project_bundle_event_ports(

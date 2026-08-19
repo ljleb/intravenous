@@ -24,6 +24,7 @@ public:
                  GraphBuilderTopology const &topology,
                  GraphBuilderNodeBundles const &node_bundles,
                  GraphBuilderVirtualNodes const &virtual_nodes,
+                 GraphBuilderConnections const &connections,
                  size_t detach_id_offset);
   static GraphBuilderRootNodeBuildResult
   build_root_node(GraphBuilderIdentity const &identity,
