@@ -170,7 +170,6 @@ void SubgraphScopeManager::define_sample_outputs(
 {
     auto& scope = current();
     auto& boundary = node_bundles.bundle(scope.boundary);
-    scope.output_sources.reserve(scope.output_sources.size() + refs.size());
     bool const require_names = refs.size() > 1;
 
     for (size_t i = 0; i < refs.size(); ++i) {
@@ -189,14 +188,12 @@ void SubgraphScopeManager::define_sample_outputs(
                 + ": subgraph outputs(...) requires names when exposing more than one sample output"
             );
         }
-        auto const source = builder.materialize_sample_output(ref).port;
         auto const output_ordinal =
             boundary.append_boundary_sample_output(config);
         builder.record_authored_sample_connection(
             NodeBundlePortId{
                 scope.boundary, PortKind::sample, output_ordinal},
             ref);
-        scope.output_sources.push_back(source);
     }
     scope.outputs_defined = true;
 }
@@ -281,15 +278,8 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
     }
 
     std::vector<std::vector<TopologyPortId>> subgraph_input_targets(sample_inputs.size());
+    std::vector<TopologyPortId> subgraph_output_sources(sample_outputs.size());
     std::vector<std::vector<TopologyPortId>> subgraph_event_input_targets(event_inputs.size());
-
-    auto translate_sample_source = [&](TopologyPortId source) {
-        if (auto const it = sample_input_index_by_boundary.find(source);
-            it != sample_input_index_by_boundary.end()) {
-            return TopologyPortId{ subgraph_node_index, it->second };
-        }
-        return source;
-    };
 
     auto translate_event_source = [&](TopologyPortId source) {
         if (auto const it = event_input_index_by_boundary.find(source);
@@ -321,9 +311,6 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
         return event_input_index_by_boundary.contains(edge.source);
     });
 
-    for (auto& source : scope.output_sources) {
-        source = translate_sample_source(source);
-    }
     for (auto& source : scope.event_output_sources) {
         source = translate_event_source(source);
     }
@@ -337,7 +324,7 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
         scope.start_node_index,
         topology.node_count() - scope.start_node_index,
         std::move(subgraph_input_targets),
-        std::move(scope.output_sources),
+        std::move(subgraph_output_sources),
         std::move(subgraph_event_input_targets),
         std::move(scope.event_output_sources)
     );

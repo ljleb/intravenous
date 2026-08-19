@@ -214,6 +214,18 @@ size_t NodeBundle::append_boundary_sample_input(
   return ordinal;
 }
 
+void NodeBundle::set_boundary_sample_input_projection(
+    size_t ordinal, TopologyPortId inward_output) {
+  if (!_payload) details::error("empty NodeBundle");
+  auto *boundary = std::get_if<BoundaryNodeBundle>(&*_payload);
+  if (!boundary) details::error("NodeBundle is not a boundary");
+  if (ordinal >= boundary->sample_input_projections.size()) {
+    details::error(
+        "boundary sample input projection ordinal is out of bounds");
+  }
+  boundary->sample_input_projections[ordinal] = inward_output;
+}
+
 size_t NodeBundle::append_boundary_sample_output(OutputConfig config) {
   if (!_payload) details::error("empty NodeBundle");
   auto *boundary = std::get_if<BoundaryNodeBundle>(&*_payload);

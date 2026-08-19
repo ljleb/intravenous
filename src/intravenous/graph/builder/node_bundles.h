@@ -91,8 +91,8 @@ class NodeBundle {
   // Normal NodeBundle descriptors expose the view from inside the graph, so
   // boundary inputs appear as outputs and boundary outputs appear as inputs.
   // Topology endpoints remain compatibility projections only: root boundaries
-  // project through GRAPH_ID, while active scope inputs retain their temporary
-  // ScopeBoundaryPortId topology sources until sample lowering moves later.
+  // project through GRAPH_ID, while subgraph inputs use temporary completion
+  // projections that are never their authored identity.
   struct BoundaryNodeBundle {
     static constexpr bool contains_concrete_nodes = false;
 
@@ -142,6 +142,7 @@ public:
   std::span<EventOutputConfig const> boundary_event_outputs() const;
   size_t append_boundary_sample_input(InputConfig);
   size_t append_boundary_sample_input(InputConfig, TopologyPortId inward_output);
+  void set_boundary_sample_input_projection(size_t, TopologyPortId inward_output);
   size_t append_boundary_sample_output(OutputConfig);
   size_t append_boundary_event_input(EventInputConfig);
   size_t append_boundary_event_input(EventInputConfig, TopologyPortId inward_output);

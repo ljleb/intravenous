@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 
 namespace iv {
 namespace {
@@ -39,6 +40,7 @@ struct PreparedBuilderGraph {
   std::vector<size_t> runtime_node_indices;
   std::unordered_map<TopologyPortId, TopologyPortId> source_of;
   std::unordered_map<TopologyPortId, TopologyEventEdge> event_source_of;
+  std::unordered_map<TopologyPortId, TopologyPortId> subgraph_input_of_boundary_source;
 
   PreparedBuilderGraph(GraphBuilderIdentity const &identity_,
                        GraphBuilderTopology const &topology_,
@@ -54,6 +56,42 @@ struct PreparedBuilderGraph {
     topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
       event_source_of[edge.target] = edge;
     });
+
+    // Completion gives every non-root BoundaryNodeBundle a unique temporary
+    // topology source. Keep the semantic meaning of that source here so a
+    // nested subgraph output can refer directly to an enclosing subgraph
+    // input without turning the boundary sentinel into authored topology.
+    for (NodeBundleHandle handle = 0; handle < node_bundles.size(); ++handle) {
+      auto const boundary =
+          node_bundles.bundle(handle).subgraph_boundary_handle();
+      if (!boundary) continue;
+
+      std::optional<size_t> subgraph_node;
+      node_bundles.bundle(handle).for_each_topology_node([&](size_t node) {
+        if (subgraph_node) {
+          details::error(
+              "SubgraphNodeBundle has more than one topology node");
+        }
+        subgraph_node = node;
+      });
+      if (!subgraph_node) {
+        details::error("SubgraphNodeBundle has no topology node");
+      }
+
+      auto const input_count =
+          node_bundles.bundle(*boundary).boundary_sample_inputs().size();
+      for (size_t input = 0; input < input_count; ++input) {
+        auto const descriptor = node_bundles.resolve_sample_output(
+            NodeBundlePortId{*boundary, PortKind::sample, input});
+        if (descriptor.endpoints.size() != 1) {
+          details::error(
+              "completed subgraph boundary input has no topology source");
+        }
+        subgraph_input_of_boundary_source.emplace(
+            descriptor.endpoints.front(),
+            TopologyPortId{*subgraph_node, input});
+      }
+    }
   }
 
   void append_metadata_nodes() {
@@ -108,8 +146,21 @@ struct PreparedBuilderGraph {
   }
 
   ConcretePortId resolve_sample_source(TopologyPortId source) const {
+    if (auto const boundary =
+            subgraph_input_of_boundary_source.find(source);
+        boundary != subgraph_input_of_boundary_source.end()) {
+      auto const incoming = source_of.find(boundary->second);
+      if (incoming == source_of.end()) {
+        details::error(
+            "subgraph boundary sample source has no incoming connection");
+      }
+      return resolve_sample_source(incoming->second);
+    }
     if (source.node == GRAPH_ID) {
       return ConcretePortId{GRAPH_ID, source.port};
+    }
+    if (source.node >= topology.node_count()) {
+      details::error("unresolved sample boundary topology source");
     }
     if (!topology.is_subgraph_node(source.node)) {
       return ConcretePortId{runtime_node_indices[source.node], source.port};
@@ -185,6 +236,9 @@ struct PreparedBuilderGraph {
 
   void lower_edges() {
     topology.for_each_sample_edge([&](TopologyEdge const &edge) {
+      if (subgraph_input_of_boundary_source.contains(edge.source)) {
+        return;
+      }
       add_sample_target_edges(resolve_sample_source(edge.source), edge.target);
     });
     topology.for_each_event_edge([&](TopologyEventEdge const &edge) {

@@ -19,10 +19,6 @@ namespace iv {
         size_t start_node_index = 0;
         std::string kind {};
         NodeBundleHandle boundary = 0;
-        // Output sources remain topology projections until authored
-        // connections become authoritative. The interface configs themselves
-        // live only on `boundary`.
-        std::vector<TopologyPortId> output_sources {};
         std::vector<TopologyPortId> event_output_sources {};
         std::vector<SourceInfo> source_infos {};
         bool outputs_defined = false;

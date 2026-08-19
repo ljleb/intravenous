@@ -749,6 +749,273 @@ void GraphBuilder::record_authored_sample_connection(
   });
 }
 
+GraphBuilder GraphBuilder::completed_sample_builder() const {
+  GraphBuilder completed = *this;
+  completed.materialize_authored_sample_connections_for_completion();
+  return completed;
+}
+
+void GraphBuilder::materialize_authored_sample_connections_for_completion() {
+  struct SubgraphBoundary {
+    NodeBundleHandle boundary = 0;
+    size_t node = 0;
+    std::vector<bool> output_assigned{};
+  };
+
+  std::vector<SubgraphBoundary> subgraphs;
+  std::unordered_map<NodeBundleHandle, size_t> subgraph_index_by_boundary;
+  for (NodeBundleHandle handle = 0; handle < _node_bundles.size(); ++handle) {
+    auto const boundary =
+        _node_bundles.bundle(handle).subgraph_boundary_handle();
+    if (!boundary) continue;
+
+    std::optional<size_t> topology_node;
+    _node_bundles.bundle(handle).for_each_topology_node([&](size_t node) {
+      if (topology_node) {
+        details::error(
+            "SubgraphNodeBundle has more than one topology node");
+      }
+      topology_node = node;
+    });
+    if (!topology_node) {
+      details::error("SubgraphNodeBundle has no topology node");
+    }
+    if (subgraph_index_by_boundary.contains(*boundary)) {
+      details::error(
+          "BoundaryNodeBundle is owned by more than one SubgraphNodeBundle");
+    }
+
+    auto const output_count =
+        _node_bundles.bundle(*boundary).boundary_sample_outputs().size();
+    subgraph_index_by_boundary.emplace(*boundary, subgraphs.size());
+    subgraphs.push_back(SubgraphBoundary{
+        .boundary = *boundary,
+        .node = *topology_node,
+        .output_assigned = std::vector<bool>(output_count, false),
+    });
+  }
+
+  // Imported boundaries deliberately lose their child topology projection.
+  // Give every completed subgraph boundary a fresh lowering-only source so
+  // the existing pack/unpack materializer can be reused unchanged.
+  for (auto const &subgraph : subgraphs) {
+    auto &binding = _topology.subgraph_node(subgraph.node).lowered_subgraph;
+    auto const input_count =
+        _node_bundles.bundle(subgraph.boundary).boundary_sample_inputs().size();
+    auto const output_count =
+        _node_bundles.bundle(subgraph.boundary).boundary_sample_outputs().size();
+    if (binding.sample_input_targets.size() != input_count) {
+      details::error(
+          "SubgraphNode sample input binding does not match its boundary");
+    }
+    binding.sample_output_sources =
+        std::vector<TopologyPortId>(output_count);
+
+    for (size_t input = 0; input < input_count; ++input) {
+      NodeBundlePortId const logical{
+          subgraph.boundary, PortKind::sample, input};
+      auto descriptor = _node_bundles.resolve_sample_output(logical);
+      if (descriptor.endpoints.empty()) {
+        auto const projection =
+            _topology.append_scope_sample_input(descriptor.config);
+        _node_bundles.bundle(subgraph.boundary)
+            .set_boundary_sample_input_projection(
+                input, projection.topology_port());
+        descriptor = _node_bundles.resolve_sample_output(logical);
+      }
+      if (descriptor.endpoints.size() != 1) {
+        details::error(
+            "subgraph boundary sample input does not have exactly one "
+            "completion topology projection");
+      }
+    }
+  }
+
+  auto target_port = [&](AuthoredSampleConnection const &connection) {
+    if (connection.target_channels.empty()) {
+      details::error("authored sample connection has no target channels");
+    }
+    auto const first = connection.target_channels.front();
+    for (auto const channel : connection.target_channels) {
+      if (channel.bundle != first.bundle || channel.port != first.port) {
+        details::error(
+            "authored sample connection target spans multiple bundle ports");
+      }
+    }
+
+    NodeBundlePortId const target{
+        first.bundle, PortKind::sample, first.port};
+    auto const descriptor = _node_bundles.resolve_sample_input(target);
+    if (descriptor.config.channel_layout.channel_type !=
+            connection.target_type ||
+        _node_bundles.sample_input_channels(target) !=
+            connection.target_channels) {
+      details::error(
+          "authored sample connection target no longer matches its "
+          "NodeBundle port");
+    }
+    return target;
+  };
+
+  std::vector<std::pair<NodeBundlePortId, std::vector<SamplePortRef>>>
+      projected_source_channels;
+  auto source_ref = [&](AuthoredSampleConnection const &connection) {
+    if (connection.source_channels.empty()) {
+      details::error("authored sample connection has no source channels");
+    }
+    auto const first = connection.source_channels.front();
+
+    // Scalar selections from one native multichannel topology port share one
+    // compatibility unpack for the whole completion pass. This preserves the
+    // old graph-service lowering, which projected all channels together.
+    if (connection.source_type == ChannelTypeId::mono &&
+        connection.source_channels.size() == 1) {
+      NodeBundlePortId const logical{
+          first.bundle, PortKind::sample, first.port};
+      auto const descriptor = _node_bundles.resolve_sample_output(logical);
+      auto const physical_channel_count =
+          channel_count(descriptor.config.channel_layout.channel_type);
+      if (physical_channel_count > 1 && descriptor.endpoints.size() == 1) {
+        auto projected = std::find_if(
+            projected_source_channels.begin(),
+            projected_source_channels.end(),
+            [&](auto const &entry) { return entry.first == logical; });
+        if (projected == projected_source_channels.end()) {
+          auto materialized =
+              materialize_bundle_sample_output_channels(logical);
+          std::vector<SamplePortRef> refs;
+          refs.reserve(materialized.size());
+          for (auto const port : materialized) {
+            refs.emplace_back(*this, port.port.node, port.port.port);
+          }
+          projected_source_channels.emplace_back(logical, std::move(refs));
+          projected = projected_source_channels.end() - 1;
+        }
+        if (first.channel >= projected->second.size()) {
+          details::error("authored sample source channel is out of bounds");
+        }
+        return projected->second[first.channel];
+      }
+    }
+    bool const one_bundle_port = std::ranges::all_of(
+        connection.source_channels, [&](SampleOutputChannelId channel) {
+          return channel.bundle == first.bundle && channel.port == first.port;
+        });
+    if (one_bundle_port) {
+      NodeBundlePortId const logical{
+          first.bundle, PortKind::sample, first.port};
+      auto const descriptor = _node_bundles.resolve_sample_output(logical);
+      if (descriptor.config.channel_layout.channel_type ==
+              connection.source_type &&
+          _node_bundles.sample_output_channels(logical) ==
+              connection.source_channels) {
+        return SamplePortRef(*this, logical);
+      }
+    }
+    return SamplePortRef(
+        *this, connection.source_type, connection.source_channels);
+  };
+
+  // detach() still records its physical source so the existing detach
+  // validation and SCC machinery can identify the cut edge. Its writer edge
+  // was therefore lowered explicitly at authoring time; do not replay the
+  // parallel authored connection until detach metadata becomes semantic too.
+  std::unordered_set<size_t> already_lowered_detach_writer_nodes;
+  _detach.for_each_info(
+      [&](TopologyPortId, DetachedSamplePortInfo const &info) {
+        already_lowered_detach_writer_nodes.insert(info.writer_node);
+      });
+
+  // Re-run only the compatibility lowering side. The authored records are
+  // already authoritative and must not be duplicated by completion.
+  for (auto const &connection : _connections.authored_sample_connections()) {
+    auto const target = target_port(connection);
+    if (subgraph_index_by_boundary.contains(target.node_bundle_handle)) {
+      // A non-root boundary input is the inward side of a subgraph output.
+      // It has no standalone topology endpoint; its source is installed in
+      // the SubgraphNode binding below.
+      continue;
+    }
+
+    auto const target_descriptor = _node_bundles.resolve_sample_input(target);
+    if (target_descriptor.endpoints.size() == 1 &&
+        target_descriptor.endpoints.front().node == GRAPH_ID) {
+      _topology.add_sample_edge(TopologyEdge{
+          materialize_sample_output(source_ref(connection)).port,
+          target_descriptor.endpoints.front(),
+      });
+      continue;
+    }
+    if (target_descriptor.endpoints.size() == 1 &&
+        target_descriptor.endpoints.front().port == 0 &&
+        already_lowered_detach_writer_nodes.contains(
+            target_descriptor.endpoints.front().node)) {
+      continue;
+    }
+    connect_sample_input_lowered(target, source_ref(connection));
+  }
+
+  // A connection targeting a non-root BoundaryNodeBundle defines the source
+  // of the corresponding parent-facing SubgraphNode output.
+  for (auto const &connection : _connections.authored_sample_connections()) {
+    auto const target = target_port(connection);
+    auto const subgraph_it =
+        subgraph_index_by_boundary.find(target.node_bundle_handle);
+    if (subgraph_it == subgraph_index_by_boundary.end()) continue;
+
+    auto &subgraph = subgraphs[subgraph_it->second];
+    if (target.port_ordinal >= subgraph.output_assigned.size()) {
+      details::error("subgraph sample output ordinal is out of bounds");
+    }
+    if (subgraph.output_assigned[target.port_ordinal]) {
+      details::error("subgraph sample output has more than one source");
+    }
+    auto const materialized =
+        materialize_sample_output(source_ref(connection)).port;
+    _topology.subgraph_node(subgraph.node)
+        .lowered_subgraph.sample_output_sources[target.port_ordinal] =
+        materialized;
+    subgraph.output_assigned[target.port_ordinal] = true;
+  }
+
+  // Connections sourced by a subgraph boundary were replayed through its
+  // temporary completion projection. Project those edges into the SubgraphNode
+  // input binding. Keep the completion edges as provenance for nested
+  // passthrough outputs; PreparedBuilderGraph skips them as executable edges.
+  for (auto const &subgraph : subgraphs) {
+    auto &binding = _topology.subgraph_node(subgraph.node).lowered_subgraph;
+    for (size_t input = 0; input < binding.sample_input_targets.size();
+         ++input) {
+      auto const descriptor = _node_bundles.resolve_sample_output(
+          NodeBundlePortId{
+              subgraph.boundary, PortKind::sample, input});
+      if (descriptor.endpoints.size() != 1) {
+        details::error(
+            "subgraph boundary sample input lost its completion projection");
+      }
+      auto const projection = descriptor.endpoints.front();
+      _topology.for_each_sample_edge([&](TopologyEdge const &edge) {
+        if (edge.source != projection) return;
+        auto &targets = binding.sample_input_targets[input];
+        if (std::find(targets.begin(), targets.end(), edge.target) ==
+            targets.end()) {
+          targets.push_back(edge.target);
+        }
+      });
+    }
+  }
+
+  for (auto const &subgraph : subgraphs) {
+    if (std::ranges::any_of(
+            subgraph.output_assigned, [](bool assigned) {
+              return !assigned;
+            })) {
+      details::error(
+          "subgraph sample output has no authored source");
+    }
+  }
+}
+
 void GraphBuilder::connect_sample_input(TopologyPortId target,
                                         MaterializedSamplePort source) {
   _connections.connect_sample_input(_topology, _identity, target, source.port);
@@ -895,7 +1162,6 @@ GraphBuilder::materialize_sample_output(SamplePortRef source) {
 
 void GraphBuilder::connect_sample_input(NodeBundlePortId target,
                                         SamplePortRef source) {
-  connect_sample_input_lowered(target, source);
   record_authored_sample_connection(target, source);
 }
 
@@ -987,7 +1253,6 @@ void GraphBuilder::connect_sample_input_lowered(NodeBundlePortId target,
 
 void GraphBuilder::connect_sample_input(
     NodeBundlePortId target, std::span<SamplePortRef const> sources) {
-  connect_sample_input_lowered(target, sources);
   record_authored_sample_connection(target, sources);
 }
 
@@ -1059,8 +1324,8 @@ void GraphBuilder::mark_runtime_filled_sample_input(NodeBundlePortId target) {
   for (auto const channel : _node_bundles.sample_input_channels(target)) {
     _connections.mark_runtime_filled_sample_input(channel);
   }
-  // Preserve the topology-addressed compatibility state consumed by the
-  // current finalizer until sample lowering moves to completion.
+  // Runtime-filled ports still use a topology projection in the current
+  // finalizer; this is independent of authored sample connectivity.
   auto const descriptor = _node_bundles.resolve_sample_input(target);
   for (auto const port : descriptor.endpoints) {
     _connections.mark_runtime_filled_sample_input(port);
@@ -1141,7 +1406,6 @@ GraphBuilder::materialize_bundle_sample_output_channels(
 
 void GraphBuilder::connect_sample_output(NodeBundlePortId source,
                                          NodeRef const &target) {
-  auto const channels = materialize_bundle_sample_output_channels(source);
   auto const semantic_source = SamplePortRef(*this, source);
   std::vector<size_t> target_nodes;
   _node_bundles.bundle(target.node_bundle_handle()).for_each_topology_node(
@@ -1151,12 +1415,10 @@ void GraphBuilder::connect_sample_output(NodeBundlePortId source,
   }
   auto const target_node = target_nodes.front();
   auto const &inputs = _topology.concrete_node(target_node).inputs();
-  if (channels.size() != inputs.size() ||
-      semantic_source.channels.size() != inputs.size()) {
+  if (semantic_source.channels.size() != inputs.size()) {
     details::error("NodeBundle output does not match graph-service sink channel count");
   }
-  for (size_t channel = 0; channel < channels.size(); ++channel) {
-    connect_sample_input(TopologyPortId{target_node, channel}, channels[channel]);
+  for (size_t channel = 0; channel < inputs.size(); ++channel) {
     record_authored_sample_connection(
         NodeBundlePortId{
             target.node_bundle_handle(), PortKind::sample, channel},
@@ -1233,16 +1495,20 @@ SamplePortRef GraphBuilder::lift_to_sample_port(NamedRef const &ref) {
 
 GraphIntrospectionMetadata
 GraphBuilder::build_metadata(size_t detach_id_offset) const {
+  auto completed = completed_sample_builder();
   return GraphBuilderFinalizer::build_metadata(
-      _identity, _topology, _node_bundles, _virtual_nodes, _connections,
+      completed._identity, completed._topology, completed._node_bundles,
+      completed._virtual_nodes, completed._connections,
       detach_id_offset);
 }
 
 GraphBuilder::RootNodeBuildResult
 GraphBuilder::build_root_node(size_t detach_id_offset) const {
+  auto completed = completed_sample_builder();
   return GraphBuilderFinalizer::build_root_node(
-      _identity, _topology, _node_bundles, _virtual_nodes, _connections, _public_ports,
-      _detach, detach_id_offset);
+      completed._identity, completed._topology, completed._node_bundles,
+      completed._virtual_nodes, completed._connections,
+      completed._public_ports, completed._detach, detach_id_offset);
 }
 
 GraphBuilder::RootNodeBuildResult

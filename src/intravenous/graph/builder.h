@@ -217,6 +217,8 @@ private:
                                          SamplePortRef const &source);
   void record_authored_sample_connection(
       NodeBundlePortId target, std::span<SamplePortRef const> sources);
+  GraphBuilder completed_sample_builder() const;
+  void materialize_authored_sample_connections_for_completion();
   void connect_sample_input(TopologyPortId target, MaterializedSamplePort source);
   // Compatibility lowering only. These overloads deliberately do not append
   // AuthoredSampleConnection records.

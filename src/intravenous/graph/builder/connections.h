@@ -136,8 +136,8 @@ namespace iv {
         bool sample_input_is_connected(SampleInputChannelId target) const;
         bool sample_output_is_connected(SampleOutputChannelId source) const;
         bool sample_input_is_runtime_filled(SampleInputChannelId target) const;
-        // Compatibility topology state remains until sample lowering moves to
-        // completion in the next migration step.
+        // Topology-addressed sample state is compatibility/lowering state;
+        // ordinary builder connectivity is authored at channel level.
         bool sample_input_is_connected(TopologyPortId target) const;
         bool event_input_is_connected(TopologyPortId target) const;
         void connect_sample_input(

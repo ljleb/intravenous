@@ -165,7 +165,7 @@ bool GraphBuilderPublicPorts::sample_outputs_defined() const
 
 void GraphBuilderPublicPorts::define_sample_outputs(
     GraphBuilder& builder,
-    GraphBuilderTopology& topology,
+    GraphBuilderTopology&,
     GraphBuilderNodeBundles& node_bundles,
     GraphBuilderIdentity const& identity,
     std::span<OutputRefConfig const> refs
@@ -205,7 +205,6 @@ void GraphBuilderPublicPorts::define_sample_outputs(
         auto const output_ordinal = existing == _sample_output_members.end()
             ? node_bundles.bundle(_boundary).boundary_sample_outputs().size()
             : static_cast<size_t>(existing - _sample_output_members.begin());
-        auto const source = builder.materialize_sample_output(ref).port;
         if (existing == _sample_output_members.end()) {
             auto const appended = node_bundles.bundle(_boundary)
                 .append_boundary_sample_output(config);
@@ -217,10 +216,6 @@ void GraphBuilderPublicPorts::define_sample_outputs(
         builder.record_authored_sample_connection(
             NodeBundlePortId{_boundary, PortKind::sample, output_ordinal},
             ref);
-        topology.add_sample_edge(TopologyEdge{
-            source,
-            TopologyPortId{ GRAPH_ID, output_ordinal },
-        });
         _last_sample_output_port_ordinals.push_back(output_ordinal);
     }
 
