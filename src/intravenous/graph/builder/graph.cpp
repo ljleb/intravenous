@@ -298,13 +298,15 @@ bool GraphBuilder::inside_subgraph_scope() const { return _subgraphs.active(); }
 ScopedSubgraph &GraphBuilder::current_scope() { return _subgraphs.current(); }
 
 void GraphBuilder::define_scope_outputs(std::span<OutputRefConfig const> refs) {
-  _subgraphs.define_sample_outputs(refs, *this, _topology, _identity);
+  _subgraphs.define_sample_outputs(
+      refs, *this, _topology, _node_bundles, _identity);
 }
 
 void GraphBuilder::define_scope_event_outputs(
     std::span<EventOutputRefConfig const> refs) {
-  _subgraphs.define_event_outputs(refs, *this, _topology, _identity,
-                                  _public_ports.event_inputs(_node_bundles));
+  _subgraphs.define_event_outputs(
+      refs, *this, _topology, _node_bundles, _identity,
+      _public_ports.event_inputs(_node_bundles));
 }
 
 std::string GraphBuilder::node_id(size_t index) const {
@@ -349,9 +351,22 @@ void GraphBuilder::annotate_public_sample_input_source_info(
         file_path, begin, end);
     return;
   }
+  if (ref.port.node_bundle_port) {
+    _subgraphs.annotate_scope_input_source_info(
+        *ref.port.node_bundle_port, _node_bundles,
+        SourceInfo{
+            .declaration_identity = std::string(declaration_identity),
+            .span = SourceSpan{
+                .file_path = std::string(file_path),
+                .begin = begin,
+                .end = end,
+            },
+        });
+    return;
+  }
   if (ref.port.scope_boundary_port) {
     _subgraphs.annotate_scope_input_source_info(
-        *ref.port.scope_boundary_port,
+        *ref.port.scope_boundary_port, _node_bundles,
         SourceInfo{
             .declaration_identity = std::string(declaration_identity),
             .span = SourceSpan{
@@ -403,7 +418,7 @@ void GraphBuilder::annotate_public_event_input_source_info(
   }
   if (ref.port.scope_boundary_port) {
     _subgraphs.annotate_scope_input_source_info(
-        *ref.port.scope_boundary_port,
+        *ref.port.scope_boundary_port, _node_bundles,
         SourceInfo{
             .declaration_identity = std::string(identity),
             .span = SourceSpan{
@@ -444,12 +459,16 @@ NodeRef GraphBuilder::embed_subgraph(GraphBuilder const &child) {
                    ": g.outputs(...) must be called before insertion");
   }
 
+  size_t const child_node_bundle_offset = _node_bundles.size();
   size_t const subgraph_node = GraphBuilderChildEmbedder::embed(
       _topology, _node_bundles, _connections, _detach, _virtual_nodes,
       child._public_ports, child._topology, child._node_bundles,
       child._connections, child._detach, child._virtual_nodes);
-  return NodeRef(*this,
-                 _node_bundles.append_subgraph(_topology, subgraph_node));
+  auto const child_boundary =
+      child_node_bundle_offset + child._public_ports.boundary_handle();
+  return NodeRef(
+      *this,
+      _node_bundles.append_subgraph(_topology, subgraph_node, child_boundary));
 }
 
 void GraphBuilder::event_outputs(std::span<EventOutputRefConfig const> refs) {
@@ -505,7 +524,7 @@ void GraphBuilder::subgraph_outputs(std::span<NamedRef const> refs) {
         "g.subgraph_outputs(...) is only valid inside g.subgraph(...)");
   }
   _subgraphs.define_sample_outputs_from_named_refs(
-      *this, _topology, _identity,
+      *this, _topology, _node_bundles, _identity,
       [&](auto &&value) {
         return lift_to_sample_port(std::forward<decltype(value)>(value));
       },

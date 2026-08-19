@@ -18,15 +18,11 @@ namespace iv {
     struct ScopedSubgraph {
         size_t start_node_index = 0;
         std::string kind {};
-        std::vector<InputConfig> input_configs {};
-        // Side-table port identities used only while this scope is open.
-        // They become ports of the finished SubgraphNode at close.
-        std::vector<ScopeBoundaryPortId> input_boundary_ports {};
-        std::vector<OutputConfig> output_configs {};
+        NodeBundleHandle boundary = 0;
+        // Output sources remain topology projections until authored
+        // connections become authoritative. The interface configs themselves
+        // live only on `boundary`.
         std::vector<TopologyPortId> output_sources {};
-        std::vector<EventInputConfig> event_input_configs {};
-        std::vector<ScopeBoundaryPortId> event_input_boundary_ports {};
-        std::vector<EventOutputConfig> event_output_configs {};
         std::vector<TopologyPortId> event_output_sources {};
         std::vector<SourceInfo> source_infos {};
         bool outputs_defined = false;
@@ -37,10 +33,14 @@ namespace iv {
     public:
         bool active() const;
         ScopedSubgraph& current();
-        void begin(size_t start_node_index, std::string_view kind);
+        void begin(size_t start_node_index, std::string_view kind,
+                   GraphBuilderNodeBundles&);
         ScopedSubgraph finish();
         void abandon_top();
-        void annotate_scope_input_source_info(ScopeBoundaryPortId, SourceInfo);
+        void annotate_scope_input_source_info(
+            NodeBundlePortId, GraphBuilderNodeBundles const&, SourceInfo);
+        void annotate_scope_input_source_info(
+            ScopeBoundaryPortId, GraphBuilderNodeBundles const&, SourceInfo);
         SamplePortRef add_scope_sample_input(
             GraphBuilder&,
             GraphBuilderTopology&,
@@ -63,12 +63,14 @@ namespace iv {
             std::span<OutputRefConfig const> refs,
             GraphBuilder&,
             GraphBuilderTopology const&,
+            GraphBuilderNodeBundles&,
             GraphBuilderIdentity const&
         );
         template<class LiftSample>
         void define_sample_outputs_from_named_refs(
             GraphBuilder&,
             GraphBuilderTopology const&,
+            GraphBuilderNodeBundles&,
             GraphBuilderIdentity const&,
             LiftSample&& lift_sample,
             std::span<NamedRef const> refs
@@ -77,6 +79,7 @@ namespace iv {
             std::span<EventOutputRefConfig const> refs,
             GraphBuilder const&,
             GraphBuilderTopology const&,
+            GraphBuilderNodeBundles&,
             GraphBuilderIdentity const&,
             std::span<EventInputConfig const> graph_event_inputs
         );
@@ -103,7 +106,7 @@ namespace iv {
             "iv::GraphBuilder::subgraph(Fn) requires a zero-argument callback; use embed_subgraph(GraphBuilder) for isolated nested builders"
         );
 
-        begin(topology.node_count(), kind);
+        begin(topology.node_count(), kind, node_bundles);
 
         struct ScopePopGuard {
             SubgraphScopeManager* subgraphs;
@@ -129,6 +132,7 @@ namespace iv {
     void SubgraphScopeManager::define_sample_outputs_from_named_refs(
         GraphBuilder& builder,
         GraphBuilderTopology const& topology,
+        GraphBuilderNodeBundles& node_bundles,
         GraphBuilderIdentity const& identity,
         LiftSample&& lift_sample,
         std::span<NamedRef const> refs
@@ -149,6 +153,6 @@ namespace iv {
                 .config = OutputConfig{ .name = std::string(ref.name) },
             });
         }
-        define_sample_outputs(std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()), builder, topology, identity);
+        define_sample_outputs(std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()), builder, topology, node_bundles, identity);
     }
 }

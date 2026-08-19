@@ -74,19 +74,25 @@ class NodeBundle {
   // A graph boundary owns the externally visible interface configuration.
   // Normal NodeBundle descriptors expose the view from inside the graph, so
   // boundary inputs appear as outputs and boundary outputs appear as inputs.
-  // Topology GRAPH_ID endpoints remain compatibility projections only.
+  // Topology endpoints remain compatibility projections only: root boundaries
+  // project through GRAPH_ID, while active scope inputs retain their temporary
+  // ScopeBoundaryPortId topology sources until sample lowering moves later.
   struct BoundaryNodeBundle {
     static constexpr bool contains_concrete_nodes = false;
 
+    bool is_root = false;
     std::vector<InputConfig> sample_inputs{};
     std::vector<OutputConfig> sample_outputs{};
     std::vector<EventInputConfig> event_inputs{};
     std::vector<EventOutputConfig> event_outputs{};
+    std::vector<std::optional<TopologyPortId>> sample_input_projections{};
+    std::vector<std::optional<TopologyPortId>> event_input_projections{};
   };
 
   struct SubgraphNodeBundle {
     static constexpr bool contains_concrete_nodes = false;
 
+    NodeBundleHandle boundary{};
     size_t node{};
     std::vector<TopologyPortId> sample_inputs, sample_outputs{};
     std::vector<TopologyPortId> event_inputs, event_outputs{};
@@ -113,13 +119,16 @@ public:
   EventOutputPortDescriptor event_output_descriptor(size_t) const;
 
   bool is_boundary() const;
+  std::optional<NodeBundleHandle> subgraph_boundary_handle() const;
   std::span<InputConfig const> boundary_sample_inputs() const;
   std::span<OutputConfig const> boundary_sample_outputs() const;
   std::span<EventInputConfig const> boundary_event_inputs() const;
   std::span<EventOutputConfig const> boundary_event_outputs() const;
   size_t append_boundary_sample_input(InputConfig);
+  size_t append_boundary_sample_input(InputConfig, TopologyPortId inward_output);
   size_t append_boundary_sample_output(OutputConfig);
   size_t append_boundary_event_input(EventInputConfig);
+  size_t append_boundary_event_input(EventInputConfig, TopologyPortId inward_output);
   size_t append_boundary_event_output(EventOutputConfig);
   void clear_boundary_event_outputs();
 
@@ -146,7 +155,7 @@ public:
   void for_each_topology_node(std::function<void(size_t)> const &) const;
   void for_each_concrete_node(std::function<void(size_t)> const &) const;
   size_t single_concrete_node() const;
-  void import_into(size_t topology_node_offset);
+  void import_into(size_t topology_node_offset, size_t node_bundle_offset);
 
   std::vector<size_t> &virtual_node_handles();
   std::vector<size_t> const &virtual_node_handles() const;
@@ -168,10 +177,12 @@ private:
 class GraphBuilderNodeBundles {
 public:
   NodeBundleHandle append_boundary();
+  NodeBundleHandle append_scope_boundary();
   NodeBundleHandle append_concrete(GraphBuilderTopology const &, size_t concrete_node_index);
   NodeBundleHandle append_tiled(GraphBuilderTopology const &, std::span<size_t const>,
                                 ChannelLayout promoted_channel_layout);
-  NodeBundleHandle append_subgraph(GraphBuilderTopology const &, size_t subgraph_node_index);
+  NodeBundleHandle append_subgraph(GraphBuilderTopology const &, size_t subgraph_node_index,
+                                   NodeBundleHandle boundary);
   NodeBundle const &bundle(NodeBundleHandle) const;
   NodeBundle &bundle(NodeBundleHandle);
 

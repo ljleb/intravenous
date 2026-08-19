@@ -3,8 +3,31 @@
 
 #include <algorithm>
 #include <limits>
+#include <unordered_map>
 
 namespace iv {
+namespace {
+void append_scope_source_info(ScopedSubgraph& scope, SourceInfo info)
+{
+    if (std::find(scope.source_infos.begin(), scope.source_infos.end(), info)
+        == scope.source_infos.end()) {
+        scope.source_infos.push_back(std::move(info));
+    }
+}
+
+template<class Descriptor>
+TopologyPortId single_boundary_projection(Descriptor const& descriptor,
+                                          std::string_view kind)
+{
+    if (descriptor.endpoints.size() != 1) {
+        details::error(
+            "active subgraph " + std::string(kind)
+            + " input does not have exactly one topology projection");
+    }
+    return descriptor.endpoints.front();
+}
+} // namespace
+
 bool SubgraphScopeManager::active() const
 {
     return !_stack.empty();
@@ -16,11 +39,13 @@ ScopedSubgraph& SubgraphScopeManager::current()
     return _stack.back();
 }
 
-void SubgraphScopeManager::begin(size_t start_node_index, std::string_view kind)
+void SubgraphScopeManager::begin(size_t start_node_index, std::string_view kind,
+                                 GraphBuilderNodeBundles& node_bundles)
 {
     _stack.push_back(ScopedSubgraph{
         .start_node_index = start_node_index,
         .kind = std::string(kind),
+        .boundary = node_bundles.append_scope_boundary(),
     });
 }
 
@@ -39,7 +64,7 @@ void SubgraphScopeManager::abandon_top()
 SamplePortRef SubgraphScopeManager::add_scope_sample_input(
     GraphBuilder& builder,
     GraphBuilderTopology& topology,
-    GraphBuilderNodeBundles&,
+    GraphBuilderNodeBundles& node_bundles,
     std::string_view name,
     Sample default_value,
     std::optional<Sample> min,
@@ -48,65 +73,103 @@ SamplePortRef SubgraphScopeManager::add_scope_sample_input(
 )
 {
     auto& scope = current();
-    scope.input_configs.emplace_back(InputConfig{
-        .name = has_name ? std::string(name) : std::string{},
-        .default_value = default_value,
-        .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
-        .max = max.value_or(std::numeric_limits<Sample::storage>::infinity()),
-    });
-    ScopeBoundaryPortId const boundary = topology.append_scope_sample_input(
+    ScopeBoundaryPortId const topology_boundary = topology.append_scope_sample_input(
         OutputConfig{ .name = has_name ? std::string(name) : std::string{} });
-    scope.input_boundary_ports.push_back(boundary);
-    return SamplePortRef(builder, boundary);
+    auto const ordinal = node_bundles.bundle(scope.boundary)
+        .append_boundary_sample_input(
+            InputConfig{
+                .name = has_name ? std::string(name) : std::string{},
+                .default_value = default_value,
+                .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
+                .max = max.value_or(std::numeric_limits<Sample::storage>::infinity()),
+            },
+            topology_boundary.topology_port());
+    return SamplePortRef(builder, NodeBundlePortId{
+        scope.boundary, PortKind::sample, ordinal});
 }
 
 EventPortRef SubgraphScopeManager::add_scope_event_input(
     GraphBuilder& builder,
     GraphBuilderTopology& topology,
-    GraphBuilderNodeBundles&,
+    GraphBuilderNodeBundles& node_bundles,
     std::string_view name,
     EventTypeId type,
     bool has_name
 )
 {
     auto& scope = current();
-    if (has_name) {
-        scope.event_input_configs.emplace_back(EventInputConfig{ .name = std::string(name), .type = type });
-    } else {
-        scope.event_input_configs.emplace_back(EventInputConfig{ .type = type });
-    }
-    ScopeBoundaryPortId const boundary = topology.append_scope_event_input(
-        EventOutputConfig{ .name = has_name ? std::string(name) : std::string{}, .type = type });
-    scope.event_input_boundary_ports.push_back(boundary);
-    return EventPortRef(builder, boundary);
+    ScopeBoundaryPortId const topology_boundary = topology.append_scope_event_input(
+        EventOutputConfig{
+            .name = has_name ? std::string(name) : std::string{},
+            .type = type,
+        });
+    auto config = has_name
+        ? EventInputConfig{ .name = std::string(name), .type = type }
+        : EventInputConfig{ .type = type };
+    node_bundles.bundle(scope.boundary).append_boundary_event_input(
+        std::move(config), topology_boundary.topology_port());
+    return EventPortRef(builder, topology_boundary);
 }
 
 void SubgraphScopeManager::annotate_scope_input_source_info(
-    ScopeBoundaryPortId boundary, SourceInfo info)
+    NodeBundlePortId boundary,
+    GraphBuilderNodeBundles const& node_bundles,
+    SourceInfo info)
 {
     auto& scope = current();
-    auto const& boundaries = boundary.port_kind == PortKind::sample
-        ? scope.input_boundary_ports
-        : scope.event_input_boundary_ports;
-    if (std::find(boundaries.begin(), boundaries.end(), boundary)
-        == boundaries.end()) {
+    if (boundary.port_kind != PortKind::sample
+        || boundary.node_bundle_handle != scope.boundary
+        || boundary.port_ordinal
+            >= node_bundles.bundle(scope.boundary).boundary_sample_inputs().size()) {
         details::error("attempted to annotate a scope input from another scope");
     }
-    if (std::find(scope.source_infos.begin(), scope.source_infos.end(), info)
-        == scope.source_infos.end()) {
-        scope.source_infos.push_back(std::move(info));
+    append_scope_source_info(scope, std::move(info));
+}
+
+void SubgraphScopeManager::annotate_scope_input_source_info(
+    ScopeBoundaryPortId boundary,
+    GraphBuilderNodeBundles const& node_bundles,
+    SourceInfo info)
+{
+    auto& scope = current();
+    bool found = false;
+    if (boundary.port_kind == PortKind::sample) {
+        auto const sample_inputs =
+            node_bundles.bundle(scope.boundary).boundary_sample_inputs();
+        for (size_t ordinal = 0; ordinal < sample_inputs.size(); ++ordinal) {
+            auto const descriptor = node_bundles.resolve_sample_output(NodeBundlePortId{
+                scope.boundary, PortKind::sample, ordinal});
+            found = std::find(descriptor.endpoints.begin(), descriptor.endpoints.end(),
+                              boundary.topology_port()) != descriptor.endpoints.end();
+            if (found) break;
+        }
+    } else {
+        auto const event_inputs =
+            node_bundles.bundle(scope.boundary).boundary_event_inputs();
+        for (size_t ordinal = 0; ordinal < event_inputs.size(); ++ordinal) {
+            auto const descriptor = node_bundles.resolve_event_output(NodeBundlePortId{
+                scope.boundary, PortKind::event, ordinal});
+            found = std::find(descriptor.endpoints.begin(), descriptor.endpoints.end(),
+                              boundary.topology_port()) != descriptor.endpoints.end();
+            if (found) break;
+        }
     }
+    if (!found) {
+        details::error("attempted to annotate a scope input from another scope");
+    }
+    append_scope_source_info(scope, std::move(info));
 }
 
 void SubgraphScopeManager::define_sample_outputs(
     std::span<OutputRefConfig const> refs,
     GraphBuilder& builder,
     GraphBuilderTopology const&,
+    GraphBuilderNodeBundles& node_bundles,
     GraphBuilderIdentity const& identity
 )
 {
     auto& scope = current();
-    scope.output_configs.reserve(scope.output_configs.size() + refs.size());
+    auto& boundary = node_bundles.bundle(scope.boundary);
     scope.output_sources.reserve(scope.output_sources.size() + refs.size());
     bool const require_names = refs.size() > 1;
 
@@ -128,7 +191,7 @@ void SubgraphScopeManager::define_sample_outputs(
         }
         scope.output_sources.push_back(
             builder.materialize_sample_output(ref).port);
-        scope.output_configs.push_back(config);
+        boundary.append_boundary_sample_output(config);
     }
     scope.outputs_defined = true;
 }
@@ -137,6 +200,7 @@ void SubgraphScopeManager::define_event_outputs(
     std::span<EventOutputRefConfig const> refs,
     GraphBuilder const& builder,
     GraphBuilderTopology const& topology,
+    GraphBuilderNodeBundles& node_bundles,
     GraphBuilderIdentity const& identity,
     std::span<EventInputConfig const> graph_event_inputs
 )
@@ -146,9 +210,9 @@ void SubgraphScopeManager::define_event_outputs(
         details::error("subgraph event_outputs(...) was already called on builder " + identity.value);
     }
 
-    scope.event_output_configs.clear();
+    auto& boundary = node_bundles.bundle(scope.boundary);
+    boundary.clear_boundary_event_outputs();
     scope.event_output_sources.clear();
-    scope.event_output_configs.reserve(refs.size());
     scope.event_output_sources.reserve(refs.size());
     bool const require_names = refs.size() > 1;
 
@@ -174,8 +238,9 @@ void SubgraphScopeManager::define_event_outputs(
                 ? topology.scope_boundary_event_output(*ref.scope_boundary_port).type
                 : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
         scope.event_output_sources.push_back(static_cast<TopologyPortId>(ref));
-        scope.event_output_configs.emplace_back(config);
-        scope.event_output_configs.back().type = source_type;
+        auto output = config;
+        output.type = source_type;
+        boundary.append_boundary_event_output(std::move(output));
     }
     scope.event_outputs_defined = true;
 }
@@ -185,23 +250,33 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
                                               GraphBuilderNodeBundles& node_bundles,
                                               ScopedSubgraph scope)
 {
+    auto const& boundary = node_bundles.bundle(scope.boundary);
+    auto const sample_inputs = boundary.boundary_sample_inputs();
+    auto const sample_outputs = boundary.boundary_sample_outputs();
+    auto const event_inputs = boundary.boundary_event_inputs();
+    auto const event_outputs = boundary.boundary_event_outputs();
+
     size_t const subgraph_node_index = topology.node_count();
     std::unordered_map<TopologyPortId, size_t> sample_input_index_by_boundary;
-    sample_input_index_by_boundary.reserve(scope.input_boundary_ports.size());
-    for (size_t i = 0; i < scope.input_boundary_ports.size(); ++i) {
+    sample_input_index_by_boundary.reserve(sample_inputs.size());
+    for (size_t i = 0; i < sample_inputs.size(); ++i) {
+        auto const descriptor = node_bundles.resolve_sample_output(NodeBundlePortId{
+            scope.boundary, PortKind::sample, i});
         sample_input_index_by_boundary.emplace(
-            scope.input_boundary_ports[i].topology_port(), i);
+            single_boundary_projection(descriptor, "sample"), i);
     }
 
     std::unordered_map<TopologyPortId, size_t> event_input_index_by_boundary;
-    event_input_index_by_boundary.reserve(scope.event_input_boundary_ports.size());
-    for (size_t i = 0; i < scope.event_input_boundary_ports.size(); ++i) {
+    event_input_index_by_boundary.reserve(event_inputs.size());
+    for (size_t i = 0; i < event_inputs.size(); ++i) {
+        auto const descriptor = node_bundles.resolve_event_output(NodeBundlePortId{
+            scope.boundary, PortKind::event, i});
         event_input_index_by_boundary.emplace(
-            scope.event_input_boundary_ports[i].topology_port(), i);
+            single_boundary_projection(descriptor, "event"), i);
     }
 
-    std::vector<std::vector<TopologyPortId>> subgraph_input_targets(scope.input_configs.size());
-    std::vector<std::vector<TopologyPortId>> subgraph_event_input_targets(scope.event_input_configs.size());
+    std::vector<std::vector<TopologyPortId>> subgraph_input_targets(sample_inputs.size());
+    std::vector<std::vector<TopologyPortId>> subgraph_event_input_targets(event_inputs.size());
 
     auto translate_sample_source = [&](TopologyPortId source) {
         if (auto const it = sample_input_index_by_boundary.find(source);
@@ -250,10 +325,10 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
 
     size_t const subgraph_node = topology.append_lowered_subgraph_node(
         std::move(scope.kind),
-        std::move(scope.input_configs),
-        std::move(scope.output_configs),
-        std::move(scope.event_input_configs),
-        std::move(scope.event_output_configs),
+        std::vector<InputConfig>(sample_inputs.begin(), sample_inputs.end()),
+        std::vector<OutputConfig>(sample_outputs.begin(), sample_outputs.end()),
+        std::vector<EventInputConfig>(event_inputs.begin(), event_inputs.end()),
+        std::vector<EventOutputConfig>(event_outputs.begin(), event_outputs.end()),
         scope.start_node_index,
         topology.node_count() - scope.start_node_index,
         std::move(subgraph_input_targets),
@@ -263,7 +338,8 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
     );
 
     NodeRef result(
-        builder, node_bundles.append_subgraph(topology, subgraph_node));
+        builder, node_bundles.append_subgraph(
+            topology, subgraph_node, scope.boundary));
     for (auto const& info : scope.source_infos) {
         result._annotate_source_info(
             info.declaration_identity, info.span.file_path,
