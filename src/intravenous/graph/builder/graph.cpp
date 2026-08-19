@@ -108,6 +108,14 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
         "graph input port " + std::to_string(graph_input.port_ordinal) +
         " is out of bounds in builder " + graph_builder_._identity.value);
   }
+  auto const logical = NodeBundlePortId{
+      graph_builder_._public_ports.boundary_handle(),
+      PortKind::sample,
+      graph_input.port_ordinal};
+  auto semantic = SamplePortRef(graph_builder_, logical);
+  node_bundle_port = logical;
+  channel_type = semantic.channel_type;
+  channels = std::move(semantic.channels);
 }
 
 SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
@@ -119,6 +127,31 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
   if (!graph_builder_._topology.is_scope_boundary_port(
           scope_boundary.topology_port())) {
     details::error("attempted to create a sample ref from an unknown scope boundary");
+  }
+
+  std::optional<NodeBundlePortId> logical;
+  for (NodeBundleHandle handle = 0; handle < graph_builder_._node_bundles.size(); ++handle) {
+    auto const &bundle = graph_builder_._node_bundles.bundle(handle);
+    if (!bundle.is_boundary()) continue;
+    for (size_t port = 0; port < bundle.sample_output_count(); ++port) {
+      auto const candidate = NodeBundlePortId{handle, PortKind::sample, port};
+      auto const descriptor =
+          graph_builder_._node_bundles.resolve_sample_output(candidate);
+      if (std::find(descriptor.endpoints.begin(), descriptor.endpoints.end(),
+                    scope_boundary.topology_port()) == descriptor.endpoints.end()) {
+        continue;
+      }
+      if (logical) {
+        details::error("scope boundary sample projection is ambiguous");
+      }
+      logical = candidate;
+    }
+  }
+  if (logical) {
+    auto semantic = SamplePortRef(graph_builder_, *logical);
+    node_bundle_port = *logical;
+    channel_type = semantic.channel_type;
+    channels = std::move(semantic.channels);
   }
 }
 
@@ -198,7 +231,30 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
   if (bundle_port.port_kind != PortKind::sample) {
     details::error("attempted to create a SamplePortRef from an event NodeBundle port");
   }
-  (void)graph_builder_._node_bundles.resolve_sample_output(bundle_port);
+  auto const descriptor =
+      graph_builder_._node_bundles.resolve_sample_output(bundle_port);
+  channel_type = descriptor.config.channel_layout.channel_type;
+  channels = graph_builder_._node_bundles.sample_output_channels(bundle_port);
+}
+
+SamplePortRef::SamplePortRef(
+    GraphBuilder &graph_builder_, ChannelTypeId channel_type_,
+    std::vector<SampleOutputChannelId> channels_)
+    : graph_builder(&graph_builder_), channel_type(channel_type_),
+      channels(std::move(channels_)) {
+  auto const expected = channel_count(channel_type);
+  if (channels.size() != expected) {
+    details::error(
+        "sample expression channel count does not match its semantic channel type");
+  }
+  for (auto const channel : channels) {
+    auto const descriptor = graph_builder_._node_bundles.resolve_sample_output(
+        NodeBundlePortId{channel.bundle, PortKind::sample, channel.port});
+    if (channel.channel >=
+        channel_count(descriptor.config.channel_layout.channel_type)) {
+      details::error("sample expression channel is out of bounds");
+    }
+  }
 }
 
 SamplePortRef::operator TopologyPortId() const {
@@ -209,19 +265,19 @@ SamplePortRef::operator TopologyPortId() const {
 }
 
 SamplePortRef SamplePortRef::_clone_handle() const {
+  return *this;
+}
+
+SamplePortRef SamplePortRef::select_channel(size_t channel) const {
   if (!graph_builder) {
-    return SamplePortRef{};
+    details::error("attempted to select a channel from an empty sample port");
   }
-  if (node_bundle_port) {
-    return SamplePortRef(*graph_builder, *node_bundle_port);
+  if (channel >= channels.size()) {
+    details::error("sample channel ordinal is out of bounds");
   }
-  if (graph_input_port) {
-    return SamplePortRef(*graph_builder, *graph_input_port);
-  }
-  if (scope_boundary_port) {
-    return SamplePortRef(*graph_builder, *scope_boundary_port);
-  }
-  details::error("invalid SamplePortRef address");
+  return SamplePortRef(
+      *graph_builder, ChannelTypeId::mono,
+      std::vector<SampleOutputChannelId>{channels[channel]});
 }
 
 SamplePortRef SamplePortRef::detach(size_t loop_extra_latency) const {
@@ -235,10 +291,6 @@ std::string SamplePortRef::to_string() const {
   if (!graph_builder) {
     return "empty sample port";
   }
-  if (node_bundle_port) {
-    return "sample output " + std::to_string(node_bundle_port->port_ordinal) +
-           " of node bundle " + std::to_string(node_bundle_port->node_bundle_handle);
-  }
   if (graph_input_port) {
     return "graph input " + std::to_string(graph_input_port->port_ordinal) +
            " in builder " + graph_builder->_identity.value;
@@ -247,6 +299,15 @@ std::string SamplePortRef::to_string() const {
     return "subgraph sample input " +
            std::to_string(scope_boundary_port->boundary_ordinal) +
            " in builder " + graph_builder->_identity.value;
+  }
+  if (node_bundle_port) {
+    return "sample output " + std::to_string(node_bundle_port->port_ordinal) +
+           " of node bundle " + std::to_string(node_bundle_port->node_bundle_handle);
+  }
+  if (!channels.empty()) {
+    return "structural sample expression with " +
+           std::to_string(channels.size()) + " channel(s) in builder " +
+           graph_builder->_identity.value;
   }
   return "invalid sample port in builder " + graph_builder->_identity.value;
 }
@@ -681,7 +742,29 @@ SamplePortRef GraphBuilder::normalize_sample_output(SamplePortRef source) {
   if (source.graph_builder != this) {
     details::error("cannot normalize a sample output from another builder");
   }
-  if (!source.node_bundle_port) return source;
+  if (!source.node_bundle_port) {
+    if (source.channels.empty()) {
+      details::error("sample output has no semantic channels");
+    }
+    if (source.channels.size() == 1) return source;
+
+    switch (source.channel_type) {
+    case ChannelTypeId::stereo: {
+      auto pack = node<ChannelPack<stereo>>();
+      for (size_t channel = 0; channel < source.channels.size(); ++channel) {
+        pack.connect_input(
+            channel,
+            SamplePortRef(
+                *this, ChannelTypeId::mono,
+                std::vector<SampleOutputChannelId>{source.channels[channel]}));
+      }
+      return static_cast<SamplePortRef>(pack);
+    }
+    case ChannelTypeId::mono: break;
+    case ChannelTypeId::count: break;
+    }
+    details::error("invalid structural sample channel type");
+  }
 
   auto const descriptor =
       _node_bundles.resolve_sample_output(*source.node_bundle_port);
@@ -736,6 +819,38 @@ GraphBuilder::materialize_sample_output(SamplePortRef source) {
     return MaterializedSamplePort{
         .port = source.scope_boundary_port->topology_port()};
   }
+  if (!source.node_bundle_port && source.channels.size() == 1) {
+    auto const channel = source.channels.front();
+    auto const logical =
+        NodeBundlePortId{channel.bundle, PortKind::sample, channel.port};
+    auto const descriptor = _node_bundles.resolve_sample_output(logical);
+    auto const physical_channels =
+        channel_count(descriptor.config.channel_layout.channel_type);
+    if (channel.channel >= physical_channels) {
+      details::error("sample output channel is out of bounds");
+    }
+    if (descriptor.endpoints.size() == physical_channels) {
+      return MaterializedSamplePort{
+          .port = descriptor.endpoints[channel.channel]};
+    }
+    if (descriptor.endpoints.size() == 1) {
+      if (physical_channels == 1) {
+        return MaterializedSamplePort{.port = descriptor.endpoints.front()};
+      }
+      switch (descriptor.config.channel_layout.channel_type) {
+      case ChannelTypeId::stereo: {
+        auto unpack = node<ChannelUnpack<stereo>>();
+        unpack.connect_input(0, SamplePortRef(*this, logical));
+        return materialize_sample_output(
+            static_cast<SamplePortRef>(unpack[channel.channel]));
+      }
+      case ChannelTypeId::mono: break;
+      case ChannelTypeId::count: break;
+      }
+    }
+    details::error(
+        "sample output channel cannot be projected onto builder topology");
+  }
 
   source = normalize_sample_output(std::move(source));
   if (!source.node_bundle_port) {
@@ -773,55 +888,64 @@ void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef s
         "tiled NodeBundle input does not match its declared channel layout");
   }
 
-  // Graph and scope boundaries are mono today; preserve the existing
-  // broadcast semantics for them and for ordinary mono bundle outputs.
-  if (!source.node_bundle_port) {
-    for (auto const port : ports) connect_sample_input(port, source);
+  if (source.channel_type == ChannelTypeId::mono) {
+    auto const materialized = materialize_sample_output(source);
+    for (auto const port : ports) connect_sample_input(port, materialized);
     return;
   }
 
-  auto const source_descriptor =
-      _node_bundles.resolve_sample_output(*source.node_bundle_port);
-  auto const source_channel_type =
-      source_descriptor.config.channel_layout.channel_type;
-  if (source_channel_type == ChannelTypeId::mono) {
-    for (auto const port : ports) connect_sample_input(port, source);
-    return;
-  }
-  if (source_channel_type != descriptor.config.channel_layout.channel_type) {
+  if (source.channel_type != descriptor.config.channel_layout.channel_type) {
     details::error("sample source and tiled input channel layouts do not match");
   }
-
-  auto const &source_ports = source_descriptor.endpoints;
-  if (source_ports.size() == ports.size()) {
-    for (size_t channel = 0; channel < ports.size(); ++channel) {
-      connect_sample_input(
-          ports[channel],
-          MaterializedSamplePort{
-              .port = source_ports[channel]});
-    }
-    return;
-  }
-  if (source_ports.size() != 1) {
+  if (source.channels.size() != ports.size()) {
     details::error(
-        "sample source cannot be projected onto the tiled input channels");
+        "sample source channel count does not match tiled input channel count");
   }
 
-  switch (source_channel_type) {
-  case ChannelTypeId::stereo: {
-    auto unpack = node<ChannelUnpack<stereo>>();
-    unpack.connect_input(0, source);
-    for (size_t channel = 0; channel < ports.size(); ++channel) {
-      connect_sample_input(ports[channel], unpack[channel]);
+  if (source.node_bundle_port) {
+    auto const source_descriptor =
+        _node_bundles.resolve_sample_output(*source.node_bundle_port);
+    if (source_descriptor.config.channel_layout.channel_type
+        != source.channel_type) {
+      details::error(
+          "sample source semantic type does not match its NodeBundle port");
     }
-    return;
+    auto const &source_ports = source_descriptor.endpoints;
+    if (source_ports.size() == ports.size()) {
+      for (size_t channel = 0; channel < ports.size(); ++channel) {
+        connect_sample_input(
+            ports[channel],
+            MaterializedSamplePort{.port = source_ports[channel]});
+      }
+      return;
+    }
+    if (source_ports.size() != 1) {
+      details::error(
+          "sample source cannot be projected onto the tiled input channels");
+    }
+
+    switch (source.channel_type) {
+    case ChannelTypeId::stereo: {
+      auto unpack = node<ChannelUnpack<stereo>>();
+      unpack.connect_input(0, source);
+      for (size_t channel = 0; channel < ports.size(); ++channel) {
+        connect_sample_input(ports[channel], unpack[channel]);
+      }
+      return;
+    }
+    case ChannelTypeId::mono: break;
+    case ChannelTypeId::count: break;
+    }
+    details::error("invalid channel type for tiled NodeBundle sample input");
   }
-  case ChannelTypeId::mono:
-    break;
-  case ChannelTypeId::count:
-    break;
+
+  for (size_t channel = 0; channel < ports.size(); ++channel) {
+    connect_sample_input(
+        ports[channel],
+        SamplePortRef(
+            *this, ChannelTypeId::mono,
+            std::vector<SampleOutputChannelId>{source.channels[channel]}));
   }
-  details::error("invalid channel type for tiled NodeBundle sample input");
 }
 
 void GraphBuilder::connect_sample_input(

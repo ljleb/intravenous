@@ -481,15 +481,107 @@ TEST(Channels, FullyMonoNodeTilesIntoAStaticStereoOutput)
               iv::ChannelTypeId::mono);
 }
 
+TEST(Channels, SampleRefsExposeOrderedStructuralChannelIdentity)
+{
+    iv::GraphBuilder g;
+    auto source = g.node<NamedStereoSource>(
+        iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto stream = source[iv::PortName<"main">{}];
+    auto erased = static_cast<iv::SamplePortRef>(stream);
+
+    EXPECT_EQ(erased.channel_type, iv::ChannelTypeId::stereo);
+    ASSERT_EQ(erased.channels.size(), 2u);
+    EXPECT_EQ(erased.channels[0].bundle, source.node_bundle_handle());
+    EXPECT_EQ(erased.channels[0].port, 0u);
+    EXPECT_EQ(erased.channels[0].channel, 0u);
+    EXPECT_EQ(erased.channels[1].bundle, source.node_bundle_handle());
+    EXPECT_EQ(erased.channels[1].port, 0u);
+    EXPECT_EQ(erased.channels[1].channel, 1u);
+
+    auto left = static_cast<iv::SamplePortRef>(
+        stream[iv::stereo::left]);
+    EXPECT_EQ(left.channel_type, iv::ChannelTypeId::mono);
+    ASSERT_EQ(left.channels.size(), 1u);
+    EXPECT_EQ(left.channels.front(), erased.channels.front());
+    EXPECT_FALSE(left.node_bundle_port.has_value());
+
+    g.outputs();
+    auto const built = g.build_root_node();
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelUnpack"));
+}
+
+TEST(Channels, GraphBuilderTileIsPureStructuralComposition)
+{
+    iv::GraphBuilder g;
+    auto left = g.node<iv::Constant>(iv::Sample{0.25f});
+    auto right = g.node<iv::Constant>(iv::Sample{-0.5f});
+    auto tiled = g.tile<iv::stereo>(left, right);
+    auto erased = static_cast<iv::SamplePortRef>(tiled);
+
+    EXPECT_EQ(erased.channel_type, iv::ChannelTypeId::stereo);
+    ASSERT_EQ(erased.channels.size(), 2u);
+    EXPECT_FALSE(erased.node_bundle_port.has_value());
+    EXPECT_EQ(erased.channels[0].bundle, left.node_bundle_handle());
+    EXPECT_EQ(erased.channels[1].bundle, right.node_bundle_handle());
+
+    g.outputs();
+    auto const built = g.build_root_node();
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelPack"));
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelUnpack"));
+}
+
+TEST(Channels, StructuralTilePacksOnlyWhenNativeStereoIsMaterialized)
+{
+    iv::GraphBuilder g;
+    auto left_source = g.node<iv::Constant>(iv::Sample{0.25f});
+    auto right_source = g.node<iv::Constant>(iv::Sample{-0.5f});
+    auto tiled = g.tile<iv::stereo>(left_source, right_source);
+
+    iv::Sample left{};
+    iv::Sample right{};
+    g.node<StereoBufferSink>(&left, &right)(tiled);
+    g.outputs();
+
+    auto built = g.build_root_node();
+    EXPECT_TRUE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelPack"));
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(left, iv::Sample{0.25f});
+    EXPECT_EQ(right, iv::Sample{-0.5f});
+}
+
+TEST(Channels, SelectedNativeChannelUnpacksOnlyWhenMaterialized)
+{
+    iv::GraphBuilder g;
+    auto source = g.node<NamedStereoSource>(
+        iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto stream = source[iv::PortName<"main">{}];
+
+    iv::Sample left{};
+    g.node<MonoBufferSink>(&left)(stream[iv::stereo::left]);
+    g.outputs();
+
+    auto built = g.build_root_node();
+    EXPECT_TRUE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelUnpack"));
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(left, iv::Sample{0.25f});
+}
+
 TEST(Channels, TiledNodesLowerMatchingChannelsToIndependentMonoEdges)
 {
     iv::GraphBuilder g;
     auto left_source = g.node<iv::Constant>(iv::Sample{0.25f});
     auto right_source = g.node<iv::Constant>(iv::Sample{-0.5f});
     auto pass = g.node<MonoPass, iv::stereo>();
-    pass(iv::TypedSamplePortTileRef<iv::stereo>{
-        std::array<iv::SamplePortRef, iv::stereo::channel_count>{
-            left_source, right_source}});
+    pass(g.tile<iv::stereo>(left_source, right_source));
 
     auto stream = pass[iv::PortName<"out">{}];
     iv::Sample left{};
@@ -540,8 +632,7 @@ TEST(Channels, TiledOutputAutomaticallyPacksForNativeStereoInput)
     auto left_source = g.node<iv::Constant>(iv::Sample{0.25f});
     auto right_source = g.node<iv::Constant>(iv::Sample{-0.5f});
     auto tiled = g.node<MonoPass, iv::stereo>();
-    tiled(iv::TypedSamplePortTileRef<iv::stereo>{
-        std::array<iv::SamplePortRef, iv::stereo::channel_count>{left_source, right_source}});
+    tiled(g.tile<iv::stereo>(left_source, right_source));
     iv::Sample left{};
     iv::Sample right{};
     g.node<StereoBufferSink>(&left, &right)(tiled[iv::PortName<"out">{}]);

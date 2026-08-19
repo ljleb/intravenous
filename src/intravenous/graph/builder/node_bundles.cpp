@@ -653,6 +653,38 @@ SampleOutputPortDescriptor GraphBuilderNodeBundles::resolve_sample_output(
   return bundle(address.node_bundle_handle).sample_output_descriptor(address.port_ordinal);
 }
 
+std::vector<SampleInputChannelId>
+GraphBuilderNodeBundles::sample_input_channels(NodeBundlePortId address) const {
+  auto const descriptor = resolve_sample_input(address);
+  auto const count = channel_count(descriptor.config.channel_layout.channel_type);
+  std::vector<SampleInputChannelId> result;
+  result.reserve(count);
+  for (size_t channel = 0; channel < count; ++channel) {
+    result.push_back(SampleInputChannelId{
+        .bundle = address.node_bundle_handle,
+        .port = address.port_ordinal,
+        .channel = channel,
+    });
+  }
+  return result;
+}
+
+std::vector<SampleOutputChannelId>
+GraphBuilderNodeBundles::sample_output_channels(NodeBundlePortId address) const {
+  auto const descriptor = resolve_sample_output(address);
+  auto const count = channel_count(descriptor.config.channel_layout.channel_type);
+  std::vector<SampleOutputChannelId> result;
+  result.reserve(count);
+  for (size_t channel = 0; channel < count; ++channel) {
+    result.push_back(SampleOutputChannelId{
+        .bundle = address.node_bundle_handle,
+        .port = address.port_ordinal,
+        .channel = channel,
+    });
+  }
+  return result;
+}
+
 EventInputPortDescriptor GraphBuilderNodeBundles::resolve_event_input(
     NodeBundlePortId address) const {
   if (address.port_kind != PortKind::event)

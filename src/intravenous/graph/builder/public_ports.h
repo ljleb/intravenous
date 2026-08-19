@@ -165,6 +165,14 @@ namespace iv {
                     .resolve_sample_output(*source.node_bundle_port)
                     .config;
             }
+            if (!source.channels.empty()) {
+                return OutputConfig{
+                    .channel_layout = ChannelLayout{
+                        .channel_type = source.channel_type,
+                        .sample_layout = SampleStreamLayout::planar,
+                    },
+                };
+            }
             if (source.graph_input_port) {
                 return node_bundles.resolve_sample_output(NodeBundlePortId{
                     _boundary, PortKind::sample, source.graph_input_port->port_ordinal}).config;
@@ -284,10 +292,17 @@ namespace iv {
             auto source = lift_sample(ref);
             auto config = source.node_bundle_port
                 ? node_bundles.resolve_sample_output(*source.node_bundle_port).config
-                : source.graph_input_port
-                    ? node_bundles.resolve_sample_output(NodeBundlePortId{
-                        _boundary, PortKind::sample, source.graph_input_port->port_ordinal}).config
-                    : OutputConfig{};
+                : !source.channels.empty()
+                    ? OutputConfig{
+                        .channel_layout = ChannelLayout{
+                            .channel_type = source.channel_type,
+                            .sample_layout = SampleStreamLayout::planar,
+                        },
+                    }
+                    : source.graph_input_port
+                        ? node_bundles.resolve_sample_output(NodeBundlePortId{
+                            _boundary, PortKind::sample, source.graph_input_port->port_ordinal}).config
+                        : OutputConfig{};
             config.name = std::string(ref.name);
             config.channel_layout.sample_layout = SampleStreamLayout::planar;
             output_refs.push_back(OutputRefConfig{ .ref = source, .config = std::move(config) });

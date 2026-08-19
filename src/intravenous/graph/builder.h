@@ -120,6 +120,9 @@ public:
   template <class Node, class ChannelType, class... Args>
   auto node(Args &&...args);
 
+  template <class ChannelType, class... Refs>
+  auto tile(Refs &&...refs);
+
   NodeRef embed_subgraph(GraphBuilder const &child);
 
   template <class... Refs> void event_outputs(Refs &&...refs);
@@ -263,23 +266,13 @@ SamplePortRef GraphBuilder::lift_to_sample_port(
 template <class ChannelType, SampleStreamLayout Layout, class Member>
 SamplePortRef GraphBuilder::lift_to_sample_port(
     TypedSamplePortChannelRef<ChannelType, Layout, Member> const &sample_port) {
-  auto unpack = node<ChannelUnpack<ChannelType>>();
-  unpack.connect_input("in", sample_port.port());
-  return static_cast<SamplePortRef>(
-      unpack[port_index(Member{})]);
+  return lift_to_sample_port(sample_port.erased());
 }
 
 template <class ChannelType, SampleStreamLayout Layout>
 SamplePortRef GraphBuilder::lift_to_sample_port(
     TypedSamplePortTileRef<ChannelType, Layout> const &sample_port) {
-  if (sample_port.has_promoted_port()) {
-    return lift_to_sample_port(sample_port.erased());
-  }
-  auto pack = node<ChannelPack<ChannelType>>();
-  for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
-    pack.connect_input(channel, sample_port.members()[channel]);
-  }
-  return static_cast<SamplePortRef>(pack);
+  return lift_to_sample_port(sample_port.erased());
 }
 
 template <class Config>
@@ -345,6 +338,22 @@ auto GraphBuilder::node(Args &&...args) {
                     .sample_layout = SampleStreamLayout::planar});
   return TiledNodeRef<StoredNode, ChannelType>(
       *this, bundle_handle, std::move(member_bundles));
+}
+
+template <class ChannelType, class... Refs>
+auto GraphBuilder::tile(Refs &&...refs) {
+  static_assert(
+      sizeof...(Refs) == ChannelType::channel_count,
+      "g.tile<ChannelType>(...) requires exactly one source per channel");
+
+  std::array<SamplePortRef, ChannelType::channel_count> members{
+      lift_to_sample_port(std::forward<Refs>(refs))...};
+  for (auto const &member : members) {
+    if (member.channel_type != ChannelTypeId::mono || member.channels.size() != 1) {
+      details::error("g.tile<ChannelType>(...) requires scalar sample sources");
+    }
+  }
+  return TypedSamplePortTileRef<ChannelType>{std::move(members)};
 }
 
 template <class... Refs> void GraphBuilder::event_outputs(Refs &&...refs) {

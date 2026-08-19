@@ -21,6 +21,22 @@ struct NodeBundlePortId {
   bool operator==(NodeBundlePortId const &) const = default;
 };
 
+struct SampleOutputChannelId {
+  NodeBundleHandle bundle = 0;
+  size_t port = 0;
+  size_t channel = 0;
+
+  bool operator==(SampleOutputChannelId const &) const = default;
+};
+
+struct SampleInputChannelId {
+  NodeBundleHandle bundle = 0;
+  size_t port = 0;
+  size_t channel = 0;
+
+  bool operator==(SampleInputChannelId const &) const = default;
+};
+
 template<class Config>
 struct SamplePortDescriptor {
   Config config{};
@@ -192,6 +208,8 @@ public:
   SampleOutputPortDescriptor resolve_sample_output(NodeBundlePortId) const;
   EventInputPortDescriptor resolve_event_input(NodeBundlePortId) const;
   EventOutputPortDescriptor resolve_event_output(NodeBundlePortId) const;
+  std::vector<SampleInputChannelId> sample_input_channels(NodeBundlePortId) const;
+  std::vector<SampleOutputChannelId> sample_output_channels(NodeBundlePortId) const;
 
   NodeBundleHandle bundle_for_concrete_node(size_t concrete_node_index) const;
   size_t size() const;
