@@ -5,8 +5,10 @@
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string_view>
 #include <span>
+#include <variant>
 #include <vector>
 
 namespace iv {
@@ -41,22 +43,56 @@ using SubgraphNodeId = size_t;
 
 class GraphBuilderTopology;
 
-// Manual type erasure for one node insertion result. Its private payload is a
-// concrete, tiled, or subgraph bundle. There is no kind tag: each operation
-// lowers directly through the payload that implements it.
+// Closed builder-time representation for one node insertion result. Bundle-kind
+// dispatch stays inside this subsystem so callers only depend on NodeBundle's
+// logical port and node-membership operations.
 class NodeBundle {
-public:
-  struct Ops;
-  NodeBundle();
-  NodeBundle(NodeBundle const &);
-  NodeBundle(NodeBundle &&) noexcept;
-  NodeBundle &operator=(NodeBundle const &);
-  NodeBundle &operator=(NodeBundle &&) noexcept;
-  ~NodeBundle();
+  struct ConcreteNodeBundle {
+    static constexpr bool contains_concrete_nodes = true;
 
-  // Used only by the private payload factories in node_bundles.cpp. Ops and
-  // payload types are not exposed to callers.
-  NodeBundle(void *, Ops const *);
+    size_t node{};
+    std::vector<TopologyPortId> sample_inputs, sample_outputs{};
+    std::vector<TopologyPortId> event_inputs, event_outputs{};
+    std::vector<InputConfig> sample_input_configs{};
+    std::vector<OutputConfig> sample_output_configs{};
+    std::vector<EventInputConfig> event_input_configs{};
+    std::vector<EventOutputConfig> event_output_configs{};
+  };
+
+  struct TiledNodeBundle {
+    static constexpr bool contains_concrete_nodes = true;
+
+    std::vector<size_t> nodes{};
+    std::vector<std::vector<TopologyPortId>> sample_inputs, sample_outputs{};
+    std::vector<std::vector<TopologyPortId>> event_inputs, event_outputs{};
+    std::vector<InputConfig> sample_input_configs{};
+    std::vector<OutputConfig> sample_output_configs{};
+    std::vector<EventInputConfig> event_input_configs{};
+    std::vector<EventOutputConfig> event_output_configs{};
+  };
+
+  struct SubgraphNodeBundle {
+    static constexpr bool contains_concrete_nodes = false;
+
+    size_t node{};
+    std::vector<TopologyPortId> sample_inputs, sample_outputs{};
+    std::vector<TopologyPortId> event_inputs, event_outputs{};
+    std::vector<InputConfig> sample_input_configs{};
+    std::vector<OutputConfig> sample_output_configs{};
+    std::vector<EventInputConfig> event_input_configs{};
+    std::vector<EventOutputConfig> event_output_configs{};
+  };
+
+  using Payload = std::variant<ConcreteNodeBundle, TiledNodeBundle,
+                               SubgraphNodeBundle>;
+
+public:
+  NodeBundle() = default;
+  NodeBundle(NodeBundle const &) = default;
+  NodeBundle(NodeBundle &&) noexcept = default;
+  NodeBundle &operator=(NodeBundle const &) = default;
+  NodeBundle &operator=(NodeBundle &&) noexcept = default;
+  ~NodeBundle() = default;
 
   SampleInputPortDescriptor sample_input_descriptor(size_t) const;
   SampleOutputPortDescriptor sample_output_descriptor(size_t) const;
@@ -94,8 +130,11 @@ public:
   NodeSourceAnnotations const &source_annotations() const;
 
 private:
-  void *_payload = nullptr;
-  Ops const *_ops = nullptr;
+  explicit NodeBundle(ConcreteNodeBundle);
+  explicit NodeBundle(TiledNodeBundle);
+  explicit NodeBundle(SubgraphNodeBundle);
+
+  std::optional<Payload> _payload{};
   std::vector<size_t> _virtual_node_handles{};
   NodeSourceAnnotations _source_annotations{};
   friend class GraphBuilderNodeBundles;

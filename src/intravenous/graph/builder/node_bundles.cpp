@@ -9,79 +9,22 @@
 
 namespace iv {
 namespace {
-struct ConcreteNodeBundle {
-  size_t node{};
-  std::vector<TopologyPortId> sample_inputs, sample_outputs{};
-  std::vector<TopologyPortId> event_inputs, event_outputs{};
-  std::vector<InputConfig> sample_input_configs{};
-  std::vector<OutputConfig> sample_output_configs{};
-  std::vector<EventInputConfig> event_input_configs{};
-  std::vector<EventOutputConfig> event_output_configs{};
-};
-
-struct TiledNodeBundle {
-  std::vector<size_t> nodes{};
-  std::vector<std::vector<TopologyPortId>> sample_inputs, sample_outputs{};
-  std::vector<std::vector<TopologyPortId>> event_inputs, event_outputs{};
-  std::vector<InputConfig> sample_input_configs{};
-  std::vector<OutputConfig> sample_output_configs{};
-  std::vector<EventInputConfig> event_input_configs{};
-  std::vector<EventOutputConfig> event_output_configs{};
-};
-
-struct SubgraphNodeBundle {
-  size_t node{};
-  std::vector<TopologyPortId> sample_inputs, sample_outputs{};
-  std::vector<TopologyPortId> event_inputs, event_outputs{};
-  std::vector<InputConfig> sample_input_configs{};
-  std::vector<OutputConfig> sample_output_configs{};
-  std::vector<EventInputConfig> event_input_configs{};
-  std::vector<EventOutputConfig> event_output_configs{};
-};
-
-template <class Payload> void destroy(void *payload) { delete static_cast<Payload *>(payload); }
-template <class Payload> void *clone(void const *payload) {
-  return new Payload(*static_cast<Payload const *>(payload));
-}
-template <class Payload> void import(void *payload, size_t offset) {
-  auto &p = *static_cast<Payload *>(payload);
-  if constexpr (std::is_same_v<Payload, TiledNodeBundle>) {
-    for (auto &node : p.nodes) node += offset;
-    auto offset_ports = [offset](auto &ports) {
-      for (auto &port_list : ports) for (auto &port : port_list) port.node += offset;
-    };
-    offset_ports(p.sample_inputs); offset_ports(p.sample_outputs);
-    offset_ports(p.event_inputs); offset_ports(p.event_outputs);
-  } else {
-    p.node += offset;
-    auto offset_ports = [offset](auto &ports) { for (auto &port : ports) port.node += offset; };
-    offset_ports(p.sample_inputs); offset_ports(p.sample_outputs);
-    offset_ports(p.event_inputs); offset_ports(p.event_outputs);
-  }
-}
-
-template <class Descriptor, class Payload, auto PortsMember, auto ConfigsMember>
-Descriptor descriptor(void const *payload, size_t ordinal) {
-  auto const &p = *static_cast<Payload const *>(payload);
-  auto const &ports = p.*PortsMember;
-  auto const &configs = p.*ConfigsMember;
+template <class Descriptor, class Ports, class Configs>
+Descriptor descriptor(Ports const &ports, Configs const &configs,
+                      size_t ordinal) {
   if (ordinal >= ports.size() || ordinal >= configs.size())
     details::error("NodeBundle port ordinal is out of bounds");
 
   Descriptor result{.config = configs[ordinal]};
-  if constexpr (std::is_same_v<Payload, TiledNodeBundle>)
+  if constexpr (requires { result.endpoints = ports[ordinal]; })
     result.endpoints = ports[ordinal];
   else
     result.endpoints.push_back(ports[ordinal]);
   return result;
 }
 
-template <class Payload, auto ConfigsMember> size_t count(void const *payload) {
-  return (static_cast<Payload const *>(payload)->*ConfigsMember).size();
-}
-template <class Payload, auto ConfigsMember>
-size_t index_for_name(void const *payload, std::string_view name) {
-  auto const &configs = static_cast<Payload const *>(payload)->*ConfigsMember;
+template <class Configs>
+size_t index_for_name(Configs const &configs, std::string_view name) {
   std::optional<size_t> result;
   for (size_t ordinal = 0; ordinal < configs.size(); ++ordinal) {
     if (configs[ordinal].name != name) continue;
@@ -91,95 +34,50 @@ size_t index_for_name(void const *payload, std::string_view name) {
   if (!result) details::error("NodeBundle port name '" + std::string(name) + "' does not exist");
   return *result;
 }
-template <class Payload> void each_node(void const *payload, std::function<void(size_t)> const &fn) {
-  auto const &p = *static_cast<Payload const *>(payload);
-  if constexpr (std::is_same_v<Payload, TiledNodeBundle>) for (auto const node : p.nodes) fn(node);
-  else fn(p.node);
-}
-template <class Payload> void each_concrete_node(void const *payload, std::function<void(size_t)> const &fn) {
-  if constexpr (!std::is_same_v<Payload, SubgraphNodeBundle>) each_node<Payload>(payload, fn);
-}
-
-template <class Payload> NodeBundle::Ops const &ops_for();
 } // namespace
 
-struct NodeBundle::Ops {
-  void (*destroy)(void *);
-  void *(*clone)(void const *);
-  SampleInputPortDescriptor (*sample_input_descriptor)(void const *, size_t);
-  SampleOutputPortDescriptor (*sample_output_descriptor)(void const *, size_t);
-  EventInputPortDescriptor (*event_input_descriptor)(void const *, size_t);
-  EventOutputPortDescriptor (*event_output_descriptor)(void const *, size_t);
-  size_t (*sample_input_count)(void const *);
-  size_t (*sample_output_count)(void const *);
-  size_t (*event_input_count)(void const *);
-  size_t (*event_output_count)(void const *);
-  size_t (*sample_input_index)(void const *, std::string_view);
-  size_t (*sample_output_index)(void const *, std::string_view);
-  size_t (*event_input_index)(void const *, std::string_view);
-  size_t (*event_output_index)(void const *, std::string_view);
-  void (*each_node)(void const *, std::function<void(size_t)> const &);
-  void (*each_concrete_node)(void const *, std::function<void(size_t)> const &);
-  void (*import_into)(void *, size_t);
-};
+NodeBundle::NodeBundle(ConcreteNodeBundle payload)
+    : _payload(Payload{std::move(payload)}) {}
+NodeBundle::NodeBundle(TiledNodeBundle payload)
+    : _payload(Payload{std::move(payload)}) {}
+NodeBundle::NodeBundle(SubgraphNodeBundle payload)
+    : _payload(Payload{std::move(payload)}) {}
 
-namespace {
-template <class Payload> NodeBundle::Ops const &ops_for() {
-  static NodeBundle::Ops const ops{
-      .destroy = destroy<Payload>, .clone = clone<Payload>,
-      .sample_input_descriptor = descriptor<SampleInputPortDescriptor, Payload,
-          &Payload::sample_inputs, &Payload::sample_input_configs>,
-      .sample_output_descriptor = descriptor<SampleOutputPortDescriptor, Payload,
-          &Payload::sample_outputs, &Payload::sample_output_configs>,
-      .event_input_descriptor = descriptor<EventInputPortDescriptor, Payload,
-          &Payload::event_inputs, &Payload::event_input_configs>,
-      .event_output_descriptor = descriptor<EventOutputPortDescriptor, Payload,
-          &Payload::event_outputs, &Payload::event_output_configs>,
-      .sample_input_count = count<Payload, &Payload::sample_input_configs>,
-      .sample_output_count = count<Payload, &Payload::sample_output_configs>,
-      .event_input_count = count<Payload, &Payload::event_input_configs>,
-      .event_output_count = count<Payload, &Payload::event_output_configs>,
-      .sample_input_index = index_for_name<Payload, &Payload::sample_input_configs>,
-      .sample_output_index = index_for_name<Payload, &Payload::sample_output_configs>,
-      .event_input_index = index_for_name<Payload, &Payload::event_input_configs>,
-      .event_output_index = index_for_name<Payload, &Payload::event_output_configs>,
-      .each_node = each_node<Payload>, .each_concrete_node = each_concrete_node<Payload>,
-      .import_into = import<Payload>};
-  return ops;
-}
-
-template <class Payload> NodeBundle make_bundle(Payload payload) {
-  return NodeBundle(new Payload(std::move(payload)), &ops_for<Payload>());
-}
-} // namespace
-
-NodeBundle::NodeBundle() = default;
-NodeBundle::NodeBundle(void *payload, Ops const *ops) : _payload(payload), _ops(ops) {}
-NodeBundle::NodeBundle(NodeBundle const &other)
-    : _payload(other._payload ? other._ops->clone(other._payload) : nullptr), _ops(other._ops),
-      _virtual_node_handles(other._virtual_node_handles), _source_annotations(other._source_annotations) {}
-NodeBundle::NodeBundle(NodeBundle &&other) noexcept
-    : _payload(std::exchange(other._payload, nullptr)),
-      _ops(std::exchange(other._ops, nullptr)),
-      _virtual_node_handles(std::move(other._virtual_node_handles)),
-      _source_annotations(std::move(other._source_annotations)) {}
-NodeBundle &NodeBundle::operator=(NodeBundle const &other) { NodeBundle copy(other); *this = std::move(copy); return *this; }
-NodeBundle &NodeBundle::operator=(NodeBundle &&other) noexcept {
-  if (this != &other) { if (_payload) _ops->destroy(_payload); _payload = std::exchange(other._payload, nullptr); _ops = std::exchange(other._ops, nullptr); _virtual_node_handles = std::move(other._virtual_node_handles); _source_annotations = std::move(other._source_annotations); }
-  return *this;
-}
-NodeBundle::~NodeBundle() { if (_payload) _ops->destroy(_payload); }
 SampleInputPortDescriptor NodeBundle::sample_input_descriptor(size_t i) const {
-  return _ops->sample_input_descriptor(_payload, i);
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [&](auto const &payload) {
+        return descriptor<SampleInputPortDescriptor>(
+            payload.sample_inputs, payload.sample_input_configs, i);
+      },
+      *_payload);
 }
 SampleOutputPortDescriptor NodeBundle::sample_output_descriptor(size_t i) const {
-  return _ops->sample_output_descriptor(_payload, i);
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [&](auto const &payload) {
+        return descriptor<SampleOutputPortDescriptor>(
+            payload.sample_outputs, payload.sample_output_configs, i);
+      },
+      *_payload);
 }
 EventInputPortDescriptor NodeBundle::event_input_descriptor(size_t i) const {
-  return _ops->event_input_descriptor(_payload, i);
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [&](auto const &payload) {
+        return descriptor<EventInputPortDescriptor>(
+            payload.event_inputs, payload.event_input_configs, i);
+      },
+      *_payload);
 }
 EventOutputPortDescriptor NodeBundle::event_output_descriptor(size_t i) const {
-  return _ops->event_output_descriptor(_payload, i);
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [&](auto const &payload) {
+        return descriptor<EventOutputPortDescriptor>(
+            payload.event_outputs, payload.event_output_configs, i);
+      },
+      *_payload);
 }
 
 void NodeBundle::for_each_sample_input(
@@ -236,16 +134,91 @@ std::string_view NodeBundle::type_identity(GraphBuilderTopology const &topology)
       : std::string_view(topology.concrete_node(*node).type_identity.value);
 }
 
-size_t NodeBundle::sample_input_count() const { return _ops->sample_input_count(_payload); }
-size_t NodeBundle::sample_output_count() const { return _ops->sample_output_count(_payload); }
-size_t NodeBundle::event_input_count() const { return _ops->event_input_count(_payload); }
-size_t NodeBundle::event_output_count() const { return _ops->event_output_count(_payload); }
-size_t NodeBundle::sample_input_index(std::string_view name) const { return _ops->sample_input_index(_payload, name); }
-size_t NodeBundle::sample_output_index(std::string_view name) const { return _ops->sample_output_index(_payload, name); }
-size_t NodeBundle::event_input_index(std::string_view name) const { return _ops->event_input_index(_payload, name); }
-size_t NodeBundle::event_output_index(std::string_view name) const { return _ops->event_output_index(_payload, name); }
-void NodeBundle::for_each_topology_node(std::function<void(size_t)> const &fn) const { _ops->each_node(_payload, fn); }
-void NodeBundle::for_each_concrete_node(std::function<void(size_t)> const &fn) const { _ops->each_concrete_node(_payload, fn); }
+size_t NodeBundle::sample_input_count() const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [](auto const &payload) { return payload.sample_input_configs.size(); },
+      *_payload);
+}
+size_t NodeBundle::sample_output_count() const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [](auto const &payload) { return payload.sample_output_configs.size(); },
+      *_payload);
+}
+size_t NodeBundle::event_input_count() const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [](auto const &payload) { return payload.event_input_configs.size(); },
+      *_payload);
+}
+size_t NodeBundle::event_output_count() const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [](auto const &payload) { return payload.event_output_configs.size(); },
+      *_payload);
+}
+size_t NodeBundle::sample_input_index(std::string_view name) const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [&](auto const &payload) {
+        return index_for_name(payload.sample_input_configs, name);
+      },
+      *_payload);
+}
+size_t NodeBundle::sample_output_index(std::string_view name) const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [&](auto const &payload) {
+        return index_for_name(payload.sample_output_configs, name);
+      },
+      *_payload);
+}
+size_t NodeBundle::event_input_index(std::string_view name) const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [&](auto const &payload) {
+        return index_for_name(payload.event_input_configs, name);
+      },
+      *_payload);
+}
+size_t NodeBundle::event_output_index(std::string_view name) const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [&](auto const &payload) {
+        return index_for_name(payload.event_output_configs, name);
+      },
+      *_payload);
+}
+void NodeBundle::for_each_topology_node(
+    std::function<void(size_t)> const &fn) const {
+  if (!_payload) details::error("empty NodeBundle");
+  std::visit(
+      [&](auto const &payload) {
+        if constexpr (requires { payload.nodes; }) {
+          for (auto const node : payload.nodes) fn(node);
+        } else {
+          fn(payload.node);
+        }
+      },
+      *_payload);
+}
+void NodeBundle::for_each_concrete_node(
+    std::function<void(size_t)> const &fn) const {
+  if (!_payload) details::error("empty NodeBundle");
+  std::visit(
+      [&](auto const &payload) {
+        using Bundle = std::remove_cvref_t<decltype(payload)>;
+        if constexpr (Bundle::contains_concrete_nodes) {
+          if constexpr (requires { payload.nodes; }) {
+            for (auto const node : payload.nodes) fn(node);
+          } else {
+            fn(payload.node);
+          }
+        }
+      },
+      *_payload);
+}
 size_t NodeBundle::single_concrete_node() const {
   std::optional<size_t> node;
   for_each_concrete_node([&](size_t value) {
@@ -255,7 +228,32 @@ size_t NodeBundle::single_concrete_node() const {
   if (!node) details::error("this operation requires a bundle with one concrete node");
   return *node;
 }
-void NodeBundle::import_into(size_t offset) { _ops->import_into(_payload, offset); _virtual_node_handles.clear(); }
+void NodeBundle::import_into(size_t offset) {
+  if (!_payload) details::error("empty NodeBundle");
+  std::visit(
+      [&](auto &payload) {
+        if constexpr (requires { payload.nodes; }) {
+          for (auto &node : payload.nodes) node += offset;
+        } else {
+          payload.node += offset;
+        }
+        auto offset_ports = [offset](auto &ports) {
+          for (auto &port_or_ports : ports) {
+            if constexpr (requires { port_or_ports.node; }) {
+              port_or_ports.node += offset;
+            } else {
+              for (auto &port : port_or_ports) port.node += offset;
+            }
+          }
+        };
+        offset_ports(payload.sample_inputs);
+        offset_ports(payload.sample_outputs);
+        offset_ports(payload.event_inputs);
+        offset_ports(payload.event_outputs);
+      },
+      *_payload);
+  _virtual_node_handles.clear();
+}
 std::vector<size_t> &NodeBundle::virtual_node_handles() { return _virtual_node_handles; }
 std::vector<size_t> const &NodeBundle::virtual_node_handles() const { return _virtual_node_handles; }
 NodeSourceAnnotations &NodeBundle::source_annotations() { return _source_annotations; }
@@ -264,7 +262,7 @@ NodeSourceAnnotations const &NodeBundle::source_annotations() const { return _so
 NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
     GraphBuilderTopology const &topology, size_t node) {
   auto const &n = topology.concrete_node(node);
-  ConcreteNodeBundle p{
+  NodeBundle::ConcreteNodeBundle p{
     .node = node,
     .sample_inputs{}, .sample_outputs{},
     .event_inputs{}, .event_outputs{},
@@ -286,7 +284,7 @@ NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
   for (size_t i = 0; i < p.event_output_configs.size(); ++i)
     p.event_outputs.push_back({node, i});
   auto handle = _bundles.size();
-  _bundles.push_back(make_bundle(std::move(p)));
+  _bundles.push_back(NodeBundle(std::move(p)));
   if (_bundle_by_concrete_node.size() <= node)
     _bundle_by_concrete_node.resize(node + 1, GRAPH_ID);
   _bundle_by_concrete_node[node] = handle;
@@ -298,7 +296,7 @@ NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     ChannelLayout promoted) {
   if (nodes.empty()) details::error("a tiled NodeBundle requires at least one ConcreteNode");
   auto const &first = topology.concrete_node(nodes.front());
-  TiledNodeBundle p{
+  NodeBundle::TiledNodeBundle p{
     .nodes = {nodes.begin(), nodes.end()},
     .sample_inputs{}, .sample_outputs{},
     .event_inputs{}, .event_outputs{},
@@ -339,7 +337,7 @@ NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
   }
 
   auto handle = _bundles.size();
-  _bundles.push_back(make_bundle(std::move(p)));
+  _bundles.push_back(NodeBundle(std::move(p)));
   for (auto node : nodes) {
     if (_bundle_by_concrete_node.size() <= node)
       _bundle_by_concrete_node.resize(node + 1, GRAPH_ID);
@@ -351,7 +349,7 @@ NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
 NodeBundleHandle GraphBuilderNodeBundles::append_subgraph(
     GraphBuilderTopology const &topology, size_t node) {
   auto const &n = topology.subgraph_node(node);
-  SubgraphNodeBundle p{
+  NodeBundle::SubgraphNodeBundle p{
     .node = node,
     .sample_inputs{}, .sample_outputs{},
     .event_inputs{}, .event_outputs{},
@@ -373,7 +371,7 @@ NodeBundleHandle GraphBuilderNodeBundles::append_subgraph(
   for (size_t i = 0; i < p.event_output_configs.size(); ++i)
     p.event_outputs.push_back({node, i});
   auto handle = _bundles.size();
-  _bundles.push_back(make_bundle(std::move(p)));
+  _bundles.push_back(NodeBundle(std::move(p)));
   if (_bundle_by_concrete_node.size() <= node)
     _bundle_by_concrete_node.resize(node + 1, GRAPH_ID);
   _bundle_by_concrete_node[node] = handle;
