@@ -213,9 +213,22 @@ void GraphBuilderPublicPorts::define_sample_outputs(
             _sample_output_members.push_back(refs[i].public_member);
             _sample_output_source_infos.emplace_back();
         }
-        builder.record_authored_sample_connection(
-            NodeBundlePortId{_boundary, PortKind::sample, output_ordinal},
-            ref);
+
+        NodeBundlePortId const target{
+            _boundary, PortKind::sample, output_ordinal};
+        if (refs[i].target_channel_ordinal) {
+            auto const target_channels =
+                node_bundles.sample_input_channels(target);
+            auto const channel = *refs[i].target_channel_ordinal;
+            if (channel >= target_channels.size()) {
+                details::error(
+                    "public sample output channel ordinal is out of bounds");
+            }
+            builder.record_authored_sample_connection(
+                target_channels[channel], ref);
+        } else {
+            builder.record_authored_sample_connection(target, ref);
+        }
         _last_sample_output_port_ordinals.push_back(output_ordinal);
     }
 

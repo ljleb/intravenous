@@ -3,6 +3,7 @@
 #include <intravenous/graph/builder/port_refs.h>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -32,6 +33,10 @@ namespace iv {
         SamplePortRef ref;
         OutputConfig config;
         PublicSamplePortMember public_member {};
+        // When set, this declaration contributes only one semantic channel to
+        // the wider destination port. Completion decides how to materialize
+        // the aggregate for the current runtime representation.
+        std::optional<size_t> target_channel_ordinal {};
     };
 
     struct EventOutputRefConfig {

@@ -6,7 +6,6 @@
 #include <intravenous/graph/builder/node_bundles.h>
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/builder/topology.h>
-#include <intravenous/basic_nodes/routing.h>
 
 #include <optional>
 #include <span>
@@ -18,9 +17,6 @@
 
 namespace iv {
     class GraphBuilder;
-
-    template<class ChannelType>
-    SamplePortRef make_channel_pack(GraphBuilder&, size_t channel, SamplePortRef source);
 
     struct GraphBuilderPublicSamplePortChannel {
         std::vector<size_t> port_ordinals {};
@@ -194,10 +190,8 @@ namespace iv {
             using RefT = std::remove_cvref_t<decltype(ref)>;
             if constexpr (details::is_channel_named_arg_v<RefT>) {
                 using ChannelType = typename RefT::channel_type;
-                auto packed = make_channel_pack<ChannelType>(
-                    builder, RefT::channel_ordinal, lift_sample(ref.value));
                 output_refs.push_back(OutputRefConfig{
-                    .ref = packed,
+                    .ref = lift_sample(ref.value),
                     .config = OutputConfig{
                         .name = std::string(RefT::name.view()),
                         .channel_layout = ChannelLayout{
@@ -210,13 +204,12 @@ namespace iv {
                         .channel_type = ChannelTypeTraits<ChannelType>::id,
                         .whole_stream = true,
                     },
+                    .target_channel_ordinal = RefT::channel_ordinal,
                 });
             } else if constexpr (details::is_default_channel_named_arg_v<RefT>) {
                 using ChannelType = typename RefT::channel_type;
-                auto packed = make_channel_pack<ChannelType>(
-                    builder, RefT::channel_ordinal, lift_sample(ref.value));
                 output_refs.push_back(OutputRefConfig{
-                    .ref = packed,
+                    .ref = lift_sample(ref.value),
                     .config = OutputConfig{
                         .name = "main",
                         .channel_layout = ChannelLayout{
@@ -229,6 +222,7 @@ namespace iv {
                         .channel_type = ChannelTypeTraits<ChannelType>::id,
                         .whole_stream = true,
                     },
+                    .target_channel_ordinal = RefT::channel_ordinal,
                 });
             } else if constexpr (details::is_named_arg_v<RefT>) {
                 if constexpr (RefT::name.view().starts_with("__")) {

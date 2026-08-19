@@ -184,11 +184,12 @@ public:
   std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
   void connect_sample_input(TopologyPortId target, SamplePortRef source);
   void connect_sample_input(NodeBundlePortId target, SamplePortRef source);
-  // Connect one mono source per channel of a builder-visible port.  The
-  // builder performs packing or tiled-port expansion as needed.
+  // Record one scalar source per channel of a builder-visible port. Physical
+  // packing/tiled projection is a completion-time lowering concern.
   void connect_sample_input(NodeBundlePortId target,
                             std::span<SamplePortRef const> sources);
-  // Explicitly cross the logical sample-ref -> topology-port boundary.
+  // Compatibility lowering hook. Ordinary authored sample operations must not
+  // cross to topology through this API.
   MaterializedSamplePort materialize_sample_output(SamplePortRef source);
   void connect_event_input(TopologyPortId target, EventPortRef source);
   void connect_event_input(NodeBundlePortId target, EventPortRef source);
@@ -214,6 +215,8 @@ private:
   SamplePortRef detach_sample_port(SamplePortRef const &sample_port,
                                    size_t loop_extra_latency);
   void record_authored_sample_connection(NodeBundlePortId target,
+                                         SamplePortRef const &source);
+  void record_authored_sample_connection(SampleInputChannelId target,
                                          SamplePortRef const &source);
   void record_authored_sample_connection(
       NodeBundlePortId target, std::span<SamplePortRef const> sources);
@@ -263,14 +266,6 @@ private:
 
   SamplePortRef lift_to_sample_port(NamedRef const &ref);
 };
-
-template <class ChannelType>
-SamplePortRef make_channel_pack(GraphBuilder &builder, size_t channel,
-                                SamplePortRef source) {
-  auto pack = builder.template node<ChannelPack<ChannelType>>();
-  pack.connect_input(channel, source);
-  return static_cast<SamplePortRef>(pack);
-}
 
 template <class ChannelType, SampleStreamLayout Layout>
 SamplePortRef GraphBuilder::lift_to_sample_port(

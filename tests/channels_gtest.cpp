@@ -533,6 +533,66 @@ TEST(Channels, GraphBuilderTileIsPureStructuralComposition)
         built.metadata.concrete_node_type_identities, "ChannelUnpack"));
 }
 
+TEST(Channels, ChannelQualifiedPublicOutputsArePackedOnlyAtCompletion)
+{
+    iv::GraphBuilder g;
+    auto left = g.node<iv::Constant>(iv::Sample{0.25f});
+    auto right = g.node<iv::Constant>(iv::Sample{-0.5f});
+
+    g.outputs(
+        iv::PortName<"main">{}[iv::stereo::left] =
+            static_cast<iv::SamplePortRef>(left),
+        iv::PortName<"main">{}[iv::stereo::right] =
+            static_cast<iv::SamplePortRef>(right));
+
+    // outputs(...) must not author a ChannelPack. The next bundle is therefore
+    // immediately after the two user-authored sources.
+    auto after_outputs = g.node<iv::Constant>(iv::Sample{1.0f});
+    EXPECT_EQ(
+        after_outputs.node_bundle_handle(),
+        right.node_bundle_handle() + 1);
+
+    auto const built = g.build_root_node();
+    ASSERT_EQ(built.graph.outputs().size(), 1u);
+    EXPECT_EQ(
+        built.graph.outputs().front().channel_layout.channel_type,
+        iv::ChannelTypeId::stereo);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            built.metadata.concrete_node_type_identities,
+            [](std::string const& type) {
+                return type.contains("ChannelPack");
+            }),
+        1);
+}
+
+TEST(Channels, DetachAuthorsOnlyItsExplicitWriterAndReaderNodes)
+{
+    iv::GraphBuilder g;
+    auto left = g.node<iv::Constant>(iv::Sample{0.25f});
+    auto right = g.node<iv::Constant>(iv::Sample{-0.5f});
+    auto structural = g.tile<iv::stereo>(left, right);
+    auto detached =
+        static_cast<iv::SamplePortRef>(structural).detach();
+
+    // Structural stereo still needs a compatibility pack for the current mono
+    // detach writer, but that node must be synthesized only in completion.
+    auto after_detach = g.node<iv::Constant>(iv::Sample{1.0f});
+    EXPECT_EQ(
+        after_detach.node_bundle_handle(),
+        right.node_bundle_handle() + 3);
+
+    g.outputs(detached);
+    auto const built = g.build_root_node();
+    EXPECT_EQ(
+        std::ranges::count_if(
+            built.metadata.concrete_node_type_identities,
+            [](std::string const& type) {
+                return type.contains("ChannelPack");
+            }),
+        1);
+}
+
 TEST(Channels, StructuralTilePacksOnlyWhenNativeStereoIsMaterialized)
 {
     iv::GraphBuilder g;

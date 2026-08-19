@@ -551,23 +551,26 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
                    sample_port.to_string() +
                    " because it belongs to another builder");
   }
+  if (sample_port.channels.empty()) {
+    details::error("builder " + _identity.value +
+                   ": cannot detach a sample port with no semantic channels");
+  }
 
-  auto const resolved_source = materialize_sample_output(sample_port);
-  TopologyPortId const source = resolved_source.port;
-  if (_detach.reader_output_exists(source)) {
+  if (_detach.reader_output_exists(
+          sample_port.channel_type, sample_port.channels)) {
     return sample_port;
   }
-  if (auto const *existing = _detach.info_for_source(source)) {
+  if (auto const *existing = _detach.info_for_source(
+          sample_port.channel_type, sample_port.channels)) {
     if (existing->loop_extra_latency != loop_extra_latency) {
       details::error("builder " + _identity.value +
                      ": detach loop extra latency conflict on " +
                      sample_port.to_string());
     }
-    TopologyPortId const reader = existing->reader_output;
-    auto const reader_bundle =
-        _node_bundles.bundle_for_concrete_node(reader.node);
     return SamplePortRef(
-        *this, NodeBundlePortId{reader_bundle, PortKind::sample, reader.port});
+        *this,
+        NodeBundlePortId{
+            existing->reader_bundle, PortKind::sample, 0});
   }
   if (loop_extra_latency < 1) {
     details::error("builder " + _identity.value +
@@ -576,8 +579,6 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
 
   size_t const detach_id = _detach.allocate_detach_id();
   auto writer = node<DetachWriterNode>(detach_id, loop_extra_latency);
-  size_t const writer_node = _topology.node_count() - 1;
-  connect_sample_input(TopologyPortId{writer_node, 0}, resolved_source);
   record_authored_sample_connection(
       NodeBundlePortId{
           writer.node_bundle_handle(), PortKind::sample, 0},
@@ -585,16 +586,20 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
 
   auto reader = node<DetachReaderNode>(detach_id, loop_extra_latency);
   SamplePortRef detached = static_cast<SamplePortRef>(reader);
-  auto const detached_source = materialize_sample_output(detached);
+  if (detached.channel_type != ChannelTypeId::mono ||
+      detached.channels.size() != 1) {
+    details::error("detach reader must expose exactly one mono sample channel");
+  }
 
-  _detach.record_detached_source(source,
-                                 DetachedSamplePortInfo{
-                                     .detach_id = detach_id,
-                                     .original_source = source,
-                                     .writer_node = writer_node,
-                                     .reader_output = detached_source.port,
-                                     .loop_extra_latency = loop_extra_latency,
-                                 });
+  _detach.record_detached_source(AuthoredDetachedSamplePortInfo{
+      .detach_id = detach_id,
+      .source_type = sample_port.channel_type,
+      .source_channels = sample_port.channels,
+      .writer_bundle = writer.node_bundle_handle(),
+      .reader_bundle = reader.node_bundle_handle(),
+      .reader_channel = detached.channels.front(),
+      .loop_extra_latency = loop_extra_latency,
+  });
   return detached;
 }
 
@@ -685,18 +690,18 @@ void GraphBuilder::record_authored_sample_connection(
   if (source.graph_builder != this) {
     details::error("cannot connect a sample output from another builder");
   }
-    auto source_type = source.channel_type;
-    auto source_channels = source.channels;
-    if (source_channels.size() != channel_count(source_type) &&
-        source.node_bundle_port) {
-      auto const descriptor =
-          _node_bundles.resolve_sample_output(*source.node_bundle_port);
-      source_type = descriptor.config.channel_layout.channel_type;
-      source_channels =
-          _node_bundles.sample_output_channels(*source.node_bundle_port);
-    }
+  auto source_type = source.channel_type;
+  auto source_channels = source.channels;
+  if (source_channels.size() != channel_count(source_type) &&
+      source.node_bundle_port) {
+    auto const descriptor =
+        _node_bundles.resolve_sample_output(*source.node_bundle_port);
+    source_type = descriptor.config.channel_layout.channel_type;
+    source_channels =
+        _node_bundles.sample_output_channels(*source.node_bundle_port);
+  }
 
-    if (source_channels.size() != channel_count(source_type)) {
+  if (source_channels.size() != channel_count(source_type)) {
     details::error(
         "sample source does not match its semantic channel type");
   }
@@ -707,6 +712,46 @@ void GraphBuilder::record_authored_sample_connection(
       .source_channels = std::move(source_channels),
       .target_type = target_descriptor.config.channel_layout.channel_type,
       .target_channels = _node_bundles.sample_input_channels(target),
+  });
+}
+
+void GraphBuilder::record_authored_sample_connection(
+    SampleInputChannelId target, SamplePortRef const &source) {
+  if (!source.graph_builder) {
+    details::error("cannot connect an empty sample output");
+  }
+  if (source.graph_builder != this) {
+    details::error("cannot connect a sample output from another builder");
+  }
+
+  NodeBundlePortId const target_port{
+      target.bundle, PortKind::sample, target.port};
+  auto const target_channels = _node_bundles.sample_input_channels(target_port);
+  if (target.channel >= target_channels.size() ||
+      target_channels[target.channel] != target) {
+    details::error("sample input channel does not belong to its NodeBundle port");
+  }
+
+  auto source_type = source.channel_type;
+  auto source_channels = source.channels;
+  if (source_channels.size() != channel_count(source_type) &&
+      source.node_bundle_port) {
+    auto const descriptor =
+        _node_bundles.resolve_sample_output(*source.node_bundle_port);
+    source_type = descriptor.config.channel_layout.channel_type;
+    source_channels =
+        _node_bundles.sample_output_channels(*source.node_bundle_port);
+  }
+  if (source_channels.size() != channel_count(source_type)) {
+    details::error(
+        "sample source does not match its semantic channel type");
+  }
+
+  _connections.record_authored_sample_connection(AuthoredSampleConnection{
+      .source_type = source_type,
+      .source_channels = std::move(source_channels),
+      .target_type = ChannelTypeId::mono,
+      .target_channels = {target},
   });
 }
 
@@ -846,16 +891,63 @@ void GraphBuilder::materialize_authored_sample_connections_for_completion() {
     NodeBundlePortId const target{
         first.bundle, PortKind::sample, first.port};
     auto const descriptor = _node_bundles.resolve_sample_input(target);
-    if (descriptor.config.channel_layout.channel_type !=
-            connection.target_type ||
-        _node_bundles.sample_input_channels(target) !=
-            connection.target_channels) {
+    auto const target_channels = _node_bundles.sample_input_channels(target);
+    bool const whole_port =
+        descriptor.config.channel_layout.channel_type == connection.target_type &&
+        target_channels == connection.target_channels;
+    bool const scalar_channel =
+        connection.target_type == ChannelTypeId::mono &&
+        connection.target_channels.size() == 1 &&
+        std::ranges::contains(
+            target_channels, connection.target_channels.front());
+    if (!whole_port && !scalar_channel) {
       details::error(
           "authored sample connection target no longer matches its "
           "NodeBundle port");
     }
     return target;
   };
+
+  auto targets_whole_port =
+      [&](NodeBundlePortId target,
+          AuthoredSampleConnection const &connection) {
+    auto const descriptor = _node_bundles.resolve_sample_input(target);
+    return connection.target_type ==
+               descriptor.config.channel_layout.channel_type &&
+           connection.target_channels ==
+               _node_bundles.sample_input_channels(target);
+  };
+
+  struct SampleTargetGroup {
+    NodeBundlePortId target{};
+    std::vector<AuthoredSampleConnection const *> connections{};
+  };
+  std::vector<SampleTargetGroup> target_groups;
+  for (auto const &connection : _connections.authored_sample_connections()) {
+    auto const target = target_port(connection);
+    if (targets_whole_port(target, connection)) {
+      // Keep ordinary whole-port connections independent. Grouping exists only
+      // to combine channel-qualified contributors to one wider destination.
+      target_groups.push_back(SampleTargetGroup{
+          .target = target,
+          .connections = {&connection},
+      });
+      continue;
+    }
+
+    auto group = std::find_if(
+        target_groups.begin(), target_groups.end(),
+        [&](SampleTargetGroup const &candidate) {
+          return candidate.target == target &&
+                 !targets_whole_port(
+                     candidate.target, *candidate.connections.front());
+        });
+    if (group == target_groups.end()) {
+      target_groups.push_back(SampleTargetGroup{.target = target});
+      group = target_groups.end() - 1;
+    }
+    group->connections.push_back(&connection);
+  }
 
   std::vector<std::pair<NodeBundlePortId, std::vector<SamplePortRef>>>
       projected_source_channels;
@@ -916,20 +1008,67 @@ void GraphBuilder::materialize_authored_sample_connections_for_completion() {
         *this, connection.source_type, connection.source_channels);
   };
 
-  // detach() still records its physical source so the existing detach
-  // validation and SCC machinery can identify the cut edge. Its writer edge
-  // was therefore lowered explicitly at authoring time; do not replay the
-  // parallel authored connection until detach metadata becomes semantic too.
-  std::unordered_set<size_t> already_lowered_detach_writer_nodes;
-  _detach.for_each_info(
-      [&](TopologyPortId, DetachedSamplePortInfo const &info) {
-        already_lowered_detach_writer_nodes.insert(info.writer_node);
-      });
+  auto source_for_target_group =
+      [&](SampleTargetGroup const &group) -> SamplePortRef {
+    auto const descriptor = _node_bundles.resolve_sample_input(group.target);
+    auto const target_channels =
+        _node_bundles.sample_input_channels(group.target);
+
+    if (group.connections.size() == 1) {
+      auto const &connection = *group.connections.front();
+      if (targets_whole_port(group.target, connection)) {
+        return source_ref(connection);
+      }
+    }
+
+    std::vector<bool> assigned(target_channels.size(), false);
+    auto connect_partial_channels = [&](NodeBundleHandle pack_bundle) {
+      for (auto const *connection : group.connections) {
+        if (connection->target_type != ChannelTypeId::mono ||
+            connection->target_channels.size() != 1) {
+          details::error(
+              "sample bundle port mixes whole-port and channel contributors");
+        }
+        auto const selected = connection->target_channels.front();
+        auto const target_it =
+            std::ranges::find(target_channels, selected);
+        if (target_it == target_channels.end()) {
+          details::error(
+              "sample channel contributor does not belong to its target port");
+        }
+        auto const channel = static_cast<size_t>(
+            target_it - target_channels.begin());
+        if (assigned[channel]) {
+          details::error(
+              "sample bundle port channel has more than one authored source");
+        }
+        assigned[channel] = true;
+        connect_sample_input_lowered(
+            NodeBundlePortId{
+                pack_bundle, PortKind::sample, channel},
+            source_ref(*connection));
+      }
+    };
+
+    switch (descriptor.config.channel_layout.channel_type) {
+    case ChannelTypeId::stereo: {
+      auto pack = node<ChannelPack<stereo>>();
+      connect_partial_channels(pack.node_bundle_handle());
+      return static_cast<SamplePortRef>(pack);
+    }
+    case ChannelTypeId::mono:
+      details::error(
+          "mono sample input has more than one authored source");
+    case ChannelTypeId::count:
+      break;
+    }
+    details::error("invalid channel type for partial sample target");
+  };
 
   // Re-run only the compatibility lowering side. The authored records are
   // already authoritative and must not be duplicated by completion.
-  for (auto const &connection : _connections.authored_sample_connections()) {
-    auto const target = target_port(connection);
+  for (auto const &group : target_groups) {
+    auto const target = group.target;
     if (subgraph_index_by_boundary.contains(target.node_bundle_handle)) {
       // A non-root boundary input is the inward side of a subgraph output.
       // It has no standalone topology endpoint; its source is installed in
@@ -937,28 +1076,23 @@ void GraphBuilder::materialize_authored_sample_connections_for_completion() {
       continue;
     }
 
+    auto const source = source_for_target_group(group);
     auto const target_descriptor = _node_bundles.resolve_sample_input(target);
     if (target_descriptor.endpoints.size() == 1 &&
         target_descriptor.endpoints.front().node == GRAPH_ID) {
       _topology.add_sample_edge(TopologyEdge{
-          materialize_sample_output(source_ref(connection)).port,
+          materialize_sample_output(source).port,
           target_descriptor.endpoints.front(),
       });
       continue;
     }
-    if (target_descriptor.endpoints.size() == 1 &&
-        target_descriptor.endpoints.front().port == 0 &&
-        already_lowered_detach_writer_nodes.contains(
-            target_descriptor.endpoints.front().node)) {
-      continue;
-    }
-    connect_sample_input_lowered(target, source_ref(connection));
+    connect_sample_input_lowered(target, source);
   }
 
-  // A connection targeting a non-root BoundaryNodeBundle defines the source
-  // of the corresponding parent-facing SubgraphNode output.
-  for (auto const &connection : _connections.authored_sample_connections()) {
-    auto const target = target_port(connection);
+  // Connections targeting a non-root BoundaryNodeBundle define the source of
+  // the corresponding parent-facing SubgraphNode output.
+  for (auto const &group : target_groups) {
+    auto const target = group.target;
     auto const subgraph_it =
         subgraph_index_by_boundary.find(target.node_bundle_handle);
     if (subgraph_it == subgraph_index_by_boundary.end()) continue;
@@ -971,7 +1105,7 @@ void GraphBuilder::materialize_authored_sample_connections_for_completion() {
       details::error("subgraph sample output has more than one source");
     }
     auto const materialized =
-        materialize_sample_output(source_ref(connection)).port;
+        materialize_sample_output(source_for_target_group(group)).port;
     _topology.subgraph_node(subgraph.node)
         .lowered_subgraph.sample_output_sources[target.port_ordinal] =
         materialized;
@@ -1013,6 +1147,52 @@ void GraphBuilder::materialize_authored_sample_connections_for_completion() {
       details::error(
           "subgraph sample output has no authored source");
     }
+  }
+
+  // detach() is authored only as explicit writer/reader nodes plus a semantic
+  // source connection. Project the cut-edge metadata only after sample
+  // lowering has produced the compatibility topology.
+  _detach.clear_materialized();
+  for (auto const &info : _detach.authored_infos()) {
+    auto const writer_node =
+        _node_bundles.bundle(info.writer_bundle).single_concrete_node();
+    std::optional<TopologyPortId> materialized_source;
+    _topology.for_each_sample_edge([&](TopologyEdge const &edge) {
+      if (edge.target != TopologyPortId{writer_node, 0}) return;
+      if (materialized_source && *materialized_source != edge.source) {
+        details::error("detach writer has more than one materialized source");
+      }
+      materialized_source = edge.source;
+    });
+    if (!materialized_source) {
+      details::error("detach writer has no materialized source");
+    }
+
+    NodeBundlePortId const reader_port{
+        info.reader_bundle, PortKind::sample, 0};
+    auto const reader_channels =
+        _node_bundles.sample_output_channels(reader_port);
+    if (reader_channels.size() != 1 ||
+        reader_channels.front() != info.reader_channel) {
+      details::error(
+          "detach reader no longer matches its authored sample channel");
+    }
+    auto const reader_descriptor =
+        _node_bundles.resolve_sample_output(reader_port);
+    if (reader_descriptor.endpoints.size() != 1) {
+      details::error(
+          "detach reader must have one completion topology output");
+    }
+
+    _detach.record_materialized_detached_source(
+        *materialized_source,
+        DetachedSamplePortInfo{
+            .detach_id = info.detach_id,
+            .original_source = *materialized_source,
+            .writer_node = writer_node,
+            .reader_output = reader_descriptor.endpoints.front(),
+            .loop_extra_latency = info.loop_extra_latency,
+        });
   }
 }
 

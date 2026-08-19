@@ -1,6 +1,20 @@
 #include <intravenous/graph/builder/detach.h>
 
+#include <algorithm>
+#include <ranges>
+
 namespace iv {
+namespace {
+bool same_source(
+    AuthoredDetachedSamplePortInfo const& info,
+    ChannelTypeId source_type,
+    std::span<SampleOutputChannelId const> source_channels)
+{
+    return info.source_type == source_type
+        && std::ranges::equal(info.source_channels, source_channels);
+}
+} // namespace
+
 size_t GraphBuilderDetach::reserve_child_offset(GraphBuilderDetach const& child)
 {
     size_t const child_detach_offset = _next_detach_id;
@@ -8,17 +22,30 @@ size_t GraphBuilderDetach::reserve_child_offset(GraphBuilderDetach const& child)
     return child_detach_offset;
 }
 
-bool GraphBuilderDetach::reader_output_exists(TopologyPortId source) const
+bool GraphBuilderDetach::reader_output_exists(
+    ChannelTypeId source_type,
+    std::span<SampleOutputChannelId const> source_channels) const
 {
-    return _reader_outputs.contains(source);
+    if (source_type != ChannelTypeId::mono || source_channels.size() != 1) {
+        return false;
+    }
+    return std::ranges::any_of(
+        _authored_infos,
+        [&](AuthoredDetachedSamplePortInfo const& info) {
+            return info.reader_channel == source_channels.front();
+        });
 }
 
-DetachedSamplePortInfo const* GraphBuilderDetach::info_for_source(TopologyPortId source) const
+AuthoredDetachedSamplePortInfo const* GraphBuilderDetach::info_for_source(
+    ChannelTypeId source_type,
+    std::span<SampleOutputChannelId const> source_channels) const
 {
-    if (auto it = _info_by_source.find(source); it != _info_by_source.end()) {
-        return &it->second;
-    }
-    return nullptr;
+    auto const it = std::ranges::find_if(
+        _authored_infos,
+        [&](AuthoredDetachedSamplePortInfo const& info) {
+            return same_source(info, source_type, source_channels);
+        });
+    return it == _authored_infos.end() ? nullptr : &*it;
 }
 
 size_t GraphBuilderDetach::allocate_detach_id()
@@ -26,36 +53,45 @@ size_t GraphBuilderDetach::allocate_detach_id()
     return _next_detach_id++;
 }
 
-void GraphBuilderDetach::record_detached_source(TopologyPortId source, DetachedSamplePortInfo info)
+void GraphBuilderDetach::record_detached_source(
+    AuthoredDetachedSamplePortInfo info)
 {
-    _reader_outputs.insert(info.reader_output);
-    _info_by_source.emplace(source, std::move(info));
+    _authored_infos.push_back(std::move(info));
 }
 
-void GraphBuilderDetach::import_child(GraphBuilderDetach const& child, size_t child_node_offset, size_t child_detach_offset)
+std::span<AuthoredDetachedSamplePortInfo const>
+GraphBuilderDetach::authored_infos() const
 {
-    auto remap_child_port = [&](TopologyPortId port) {
-        if (port.node == GRAPH_ID) {
-            return TopologyPortId{ child_node_offset - 1, port.port };
+    return _authored_infos;
+}
+
+void GraphBuilderDetach::clear_materialized()
+{
+    _materialized_info_by_source.clear();
+    _materialized_reader_outputs.clear();
+}
+
+void GraphBuilderDetach::record_materialized_detached_source(
+    TopologyPortId source, DetachedSamplePortInfo info)
+{
+    _materialized_reader_outputs.insert(info.reader_output);
+    _materialized_info_by_source.emplace(source, std::move(info));
+}
+
+void GraphBuilderDetach::import_child(
+    GraphBuilderDetach const& child,
+    size_t child_node_bundle_offset,
+    size_t child_detach_offset)
+{
+    for (auto info : child._authored_infos) {
+        info.detach_id += child_detach_offset;
+        for (auto& channel : info.source_channels) {
+            channel.bundle += child_node_bundle_offset;
         }
-        return TopologyPortId{ child_node_offset + port.node, port.port };
-    };
-
-    for (auto const& [source, info] : child._info_by_source) {
-        _info_by_source.emplace(
-            remap_child_port(source),
-            DetachedSamplePortInfo{
-                .detach_id = info.detach_id + child_detach_offset,
-                .original_source = remap_child_port(info.original_source),
-                .writer_node = child_node_offset + info.writer_node,
-                .reader_output = remap_child_port(info.reader_output),
-                .loop_extra_latency = info.loop_extra_latency,
-            }
-        );
-    }
-
-    for (TopologyPortId const reader_output : child._reader_outputs) {
-        _reader_outputs.insert(remap_child_port(reader_output));
+        info.writer_bundle += child_node_bundle_offset;
+        info.reader_bundle += child_node_bundle_offset;
+        info.reader_channel.bundle += child_node_bundle_offset;
+        _authored_infos.push_back(std::move(info));
     }
 }
 }
