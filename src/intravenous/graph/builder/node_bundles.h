@@ -71,6 +71,19 @@ class NodeBundle {
     std::vector<EventOutputConfig> event_output_configs{};
   };
 
+  // A graph boundary owns the externally visible interface configuration.
+  // Normal NodeBundle descriptors expose the view from inside the graph, so
+  // boundary inputs appear as outputs and boundary outputs appear as inputs.
+  // Topology GRAPH_ID endpoints remain compatibility projections only.
+  struct BoundaryNodeBundle {
+    static constexpr bool contains_concrete_nodes = false;
+
+    std::vector<InputConfig> sample_inputs{};
+    std::vector<OutputConfig> sample_outputs{};
+    std::vector<EventInputConfig> event_inputs{};
+    std::vector<EventOutputConfig> event_outputs{};
+  };
+
   struct SubgraphNodeBundle {
     static constexpr bool contains_concrete_nodes = false;
 
@@ -84,7 +97,7 @@ class NodeBundle {
   };
 
   using Payload = std::variant<ConcreteNodeBundle, TiledNodeBundle,
-                               SubgraphNodeBundle>;
+                               BoundaryNodeBundle, SubgraphNodeBundle>;
 
 public:
   NodeBundle() = default;
@@ -98,6 +111,17 @@ public:
   SampleOutputPortDescriptor sample_output_descriptor(size_t) const;
   EventInputPortDescriptor event_input_descriptor(size_t) const;
   EventOutputPortDescriptor event_output_descriptor(size_t) const;
+
+  bool is_boundary() const;
+  std::span<InputConfig const> boundary_sample_inputs() const;
+  std::span<OutputConfig const> boundary_sample_outputs() const;
+  std::span<EventInputConfig const> boundary_event_inputs() const;
+  std::span<EventOutputConfig const> boundary_event_outputs() const;
+  size_t append_boundary_sample_input(InputConfig);
+  size_t append_boundary_sample_output(OutputConfig);
+  size_t append_boundary_event_input(EventInputConfig);
+  size_t append_boundary_event_output(EventOutputConfig);
+  void clear_boundary_event_outputs();
 
   // Compatibility projection APIs. Consumers should migrate to descriptors.
   void for_each_sample_input(size_t, std::function<void(TopologyPortId)> const &) const;
@@ -132,6 +156,7 @@ public:
 private:
   explicit NodeBundle(ConcreteNodeBundle);
   explicit NodeBundle(TiledNodeBundle);
+  explicit NodeBundle(BoundaryNodeBundle);
   explicit NodeBundle(SubgraphNodeBundle);
 
   std::optional<Payload> _payload{};
@@ -142,6 +167,7 @@ private:
 
 class GraphBuilderNodeBundles {
 public:
+  NodeBundleHandle append_boundary();
   NodeBundleHandle append_concrete(GraphBuilderTopology const &, size_t concrete_node_index);
   NodeBundleHandle append_tiled(GraphBuilderTopology const &, std::span<size_t const>,
                                 ChannelLayout promoted_channel_layout);

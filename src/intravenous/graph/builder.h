@@ -348,7 +348,7 @@ auto GraphBuilder::node(Args &&...args) {
 }
 
 template <class... Refs> void GraphBuilder::event_outputs(Refs &&...refs) {
-  _public_ports.define_event_outputs_from_args(*this, _topology, _identity,
+  _public_ports.define_event_outputs_from_args(*this, _topology, _node_bundles, _identity,
                                                std::forward<Refs>(refs)...);
 }
 

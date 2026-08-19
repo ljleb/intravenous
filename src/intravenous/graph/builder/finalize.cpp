@@ -476,6 +476,11 @@ GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
                    ": g.outputs(...) must be called before build()");
   }
 
+  auto const sample_inputs = public_ports.sample_inputs(node_bundles);
+  auto const sample_outputs = public_ports.sample_outputs(node_bundles);
+  auto const event_inputs = public_ports.event_inputs(node_bundles);
+  auto const event_outputs = public_ports.event_outputs(node_bundles);
+
   PreparedBuilderGraph prepared(identity, topology, node_bundles, virtual_nodes, &connections,
                                 &detach);
   prepared.append_materialized_nodes(detach_id_offset);
@@ -484,16 +489,16 @@ GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
   prepared.add_subgraph_default_edges();
   prepared.copy_detach_info();
 
-  details::expand_hyperedge_ports(prepared.graph, public_ports.sample_outputs(),
+  details::expand_hyperedge_ports(prepared.graph, sample_outputs,
                                   identity.value);
   details::stub_dangling_ports(
-      prepared.graph, public_ports.sample_inputs().size(), identity.value);
-  details::validate_graph(prepared.graph, public_ports.sample_inputs().size(),
-                          public_ports.sample_outputs().size());
+      prepared.graph, sample_inputs.size(), identity.value);
+  details::validate_graph(prepared.graph, sample_inputs.size(),
+                          sample_outputs.size());
   details::validate_detached_edges(prepared.graph, identity.value);
   details::sort_nodes_or_error(prepared.graph, identity.value);
-  details::validate_graph(prepared.graph, public_ports.sample_inputs().size(),
-                          public_ports.sample_outputs().size());
+  details::validate_graph(prepared.graph, sample_inputs.size(),
+                          sample_outputs.size());
 
   auto lowered_scopes = prepared.build_lowered_scopes();
   auto lowered_subgraphs =
@@ -524,14 +529,10 @@ GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
           std::move(prepared.graph.node_ids), std::move(prepared.graph.edges),
           std::move(prepared.graph.event_edges), std::move(detached),
           std::move(execution_plan),
-          std::vector<InputConfig>(public_ports.sample_inputs().begin(),
-                                   public_ports.sample_inputs().end()),
-          std::vector<OutputConfig>(public_ports.sample_outputs().begin(),
-                                    public_ports.sample_outputs().end()),
-          std::vector<EventInputConfig>(public_ports.event_inputs().begin(),
-                                        public_ports.event_inputs().end()),
-          std::vector<EventOutputConfig>(public_ports.event_outputs().begin(),
-                                         public_ports.event_outputs().end()),
+          std::vector<InputConfig>(sample_inputs.begin(), sample_inputs.end()),
+          std::vector<OutputConfig>(sample_outputs.begin(), sample_outputs.end()),
+          std::vector<EventInputConfig>(event_inputs.begin(), event_inputs.end()),
+          std::vector<EventOutputConfig>(event_outputs.begin(), event_outputs.end()),
           std::move(dormancy_groups))),
       .metadata =
           GraphBuildMetadata{

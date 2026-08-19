@@ -24,9 +24,10 @@ size_t GraphBuilderChildEmbedder::embed(
   size_t const child_detach_offset =
       parent_detach.reserve_child_offset(child_detach);
   size_t const subgraph_node = parent_topology.append_embedded_child(
-      child_topology, child_public_ports.sample_inputs(),
-      child_public_ports.sample_outputs(), child_public_ports.event_inputs(),
-      child_public_ports.event_outputs(), child_detach_offset);
+      child_topology, child_public_ports.sample_inputs(child_node_bundles),
+      child_public_ports.sample_outputs(child_node_bundles),
+      child_public_ports.event_inputs(child_node_bundles),
+      child_public_ports.event_outputs(child_node_bundles), child_detach_offset);
   size_t const child_node_offset = subgraph_node + 1;
   size_t const child_node_bundle_offset = parent_node_bundles.size();
 

@@ -103,7 +103,7 @@ SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
   if (graph_input.port_kind != PortKind::sample) {
     details::error("attempted to create a sample ref from a graph event input");
   }
-  if (graph_input.port_ordinal >= graph_builder_._public_ports.sample_inputs().size()) {
+  if (graph_input.port_ordinal >= graph_builder_._public_ports.sample_inputs(graph_builder_._node_bundles).size()) {
     details::error(
         "graph input port " + std::to_string(graph_input.port_ordinal) +
         " is out of bounds in builder " + graph_builder_._identity.value);
@@ -172,7 +172,7 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
   if (graph_input.port_kind != PortKind::event) {
     details::error("attempted to create an event ref from a graph sample input");
   }
-  if (graph_input.port_ordinal >= graph_builder_._public_ports.event_inputs().size()) {
+  if (graph_input.port_ordinal >= graph_builder_._public_ports.event_inputs(graph_builder_._node_bundles).size()) {
     details::error("graph event input port " +
                    std::to_string(graph_input.port_ordinal) +
                    " is out of bounds in builder " +
@@ -282,9 +282,11 @@ std::string GraphBuilderIdentity::child_id(size_t index) const {
 }
 
 GraphBuilder::GraphBuilder(GraphBuilderIdentity identity)
-    : _identity(std::move(identity)) {}
+    : _identity(std::move(identity)),
+      _public_ports(_node_bundles.append_boundary()) {}
 
-GraphBuilder::GraphBuilder() : _identity(allocate_root_builder_id()) {}
+GraphBuilder::GraphBuilder()
+    : GraphBuilder(GraphBuilderIdentity(allocate_root_builder_id())) {}
 
 GraphBuilder GraphBuilder::derive_nested_builder() {
   return GraphBuilder(
@@ -302,7 +304,7 @@ void GraphBuilder::define_scope_outputs(std::span<OutputRefConfig const> refs) {
 void GraphBuilder::define_scope_event_outputs(
     std::span<EventOutputRefConfig const> refs) {
   _subgraphs.define_event_outputs(refs, *this, _topology, _identity,
-                                  _public_ports.event_inputs());
+                                  _public_ports.event_inputs(_node_bundles));
 }
 
 std::string GraphBuilder::node_id(size_t index) const {
@@ -321,7 +323,7 @@ PublicSampleInputRef GraphBuilder::input_named(std::string_view name,
         *this, _topology, _node_bundles, name, default_value, min, max, true));
   }
   return PublicSampleInputRef(
-      _public_ports.add_sample_input(*this, name, default_value, min, max));
+      _public_ports.add_sample_input(*this, _node_bundles, name, default_value, min, max));
 }
 
 PublicSampleInputRef GraphBuilder::input(Sample default_value,
@@ -332,7 +334,7 @@ PublicSampleInputRef GraphBuilder::input(Sample default_value,
         *this, _topology, _node_bundles, {}, default_value, min, max, false));
   }
   return PublicSampleInputRef(
-      _public_ports.add_sample_input(*this, {}, default_value, min, max));
+      _public_ports.add_sample_input(*this, _node_bundles, {}, default_value, min, max));
 }
 
 void GraphBuilder::annotate_public_sample_input_source_info(
@@ -378,7 +380,7 @@ PublicEventInputRef GraphBuilder::event_input_named(std::string_view name,
     return PublicEventInputRef(
         _subgraphs.add_scope_event_input(*this, _topology, _node_bundles, name, type, true));
   }
-  return PublicEventInputRef(_public_ports.add_event_input(*this, name, type));
+  return PublicEventInputRef(_public_ports.add_event_input(*this, _node_bundles, name, type));
 }
 
 PublicEventInputRef GraphBuilder::event_input(EventTypeId type) {
@@ -386,7 +388,7 @@ PublicEventInputRef GraphBuilder::event_input(EventTypeId type) {
     return PublicEventInputRef(
         _subgraphs.add_scope_event_input(*this, _topology, _node_bundles, {}, type, false));
   }
-  return PublicEventInputRef(_public_ports.add_event_input(*this, {}, type));
+  return PublicEventInputRef(_public_ports.add_event_input(*this, _node_bundles, {}, type));
 }
 
 void GraphBuilder::annotate_public_event_input_source_info(
@@ -451,7 +453,7 @@ NodeRef GraphBuilder::embed_subgraph(GraphBuilder const &child) {
 }
 
 void GraphBuilder::event_outputs(std::span<EventOutputRefConfig const> refs) {
-  _public_ports.define_event_outputs(*this, _topology, _identity, refs);
+  _public_ports.define_event_outputs(*this, _topology, _node_bundles, _identity, refs);
 }
 
 void GraphBuilder::outputs(std::initializer_list<NamedRef> refs) {
@@ -464,7 +466,7 @@ void GraphBuilder::outputs(std::initializer_list<NamedRef> refs) {
 }
 
 void GraphBuilder::outputs(std::span<OutputRefConfig const> refs) {
-  _public_ports.define_sample_outputs(*this, _topology, _identity, refs);
+  _public_ports.define_sample_outputs(*this, _topology, _node_bundles, _identity, refs);
 }
 
 void GraphBuilder::outputs(std::span<NamedRef const> refs) {
@@ -601,7 +603,7 @@ GraphBuilder::VirtualPorts GraphBuilder::virtual_ports() const {
 
 GraphBuilderPublicSamplePortFamilies
 GraphBuilder::public_sample_input_families() const {
-  return _public_ports.sample_input_families();
+  return _public_ports.sample_input_families(_node_bundles);
 }
 
 bool GraphBuilder::public_sample_input_is_connected(size_t port_ordinal) const {
@@ -616,7 +618,7 @@ bool GraphBuilder::public_sample_input_is_connected(size_t port_ordinal) const {
 
 std::vector<GraphBuilderPublicEventInput>
 GraphBuilder::public_event_inputs() const {
-  return _public_ports.collected_event_inputs();
+  return _public_ports.collected_event_inputs(_node_bundles);
 }
 
 bool GraphBuilder::public_event_input_is_connected(size_t port_ordinal) const {
@@ -636,12 +638,12 @@ GraphBuilder::public_event_input_source_infos(size_t port_ordinal) const {
 
 GraphBuilderPublicSamplePortFamilies
 GraphBuilder::public_sample_output_families() const {
-  return _public_ports.sample_output_families();
+  return _public_ports.sample_output_families(_node_bundles);
 }
 
 std::vector<GraphBuilderPublicEventOutput>
 GraphBuilder::public_event_outputs() const {
-  return _public_ports.collected_event_outputs();
+  return _public_ports.collected_event_outputs(_node_bundles);
 }
 
 void GraphBuilder::connect_sample_input(TopologyPortId target,
@@ -826,7 +828,7 @@ void GraphBuilder::connect_sample_input(
 }
 
 void GraphBuilder::connect_event_input(TopologyPortId target, EventPortRef source) {
-  _connections.connect_event_input(_topology, _public_ports.event_inputs(),
+  _connections.connect_event_input(_topology, _public_ports.event_inputs(_node_bundles),
                                    _identity, target, source);
 }
 

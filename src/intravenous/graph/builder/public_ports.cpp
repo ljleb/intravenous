@@ -84,12 +84,14 @@ GraphBuilderPublicSamplePortFamilies collect_sample_port_families(
 
 SamplePortRef GraphBuilderPublicPorts::add_sample_input(
     GraphBuilder& builder,
+    GraphBuilderNodeBundles& node_bundles,
     std::string_view name,
     Sample default_value,
     std::optional<Sample> min,
     std::optional<Sample> max)
 {
-    _sample_inputs.emplace_back(InputConfig{
+    auto& boundary = node_bundles.bundle(_boundary);
+    auto const ordinal = boundary.append_boundary_sample_input(InputConfig{
         .name = std::string(name),
         .default_value = default_value,
         .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
@@ -97,7 +99,7 @@ SamplePortRef GraphBuilderPublicPorts::add_sample_input(
     });
     _sample_input_source_infos.emplace_back();
     return SamplePortRef(
-        builder, GraphInputPortId{PortKind::sample, _sample_inputs.size() - 1});
+        builder, GraphInputPortId{PortKind::sample, ordinal});
 }
 
 void GraphBuilderPublicPorts::annotate_sample_input_source_info(
@@ -128,16 +130,18 @@ std::span<SourceInfo const> GraphBuilderPublicPorts::sample_input_source_infos(s
     return _sample_input_source_infos[port_ordinal];
 }
 
-EventPortRef GraphBuilderPublicPorts::add_event_input(GraphBuilder& builder, std::string_view name, EventTypeId type)
+EventPortRef GraphBuilderPublicPorts::add_event_input(
+    GraphBuilder& builder, GraphBuilderNodeBundles& node_bundles,
+    std::string_view name, EventTypeId type)
 {
-    if (!name.empty()) {
-        _event_inputs.emplace_back(EventInputConfig{ .name = std::string(name), .type = type });
-    } else {
-        _event_inputs.emplace_back(EventInputConfig{ .type = type });
-    }
+    auto config = !name.empty()
+        ? EventInputConfig{ .name = std::string(name), .type = type }
+        : EventInputConfig{ .type = type };
+    auto& boundary = node_bundles.bundle(_boundary);
+    auto const ordinal = boundary.append_boundary_event_input(std::move(config));
     _event_input_source_infos.emplace_back();
     return EventPortRef(
-        builder, GraphInputPortId{PortKind::event, _event_inputs.size() - 1});
+        builder, GraphInputPortId{PortKind::event, ordinal});
 }
 
 void GraphBuilderPublicPorts::annotate_event_input_source_info(size_t ordinal, std::string_view identity,
@@ -162,6 +166,7 @@ bool GraphBuilderPublicPorts::sample_outputs_defined() const
 void GraphBuilderPublicPorts::define_sample_outputs(
     GraphBuilder& builder,
     GraphBuilderTopology& topology,
+    GraphBuilderNodeBundles& node_bundles,
     GraphBuilderIdentity const& identity,
     std::span<OutputRefConfig const> refs
 )
@@ -198,7 +203,7 @@ void GraphBuilderPublicPorts::define_sample_outputs(
             })
             : _sample_output_members.end();
         auto const output_ordinal = existing == _sample_output_members.end()
-            ? _sample_outputs.size()
+            ? node_bundles.bundle(_boundary).boundary_sample_outputs().size()
             : static_cast<size_t>(existing - _sample_output_members.begin());
         auto const source = builder.materialize_sample_output(ref).port;
         topology.add_sample_edge(TopologyEdge{
@@ -206,7 +211,10 @@ void GraphBuilderPublicPorts::define_sample_outputs(
             TopologyPortId{ GRAPH_ID, output_ordinal },
         });
         if (existing == _sample_output_members.end()) {
-            _sample_outputs.push_back(config);
+            auto const appended = node_bundles.bundle(_boundary)
+                .append_boundary_sample_output(config);
+            IV_ASSERT(appended == output_ordinal,
+                      "public sample output metadata must align with boundary ports");
             _sample_output_members.push_back(refs[i].public_member);
             _sample_output_source_infos.emplace_back();
         }
@@ -219,12 +227,13 @@ void GraphBuilderPublicPorts::define_sample_outputs(
 void GraphBuilderPublicPorts::define_event_outputs(
     GraphBuilder const& builder,
     GraphBuilderTopology& topology,
+    GraphBuilderNodeBundles& node_bundles,
     GraphBuilderIdentity const& identity,
     std::span<EventOutputRefConfig const> refs
 )
 {
-    _event_outputs.clear();
-    _event_outputs.reserve(refs.size());
+    auto& boundary = node_bundles.bundle(_boundary);
+    boundary.clear_boundary_event_outputs();
     _event_output_source_infos.resize(refs.size());
     bool const require_names = refs.size() > 1;
 
@@ -249,7 +258,7 @@ void GraphBuilderPublicPorts::define_event_outputs(
         }
 
         auto const source_type = ref.graph_input_port
-            ? _event_inputs[ref.graph_input_port->port_ordinal].type
+            ? boundary.boundary_event_inputs()[ref.graph_input_port->port_ordinal].type
             : ref.scope_boundary_port
                 ? topology.scope_boundary_event_output(*ref.scope_boundary_port).type
                 : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
@@ -258,42 +267,48 @@ void GraphBuilderPublicPorts::define_event_outputs(
             TopologyPortId{ GRAPH_ID, i },
             EventConversionRegistry::instance().plan(source_type, source_type)
         });
-        _event_outputs.emplace_back(config);
-        _event_outputs.back().type = source_type;
+        auto output_config = config;
+        output_config.type = source_type;
+        boundary.append_boundary_event_output(std::move(output_config));
     }
 }
 
-std::span<InputConfig const> GraphBuilderPublicPorts::sample_inputs() const
+std::span<InputConfig const> GraphBuilderPublicPorts::sample_inputs(
+    GraphBuilderNodeBundles const& node_bundles) const
 {
-    return _sample_inputs;
+    return node_bundles.bundle(_boundary).boundary_sample_inputs();
 }
 
-std::span<EventInputConfig const> GraphBuilderPublicPorts::event_inputs() const
+std::span<EventInputConfig const> GraphBuilderPublicPorts::event_inputs(
+    GraphBuilderNodeBundles const& node_bundles) const
 {
-    return _event_inputs;
+    return node_bundles.bundle(_boundary).boundary_event_inputs();
 }
 
-std::span<OutputConfig const> GraphBuilderPublicPorts::sample_outputs() const
+std::span<OutputConfig const> GraphBuilderPublicPorts::sample_outputs(
+    GraphBuilderNodeBundles const& node_bundles) const
 {
-    return _sample_outputs;
+    return node_bundles.bundle(_boundary).boundary_sample_outputs();
 }
 
-std::span<EventOutputConfig const> GraphBuilderPublicPorts::event_outputs() const
+std::span<EventOutputConfig const> GraphBuilderPublicPorts::event_outputs(
+    GraphBuilderNodeBundles const& node_bundles) const
 {
-    return _event_outputs;
+    return node_bundles.bundle(_boundary).boundary_event_outputs();
 }
 
-GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_input_families() const
+GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_input_families(
+    GraphBuilderNodeBundles const& node_bundles) const
 {
+    auto const configs = sample_inputs(node_bundles);
     std::vector<PublicSamplePortMember> members;
-    members.reserve(_sample_inputs.size());
-    for (auto const& config : _sample_inputs) {
+    members.reserve(configs.size());
+    for (auto const& config : configs) {
         members.push_back(PublicSamplePortMember{
             .channel_type = config.channel_layout.channel_type,
         });
     }
-    auto families = collect_sample_port_families(
-        std::span<InputConfig const>(_sample_inputs), members, true);
+    auto families = collect_sample_port_families(configs, members, true);
     for (auto& family : families.families) {
         for (auto& channel : family.channels) {
             for (auto const port_ordinal : channel.port_ordinals) {
@@ -308,10 +323,11 @@ GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_input_famil
     return families;
 }
 
-GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_output_families() const
+GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_output_families(
+    GraphBuilderNodeBundles const& node_bundles) const
 {
     auto families = collect_sample_port_families(
-        std::span<OutputConfig const>(_sample_outputs), _sample_output_members, false);
+        sample_outputs(node_bundles), _sample_output_members, false);
     for (auto& family : families.families) {
         for (auto& channel : family.channels) {
             for (auto const port_ordinal : channel.port_ordinals) {
@@ -329,27 +345,31 @@ GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_output_fami
     return families;
 }
 
-std::vector<GraphBuilderPublicEventInput> GraphBuilderPublicPorts::collected_event_inputs() const
+std::vector<GraphBuilderPublicEventInput> GraphBuilderPublicPorts::collected_event_inputs(
+    GraphBuilderNodeBundles const& node_bundles) const
 {
+    auto const configs = event_inputs(node_bundles);
     std::vector<GraphBuilderPublicEventInput> result;
-    result.reserve(_event_inputs.size());
-    for (size_t port_ordinal = 0; port_ordinal < _event_inputs.size(); ++port_ordinal) {
+    result.reserve(configs.size());
+    for (size_t port_ordinal = 0; port_ordinal < configs.size(); ++port_ordinal) {
         result.push_back(GraphBuilderPublicEventInput{
             .port_ordinal = port_ordinal,
-            .config = _event_inputs[port_ordinal],
+            .config = configs[port_ordinal],
         });
     }
     return result;
 }
 
-std::vector<GraphBuilderPublicEventOutput> GraphBuilderPublicPorts::collected_event_outputs() const
+std::vector<GraphBuilderPublicEventOutput> GraphBuilderPublicPorts::collected_event_outputs(
+    GraphBuilderNodeBundles const& node_bundles) const
 {
+    auto const configs = event_outputs(node_bundles);
     std::vector<GraphBuilderPublicEventOutput> result;
-    result.reserve(_event_outputs.size());
-    for (size_t port_ordinal = 0; port_ordinal < _event_outputs.size(); ++port_ordinal) {
+    result.reserve(configs.size());
+    for (size_t port_ordinal = 0; port_ordinal < configs.size(); ++port_ordinal) {
         result.push_back(GraphBuilderPublicEventOutput{
             .port_ordinal = port_ordinal,
-            .config = _event_outputs[port_ordinal],
+            .config = configs[port_ordinal],
             .source_infos = port_ordinal < _event_output_source_infos.size()
                 ? _event_output_source_infos[port_ordinal]
                 : std::vector<SourceInfo>{},

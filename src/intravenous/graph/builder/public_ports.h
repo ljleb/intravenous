@@ -54,23 +54,31 @@ namespace iv {
 
     class GraphBuilderPublicPorts {
     public:
+        explicit GraphBuilderPublicPorts(NodeBundleHandle boundary) : _boundary(boundary) {}
+
+        NodeBundleHandle boundary_handle() const { return _boundary; }
+
         SamplePortRef add_sample_input(
             GraphBuilder&,
+            GraphBuilderNodeBundles&,
             std::string_view name,
             Sample default_value,
             std::optional<Sample> min,
             std::optional<Sample> max);
-        EventPortRef add_event_input(GraphBuilder&, std::string_view name, EventTypeId type);
+        EventPortRef add_event_input(
+            GraphBuilder&, GraphBuilderNodeBundles&, std::string_view name, EventTypeId type);
         bool sample_outputs_defined() const;
         void define_sample_outputs(
             GraphBuilder&,
             GraphBuilderTopology&,
+            GraphBuilderNodeBundles&,
             GraphBuilderIdentity const&,
             std::span<OutputRefConfig const> refs
         );
         void define_event_outputs(
             GraphBuilder const&,
             GraphBuilderTopology&,
+            GraphBuilderNodeBundles&,
             GraphBuilderIdentity const&,
             std::span<EventOutputRefConfig const> refs
         );
@@ -78,7 +86,7 @@ namespace iv {
         void define_sample_outputs_from_args(
             GraphBuilder&,
             GraphBuilderTopology&,
-            GraphBuilderNodeBundles const&,
+            GraphBuilderNodeBundles&,
             GraphBuilderIdentity const&,
             LiftSample&& lift_sample,
             Refs&&... refs
@@ -87,7 +95,7 @@ namespace iv {
         void define_sample_outputs_from_named_refs(
             GraphBuilder&,
             GraphBuilderTopology&,
-            GraphBuilderNodeBundles const&,
+            GraphBuilderNodeBundles&,
             GraphBuilderIdentity const&,
             LiftSample&& lift_sample,
             std::span<NamedRef const> refs
@@ -96,17 +104,22 @@ namespace iv {
         void define_event_outputs_from_args(
             GraphBuilder&,
             GraphBuilderTopology&,
+            GraphBuilderNodeBundles&,
             GraphBuilderIdentity const&,
             Refs&&... refs
         );
-        std::span<InputConfig const> sample_inputs() const;
-        std::span<EventInputConfig const> event_inputs() const;
-        std::span<OutputConfig const> sample_outputs() const;
-        std::span<EventOutputConfig const> event_outputs() const;
-        GraphBuilderPublicSamplePortFamilies sample_input_families() const;
-        GraphBuilderPublicSamplePortFamilies sample_output_families() const;
-        std::vector<GraphBuilderPublicEventInput> collected_event_inputs() const;
-        std::vector<GraphBuilderPublicEventOutput> collected_event_outputs() const;
+        std::span<InputConfig const> sample_inputs(GraphBuilderNodeBundles const&) const;
+        std::span<EventInputConfig const> event_inputs(GraphBuilderNodeBundles const&) const;
+        std::span<OutputConfig const> sample_outputs(GraphBuilderNodeBundles const&) const;
+        std::span<EventOutputConfig const> event_outputs(GraphBuilderNodeBundles const&) const;
+        GraphBuilderPublicSamplePortFamilies sample_input_families(
+            GraphBuilderNodeBundles const&) const;
+        GraphBuilderPublicSamplePortFamilies sample_output_families(
+            GraphBuilderNodeBundles const&) const;
+        std::vector<GraphBuilderPublicEventInput> collected_event_inputs(
+            GraphBuilderNodeBundles const&) const;
+        std::vector<GraphBuilderPublicEventOutput> collected_event_outputs(
+            GraphBuilderNodeBundles const&) const;
         void annotate_sample_input_source_info(
             size_t port_ordinal,
             std::string_view declaration_identity,
@@ -121,17 +134,14 @@ namespace iv {
         void annotate_event_output_source_info(size_t port_ordinal, SourceInfo info);
 
     private:
-        std::vector<InputConfig> _sample_inputs {};
+        NodeBundleHandle _boundary = 0;
         std::vector<std::vector<SourceInfo>> _sample_input_source_infos {};
-        std::vector<EventInputConfig> _event_inputs {};
         std::vector<std::vector<SourceInfo>> _event_input_source_infos {};
-        std::vector<OutputConfig> _sample_outputs {};
-        // Index-aligned with _sample_outputs. This is public-declaration
-        // metadata, not a property of a concrete port configuration.
+        // Index-aligned with the boundary's public sample outputs. This is
+        // public-declaration metadata, not port configuration.
         std::vector<PublicSamplePortMember> _sample_output_members {};
         std::vector<size_t> _last_sample_output_port_ordinals {};
         std::vector<std::vector<SourceInfo>> _sample_output_source_infos {};
-        std::vector<EventOutputConfig> _event_outputs {};
         std::vector<std::vector<SourceInfo>> _event_output_source_infos {};
         bool _sample_outputs_defined = false;
     };
@@ -140,7 +150,7 @@ namespace iv {
     void GraphBuilderPublicPorts::define_sample_outputs_from_args(
         GraphBuilder& builder,
         GraphBuilderTopology& topology,
-        GraphBuilderNodeBundles const& node_bundles,
+        GraphBuilderNodeBundles& node_bundles,
         GraphBuilderIdentity const& identity,
         LiftSample&& lift_sample,
         Refs&&... refs
@@ -155,7 +165,11 @@ namespace iv {
                     .resolve_sample_output(*source.node_bundle_port)
                     .config;
             }
-            if (source.graph_input_port || source.scope_boundary_port) {
+            if (source.graph_input_port) {
+                return node_bundles.resolve_sample_output(NodeBundlePortId{
+                    _boundary, PortKind::sample, source.graph_input_port->port_ordinal}).config;
+            }
+            if (source.scope_boundary_port) {
                 return OutputConfig{};
             }
             details::error("sample output source has no logical address");
@@ -243,14 +257,15 @@ namespace iv {
             }
         };
         (append_ref(std::forward<Refs>(refs)), ...);
-        define_sample_outputs(builder, topology, identity, std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
+        define_sample_outputs(builder, topology, node_bundles, identity,
+            std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
     }
 
     template<class LiftSample>
     void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
         GraphBuilder& builder,
         GraphBuilderTopology& topology,
-        GraphBuilderNodeBundles const& node_bundles,
+        GraphBuilderNodeBundles& node_bundles,
         GraphBuilderIdentity const& identity,
         LiftSample&& lift_sample,
         std::span<NamedRef const> refs
@@ -269,18 +284,23 @@ namespace iv {
             auto source = lift_sample(ref);
             auto config = source.node_bundle_port
                 ? node_bundles.resolve_sample_output(*source.node_bundle_port).config
-                : OutputConfig{};
+                : source.graph_input_port
+                    ? node_bundles.resolve_sample_output(NodeBundlePortId{
+                        _boundary, PortKind::sample, source.graph_input_port->port_ordinal}).config
+                    : OutputConfig{};
             config.name = std::string(ref.name);
             config.channel_layout.sample_layout = SampleStreamLayout::planar;
             output_refs.push_back(OutputRefConfig{ .ref = source, .config = std::move(config) });
         }
-        define_sample_outputs(builder, topology, identity, std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
+        define_sample_outputs(builder, topology, node_bundles, identity,
+            std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
     }
 
     template<class... Refs>
     void GraphBuilderPublicPorts::define_event_outputs_from_args(
         GraphBuilder& builder,
         GraphBuilderTopology& topology,
+        GraphBuilderNodeBundles& node_bundles,
         GraphBuilderIdentity const& identity,
         Refs&&... refs
     )
@@ -309,6 +329,7 @@ namespace iv {
             }
         };
         (append_ref(std::forward<Refs>(refs)), ...);
-        define_event_outputs(builder, topology, identity, std::span<EventOutputRefConfig const>(output_refs.data(), output_refs.size()));
+        define_event_outputs(builder, topology, node_bundles, identity,
+            std::span<EventOutputRefConfig const>(output_refs.data(), output_refs.size()));
     }
 }
