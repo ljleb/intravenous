@@ -222,8 +222,9 @@ private:
       NodeBundlePortId target, std::span<SamplePortRef const> sources);
   void record_authored_event_connection(
       NodeBundlePortId target, EventPortRef const& source);
-  GraphBuilder completed_sample_builder() const;
+  GraphBuilder completed_builder() const;
   void materialize_authored_sample_connections_for_completion();
+  void materialize_authored_event_connections_for_completion();
   void connect_sample_input(TopologyPortId target, MaterializedSamplePort source);
   // Compatibility lowering only. These overloads deliberately do not append
   // AuthoredSampleConnection records.

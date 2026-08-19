@@ -19,7 +19,6 @@ namespace iv {
         size_t start_node_index = 0;
         std::string kind {};
         NodeBundleHandle boundary = 0;
-        std::vector<TopologyPortId> event_output_sources {};
         std::vector<SourceInfo> source_infos {};
         bool outputs_defined = false;
         bool event_outputs_defined = false;

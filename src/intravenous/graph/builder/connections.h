@@ -151,8 +151,11 @@ namespace iv {
         bool sample_input_is_connected(SampleInputChannelId target) const;
         bool sample_output_is_connected(SampleOutputChannelId source) const;
         bool sample_input_is_runtime_filled(SampleInputChannelId target) const;
-        // Topology-addressed sample state is compatibility/lowering state;
-        // ordinary builder connectivity is authored at channel level.
+        bool event_input_is_connected(EventInputPortId target) const;
+        bool event_output_is_connected(EventOutputPortId source) const;
+        bool event_input_is_runtime_filled(EventInputPortId target) const;
+        // Topology-addressed state is compatibility/lowering state; ordinary
+        // builder connectivity is authored in semantic sample/event identities.
         bool sample_input_is_connected(TopologyPortId target) const;
         bool event_input_is_connected(TopologyPortId target) const;
         void connect_sample_input(
@@ -170,6 +173,7 @@ namespace iv {
         );
         void mark_runtime_filled_sample_input(SampleInputChannelId target);
         void mark_runtime_filled_sample_input(TopologyPortId target);
+        void mark_runtime_filled_event_input(EventInputPortId target);
         void mark_runtime_filled_event_input(TopologyPortId target);
         GraphBuilderVacantInputs collect_vacant_inputs(
             GraphBuilderTopology const&, GraphBuilderNodeBundles const&,
@@ -206,8 +210,9 @@ namespace iv {
         std::vector<AuthoredSampleConnection> _authored_sample_connections {};
         std::vector<AuthoredEventConnection> _authored_event_connections {};
         std::vector<SampleInputChannelId> _runtime_filled_sample_channels {};
-        // Compatibility lowering state. Sample-side builder introspection must
-        // not consult these topology-addressed sets.
+        std::vector<EventInputPortId> _runtime_filled_event_ports {};
+        // Compatibility lowering state. Builder introspection must not consult
+        // these topology-addressed connection sets.
         std::unordered_set<TopologyPortId> _placed_sample_inputs {};
         std::unordered_set<TopologyPortId> _placed_event_inputs {};
         std::unordered_set<TopologyPortId> _runtime_filled_sample_inputs {};

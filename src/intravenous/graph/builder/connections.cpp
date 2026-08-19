@@ -39,6 +39,36 @@ bool topology_sample_output_is_connected(
     return connections.sample_output_is_connected(channel);
   });
 }
+
+bool topology_event_input_is_connected(
+    GraphBuilderConnections const& connections,
+    GraphBuilderNodeBundles const& node_bundles, TopologyPortId target) {
+  auto const ports =
+      node_bundles.event_input_ports_for_topology_port(target);
+  return std::ranges::any_of(ports, [&](auto port) {
+    return connections.event_input_is_connected(port);
+  });
+}
+
+bool topology_event_input_is_runtime_filled(
+    GraphBuilderConnections const& connections,
+    GraphBuilderNodeBundles const& node_bundles, TopologyPortId target) {
+  auto const ports =
+      node_bundles.event_input_ports_for_topology_port(target);
+  return std::ranges::any_of(ports, [&](auto port) {
+    return connections.event_input_is_runtime_filled(port);
+  });
+}
+
+bool topology_event_output_is_connected(
+    GraphBuilderConnections const& connections,
+    GraphBuilderNodeBundles const& node_bundles, TopologyPortId source) {
+  auto const ports =
+      node_bundles.event_output_ports_for_topology_port(source);
+  return std::ranges::any_of(ports, [&](auto port) {
+    return connections.event_output_is_connected(port);
+  });
+}
 } // namespace
 
 bool GraphBuilderConnections::sample_input_is_connected(
@@ -60,6 +90,27 @@ bool GraphBuilderConnections::sample_output_is_connected(
 bool GraphBuilderConnections::sample_input_is_runtime_filled(
     SampleInputChannelId target) const {
   return std::ranges::contains(_runtime_filled_sample_channels, target);
+}
+
+bool GraphBuilderConnections::event_input_is_connected(
+    EventInputPortId target) const {
+  return std::ranges::any_of(
+      _authored_event_connections, [&](auto const& connection) {
+        return std::ranges::contains(connection.targets, target);
+      });
+}
+
+bool GraphBuilderConnections::event_output_is_connected(
+    EventOutputPortId source) const {
+  return std::ranges::any_of(
+      _authored_event_connections, [&](auto const& connection) {
+        return std::ranges::contains(connection.sources, source);
+      });
+}
+
+bool GraphBuilderConnections::event_input_is_runtime_filled(
+    EventInputPortId target) const {
+  return std::ranges::contains(_runtime_filled_event_ports, target);
 }
 
 bool GraphBuilderConnections::sample_input_is_connected(TopologyPortId target) const {
@@ -158,6 +209,13 @@ void GraphBuilderConnections::mark_runtime_filled_sample_input(TopologyPortId ta
   _runtime_filled_sample_inputs.insert(target);
 }
 
+void GraphBuilderConnections::mark_runtime_filled_event_input(
+    EventInputPortId target) {
+  if (!std::ranges::contains(_runtime_filled_event_ports, target)) {
+    _runtime_filled_event_ports.push_back(target);
+  }
+}
+
 void GraphBuilderConnections::mark_runtime_filled_event_input(TopologyPortId target) {
   _runtime_filled_event_inputs.insert(target);
 }
@@ -189,7 +247,8 @@ GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
       for (size_t input_i = 0; input_i < node.event_inputs().size();
            ++input_i) {
         TopologyPortId const target_port{node_i, input_i};
-        if (_placed_event_inputs.contains(target_port)) {
+        if (topology_event_input_is_connected(
+                *this, node_bundles, target_port)) {
           continue;
         }
         result.event.push_back(GraphBuilderVacantEventInput{
@@ -236,10 +295,10 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
             .virtual_node_id = virtual_node.id,
             .member_ordinal = member_ordinal,
             .config = node.event_inputs()[input_i],
-            .has_existing_connection =
-                _placed_event_inputs.contains(target_port),
-            .runtime_filled =
-                _runtime_filled_event_inputs.contains(target_port),
+            .has_existing_connection = topology_event_input_is_connected(
+                *this, node_bundles, target_port),
+            .runtime_filled = topology_event_input_is_runtime_filled(
+                *this, node_bundles, target_port),
         });
       }
     }
@@ -296,11 +355,6 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
     GraphBuilderVirtualNodes const &virtual_nodes) const {
   GraphBuilderVirtualOutputs result;
 
-  std::unordered_set<TopologyPortId> connected_event_sources;
-  topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
-    connected_event_sources.insert(edge.source);
-  });
-
   for (auto const &virtual_node : virtual_nodes.records()) {
     for (size_t member_ordinal = 0;
          member_ordinal < virtual_node.concrete_node_indices.size();
@@ -328,7 +382,8 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
             .member_ordinal = member_ordinal,
             .config = node.event_outputs()[output_i],
             .has_existing_downstream_connection =
-                connected_event_sources.contains(source_port),
+                topology_event_output_is_connected(
+                    *this, node_bundles, source_port),
         });
       }
     }
@@ -403,6 +458,12 @@ void GraphBuilderConnections::import_child(
     channel.bundle += child_node_bundle_offset;
     if (!std::ranges::contains(_runtime_filled_sample_channels, channel)) {
       _runtime_filled_sample_channels.push_back(channel);
+    }
+  }
+  for (auto port : child._runtime_filled_event_ports) {
+    port.bundle += child_node_bundle_offset;
+    if (!std::ranges::contains(_runtime_filled_event_ports, port)) {
+      _runtime_filled_event_ports.push_back(port);
     }
   }
 

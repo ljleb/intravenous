@@ -1,5 +1,6 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
+#include <intravenous/basic_nodes/routing.h>
 
 #include <gtest/gtest.h>
 
@@ -30,6 +31,31 @@ TEST(GraphVirtualOutputsTest, ReportsExistingDownstreamConnection)
     auto const outputs = g.virtual_outputs();
     ASSERT_EQ(outputs.sample.size(), 1u);
     EXPECT_TRUE(outputs.sample.front().has_existing_downstream_connection);
+}
+
+TEST(GraphVirtualOutputsTest, ReportsAuthoredEventDownstreamConnection)
+{
+    GraphBuilder g;
+    auto source = _annotate_node_source_info(
+        g.node<EventConcatenation>(1, EventTypeId::empty).node_ref(),
+        "event-source");
+    auto sink = g.node<DummyEventSink>();
+    sink.connect_event_input(0, source.event_port());
+
+    auto const outputs = g.virtual_outputs();
+    ASSERT_EQ(outputs.event.size(), 1u);
+    EXPECT_EQ(outputs.event.front().virtual_node_id, "event-source");
+    EXPECT_TRUE(outputs.event.front().has_existing_downstream_connection);
+}
+
+TEST(GraphVirtualOutputsTest, PublicEventInputConnectivityUsesAuthoredConnections)
+{
+    GraphBuilder g;
+    auto input = g.event_input(EventTypeId::empty);
+    auto sink = g.node<DummyEventSink>();
+    sink.connect_event_input(0, input);
+
+    EXPECT_TRUE(g.public_event_input_is_connected(0));
 }
 
 TEST(GraphVirtualOutputsTest, GroupsConcreteMembersOfSharedVirtualNode)

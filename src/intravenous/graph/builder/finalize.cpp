@@ -41,6 +41,8 @@ struct PreparedBuilderGraph {
   std::unordered_map<TopologyPortId, TopologyPortId> source_of;
   std::unordered_map<TopologyPortId, TopologyEventEdge> event_source_of;
   std::unordered_map<TopologyPortId, TopologyPortId> subgraph_input_of_boundary_source;
+  std::unordered_map<TopologyPortId, TopologyPortId>
+      subgraph_event_input_of_boundary_source;
 
   PreparedBuilderGraph(GraphBuilderIdentity const &identity_,
                        GraphBuilderTopology const &topology_,
@@ -88,6 +90,20 @@ struct PreparedBuilderGraph {
               "completed subgraph boundary input has no topology source");
         }
         subgraph_input_of_boundary_source.emplace(
+            descriptor.endpoints.front(),
+            TopologyPortId{*subgraph_node, input});
+      }
+
+      auto const event_input_count =
+          node_bundles.bundle(*boundary).boundary_event_inputs().size();
+      for (size_t input = 0; input < event_input_count; ++input) {
+        auto const descriptor = node_bundles.resolve_event_output(
+            NodeBundlePortId{*boundary, PortKind::event, input});
+        if (descriptor.endpoints.size() != 1) {
+          details::error(
+              "completed subgraph boundary event input has no topology source");
+        }
+        subgraph_event_input_of_boundary_source.emplace(
             descriptor.endpoints.front(),
             TopologyPortId{*subgraph_node, input});
       }
@@ -175,8 +191,21 @@ struct PreparedBuilderGraph {
   }
 
   ConcretePortId resolve_event_source(TopologyPortId source) const {
+    if (auto const boundary =
+            subgraph_event_input_of_boundary_source.find(source);
+        boundary != subgraph_event_input_of_boundary_source.end()) {
+      auto const incoming = event_source_of.find(boundary->second);
+      if (incoming == event_source_of.end()) {
+        details::error(
+            "subgraph boundary event source has no incoming connection");
+      }
+      return resolve_event_source(incoming->second.source);
+    }
     if (source.node == GRAPH_ID) {
       return ConcretePortId{GRAPH_ID, source.port};
+    }
+    if (source.node >= topology.node_count()) {
+      details::error("unresolved event boundary topology source");
     }
     if (!topology.is_subgraph_node(source.node)) {
       return ConcretePortId{runtime_node_indices[source.node], source.port};
@@ -242,6 +271,9 @@ struct PreparedBuilderGraph {
       add_sample_target_edges(resolve_sample_source(edge.source), edge.target);
     });
     topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
+      if (subgraph_event_input_of_boundary_source.contains(edge.source)) {
+        return;
+      }
       add_event_target_edges(
           GraphEventEdge{resolve_event_source(edge.source), {}, edge.conversion},
           edge.target);

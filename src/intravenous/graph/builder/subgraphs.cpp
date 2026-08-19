@@ -214,8 +214,6 @@ void SubgraphScopeManager::define_event_outputs(
 
     auto& boundary = node_bundles.bundle(scope.boundary);
     boundary.clear_boundary_event_outputs();
-    scope.event_output_sources.clear();
-    scope.event_output_sources.reserve(refs.size());
     bool const require_names = refs.size() > 1;
 
     for (size_t i = 0; i < refs.size(); ++i) {
@@ -235,7 +233,6 @@ void SubgraphScopeManager::define_event_outputs(
             );
         }
         auto const source_type = ref.type;
-        scope.event_output_sources.push_back(static_cast<TopologyPortId>(ref));
         auto output = config;
         output.type = source_type;
         auto const output_ordinal =
@@ -281,14 +278,7 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
     std::vector<std::vector<TopologyPortId>> subgraph_input_targets(sample_inputs.size());
     std::vector<TopologyPortId> subgraph_output_sources(sample_outputs.size());
     std::vector<std::vector<TopologyPortId>> subgraph_event_input_targets(event_inputs.size());
-
-    auto translate_event_source = [&](TopologyPortId source) {
-        if (auto const it = event_input_index_by_boundary.find(source);
-            it != event_input_index_by_boundary.end()) {
-            return TopologyPortId{ subgraph_node_index, it->second };
-        }
-        return source;
-    };
+    std::vector<TopologyPortId> subgraph_event_output_sources(event_outputs.size());
 
     topology.for_each_sample_edge([&](TopologyEdge const& edge) {
         auto const it = sample_input_index_by_boundary.find(edge.source);
@@ -312,10 +302,6 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
         return event_input_index_by_boundary.contains(edge.source);
     });
 
-    for (auto& source : scope.event_output_sources) {
-        source = translate_event_source(source);
-    }
-
     size_t const subgraph_node = topology.append_lowered_subgraph_node(
         std::move(scope.kind),
         std::vector<InputConfig>(sample_inputs.begin(), sample_inputs.end()),
@@ -327,7 +313,7 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
         std::move(subgraph_input_targets),
         std::move(subgraph_output_sources),
         std::move(subgraph_event_input_targets),
-        std::move(scope.event_output_sources)
+        std::move(subgraph_event_output_sources)
     );
 
     NodeRef result(

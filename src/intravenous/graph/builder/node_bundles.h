@@ -161,6 +161,7 @@ public:
   size_t append_boundary_sample_output(OutputConfig);
   size_t append_boundary_event_input(EventInputConfig);
   size_t append_boundary_event_input(EventInputConfig, TopologyPortId inward_output);
+  void set_boundary_event_input_projection(size_t, TopologyPortId inward_output);
   size_t append_boundary_event_output(EventOutputConfig);
   void clear_boundary_event_outputs();
 

@@ -274,19 +274,25 @@ namespace iv {
         std::vector<EventOutputPortId> sources {};
         std::optional<GraphInputPortId> graph_input_port {};
         std::optional<ScopeBoundaryPortId> scope_boundary_port {};
+        std::optional<TopologyPortId> topology_projection {};
 
         EventPortRef() = default;
         explicit EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
         explicit EventPortRef(GraphBuilder& graph_builder_, GraphInputPortId graph_input);
         explicit EventPortRef(GraphBuilder& graph_builder_, ScopeBoundaryPortId scope_boundary);
         explicit EventPortRef(
+            GraphBuilder&, EventTypeId, std::vector<EventOutputPortId>);
+        explicit EventPortRef(
             GraphBuilder&, EventTypeId, std::vector<EventOutputPortId>,
-            TopologyPortId topology_projection);
+            TopologyPortId topology_projection_);
         operator TopologyPortId() const
         {
             if (graph_input_port) return graph_input_port->topology_port();
             if (scope_boundary_port) return scope_boundary_port->topology_port();
-            return {node_index, output_port};
+            if (topology_projection) return *topology_projection;
+            details::error(
+                "an authored event expression has no topology projection; "
+                "materialize it during completion");
         }
 
         bool is_graph_input() const { return graph_input_port.has_value(); }

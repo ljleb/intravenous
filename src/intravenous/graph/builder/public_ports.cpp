@@ -237,7 +237,7 @@ void GraphBuilderPublicPorts::define_sample_outputs(
 
 void GraphBuilderPublicPorts::define_event_outputs(
     GraphBuilder& builder,
-    GraphBuilderTopology& topology,
+    GraphBuilderTopology&,
     GraphBuilderNodeBundles& node_bundles,
     GraphBuilderIdentity const& identity,
     std::span<EventOutputRefConfig const> refs
@@ -280,14 +280,6 @@ void GraphBuilderPublicPorts::define_event_outputs(
             NodeBundlePortId{
                 _boundary, PortKind::event, output_ordinal},
             ref);
-
-        // Patch 9 dual-writes the existing topology edge. Event lowering moves
-        // to completion in the next step.
-        topology.add_event_edge(TopologyEventEdge{
-            static_cast<TopologyPortId>(ref),
-            TopologyPortId{ GRAPH_ID, i },
-            EventConversionRegistry::instance().plan(source_type, source_type)
-        });
     }
 }
 
