@@ -129,10 +129,25 @@ namespace iv {
         bool operator==(AuthoredSampleConnection const&) const = default;
     };
 
+    // Event connections retain the logical source/target grouping. Tiled
+    // outputs therefore carry one source identity per member and tiled inputs
+    // carry one target identity per member; topology merge/broadcast nodes are
+    // compatibility lowering details.
+    struct AuthoredEventConnection {
+        EventTypeId source_type = EventTypeId::empty;
+        std::vector<EventOutputPortId> sources {};
+        EventTypeId target_type = EventTypeId::empty;
+        std::vector<EventInputPortId> targets {};
+
+        bool operator==(AuthoredEventConnection const&) const = default;
+    };
+
     class GraphBuilderConnections {
     public:
         void record_authored_sample_connection(AuthoredSampleConnection);
         std::span<AuthoredSampleConnection const> authored_sample_connections() const;
+        void record_authored_event_connection(AuthoredEventConnection);
+        std::span<AuthoredEventConnection const> authored_event_connections() const;
         bool sample_input_is_connected(SampleInputChannelId target) const;
         bool sample_output_is_connected(SampleOutputChannelId source) const;
         bool sample_input_is_runtime_filled(SampleInputChannelId target) const;
@@ -189,6 +204,7 @@ namespace iv {
 
     private:
         std::vector<AuthoredSampleConnection> _authored_sample_connections {};
+        std::vector<AuthoredEventConnection> _authored_event_connections {};
         std::vector<SampleInputChannelId> _runtime_filled_sample_channels {};
         // Compatibility lowering state. Sample-side builder introspection must
         // not consult these topology-addressed sets.

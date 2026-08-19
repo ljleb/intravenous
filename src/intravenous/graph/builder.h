@@ -220,6 +220,8 @@ private:
                                          SamplePortRef const &source);
   void record_authored_sample_connection(
       NodeBundlePortId target, std::span<SamplePortRef const> sources);
+  void record_authored_event_connection(
+      NodeBundlePortId target, EventPortRef const& source);
   GraphBuilder completed_sample_builder() const;
   void materialize_authored_sample_connections_for_completion();
   void connect_sample_input(TopologyPortId target, MaterializedSamplePort source);
@@ -228,6 +230,7 @@ private:
   void connect_sample_input_lowered(NodeBundlePortId target, SamplePortRef source);
   void connect_sample_input_lowered(
       NodeBundlePortId target, std::span<SamplePortRef const> sources);
+  void connect_event_input_lowered(NodeBundlePortId target, EventPortRef source);
   std::vector<MaterializedSamplePort>
   materialize_bundle_sample_output_channels(NodeBundlePortId source);
   SamplePortRef normalize_sample_output(SamplePortRef source);
@@ -343,7 +346,7 @@ auto GraphBuilder::node(Args &&...args) {
         _topology, concrete_node_index);
   }
   auto const bundle_handle = _node_bundles.append_tiled(
-      _topology, concrete_node_indices,
+      _topology, concrete_node_indices, member_bundles,
       ChannelLayout{.channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar});
   return TiledNodeRef<StoredNode, ChannelType>(

@@ -90,6 +90,22 @@ GraphBuilderConnections::authored_sample_connections() const {
   return _authored_sample_connections;
 }
 
+void GraphBuilderConnections::record_authored_event_connection(
+    AuthoredEventConnection connection) {
+  if (connection.sources.empty()) {
+    details::error("authored event connection has no source");
+  }
+  if (connection.targets.empty()) {
+    details::error("authored event connection has no target");
+  }
+  _authored_event_connections.push_back(std::move(connection));
+}
+
+std::span<AuthoredEventConnection const>
+GraphBuilderConnections::authored_event_connections() const {
+  return _authored_event_connections;
+}
+
 void GraphBuilderConnections::connect_sample_input(
     GraphBuilderTopology &topology, GraphBuilderIdentity const &identity,
     TopologyPortId target, TopologyPortId source) {
@@ -373,6 +389,15 @@ void GraphBuilderConnections::import_child(
       channel.bundle += child_node_bundle_offset;
     }
     _authored_sample_connections.push_back(std::move(connection));
+  }
+  for (auto connection : child._authored_event_connections) {
+    for (auto &source : connection.sources) {
+      source.bundle += child_node_bundle_offset;
+    }
+    for (auto &target : connection.targets) {
+      target.bundle += child_node_bundle_offset;
+    }
+    _authored_event_connections.push_back(std::move(connection));
   }
   for (auto channel : child._runtime_filled_sample_channels) {
     channel.bundle += child_node_bundle_offset;

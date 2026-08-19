@@ -270,6 +270,8 @@ namespace iv {
         GraphBuilder* graph_builder {};
         size_t node_index {};
         size_t output_port {};
+        EventTypeId type = EventTypeId::empty;
+        std::vector<EventOutputPortId> sources {};
         std::optional<GraphInputPortId> graph_input_port {};
         std::optional<ScopeBoundaryPortId> scope_boundary_port {};
 
@@ -277,6 +279,9 @@ namespace iv {
         explicit EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
         explicit EventPortRef(GraphBuilder& graph_builder_, GraphInputPortId graph_input);
         explicit EventPortRef(GraphBuilder& graph_builder_, ScopeBoundaryPortId scope_boundary);
+        explicit EventPortRef(
+            GraphBuilder&, EventTypeId, std::vector<EventOutputPortId>,
+            TopologyPortId topology_projection);
         operator TopologyPortId() const
         {
             if (graph_input_port) return graph_input_port->topology_port();

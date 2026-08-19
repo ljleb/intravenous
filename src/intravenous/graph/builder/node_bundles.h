@@ -37,6 +37,20 @@ struct SampleInputChannelId {
   bool operator==(SampleInputChannelId const &) const = default;
 };
 
+struct EventOutputPortId {
+  NodeBundleHandle bundle = 0;
+  size_t port = 0;
+
+  bool operator==(EventOutputPortId const &) const = default;
+};
+
+struct EventInputPortId {
+  NodeBundleHandle bundle = 0;
+  size_t port = 0;
+
+  bool operator==(EventInputPortId const &) const = default;
+};
+
 template<class Config>
 struct SamplePortDescriptor {
   Config config{};
@@ -79,6 +93,7 @@ class NodeBundle {
     static constexpr bool contains_concrete_nodes = true;
 
     std::vector<size_t> nodes{};
+    std::vector<NodeBundleHandle> member_bundles{};
     std::vector<std::vector<TopologyPortId>> sample_inputs, sample_outputs{};
     std::vector<std::vector<TopologyPortId>> event_inputs, event_outputs{};
     std::vector<InputConfig> sample_input_configs{};
@@ -196,8 +211,9 @@ public:
   NodeBundleHandle append_boundary();
   NodeBundleHandle append_scope_boundary();
   NodeBundleHandle append_concrete(GraphBuilderTopology const &, size_t concrete_node_index);
-  NodeBundleHandle append_tiled(GraphBuilderTopology const &, std::span<size_t const>,
-                                ChannelLayout promoted_channel_layout);
+  NodeBundleHandle append_tiled(
+      GraphBuilderTopology const &, std::span<size_t const>,
+      std::span<NodeBundleHandle const>, ChannelLayout promoted_channel_layout);
   NodeBundleHandle append_subgraph(GraphBuilderTopology const &, size_t subgraph_node_index,
                                    NodeBundleHandle boundary);
   NodeBundle const &bundle(NodeBundleHandle) const;
@@ -211,6 +227,8 @@ public:
   EventOutputPortDescriptor resolve_event_output(NodeBundlePortId) const;
   std::vector<SampleInputChannelId> sample_input_channels(NodeBundlePortId) const;
   std::vector<SampleOutputChannelId> sample_output_channels(NodeBundlePortId) const;
+  std::vector<EventInputPortId> event_input_ports(NodeBundlePortId) const;
+  std::vector<EventOutputPortId> event_output_ports(NodeBundlePortId) const;
 
   // Compatibility projection used by topology-backed builder services while
   // authored connectivity is channel-based. A native multichannel topology
@@ -220,6 +238,10 @@ public:
   sample_input_channels_for_topology_port(TopologyPortId) const;
   std::vector<SampleOutputChannelId>
   sample_output_channels_for_topology_port(TopologyPortId) const;
+  std::vector<EventInputPortId>
+  event_input_ports_for_topology_port(TopologyPortId) const;
+  std::vector<EventOutputPortId>
+  event_output_ports_for_topology_port(TopologyPortId) const;
 
   NodeBundleHandle bundle_for_concrete_node(size_t concrete_node_index) const;
   size_t size() const;

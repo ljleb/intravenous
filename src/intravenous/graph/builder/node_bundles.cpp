@@ -466,6 +466,10 @@ void NodeBundle::import_into(size_t offset, size_t bundle_offset) {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, SubgraphNodeBundle>) {
           payload.boundary += bundle_offset;
+        } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
+          for (auto &member : payload.member_bundles) {
+            member += bundle_offset;
+          }
         } else if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
           // Imported boundaries are semantic interfaces inside the parent.
           // Their old root/scope topology projections belong to the child
@@ -551,11 +555,16 @@ NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
 
 NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     GraphBuilderTopology const &topology, std::span<size_t const> nodes,
+    std::span<NodeBundleHandle const> member_bundles,
     ChannelLayout promoted) {
   if (nodes.empty()) details::error("a tiled NodeBundle requires at least one ConcreteNode");
+  if (member_bundles.size() != nodes.size()) {
+    details::error("a tiled NodeBundle requires one member bundle per concrete node");
+  }
   auto const &first = topology.concrete_node(nodes.front());
   NodeBundle::TiledNodeBundle p{
     .nodes = {nodes.begin(), nodes.end()},
+    .member_bundles = {member_bundles.begin(), member_bundles.end()},
     .sample_inputs{}, .sample_outputs{},
     .event_inputs{}, .event_outputs{},
     .sample_input_configs{},
@@ -724,6 +733,32 @@ std::vector<Channel> channels_for_topology_projection(
   auto const channel = static_cast<size_t>(it - endpoints.begin());
   return {channels[channel]};
 }
+
+template<class Port>
+std::vector<Port> event_ports_for_topology_projection(
+    TopologyPortId topology_port,
+    std::vector<TopologyPortId> const& endpoints,
+    std::vector<Port> ports) {
+  if (endpoints.empty()) {
+    details::error("NodeBundle event port has no topology endpoint");
+  }
+  if (endpoints.size() == 1) {
+    if (endpoints.front() != topology_port) {
+      details::error("topology port does not belong to the resolved NodeBundle port");
+    }
+    return ports;
+  }
+  if (endpoints.size() != ports.size()) {
+    details::error(
+        "NodeBundle event topology projection does not match its semantic ports");
+  }
+  auto const it = std::find(endpoints.begin(), endpoints.end(), topology_port);
+  if (it == endpoints.end()) {
+    details::error("topology port does not belong to the resolved NodeBundle port");
+  }
+  auto const ordinal = static_cast<size_t>(it - endpoints.begin());
+  return {ports[ordinal]};
+}
 } // namespace
 
 std::vector<SampleInputChannelId>
@@ -760,6 +795,88 @@ EventOutputPortDescriptor GraphBuilderNodeBundles::resolve_event_output(
   if (address.port_kind != PortKind::event)
     details::error("attempted to resolve an event output from a sample NodeBundle port");
   return bundle(address.node_bundle_handle).event_output_descriptor(address.port_ordinal);
+}
+
+std::vector<EventInputPortId>
+GraphBuilderNodeBundles::event_input_ports(NodeBundlePortId address) const {
+  auto const descriptor = resolve_event_input(address);
+  auto const &logical_bundle = bundle(address.node_bundle_handle);
+  if (logical_bundle._payload) {
+    if (auto const *tiled =
+            std::get_if<NodeBundle::TiledNodeBundle>(&*logical_bundle._payload)) {
+      std::vector<EventInputPortId> result;
+      result.reserve(tiled->member_bundles.size());
+      for (auto const member : tiled->member_bundles) {
+        NodeBundlePortId const member_port{
+            member, PortKind::event, address.port_ordinal};
+        if (resolve_event_input(member_port).config.type != descriptor.config.type) {
+          details::error(
+              "tiled NodeBundle member event input type does not match promoted port");
+        }
+        result.push_back(EventInputPortId{
+            .bundle = member,
+            .port = address.port_ordinal,
+        });
+      }
+      return result;
+    }
+  }
+  return {EventInputPortId{
+      .bundle = address.node_bundle_handle,
+      .port = address.port_ordinal,
+  }};
+}
+
+std::vector<EventOutputPortId>
+GraphBuilderNodeBundles::event_output_ports(NodeBundlePortId address) const {
+  auto const descriptor = resolve_event_output(address);
+  auto const &logical_bundle = bundle(address.node_bundle_handle);
+  if (logical_bundle._payload) {
+    if (auto const *tiled =
+            std::get_if<NodeBundle::TiledNodeBundle>(&*logical_bundle._payload)) {
+      std::vector<EventOutputPortId> result;
+      result.reserve(tiled->member_bundles.size());
+      for (auto const member : tiled->member_bundles) {
+        NodeBundlePortId const member_port{
+            member, PortKind::event, address.port_ordinal};
+        if (resolve_event_output(member_port).config.type != descriptor.config.type) {
+          details::error(
+              "tiled NodeBundle member event output type does not match promoted port");
+        }
+        result.push_back(EventOutputPortId{
+            .bundle = member,
+            .port = address.port_ordinal,
+        });
+      }
+      return result;
+    }
+  }
+  return {EventOutputPortId{
+      .bundle = address.node_bundle_handle,
+      .port = address.port_ordinal,
+  }};
+}
+
+std::vector<EventInputPortId>
+GraphBuilderNodeBundles::event_input_ports_for_topology_port(
+    TopologyPortId topology_port) const {
+  auto const bundle_handle = bundle_for_concrete_node(topology_port.node);
+  NodeBundlePortId const logical{
+      bundle_handle, PortKind::event, topology_port.port};
+  auto const descriptor = resolve_event_input(logical);
+  return event_ports_for_topology_projection(
+      topology_port, descriptor.endpoints, event_input_ports(logical));
+}
+
+std::vector<EventOutputPortId>
+GraphBuilderNodeBundles::event_output_ports_for_topology_port(
+    TopologyPortId topology_port) const {
+  auto const bundle_handle = bundle_for_concrete_node(topology_port.node);
+  NodeBundlePortId const logical{
+      bundle_handle, PortKind::event, topology_port.port};
+  auto const descriptor = resolve_event_output(logical);
+  return event_ports_for_topology_projection(
+      topology_port, descriptor.endpoints, event_output_ports(logical));
 }
 
 NodeBundleHandle GraphBuilderNodeBundles::bundle_for_concrete_node(size_t node) const { if (node >= _bundle_by_concrete_node.size() || _bundle_by_concrete_node[node] == GRAPH_ID) details::error("concrete node has no NodeBundle"); return _bundle_by_concrete_node[node]; }

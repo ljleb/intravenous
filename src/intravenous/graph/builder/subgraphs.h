@@ -73,7 +73,7 @@ namespace iv {
         );
         void define_event_outputs(
             std::span<EventOutputRefConfig const> refs,
-            GraphBuilder const&,
+            GraphBuilder&,
             GraphBuilderTopology const&,
             GraphBuilderNodeBundles&,
             GraphBuilderIdentity const&,

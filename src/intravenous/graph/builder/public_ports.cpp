@@ -236,7 +236,7 @@ void GraphBuilderPublicPorts::define_sample_outputs(
 }
 
 void GraphBuilderPublicPorts::define_event_outputs(
-    GraphBuilder const& builder,
+    GraphBuilder& builder,
     GraphBuilderTopology& topology,
     GraphBuilderNodeBundles& node_bundles,
     GraphBuilderIdentity const& identity,
@@ -268,19 +268,26 @@ void GraphBuilderPublicPorts::define_event_outputs(
             );
         }
 
-        auto const source_type = ref.graph_input_port
-            ? boundary.boundary_event_inputs()[ref.graph_input_port->port_ordinal].type
-            : ref.scope_boundary_port
-                ? topology.scope_boundary_event_output(*ref.scope_boundary_port).type
-                : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
+        auto const source_type = ref.type;
+        auto output_config = config;
+        output_config.type = source_type;
+        auto const output_ordinal =
+            boundary.append_boundary_event_output(std::move(output_config));
+        IV_ASSERT(
+            output_ordinal == i,
+            "public event output metadata must align with boundary ports");
+        builder.record_authored_event_connection(
+            NodeBundlePortId{
+                _boundary, PortKind::event, output_ordinal},
+            ref);
+
+        // Patch 9 dual-writes the existing topology edge. Event lowering moves
+        // to completion in the next step.
         topology.add_event_edge(TopologyEventEdge{
             static_cast<TopologyPortId>(ref),
             TopologyPortId{ GRAPH_ID, i },
             EventConversionRegistry::instance().plan(source_type, source_type)
         });
-        auto output_config = config;
-        output_config.type = source_type;
-        boundary.append_boundary_event_output(std::move(output_config));
     }
 }
 

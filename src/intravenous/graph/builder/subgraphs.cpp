@@ -200,11 +200,11 @@ void SubgraphScopeManager::define_sample_outputs(
 
 void SubgraphScopeManager::define_event_outputs(
     std::span<EventOutputRefConfig const> refs,
-    GraphBuilder const& builder,
-    GraphBuilderTopology const& topology,
+    GraphBuilder& builder,
+    GraphBuilderTopology const&,
     GraphBuilderNodeBundles& node_bundles,
     GraphBuilderIdentity const& identity,
-    std::span<EventInputConfig const> graph_event_inputs
+    std::span<EventInputConfig const>
 )
 {
     auto& scope = current();
@@ -234,15 +234,16 @@ void SubgraphScopeManager::define_event_outputs(
                 + ": subgraph event_outputs(...) requires names when exposing more than one event output"
             );
         }
-        auto const source_type = ref.graph_input_port
-            ? graph_event_inputs[ref.graph_input_port->port_ordinal].type
-            : ref.scope_boundary_port
-                ? topology.scope_boundary_event_output(*ref.scope_boundary_port).type
-                : topology.ports(ref.node_index).event_outputs()[ref.output_port].type;
+        auto const source_type = ref.type;
         scope.event_output_sources.push_back(static_cast<TopologyPortId>(ref));
         auto output = config;
         output.type = source_type;
-        boundary.append_boundary_event_output(std::move(output));
+        auto const output_ordinal =
+            boundary.append_boundary_event_output(std::move(output));
+        builder.record_authored_event_connection(
+            NodeBundlePortId{
+                scope.boundary, PortKind::event, output_ordinal},
+            ref);
     }
     scope.event_outputs_defined = true;
 }

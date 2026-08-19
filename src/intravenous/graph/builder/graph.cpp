@@ -137,6 +137,9 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_, size_t node_index,
                    " "
                    "is out of bounds");
   }
+  type = ports.event_outputs()[output_port].type;
+  sources = graph_builder_._node_bundles.event_output_ports_for_topology_port(
+      TopologyPortId{node_index, output_port});
 }
 
 EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
@@ -154,6 +157,15 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
                    " is out of bounds in builder " +
                    graph_builder_._identity.value);
   }
+  NodeBundlePortId const logical{
+      graph_builder_._public_ports.boundary_handle(),
+      PortKind::event,
+      graph_input.port_ordinal,
+  };
+  auto const descriptor =
+      graph_builder_._node_bundles.resolve_event_output(logical);
+  type = descriptor.config.type;
+  sources = graph_builder_._node_bundles.event_output_ports(logical);
 }
 
 EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
@@ -165,7 +177,61 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
   if (scope_boundary.port_kind != PortKind::event) {
     details::error("attempted to create an event ref from a sample scope boundary");
   }
-  (void)graph_builder_._topology.scope_boundary_event_output(scope_boundary);
+  auto const topology_config =
+      graph_builder_._topology.scope_boundary_event_output(scope_boundary);
+
+  std::optional<NodeBundlePortId> logical;
+  for (NodeBundleHandle handle = 0;
+       handle < graph_builder_._node_bundles.size(); ++handle) {
+    auto const &bundle = graph_builder_._node_bundles.bundle(handle);
+    if (!bundle.is_boundary()) continue;
+    for (size_t port = 0; port < bundle.event_output_count(); ++port) {
+      auto const candidate =
+          NodeBundlePortId{handle, PortKind::event, port};
+      auto const descriptor =
+          graph_builder_._node_bundles.resolve_event_output(candidate);
+      if (std::find(descriptor.endpoints.begin(), descriptor.endpoints.end(),
+                    scope_boundary.topology_port()) ==
+          descriptor.endpoints.end()) {
+        continue;
+      }
+      if (logical) {
+        details::error("scope boundary event projection is ambiguous");
+      }
+      logical = candidate;
+    }
+  }
+  if (logical) {
+    auto const descriptor =
+        graph_builder_._node_bundles.resolve_event_output(*logical);
+    type = descriptor.config.type;
+    sources = graph_builder_._node_bundles.event_output_ports(*logical);
+  } else {
+    // Compatibility fallback for a legacy topology-only scope boundary.
+    type = topology_config.type;
+  }
+}
+
+EventPortRef::EventPortRef(
+    GraphBuilder &graph_builder_, EventTypeId type_,
+    std::vector<EventOutputPortId> sources_,
+    TopologyPortId topology_projection)
+    : graph_builder(&graph_builder_),
+      node_index(topology_projection.node),
+      output_port(topology_projection.port),
+      type(type_),
+      sources(std::move(sources_)) {
+  if (sources.empty()) {
+    details::error("event expression has no semantic sources");
+  }
+  for (auto const source : sources) {
+    auto const descriptor = graph_builder_._node_bundles.resolve_event_output(
+        NodeBundlePortId{source.bundle, PortKind::event, source.port});
+    if (descriptor.config.type != type) {
+      details::error(
+          "event expression source does not match its semantic event type");
+    }
+  }
 }
 
 SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_,
@@ -268,6 +334,11 @@ std::string EventPortRef::to_string() const {
     return "subgraph event input " +
            std::to_string(scope_boundary_port->boundary_ordinal) +
            " in builder " + graph_builder->_identity.value;
+  }
+  if (sources.size() > 1) {
+    return "structural event expression with " +
+           std::to_string(sources.size()) + " source(s) in builder " +
+           graph_builder->_identity.value;
   }
   return "event at address " + graph_builder->node_id(node_index) + ":" +
          std::to_string(output_port);
@@ -791,6 +862,52 @@ void GraphBuilder::record_authored_sample_connection(
       .source_channels = std::move(source_channels),
       .target_type = target_descriptor.config.channel_layout.channel_type,
       .target_channels = std::move(target_channels),
+  });
+}
+
+void GraphBuilder::record_authored_event_connection(
+    NodeBundlePortId target, EventPortRef const &source) {
+  if (target.port_kind != PortKind::event) {
+    details::error(
+        "attempted to record an event connection to a sample NodeBundle port");
+  }
+  if (!source.graph_builder) {
+    details::error("cannot connect an empty event output");
+  }
+  if (source.graph_builder != this) {
+    details::error("cannot connect an event output from another builder");
+  }
+  if (source.sources.empty()) {
+    details::error("event source has no semantic port identity");
+  }
+
+  for (auto const source_port : source.sources) {
+    auto const descriptor = _node_bundles.resolve_event_output(
+        NodeBundlePortId{
+            source_port.bundle, PortKind::event, source_port.port});
+    if (descriptor.config.type != source.type) {
+      details::error(
+          "event source does not match its semantic event type");
+    }
+  }
+
+  auto const target_descriptor = _node_bundles.resolve_event_input(target);
+  auto target_ports = _node_bundles.event_input_ports(target);
+  for (auto const target_port : target_ports) {
+    auto const descriptor = _node_bundles.resolve_event_input(
+        NodeBundlePortId{
+            target_port.bundle, PortKind::event, target_port.port});
+    if (descriptor.config.type != target_descriptor.config.type) {
+      details::error(
+          "event target does not match its semantic event type");
+    }
+  }
+
+  _connections.record_authored_event_connection(AuthoredEventConnection{
+      .source_type = source.type,
+      .sources = source.sources,
+      .target_type = target_descriptor.config.type,
+      .targets = std::move(target_ports),
   });
 }
 
@@ -1484,6 +1601,12 @@ void GraphBuilder::connect_event_input(TopologyPortId target, EventPortRef sourc
 }
 
 void GraphBuilder::connect_event_input(NodeBundlePortId target, EventPortRef source) {
+  record_authored_event_connection(target, source);
+  connect_event_input_lowered(target, std::move(source));
+}
+
+void GraphBuilder::connect_event_input_lowered(
+    NodeBundlePortId target, EventPortRef source) {
   if (target.port_kind != PortKind::event) {
     details::error("attempted to connect an event source to a sample NodeBundle port");
   }
@@ -1613,18 +1736,39 @@ EventPortRef GraphBuilder::event_output(NodeBundlePortId source) const {
   auto const descriptor = _node_bundles.resolve_event_output(source);
   auto const &ports = descriptor.endpoints;
   if (ports.empty()) details::error("event output has no topology endpoints");
-  if (ports.size() == 1) {
-    auto const port = ports.front();
-    return EventPortRef(const_cast<GraphBuilder &>(*this), port.node, port.port);
-  }
+
+  auto &builder = const_cast<GraphBuilder &>(*this);
   auto const type = descriptor.config.type;
-  auto merge = const_cast<GraphBuilder &>(*this).node<EventConcatenation>(ports.size(), type);
+  auto semantic_sources = _node_bundles.event_output_ports(source);
+  if (ports.size() == 1) {
+    return EventPortRef(
+        builder, type, std::move(semantic_sources), ports.front());
+  }
+  if (ports.size() != semantic_sources.size()) {
+    details::error(
+        "event output topology projection does not match its semantic sources");
+  }
+
+  auto merge = builder.node<EventConcatenation>(ports.size(), type);
   for (size_t index = 0; index < ports.size(); ++index) {
     auto const port = ports[index];
-    merge.connect_event_input(index,
-        EventPortRef(const_cast<GraphBuilder &>(*this), port.node, port.port));
+    builder.connect_event_input_lowered(
+        NodeBundlePortId{
+            merge.node_bundle_handle(), PortKind::event, index},
+        EventPortRef(builder, port.node, port.port));
   }
-  return merge.event_port(0);
+
+  NodeBundlePortId const merged_output{
+      merge.node_bundle_handle(), PortKind::event, 0};
+  auto const merged_descriptor =
+      _node_bundles.resolve_event_output(merged_output);
+  if (merged_descriptor.endpoints.size() != 1) {
+    details::error(
+        "event concatenation output must have one topology endpoint");
+  }
+  return EventPortRef(
+      builder, type, std::move(semantic_sources),
+      merged_descriptor.endpoints.front());
 }
 
 size_t GraphBuilder::sample_port_index(NodeBundleHandle handle, bool inputs,

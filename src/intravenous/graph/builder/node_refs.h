@@ -480,9 +480,7 @@ namespace iv {
             };
         } else if constexpr (std::same_as<Value, EventPortRef>) {
             return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, EventPortRef>{
-                .value = value.graph_builder
-                    ? EventPortRef(*value.graph_builder, value.node_index, value.output_port)
-                    : EventPortRef{},
+                .value = std::forward<T>(value),
             };
         } else if constexpr (requires(Value const& ref) { ref._clone_handle(); }) {
             using Handle = decltype(value._clone_handle());
@@ -504,11 +502,8 @@ namespace iv {
         if constexpr (std::same_as<Value, SamplePortRef>) {
             return NamedArg<Name, SamplePortRef, Kind>{ static_cast<SamplePortRef>(std::forward<T>(value)) };
         } else if constexpr (std::same_as<Value, EventPortRef>) {
-            if (!value.graph_builder) {
-                return NamedArg<Name, EventPortRef, Kind>{ EventPortRef{} };
-            }
             return NamedArg<Name, EventPortRef, Kind>{
-                EventPortRef(*value.graph_builder, value.node_index, value.output_port)
+                std::forward<T>(value)
             };
         } else if constexpr (requires(Value const& ref) { ref._clone_handle(); }) {
             using Handle = decltype(value._clone_handle());
