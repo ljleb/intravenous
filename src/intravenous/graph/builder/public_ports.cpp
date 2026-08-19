@@ -206,10 +206,6 @@ void GraphBuilderPublicPorts::define_sample_outputs(
             ? node_bundles.bundle(_boundary).boundary_sample_outputs().size()
             : static_cast<size_t>(existing - _sample_output_members.begin());
         auto const source = builder.materialize_sample_output(ref).port;
-        topology.add_sample_edge(TopologyEdge{
-            source,
-            TopologyPortId{ GRAPH_ID, output_ordinal },
-        });
         if (existing == _sample_output_members.end()) {
             auto const appended = node_bundles.bundle(_boundary)
                 .append_boundary_sample_output(config);
@@ -218,6 +214,13 @@ void GraphBuilderPublicPorts::define_sample_outputs(
             _sample_output_members.push_back(refs[i].public_member);
             _sample_output_source_infos.emplace_back();
         }
+        builder.record_authored_sample_connection(
+            NodeBundlePortId{_boundary, PortKind::sample, output_ordinal},
+            ref);
+        topology.add_sample_edge(TopologyEdge{
+            source,
+            TopologyPortId{ GRAPH_ID, output_ordinal },
+        });
         _last_sample_output_port_ordinals.push_back(output_ordinal);
     }
 

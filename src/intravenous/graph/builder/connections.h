@@ -117,8 +117,22 @@ namespace iv {
         std::vector<GraphBuilderVirtualSampleOutputFamily> families {};
     };
 
+    // Semantic sample edge recorded exactly as the builder saw it. Channel
+    // vector order is the semantic channel order; the two channel types retain
+    // grouping independently of the backing bundle-port layouts.
+    struct AuthoredSampleConnection {
+        ChannelTypeId source_type = ChannelTypeId::mono;
+        std::vector<SampleOutputChannelId> source_channels {};
+        ChannelTypeId target_type = ChannelTypeId::mono;
+        std::vector<SampleInputChannelId> target_channels {};
+
+        bool operator==(AuthoredSampleConnection const&) const = default;
+    };
+
     class GraphBuilderConnections {
     public:
+        void record_authored_sample_connection(AuthoredSampleConnection);
+        std::span<AuthoredSampleConnection const> authored_sample_connections() const;
         bool sample_input_is_connected(TopologyPortId target) const;
         bool event_input_is_connected(TopologyPortId target) const;
         void connect_sample_input(
@@ -147,7 +161,9 @@ namespace iv {
         GraphBuilderVirtualSampleOutputFamilies collect_virtual_sample_output_families(
             GraphBuilderTopology const&, GraphBuilderNodeBundles const&,
             GraphBuilderVirtualNodes const&) const;
-        void import_child(GraphBuilderConnections const& child, size_t child_node_offset);
+        void import_child(GraphBuilderConnections const& child,
+                          size_t child_node_offset,
+                          size_t child_node_bundle_offset);
         template<class Fn>
         void for_each_runtime_filled_sample_input(Fn&& fn) const
         {
@@ -164,6 +180,7 @@ namespace iv {
         }
 
     private:
+        std::vector<AuthoredSampleConnection> _authored_sample_connections {};
         std::unordered_set<TopologyPortId> _placed_sample_inputs {};
         std::unordered_set<TopologyPortId> _placed_event_inputs {};
         std::unordered_set<TopologyPortId> _runtime_filled_sample_inputs {};

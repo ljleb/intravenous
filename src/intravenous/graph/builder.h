@@ -56,6 +56,8 @@ class GraphBuilder {
   friend class GraphBuilderDetach;
   friend class GraphBuilderAnnotations;
   friend class GraphBuilderVirtualNodes;
+  friend class GraphBuilderPublicPorts;
+  friend class SubgraphScopeManager;
 
   GraphBuilderIdentity _identity;
   GraphBuilderTopology _topology;
@@ -211,7 +213,18 @@ private:
   static std::string allocate_root_builder_id();
   SamplePortRef detach_sample_port(SamplePortRef const &sample_port,
                                    size_t loop_extra_latency);
+  void record_authored_sample_connection(NodeBundlePortId target,
+                                         SamplePortRef const &source);
+  void record_authored_sample_connection(
+      NodeBundlePortId target, std::span<SamplePortRef const> sources);
   void connect_sample_input(TopologyPortId target, MaterializedSamplePort source);
+  // Compatibility lowering only. These overloads deliberately do not append
+  // AuthoredSampleConnection records.
+  void connect_sample_input_lowered(NodeBundlePortId target, SamplePortRef source);
+  void connect_sample_input_lowered(
+      NodeBundlePortId target, std::span<SamplePortRef const> sources);
+  std::vector<MaterializedSamplePort>
+  materialize_bundle_sample_output_channels(NodeBundlePortId source);
   SamplePortRef normalize_sample_output(SamplePortRef source);
   SamplePortRef lift_to_sample_port(SamplePortRef const &sample_port);
   SamplePortRef lift_to_sample_port(SamplePortRef &&sample_port);

@@ -32,7 +32,8 @@ size_t GraphBuilderChildEmbedder::embed(
   size_t const child_node_bundle_offset = parent_node_bundles.size();
 
   parent_node_bundles.import_child(child_node_bundles, child_node_offset);
-  parent_connections.import_child(child_connections, child_node_offset);
+  parent_connections.import_child(
+      child_connections, child_node_offset, child_node_bundle_offset);
   parent_detach.import_child(child_detach, child_node_offset,
                              child_detach_offset);
   parent_virtual_nodes.import_child(parent_topology, parent_node_bundles,

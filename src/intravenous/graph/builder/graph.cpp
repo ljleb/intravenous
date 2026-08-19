@@ -4,63 +4,6 @@
 #include <intravenous/graph/builder/embedder.h>
 
 namespace iv {
-namespace {
-std::vector<MaterializedSamplePort> bundle_sample_output_channels(
-    GraphBuilder &builder, GraphBuilderNodeBundles const &node_bundles,
-    NodeBundlePortId source) {
-  if (source.port_kind != PortKind::sample) {
-    details::error("attempted to read a sample output from an event NodeBundle port");
-  }
-  auto const descriptor = node_bundles.resolve_sample_output(source);
-  auto const &ports = descriptor.endpoints;
-  if (ports.empty()) {
-    details::error("NodeBundle sample output has no topology endpoint");
-  }
-  if (ports.size() > 1) {
-    std::vector<MaterializedSamplePort> result;
-    result.reserve(ports.size());
-    for (auto const port : ports) {
-      result.push_back(MaterializedSamplePort{
-          .port = port});
-    }
-    return result;
-  }
-  auto const packed = SamplePortRef(builder, source);
-  switch (descriptor.config.channel_layout.channel_type) {
-  case ChannelTypeId::mono:
-    return {builder.materialize_sample_output(packed)};
-  case ChannelTypeId::stereo: {
-    auto unpack = builder.node<ChannelUnpack<stereo>>();
-    unpack.connect_input(0, packed);
-    return {
-        builder.materialize_sample_output(static_cast<SamplePortRef>(unpack[0])),
-        builder.materialize_sample_output(static_cast<SamplePortRef>(unpack[1]))};
-  }
-  case ChannelTypeId::count: break;
-  }
-  details::error("invalid channel type for NodeBundle sample output");
-}
-
-SamplePortRef pack_sample_channels(GraphBuilder &builder, ChannelLayout layout,
-                                   std::span<SamplePortRef const> sources) {
-  if (sources.size() != channel_count(layout.channel_type)) {
-    details::error("sample channel source count does not match NodeBundle port layout");
-  }
-  switch (layout.channel_type) {
-  case ChannelTypeId::mono:
-    return sources.front();
-  case ChannelTypeId::stereo: {
-    auto pack = builder.node<ChannelPack<stereo>>();
-    for (size_t channel = 0; channel < sources.size(); ++channel)
-      pack.connect_input(channel, sources[channel]);
-    return static_cast<SamplePortRef>(pack);
-  }
-  case ChannelTypeId::count:
-    break;
-  }
-  details::error("invalid channel type for NodeBundle sample input");
-}
-} // namespace
 SamplePortRef::SamplePortRef(GraphBuilder &graph_builder_, size_t node_index,
                              size_t output_port)
     : graph_builder(&graph_builder_) {
@@ -633,9 +576,12 @@ SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const &sample_port,
 
   size_t const detach_id = _detach.allocate_detach_id();
   auto writer = node<DetachWriterNode>(detach_id, loop_extra_latency);
-  (void)writer;
   size_t const writer_node = _topology.node_count() - 1;
   connect_sample_input(TopologyPortId{writer_node, 0}, resolved_source);
+  record_authored_sample_connection(
+      NodeBundlePortId{
+          writer.node_bundle_handle(), PortKind::sample, 0},
+      sample_port);
 
   auto reader = node<DetachReaderNode>(detach_id, loop_extra_latency);
   SamplePortRef detached = static_cast<SamplePortRef>(reader);
@@ -726,6 +672,82 @@ GraphBuilder::public_event_outputs() const {
   return _public_ports.collected_event_outputs(_node_bundles);
 }
 
+void GraphBuilder::record_authored_sample_connection(
+    NodeBundlePortId target, SamplePortRef const &source) {
+  if (target.port_kind != PortKind::sample) {
+    details::error(
+        "attempted to record a sample connection to an event NodeBundle port");
+  }
+  if (!source.graph_builder) {
+    details::error("cannot connect an empty sample output");
+  }
+  if (source.graph_builder != this) {
+    details::error("cannot connect a sample output from another builder");
+  }
+    auto source_type = source.channel_type;
+    auto source_channels = source.channels;
+    if (source_channels.size() != channel_count(source_type) &&
+        source.node_bundle_port) {
+      auto const descriptor =
+          _node_bundles.resolve_sample_output(*source.node_bundle_port);
+      source_type = descriptor.config.channel_layout.channel_type;
+      source_channels =
+          _node_bundles.sample_output_channels(*source.node_bundle_port);
+    }
+
+    if (source_channels.size() != channel_count(source_type)) {
+    details::error(
+        "sample source does not match its semantic channel type");
+  }
+
+  auto const target_descriptor = _node_bundles.resolve_sample_input(target);
+  _connections.record_authored_sample_connection(AuthoredSampleConnection{
+      .source_type = source_type,
+      .source_channels = std::move(source_channels),
+      .target_type = target_descriptor.config.channel_layout.channel_type,
+      .target_channels = _node_bundles.sample_input_channels(target),
+  });
+}
+
+void GraphBuilder::record_authored_sample_connection(
+    NodeBundlePortId target, std::span<SamplePortRef const> sources) {
+  if (target.port_kind != PortKind::sample) {
+    details::error(
+        "attempted to record sample channels to an event NodeBundle port");
+  }
+
+  auto const target_descriptor = _node_bundles.resolve_sample_input(target);
+  auto target_channels = _node_bundles.sample_input_channels(target);
+  if (sources.size() != target_channels.size()) {
+    details::error(
+        "sample channel source count does not match NodeBundle port layout");
+  }
+
+  std::vector<SampleOutputChannelId> source_channels;
+  source_channels.reserve(sources.size());
+  for (auto const &source : sources) {
+    if (!source.graph_builder) {
+      details::error("cannot connect an empty sample output");
+    }
+    if (source.graph_builder != this) {
+      details::error("cannot connect a sample output from another builder");
+    }
+    if (source.channel_type != ChannelTypeId::mono ||
+        source.channels.size() != 1) {
+      details::error(
+          "channel-wise sample connection requires one scalar source per channel");
+    }
+    source_channels.push_back(source.channels.front());
+  }
+
+  _connections.record_authored_sample_connection(AuthoredSampleConnection{
+      .source_type = target_descriptor.config.channel_layout.channel_type,
+      .source_channels = std::move(source_channels),
+      .target_type = target_descriptor.config.channel_layout.channel_type,
+      .target_channels = std::move(target_channels),
+  });
+}
+
 void GraphBuilder::connect_sample_input(TopologyPortId target,
                                         MaterializedSamplePort source) {
   _connections.connect_sample_input(_topology, _identity, target, source.port);
@@ -751,9 +773,10 @@ SamplePortRef GraphBuilder::normalize_sample_output(SamplePortRef source) {
     switch (source.channel_type) {
     case ChannelTypeId::stereo: {
       auto pack = node<ChannelPack<stereo>>();
+      auto const pack_handle = pack.node_bundle_handle();
       for (size_t channel = 0; channel < source.channels.size(); ++channel) {
-        pack.connect_input(
-            channel,
+        connect_sample_input_lowered(
+            NodeBundlePortId{pack_handle, PortKind::sample, channel},
             SamplePortRef(
                 *this, ChannelTypeId::mono,
                 std::vector<SampleOutputChannelId>{source.channels[channel]}));
@@ -840,7 +863,10 @@ GraphBuilder::materialize_sample_output(SamplePortRef source) {
       switch (descriptor.config.channel_layout.channel_type) {
       case ChannelTypeId::stereo: {
         auto unpack = node<ChannelUnpack<stereo>>();
-        unpack.connect_input(0, SamplePortRef(*this, logical));
+        connect_sample_input_lowered(
+            NodeBundlePortId{
+                unpack.node_bundle_handle(), PortKind::sample, 0},
+            SamplePortRef(*this, logical));
         return materialize_sample_output(
             static_cast<SamplePortRef>(unpack[channel.channel]));
       }
@@ -866,7 +892,14 @@ GraphBuilder::materialize_sample_output(SamplePortRef source) {
       .port = descriptor.endpoints.front()};
 }
 
-void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef source) {
+void GraphBuilder::connect_sample_input(NodeBundlePortId target,
+                                        SamplePortRef source) {
+  connect_sample_input_lowered(target, source);
+  record_authored_sample_connection(target, source);
+}
+
+void GraphBuilder::connect_sample_input_lowered(NodeBundlePortId target,
+                                                SamplePortRef source) {
   if (target.port_kind != PortKind::sample) {
     details::error("attempted to connect a sample source to an event NodeBundle port");
   }
@@ -927,7 +960,10 @@ void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef s
     switch (source.channel_type) {
     case ChannelTypeId::stereo: {
       auto unpack = node<ChannelUnpack<stereo>>();
-      unpack.connect_input(0, source);
+      connect_sample_input_lowered(
+          NodeBundlePortId{
+              unpack.node_bundle_handle(), PortKind::sample, 0},
+          source);
       for (size_t channel = 0; channel < ports.size(); ++channel) {
         connect_sample_input(ports[channel], unpack[channel]);
       }
@@ -950,17 +986,43 @@ void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef s
 
 void GraphBuilder::connect_sample_input(
     NodeBundlePortId target, std::span<SamplePortRef const> sources) {
+  connect_sample_input_lowered(target, sources);
+  record_authored_sample_connection(target, sources);
+}
+
+void GraphBuilder::connect_sample_input_lowered(
+    NodeBundlePortId target, std::span<SamplePortRef const> sources) {
   if (target.port_kind != PortKind::sample) {
     details::error("attempted to connect sample channels to an event NodeBundle port");
   }
   auto const descriptor = _node_bundles.resolve_sample_input(target);
   auto const &ports = descriptor.endpoints;
   if (ports.size() == 1) {
-    connect_sample_input(ports.front(),
-                         pack_sample_channels(*this,
-                                              descriptor.config.channel_layout,
-                                              sources));
-    return;
+    if (sources.size() !=
+        channel_count(descriptor.config.channel_layout.channel_type)) {
+      details::error(
+          "sample channel source count does not match NodeBundle port layout");
+    }
+    switch (descriptor.config.channel_layout.channel_type) {
+    case ChannelTypeId::mono:
+      connect_sample_input(ports.front(), sources.front());
+      return;
+    case ChannelTypeId::stereo: {
+      auto pack = node<ChannelPack<stereo>>();
+      auto const pack_handle = pack.node_bundle_handle();
+      for (size_t channel = 0; channel < sources.size(); ++channel) {
+        connect_sample_input_lowered(
+            NodeBundlePortId{pack_handle, PortKind::sample, channel},
+            sources[channel]);
+      }
+      connect_sample_input(
+          ports.front(), static_cast<SamplePortRef>(pack));
+      return;
+    }
+    case ChannelTypeId::count:
+      break;
+    }
+    details::error("invalid channel type for NodeBundle sample input");
   }
   if (sources.size() != ports.size()) {
     details::error("tiled NodeBundle input has an unexpected channel count");
@@ -1025,10 +1087,51 @@ bool GraphBuilder::event_input_is_connected(NodeBundlePortId target) const {
   return connected;
 }
 
+std::vector<MaterializedSamplePort>
+GraphBuilder::materialize_bundle_sample_output_channels(
+    NodeBundlePortId source) {
+  if (source.port_kind != PortKind::sample) {
+    details::error(
+        "attempted to read a sample output from an event NodeBundle port");
+  }
+  auto const descriptor = _node_bundles.resolve_sample_output(source);
+  auto const &ports = descriptor.endpoints;
+  if (ports.empty()) {
+    details::error("NodeBundle sample output has no topology endpoint");
+  }
+  if (ports.size() > 1) {
+    std::vector<MaterializedSamplePort> result;
+    result.reserve(ports.size());
+    for (auto const port : ports) {
+      result.push_back(MaterializedSamplePort{.port = port});
+    }
+    return result;
+  }
+
+  auto const packed = SamplePortRef(*this, source);
+  switch (descriptor.config.channel_layout.channel_type) {
+  case ChannelTypeId::mono:
+    return {materialize_sample_output(packed)};
+  case ChannelTypeId::stereo: {
+    auto unpack = node<ChannelUnpack<stereo>>();
+    connect_sample_input_lowered(
+        NodeBundlePortId{
+            unpack.node_bundle_handle(), PortKind::sample, 0},
+        packed);
+    return {
+        materialize_sample_output(static_cast<SamplePortRef>(unpack[0])),
+        materialize_sample_output(static_cast<SamplePortRef>(unpack[1]))};
+  }
+  case ChannelTypeId::count:
+    break;
+  }
+  details::error("invalid channel type for NodeBundle sample output");
+}
+
 void GraphBuilder::connect_sample_output(NodeBundlePortId source,
                                          NodeRef const &target) {
-  auto const channels = bundle_sample_output_channels(
-      *this, _node_bundles, source);
+  auto const channels = materialize_bundle_sample_output_channels(source);
+  auto const semantic_source = SamplePortRef(*this, source);
   std::vector<size_t> target_nodes;
   _node_bundles.bundle(target.node_bundle_handle()).for_each_topology_node(
       [&](size_t node) { target_nodes.push_back(node); });
@@ -1037,11 +1140,16 @@ void GraphBuilder::connect_sample_output(NodeBundlePortId source,
   }
   auto const target_node = target_nodes.front();
   auto const &inputs = _topology.concrete_node(target_node).inputs();
-  if (channels.size() != inputs.size()) {
+  if (channels.size() != inputs.size() ||
+      semantic_source.channels.size() != inputs.size()) {
     details::error("NodeBundle output does not match graph-service sink channel count");
   }
   for (size_t channel = 0; channel < channels.size(); ++channel) {
     connect_sample_input(TopologyPortId{target_node, channel}, channels[channel]);
+    record_authored_sample_connection(
+        NodeBundlePortId{
+            target.node_bundle_handle(), PortKind::sample, channel},
+        semantic_source.select_channel(channel));
   }
 }
 

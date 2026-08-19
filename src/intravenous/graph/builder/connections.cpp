@@ -42,6 +42,26 @@ bool GraphBuilderConnections::event_input_is_connected(TopologyPortId target) co
   return _placed_event_inputs.contains(target);
 }
 
+void GraphBuilderConnections::record_authored_sample_connection(
+    AuthoredSampleConnection connection) {
+  if (connection.source_channels.size() !=
+      channel_count(connection.source_type)) {
+    details::error(
+        "authored sample connection source does not match its channel type");
+  }
+  if (connection.target_channels.size() !=
+      channel_count(connection.target_type)) {
+    details::error(
+        "authored sample connection target does not match its channel type");
+  }
+  _authored_sample_connections.push_back(std::move(connection));
+}
+
+std::span<AuthoredSampleConnection const>
+GraphBuilderConnections::authored_sample_connections() const {
+  return _authored_sample_connections;
+}
+
 void GraphBuilderConnections::connect_sample_input(
     GraphBuilderTopology &topology, GraphBuilderIdentity const &identity,
     TopologyPortId target, TopologyPortId source) {
@@ -300,8 +320,19 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
   return result;
 }
 
-void GraphBuilderConnections::import_child(GraphBuilderConnections const &child,
-                                           size_t child_node_offset) {
+void GraphBuilderConnections::import_child(
+    GraphBuilderConnections const &child, size_t child_node_offset,
+    size_t child_node_bundle_offset) {
+  for (auto connection : child._authored_sample_connections) {
+    for (auto &channel : connection.source_channels) {
+      channel.bundle += child_node_bundle_offset;
+    }
+    for (auto &channel : connection.target_channels) {
+      channel.bundle += child_node_bundle_offset;
+    }
+    _authored_sample_connections.push_back(std::move(connection));
+  }
+
   for (TopologyPortId const port : child._placed_sample_inputs) {
     if (port.node != GRAPH_ID) {
       _placed_sample_inputs.insert(

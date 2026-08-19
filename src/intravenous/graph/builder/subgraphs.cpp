@@ -189,9 +189,14 @@ void SubgraphScopeManager::define_sample_outputs(
                 + ": subgraph outputs(...) requires names when exposing more than one sample output"
             );
         }
-        scope.output_sources.push_back(
-            builder.materialize_sample_output(ref).port);
-        boundary.append_boundary_sample_output(config);
+        auto const source = builder.materialize_sample_output(ref).port;
+        auto const output_ordinal =
+            boundary.append_boundary_sample_output(config);
+        builder.record_authored_sample_connection(
+            NodeBundlePortId{
+                scope.boundary, PortKind::sample, output_ordinal},
+            ref);
+        scope.output_sources.push_back(source);
     }
     scope.outputs_defined = true;
 }
