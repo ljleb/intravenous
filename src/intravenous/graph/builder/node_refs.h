@@ -268,7 +268,6 @@ namespace iv {
         : public NodeRefCrtp<TypedNodeRef<Node, TiledPortProjection<ChannelType>>> {
         using Self = TypedNodeRef<Node, TiledPortProjection<ChannelType>>;
         using Base = NodeRefCrtp<Self>;
-        std::array<NodeBundleHandle, ChannelType::channel_count> _member_bundles{};
 
     public:
         using NodeType = std::remove_cvref_t<Node>;
@@ -282,9 +281,8 @@ namespace iv {
         using Base::to_string;
 
         TypedNodeRef() = default;
-        explicit TypedNodeRef(GraphBuilder& graph_builder, NodeBundleHandle handle,
-                              std::array<NodeBundleHandle, ChannelType::channel_count> members) :
-            Base(graph_builder, handle), _member_bundles(std::move(members)) {}
+        explicit TypedNodeRef(GraphBuilder& graph_builder, NodeBundleHandle handle) :
+            Base(graph_builder, handle) {}
 
         TypedNodeRef(TypedNodeRef const&) = delete;
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
@@ -293,7 +291,6 @@ namespace iv {
         TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
-            _member_bundles = std::move(rhs._member_bundles);
             return *this;
         }
 
@@ -302,7 +299,7 @@ namespace iv {
             if (!this->_graph_builder) {
                 return Self {};
             }
-            return Self(*this->_graph_builder, this->_index, _member_bundles);
+            return Self(*this->_graph_builder, this->_index);
         }
 
         template<fixed_string Name, NamedPortKind Kind>
@@ -325,8 +322,10 @@ namespace iv {
             if (!this->_graph_builder) {
                 details::error("attempted to select a tile from a null tiled node ref");
             }
-            return ConcreteRef(*this->_graph_builder,
-                               _member_bundles[MemberType::channel_ordinal]);
+            return ConcreteRef(
+                *this->_graph_builder,
+                this->_graph_builder->_node_bundles.tiled_member(
+                    this->_index, MemberType::channel_ordinal));
         }
 
         template<size_t I>

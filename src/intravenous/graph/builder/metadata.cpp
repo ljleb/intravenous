@@ -2,7 +2,6 @@
 
 #include <intravenous/graph/builder/connections.h>
 #include <intravenous/graph/builder/node_bundles.h>
-#include <intravenous/graph/builder/topology.h>
 #include <intravenous/graph/builder/virtual_nodes.h>
 
 namespace iv::details {
@@ -451,8 +450,9 @@ std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
 }
 
 std::vector<IntrospectionPortInfo> project_bundle_event_ports(
-    GraphBuilderNodeBundles const &node_bundles, NodeBundleHandle bundle_handle,
-    GraphBuilderTopology const &topology, bool inputs) {
+    GraphBuilderNodeBundles const &node_bundles,
+    GraphBuilderConnections const &connections,
+    NodeBundleHandle bundle_handle, bool inputs) {
   auto const &bundle = node_bundles.bundle(bundle_handle);
   auto project = [&](size_t count) {
     std::vector<IntrospectionPortInfo> result;
@@ -460,38 +460,27 @@ std::vector<IntrospectionPortInfo> project_bundle_event_ports(
     for (size_t ordinal = 0; ordinal < count; ++ordinal) {
       std::string name;
       EventTypeId type = EventTypeId::empty;
-      std::vector<TopologyPortId> endpoints;
+      bool connected = false;
       if (inputs) {
-        auto descriptor = node_bundles.resolve_event_input(
-            {bundle_handle, PortKind::event, ordinal});
-        name = descriptor.config.name;
-        type = descriptor.config.type;
-        endpoints = std::move(descriptor.endpoints);
+        auto const config = node_bundles.resolve_event_input(
+            {bundle_handle, PortKind::event, ordinal}).config;
+        name = config.name;
+        type = config.type;
+        connected = connections.event_input_is_connected(
+            EventInputPortId{bundle_handle, ordinal});
       } else {
-        auto descriptor = node_bundles.resolve_event_output(
-            {bundle_handle, PortKind::event, ordinal});
-        name = descriptor.config.name;
-        type = descriptor.config.type;
-        endpoints = std::move(descriptor.endpoints);
-      }
-
-      bool any_connected = false;
-      bool any_disconnected = false;
-      for (auto const port : endpoints) {
-        bool connected = false;
-        topology.for_each_event_edge([&](TopologyEventEdge const &edge) {
-          connected = connected || (inputs ? edge.target == port : edge.source == port);
-        });
-        any_connected = any_connected || connected;
-        any_disconnected = any_disconnected || !connected;
+        auto const config = node_bundles.resolve_event_output(
+            {bundle_handle, PortKind::event, ordinal}).config;
+        name = config.name;
+        type = config.type;
+        connected = connections.event_output_is_connected(
+            EventOutputPortId{bundle_handle, ordinal});
       }
 
       result.push_back(IntrospectionPortInfo{
           .name = std::move(name), .type = event_type_name(type),
-          .connectivity = any_connected && any_disconnected
-              ? VirtualPortConnectivity::mixed
-              : any_connected ? VirtualPortConnectivity::connected
-                              : VirtualPortConnectivity::disconnected,
+          .connectivity = connected ? VirtualPortConnectivity::connected
+                                    : VirtualPortConnectivity::disconnected,
           .ordinal = ordinal});
     }
     return result;
@@ -500,14 +489,14 @@ std::vector<IntrospectionPortInfo> project_bundle_event_ports(
 }
 
 std::pair<std::string, std::string> bundle_display_type(
-    NodeBundle const &bundle, GraphBuilderTopology const &topology) {
-  auto const type = std::string(bundle.type_identity(topology));
+    NodeBundle const &bundle) {
+  auto const type = std::string(bundle.type_identity());
   return {type, type};
 }
 } // namespace
 
 void apply_virtual_port_metadata(
-    GraphIntrospectionMetadata &metadata, GraphBuilderTopology const &topology,
+    GraphIntrospectionMetadata &metadata,
     GraphBuilderNodeBundles const &node_bundles,
     GraphBuilderVirtualNodes const &virtual_nodes,
     GraphBuilderConnections const &connections) {
@@ -541,7 +530,7 @@ void apply_virtual_port_metadata(
          bundle_ordinal < record.node_bundle_handles.size(); ++bundle_ordinal) {
       auto const handle = record.node_bundle_handles[bundle_ordinal];
       auto const &bundle = node_bundles.bundle(handle);
-      auto const [kind, type_identity] = bundle_display_type(bundle, topology);
+      auto const [kind, type_identity] = bundle_display_type(bundle);
       if (it->kind.empty()) it->kind = kind;
       if (it->type_identity.empty()) it->type_identity = type_identity;
       auto const backing_id = "node-bundle:" + record.id + ":" +
@@ -557,9 +546,9 @@ void apply_virtual_port_metadata(
           .sample_outputs = project_bundle_sample_ports(
               record.sample_outputs, node_bundles, connections, handle, false),
           .event_inputs = project_bundle_event_ports(
-              node_bundles, handle, topology, true),
+              node_bundles, connections, handle, true),
           .event_outputs = project_bundle_event_ports(
-              node_bundles, handle, topology, false),
+              node_bundles, connections, handle, false),
       });
     }
   }

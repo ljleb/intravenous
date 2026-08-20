@@ -5,7 +5,6 @@
 #include <intravenous/graph/builder/node_call.h>
 #include <intravenous/graph/builder/node_bundles.h>
 #include <intravenous/graph/builder/output_refs.h>
-#include <intravenous/graph/builder/topology.h>
 
 #include <optional>
 #include <span>
@@ -16,322 +15,179 @@
 #include <vector>
 
 namespace iv {
-    class GraphBuilder;
+class GraphBuilder;
 
-    struct GraphBuilderPublicSamplePortChannel {
-        std::vector<size_t> port_ordinals {};
-        std::vector<SourceInfo> source_infos {};
-    };
+struct GraphBuilderPublicSamplePortChannel {
+  std::vector<size_t> port_ordinals{};
+  std::vector<SourceInfo> source_infos{};
+};
+struct GraphBuilderPublicSamplePortFamily {
+  size_t family_ordinal = 0;
+  std::string family_name{};
+  InputConfig input_config{};
+  OutputConfig output_config{};
+  ChannelTypeId channel_type = ChannelTypeId::mono;
+  std::vector<GraphBuilderPublicSamplePortChannel> channels{};
+  std::vector<SourceInfo> source_infos{};
+};
+struct GraphBuilderPublicSamplePortFamilies {
+  std::vector<GraphBuilderPublicSamplePortFamily> families{};
+};
+struct GraphBuilderPublicEventInput { size_t port_ordinal = 0; EventInputConfig config{}; };
+struct GraphBuilderPublicEventOutput {
+  size_t port_ordinal = 0;
+  EventOutputConfig config{};
+  std::vector<SourceInfo> source_infos{};
+};
 
-    struct GraphBuilderPublicSamplePortFamily {
-        size_t family_ordinal = 0;
-        std::string family_name {};
-        InputConfig input_config {};
-        OutputConfig output_config {};
-        ChannelTypeId channel_type = ChannelTypeId::mono;
-        std::vector<GraphBuilderPublicSamplePortChannel> channels {};
-        std::vector<SourceInfo> source_infos {};
-    };
+class GraphBuilderPublicPorts {
+public:
+  explicit GraphBuilderPublicPorts(NodeBundleHandle boundary) : _boundary(boundary) {}
+  NodeBundleHandle boundary_handle() const { return _boundary; }
 
-    struct GraphBuilderPublicSamplePortFamilies {
-        std::vector<GraphBuilderPublicSamplePortFamily> families {};
-    };
+  SamplePortRef add_sample_input(GraphBuilder&, GraphBuilderNodeBundles&,
+      std::string_view, Sample, std::optional<Sample>, std::optional<Sample>);
+  EventPortRef add_event_input(GraphBuilder&, GraphBuilderNodeBundles&,
+      std::string_view, EventTypeId);
+  bool sample_outputs_defined() const;
+  void define_sample_outputs(GraphBuilder&, GraphBuilderNodeBundles&,
+      GraphBuilderIdentity const&, std::span<OutputRefConfig const>);
+  void define_event_outputs(GraphBuilder&, GraphBuilderNodeBundles&,
+      GraphBuilderIdentity const&, std::span<EventOutputRefConfig const>);
 
-    struct GraphBuilderPublicEventInput {
-        size_t port_ordinal = 0;
-        EventInputConfig config {};
-    };
+  template<class LiftSample, class... Refs>
+  void define_sample_outputs_from_args(GraphBuilder&, GraphBuilderNodeBundles&,
+      GraphBuilderIdentity const&, LiftSample&&, Refs&&...);
+  template<class LiftSample>
+  void define_sample_outputs_from_named_refs(GraphBuilder&, GraphBuilderNodeBundles&,
+      GraphBuilderIdentity const&, LiftSample&&, std::span<NamedRef const>);
+  template<class... Refs>
+  void define_event_outputs_from_args(GraphBuilder&, GraphBuilderNodeBundles&,
+      GraphBuilderIdentity const&, Refs&&...);
 
-    struct GraphBuilderPublicEventOutput {
-        size_t port_ordinal = 0;
-        EventOutputConfig config {};
-        std::vector<SourceInfo> source_infos {};
-    };
+  std::span<InputConfig const> sample_inputs(GraphBuilderNodeBundles const&) const;
+  std::span<EventInputConfig const> event_inputs(GraphBuilderNodeBundles const&) const;
+  std::span<OutputConfig const> sample_outputs(GraphBuilderNodeBundles const&) const;
+  std::span<EventOutputConfig const> event_outputs(GraphBuilderNodeBundles const&) const;
+  GraphBuilderPublicSamplePortFamilies sample_input_families(GraphBuilderNodeBundles const&) const;
+  GraphBuilderPublicSamplePortFamilies sample_output_families(GraphBuilderNodeBundles const&) const;
+  std::vector<GraphBuilderPublicEventInput> collected_event_inputs(GraphBuilderNodeBundles const&) const;
+  std::vector<GraphBuilderPublicEventOutput> collected_event_outputs(GraphBuilderNodeBundles const&) const;
 
-    class GraphBuilderPublicPorts {
-    public:
-        explicit GraphBuilderPublicPorts(NodeBundleHandle boundary) : _boundary(boundary) {}
+  void annotate_sample_input_source_info(size_t, std::string_view,
+      std::string_view, uint32_t, uint32_t);
+  std::span<SourceInfo const> sample_input_source_infos(size_t) const;
+  void annotate_event_input_source_info(size_t, std::string_view,
+      std::string_view, uint32_t, uint32_t);
+  std::span<SourceInfo const> event_input_source_infos(size_t) const;
+  void annotate_sample_output_source_info(size_t, SourceInfo);
+  void annotate_event_output_source_info(size_t, SourceInfo);
 
-        NodeBundleHandle boundary_handle() const { return _boundary; }
+private:
+  NodeBundleHandle _boundary = 0;
+  std::vector<std::vector<SourceInfo>> _sample_input_source_infos{};
+  std::vector<std::vector<SourceInfo>> _event_input_source_infos{};
+  std::vector<PublicSamplePortMember> _sample_output_members{};
+  std::vector<size_t> _last_sample_output_port_ordinals{};
+  std::vector<std::vector<SourceInfo>> _sample_output_source_infos{};
+  std::vector<std::vector<SourceInfo>> _event_output_source_infos{};
+  bool _sample_outputs_defined = false;
+};
 
-        SamplePortRef add_sample_input(
-            GraphBuilder&,
-            GraphBuilderNodeBundles&,
-            std::string_view name,
-            Sample default_value,
-            std::optional<Sample> min,
-            std::optional<Sample> max);
-        EventPortRef add_event_input(
-            GraphBuilder&, GraphBuilderNodeBundles&, std::string_view name, EventTypeId type);
-        bool sample_outputs_defined() const;
-        void define_sample_outputs(
-            GraphBuilder&,
-            GraphBuilderTopology&,
-            GraphBuilderNodeBundles&,
-            GraphBuilderIdentity const&,
-            std::span<OutputRefConfig const> refs
-        );
-        void define_event_outputs(
-            GraphBuilder&,
-            GraphBuilderTopology&,
-            GraphBuilderNodeBundles&,
-            GraphBuilderIdentity const&,
-            std::span<EventOutputRefConfig const> refs
-        );
-        template<class LiftSample, class... Refs>
-        void define_sample_outputs_from_args(
-            GraphBuilder&,
-            GraphBuilderTopology&,
-            GraphBuilderNodeBundles&,
-            GraphBuilderIdentity const&,
-            LiftSample&& lift_sample,
-            Refs&&... refs
-        );
-        template<class LiftSample>
-        void define_sample_outputs_from_named_refs(
-            GraphBuilder&,
-            GraphBuilderTopology&,
-            GraphBuilderNodeBundles&,
-            GraphBuilderIdentity const&,
-            LiftSample&& lift_sample,
-            std::span<NamedRef const> refs
-        );
-        template<class... Refs>
-        void define_event_outputs_from_args(
-            GraphBuilder&,
-            GraphBuilderTopology&,
-            GraphBuilderNodeBundles&,
-            GraphBuilderIdentity const&,
-            Refs&&... refs
-        );
-        std::span<InputConfig const> sample_inputs(GraphBuilderNodeBundles const&) const;
-        std::span<EventInputConfig const> event_inputs(GraphBuilderNodeBundles const&) const;
-        std::span<OutputConfig const> sample_outputs(GraphBuilderNodeBundles const&) const;
-        std::span<EventOutputConfig const> event_outputs(GraphBuilderNodeBundles const&) const;
-        GraphBuilderPublicSamplePortFamilies sample_input_families(
-            GraphBuilderNodeBundles const&) const;
-        GraphBuilderPublicSamplePortFamilies sample_output_families(
-            GraphBuilderNodeBundles const&) const;
-        std::vector<GraphBuilderPublicEventInput> collected_event_inputs(
-            GraphBuilderNodeBundles const&) const;
-        std::vector<GraphBuilderPublicEventOutput> collected_event_outputs(
-            GraphBuilderNodeBundles const&) const;
-        void annotate_sample_input_source_info(
-            size_t port_ordinal,
-            std::string_view declaration_identity,
-            std::string_view file_path,
-            uint32_t begin,
-            uint32_t end);
-        std::span<SourceInfo const> sample_input_source_infos(size_t port_ordinal) const;
-        void annotate_event_input_source_info(size_t port_ordinal, std::string_view declaration_identity,
-            std::string_view file_path, uint32_t begin, uint32_t end);
-        std::span<SourceInfo const> event_input_source_infos(size_t port_ordinal) const;
-        void annotate_sample_output_source_info(size_t port_ordinal, SourceInfo info);
-        void annotate_event_output_source_info(size_t port_ordinal, SourceInfo info);
-
-    private:
-        NodeBundleHandle _boundary = 0;
-        std::vector<std::vector<SourceInfo>> _sample_input_source_infos {};
-        std::vector<std::vector<SourceInfo>> _event_input_source_infos {};
-        // Index-aligned with the boundary's public sample outputs. This is
-        // public-declaration metadata, not port configuration.
-        std::vector<PublicSamplePortMember> _sample_output_members {};
-        std::vector<size_t> _last_sample_output_port_ordinals {};
-        std::vector<std::vector<SourceInfo>> _sample_output_source_infos {};
-        std::vector<std::vector<SourceInfo>> _event_output_source_infos {};
-        bool _sample_outputs_defined = false;
-    };
-
-    template<class LiftSample, class... Refs>
-    void GraphBuilderPublicPorts::define_sample_outputs_from_args(
-        GraphBuilder& builder,
-        GraphBuilderTopology& topology,
-        GraphBuilderNodeBundles& node_bundles,
-        GraphBuilderIdentity const& identity,
-        LiftSample&& lift_sample,
-        Refs&&... refs
-    )
-    {
-        std::vector<OutputRefConfig> output_refs;
-        output_refs.reserve(sizeof...(Refs));
-        constexpr bool require_names = (sizeof...(Refs) > 1);
-        auto const source_config = [&](SamplePortRef const& source) {
-            if (auto const logical = node_bundles.sample_output_port_for_channels(
-                    source.channel_type, source.channels)) {
-                return node_bundles
-                    .resolve_sample_output(*logical)
-                    .config;
-            }
-            if (!source.channels.empty()) {
-                return OutputConfig{
-                    .channel_layout = ChannelLayout{
-                        .channel_type = source.channel_type,
-                        .sample_layout = SampleStreamLayout::planar,
-                    },
-                };
-            }
-            details::error("sample output source has no logical address");
-        };
-        auto const public_output_config = [&](SamplePortRef const& source, std::string_view name) {
-            auto config = source_config(source);
-            config.name = std::string(name);
-            // Public graph outputs use the canonical lane-facing layout.
-            // Contributors in another layout are adapted by their edge plan.
-            config.channel_layout.sample_layout = SampleStreamLayout::planar;
-            return config;
-        };
-        auto const append_ref = [&](auto&& ref) {
-            using RefT = std::remove_cvref_t<decltype(ref)>;
-            if constexpr (details::is_channel_named_arg_v<RefT>) {
-                using ChannelType = typename RefT::channel_type;
-                output_refs.push_back(OutputRefConfig{
-                    .ref = lift_sample(ref.value),
-                    .config = OutputConfig{
-                        .name = std::string(RefT::name.view()),
-                        .channel_layout = ChannelLayout{
-                            .channel_type = ChannelTypeTraits<ChannelType>::id,
-                            .sample_layout = SampleStreamLayout::planar,
-                        },
-                    },
-                    .public_member = PublicSamplePortMember{
-                        .family_name = std::string(RefT::name.view()),
-                        .channel_type = ChannelTypeTraits<ChannelType>::id,
-                        .whole_stream = true,
-                    },
-                    .target_channel_ordinal = RefT::channel_ordinal,
-                });
-            } else if constexpr (details::is_default_channel_named_arg_v<RefT>) {
-                using ChannelType = typename RefT::channel_type;
-                output_refs.push_back(OutputRefConfig{
-                    .ref = lift_sample(ref.value),
-                    .config = OutputConfig{
-                        .name = "main",
-                        .channel_layout = ChannelLayout{
-                            .channel_type = ChannelTypeTraits<ChannelType>::id,
-                            .sample_layout = SampleStreamLayout::planar,
-                        },
-                    },
-                    .public_member = PublicSamplePortMember{
-                        .family_name = "main",
-                        .channel_type = ChannelTypeTraits<ChannelType>::id,
-                        .whole_stream = true,
-                    },
-                    .target_channel_ordinal = RefT::channel_ordinal,
-                });
-            } else if constexpr (details::is_named_arg_v<RefT>) {
-                if constexpr (RefT::name.view().starts_with("__")) {
-                    details::error(
-                        "builder " + identity.value
-                        + ": generated channel assignments are not public outputs; use \"name\"_P[channel] = value"
-                    );
-                }
-                auto source = lift_sample(ref.value);
-                auto config = public_output_config(source, RefT::name.view());
-                auto const channel_type = config.channel_layout.channel_type;
-                output_refs.push_back(OutputRefConfig{
-                    .ref = source,
-                    .config = std::move(config),
-                    .public_member = PublicSamplePortMember{
-                        .family_name = std::string(RefT::name.view()),
-                        .channel_type = channel_type,
-                        .whole_stream = true,
-                    },
-                });
-            } else {
-                if constexpr (require_names) {
-                    details::error(
-                        "builder " + identity.value
-                        + ": outputs(...) requires names when exposing more than one sample output"
-                    );
-                } else {
-                    auto source = lift_sample(std::forward<decltype(ref)>(ref));
-                    output_refs.push_back(OutputRefConfig{
-                        .ref = source,
-                        .config = public_output_config(source, {}),
-                    });
-                }
-            }
-        };
-        (append_ref(std::forward<Refs>(refs)), ...);
-        define_sample_outputs(builder, topology, node_bundles, identity,
-            std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
+template<class LiftSample, class... Refs>
+void GraphBuilderPublicPorts::define_sample_outputs_from_args(
+    GraphBuilder& builder, GraphBuilderNodeBundles& bundles,
+    GraphBuilderIdentity const& identity, LiftSample&& lift_sample, Refs&&... refs) {
+  std::vector<OutputRefConfig> out;
+  out.reserve(sizeof...(Refs));
+  constexpr bool require_names = sizeof...(Refs) > 1;
+  auto source_config = [&](SamplePortRef const& source) {
+    if (auto logical = bundles.sample_output_port_for_channels(source.channel_type, source.channels))
+      return bundles.resolve_sample_output(*logical).config;
+    if (source.channels.empty()) details::error("sample output source has no logical address");
+    return OutputConfig{.channel_layout = {.channel_type = source.channel_type,
+                                           .sample_layout = SampleStreamLayout::planar}};
+  };
+  auto public_config = [&](SamplePortRef const& source, std::string_view name) {
+    auto config = source_config(source); config.name = std::string(name);
+    config.channel_layout.sample_layout = SampleStreamLayout::planar; return config;
+  };
+  auto append = [&](auto&& ref) {
+    using Ref = std::remove_cvref_t<decltype(ref)>;
+    if constexpr (details::is_channel_named_arg_v<Ref>) {
+      using C = typename Ref::channel_type;
+      out.push_back({.ref = lift_sample(ref.value),
+                     .config = {.name = std::string(Ref::name.view()),
+                                .channel_layout = {.channel_type = ChannelTypeTraits<C>::id,
+                                                   .sample_layout = SampleStreamLayout::planar}},
+                     .public_member = {.family_name = std::string(Ref::name.view()),
+                                       .channel_type = ChannelTypeTraits<C>::id,
+                                       .whole_stream = true},
+                     .target_channel_ordinal = Ref::channel_ordinal});
+    } else if constexpr (details::is_default_channel_named_arg_v<Ref>) {
+      using C = typename Ref::channel_type;
+      out.push_back({.ref = lift_sample(ref.value),
+                     .config = {.name = "main",
+                                .channel_layout = {.channel_type = ChannelTypeTraits<C>::id,
+                                                   .sample_layout = SampleStreamLayout::planar}},
+                     .public_member = {.family_name = "main",
+                                       .channel_type = ChannelTypeTraits<C>::id,
+                                       .whole_stream = true},
+                     .target_channel_ordinal = Ref::channel_ordinal});
+    } else if constexpr (details::is_named_arg_v<Ref>) {
+      if constexpr (Ref::name.view().starts_with("__"))
+        details::error("builder " + identity.value + ": generated channel assignments are not public outputs");
+      auto source = lift_sample(ref.value); auto config = public_config(source, Ref::name.view());
+      auto type = config.channel_layout.channel_type;
+      out.push_back({.ref = source, .config = std::move(config),
+                     .public_member = {.family_name = std::string(Ref::name.view()),
+                                       .channel_type = type, .whole_stream = true}});
+    } else {
+      if constexpr (require_names) details::error("builder " + identity.value + ": outputs(...) requires names when exposing more than one sample output");
+      auto source = lift_sample(std::forward<decltype(ref)>(ref));
+      out.push_back({.ref = source, .config = public_config(source, {})});
     }
-
-    template<class LiftSample>
-    void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
-        GraphBuilder& builder,
-        GraphBuilderTopology& topology,
-        GraphBuilderNodeBundles& node_bundles,
-        GraphBuilderIdentity const& identity,
-        LiftSample&& lift_sample,
-        std::span<NamedRef const> refs
-    )
-    {
-        std::vector<OutputRefConfig> output_refs;
-        output_refs.reserve(refs.size());
-        bool const require_names = refs.size() > 1;
-        for (auto const& ref : refs) {
-            if (require_names && ref.name.empty()) {
-                details::error(
-                    "builder " + identity.value
-                    + ": outputs(...) requires names when exposing more than one sample output"
-                );
-            }
-            auto source = lift_sample(ref);
-            auto const logical = node_bundles.sample_output_port_for_channels(
-                source.channel_type, source.channels);
-            auto config = logical
-                ? node_bundles.resolve_sample_output(*logical).config
-                : !source.channels.empty()
-                    ? OutputConfig{
-                        .channel_layout = ChannelLayout{
-                            .channel_type = source.channel_type,
-                            .sample_layout = SampleStreamLayout::planar,
-                        },
-                    }
-                    : OutputConfig{};
-            config.name = std::string(ref.name);
-            config.channel_layout.sample_layout = SampleStreamLayout::planar;
-            output_refs.push_back(OutputRefConfig{ .ref = source, .config = std::move(config) });
-        }
-        define_sample_outputs(builder, topology, node_bundles, identity,
-            std::span<OutputRefConfig const>(output_refs.data(), output_refs.size()));
-    }
-
-    template<class... Refs>
-    void GraphBuilderPublicPorts::define_event_outputs_from_args(
-        GraphBuilder& builder,
-        GraphBuilderTopology& topology,
-        GraphBuilderNodeBundles& node_bundles,
-        GraphBuilderIdentity const& identity,
-        Refs&&... refs
-    )
-    {
-        std::vector<EventOutputRefConfig> output_refs;
-        output_refs.reserve(sizeof...(Refs));
-        constexpr bool require_names = (sizeof...(Refs) > 1);
-        auto const append_ref = [&](auto&& ref) {
-            using RefT = std::remove_cvref_t<decltype(ref)>;
-            if constexpr (details::is_named_arg_v<RefT>) {
-                output_refs.push_back(EventOutputRefConfig{
-                    .ref = static_cast<EventPortRef>(ref.value),
-                    .config = EventOutputConfig{ .name = std::string(RefT::name.view()) },
-                });
-            } else {
-                if constexpr (require_names) {
-                    details::error(
-                        "builder " + identity.value + ": event_outputs(...) requires names when exposing more than one event output"
-                    );
-                } else {
-                    output_refs.push_back(EventOutputRefConfig{
-                        .ref = static_cast<EventPortRef>(ref),
-                        .config = EventOutputConfig{},
-                    });
-                }
-            }
-        };
-        (append_ref(std::forward<Refs>(refs)), ...);
-        define_event_outputs(builder, topology, node_bundles, identity,
-            std::span<EventOutputRefConfig const>(output_refs.data(), output_refs.size()));
-    }
+  };
+  (append(std::forward<Refs>(refs)), ...);
+  define_sample_outputs(builder, bundles, identity, out);
 }
+
+template<class LiftSample>
+void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
+    GraphBuilder& builder, GraphBuilderNodeBundles& bundles,
+    GraphBuilderIdentity const& identity, LiftSample&& lift_sample,
+    std::span<NamedRef const> refs) {
+  std::vector<OutputRefConfig> out; out.reserve(refs.size());
+  for (auto const& ref : refs) {
+    if (refs.size() > 1 && ref.name.empty()) details::error("builder " + identity.value + ": outputs(...) requires names when exposing more than one sample output");
+    auto source = lift_sample(ref);
+    auto logical = bundles.sample_output_port_for_channels(source.channel_type, source.channels);
+    auto config = logical ? bundles.resolve_sample_output(*logical).config
+                          : OutputConfig{.channel_layout = {.channel_type = source.channel_type,
+                                                           .sample_layout = SampleStreamLayout::planar}};
+    config.name = std::string(ref.name); config.channel_layout.sample_layout = SampleStreamLayout::planar;
+    out.push_back({.ref = source, .config = std::move(config)});
+  }
+  define_sample_outputs(builder, bundles, identity, out);
+}
+
+template<class... Refs>
+void GraphBuilderPublicPorts::define_event_outputs_from_args(
+    GraphBuilder& builder, GraphBuilderNodeBundles& bundles,
+    GraphBuilderIdentity const& identity, Refs&&... refs) {
+  std::vector<EventOutputRefConfig> out; out.reserve(sizeof...(Refs));
+  constexpr bool require_names = sizeof...(Refs) > 1;
+  auto append = [&](auto&& ref) {
+    using Ref = std::remove_cvref_t<decltype(ref)>;
+    if constexpr (details::is_named_arg_v<Ref>)
+      out.push_back({.ref = static_cast<EventPortRef>(ref.value),
+                     .config = {.name = std::string(Ref::name.view())}});
+    else {
+      if constexpr (require_names) details::error("builder " + identity.value + ": event_outputs(...) requires names when exposing more than one event output");
+      out.push_back({.ref = static_cast<EventPortRef>(ref), .config = {}});
+    }
+  };
+  (append(std::forward<Refs>(refs)), ...);
+  define_event_outputs(builder, bundles, identity, out);
+}
+} // namespace iv

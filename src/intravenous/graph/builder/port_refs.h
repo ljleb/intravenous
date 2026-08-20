@@ -1,308 +1,212 @@
 #pragma once
 
-#include <intravenous/graph/node.h>
 #include <intravenous/graph/builder/node_bundles.h>
-#include <intravenous/graph/compiler.h>  // details::error
+#include <intravenous/graph/compiler.h>
 #include <intravenous/channel_ports.h>
 
 #include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 namespace iv {
-    class GraphBuilder;
-    template<class ChannelType, SampleStreamLayout Layout>
-    class TypedSamplePortRef;
-    template<class ChannelType, SampleStreamLayout Layout, class Member>
-    class TypedSamplePortChannelRef;
-    template<class ChannelType, SampleStreamLayout Layout = SampleStreamLayout::planar>
-    class TypedSamplePortTileRef;
-    template<class ChannelType, class Member,
-             SampleStreamLayout Layout = SampleStreamLayout::planar>
-    class TypedSamplePortTileChannelRef;
+class GraphBuilder;
 
-    // Explicit builder-boundary addresses. Their topology_port() projections
-    // are used only when a logical boundary is recorded in GraphBuilderTopology;
-    // the semantic identity itself never depends on a sentinel node index.
-    struct GraphInputPortId {
-        PortKind port_kind = PortKind::sample;
-        size_t port_ordinal = 0;
+template<class ChannelType, SampleStreamLayout Layout>
+class TypedSamplePortRef;
+template<class ChannelType, SampleStreamLayout Layout, class Member>
+class TypedSamplePortChannelRef;
+template<class ChannelType, SampleStreamLayout Layout = SampleStreamLayout::planar>
+class TypedSamplePortTileRef;
+template<class ChannelType, class Member,
+         SampleStreamLayout Layout = SampleStreamLayout::planar>
+class TypedSamplePortTileChannelRef;
 
-        TopologyPortId topology_port() const noexcept
-        {
-            return {GRAPH_ID, port_ordinal};
-        }
+// A sample expression is exactly the ordered semantic source channels that
+// participate in an authored connection. It has no execution/topology address.
+struct SamplePortRef {
+  GraphBuilder* graph_builder{};
+  ChannelTypeId channel_type = ChannelTypeId::mono;
+  std::vector<SampleOutputChannelId> channels{};
 
-        bool operator==(GraphInputPortId const&) const = default;
-    };
+  SamplePortRef() = default;
+  SamplePortRef(SamplePortRef const&) = default;
+  SamplePortRef(SamplePortRef&&) noexcept = default;
+  explicit SamplePortRef(GraphBuilder&, NodeBundlePortId bundle_port);
+  explicit SamplePortRef(GraphBuilder&, ChannelTypeId,
+                         std::vector<SampleOutputChannelId>);
 
-    struct ScopeBoundaryPortId {
-        PortKind port_kind = PortKind::sample;
-        size_t boundary_ordinal = 0;
+  SamplePortRef& operator=(SamplePortRef const&) = default;
+  SamplePortRef& operator=(SamplePortRef&&) noexcept = default;
+  SamplePortRef _clone_handle() const;
+  SamplePortRef select_channel(size_t channel) const;
+  SamplePortRef detach(size_t loop_extra_latency = 1) const;
+  std::string to_string() const;
+};
 
-        TopologyPortId topology_port() const noexcept
-        {
-            return {GRAPH_ID - 1 - boundary_ordinal, 0};
-        }
+template<class ChannelType, SampleStreamLayout Layout>
+class TypedSamplePortRef {
+  SamplePortRef _port;
 
-        static ScopeBoundaryPortId from_topology(TopologyPortId port, PortKind kind) noexcept
-        {
-            return ScopeBoundaryPortId{
-                .port_kind = kind,
-                .boundary_ordinal = GRAPH_ID - 1 - port.node,
-            };
-        }
+public:
+  using channel_type = ChannelType;
+  static constexpr auto sample_layout = Layout;
 
-        bool operator==(ScopeBoundaryPortId const&) const = default;
-    };
+  TypedSamplePortRef() = default;
+  explicit TypedSamplePortRef(SamplePortRef port) : _port(std::move(port)) {}
 
-    // Internal result of crossing the logical sample-reference boundary.
-    // It is intentionally distinct from SamplePortRef: callers that hold one
-    // have already chosen a builder-topology edge source.
-    struct MaterializedSamplePort {
-        TopologyPortId port{};
-    };
+  operator SamplePortRef() const { return _port; }
+  SamplePortRef const& erased() const { return _port; }
 
-    struct SamplePortRef {
-        GraphBuilder* graph_builder{};
-        ChannelTypeId channel_type = ChannelTypeId::mono;
-        std::vector<SampleOutputChannelId> channels{};
+  template<class Channel>
+  auto operator[](Channel) const
+  requires std::same_as<typename std::remove_cvref_t<Channel>::channel_type,
+                        ChannelType>;
+};
 
-        SamplePortRef() = default;
-        SamplePortRef(SamplePortRef const&) = default;
-        SamplePortRef(SamplePortRef&&) noexcept = default;
-        explicit SamplePortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
-        explicit SamplePortRef(GraphBuilder& graph_builder_, GraphInputPortId graph_input);
-        explicit SamplePortRef(GraphBuilder& graph_builder_, ScopeBoundaryPortId scope_boundary);
-        explicit SamplePortRef(GraphBuilder& graph_builder_, NodeBundlePortId bundle_port);
-        explicit SamplePortRef(GraphBuilder& graph_builder_, ChannelTypeId channel_type_,
-                               std::vector<SampleOutputChannelId> channels_);
-        operator TopologyPortId() const;
+template<class ChannelType, SampleStreamLayout Layout, class Member>
+class TypedSamplePortChannelRef {
+  static_assert(std::same_as<typename Member::channel_type, ChannelType>);
+  SamplePortRef _port;
 
-        SamplePortRef& operator=(SamplePortRef const&) = default;
-        SamplePortRef& operator=(SamplePortRef&& rhs) = default;
-        SamplePortRef _clone_handle() const;
-        SamplePortRef select_channel(size_t channel) const;
+public:
+  using channel_type = ChannelType;
+  using member_type = Member;
+  static constexpr auto sample_layout = Layout;
 
-        SamplePortRef detach(size_t loop_extra_latency = 1) const;
-        bool is_graph_input() const;
-        bool is_scope_boundary() const;
-        std::string to_string() const;
-    };
+  explicit TypedSamplePortChannelRef(TypedSamplePortRef<ChannelType, Layout> port)
+      : _port(port.erased().select_channel(Member::channel_ordinal)) {}
 
-    template<class ChannelType, SampleStreamLayout Layout>
-    class TypedSamplePortRef {
-        SamplePortRef _port;
+  operator SamplePortRef() const { return _port; }
+  SamplePortRef const& erased() const { return _port; }
+  SamplePortRef const& port() const { return _port; }
+};
 
-    public:
-        using channel_type = ChannelType;
-        static constexpr auto sample_layout = Layout;
+// Both a native tiled-node output and g.tile(...) have the same erased form:
+// one semantic SamplePortRef. Channel selection is therefore just selection
+// from that expression; there is no second structural/member representation.
+template<class ChannelType, SampleStreamLayout Layout>
+class TypedSamplePortTileRef {
+  SamplePortRef _port{};
 
-        TypedSamplePortRef() = default;
-        explicit TypedSamplePortRef(SamplePortRef port) : _port(std::move(port)) {}
+  static SamplePortRef make_port(
+      std::array<SamplePortRef, ChannelType::channel_count> const& members) {
+    static_assert(ChannelType::channel_count > 0);
+    auto* builder = members.front().graph_builder;
+    if (!builder) details::error("cannot tile an empty sample output");
 
-        operator SamplePortRef() const { return _port; }
-        SamplePortRef const& erased() const { return _port; }
-
-        template<class Channel>
-        auto operator[](Channel) const
-        requires std::same_as<typename std::remove_cvref_t<Channel>::channel_type, ChannelType>;
-    };
-
-    template<class ChannelType, SampleStreamLayout Layout, class Member>
-    class TypedSamplePortChannelRef {
-        static_assert(std::same_as<typename Member::channel_type, ChannelType>);
-        SamplePortRef _port;
-
-    public:
-        using channel_type = ChannelType;
-        using member_type = Member;
-        static constexpr auto sample_layout = Layout;
-
-        explicit TypedSamplePortChannelRef(TypedSamplePortRef<ChannelType, Layout> port)
-            : _port(port.erased().select_channel(Member::channel_ordinal))
-        {}
-
-        operator SamplePortRef() const { return _port; }
-        SamplePortRef const& erased() const { return _port; }
-        SamplePortRef const& port() const { return _port; }
-    };
-
-    // A channel-aware sample expression has exactly one erased representation:
-    // its ordered semantic source channels. A tiled node output therefore
-    // carries channels on the TiledNodeBundle itself, while g.tile(...) carries
-    // whichever scalar channels its caller supplied.
-    template<class ChannelType, SampleStreamLayout Layout>
-    class TypedSamplePortTileRef {
-        SamplePortRef _port {};
-        std::array<SamplePortRef, ChannelType::channel_count> _members {};
-
-        static SamplePortRef make_port(
-            std::array<SamplePortRef, ChannelType::channel_count> const& members)
-        {
-            static_assert(ChannelType::channel_count > 0);
-            auto* builder = members.front().graph_builder;
-            if (!builder) {
-                details::error("cannot tile an empty sample output");
-            }
-
-            std::vector<SampleOutputChannelId> channels;
-            channels.reserve(ChannelType::channel_count);
-            for (auto const& member : members) {
-                if (member.graph_builder != builder) {
-                    details::error("cannot tile sample outputs from different builders");
-                }
-                if (member.channel_type != ChannelTypeId::mono
-                    || member.channels.size() != 1) {
-                    details::error(
-                        "each g.tile channel must be a scalar sample expression");
-                }
-                channels.push_back(member.channels.front());
-            }
-            return SamplePortRef(
-                *builder, ChannelTypeTraits<ChannelType>::id, std::move(channels));
-        }
-
-    public:
-        using channel_type = ChannelType;
-        static constexpr auto sample_layout = Layout;
-
-        TypedSamplePortTileRef() = default;
-
-        explicit TypedSamplePortTileRef(
-            std::array<SamplePortRef, ChannelType::channel_count> members)
-            : _port(make_port(members)),
-              _members(std::move(members)) {}
-
-        explicit TypedSamplePortTileRef(SamplePortRef port)
-            : _port(std::move(port))
-        {
-            if (!_port.graph_builder ||
-                _port.channel_type != ChannelTypeTraits<ChannelType>::id ||
-                _port.channels.size() != ChannelType::channel_count) {
-                details::error("typed tiled sample output does not match its channel type");
-            }
-            for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
-                _members[channel] = _port.select_channel(channel);
-            }
-        }
-
-        operator SamplePortRef() const { return _port; }
-        SamplePortRef const& erased() const { return _port; }
-
-        std::array<SamplePortRef, ChannelType::channel_count> const& members() const
-        {
-            return _members;
-        }
-
-        template<class Member>
-        auto operator[](Member) const
-        requires std::same_as<typename std::remove_cvref_t<Member>::channel_type, ChannelType>;
-
-    private:
-        template<class, class, SampleStreamLayout>
-        friend class TypedSamplePortTileChannelRef;
-    };
-
-    template<class ChannelType, class Member, SampleStreamLayout Layout>
-    class TypedSamplePortTileChannelRef {
-        static_assert(std::same_as<typename Member::channel_type, ChannelType>);
-        SamplePortRef _port {};
-
-    public:
-        using channel_type = ChannelType;
-        using member_type = Member;
-        static constexpr auto sample_layout = Layout;
-
-        explicit TypedSamplePortTileChannelRef(SamplePortRef port) : _port(std::move(port)) {}
-
-        operator SamplePortRef() const { return _port; }
-        SamplePortRef const& erased() const { return _port; }
-    };
-
-    template<class ChannelType, SampleStreamLayout Layout>
-    template<class Member>
-    auto TypedSamplePortTileRef<ChannelType, Layout>::operator[](Member) const
-    requires std::same_as<typename std::remove_cvref_t<Member>::channel_type, ChannelType>
-    {
-        using MemberType = std::remove_cvref_t<Member>;
-        return TypedSamplePortTileChannelRef<ChannelType, MemberType, Layout>{
-            _members[MemberType::channel_ordinal]};
+    std::vector<SampleOutputChannelId> channels;
+    channels.reserve(ChannelType::channel_count);
+    for (auto const& member : members) {
+      if (member.graph_builder != builder)
+        details::error("cannot tile sample outputs from different builders");
+      if (member.channel_type != ChannelTypeId::mono ||
+          member.channels.size() != 1)
+        details::error("each g.tile channel must be a scalar sample expression");
+      channels.push_back(member.channels.front());
     }
+    return SamplePortRef(*builder, ChannelTypeTraits<ChannelType>::id,
+                         std::move(channels));
+  }
 
-    template<class ChannelType, SampleStreamLayout Layout>
-    template<class Channel>
-    auto TypedSamplePortRef<ChannelType, Layout>::operator[](Channel) const
-    requires std::same_as<typename std::remove_cvref_t<Channel>::channel_type, ChannelType>
-    {
-        using Member = std::remove_cvref_t<Channel>;
-        return TypedSamplePortChannelRef<ChannelType, Layout, Member>{*this};
-    }
+public:
+  using channel_type = ChannelType;
+  static constexpr auto sample_layout = Layout;
 
-    struct PublicSampleInputRef {
-        SamplePortRef port {};
+  TypedSamplePortTileRef() = default;
+  explicit TypedSamplePortTileRef(
+      std::array<SamplePortRef, ChannelType::channel_count> members)
+      : _port(make_port(members)) {}
+  explicit TypedSamplePortTileRef(SamplePortRef port) : _port(std::move(port)) {
+    if (!_port.graph_builder ||
+        _port.channel_type != ChannelTypeTraits<ChannelType>::id ||
+        _port.channels.size() != ChannelType::channel_count)
+      details::error("typed tiled sample output does not match its channel type");
+  }
 
-        PublicSampleInputRef() = default;
-        explicit PublicSampleInputRef(SamplePortRef port_) : port(std::move(port_)) {}
+  operator SamplePortRef() const { return _port; }
+  SamplePortRef const& erased() const { return _port; }
 
-        operator SamplePortRef() const { return port; }
-        operator TopologyPortId() const { return static_cast<TopologyPortId>(port); }
+  template<class Member>
+  auto operator[](Member) const
+  requires std::same_as<typename std::remove_cvref_t<Member>::channel_type,
+                        ChannelType>;
+};
 
-        void _annotate_source_info(
-            std::string_view declaration_identity,
-            std::string_view file_path,
-            uint32_t begin,
-            uint32_t end) const;
-    };
+template<class ChannelType, class Member, SampleStreamLayout Layout>
+class TypedSamplePortTileChannelRef {
+  static_assert(std::same_as<typename Member::channel_type, ChannelType>);
+  SamplePortRef _port{};
 
-    struct EventPortRef {
-        GraphBuilder* graph_builder {};
-        size_t node_index {};
-        size_t output_port {};
-        EventTypeId type = EventTypeId::empty;
-        std::vector<EventOutputPortId> sources {};
-        std::optional<GraphInputPortId> graph_input_port {};
-        std::optional<ScopeBoundaryPortId> scope_boundary_port {};
-        std::optional<TopologyPortId> topology_projection {};
+public:
+  using channel_type = ChannelType;
+  using member_type = Member;
+  static constexpr auto sample_layout = Layout;
 
-        EventPortRef() = default;
-        explicit EventPortRef(GraphBuilder& graph_builder_, size_t node_index, size_t output_port);
-        explicit EventPortRef(GraphBuilder& graph_builder_, GraphInputPortId graph_input);
-        explicit EventPortRef(GraphBuilder& graph_builder_, ScopeBoundaryPortId scope_boundary);
-        explicit EventPortRef(
-            GraphBuilder&, EventTypeId, std::vector<EventOutputPortId>);
-        explicit EventPortRef(
-            GraphBuilder&, EventTypeId, std::vector<EventOutputPortId>,
-            TopologyPortId topology_projection_);
-        operator TopologyPortId() const
-        {
-            if (graph_input_port) return graph_input_port->topology_port();
-            if (scope_boundary_port) return scope_boundary_port->topology_port();
-            if (topology_projection) return *topology_projection;
-            details::error(
-                "an authored event expression has no topology projection; "
-                "materialize it during completion");
-        }
+  explicit TypedSamplePortTileChannelRef(SamplePortRef port)
+      : _port(std::move(port)) {}
 
-        bool is_graph_input() const { return graph_input_port.has_value(); }
-        bool is_scope_boundary() const { return scope_boundary_port.has_value(); }
-        std::string to_string() const;
-    };
+  operator SamplePortRef() const { return _port; }
+  SamplePortRef const& erased() const { return _port; }
+};
 
-    struct PublicEventInputRef {
-        EventPortRef port {};
-        PublicEventInputRef() = default;
-        explicit PublicEventInputRef(EventPortRef port_) : port(std::move(port_)) {}
-        operator EventPortRef() const { return port; }
-        operator TopologyPortId() const { return static_cast<TopologyPortId>(port); }
-        void _annotate_source_info(
-            std::string_view declaration_identity, std::string_view file_path,
-            uint32_t begin, uint32_t end) const;
-    };
+template<class ChannelType, SampleStreamLayout Layout>
+template<class Member>
+auto TypedSamplePortTileRef<ChannelType, Layout>::operator[](Member) const
+requires std::same_as<typename std::remove_cvref_t<Member>::channel_type,
+                      ChannelType> {
+  using MemberType = std::remove_cvref_t<Member>;
+  return TypedSamplePortTileChannelRef<ChannelType, MemberType, Layout>{
+      _port.select_channel(MemberType::channel_ordinal)};
 }
+
+template<class ChannelType, SampleStreamLayout Layout>
+template<class Channel>
+auto TypedSamplePortRef<ChannelType, Layout>::operator[](Channel) const
+requires std::same_as<typename std::remove_cvref_t<Channel>::channel_type,
+                      ChannelType> {
+  using Member = std::remove_cvref_t<Channel>;
+  return TypedSamplePortChannelRef<ChannelType, Layout, Member>{*this};
+}
+
+struct PublicSampleInputRef {
+  SamplePortRef port{};
+
+  PublicSampleInputRef() = default;
+  explicit PublicSampleInputRef(SamplePortRef port_) : port(std::move(port_)) {}
+  operator SamplePortRef() const { return port; }
+
+  void _annotate_source_info(std::string_view declaration_identity,
+                             std::string_view file_path,
+                             uint32_t begin, uint32_t end) const;
+};
+
+// Event expressions mirror SamplePortRef: only semantic source ports survive
+// authoring. A tiled source is one TiledNodeBundle event port; lowering expands
+// it to member execution ports when compiling the graph.
+struct EventPortRef {
+  GraphBuilder* graph_builder{};
+  EventTypeId type = EventTypeId::empty;
+  std::vector<EventOutputPortId> sources{};
+
+  EventPortRef() = default;
+  explicit EventPortRef(GraphBuilder&, NodeBundlePortId bundle_port);
+  explicit EventPortRef(GraphBuilder&, EventTypeId,
+                        std::vector<EventOutputPortId>);
+  std::string to_string() const;
+};
+
+struct PublicEventInputRef {
+  EventPortRef port{};
+  PublicEventInputRef() = default;
+  explicit PublicEventInputRef(EventPortRef port_) : port(std::move(port_)) {}
+  operator EventPortRef() const { return port; }
+  void _annotate_source_info(std::string_view declaration_identity,
+                             std::string_view file_path,
+                             uint32_t begin, uint32_t end) const;
+};
+} // namespace iv

@@ -1,304 +1,185 @@
 #include <intravenous/graph/builder/virtual_nodes.h>
 
-#include <intravenous/graph/builder/topology.h>
-
 #include <algorithm>
+#include <ranges>
 
 namespace iv {
 namespace {
 template <class Config>
 void append_virtual_event_port_mapping(
-    std::vector<VirtualEventPortMapping> &mappings, Config const &config,
+    std::vector<VirtualEventPortMapping>& mappings, Config const& config,
     size_t ordinal, NodeBundlePortId bundle_port) {
   if (mappings.size() <= ordinal) mappings.resize(ordinal + 1);
-  auto &mapping = mappings[ordinal];
+  auto& mapping = mappings[ordinal];
   if (mapping.node_bundle_ports.empty()) {
-    mapping = VirtualEventPortMapping{.name = config.name, .ordinal = ordinal,
-                                      .type = config.type,
-                                      .node_bundle_ports = {bundle_port}};
+    mapping = {.name = config.name, .ordinal = ordinal, .type = config.type,
+               .node_bundle_ports = {bundle_port}};
     return;
   }
-  if (mapping.name != config.name || mapping.type != config.type) {
+  if (mapping.name != config.name || mapping.type != config.type)
     details::error("virtual node members must expose matching event port configurations");
-  }
-  if (!std::ranges::contains(mapping.node_bundle_ports, bundle_port)) {
+  if (!std::ranges::contains(mapping.node_bundle_ports, bundle_port))
     mapping.node_bundle_ports.push_back(bundle_port);
-  }
 }
 
-void append_bundle_event_port_mappings(
-    std::vector<VirtualEventPortMapping> &mappings, NodeBundle const &bundle,
-    NodeBundleHandle bundle_handle, GraphBuilderTopology const &topology,
-    bool inputs) {
-  (void)topology;
-  auto const count = inputs ? bundle.event_input_count() : bundle.event_output_count();
-  for (size_t ordinal = 0; ordinal < count; ++ordinal) {
-    auto append = [&](auto const &config) {
-      append_virtual_event_port_mapping(mappings, config, ordinal,
-                                        {bundle_handle, PortKind::event, ordinal});
-    };
-    if (inputs) append(bundle.event_input_descriptor(ordinal).config);
-    else append(bundle.event_output_descriptor(ordinal).config);
-  }
-}
-
-template <class Mapping, class Config, class Channels>
+template<class Mapping, class Config, class Channels>
 void append_virtual_sample_port_mapping(
-    std::vector<Mapping> &mappings, Config const &config,
-    size_t ordinal, ChannelLayout layout, Channels const& appended_channels) {
-  if (mappings.size() <= ordinal) {
-    mappings.resize(ordinal + 1);
-  }
-  auto &mapping = mappings[ordinal];
+    std::vector<Mapping>& mappings, Config const& config, size_t ordinal,
+    ChannelLayout layout, Channels const& channels) {
+  if (mappings.size() <= ordinal) mappings.resize(ordinal + 1);
+  auto& mapping = mappings[ordinal];
   if (mapping.channels.empty()) {
-    mapping = Mapping{
-        .name = config.name,
-        .ordinal = ordinal,
-        .channel_layout = layout,
-        .channels = {appended_channels.begin(), appended_channels.end()},
-    };
+    mapping = {.name = config.name, .ordinal = ordinal,
+               .channel_layout = layout,
+               .channels = {channels.begin(), channels.end()}};
     return;
   }
-  if (mapping.name != config.name || mapping.channel_layout != layout) {
+  if (mapping.name != config.name || mapping.channel_layout != layout)
     details::error("virtual node members must expose matching sample port configurations");
-  }
-  for (auto const channel : appended_channels) {
-    if (!std::ranges::contains(mapping.channels, channel)) {
+  for (auto const channel : channels)
+    if (!std::ranges::contains(mapping.channels, channel))
       mapping.channels.push_back(channel);
-    }
-  }
 }
 
-void append_bundle_sample_port_mappings(
-    std::vector<VirtualSampleInputPortMapping> &mappings,
-    NodeBundle const &bundle, NodeBundleHandle bundle_handle,
-    GraphBuilderNodeBundles const& node_bundles) {
+void append_bundle_mappings(VirtualNodeRecord& virtual_node,
+                            GraphBuilderNodeBundles const& bundles,
+                            NodeBundleHandle handle) {
+  auto const& bundle = bundles.bundle(handle);
   for (size_t ordinal = 0; ordinal < bundle.sample_input_count(); ++ordinal) {
-    NodeBundlePortId const port{bundle_handle, PortKind::sample, ordinal};
-    auto const config = node_bundles.resolve_sample_input(port).config;
-    append_virtual_sample_port_mapping(
-        mappings, config, ordinal, config.channel_layout,
-        node_bundles.sample_input_channels(port));
+    NodeBundlePortId const port{handle, PortKind::sample, ordinal};
+    auto const config = bundles.resolve_sample_input(port).config;
+    append_virtual_sample_port_mapping(virtual_node.sample_inputs, config, ordinal,
+                                       config.channel_layout,
+                                       bundles.sample_input_channels(port));
   }
-}
-
-void append_bundle_sample_port_mappings(
-    std::vector<VirtualSampleOutputPortMapping> &mappings,
-    NodeBundle const &bundle, NodeBundleHandle bundle_handle,
-    GraphBuilderNodeBundles const& node_bundles) {
   for (size_t ordinal = 0; ordinal < bundle.sample_output_count(); ++ordinal) {
-    NodeBundlePortId const port{bundle_handle, PortKind::sample, ordinal};
-    auto const config = node_bundles.resolve_sample_output(port).config;
-    append_virtual_sample_port_mapping(
-        mappings, config, ordinal, config.channel_layout,
-        node_bundles.sample_output_channels(port));
+    NodeBundlePortId const port{handle, PortKind::sample, ordinal};
+    auto const config = bundles.resolve_sample_output(port).config;
+    append_virtual_sample_port_mapping(virtual_node.sample_outputs, config, ordinal,
+                                       config.channel_layout,
+                                       bundles.sample_output_channels(port));
+  }
+  for (size_t ordinal = 0; ordinal < bundle.event_input_count(); ++ordinal) {
+    NodeBundlePortId const port{handle, PortKind::event, ordinal};
+    append_virtual_event_port_mapping(virtual_node.event_inputs,
+        bundles.resolve_event_input(port).config, ordinal, port);
+  }
+  for (size_t ordinal = 0; ordinal < bundle.event_output_count(); ++ordinal) {
+    NodeBundlePortId const port{handle, PortKind::event, ordinal};
+    append_virtual_event_port_mapping(virtual_node.event_outputs,
+        bundles.resolve_event_output(port).config, ordinal, port);
   }
 }
 } // namespace
 
-VirtualNodeHandle
-GraphBuilderVirtualNodes::get_or_create(std::string_view virtual_node_id) {
+VirtualNodeHandle GraphBuilderVirtualNodes::get_or_create(
+    std::string_view virtual_node_id) {
   auto const it = _handles_by_id.find(std::string(virtual_node_id));
-  if (it != _handles_by_id.end()) {
-    return it->second;
-  }
+  if (it != _handles_by_id.end()) return it->second;
   auto const handle = _records.size();
-  _records.push_back(VirtualNodeRecord{.id = std::string(virtual_node_id)});
+  _records.push_back({.id = std::string(virtual_node_id)});
   _handles_by_id.emplace(_records.back().id, handle);
   return handle;
 }
 
-void GraphBuilderVirtualNodes::attach_member(GraphBuilderTopology &topology,
-                                             GraphBuilderNodeBundles &node_bundles,
-                                             VirtualNodeHandle handle,
-                                             NodeBundleHandle node_bundle_handle,
-                                             SourceInfo const *source_info) {
-  auto &virtual_node = _records[handle];
-  auto const &bundle = node_bundles.bundle(node_bundle_handle);
-  if (!std::ranges::contains(virtual_node.node_bundle_handles,
-                             node_bundle_handle)) {
-    virtual_node.node_bundle_handles.push_back(node_bundle_handle);
+void GraphBuilderVirtualNodes::attach_member(
+    GraphBuilderNodeBundles& bundles, VirtualNodeHandle virtual_handle,
+    NodeBundleHandle bundle_handle, SourceInfo const* source_info) {
+  auto& record = _records[virtual_handle];
+  if (!std::ranges::contains(record.node_bundle_handles, bundle_handle)) {
+    record.node_bundle_handles.push_back(bundle_handle);
+    append_bundle_mappings(record, bundles, bundle_handle);
   }
-  bool has_new_concrete_member = false;
-  bundle.for_each_concrete_node([&](size_t concrete_node_index) {
-    if (!std::ranges::contains(virtual_node.concrete_node_indices,
-                               concrete_node_index)) {
-      virtual_node.concrete_node_indices.push_back(concrete_node_index);
-      has_new_concrete_member = true;
-    }
-  });
-  if (has_new_concrete_member) {
-    append_bundle_sample_port_mappings(virtual_node.sample_inputs, bundle,
-                                       node_bundle_handle, node_bundles);
-    append_bundle_sample_port_mappings(virtual_node.sample_outputs, bundle,
-                                       node_bundle_handle, node_bundles);
-    append_bundle_event_port_mappings(virtual_node.event_inputs, bundle,
-                                      node_bundle_handle, topology, true);
-    append_bundle_event_port_mappings(virtual_node.event_outputs, bundle,
-                                      node_bundle_handle, topology, false);
-  }
-  auto &bundle_handles = node_bundles.bundle(node_bundle_handle).virtual_node_handles();
-  if (!std::ranges::contains(bundle_handles, handle)) {
-    bundle_handles.push_back(handle);
-  }
-  if (source_info && std::find(virtual_node.source_infos.begin(),
-                               virtual_node.source_infos.end(), *source_info) ==
-                         virtual_node.source_infos.end()) {
-    virtual_node.source_infos.push_back(*source_info);
-  }
+  auto& inverse = bundles.bundle(bundle_handle).virtual_node_handles();
+  if (!std::ranges::contains(inverse, virtual_handle)) inverse.push_back(virtual_handle);
+  if (source_info && !std::ranges::contains(record.source_infos, *source_info))
+    record.source_infos.push_back(*source_info);
 }
 
 void GraphBuilderVirtualNodes::attach_bundle_member(
-    GraphBuilderTopology &topology, GraphBuilderNodeBundles &node_bundles,
-    NodeBundleHandle node_bundle_handle,
-    std::string_view virtual_node_id, SourceInfo const *source_info) {
-  if (virtual_node_id.empty())
-    return;
-  attach_member(topology, node_bundles, get_or_create(virtual_node_id),
-                node_bundle_handle, source_info);
-}
-
-void GraphBuilderVirtualNodes::attach_tiled_members(
-    GraphBuilderTopology &topology, GraphBuilderNodeBundles &node_bundles,
-    VirtualNodeRecord mapping,
-    SourceInfo const *source_info) {
-  if (mapping.id.empty())
-    return;
-  auto const handle = get_or_create(mapping.id);
-  auto &record = _records[handle];
-  for (auto const node_bundle_handle : mapping.node_bundle_handles) {
-    attach_member(topology, node_bundles, handle, node_bundle_handle, source_info);
-  }
-  // Imported non-tiled members are merged above by attach_member(), which
-  // validates their port configurations and appends their lowered ports.
-  // Only preserve an explicit mapping when there are no concrete members to
-  // derive it from (the currently-unimplemented tiled-node case).
-  if (record.concrete_node_indices.empty()) {
-    record.sample_inputs = std::move(mapping.sample_inputs);
-    record.sample_outputs = std::move(mapping.sample_outputs);
-    record.event_inputs = std::move(mapping.event_inputs);
-    record.event_outputs = std::move(mapping.event_outputs);
-  }
+    GraphBuilderNodeBundles& bundles, NodeBundleHandle bundle_handle,
+    std::string_view virtual_node_id, SourceInfo const* source_info) {
+  if (virtual_node_id.empty()) return;
+  attach_member(bundles, get_or_create(virtual_node_id), bundle_handle, source_info);
 }
 
 void GraphBuilderVirtualNodes::import_child(
-    GraphBuilderTopology &topology, GraphBuilderNodeBundles &node_bundles,
-    GraphBuilderVirtualNodes const &child,
-    size_t node_offset, size_t node_bundle_offset) {
-  for (auto const &child_record : child.records()) {
-    auto mapping = child_record;
-    for (auto &handle : mapping.node_bundle_handles)
-      handle += node_bundle_offset;
-    for (auto &node_index : mapping.concrete_node_indices)
-      node_index += node_offset;
-    auto offset_sample_channels = [node_bundle_offset](auto &ports) {
-      for (auto &port : ports) {
-        for (auto &channel : port.channels)
-          channel.bundle += node_bundle_offset;
-      }
-    };
-    auto offset_event_ports = [node_bundle_offset](auto &ports) {
-      for (auto &port : ports) {
-        for (auto &endpoint : port.node_bundle_ports)
-          endpoint.node_bundle_handle += node_bundle_offset;
-      }
-    };
-    offset_sample_channels(mapping.sample_inputs);
-    offset_sample_channels(mapping.sample_outputs);
-    offset_event_ports(mapping.event_inputs);
-    offset_event_ports(mapping.event_outputs);
-    attach_tiled_members(topology, node_bundles, std::move(mapping));
-    auto &record = _records[_handles_by_id.at(child_record.id)];
-    for (auto const &info : child_record.source_infos) {
-      if (std::find(record.source_infos.begin(), record.source_infos.end(),
-                    info) == record.source_infos.end()) {
+    GraphBuilderNodeBundles& bundles, GraphBuilderVirtualNodes const& child,
+    size_t bundle_offset) {
+  for (auto const& child_record : child.records()) {
+    auto const handle = get_or_create(child_record.id);
+    auto& record = _records[handle];
+    for (auto child_bundle : child_record.node_bundle_handles)
+      attach_member(bundles, handle, child_bundle + bundle_offset, nullptr);
+    for (auto const& info : child_record.source_infos)
+      if (!std::ranges::contains(record.source_infos, info))
         record.source_infos.push_back(info);
-      }
-    }
   }
 }
 
-std::vector<VirtualNodeRecord> const &
-GraphBuilderVirtualNodes::records() const {
+std::vector<VirtualNodeRecord> const& GraphBuilderVirtualNodes::records() const {
   return _records;
 }
-VirtualNodeRecord const &
-GraphBuilderVirtualNodes::record(VirtualNodeHandle handle) const {
+VirtualNodeRecord const& GraphBuilderVirtualNodes::record(VirtualNodeHandle handle) const {
   return _records.at(handle);
 }
 
 GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
-    GraphBuilderTopology const &topology,
-    GraphBuilderNodeBundles const &node_bundles) const {
-  (void)topology;
+    GraphBuilderNodeBundles const& bundles) const {
   GraphBuilderVirtualPorts result;
-  auto input_config = [&](SampleInputChannelId channel) -> InputConfig {
-    return node_bundles.resolve_sample_input(
-        {channel.bundle, PortKind::sample, channel.port}).config;
-  };
-  auto output_config = [&](SampleOutputChannelId channel) -> OutputConfig {
-    return node_bundles.resolve_sample_output(
-        {channel.bundle, PortKind::sample, channel.port}).config;
-  };
   auto sample_bundle_ports = [](auto const& channels) {
     std::vector<NodeBundlePortId> ports;
     for (auto const channel : channels) {
-      NodeBundlePortId const port{
-          channel.bundle, PortKind::sample, channel.port};
+      NodeBundlePortId const port{channel.bundle, PortKind::sample, channel.port};
       if (!std::ranges::contains(ports, port)) ports.push_back(port);
     }
     return ports;
   };
-  auto event_input_config = [&](NodeBundlePortId id) -> EventInputConfig {
-    return node_bundles.resolve_event_input(id).config;
-  };
-  auto event_output_config = [&](NodeBundlePortId id) -> EventOutputConfig {
-    return node_bundles.resolve_event_output(id).config;
-  };
-  for (auto const &node : _records) {
-    for (auto const &mapping : node.sample_inputs) {
+  for (auto const& node : _records) {
+    for (auto const& mapping : node.sample_inputs) {
       if (mapping.channels.empty()) continue;
-      auto config = input_config(mapping.channels.front());
+      auto const first = mapping.channels.front();
+      auto config = bundles.resolve_sample_input(
+          {first.bundle, PortKind::sample, first.port}).config;
       config.channel_layout = mapping.channel_layout;
       result.sample_inputs.push_back({
           .id = {node.id, PortKind::sample, mapping.ordinal},
-          .config = std::move(config),
-          .channels = mapping.channels,
+          .config = std::move(config), .channels = mapping.channels,
           .node_bundle_ports = sample_bundle_ports(mapping.channels)});
     }
-    for (auto const &mapping : node.sample_outputs) {
+    for (auto const& mapping : node.sample_outputs) {
       if (mapping.channels.empty()) continue;
-      auto config = output_config(mapping.channels.front());
+      auto const first = mapping.channels.front();
+      auto config = bundles.resolve_sample_output(
+          {first.bundle, PortKind::sample, first.port}).config;
       config.channel_layout = mapping.channel_layout;
       result.sample_outputs.push_back({
           .id = {node.id, PortKind::sample, mapping.ordinal},
-          .config = std::move(config),
-          .channels = mapping.channels,
+          .config = std::move(config), .channels = mapping.channels,
           .node_bundle_ports = sample_bundle_ports(mapping.channels)});
     }
-    for (auto const &mapping : node.event_inputs) {
+    for (auto const& mapping : node.event_inputs) {
       if (mapping.node_bundle_ports.empty()) continue;
-      result.event_inputs.push_back({.id = {node.id, PortKind::event, mapping.ordinal},
-          .config = event_input_config(mapping.node_bundle_ports.front()),
+      result.event_inputs.push_back({
+          .id = {node.id, PortKind::event, mapping.ordinal},
+          .config = bundles.resolve_event_input(mapping.node_bundle_ports.front()).config,
           .node_bundle_ports = mapping.node_bundle_ports});
     }
-    for (auto const &mapping : node.event_outputs) {
+    for (auto const& mapping : node.event_outputs) {
       if (mapping.node_bundle_ports.empty()) continue;
-      result.event_outputs.push_back({.id = {node.id, PortKind::event, mapping.ordinal},
-          .config = event_output_config(mapping.node_bundle_ports.front()),
+      result.event_outputs.push_back({
+          .id = {node.id, PortKind::event, mapping.ordinal},
+          .config = bundles.resolve_event_output(mapping.node_bundle_ports.front()).config,
           .node_bundle_ports = mapping.node_bundle_ports});
     }
   }
   return result;
 }
 
-std::vector<std::string>
-GraphBuilderVirtualNodes::ids_for_bundle(NodeBundle const &bundle) const {
+std::vector<std::string> GraphBuilderVirtualNodes::ids_for_bundle(
+    NodeBundle const& bundle) const {
   std::vector<std::string> ids;
-  ids.reserve(bundle.virtual_node_handles().size());
-  for (auto const handle : bundle.virtual_node_handles()) {
-    ids.push_back(record(handle).id);
-  }
+  for (auto const handle : bundle.virtual_node_handles()) ids.push_back(record(handle).id);
   return ids;
 }
 } // namespace iv

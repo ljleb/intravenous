@@ -185,6 +185,7 @@ endfunction()
 add_library(intravenous_graph_builder OBJECT
     graph/builder/stored_node.cpp
     graph/builder/topology.cpp
+    graph/builder/lowering.cpp
     graph/builder/node_bundles.cpp
     graph/builder/public_ports.cpp
     graph/builder/subgraphs.cpp
