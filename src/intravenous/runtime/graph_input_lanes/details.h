@@ -383,7 +383,7 @@ inline GraphInputPortDescriptor event_output_descriptor(
         .virtual_node_id = output.virtual_node_id,
         .node_bundle_port_ordinal = member_ordinal,
         .port_kind = PortKind::event,
-        .port_ordinal = output.source.port,
+        .port_ordinal = output.source.port_ordinal,
         .port_name = output.config.name,
         .port_type = details::event_type_name(output.config.type),
     };
@@ -412,7 +412,7 @@ inline GraphInputPortDescriptor event_port_descriptor(
         .virtual_node_id = input.virtual_node_id,
         .node_bundle_port_ordinal = member_ordinal,
         .port_kind = PortKind::event,
-        .port_ordinal = input.target.port,
+        .port_ordinal = input.target.port_ordinal,
         .port_name = input.config.name,
         .port_type = details::event_type_name(input.config.type),
     };

@@ -17,7 +17,7 @@ TEST(GraphVirtualOutputsTest, EnumeratesVirtualNodeOutputPorts)
     auto const &output = outputs.sample.front();
     EXPECT_EQ(output.virtual_node_id, "node-1");
     EXPECT_EQ(output.member_ordinal, 0u);
-    EXPECT_EQ(output.source.port, 0u);
+    EXPECT_EQ(output.source.port_ordinal, 0u);
     EXPECT_FALSE(output.has_existing_downstream_connection);
 }
 
