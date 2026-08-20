@@ -253,12 +253,12 @@ namespace iv {
         GraphBuilder* g = nullptr;
 
         if constexpr (SamplePortLike<L>) {
-            SamplePortRef s = static_cast<SamplePortRef>(std::forward<L>(lhs));
+            SamplePortRef s = static_cast<SamplePortRef>(lhs);
             g = s.graph_builder;
         }
 
         if constexpr (SamplePortLike<R>) {
-            SamplePortRef s = static_cast<SamplePortRef>(std::forward<R>(rhs));
+            SamplePortRef s = static_cast<SamplePortRef>(rhs);
             if (!g) {
                 g = s.graph_builder;
             } else if (s.graph_builder != g) {

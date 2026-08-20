@@ -228,6 +228,9 @@ public:
   EventOutputPortDescriptor resolve_event_output(NodeBundlePortId) const;
   std::vector<SampleInputChannelId> sample_input_channels(NodeBundlePortId) const;
   std::vector<SampleOutputChannelId> sample_output_channels(NodeBundlePortId) const;
+  std::optional<NodeBundlePortId> sample_output_port_for_channels(
+      ChannelTypeId,
+      std::span<SampleOutputChannelId const>) const;
   std::vector<EventInputPortId> event_input_ports(NodeBundlePortId) const;
   std::vector<EventOutputPortId> event_output_ports(NodeBundlePortId) const;
 

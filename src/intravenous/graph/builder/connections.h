@@ -129,10 +129,10 @@ namespace iv {
         bool operator==(AuthoredSampleConnection const&) const = default;
     };
 
-    // Event connections retain the logical source/target grouping. Tiled
-    // outputs therefore carry one source identity per member and tiled inputs
-    // carry one target identity per member; topology merge/broadcast nodes are
-    // compatibility lowering details.
+    // Event connections retain the logical source/target grouping. A tiled bundle
+    // is a first-class authored endpoint, just like a concrete bundle; completion
+    // expands its event output to the tile outputs and its event input to the tile
+    // inputs when producing compatibility topology.
     struct AuthoredEventConnection {
         EventTypeId source_type = EventTypeId::empty;
         std::vector<EventOutputPortId> sources {};

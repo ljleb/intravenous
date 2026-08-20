@@ -256,7 +256,6 @@ NodeRef SubgraphScopeManager::finalize_scope(GraphBuilder& builder,
     auto const event_inputs = boundary.boundary_event_inputs();
     auto const event_outputs = boundary.boundary_event_outputs();
 
-    size_t const subgraph_node_index = topology.node_count();
     std::unordered_map<TopologyPortId, size_t> sample_input_index_by_boundary;
     sample_input_index_by_boundary.reserve(sample_inputs.size());
     for (size_t i = 0; i < sample_inputs.size(); ++i) {

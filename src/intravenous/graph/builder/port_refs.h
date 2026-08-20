@@ -73,9 +73,6 @@ namespace iv {
         GraphBuilder* graph_builder{};
         ChannelTypeId channel_type = ChannelTypeId::mono;
         std::vector<SampleOutputChannelId> channels{};
-        std::optional<NodeBundlePortId> node_bundle_port{};
-        std::optional<GraphInputPortId> graph_input_port{};
-        std::optional<ScopeBoundaryPortId> scope_boundary_port{};
 
         SamplePortRef() = default;
         SamplePortRef(SamplePortRef const&) = default;
@@ -94,8 +91,8 @@ namespace iv {
         SamplePortRef select_channel(size_t channel) const;
 
         SamplePortRef detach(size_t loop_extra_latency = 1) const;
-        bool is_graph_input() const { return graph_input_port.has_value(); }
-        bool is_scope_boundary() const { return scope_boundary_port.has_value(); }
+        bool is_graph_input() const;
+        bool is_scope_boundary() const;
         std::string to_string() const;
     };
 
@@ -137,16 +134,16 @@ namespace iv {
         SamplePortRef const& port() const { return _port; }
     };
 
-    // A tiled node output keeps its promoted logical bundle port separate
-    // from the per-channel refs used to preserve physical tiling. Member-only
-    // construction represents an aggregate with no promoted bundle identity.
+    // A channel-aware sample expression has exactly one erased representation:
+    // its ordered semantic source channels. A tiled node output therefore
+    // carries channels on the TiledNodeBundle itself, while g.tile(...) carries
+    // whichever scalar channels its caller supplied.
     template<class ChannelType, SampleStreamLayout Layout>
     class TypedSamplePortTileRef {
-        SamplePortRef _promoted {};
-        SamplePortRef _structural {};
+        SamplePortRef _port {};
         std::array<SamplePortRef, ChannelType::channel_count> _members {};
 
-        static SamplePortRef make_structural_port(
+        static SamplePortRef make_port(
             std::array<SamplePortRef, ChannelType::channel_count> const& members)
         {
             static_assert(ChannelType::channel_count > 0);
@@ -180,26 +177,24 @@ namespace iv {
 
         explicit TypedSamplePortTileRef(
             std::array<SamplePortRef, ChannelType::channel_count> members)
-            : _structural(make_structural_port(members)),
+            : _port(make_port(members)),
               _members(std::move(members)) {}
 
-        TypedSamplePortTileRef(
-            SamplePortRef promoted,
-            std::array<SamplePortRef, ChannelType::channel_count> members)
-            : _promoted(std::move(promoted)),
-              _structural(make_structural_port(members)),
-              _members(std::move(members))
+        explicit TypedSamplePortTileRef(SamplePortRef port)
+            : _port(std::move(port))
         {
-            if (_promoted.graph_builder != _structural.graph_builder) {
-                details::error(
-                    "promoted tiled output belongs to a different builder");
+            if (!_port.graph_builder ||
+                _port.channel_type != ChannelTypeTraits<ChannelType>::id ||
+                _port.channels.size() != ChannelType::channel_count) {
+                details::error("typed tiled sample output does not match its channel type");
             }
-            _structural.node_bundle_port = _promoted.node_bundle_port;
+            for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
+                _members[channel] = _port.select_channel(channel);
+            }
         }
 
-        bool has_promoted_port() const { return _promoted.graph_builder != nullptr; }
-        operator SamplePortRef() const { return _structural; }
-        SamplePortRef const& erased() const { return _structural; }
+        operator SamplePortRef() const { return _port; }
+        SamplePortRef const& erased() const { return _port; }
 
         std::array<SamplePortRef, ChannelType::channel_count> const& members() const
         {

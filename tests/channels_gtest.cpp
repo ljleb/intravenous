@@ -503,7 +503,6 @@ TEST(Channels, SampleRefsExposeOrderedStructuralChannelIdentity)
     EXPECT_EQ(left.channel_type, iv::ChannelTypeId::mono);
     ASSERT_EQ(left.channels.size(), 1u);
     EXPECT_EQ(left.channels.front(), erased.channels.front());
-    EXPECT_FALSE(left.node_bundle_port.has_value());
 
     g.outputs();
     auto const built = g.build_root_node();
@@ -521,7 +520,6 @@ TEST(Channels, GraphBuilderTileIsPureStructuralComposition)
 
     EXPECT_EQ(erased.channel_type, iv::ChannelTypeId::stereo);
     ASSERT_EQ(erased.channels.size(), 2u);
-    EXPECT_FALSE(erased.node_bundle_port.has_value());
     EXPECT_EQ(erased.channels[0].bundle, left.node_bundle_handle());
     EXPECT_EQ(erased.channels[1].bundle, right.node_bundle_handle());
 
@@ -644,6 +642,11 @@ TEST(Channels, TiledNodesLowerMatchingChannelsToIndependentMonoEdges)
     pass(g.tile<iv::stereo>(left_source, right_source));
 
     auto stream = pass[iv::PortName<"out">{}];
+    auto const semantic_stream = static_cast<iv::SamplePortRef>(stream);
+    ASSERT_EQ(semantic_stream.channels.size(), 2u);
+    EXPECT_EQ(semantic_stream.channels[0].bundle, pass.node_bundle_handle());
+    EXPECT_EQ(semantic_stream.channels[1].bundle, pass.node_bundle_handle());
+
     iv::Sample left{};
     iv::Sample right{};
     g.node<MonoBufferSink>(&left)(stream[iv::stereo::left]);
@@ -668,6 +671,9 @@ TEST(Channels, TiledEventPortsBroadcastInputsAndMergeOutputs)
     auto source = g.node<iv::EventConcatenation>(0, iv::EventTypeId::trigger);
     tiled("trigger"_F = source.event_port(0));
     auto merged = tiled.event_port(0);
+    ASSERT_EQ(merged.sources.size(), 1u);
+    EXPECT_EQ(merged.sources.front().bundle, tiled.node_bundle_handle());
+    EXPECT_TRUE(tiled.event_input_is_connected(0));
     auto sink = g.node<iv::EventConcatenation>(1, iv::EventTypeId::trigger);
     sink.connect_event_input(0, merged);
     g.outputs();
@@ -775,6 +781,8 @@ TEST(Channels, SourceAnnotationProjectsATiledBundleAsOneStereoVirtualPort)
     ASSERT_EQ(input.channels.size(), 2u);
     ASSERT_EQ(input.channels[0].targets.size(), 1u);
     ASSERT_EQ(input.channels[1].targets.size(), 1u);
+    EXPECT_EQ(input.channels[0].targets.front().bundle, node.node_bundle_handle());
+    EXPECT_EQ(input.channels[1].targets.front().bundle, node.node_bundle_handle());
     EXPECT_NE(input.channels[0].targets.front(), input.channels[1].targets.front());
 
     auto const outputs = g.virtual_sample_output_families();
@@ -785,6 +793,8 @@ TEST(Channels, SourceAnnotationProjectsATiledBundleAsOneStereoVirtualPort)
     ASSERT_EQ(output.channels.size(), 2u);
     ASSERT_EQ(output.channels[0].sources.size(), 1u);
     ASSERT_EQ(output.channels[1].sources.size(), 1u);
+    EXPECT_EQ(output.channels[0].sources.front().bundle, node.node_bundle_handle());
+    EXPECT_EQ(output.channels[1].sources.front().bundle, node.node_bundle_handle());
     EXPECT_NE(output.channels[0].sources.front(), output.channels[1].sources.front());
 }
 

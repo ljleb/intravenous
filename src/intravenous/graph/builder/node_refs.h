@@ -17,17 +17,6 @@
 #include <utility>
 
 namespace iv {
-    namespace details {
-        template<class Value, class ChannelType>
-        inline constexpr bool is_typed_sample_port_tile_for_v = false;
-
-        template<class ValueChannelType, SampleStreamLayout Layout,
-                 class ChannelType>
-        inline constexpr bool is_typed_sample_port_tile_for_v<
-            TypedSamplePortTileRef<ValueChannelType, Layout>, ChannelType> =
-            std::same_as<ValueChannelType, ChannelType>;
-    }
-
     class GraphBuilder;
     class GraphBuilderAnnotations;
     class NodeRef;
@@ -347,8 +336,11 @@ namespace iv {
             if (!this->_graph_builder) {
                 details::error("attempted to use a null tiled TypedNodeRef");
             }
-            return static_output_impl<I>(
-                std::make_index_sequence<ChannelType::channel_count>{});
+            constexpr auto layout =
+                details::static_output_port_layout_at<NodeType, I>();
+            return TypedSamplePortTileRef<ChannelType, layout.sample_layout>{
+                SamplePortRef{*this->_graph_builder,
+                    NodeBundlePortId{this->_index, PortKind::sample, I}}};
         }
 
         operator TypedSamplePortTileRef<
@@ -414,19 +406,11 @@ namespace iv {
                 if (input_ordinal >= inputs.size()) {
                     details::error("too many sample inputs for tiled node");
                 }
-                using ValueType = std::remove_cvref_t<Value>;
-                if constexpr (details::is_typed_sample_port_tile_for_v<ValueType,
-                                                                         ChannelType>) {
-                    this->_graph_builder->connect_sample_input(
-                        {this->_index, PortKind::sample, input_ordinal},
-                        std::span<SamplePortRef const>{value.members()});
-                } else {
-                    auto source = this->_graph_builder->lift_to_sample_port(
-                        std::forward<Value>(value));
-                    this->_graph_builder->connect_sample_input(
-                        {this->_index, PortKind::sample, input_ordinal},
-                        std::move(source));
-                }
+                auto source = this->_graph_builder->lift_to_sample_port(
+                    std::forward<Value>(value));
+                this->_graph_builder->connect_sample_input(
+                    {this->_index, PortKind::sample, input_ordinal},
+                    std::move(source));
             };
             auto process = [&](auto&& arg) {
                 using Arg = std::remove_cvref_t<decltype(arg)>;
@@ -445,20 +429,6 @@ namespace iv {
             };
             (process(std::forward<Args>(args)), ...);
             return _clone_handle();
-        }
-
-    private:
-        template<size_t I, size_t... Channels>
-        auto static_output_impl(std::index_sequence<Channels...>) const
-        {
-            constexpr auto layout = details::static_output_port_layout_at<NodeType, I>();
-            return TypedSamplePortTileRef<ChannelType, layout.sample_layout>{
-                SamplePortRef{*_graph_builder,
-                    NodeBundlePortId{_index, PortKind::sample, I}},
-                std::array<SamplePortRef, ChannelType::channel_count>{
-                    static_cast<SamplePortRef>(
-                        TypedNodeRef<NodeType>{*this->_graph_builder,
-                            _member_bundles[Channels]}[I])...}};
         }
     };
 

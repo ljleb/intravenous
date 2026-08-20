@@ -156,9 +156,10 @@ namespace iv {
         output_refs.reserve(sizeof...(Refs));
         constexpr bool require_names = (sizeof...(Refs) > 1);
         auto const source_config = [&](SamplePortRef const& source) {
-            if (source.node_bundle_port) {
+            if (auto const logical = node_bundles.sample_output_port_for_channels(
+                    source.channel_type, source.channels)) {
                 return node_bundles
-                    .resolve_sample_output(*source.node_bundle_port)
+                    .resolve_sample_output(*logical)
                     .config;
             }
             if (!source.channels.empty()) {
@@ -168,13 +169,6 @@ namespace iv {
                         .sample_layout = SampleStreamLayout::planar,
                     },
                 };
-            }
-            if (source.graph_input_port) {
-                return node_bundles.resolve_sample_output(NodeBundlePortId{
-                    _boundary, PortKind::sample, source.graph_input_port->port_ordinal}).config;
-            }
-            if (source.scope_boundary_port) {
-                return OutputConfig{};
             }
             details::error("sample output source has no logical address");
         };
@@ -284,8 +278,10 @@ namespace iv {
                 );
             }
             auto source = lift_sample(ref);
-            auto config = source.node_bundle_port
-                ? node_bundles.resolve_sample_output(*source.node_bundle_port).config
+            auto const logical = node_bundles.sample_output_port_for_channels(
+                source.channel_type, source.channels);
+            auto config = logical
+                ? node_bundles.resolve_sample_output(*logical).config
                 : !source.channels.empty()
                     ? OutputConfig{
                         .channel_layout = ChannelLayout{
@@ -293,10 +289,7 @@ namespace iv {
                             .sample_layout = SampleStreamLayout::planar,
                         },
                     }
-                    : source.graph_input_port
-                        ? node_bundles.resolve_sample_output(NodeBundlePortId{
-                            _boundary, PortKind::sample, source.graph_input_port->port_ordinal}).config
-                        : OutputConfig{};
+                    : OutputConfig{};
             config.name = std::string(ref.name);
             config.channel_layout.sample_layout = SampleStreamLayout::planar;
             output_refs.push_back(OutputRefConfig{ .ref = source, .config = std::move(config) });

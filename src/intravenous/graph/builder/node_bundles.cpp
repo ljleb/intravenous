@@ -719,6 +719,32 @@ GraphBuilderNodeBundles::sample_output_channels(NodeBundlePortId address) const 
   return result;
 }
 
+std::optional<NodeBundlePortId>
+GraphBuilderNodeBundles::sample_output_port_for_channels(
+    ChannelTypeId channel_type,
+    std::span<SampleOutputChannelId const> channels) const {
+  if (channels.empty()) return std::nullopt;
+
+  auto const first = channels.front();
+  if (!std::ranges::all_of(channels, [&](auto const channel) {
+        return channel.bundle == first.bundle && channel.port == first.port;
+      })) {
+    return std::nullopt;
+  }
+
+  NodeBundlePortId const address{
+      first.bundle, PortKind::sample, first.port};
+  auto const descriptor = resolve_sample_output(address);
+  if (descriptor.config.channel_layout.channel_type != channel_type) {
+    return std::nullopt;
+  }
+  auto const expected = sample_output_channels(address);
+  if (!std::ranges::equal(expected, channels)) {
+    return std::nullopt;
+  }
+  return address;
+}
+
 namespace {
 template<class Channel>
 std::vector<Channel> channels_for_topology_projection(
@@ -753,6 +779,12 @@ std::vector<Port> event_ports_for_topology_projection(
     std::vector<Port> ports) {
   if (endpoints.empty()) {
     details::error("NodeBundle event port has no topology endpoint");
+  }
+  // A first-class tiled event port has one semantic identity and several
+  // topology endpoints. Every tile projection therefore maps back to the same
+  // authored port.
+  if (ports.size() == 1 && std::ranges::contains(endpoints, topology_port)) {
+    return ports;
   }
   if (endpoints.size() == 1) {
     if (endpoints.front() != topology_port) {
@@ -811,28 +843,7 @@ EventOutputPortDescriptor GraphBuilderNodeBundles::resolve_event_output(
 
 std::vector<EventInputPortId>
 GraphBuilderNodeBundles::event_input_ports(NodeBundlePortId address) const {
-  auto const descriptor = resolve_event_input(address);
-  auto const &logical_bundle = bundle(address.node_bundle_handle);
-  if (logical_bundle._payload) {
-    if (auto const *tiled =
-            std::get_if<NodeBundle::TiledNodeBundle>(&*logical_bundle._payload)) {
-      std::vector<EventInputPortId> result;
-      result.reserve(tiled->member_bundles.size());
-      for (auto const member : tiled->member_bundles) {
-        NodeBundlePortId const member_port{
-            member, PortKind::event, address.port_ordinal};
-        if (resolve_event_input(member_port).config.type != descriptor.config.type) {
-          details::error(
-              "tiled NodeBundle member event input type does not match promoted port");
-        }
-        result.push_back(EventInputPortId{
-            .bundle = member,
-            .port = address.port_ordinal,
-        });
-      }
-      return result;
-    }
-  }
+  (void)resolve_event_input(address);
   return {EventInputPortId{
       .bundle = address.node_bundle_handle,
       .port = address.port_ordinal,
@@ -841,28 +852,7 @@ GraphBuilderNodeBundles::event_input_ports(NodeBundlePortId address) const {
 
 std::vector<EventOutputPortId>
 GraphBuilderNodeBundles::event_output_ports(NodeBundlePortId address) const {
-  auto const descriptor = resolve_event_output(address);
-  auto const &logical_bundle = bundle(address.node_bundle_handle);
-  if (logical_bundle._payload) {
-    if (auto const *tiled =
-            std::get_if<NodeBundle::TiledNodeBundle>(&*logical_bundle._payload)) {
-      std::vector<EventOutputPortId> result;
-      result.reserve(tiled->member_bundles.size());
-      for (auto const member : tiled->member_bundles) {
-        NodeBundlePortId const member_port{
-            member, PortKind::event, address.port_ordinal};
-        if (resolve_event_output(member_port).config.type != descriptor.config.type) {
-          details::error(
-              "tiled NodeBundle member event output type does not match promoted port");
-        }
-        result.push_back(EventOutputPortId{
-            .bundle = member,
-            .port = address.port_ordinal,
-        });
-      }
-      return result;
-    }
-  }
+  (void)resolve_event_output(address);
   return {EventOutputPortId{
       .bundle = address.node_bundle_handle,
       .port = address.port_ordinal,
