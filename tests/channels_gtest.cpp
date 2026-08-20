@@ -1,5 +1,6 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/basic_nodes/routing.h>
+#include <intravenous/graph/sample_projection_node.h>
 #include <intravenous/node/tick.h>
 #include <intravenous/node/block_executor.h>
 #include <intravenous/graph/builder.h>
@@ -508,6 +509,8 @@ TEST(Channels, SampleRefsExposeOrderedStructuralChannelIdentity)
     auto const built = g.build_root_node();
     EXPECT_FALSE(has_generated_type(
         built.metadata.concrete_node_type_identities, "ChannelUnpack"));
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
 }
 
 TEST(Channels, GraphBuilderTileIsPureStructuralComposition)
@@ -529,9 +532,11 @@ TEST(Channels, GraphBuilderTileIsPureStructuralComposition)
         built.metadata.concrete_node_type_identities, "ChannelPack"));
     EXPECT_FALSE(has_generated_type(
         built.metadata.concrete_node_type_identities, "ChannelUnpack"));
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
 }
 
-TEST(Channels, ChannelQualifiedPublicOutputsArePackedOnlyAtCompletion)
+TEST(Channels, ChannelQualifiedPublicOutputsAreProjectedOnlyAtCompletion)
 {
     iv::GraphBuilder g;
     auto left = g.node<iv::Constant>(iv::Sample{0.25f});
@@ -543,7 +548,7 @@ TEST(Channels, ChannelQualifiedPublicOutputsArePackedOnlyAtCompletion)
         iv::PortName<"main">{}[iv::stereo::right] =
             static_cast<iv::SamplePortRef>(right));
 
-    // outputs(...) must not author a ChannelPack. The next bundle is therefore
+    // outputs(...) must not author a projection node. The next bundle is therefore
     // immediately after the two user-authored sources.
     auto after_outputs = g.node<iv::Constant>(iv::Sample{1.0f});
     EXPECT_EQ(
@@ -559,9 +564,13 @@ TEST(Channels, ChannelQualifiedPublicOutputsArePackedOnlyAtCompletion)
         std::ranges::count_if(
             built.metadata.concrete_node_type_identities,
             [](std::string const& type) {
-                return type.contains("ChannelPack");
+                return type.contains("SampleProjectionNode");
             }),
         1);
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelPack"));
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelUnpack"));
 }
 
 TEST(Channels, DetachAuthorsOnlyItsExplicitWriterAndReaderNodes)
@@ -573,7 +582,7 @@ TEST(Channels, DetachAuthorsOnlyItsExplicitWriterAndReaderNodes)
     auto detached =
         static_cast<iv::SamplePortRef>(structural).detach();
 
-    // Structural stereo still needs a compatibility pack for the current mono
+    // Structural stereo still needs a lower-only projection for the current mono
     // detach writer, but that node must be synthesized only in completion.
     auto after_detach = g.node<iv::Constant>(iv::Sample{1.0f});
     EXPECT_EQ(
@@ -586,12 +595,16 @@ TEST(Channels, DetachAuthorsOnlyItsExplicitWriterAndReaderNodes)
         std::ranges::count_if(
             built.metadata.concrete_node_type_identities,
             [](std::string const& type) {
-                return type.contains("ChannelPack");
+                return type.contains("SampleProjectionNode");
             }),
         1);
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelPack"));
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelUnpack"));
 }
 
-TEST(Channels, StructuralTilePacksOnlyWhenNativeStereoIsMaterialized)
+TEST(Channels, StructuralTileProjectsOnlyWhenNativeStereoIsMaterialized)
 {
     iv::GraphBuilder g;
     auto left_source = g.node<iv::Constant>(iv::Sample{0.25f});
@@ -605,7 +618,11 @@ TEST(Channels, StructuralTilePacksOnlyWhenNativeStereoIsMaterialized)
 
     auto built = g.build_root_node();
     EXPECT_TRUE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+    EXPECT_FALSE(has_generated_type(
         built.metadata.concrete_node_type_identities, "ChannelPack"));
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelUnpack"));
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(std::move(built.graph)), 1);
     executor.tick_block(0);
@@ -613,7 +630,7 @@ TEST(Channels, StructuralTilePacksOnlyWhenNativeStereoIsMaterialized)
     EXPECT_EQ(right, iv::Sample{-0.5f});
 }
 
-TEST(Channels, SelectedNativeChannelUnpacksOnlyWhenMaterialized)
+TEST(Channels, SelectedNativeChannelProjectsOnlyWhenMaterialized)
 {
     iv::GraphBuilder g;
     auto source = g.node<NamedStereoSource>(
@@ -626,6 +643,10 @@ TEST(Channels, SelectedNativeChannelUnpacksOnlyWhenMaterialized)
 
     auto built = g.build_root_node();
     EXPECT_TRUE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelPack"));
+    EXPECT_FALSE(has_generated_type(
         built.metadata.concrete_node_type_identities, "ChannelUnpack"));
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(std::move(built.graph)), 1);
@@ -661,6 +682,7 @@ TEST(Channels, TiledNodesLowerMatchingChannelsToIndependentMonoEdges)
     auto const built = g.build_root_node();
     EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelPack"));
     EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelUnpack"));
+    EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
 }
 
 TEST(Channels, TiledEventPortsBroadcastInputsAndMergeOutputs)
@@ -692,7 +714,7 @@ TEST(Channels, TiledEventPortsBroadcastInputsAndMergeOutputs)
     EXPECT_EQ(merge_count, 3);
 }
 
-TEST(Channels, TiledOutputAutomaticallyPacksForNativeStereoInput)
+TEST(Channels, TiledOutputAutomaticallyProjectsForNativeStereoInput)
 {
     iv::GraphBuilder g;
     auto left_source = g.node<iv::Constant>(iv::Sample{0.25f});
@@ -704,14 +726,16 @@ TEST(Channels, TiledOutputAutomaticallyPacksForNativeStereoInput)
     g.node<StereoBufferSink>(&left, &right)(tiled[iv::PortName<"out">{}]);
     g.outputs();
     auto built = g.build_root_node();
-    EXPECT_TRUE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelPack"));
+    EXPECT_TRUE(has_generated_type(built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+    EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelPack"));
+    EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelUnpack"));
     auto executor = iv::BlockNodeExecutor::create(iv::TypeErasedNode(std::move(built.graph)), 1);
     executor.tick_block(0);
     EXPECT_EQ(left, iv::Sample{0.25f});
     EXPECT_EQ(right, iv::Sample{-0.5f});
 }
 
-TEST(Channels, NativeStereoOutputAutomaticallyUnpacksForTiledInput)
+TEST(Channels, NativeStereoOutputAutomaticallyProjectsForTiledInput)
 {
     iv::GraphBuilder g;
     auto source = g.node<NamedStereoSource>(iv::Sample{0.25f}, iv::Sample{-0.5f});
@@ -724,7 +748,9 @@ TEST(Channels, NativeStereoOutputAutomaticallyUnpacksForTiledInput)
     g.node<MonoBufferSink>(&right)(stream[iv::stereo::right]);
     g.outputs();
     auto built = g.build_root_node();
-    EXPECT_TRUE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelUnpack"));
+    EXPECT_TRUE(has_generated_type(built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+    EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelPack"));
+    EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelUnpack"));
     auto executor = iv::BlockNodeExecutor::create(iv::TypeErasedNode(std::move(built.graph)), 1);
     executor.tick_block(0);
     EXPECT_EQ(left, iv::Sample{0.25f});
@@ -971,4 +997,132 @@ TEST(Channels, OddFrameMonoToStereoInterleavedConversionBroadcastsEveryFrame)
         iv::Sample{0.25f}, iv::Sample{0.25f},
         iv::Sample{-0.75f}, iv::Sample{-0.75f},
     }));
+}
+
+TEST(Channels, ReconstructedNativeChannelSequenceLowersAsWholePort)
+{
+    iv::GraphBuilder g;
+    auto source = g.node<NamedStereoSource>(
+        iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto stream = source[iv::PortName<"main">{}];
+    auto erased = static_cast<iv::SamplePortRef>(stream);
+    auto reconstructed = iv::SamplePortRef(
+        g, erased.channel_type,
+        std::vector<iv::SampleOutputChannelId>{
+            erased.channels[0], erased.channels[1]});
+
+    iv::Sample left{};
+    iv::Sample right{};
+    g.node<StereoBufferSink>(&left, &right)(reconstructed);
+    g.outputs();
+
+    auto built = g.build_root_node();
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities,
+        "SampleProjectionNode"));
+
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(left, iv::Sample{0.25f});
+    EXPECT_EQ(right, iv::Sample{-0.5f});
+}
+
+TEST(Channels, ReorderedNativeChannelsUseOneSampleProjection)
+{
+    iv::GraphBuilder g;
+    auto source = g.node<NamedStereoSource>(
+        iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto stream = source[iv::PortName<"main">{}];
+    auto erased = static_cast<iv::SamplePortRef>(stream);
+    auto reordered = iv::SamplePortRef(
+        g, iv::ChannelTypeId::stereo,
+        std::vector<iv::SampleOutputChannelId>{
+            erased.channels[1], erased.channels[0]});
+
+    iv::Sample left{};
+    iv::Sample right{};
+    g.node<StereoBufferSink>(&left, &right)(reordered);
+    g.outputs();
+
+    auto built = g.build_root_node();
+    EXPECT_EQ(
+        std::ranges::count_if(
+            built.metadata.concrete_node_type_identities,
+            [](std::string const& type) {
+                return type.contains("SampleProjectionNode");
+            }),
+        1);
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelPack"));
+    EXPECT_FALSE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ChannelUnpack"));
+
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(left, iv::Sample{-0.5f});
+    EXPECT_EQ(right, iv::Sample{0.25f});
+}
+
+TEST(Channels, SampleProjectionInitializesUnwrittenOutputChannelsOnce)
+{
+    constexpr auto mono_layout = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    constexpr auto stereo_layout = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+
+    iv::SampleProjectionNode node(
+        {iv::InputConfig{.channel_layout = mono_layout, .default_value = 0}},
+        {iv::OutputConfig{.channel_layout = stereo_layout}},
+        {iv::SampleProjectionNode::Route{
+            .source_type = iv::ChannelTypeId::mono,
+            .target_type = iv::ChannelTypeId::mono,
+            .sources = {{.port = 0, .channel = 0}},
+            .targets = {{.port = 0, .channel = 0}},
+        }});
+
+    std::array<iv::Sample, 8> input_samples{
+        iv::Sample{1.0f}, iv::Sample{2.0f},
+        iv::Sample{3.0f}, iv::Sample{4.0f},
+    };
+    std::array<iv::Sample, 16> output_samples;
+    output_samples.fill(iv::Sample{0.0f});
+
+    iv::SharedPortData input_data(input_samples, 0, mono_layout, 8);
+    iv::SharedPortData output_data(output_samples, 0, stereo_layout, 8);
+    std::array<iv::InputPort, 1> inputs{
+        iv::InputPort(input_data, 0)};
+    std::array<iv::OutputPort, 1> outputs{
+        iv::OutputPort(output_data, 0)};
+
+    iv::do_tick_block(
+        node,
+        iv::TickBlockContext<iv::SampleProjectionNode>{
+            iv::TickContext<iv::SampleProjectionNode>{
+                .inputs = inputs,
+                .outputs = outputs,
+                .event_inputs = {},
+                .event_outputs = {},
+                .scc_feedback_latency = 0,
+                .buffer{},
+            },
+            0,
+            4,
+        });
+
+    for (size_t frame = 0; frame < 4; ++frame) {
+        EXPECT_EQ(
+            output_samples[output_data.sample_index(frame, 0)],
+            input_samples[input_data.sample_index(frame, 0)]);
+    }
+    for (size_t frame = 0; frame < 8; ++frame) {
+        EXPECT_EQ(
+            output_samples[output_data.sample_index(frame, 1)],
+            iv::Sample{0.0f});
+    }
 }

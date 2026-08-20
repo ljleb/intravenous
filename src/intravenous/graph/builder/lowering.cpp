@@ -4,10 +4,10 @@
 #include <intravenous/graph/builder/connections.h>
 #include <intravenous/graph/builder/detach.h>
 #include <intravenous/graph/builder/public_ports.h>
+#include <intravenous/graph/sample_projection_node.h>
 
 #include <algorithm>
-#include <array>
-#include <functional>
+#include <optional>
 #include <ranges>
 #include <unordered_map>
 #include <utility>
@@ -21,12 +21,6 @@ class Lowerer {
   GraphBuilderDetach const& detach;
   LoweredBuilderGraph out;
   std::unordered_map<NodeBundleHandle, size_t> subgraph_by_boundary;
-  std::unordered_map<NodeBundlePortId, std::vector<TopologyPortId>,
-      std::function<size_t(NodeBundlePortId const&)>> unpacked_cache{
-        0, [](NodeBundlePortId const& p) {
-          return std::hash<size_t>{}(p.node_bundle_handle) ^
-                 (std::hash<size_t>{}(p.port_ordinal) << 1);
-        }};
 
   size_t append_generated(ConcreteNode node) {
     auto const index = out.topology.append_node(std::move(node));
@@ -34,12 +28,6 @@ class Lowerer {
       out.bundle_by_lowered_node.resize(index + 1);
     out.bundle_by_lowered_node[index] = std::nullopt;
     return index;
-  }
-
-  std::vector<TopologyPortId> ports_for_node(size_t node, size_t count) const {
-    std::vector<TopologyPortId> result; result.reserve(count);
-    for (size_t i=0;i<count;++i) result.push_back({node,i});
-    return result;
   }
 
   void project_bundles() {
@@ -147,133 +135,464 @@ class Lowerer {
     }
   }
 
-  TopologyPortId sample_channel_source(SampleOutputChannelId channel) {
-    NodeBundlePortId logical{channel.bundle,PortKind::sample,channel.port};
-    auto const config=bundles.resolve_sample_output(logical).config;
-    auto const count=channel_count(config.channel_layout.channel_type);
-    auto const& endpoints=out.bundle_projections.at(channel.bundle).sample_outputs.at(channel.port);
-    if(channel.channel>=count)details::error("sample source channel out of bounds");
-    if(endpoints.size()==count)return endpoints[channel.channel];
-    if(endpoints.size()!=1)details::error("sample source has invalid lowered endpoint count");
-    if(count==1)return endpoints.front();
-    auto found=unpacked_cache.find(logical);
-    if(found==unpacked_cache.end()) {
-      if(config.channel_layout.channel_type!=ChannelTypeId::stereo)details::error("unsupported sample channel type for unpack");
-      auto node=append_generated(GraphBuilderNodeBundles::make_concrete_node<ChannelUnpack<stereo>>());
-      out.topology.add_sample_edge({endpoints.front(),{node,0}});
-      found=unpacked_cache.emplace(logical,ports_for_node(node,count)).first;
+  struct ResolvedSampleSourceChannel {
+    TopologyPortId port{};
+    OutputConfig config{};
+    size_t channel = 0;
+  };
+
+  struct ResolvedSampleTargetChannel {
+    std::optional<TopologyPortId> port{};
+    InputConfig config{};
+    size_t channel = 0;
+  };
+
+  ResolvedSampleSourceChannel resolve_sample_source_channel(
+      SampleOutputChannelId channel) const {
+    NodeBundlePortId logical{
+        channel.bundle, PortKind::sample, channel.port};
+    auto const config = bundles.resolve_sample_output(logical).config;
+    auto const count = channel_count(config.channel_layout.channel_type);
+    auto const& endpoints =
+        out.bundle_projections.at(channel.bundle).sample_outputs.at(channel.port);
+    if (channel.channel >= count)
+      details::error("sample source channel out of bounds");
+
+    if (endpoints.size() == 1)
+      return {endpoints.front(), config, channel.channel};
+
+    if (endpoints.size() == count && bundles.bundle(channel.bundle).is_tiled()) {
+      auto const member =
+          bundles.tiled_member(channel.bundle, channel.channel);
+      auto const member_config =
+          bundles.resolve_sample_output(
+              {member, PortKind::sample, channel.port}).config;
+      if (channel_count(member_config.channel_layout.channel_type) != 1)
+        details::error(
+            "tiled sample source member must expose one concrete channel");
+      return {endpoints[channel.channel], member_config, 0};
     }
-    return found->second.at(channel.channel);
+
+    details::error("sample source has invalid lowered endpoint count");
   }
 
-  TopologyPortId materialize_sample_source(ChannelTypeId type,
-      std::span<SampleOutputChannelId const> channels) {
-    if(channels.empty())details::error("sample source has no channels");
-    auto const first=channels.front();
-    bool one_port=std::ranges::all_of(channels,[&](auto c){return c.bundle==first.bundle&&c.port==first.port;});
-    if(one_port) {
-      NodeBundlePortId logical{first.bundle,PortKind::sample,first.port};
-      auto const declared=bundles.resolve_sample_output(logical).config.channel_layout.channel_type;
-      if(declared==type && bundles.sample_output_channels(logical)==std::vector<SampleOutputChannelId>(channels.begin(),channels.end())) {
-        auto const& endpoints=out.bundle_projections.at(first.bundle).sample_outputs.at(first.port);
-        if(endpoints.size()==1)return endpoints.front();
-      }
+  ResolvedSampleTargetChannel resolve_sample_target_channel(
+      SampleInputChannelId channel) const {
+    NodeBundlePortId logical{
+        channel.bundle, PortKind::sample, channel.port};
+    auto const config = bundles.resolve_sample_input(logical).config;
+    auto const count = channel_count(config.channel_layout.channel_type);
+    auto const& endpoints =
+        out.bundle_projections.at(channel.bundle).sample_inputs.at(channel.port);
+    if (channel.channel >= count)
+      details::error("sample target channel out of bounds");
+
+    if (endpoints.empty()) {
+      if (!subgraph_by_boundary.contains(channel.bundle))
+        details::error("sample target has no lowered endpoint");
+      return {std::nullopt, config, channel.channel};
     }
-    if(type==ChannelTypeId::mono && channels.size()==1)return sample_channel_source(channels.front());
-    if(type!=ChannelTypeId::stereo || channels.size()!=2)details::error("unsupported structural sample source layout");
-    auto node=append_generated(GraphBuilderNodeBundles::make_concrete_node<ChannelPack<stereo>>());
-    for(size_t i=0;i<channels.size();++i)out.topology.add_sample_edge({sample_channel_source(channels[i]),{node,i}});
-    return {node,0};
+
+    if (endpoints.size() == 1)
+      return {endpoints.front(), config, channel.channel};
+
+    if (endpoints.size() == count && bundles.bundle(channel.bundle).is_tiled()) {
+      auto const member =
+          bundles.tiled_member(channel.bundle, channel.channel);
+      auto const member_config =
+          bundles.resolve_sample_input(
+              {member, PortKind::sample, channel.port}).config;
+      if (channel_count(member_config.channel_layout.channel_type) != 1)
+        details::error(
+            "tiled sample target member must expose one concrete channel");
+      return {endpoints[channel.channel], member_config, 0};
+    }
+
+    details::error("sample target has invalid lowered endpoint count");
   }
 
-  struct SampleGroup { NodeBundlePortId target{}; std::vector<AuthoredSampleConnection const*> connections{}; };
+  std::optional<TopologyPortId> direct_sample_source(
+      ChannelTypeId type,
+      std::span<SampleOutputChannelId const> channels) const {
+    if (channels.empty())
+      details::error("sample source has no channels");
+
+    if (auto logical = bundles.sample_output_port_for_channels(type, channels)) {
+      auto const& endpoints =
+          out.bundle_projections.at(logical->node_bundle_handle)
+              .sample_outputs.at(logical->port_ordinal);
+      if (endpoints.size() == 1)
+        return endpoints.front();
+    }
+
+    // Selecting a channel from a tiled bundle is still a direct full mono
+    // execution port. Selecting a channel from a native multichannel port is
+    // not: that requires a projection.
+    if (type == ChannelTypeId::mono && channels.size() == 1) {
+      auto const resolved = resolve_sample_source_channel(channels.front());
+      if (resolved.channel == 0 &&
+          channel_count(resolved.config.channel_layout.channel_type) == 1)
+        return resolved.port;
+    }
+
+    return std::nullopt;
+  }
+
+  ConcreteNode make_sample_projection_node(
+      std::vector<InputConfig> inputs,
+      std::vector<OutputConfig> outputs,
+      std::vector<SampleProjectionNode::Route> routes) const {
+    SampleProjectionNode node(
+        std::move(inputs), std::move(outputs), std::move(routes));
+    auto const input_configs = node.inputs();
+    auto const output_configs = node.outputs();
+
+    return ConcreteNode{
+        .ports = NodePorts{
+            .sample_inputs =
+                std::vector<InputConfig>(
+                    input_configs.begin(), input_configs.end()),
+            .sample_outputs =
+                std::vector<OutputConfig>(
+                    output_configs.begin(), output_configs.end()),
+        },
+        .materialization = NodeMaterialization{
+            .factory =
+                [node = std::move(node)](size_t) {
+                  return TypeErasedNode(node);
+                },
+        },
+        .type_identity =
+            NodeTypeIdentity{.value = "iv::SampleProjectionNode"},
+    };
+  }
+
+  struct SampleGroup {
+    NodeBundlePortId target{};
+    std::vector<AuthoredSampleConnection const*> connections{};
+  };
+
   std::vector<SampleGroup> sample_groups() const {
     std::vector<SampleGroup> groups;
-    for(auto const& c:connections.authored_sample_connections()) {
-      if(c.target_channels.empty())details::error("sample connection has no target");
-      auto first=c.target_channels.front();
-      if(!std::ranges::all_of(c.target_channels,[&](auto x){return x.bundle==first.bundle&&x.port==first.port;}))details::error("sample target spans bundle ports");
-      NodeBundlePortId target{first.bundle,PortKind::sample,first.port};
-      auto all=bundles.sample_input_channels(target);
-      bool whole=c.target_type==bundles.resolve_sample_input(target).config.channel_layout.channel_type&&all==c.target_channels;
-      if(whole){groups.push_back({target,{&c}});continue;}
-      auto it=std::find_if(groups.begin(),groups.end(),[&](auto const& g){
-        if(g.target!=target)return false; auto const& x=*g.connections.front(); return x.target_channels!=all;});
-      if(it==groups.end()){groups.push_back({target,{}});it=std::prev(groups.end());}
+    for (auto const& c : connections.authored_sample_connections()) {
+      if (c.target_channels.empty())
+        details::error("sample connection has no target");
+      auto first = c.target_channels.front();
+      if (!std::ranges::all_of(c.target_channels, [&](auto x) {
+            return x.bundle == first.bundle && x.port == first.port;
+          }))
+        details::error("sample target spans bundle ports");
+
+      NodeBundlePortId target{first.bundle, PortKind::sample, first.port};
+      auto all = bundles.sample_input_channels(target);
+      bool whole =
+          c.target_type ==
+              bundles.resolve_sample_input(target).config.channel_layout.channel_type &&
+          all == c.target_channels;
+      if (whole) {
+        groups.push_back({target, {&c}});
+        continue;
+      }
+
+      auto it = std::find_if(groups.begin(), groups.end(), [&](auto const& g) {
+        if (g.target != target)
+          return false;
+        auto const& x = *g.connections.front();
+        return x.target_channels != all;
+      });
+      if (it == groups.end()) {
+        groups.push_back({target, {}});
+        it = std::prev(groups.end());
+      }
       it->connections.push_back(&c);
     }
     return groups;
   }
 
-  TopologyPortId source_for_group(SampleGroup const& group) {
-    auto target_channels=bundles.sample_input_channels(group.target);
-    auto target_type=bundles.resolve_sample_input(group.target).config.channel_layout.channel_type;
-    if(group.connections.size()==1) {
-      auto const& c=*group.connections.front();
-      if(c.target_type==target_type&&c.target_channels==target_channels)
-        return materialize_sample_source(c.source_type,c.source_channels);
+  struct ProjectionOutput {
+    std::optional<TopologyPortId> target{};
+    OutputConfig config{};
+  };
+
+  struct ProjectedSampleGroup {
+    std::vector<TopologyPortId> unbound_outputs{};
+  };
+
+  ProjectedSampleGroup project_sample_group(SampleGroup const& group) {
+    std::vector<TopologyPortId> input_sources;
+    std::vector<InputConfig> input_configs;
+    std::vector<ProjectionOutput> projection_outputs;
+    std::vector<SampleProjectionNode::Route> routes;
+    std::vector<std::vector<bool>> claimed_output_channels;
+
+    auto projection_input = [&](ResolvedSampleSourceChannel const& source) {
+      auto it = std::ranges::find(input_sources, source.port);
+      if (it != input_sources.end())
+        return static_cast<size_t>(it - input_sources.begin());
+
+      input_sources.push_back(source.port);
+      input_configs.push_back(InputConfig{
+          .channel_layout = source.config.channel_layout,
+      });
+      return input_sources.size() - 1;
+    };
+
+    auto projection_output = [&](ResolvedSampleTargetChannel const& target) {
+      auto it = std::find_if(
+          projection_outputs.begin(), projection_outputs.end(),
+          [&](ProjectionOutput const& output) {
+            return output.target == target.port;
+          });
+      if (it != projection_outputs.end()) {
+        if (it->config.channel_layout != target.config.channel_layout)
+          details::error(
+              "sample projection target endpoint changed channel layout");
+        return static_cast<size_t>(it - projection_outputs.begin());
+      }
+
+      projection_outputs.push_back(ProjectionOutput{
+          .target = target.port,
+          .config = OutputConfig{
+              .channel_layout = target.config.channel_layout,
+          },
+      });
+      claimed_output_channels.emplace_back(
+          channel_count(target.config.channel_layout.channel_type), false);
+      return projection_outputs.size() - 1;
+    };
+
+    for (auto const* connection : group.connections) {
+      if (connection->source_channels.size() !=
+          channel_count(connection->source_type))
+        details::error(
+            "sample source channel count does not match its semantic type");
+      if (connection->target_channels.size() !=
+          channel_count(connection->target_type))
+        details::error(
+            "sample target channel count does not match its semantic type");
+
+      SampleProjectionNode::Route route{
+          .source_type = connection->source_type,
+          .target_type = connection->target_type,
+      };
+
+      for (auto const source_channel : connection->source_channels) {
+        auto const source = resolve_sample_source_channel(source_channel);
+        route.sources.push_back({
+            .port = projection_input(source),
+            .channel = source.channel,
+        });
+      }
+
+      for (auto const target_channel : connection->target_channels) {
+        auto const target = resolve_sample_target_channel(target_channel);
+        auto const output = projection_output(target);
+        if (target.channel >= claimed_output_channels[output].size())
+          details::error("sample projection target channel out of bounds");
+        if (claimed_output_channels[output][target.channel])
+          details::error("sample target channel has multiple sources");
+        claimed_output_channels[output][target.channel] = true;
+        route.targets.push_back({
+            .port = output,
+            .channel = target.channel,
+        });
+      }
+
+      routes.push_back(std::move(route));
     }
-    if(target_type!=ChannelTypeId::stereo)details::error("partial sample target requires supported multichannel layout");
-    std::array<std::optional<TopologyPortId>,2> sources;
-    for(auto const* c:group.connections) {
-      if(c->target_type!=ChannelTypeId::mono||c->target_channels.size()!=1)details::error("sample target mixes whole and channel contributors");
-      auto it=std::ranges::find(target_channels,c->target_channels.front());
-      if(it==target_channels.end())details::error("sample channel contributor outside target");
-      auto channel=static_cast<size_t>(it-target_channels.begin());
-      if(sources[channel])details::error("sample target channel has multiple sources");
-      sources[channel]=materialize_sample_source(c->source_type,c->source_channels);
+
+    if (projection_outputs.empty())
+      details::error("sample projection has no outputs");
+
+    std::vector<OutputConfig> output_configs;
+    output_configs.reserve(projection_outputs.size());
+    for (auto const& output : projection_outputs)
+      output_configs.push_back(output.config);
+
+    auto const node = append_generated(make_sample_projection_node(
+        std::move(input_configs), std::move(output_configs),
+        std::move(routes)));
+
+    for (size_t input = 0; input < input_sources.size(); ++input)
+      out.topology.add_sample_edge({input_sources[input], {node, input}});
+
+    ProjectedSampleGroup result;
+    for (size_t output = 0; output < projection_outputs.size(); ++output) {
+      TopologyPortId const source{node, output};
+      if (projection_outputs[output].target)
+        out.topology.add_sample_edge(
+            {source, *projection_outputs[output].target});
+      else
+        result.unbound_outputs.push_back(source);
     }
-    auto node=append_generated(GraphBuilderNodeBundles::make_concrete_node<ChannelPack<stereo>>());
-    for(size_t i=0;i<2;++i)if(sources[i])out.topology.add_sample_edge({*sources[i],{node,i}});
-    return {node,0};
+    return result;
+  }
+
+  bool lower_tiled_group_direct(
+      SampleGroup const& group,
+      std::span<TopologyPortId const> endpoints) {
+    auto const target_channels = bundles.sample_input_channels(group.target);
+    auto const target_type =
+        bundles.resolve_sample_input(group.target).config.channel_layout.channel_type;
+
+    if (group.connections.size() == 1) {
+      auto const& connection = *group.connections.front();
+      bool const whole_target =
+          connection.target_type == target_type &&
+          connection.target_channels == target_channels;
+
+      if (whole_target && connection.source_type == ChannelTypeId::mono) {
+        if (auto source = direct_sample_source(
+                connection.source_type, connection.source_channels)) {
+          for (auto const target : endpoints)
+            out.topology.add_sample_edge({*source, target});
+          return true;
+        }
+      }
+
+      if (whole_target && connection.source_type == target_type &&
+          connection.source_channels.size() == endpoints.size()) {
+        std::vector<TopologyPortId> sources;
+        sources.reserve(connection.source_channels.size());
+        for (auto const source_channel : connection.source_channels) {
+          auto const resolved = resolve_sample_source_channel(source_channel);
+          if (resolved.channel != 0 ||
+              channel_count(resolved.config.channel_layout.channel_type) != 1)
+            return false;
+          sources.push_back(resolved.port);
+        }
+        for (size_t channel = 0; channel < endpoints.size(); ++channel)
+          out.topology.add_sample_edge({sources[channel], endpoints[channel]});
+        return true;
+      }
+    }
+
+    std::vector<std::pair<TopologyPortId, TopologyPortId>> edges;
+    std::vector<bool> claimed(endpoints.size(), false);
+    for (auto const* connection : group.connections) {
+      if (connection->target_type != ChannelTypeId::mono ||
+          connection->target_channels.size() != 1)
+        return false;
+
+      auto it = std::ranges::find(
+          target_channels, connection->target_channels.front());
+      if (it == target_channels.end())
+        details::error("partial target not in tiled input");
+      auto const channel =
+          static_cast<size_t>(it - target_channels.begin());
+      if (claimed[channel])
+        details::error("sample target channel has multiple sources");
+
+      auto source = direct_sample_source(
+          connection->source_type, connection->source_channels);
+      if (!source)
+        return false;
+
+      claimed[channel] = true;
+      edges.push_back({*source, endpoints[channel]});
+    }
+
+    for (auto const& [source, target] : edges)
+      out.topology.add_sample_edge({source, target});
+    return !edges.empty();
   }
 
   void lower_samples() {
     std::vector<NodeBundlePortId> assigned_subgraph_outputs;
-    auto groups=sample_groups();
-    for(auto const& group:groups) {
-      auto const& endpoints=out.bundle_projections.at(group.target.node_bundle_handle).sample_inputs.at(group.target.port_ordinal);
-      auto target_channels=bundles.sample_input_channels(group.target);
-      auto target_type=bundles.resolve_sample_input(group.target).config.channel_layout.channel_type;
-      if(auto it=subgraph_by_boundary.find(group.target.node_bundle_handle);it!=subgraph_by_boundary.end()) {
-        auto source=source_for_group(group); auto& binding=out.topology.subgraph_node(it->second).lowered_subgraph;
-        if(group.target.port_ordinal>=binding.sample_output_sources.size())details::error("subgraph sample output out of bounds");
+    auto groups = sample_groups();
+
+    for (auto const& group : groups) {
+      auto const& endpoints =
+          out.bundle_projections.at(group.target.node_bundle_handle)
+              .sample_inputs.at(group.target.port_ordinal);
+      auto const target_channels = bundles.sample_input_channels(group.target);
+      auto const target_type =
+          bundles.resolve_sample_input(group.target)
+              .config.channel_layout.channel_type;
+
+      if (auto it =
+              subgraph_by_boundary.find(group.target.node_bundle_handle);
+          it != subgraph_by_boundary.end()) {
+        auto& binding =
+            out.topology.subgraph_node(it->second).lowered_subgraph;
+        if (group.target.port_ordinal >= binding.sample_output_sources.size())
+          details::error("subgraph sample output out of bounds");
         if (std::ranges::contains(assigned_subgraph_outputs, group.target))
           details::error("subgraph sample output has more than one source");
         assigned_subgraph_outputs.push_back(group.target);
-        binding.sample_output_sources[group.target.port_ordinal]=source; continue;
-      }
-      if(endpoints.empty())details::error("sample target has no lowered endpoint");
-      if(endpoints.size()==1) { out.topology.add_sample_edge({source_for_group(group),endpoints.front()}); continue; }
-      // A tiled input exposes one lowered endpoint per semantic channel.
-      if(group.connections.size()==1) {
-        auto const& c=*group.connections.front();
-        if(c.target_type==target_type&&c.target_channels==target_channels) {
-          if(c.source_type==ChannelTypeId::mono) {
-            auto s=materialize_sample_source(c.source_type,c.source_channels); for(auto t:endpoints)out.topology.add_sample_edge({s,t});
-          } else {
-            if(c.source_channels.size()!=endpoints.size())details::error("tiled source/target channel count mismatch");
-            for(size_t i=0;i<endpoints.size();++i)out.topology.add_sample_edge({sample_channel_source(c.source_channels[i]),endpoints[i]});
-          }
-          continue;
+
+        std::optional<TopologyPortId> source;
+        if (group.connections.size() == 1) {
+          auto const& connection = *group.connections.front();
+          if (connection.target_type == target_type &&
+              connection.target_channels == target_channels)
+            source = direct_sample_source(
+                connection.source_type, connection.source_channels);
         }
+
+        if (!source) {
+          auto projected = project_sample_group(group);
+          if (projected.unbound_outputs.size() != 1)
+            details::error(
+                "subgraph sample projection must produce one output");
+          source = projected.unbound_outputs.front();
+        }
+
+        binding.sample_output_sources[group.target.port_ordinal] = *source;
+        continue;
       }
-      for(auto const* c:group.connections) {
-        if(c->target_type!=ChannelTypeId::mono||c->target_channels.size()!=1)details::error("invalid tiled partial connection");
-        auto it=std::ranges::find(target_channels,c->target_channels.front()); if(it==target_channels.end())details::error("partial target not in tiled input");
-        out.topology.add_sample_edge({materialize_sample_source(c->source_type,c->source_channels),endpoints[static_cast<size_t>(it-target_channels.begin())]});
+
+      if (endpoints.empty())
+        details::error("sample target has no lowered endpoint");
+
+      if (endpoints.size() == 1) {
+        if (group.connections.size() == 1) {
+          auto const& connection = *group.connections.front();
+          if (connection.target_type == target_type &&
+              connection.target_channels == target_channels) {
+            if (auto source = direct_sample_source(
+                    connection.source_type, connection.source_channels)) {
+              out.topology.add_sample_edge({*source, endpoints.front()});
+              continue;
+            }
+          }
+        }
+
+        auto projected = project_sample_group(group);
+        if (!projected.unbound_outputs.empty())
+          details::error(
+              "concrete sample projection left an output unbound");
+        continue;
       }
+
+      if (lower_tiled_group_direct(group, endpoints))
+        continue;
+
+      auto projected = project_sample_group(group);
+      if (!projected.unbound_outputs.empty())
+        details::error("tiled sample projection left an output unbound");
     }
-    for(auto const& [boundary,node]:subgraph_by_boundary) {
-      auto& binding=out.topology.subgraph_node(node).lowered_subgraph;
-      auto const& p=out.bundle_projections.at(boundary);
-      for(size_t i=0;i<p.sample_outputs.size();++i) {
-        if(p.sample_outputs[i].empty())continue; auto source=p.sample_outputs[i].front();
-        out.topology.for_each_sample_edge([&](TopologyEdge const& edge){ if(edge.source==source && !std::ranges::contains(binding.sample_input_targets[i],edge.target))binding.sample_input_targets[i].push_back(edge.target); });
+
+    for (auto const& [boundary, node] : subgraph_by_boundary) {
+      auto& binding = out.topology.subgraph_node(node).lowered_subgraph;
+      auto const& p = out.bundle_projections.at(boundary);
+      for (size_t i = 0; i < p.sample_outputs.size(); ++i) {
+        if (p.sample_outputs[i].empty())
+          continue;
+        auto source = p.sample_outputs[i].front();
+        out.topology.for_each_sample_edge([&](TopologyEdge const& edge) {
+          if (edge.source == source &&
+              !std::ranges::contains(
+                  binding.sample_input_targets[i], edge.target))
+            binding.sample_input_targets[i].push_back(edge.target);
+        });
       }
-      for (size_t output = 0; output < binding.sample_output_sources.size(); ++output) {
-        if (!std::ranges::contains(assigned_subgraph_outputs,
-              NodeBundlePortId{boundary, PortKind::sample, output}))
+      for (size_t output = 0;
+           output < binding.sample_output_sources.size(); ++output) {
+        if (!std::ranges::contains(
+                assigned_subgraph_outputs,
+                NodeBundlePortId{
+                    boundary, PortKind::sample, output}))
           details::error("subgraph sample output has no authored source");
       }
     }
@@ -348,7 +667,12 @@ class Lowerer {
       std::optional<TopologyPortId> source;
       out.topology.for_each_sample_edge([&](TopologyEdge const& edge){if(edge.target==TopologyPortId{*writer,0}){if(source&&*source!=edge.source)details::error("detach writer has multiple sources");source=edge.source;}});
       if(!source)details::error("detach writer has no lowered source");
-      auto reader=sample_channel_source(info.reader_channel);
+      auto const reader_channel =
+          resolve_sample_source_channel(info.reader_channel);
+      if (reader_channel.channel != 0 ||
+          channel_count(reader_channel.config.channel_layout.channel_type) != 1)
+        details::error("detach reader output must be one concrete channel");
+      auto const reader = reader_channel.port;
       out.detached_info_by_source.emplace(*source,DetachedSamplePortInfo{info.detach_id,*source,*writer,reader,info.loop_extra_latency});
       out.detached_reader_outputs.insert(reader);
     }
