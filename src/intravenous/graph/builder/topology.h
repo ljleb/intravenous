@@ -82,14 +82,6 @@ namespace iv {
         bool is_scope_boundary_port(TopologyPortId) const;
         EventOutputConfig const& scope_boundary_event_output(ScopeBoundaryPortId) const;
         EventOutputConfig const& scope_boundary_event_output(TopologyPortId) const;
-        template<class Config>
-        static void validate_output_port_configs(
-            std::span<Config const> configs,
-            std::string_view node_label,
-            std::string_view kind
-        );
-        template<class Node, class... Args>
-        size_t insert_node(Args&&... args);
         size_t append_lowered_subgraph_node(
             std::string subgraph_kind,
             std::vector<InputConfig> input_configs,
@@ -135,78 +127,4 @@ namespace iv {
         std::erase_if(_event_edges, std::forward<Predicate>(predicate));
     }
 
-    template<class Config>
-    void GraphBuilderTopology::validate_output_port_configs(
-        std::span<Config const> configs,
-        std::string_view node_label,
-        std::string_view kind
-    )
-    {
-        if (configs.size() <= 1) {
-            return;
-        }
-        for (auto const& config : configs) {
-            if (config.name.empty()) {
-                details::error(
-                    std::string(node_label)
-                    + ": output "
-                    + std::string(kind)
-                    + " ports require names when more than one output is exposed"
-                );
-            }
-        }
-    }
-
-    template<class Node, class... Args>
-    size_t GraphBuilderTopology::insert_node(Args&&... args)
-    {
-        using StoredNode = std::remove_cvref_t<Node>;
-        static_assert(
-            details::has_constexpr_sample_port_configs<StoredNode>,
-            "concrete DSP nodes must provide constexpr static inputs()/outputs() configurations"
-        );
-        StoredNode node_value(std::forward<Args>(args)...);
-        auto inputs = get_inputs(node_value);
-        auto outputs = get_outputs(node_value);
-        auto event_inputs = get_event_inputs(node_value);
-        auto event_outputs = get_event_outputs(node_value);
-
-        auto const node_type = typeid(StoredNode).name();
-        validate_output_port_configs(
-            std::span<OutputConfig const>(std::begin(outputs), std::end(outputs)),
-            node_type,
-            "sample"
-        );
-        validate_output_port_configs(
-            std::span<EventOutputConfig const>(std::begin(event_outputs), std::end(event_outputs)),
-            node_type,
-            "event"
-        );
-        auto materialize = [node_value = std::move(node_value)]([[maybe_unused]] size_t detach_id_offset) {
-            if constexpr (std::same_as<StoredNode, DetachWriterNode>) {
-                return TypeErasedNode(DetachWriterNode{
-                    DetachArrayId(node_value.id.id + detach_id_offset),
-                    node_value.loop_extra_latency
-                });
-            } else if constexpr (std::same_as<StoredNode, DetachReaderNode>) {
-                return TypeErasedNode(DetachReaderNode{
-                    DetachArrayId(node_value.id.id + detach_id_offset),
-                    node_value.loop_extra_latency
-                });
-            } else {
-                return TypeErasedNode(node_value);
-            }
-        };
-
-        return append_node(ConcreteNode{
-            .ports = NodePorts{
-                .sample_inputs = std::vector<InputConfig>(std::begin(inputs), std::end(inputs)),
-                .sample_outputs = std::vector<OutputConfig>(std::begin(outputs), std::end(outputs)),
-                .event_input_configs = std::vector<EventInputConfig>(std::begin(event_inputs), std::end(event_inputs)),
-                .event_output_configs = std::vector<EventOutputConfig>(std::begin(event_outputs), std::end(event_outputs)),
-            },
-            .materialization = NodeMaterialization{ .factory = std::move(materialize) },
-            .type_identity = NodeTypeIdentity{ .value = details::demangle_type_name(typeid(StoredNode).name()) },
-        });
-    }
 }

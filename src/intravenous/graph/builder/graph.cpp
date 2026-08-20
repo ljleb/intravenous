@@ -120,22 +120,19 @@ EventPortRef::EventPortRef(GraphBuilder &graph_builder_, size_t node_index,
                    graph_builder->_identity.value);
   }
 
-  auto const &ports = graph_builder->_topology.ports(node_index);
-  size_t num_outputs = ports.event_outputs().size();
-  if (output_port >= num_outputs) {
-    details::error("event output port " + std::to_string(output_port) +
-                   " of "
-                   "node at index " +
-                   std::to_string(node_index) +
-                   " in "
-                   "builder " +
-                   graph_builder->_identity.value +
-                   " "
-                   "is out of bounds");
+  auto const bundle =
+      graph_builder_._node_bundles.bundle_for_concrete_node(node_index);
+  NodeBundlePortId const logical{bundle, PortKind::event, output_port};
+  auto const descriptor =
+      graph_builder_._node_bundles.resolve_event_output(logical);
+  if (!std::ranges::contains(descriptor.endpoints, topology_port)) {
+    details::error(
+        "raw topology event output does not identify a logical NodeBundle "
+        "output");
   }
-  type = ports.event_outputs()[output_port].type;
+  type = descriptor.config.type;
   sources = graph_builder_._node_bundles.event_output_ports_for_topology_port(
-      TopologyPortId{node_index, output_port});
+      topology_port);
 }
 
 EventPortRef::EventPortRef(GraphBuilder &graph_builder_,
@@ -1961,18 +1958,20 @@ GraphBuilder::materialize_bundle_sample_output_channels(
 void GraphBuilder::connect_sample_output(NodeBundlePortId source,
                                          NodeRef const &target) {
   auto const semantic_source = SamplePortRef(*this, source);
-  std::vector<size_t> target_nodes;
-  _node_bundles.bundle(target.node_bundle_handle()).for_each_topology_node(
-      [&](size_t node) { target_nodes.push_back(node); });
-  if (target_nodes.size() != 1) {
+  auto const &target_bundle =
+      _node_bundles.bundle(target.node_bundle_handle());
+  size_t concrete_node_count = 0;
+  target_bundle.for_each_concrete_node(
+      [&](size_t) { ++concrete_node_count; });
+  if (concrete_node_count != 1) {
     details::error("a graph-service sink must contain exactly one concrete node");
   }
-  auto const target_node = target_nodes.front();
-  auto const &inputs = _topology.concrete_node(target_node).inputs();
-  if (semantic_source.channels.size() != inputs.size()) {
-    details::error("NodeBundle output does not match graph-service sink channel count");
+  auto const input_count = target_bundle.sample_input_count();
+  if (semantic_source.channels.size() != input_count) {
+    details::error(
+        "NodeBundle output does not match graph-service sink channel count");
   }
-  for (size_t channel = 0; channel < inputs.size(); ++channel) {
+  for (size_t channel = 0; channel < input_count; ++channel) {
     record_authored_sample_connection(
         NodeBundlePortId{
             target.node_bundle_handle(), PortKind::sample, channel},

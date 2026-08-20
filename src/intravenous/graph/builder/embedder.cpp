@@ -31,7 +31,8 @@ size_t GraphBuilderChildEmbedder::embed(
   size_t const child_node_offset = subgraph_node + 1;
   size_t const child_node_bundle_offset = parent_node_bundles.size();
 
-  parent_node_bundles.import_child(child_node_bundles, child_node_offset);
+  parent_node_bundles.import_child(
+      child_node_bundles, child_node_offset, child_detach_offset);
   parent_connections.import_child(
       child_connections, child_node_offset, child_node_bundle_offset);
   parent_detach.import_child(

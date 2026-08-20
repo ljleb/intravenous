@@ -293,15 +293,15 @@ template <class Config>
 void GraphBuilder::validate_output_port_configs(std::span<Config const> configs,
                                                 std::string_view node_label,
                                                 std::string_view kind) {
-  GraphBuilderTopology::validate_output_port_configs(configs, node_label, kind);
+  GraphBuilderNodeBundles::validate_output_port_configs(
+      configs, node_label, kind);
 }
 
 template <class Node, class... Args>
 details::node_ref_for_t<Node> GraphBuilder::node(Args &&...args) {
-  auto const concrete_node_index =
-      _topology.insert_node<Node>(std::forward<Args>(args)...);
   auto const bundle_handle =
-      _node_bundles.append_concrete(_topology, concrete_node_index);
+      _node_bundles.append_concrete<Node>(std::forward<Args>(args)...);
+  _node_bundles.mirror_concrete_to_topology(_topology, bundle_handle);
   using StoredNode = std::remove_cvref_t<Node>;
   if constexpr (details::should_preserve_node_type_v<StoredNode>) {
     return TypedNodeRef<StoredNode>(*this, bundle_handle);
@@ -335,19 +335,18 @@ auto GraphBuilder::node(Args &&...args) {
     return true;
   }(), "the initial tiled-node model only supports fully mono sample nodes");
 
-  std::array<size_t, ChannelType::channel_count> concrete_node_indices{};
   std::array<NodeBundleHandle, ChannelType::channel_count> member_bundles{};
   for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
-    auto &concrete_node_index = concrete_node_indices[channel];
-    concrete_node_index = _topology.insert_node<StoredNode>(args...);
-    // A tiled ref owns these member handles.  They preserve the concrete node
+    // A tiled ref owns these member handles. They preserve the concrete node
     // type selected by `tiled[channel]`; the promoted bundle below is only
     // the common, builder-facing bundle used by NodeRef.
-    member_bundles[channel] = _node_bundles.append_concrete(
-        _topology, concrete_node_index);
+    auto const member =
+        _node_bundles.append_concrete<StoredNode>(args...);
+    _node_bundles.mirror_concrete_to_topology(_topology, member);
+    member_bundles[channel] = member;
   }
   auto const bundle_handle = _node_bundles.append_tiled(
-      _topology, concrete_node_indices, member_bundles,
+      member_bundles,
       ChannelLayout{.channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = SampleStreamLayout::planar});
   return TiledNodeRef<StoredNode, ChannelType>(
@@ -541,8 +540,7 @@ inline NodePorts const &TypedNodeRef<Node, PortProjection>::ports() const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
-  return _graph_builder->_topology.ports(
-      _graph_builder->_node_bundles.bundle(_index).single_concrete_node());
+  return _graph_builder->_node_bundles.bundle(_index).concrete_ports();
 }
 
 inline NodeRef NodeRef::node_ref() const {
@@ -731,8 +729,8 @@ inline NodeRef NodeRef::ttl(size_t ttl_samples) const {
   if (!_graph_builder) {
     details::error("attempted to use a null NodeRef");
   }
-  _graph_builder->_node_bundles.bundle(_index).for_each_topology_node(
-      [&](size_t node) { _graph_builder->_topology.apply_ttl(node, ttl_samples); });
+  _graph_builder->_node_bundles.apply_ttl(
+      _graph_builder->_topology, _index, ttl_samples);
   return _clone_handle();
 }
 

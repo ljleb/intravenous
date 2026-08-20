@@ -53,6 +53,8 @@ struct NodeTypeIdentity {
   std::string value{};
 };
 
+// Compatibility topology IR. Authored concrete-node ownership lives in
+// NodeBundle::ConcreteNodeBundle; this mirror disappears with builder lowering.
 struct ConcreteNode {
   NodePorts ports{};
   NodeMaterialization materialization{};

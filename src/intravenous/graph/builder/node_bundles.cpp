@@ -24,6 +24,17 @@ Descriptor descriptor(Ports const &ports, Configs const &configs,
   return result;
 }
 
+template <class Descriptor, class Configs>
+Descriptor concrete_descriptor(std::vector<TopologyPortId> const &ports,
+                               Configs const &configs, size_t ordinal) {
+  if (ordinal >= configs.size())
+    details::error("NodeBundle port ordinal is out of bounds");
+
+  Descriptor result{.config = configs[ordinal]};
+  if (ordinal < ports.size()) result.endpoints.push_back(ports[ordinal]);
+  return result;
+}
+
 OutputConfig inward_output_config(InputConfig const &config) {
   return OutputConfig{
       .name = config.name,
@@ -83,6 +94,9 @@ SampleInputPortDescriptor NodeBundle::sample_input_descriptor(size_t i) const {
           };
           if (payload.is_root) result.endpoints.push_back({GRAPH_ID, i});
           return result;
+        } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
+          return concrete_descriptor<SampleInputPortDescriptor>(
+              payload.sample_inputs, payload.ports.sample_inputs, i);
         } else {
           return descriptor<SampleInputPortDescriptor>(
               payload.sample_inputs, payload.sample_input_configs, i);
@@ -106,6 +120,9 @@ SampleOutputPortDescriptor NodeBundle::sample_output_descriptor(size_t i) const 
           else if (payload.is_root)
             result.endpoints.push_back({GRAPH_ID, i});
           return result;
+        } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
+          return concrete_descriptor<SampleOutputPortDescriptor>(
+              payload.sample_outputs, payload.ports.sample_outputs, i);
         } else {
           return descriptor<SampleOutputPortDescriptor>(
               payload.sample_outputs, payload.sample_output_configs, i);
@@ -126,6 +143,9 @@ EventInputPortDescriptor NodeBundle::event_input_descriptor(size_t i) const {
           };
           if (payload.is_root) result.endpoints.push_back({GRAPH_ID, i});
           return result;
+        } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
+          return concrete_descriptor<EventInputPortDescriptor>(
+              payload.event_inputs, payload.ports.event_input_configs, i);
         } else {
           return descriptor<EventInputPortDescriptor>(
               payload.event_inputs, payload.event_input_configs, i);
@@ -149,6 +169,9 @@ EventOutputPortDescriptor NodeBundle::event_output_descriptor(size_t i) const {
           else if (payload.is_root)
             result.endpoints.push_back({GRAPH_ID, i});
           return result;
+        } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
+          return concrete_descriptor<EventOutputPortDescriptor>(
+              payload.event_outputs, payload.ports.event_output_configs, i);
         } else {
           return descriptor<EventOutputPortDescriptor>(
               payload.event_outputs, payload.event_output_configs, i);
@@ -324,16 +347,25 @@ EventOutputConfig NodeBundle::event_output_config(
   return event_output_descriptor(ordinal).config;
 }
 
-std::string_view NodeBundle::type_identity(GraphBuilderTopology const &topology) const {
-  if (is_boundary()) return "Boundary";
-  std::optional<size_t> node;
-  for_each_topology_node([&](size_t value) {
-    if (!node) node = value;
-  });
-  if (!node) details::error("NodeBundle has no topology node");
-  return topology.is_subgraph_node(*node)
-      ? std::string_view(topology.subgraph_node(*node).type_identity.value)
-      : std::string_view(topology.concrete_node(*node).type_identity.value);
+std::string_view NodeBundle::type_identity(GraphBuilderTopology const &) const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit(
+      [](auto const &payload) -> std::string_view {
+        using Bundle = std::remove_cvref_t<decltype(payload)>;
+        if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
+          return "Boundary";
+        } else {
+          return payload.type_identity.value;
+        }
+      },
+      *_payload);
+}
+
+NodePorts const &NodeBundle::concrete_ports() const {
+  if (!_payload) details::error("empty NodeBundle");
+  auto const *concrete = std::get_if<ConcreteNodeBundle>(&*_payload);
+  if (!concrete) details::error("NodeBundle is not a concrete node bundle");
+  return concrete->ports;
 }
 
 size_t NodeBundle::sample_input_count() const {
@@ -343,6 +375,8 @@ size_t NodeBundle::sample_input_count() const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
           return payload.sample_outputs.size();
+        else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>)
+          return payload.ports.sample_inputs.size();
         else
           return payload.sample_input_configs.size();
       },
@@ -355,6 +389,8 @@ size_t NodeBundle::sample_output_count() const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
           return payload.sample_inputs.size();
+        else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>)
+          return payload.ports.sample_outputs.size();
         else
           return payload.sample_output_configs.size();
       },
@@ -367,6 +403,8 @@ size_t NodeBundle::event_input_count() const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
           return payload.event_outputs.size();
+        else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>)
+          return payload.ports.event_input_configs.size();
         else
           return payload.event_input_configs.size();
       },
@@ -379,6 +417,8 @@ size_t NodeBundle::event_output_count() const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
           return payload.event_inputs.size();
+        else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>)
+          return payload.ports.event_output_configs.size();
         else
           return payload.event_output_configs.size();
       },
@@ -391,6 +431,8 @@ size_t NodeBundle::sample_input_index(std::string_view name) const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
           return index_for_name(payload.sample_outputs, name);
+        else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>)
+          return index_for_name(payload.ports.sample_inputs, name);
         else
           return index_for_name(payload.sample_input_configs, name);
       },
@@ -403,6 +445,8 @@ size_t NodeBundle::sample_output_index(std::string_view name) const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
           return index_for_name(payload.sample_inputs, name);
+        else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>)
+          return index_for_name(payload.ports.sample_outputs, name);
         else
           return index_for_name(payload.sample_output_configs, name);
       },
@@ -415,6 +459,8 @@ size_t NodeBundle::event_input_index(std::string_view name) const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
           return index_for_name(payload.event_outputs, name);
+        else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>)
+          return index_for_name(payload.ports.event_input_configs, name);
         else
           return index_for_name(payload.event_input_configs, name);
       },
@@ -427,6 +473,8 @@ size_t NodeBundle::event_output_index(std::string_view name) const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>)
           return index_for_name(payload.event_inputs, name);
+        else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>)
+          return index_for_name(payload.ports.event_output_configs, name);
         else
           return index_for_name(payload.event_output_configs, name);
       },
@@ -438,7 +486,10 @@ void NodeBundle::for_each_topology_node(
   if (!_payload) details::error("empty NodeBundle");
   std::visit(
       [&](auto const &payload) {
-        if constexpr (requires { payload.nodes; }) {
+        using Bundle = std::remove_cvref_t<decltype(payload)>;
+        if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
+          if (payload.node != GRAPH_ID) fn(payload.node);
+        } else if constexpr (requires { payload.nodes; }) {
           for (auto const node : payload.nodes) fn(node);
         } else if constexpr (requires { payload.node; }) {
           fn(payload.node);
@@ -453,10 +504,10 @@ void NodeBundle::for_each_concrete_node(
       [&](auto const &payload) {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (Bundle::contains_concrete_nodes) {
-          if constexpr (requires { payload.nodes; }) {
+          if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
+            if (payload.node != GRAPH_ID) fn(payload.node);
+          } else if constexpr (requires { payload.nodes; }) {
             for (auto const node : payload.nodes) fn(node);
-          } else {
-            fn(payload.node);
           }
         }
       },
@@ -471,12 +522,22 @@ size_t NodeBundle::single_concrete_node() const {
   if (!node) details::error("this operation requires a bundle with one concrete node");
   return *node;
 }
-void NodeBundle::import_into(size_t offset, size_t bundle_offset) {
+void NodeBundle::import_into(size_t offset, size_t bundle_offset,
+                             size_t detach_id_offset) {
   if (!_payload) details::error("empty NodeBundle");
   std::visit(
       [&](auto &payload) {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
-        if constexpr (std::is_same_v<Bundle, SubgraphNodeBundle>) {
+        if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
+          auto factory = std::move(payload.materialization.factory);
+          if (factory) {
+            payload.materialization.factory =
+                [factory = std::move(factory), detach_id_offset](
+                    size_t parent_detach_id_offset) {
+                  return factory(parent_detach_id_offset + detach_id_offset);
+                };
+          }
+        } else if constexpr (std::is_same_v<Bundle, SubgraphNodeBundle>) {
           payload.boundary += bundle_offset;
         } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
           for (auto &member : payload.member_bundles) {
@@ -497,7 +558,7 @@ void NodeBundle::import_into(size_t offset, size_t bundle_offset) {
         } else if constexpr (requires { payload.node; }) {
           payload.node += offset;
         }
-        if constexpr (requires { payload.sample_input_configs; }) {
+        if constexpr (!std::is_same_v<Bundle, BoundaryNodeBundle>) {
           auto offset_ports = [offset](auto &ports) {
             for (auto &port_or_ports : ports) {
               if constexpr (requires { port_or_ports.node; }) {
@@ -533,50 +594,71 @@ NodeBundleHandle GraphBuilderNodeBundles::append_scope_boundary() {
   return handle;
 }
 
-NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
-    GraphBuilderTopology const &topology, size_t node) {
-  auto const &n = topology.concrete_node(node);
-  NodeBundle::ConcreteNodeBundle p{
-    .node = node,
-    .sample_inputs{}, .sample_outputs{},
-    .event_inputs{}, .event_outputs{},
-    .sample_input_configs{},
-    .sample_output_configs{},
-    .event_input_configs{},
-    .event_output_configs{},
-  };
-  p.sample_input_configs = n.inputs();
-  p.sample_output_configs = n.outputs();
-  p.event_input_configs = n.event_inputs();
-  p.event_output_configs = n.event_outputs();
-  for (size_t i = 0; i < p.sample_input_configs.size(); ++i)
-    p.sample_inputs.push_back({node, i});
-  for (size_t i = 0; i < p.sample_output_configs.size(); ++i)
-    p.sample_outputs.push_back({node, i});
-  for (size_t i = 0; i < p.event_input_configs.size(); ++i)
-    p.event_inputs.push_back({node, i});
-  for (size_t i = 0; i < p.event_output_configs.size(); ++i)
-    p.event_outputs.push_back({node, i});
-  auto handle = _bundles.size();
-  _bundles.push_back(NodeBundle(std::move(p)));
+size_t GraphBuilderNodeBundles::mirror_concrete_to_topology(
+    GraphBuilderTopology &topology, NodeBundleHandle handle) {
+  auto &semantic_bundle = bundle(handle);
+  auto *payload =
+      semantic_bundle._payload
+          ? std::get_if<NodeBundle::ConcreteNodeBundle>(
+                &*semantic_bundle._payload)
+          : nullptr;
+  if (!payload) {
+    details::error("only a ConcreteNodeBundle can be mirrored to topology");
+  }
+  if (payload->node != GRAPH_ID) {
+    details::error("ConcreteNodeBundle already has a topology mirror");
+  }
+
+  auto const node = topology.append_node(ConcreteNode{
+      .ports = payload->ports,
+      .materialization = payload->materialization,
+      .lifetime = payload->lifetime,
+      .type_identity = payload->type_identity,
+  });
+  payload->node = node;
+  for (size_t i = 0; i < payload->ports.sample_inputs.size(); ++i)
+    payload->sample_inputs.push_back({node, i});
+  for (size_t i = 0; i < payload->ports.sample_outputs.size(); ++i)
+    payload->sample_outputs.push_back({node, i});
+  for (size_t i = 0; i < payload->ports.event_input_configs.size(); ++i)
+    payload->event_inputs.push_back({node, i});
+  for (size_t i = 0; i < payload->ports.event_output_configs.size(); ++i)
+    payload->event_outputs.push_back({node, i});
+
   if (_bundle_by_concrete_node.size() <= node)
     _bundle_by_concrete_node.resize(node + 1, GRAPH_ID);
   _bundle_by_concrete_node[node] = handle;
-  return handle;
+  return node;
 }
 
 NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
-    GraphBuilderTopology const &topology, std::span<size_t const> nodes,
     std::span<NodeBundleHandle const> member_bundles,
     ChannelLayout promoted) {
-  if (nodes.empty()) details::error("a tiled NodeBundle requires at least one ConcreteNode");
-  if (member_bundles.size() != nodes.size()) {
-    details::error("a tiled NodeBundle requires one member bundle per concrete node");
+  if (member_bundles.empty())
+    details::error("a tiled NodeBundle requires at least one ConcreteNode");
+
+  std::vector<size_t> nodes;
+  nodes.reserve(member_bundles.size());
+  NodeBundle::ConcreteNodeBundle const *first = nullptr;
+  for (auto const member : member_bundles) {
+    auto const &member_bundle = bundle(member);
+    auto const *concrete =
+        member_bundle._payload
+            ? std::get_if<NodeBundle::ConcreteNodeBundle>(
+                  &*member_bundle._payload)
+            : nullptr;
+    if (!concrete || concrete->node == GRAPH_ID) {
+      details::error(
+          "a tiled NodeBundle requires projected concrete member bundles");
+    }
+    if (!first) first = concrete;
+    nodes.push_back(concrete->node);
   }
-  auto const &first = topology.concrete_node(nodes.front());
+
   NodeBundle::TiledNodeBundle p{
-    .nodes = {nodes.begin(), nodes.end()},
+    .nodes = nodes,
     .member_bundles = {member_bundles.begin(), member_bundles.end()},
+    .type_identity = first->type_identity,
     .sample_inputs{}, .sample_outputs{},
     .event_inputs{}, .event_outputs{},
     .sample_input_configs{},
@@ -599,11 +681,13 @@ NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
       dest_configs.push_back(std::move(config));
     }
   };
-  append_sample(first.inputs(), p.sample_inputs, p.sample_input_configs);
-  append_sample(first.outputs(), p.sample_outputs, p.sample_output_configs);
+  append_sample(first->ports.sample_inputs, p.sample_inputs,
+                p.sample_input_configs);
+  append_sample(first->ports.sample_outputs, p.sample_outputs,
+                p.sample_output_configs);
 
-  p.event_input_configs = first.event_inputs();
-  p.event_output_configs = first.event_outputs();
+  p.event_input_configs = first->ports.event_input_configs;
+  p.event_output_configs = first->ports.event_output_configs;
   for (size_t port = 0; port < p.event_input_configs.size(); ++port) {
     std::vector<TopologyPortId> ports;
     for (auto node : nodes) ports.push_back({node, port});
@@ -648,6 +732,7 @@ NodeBundleHandle GraphBuilderNodeBundles::append_subgraph(
   NodeBundle::SubgraphNodeBundle p{
     .boundary = boundary,
     .node = node,
+    .type_identity = n.type_identity,
     .sample_inputs{}, .sample_outputs{},
     .event_inputs{}, .event_outputs{},
     .sample_input_configs = {sample_inputs.begin(), sample_inputs.end()},
@@ -883,5 +968,61 @@ GraphBuilderNodeBundles::event_output_ports_for_topology_port(
 
 NodeBundleHandle GraphBuilderNodeBundles::bundle_for_concrete_node(size_t node) const { if (node >= _bundle_by_concrete_node.size() || _bundle_by_concrete_node[node] == GRAPH_ID) details::error("concrete node has no NodeBundle"); return _bundle_by_concrete_node[node]; }
 size_t GraphBuilderNodeBundles::size() const { return _bundles.size(); }
-void GraphBuilderNodeBundles::import_child(GraphBuilderNodeBundles const &child, size_t offset) { auto const bundle_offset = _bundles.size(); for (auto bundle : child._bundles) { bundle.import_into(offset, bundle_offset); auto handle = _bundles.size(); bundle.for_each_topology_node([&](size_t node) { if (_bundle_by_concrete_node.size() <= node) _bundle_by_concrete_node.resize(node + 1, GRAPH_ID); _bundle_by_concrete_node[node] = handle; }); _bundles.push_back(std::move(bundle)); } }
+
+void GraphBuilderNodeBundles::apply_ttl(
+    GraphBuilderTopology &topology, NodeBundleHandle handle,
+    size_t ttl_samples) {
+  struct NodeRange {
+    size_t begin = 0;
+    size_t end = 0;
+  };
+  std::vector<size_t> topology_nodes;
+  std::vector<NodeRange> affected;
+  bundle(handle).for_each_topology_node([&](size_t node) {
+    topology_nodes.push_back(node);
+    affected.push_back(NodeRange{.begin = node, .end = node + 1});
+    if (topology.is_subgraph_node(node)) {
+      auto const &subgraph = topology.subgraph_node(node).lowered_subgraph;
+      affected.push_back(NodeRange{
+          .begin = subgraph.begin,
+          .end = subgraph.begin + subgraph.count,
+      });
+    }
+  });
+
+  // Semantic lifetime is authoritative. Keep the current topology state in
+  // sync only as a compatibility mirror.
+  for (auto &candidate : _bundles) {
+    if (!candidate._payload) continue;
+    auto *concrete =
+        std::get_if<NodeBundle::ConcreteNodeBundle>(&*candidate._payload);
+    if (!concrete || concrete->node == GRAPH_ID) continue;
+    if (std::ranges::any_of(affected, [&](NodeRange const &range) {
+          return concrete->node >= range.begin &&
+                 concrete->node < range.end;
+        })) {
+      concrete->lifetime.ttl_samples = ttl_samples;
+    }
+  }
+
+  for (auto const node : topology_nodes) {
+    topology.apply_ttl(node, ttl_samples);
+  }
+}
+
+void GraphBuilderNodeBundles::import_child(
+    GraphBuilderNodeBundles const &child, size_t offset,
+    size_t detach_id_offset) {
+  auto const bundle_offset = _bundles.size();
+  for (auto bundle : child._bundles) {
+    bundle.import_into(offset, bundle_offset, detach_id_offset);
+    auto handle = _bundles.size();
+    bundle.for_each_topology_node([&](size_t node) {
+      if (_bundle_by_concrete_node.size() <= node)
+        _bundle_by_concrete_node.resize(node + 1, GRAPH_ID);
+      _bundle_by_concrete_node[node] = handle;
+    });
+    _bundles.push_back(std::move(bundle));
+  }
+}
 } // namespace iv

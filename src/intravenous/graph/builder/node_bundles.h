@@ -1,13 +1,21 @@
 #pragma once
 
+#include <intravenous/basic_nodes/routing.h>
+#include <intravenous/graph/builder/names.h>
 #include <intravenous/graph/builder/stored_node.h>
 #include <intravenous/graph/builder/topology_port.h>
 
+#include <concepts>
 #include <cstddef>
 #include <functional>
+#include <iterator>
 #include <optional>
-#include <string_view>
 #include <span>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <typeinfo>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -80,13 +88,16 @@ class NodeBundle {
   struct ConcreteNodeBundle {
     static constexpr bool contains_concrete_nodes = true;
 
-    size_t node{};
+    // Canonical authored node definition. Topology below is only a temporary
+    // compatibility projection until builder compilation owns lowering.
+    NodePorts ports{};
+    NodeMaterialization materialization{};
+    NodeLifetime lifetime{};
+    NodeTypeIdentity type_identity{};
+
+    size_t node = GRAPH_ID;
     std::vector<TopologyPortId> sample_inputs, sample_outputs{};
     std::vector<TopologyPortId> event_inputs, event_outputs{};
-    std::vector<InputConfig> sample_input_configs{};
-    std::vector<OutputConfig> sample_output_configs{};
-    std::vector<EventInputConfig> event_input_configs{};
-    std::vector<EventOutputConfig> event_output_configs{};
   };
 
   struct TiledNodeBundle {
@@ -94,6 +105,7 @@ class NodeBundle {
 
     std::vector<size_t> nodes{};
     std::vector<NodeBundleHandle> member_bundles{};
+    NodeTypeIdentity type_identity{};
     std::vector<std::vector<TopologyPortId>> sample_inputs, sample_outputs{};
     std::vector<std::vector<TopologyPortId>> event_inputs, event_outputs{};
     std::vector<InputConfig> sample_input_configs{};
@@ -125,6 +137,7 @@ class NodeBundle {
 
     NodeBundleHandle boundary{};
     size_t node{};
+    NodeTypeIdentity type_identity{};
     std::vector<TopologyPortId> sample_inputs, sample_outputs{};
     std::vector<TopologyPortId> event_inputs, event_outputs{};
     std::vector<InputConfig> sample_input_configs{};
@@ -177,6 +190,7 @@ public:
   EventInputConfig event_input_config(GraphBuilderTopology const &, size_t) const;
   EventOutputConfig event_output_config(GraphBuilderTopology const &, size_t) const;
   std::string_view type_identity(GraphBuilderTopology const &) const;
+  NodePorts const &concrete_ports() const;
   size_t sample_input_count() const;
   size_t sample_output_count() const;
   size_t event_input_count() const;
@@ -188,7 +202,8 @@ public:
   void for_each_topology_node(std::function<void(size_t)> const &) const;
   void for_each_concrete_node(std::function<void(size_t)> const &) const;
   size_t single_concrete_node() const;
-  void import_into(size_t topology_node_offset, size_t node_bundle_offset);
+  void import_into(size_t topology_node_offset, size_t node_bundle_offset,
+                   size_t detach_id_offset);
 
   std::vector<size_t> &virtual_node_handles();
   std::vector<size_t> const &virtual_node_handles() const;
@@ -209,11 +224,19 @@ private:
 
 class GraphBuilderNodeBundles {
 public:
+  template <class Config>
+  static void validate_output_port_configs(std::span<Config const> configs,
+                                           std::string_view node_label,
+                                           std::string_view kind);
+
   NodeBundleHandle append_boundary();
   NodeBundleHandle append_scope_boundary();
-  NodeBundleHandle append_concrete(GraphBuilderTopology const &, size_t concrete_node_index);
+
+  template <class Node, class... Args>
+  NodeBundleHandle append_concrete(Args &&...args);
+
+  size_t mirror_concrete_to_topology(GraphBuilderTopology &, NodeBundleHandle);
   NodeBundleHandle append_tiled(
-      GraphBuilderTopology const &, std::span<size_t const>,
       std::span<NodeBundleHandle const>, ChannelLayout promoted_channel_layout);
   NodeBundleHandle append_subgraph(GraphBuilderTopology const &, size_t subgraph_node_index,
                                    NodeBundleHandle boundary);
@@ -249,10 +272,91 @@ public:
 
   NodeBundleHandle bundle_for_concrete_node(size_t concrete_node_index) const;
   size_t size() const;
-  void import_child(GraphBuilderNodeBundles const &, size_t concrete_node_offset);
+  void apply_ttl(GraphBuilderTopology &, NodeBundleHandle, size_t ttl_samples);
+  void import_child(GraphBuilderNodeBundles const &, size_t concrete_node_offset,
+                    size_t detach_id_offset);
 
 private:
   std::vector<NodeBundle> _bundles{};
   std::vector<size_t> _bundle_by_concrete_node{};
 };
+
+template <class Config>
+void GraphBuilderNodeBundles::validate_output_port_configs(
+    std::span<Config const> configs, std::string_view node_label,
+    std::string_view kind) {
+  if (configs.size() <= 1) {
+    return;
+  }
+  for (auto const &config : configs) {
+    if (config.name.empty()) {
+      details::error(
+          std::string(node_label) + ": output " + std::string(kind) +
+          " ports require names when more than one output is exposed");
+    }
+  }
+}
+
+template <class Node, class... Args>
+NodeBundleHandle GraphBuilderNodeBundles::append_concrete(Args &&...args) {
+  using StoredNode = std::remove_cvref_t<Node>;
+  static_assert(
+      details::has_constexpr_sample_port_configs<StoredNode>,
+      "concrete DSP nodes must provide constexpr static inputs()/outputs() configurations");
+
+  StoredNode node_value(std::forward<Args>(args)...);
+  auto inputs = get_inputs(node_value);
+  auto outputs = get_outputs(node_value);
+  auto event_inputs = get_event_inputs(node_value);
+  auto event_outputs = get_event_outputs(node_value);
+
+  auto const node_type = typeid(StoredNode).name();
+  validate_output_port_configs(
+      std::span<OutputConfig const>(std::begin(outputs), std::end(outputs)),
+      node_type, "sample");
+  validate_output_port_configs(
+      std::span<EventOutputConfig const>(
+          std::begin(event_outputs), std::end(event_outputs)),
+      node_type, "event");
+
+  auto materialize =
+      [node_value = std::move(node_value)](
+          [[maybe_unused]] size_t detach_id_offset) {
+        if constexpr (std::same_as<StoredNode, DetachWriterNode>) {
+          return TypeErasedNode(DetachWriterNode{
+              DetachArrayId(node_value.id.id + detach_id_offset),
+              node_value.loop_extra_latency});
+        } else if constexpr (std::same_as<StoredNode, DetachReaderNode>) {
+          return TypeErasedNode(DetachReaderNode{
+              DetachArrayId(node_value.id.id + detach_id_offset),
+              node_value.loop_extra_latency});
+        } else {
+          return TypeErasedNode(node_value);
+        }
+      };
+
+  NodeBundle::ConcreteNodeBundle payload{
+      .ports =
+          NodePorts{
+              .sample_inputs =
+                  std::vector<InputConfig>(std::begin(inputs), std::end(inputs)),
+              .sample_outputs =
+                  std::vector<OutputConfig>(std::begin(outputs), std::end(outputs)),
+              .event_input_configs = std::vector<EventInputConfig>(
+                  std::begin(event_inputs), std::end(event_inputs)),
+              .event_output_configs = std::vector<EventOutputConfig>(
+                  std::begin(event_outputs), std::end(event_outputs)),
+          },
+      .materialization =
+          NodeMaterialization{.factory = std::move(materialize)},
+      .type_identity =
+          NodeTypeIdentity{
+              .value = details::demangle_type_name(typeid(StoredNode).name())},
+      .node = GRAPH_ID,
+  };
+
+  auto const handle = _bundles.size();
+  _bundles.push_back(NodeBundle(std::move(payload)));
+  return handle;
+}
 } // namespace iv
