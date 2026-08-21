@@ -78,20 +78,6 @@ namespace iv {
             _type_info = &typeid(Node);
             validate_max_block_size(_max_block_size, "node max_block_size() must be a power of 2");
 
-            auto nested_context = [](auto const& ctx, auto& state) {
-                using ConcreteNode = Node;
-                return TickContext<ConcreteNode> {
-                    .inputs = ctx.inputs,
-                    .outputs = ctx.outputs,
-                    .event_inputs = ctx.event_inputs,
-                    .event_outputs = ctx.event_outputs,
-                    .sample_rate = ctx.sample_rate,
-                    .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .buffer = state.nested_node_states[0]
-                };
-            };
-            (void)nested_context;
-
             if constexpr (std::is_empty_v<Node>) {
                 _node = NodeStoragePtr(nullptr, +[](void*) {});
                 _const_ptr_fn = +[](void const*) -> void const* { return nullptr; };
