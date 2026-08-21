@@ -103,7 +103,9 @@ public:
   template<class Node, class... Args> details::node_ref_for_t<Node> node(Args&&... args);
   template<class Node, class ChannelType, class... Args> auto node(Args&&... args);
   template<class ChannelType, class... Refs> auto tile(Refs&&... refs);
-  NodeRef embed_subgraph(GraphBuilder const& child);
+  NodeRef embed_subgraph(GraphBuilder const& child,
+                         std::string_view kind = "Subgraph");
+  template<auto Module> NodeRef module(std::string_view kind = "Module");
 
   template<class... Refs> void event_outputs(Refs&&... refs);
   void event_outputs(std::span<EventOutputRefConfig const> refs);
@@ -251,6 +253,18 @@ template<class... Refs>
 void GraphBuilder::event_outputs(Refs&&... refs) {
   _public_ports.define_event_outputs_from_args(*this, _node_bundles, _identity,
                                                std::forward<Refs>(refs)...);
+}
+
+template<auto Module>
+NodeRef GraphBuilder::module(std::string_view kind) {
+  static_assert(std::invocable<decltype(Module), GraphBuilder&>,
+      "iv::GraphBuilder::module<Module>() requires Module(GraphBuilder&)");
+  static_assert(std::same_as<std::invoke_result_t<decltype(Module), GraphBuilder&>, void>,
+      "iv::GraphBuilder::module<Module>() requires Module(GraphBuilder&) to return void");
+
+  auto child = derive_nested_builder();
+  std::invoke(Module, child);
+  return embed_subgraph(child, kind);
 }
 
 template<class Fn>
