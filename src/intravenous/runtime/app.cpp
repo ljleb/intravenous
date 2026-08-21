@@ -400,7 +400,7 @@ namespace iv {
             unbind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, timeline_execution);
             unbind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
             unbind_timeline_lane_batch_bridge(timeline);
-            unbind_timeline_execution_lanes_visualization_bridge(lanes_visualization);
+            unbind_timeline_execution_lanes_visualization_bridge(timeline_execution);
             unbind_task_runner_lanes_visualization_bridge(lanes_visualization);
             unbind_lanes_visualization_timeline_bridge(lanes_visualization, timeline);
             unbind_lane_views_lanes_visualization_bridge(lanes_visualization);
