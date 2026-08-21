@@ -15,9 +15,6 @@
 namespace iv {
     class TypeErasedModule;
     struct ModuleExecutorTarget { size_t sample_rate = 48000; size_t num_channels = 2; size_t max_block_frames = 4096; };
-
-    // Descriptor-v1 context is retained only as the host ABI adapter during
-    // the Phase 2 transition. New authored module entries use void(GraphBuilder&).
     class ModuleContext {
         GraphBuilder* _builder = nullptr;
         ModuleExecutorTarget _render_config;
@@ -54,7 +51,6 @@ namespace iv {
             return builder;
         }
     };
-
     inline GraphBuilder ModuleContext::load_builder(std::string_view id) const {
         if (!_load_fn) throw std::logic_error("module loader is unavailable in this ModuleContext; cannot load '" + std::string(id) + "'");
         return _load_fn(_load_user_data, id).builder(*this);
@@ -74,6 +70,11 @@ extern "C" {
 #define IV_MODULE_EXPORT __attribute__((visibility("default")))
 #endif
 
+// Source-compatibility shim only. The loader never discovers or exports from
+// this macro in Phase 2; iv_module.json is authoritative. Existing downstream
+// sources therefore keep compiling while they remove the obsolete line.
+#define IV_EXPORT_MODULE(...)
+
 namespace iv::details {
     template<auto Main>
     void invoke_generated_main(ModuleContext const& context) {
@@ -81,15 +82,11 @@ namespace iv::details {
             static_assert(std::same_as<std::invoke_result_t<decltype(Main), GraphBuilder&>, void>, "module main must return void");
             Main(context.builder());
         } else {
-            // Temporary source-compatibility path for Phase 1 fixtures. It is
-            // not part of the authored Phase 2 contract and can be removed
-            // once all downstream modules use GraphBuilder&.
             static_assert(std::invocable<decltype(Main), ModuleContext const&>, "module main must be void(GraphBuilder&)");
             static_assert(std::same_as<std::invoke_result_t<decltype(Main), ModuleContext const&>, void>, "module main must return void");
             Main(context);
         }
     }
-
     template<auto Main>
     char const* generated_module_build_v1(ModuleContext const& context) noexcept {
         static thread_local char last_error[2048];
