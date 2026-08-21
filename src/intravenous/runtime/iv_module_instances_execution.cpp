@@ -26,6 +26,7 @@ GraphBuilder::RootNodeBuildResult build_execution_root(GraphBuilder &builder)
 std::unique_ptr<BlockNodeExecutor> IvModuleInstancesExecution::make_executor(
     GraphBuilder &builder,
     size_t block_size,
+    size_t sample_rate,
     std::optional<size_t> default_silence_ttl_samples)
 {
     return std::make_unique<BlockNodeExecutor>(
@@ -33,25 +34,22 @@ std::unique_ptr<BlockNodeExecutor> IvModuleInstancesExecution::make_executor(
             TypeErasedNode(build_execution_root(builder).graph),
             block_size,
             {},
-            default_silence_ttl_samples));
+            default_silence_ttl_samples,
+            DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
+            sample_rate));
 }
 
 void IvModuleInstancesExecution::invoke_instance_task(void *raw_context)
 {
     auto *context = static_cast<InstanceTaskContext *>(raw_context);
-    if (!context || !context->execution) {
-        return;
-    }
+    if (!context || !context->execution) return;
 
     std::scoped_lock lock(context->execution->mutex_);
     auto it = context->execution->instances_by_id_.find(context->instance_id);
-    if (it == context->execution->instances_by_id_.end()) {
-        return;
-    }
+    if (it == context->execution->instances_by_id_.end()) return;
     auto &state = it->second;
-    if (!state.executor) {
-        return;
-    }
+    if (!state.executor) return;
+
     state.executor->tick_block(state.next_block_index);
     state.next_block_index += context->execution->block_size_;
 }
@@ -63,9 +61,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
     TaskGraphUpdate update;
 
     for (auto const &created : diff.created) {
-        if (!created.instance || !created.builder) {
-            continue;
-        }
+        if (!created.instance || !created.builder) continue;
         auto &state = instances_by_id_[created.instance->instance_id];
         state.instance = created.instance;
         state.builder = created.builder;
@@ -74,12 +70,11 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
         state.executor = make_executor(
             *created.builder,
             block_size_,
+            sample_rate_,
             state.default_silence_ttl_samples);
         state.next_block_index = 0;
         auto &callback = callback_contexts_[created.instance->instance_id];
-        if (!callback) {
-            callback = std::make_unique<InstanceTaskContext>();
-        }
+        if (!callback) callback = std::make_unique<InstanceTaskContext>();
         callback->execution = this;
         callback->instance_id = created.instance->instance_id;
 
@@ -100,9 +95,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
     }
 
     for (auto const &changed : diff.updated) {
-        if (!changed.instance || !changed.builder) {
-            continue;
-        }
+        if (!changed.instance || !changed.builder) continue;
         auto &state = instances_by_id_[changed.instance->instance_id];
         state.instance = changed.instance;
         state.builder = changed.builder;
@@ -116,16 +109,13 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             state.executor = make_executor(
                 *changed.builder,
                 block_size_,
+                sample_rate_,
                 state.default_silence_ttl_samples);
         }
-        // Release the old graph before allowing its loaded binary generation to
-        // go away. Its type-erased lifecycle functions live in that binary.
         state.module_refs = changed.module_refs;
         state.next_block_index = 0;
         auto &callback = callback_contexts_[changed.instance->instance_id];
-        if (!callback) {
-            callback = std::make_unique<InstanceTaskContext>();
-        }
+        if (!callback) callback = std::make_unique<InstanceTaskContext>();
         callback->execution = this;
         callback->instance_id = changed.instance->instance_id;
 
@@ -175,9 +165,7 @@ void IvModuleInstancesExecution::set_follows_transport_playhead(bool follows)
 void IvModuleInstancesExecution::synchronize_transport_playhead(size_t start_index)
 {
     std::scoped_lock lock(mutex_);
-    if (!follows_transport_playhead_) {
-        return;
-    }
+    if (!follows_transport_playhead_) return;
     for (auto &[instance_id, state] : instances_by_id_) {
         (void)instance_id;
         state.next_block_index = start_index;
