@@ -5,6 +5,7 @@
 
 #include <intravenous/graph/compiler.h>
 
+#include <deque>
 #include <functional>
 #include <optional>
 #include <span>
@@ -84,7 +85,10 @@ private:
     }
   };
 
-  std::vector<StoredNode> _nodes{};
+  // Lowering can keep references to an existing SubgraphNode while appending
+  // generated projection/conversion nodes. Deque preserves those references
+  // across append_node(), unlike vector reallocation.
+  std::deque<StoredNode> _nodes{};
   std::unordered_set<TopologyEdge, TopologyEdgeHash> _edges{};
   std::unordered_set<TopologyEventEdge, TopologyEventEdgeHash> _event_edges{};
   size_t _scope_boundary_port_count = 0;
