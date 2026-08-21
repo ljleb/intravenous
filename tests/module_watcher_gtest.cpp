@@ -17,13 +17,8 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     iv::test::copy_directory(project_src, project_dst);
     iv::test::copy_directory(voice_src, voice_dst);
 
-    iv::test::FakeAudioDevice audio_device;
-    auto loader = iv::test::make_loader({ runtime_root });
-    auto graph = loader.load_root_definition(
-        project_dst,
-        iv::test::module_executor_target(audio_device),
-        &audio_device.sample_period()
-    );
+    auto loader = iv::test::make_loader({runtime_root});
+    auto graph = loader.load_root_definition(project_dst);
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
@@ -66,13 +61,8 @@ TEST(ModuleWatcher, MissingDependencyDirectoryIsReportedAsChangeWithoutThrowing)
     iv::test::copy_directory(project_src, project_dst);
     iv::test::copy_directory(voice_src, voice_dst);
 
-    iv::test::FakeAudioDevice audio_device;
-    auto loader = iv::test::make_loader({ runtime_root });
-    auto graph = loader.load_root_definition(
-        project_dst,
-        iv::test::module_executor_target(audio_device),
-        &audio_device.sample_period()
-    );
+    auto loader = iv::test::make_loader({runtime_root});
+    auto graph = loader.load_root_definition(project_dst);
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
