@@ -1,5 +1,7 @@
 #include <intravenous/runtime/iv_module_sources.h>
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -8,15 +10,25 @@
 
 namespace iv {
 namespace {
-std::optional<std::string> module_id(std::filesystem::path const& source)
+struct SourceManifest {
+    std::string id;
+    std::filesystem::path entry;
+};
+
+std::optional<SourceManifest> read_manifest(std::filesystem::path const& path)
 {
-    std::ifstream in(source);
-    std::string text((std::istreambuf_iterator<char>(in)), {});
-    auto const macro = text.find("IV_EXPORT_MODULE");
-    auto const first = text.find('"', macro);
-    auto const last = first == std::string::npos ? first : text.find('"', first + 1);
-    if (macro == std::string::npos || first == std::string::npos || last == std::string::npos) return std::nullopt;
-    return text.substr(first + 1, last - first - 1);
+    std::ifstream in(path);
+    if (!in) return std::nullopt;
+    try {
+        auto json = nlohmann::json::parse(in);
+        if (json.value("schema", 0) != 1 || !json.contains("id") || !json.contains("entry")) return std::nullopt;
+        auto id = json.at("id").get<std::string>();
+        auto entry = std::filesystem::path(json.at("entry").get<std::string>());
+        if (id.empty() || entry.empty() || entry.is_absolute()) return std::nullopt;
+        return SourceManifest{std::move(id), std::move(entry)};
+    } catch (nlohmann::json::exception const&) {
+        return std::nullopt;
+    }
 }
 
 bool valid_source_name(std::string const& name)
@@ -31,22 +43,18 @@ bool valid_source_name(std::string const& name)
 std::string module_identifier(std::string const& name)
 {
     std::string identifier = "iv.project.";
-    for (unsigned char character : name) {
-        identifier += character == '-' ? '_' : static_cast<char>(character);
-    }
+    for (unsigned char character : name) identifier += character == '-' ? '_' : static_cast<char>(character);
     return identifier;
 }
 
-std::string source_template(std::string const& name)
+std::string source_template()
 {
     return "#include <intravenous/dsl.h>\n\n"
-        "inline void module_main(iv::ModuleContext const& ctx)\n"
+        "inline void module_main(iv::GraphBuilder& g)\n"
         "{\n"
         "    using namespace iv;\n"
-        "    auto& g = ctx.builder();\n"
         "    g.outputs();\n"
-        "}\n\n"
-        "IV_EXPORT_MODULE(\"" + module_identifier(name) + "\", module_main);\n";
+        "}\n";
 }
 
 void copy_initial_compile_commands(std::filesystem::path const& destination)
@@ -55,14 +63,9 @@ void copy_initial_compile_commands(std::filesystem::path const& destination)
     throw std::runtime_error("no compile_commands.json template was configured");
 #else
     std::error_code error;
-    std::filesystem::copy_file(
-        IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_DATABASE,
-        destination,
-        std::filesystem::copy_options::none,
-        error);
-    if (error) {
-        throw std::runtime_error("cannot copy compile_commands.json template: " + error.message());
-    }
+    std::filesystem::copy_file(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_DATABASE, destination,
+        std::filesystem::copy_options::none, error);
+    if (error) throw std::runtime_error("cannot copy compile_commands.json template: " + error.message());
 #endif
 }
 }
@@ -75,12 +78,16 @@ std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
     std::vector<IvModuleSourceInfo> result;
     auto scan = [&](std::filesystem::path const& root, bool local) {
         std::error_code error;
+        if (!std::filesystem::exists(root, error)) return;
         for (std::filesystem::recursive_directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
             auto const& entry = *it;
-            if (!entry.is_regular_file() || entry.path().filename() != "module.cpp") continue;
+            if (!entry.is_regular_file() || entry.path().filename() != "iv_module.json") continue;
             auto const directory = entry.path().parent_path();
-            if (!std::filesystem::is_regular_file(directory / "iv_module.json")) continue;
-            if (auto id = module_id(entry.path())) result.push_back({.module_id = *id, .module_root = directory, .project_local = local});
+            auto manifest = read_manifest(entry.path());
+            if (!manifest) continue;
+            if (!std::filesystem::is_regular_file(directory / manifest->entry)) continue;
+            result.push_back({.module_id = manifest->id, .module_root = directory, .project_local = local});
+            it.disable_recursion_pending();
         }
     };
     scan(project_root_ / "modules", true);
@@ -89,8 +96,7 @@ std::vector<IvModuleSourceInfo> IvModuleSources::list_sources() const
     return result;
 }
 
-std::optional<IvModuleSourceInfo> IvModuleSources::find_source(
-    std::string const& module_id) const
+std::optional<IvModuleSourceInfo> IvModuleSources::find_source(std::string const& module_id) const
 {
     auto const sources = list_sources();
     auto const found = std::ranges::find(sources, module_id, &IvModuleSourceInfo::module_id);
@@ -106,23 +112,21 @@ IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& nam
 
     auto const root = project_root_ / "modules" / name;
     std::error_code error;
-    if (std::filesystem::exists(root, error)) {
-        throw std::runtime_error("module source already exists: " + root.string());
-    }
-    if (error) {
-        throw std::runtime_error("cannot inspect module source destination: " + error.message());
-    }
+    if (std::filesystem::exists(root, error)) throw std::runtime_error("module source already exists: " + root.string());
+    if (error) throw std::runtime_error("cannot inspect module source destination: " + error.message());
     if (!std::filesystem::create_directories(root, error) || error) {
         throw std::runtime_error("cannot create module source directory: " + root.string());
     }
 
+    auto const id = module_identifier(name);
     try {
-        std::ofstream manifest(root / "iv_module.json", std::ios::binary | std::ios::noreplace);
-        manifest << "{}\n";
-        if (!manifest) throw std::runtime_error("cannot write iv_module.json");
+        nlohmann::json manifest{{"schema", 1}, {"id", id}, {"entry", "module.cpp"}, {"main", "module_main"}};
+        std::ofstream manifest_out(root / "iv_module.json", std::ios::binary | std::ios::noreplace);
+        manifest_out << manifest.dump(2) << '\n';
+        if (!manifest_out) throw std::runtime_error("cannot write iv_module.json");
 
         std::ofstream source(root / "module.cpp", std::ios::binary | std::ios::noreplace);
-        source << source_template(name);
+        source << source_template();
         if (!source) throw std::runtime_error("cannot write module.cpp");
         copy_initial_compile_commands(root / "compile_commands.json");
     } catch (...) {
@@ -130,10 +134,6 @@ IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& nam
         throw;
     }
 
-    return IvModuleSourceInfo{
-        .module_id = module_identifier(name),
-        .module_root = root,
-        .project_local = true,
-    };
+    return IvModuleSourceInfo{.module_id = id, .module_root = root, .project_local = true};
 }
 } // namespace iv
