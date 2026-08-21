@@ -25,6 +25,7 @@ class BlockNodeExecutor {
     NodeLayout layout_;
     NodeStorage storage_;
     size_t block_size_ = 0;
+    size_t sample_rate_ = 48000;
     size_t default_silence_ttl_samples_ = 0;
     size_t event_port_buffer_base_multiplier_ = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER;
 
@@ -81,9 +82,7 @@ class BlockNodeExecutor {
         if (block_size == 0) {
             throw std::logic_error("BlockNodeExecutor block size must be non-zero");
         }
-        validate_block_size(
-            block_size,
-            "BlockNodeExecutor block size must be a power of 2");
+        validate_block_size(block_size, "BlockNodeExecutor block size must be a power of 2");
         if (block_size > root.max_block_size()) {
             throw std::logic_error("BlockNodeExecutor block size exceeds root max block size");
         }
@@ -152,6 +151,7 @@ public:
       , layout_(std::move(other.layout_))
       , storage_(std::move(other.storage_))
       , block_size_(other.block_size_)
+      , sample_rate_(other.sample_rate_)
       , default_silence_ttl_samples_(other.default_silence_ttl_samples_)
       , event_port_buffer_base_multiplier_(other.event_port_buffer_base_multiplier_)
     {
@@ -160,9 +160,7 @@ public:
 
     BlockNodeExecutor& operator=(BlockNodeExecutor&& other) noexcept
     {
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;
 
         try {
             storage_.release();
@@ -174,6 +172,7 @@ public:
         layout_ = std::move(other.layout_);
         storage_ = std::move(other.storage_);
         block_size_ = other.block_size_;
+        sample_rate_ = other.sample_rate_;
         default_silence_ttl_samples_ = other.default_silence_ttl_samples_;
         event_port_buffer_base_multiplier_ = other.event_port_buffer_base_multiplier_;
         rebind_storage_metadata();
@@ -188,8 +187,12 @@ public:
         size_t block_size,
         ResourceContext resources = {},
         std::optional<size_t> default_silence_ttl_samples = std::nullopt,
-        size_t event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER)
+        size_t event_port_buffer_base_multiplier = DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
+        size_t sample_rate = 48000)
     {
+        if (sample_rate == 0) {
+            throw std::logic_error("BlockNodeExecutor sample rate must be non-zero");
+        }
         auto prepared = prepare_state(
             std::move(root),
             std::move(resources),
@@ -205,6 +208,7 @@ public:
             std::move(prepared.layout),
             std::move(prepared.storage),
             block_size,
+            sample_rate,
             prepared.resolved_default_silence_ttl_samples,
             event_port_buffer_base_multiplier);
     }
@@ -215,6 +219,7 @@ public:
         NodeLayout layout,
         NodeStorage storage,
         size_t block_size,
+        size_t sample_rate,
         size_t default_silence_ttl_samples,
         size_t event_port_buffer_base_multiplier)
       : root_(std::move(root))
@@ -222,10 +227,14 @@ public:
       , layout_(std::move(layout))
       , storage_(std::move(storage))
       , block_size_(block_size)
+      , sample_rate_(sample_rate)
       , default_silence_ttl_samples_(default_silence_ttl_samples)
       , event_port_buffer_base_multiplier_(event_port_buffer_base_multiplier)
     {
         validate_root_interface(root_);
+        if (sample_rate_ == 0) {
+            throw std::logic_error("BlockNodeExecutor sample rate must be non-zero");
+        }
         rebind_storage_metadata();
     }
 
@@ -266,6 +275,7 @@ public:
                 .outputs = {},
                 .event_inputs = {},
                 .event_outputs = {},
+                .sample_rate = sample_rate_,
                 .buffer = storage_.buffer(),
             },
             index,
@@ -273,29 +283,11 @@ public:
         });
     }
 
-    size_t block_size() const
-    {
-        return block_size_;
-    }
-
-    TypeErasedNode const& root() const
-    {
-        return root_;
-    }
-
-    NodeLayout const& layout() const
-    {
-        return layout_;
-    }
-
-    NodeStorage& storage()
-    {
-        return storage_;
-    }
-
-    ResourceContext const& resources() const
-    {
-        return resources_;
-    }
+    size_t block_size() const { return block_size_; }
+    size_t sample_rate() const { return sample_rate_; }
+    TypeErasedNode const& root() const { return root_; }
+    NodeLayout const& layout() const { return layout_; }
+    NodeStorage& storage() { return storage_; }
+    ResourceContext const& resources() const { return resources_; }
 };
 }
