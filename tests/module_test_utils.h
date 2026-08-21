@@ -11,6 +11,7 @@
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/juce/vst_runtime.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cctype>
@@ -346,11 +347,57 @@ namespace iv::test {
         return {std::move(id), std::move(main)};
     }
 
+    inline void blank_line_preserving_offsets(std::string& source, size_t line_begin, size_t line_end)
+    {
+        std::fill(
+            source.begin() + static_cast<std::ptrdiff_t>(line_begin),
+            source.begin() + static_cast<std::ptrdiff_t>(line_end),
+            ' ');
+    }
+
+    inline void remove_obsolete_dt_plumbing(std::string& source)
+    {
+        size_t cursor = 0;
+        while (cursor < source.size()) {
+            auto const line_end_pos = source.find('\n', cursor);
+            auto const line_end = line_end_pos == std::string::npos ? source.size() : line_end_pos;
+            auto const line = std::string_view(source).substr(cursor, line_end - cursor);
+
+            bool const dt_declaration =
+                line.contains("auto const dt =") &&
+                (line.contains("context.sample_period()") || line.contains("g.node<ValueSource>") ||
+                 line.contains("g.node<iv::ValueSource>"));
+            bool const dt_argument = line.contains("\"dt\"_P") || line.contains("\"dt\"_F");
+
+            if (dt_argument) {
+                size_t previous_end = cursor;
+                if (previous_end > 0 && source[previous_end - 1] == '\n') --previous_end;
+                size_t previous_begin = previous_end == 0 ? 0 : source.rfind('\n', previous_end - 1);
+                previous_begin = previous_begin == std::string::npos ? 0 : previous_begin + 1;
+
+                size_t comma = previous_end;
+                while (comma > previous_begin && std::isspace(static_cast<unsigned char>(source[comma - 1]))) {
+                    --comma;
+                }
+                if (comma > previous_begin && source[comma - 1] == ',') {
+                    source[comma - 1] = ' ';
+                }
+                blank_line_preserving_offsets(source, cursor, line_end);
+            } else if (dt_declaration) {
+                blank_line_preserving_offsets(source, cursor, line_end);
+            }
+
+            if (line_end_pos == std::string::npos) break;
+            cursor = line_end_pos + 1;
+        }
+    }
+
     inline std::string materialize_inline_module_source(std::string source)
     {
         // These transformations migrate historical source strings used by the
-        // introspection tests. They deliberately do not exist in production
-        // module loading: on-disk/authored modules must already use GraphBuilder&.
+        // tests. They deliberately do not exist in production module loading:
+        // authored modules must already use GraphBuilder& and DSP runtime values
+        // are supplied by TickContext rather than graph-authoring nodes/ports.
         replace_all(source, ", iv::ModuleContext const& context", "");
         replace_all(source, ", iv::ModuleContext const &context", "");
         replace_all(source, "iv::ModuleContext const& context", "iv::GraphBuilder& g");
@@ -360,10 +407,7 @@ namespace iv::test {
         replace_all(source, "auto const& g = context.builder();", "");
         replace_all(source, ", context)", ")");
         replace_all(source, ", context);", ");");
-        replace_all(
-            source,
-            "context.sample_period()",
-            "([]() -> iv::Sample& { static iv::Sample value{}; return value; }())");
+        remove_obsolete_dt_plumbing(source);
 
         size_t marker = 0;
         while ((marker = source.find("IV_EXPORT_MODULE", marker)) != std::string::npos) {
@@ -371,8 +415,7 @@ namespace iv::test {
             auto const begin = line_begin == std::string::npos ? 0 : line_begin + 1;
             auto const line_end = source.find('\n', marker);
             auto const end = line_end == std::string::npos ? source.size() : line_end;
-            std::fill(source.begin() + static_cast<std::ptrdiff_t>(begin),
-                      source.begin() + static_cast<std::ptrdiff_t>(end), ' ');
+            blank_line_preserving_offsets(source, begin, end);
             marker = end;
         }
         return source;
