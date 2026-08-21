@@ -407,6 +407,14 @@ namespace iv::test {
         replace_all(source, "auto const& g = context.builder();", "");
         replace_all(source, ", context)", ")");
         replace_all(source, ", context);", ");");
+
+        // Historical declaration/introspection fixtures used sample_period only
+        // as a convenient address-backed ValueSource. Preserve a concrete node
+        // at the same source location without retaining any runtime config in
+        // module authoring. The padding keeps the replacement the same width as
+        // '&context.sample_period()' so column-based source-span expectations do
+        // not shift.
+        replace_all(source, "&context.sample_period()", "new iv::Sample{0.0f}    ");
         remove_obsolete_dt_plumbing(source);
 
         size_t marker = 0;
