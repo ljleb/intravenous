@@ -1,6 +1,22 @@
 #include <intravenous/dsl.h>
 
-void reload_sample_period(iv::GraphBuilder &g)
+#include <array>
+
+namespace {
+struct SamplePeriodSource {
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 1>{};
+    }
+
+    void tick(iv::TickSampleContext<SamplePeriodSource> const& ctx) const
+    {
+        ctx.outputs[0].push(ctx.sample_period());
+    }
+};
+}
+
+void reload_sample_period(iv::GraphBuilder& g)
 {
-    g.outputs(0.0f);
+    g.outputs(g.node<SamplePeriodSource>());
 }
