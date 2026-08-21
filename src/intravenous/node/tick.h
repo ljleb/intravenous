@@ -15,8 +15,14 @@ namespace iv {
         std::span<OutputPort> outputs;
         std::span<EventInputPort> event_inputs;
         std::span<EventOutputPort> event_outputs;
+        size_t sample_rate = 48000;
         size_t scc_feedback_latency = 0;
         std::span<std::byte> buffer;
+
+        constexpr Sample sample_period() const noexcept
+        {
+            return Sample{1.0f / static_cast<float>(sample_rate)};
+        }
 
         using State = typename NodeState<Node>::Type;
 
@@ -180,6 +186,7 @@ namespace iv {
             .outputs = outputs,
             .event_inputs = event_inputs,
             .event_outputs = event_outputs,
+            .sample_rate = outer.sample_rate,
             .scc_feedback_latency = outer.scc_feedback_latency,
             .buffer = remaining_buffer(outer.buffer, nested_state),
         };
