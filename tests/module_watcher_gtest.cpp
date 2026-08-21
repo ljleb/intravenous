@@ -14,10 +14,11 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
 
     std::filesystem::remove_all(runtime_root);
     std::filesystem::create_directories(runtime_root);
+    iv::test::write_text(runtime_root / "iv_project.jsonl", "");
     iv::test::copy_directory(project_src, project_dst);
     iv::test::copy_directory(voice_src, voice_dst);
 
-    auto loader = iv::test::make_loader({runtime_root});
+    auto loader = iv::test::make_loader({});
     auto graph = loader.load_root_definition(project_dst);
 
     auto watcher = iv::make_dependency_watcher();
@@ -58,10 +59,11 @@ TEST(ModuleWatcher, MissingDependencyDirectoryIsReportedAsChangeWithoutThrowing)
 
     std::filesystem::remove_all(runtime_root);
     std::filesystem::create_directories(runtime_root);
+    iv::test::write_text(runtime_root / "iv_project.jsonl", "");
     iv::test::copy_directory(project_src, project_dst);
     iv::test::copy_directory(voice_src, voice_dst);
 
-    auto loader = iv::test::make_loader({runtime_root});
+    auto loader = iv::test::make_loader({});
     auto graph = loader.load_root_definition(project_dst);
 
     auto watcher = iv::make_dependency_watcher();
