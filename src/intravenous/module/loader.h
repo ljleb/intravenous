@@ -3,12 +3,13 @@
 #include <intravenous/graph/build_types.h>
 #include <intravenous/module/dependency.h>
 #include <intravenous/module/module.h>
+
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
-#include <functional>
 
 namespace iv {
     using ModuleRef = std::shared_ptr<void>;
@@ -83,11 +84,13 @@ namespace iv {
         ModuleLoader(ModuleLoader const&) = delete;
         ModuleLoader& operator=(ModuleLoader const&) = delete;
 
+        // Loading a graph definition is deliberately independent of runtime
+        // render configuration. Sample rate and other device/runtime values are
+        // supplied only when DSP nodes execute through TickContext.
         LoadedDefinition load_root_definition(
-            std::filesystem::path const& module_path,
-            ModuleExecutorTarget render_config = {},
-            Sample* sample_period = nullptr
+            std::filesystem::path const& module_path
         ) const;
+
         std::vector<std::filesystem::path> const& extra_search_roots() const;
     };
 }
