@@ -44,6 +44,9 @@ function(iv_add_runtime_module target)
         target_include_directories(${target}__compile_settings INTERFACE
             ${IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR})
     endif()
+    if(DEFINED IV_MODULE_INCLUDE_DIRS AND NOT IV_MODULE_INCLUDE_DIRS STREQUAL "")
+        target_include_directories(${target}__compile_settings INTERFACE ${IV_MODULE_INCLUDE_DIRS})
+    endif()
     target_include_directories(${target}__compile_settings SYSTEM INTERFACE ${IV_THIRD_PARTY_INCLUDE_DIR})
 
     if(MSVC)
@@ -65,12 +68,15 @@ function(iv_add_runtime_module target)
     endif()
 
     # The loader generates only IV-specific build glue. A custom CMakeLists.txt
-    # remains authoritative for all ordinary sources/libraries/settings and can
-    # call this helper like the generated default project does.
+    # remains authoritative for ordinary sources/libraries/settings. Rewriter
+    # compile-database targets link the same interface settings target, so
+    # settings added by custom CMake are visible to both rewriting and final
+    # compilation.
     if(DEFINED IV_MODULE_GENERATED_CMAKE AND NOT IV_MODULE_GENERATED_CMAKE STREQUAL "")
         if(NOT EXISTS "${IV_MODULE_GENERATED_CMAKE}")
             message(FATAL_ERROR "IV_MODULE_GENERATED_CMAKE does not exist: ${IV_MODULE_GENERATED_CMAKE}")
         endif()
+        set(IV_MODULE_DEFINITION_COMPILE_SETTINGS_TARGET ${target}__compile_settings)
         include("${IV_MODULE_GENERATED_CMAKE}")
     endif()
 
