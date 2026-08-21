@@ -3,8 +3,7 @@ include_guard(GLOBAL)
 # Rewrite exactly one IV graph-authoring entry into its generated extensionless
 # definition-bearing import. Included headers are parsed for context but are
 # never rewrite targets. Module-to-module ordering is passed explicitly through
-# DEPENDS by the manifest/import resolver; this avoids guessing resolution from
-# the output path inside the per-file rewrite primitive.
+# DEPENDS by the manifest/import resolver.
 function(iv_rewrite_module_entry)
     set(options GLOBAL_MODULE)
     set(oneValueArgs TARGET SOURCE OUTPUT COMPILE_SETTINGS_TARGET PCH_HEADER)
@@ -16,6 +15,7 @@ function(iv_rewrite_module_entry)
     endif()
 
     get_filename_component(_iv_source_abs "${IVR_SOURCE}" ABSOLUTE)
+    get_filename_component(_iv_source_dir "${_iv_source_abs}" DIRECTORY)
     get_filename_component(_iv_output_abs "${IVR_OUTPUT}" ABSOLUTE)
     get_filename_component(_iv_output_dir "${_iv_output_abs}" DIRECTORY)
 
@@ -25,10 +25,31 @@ function(iv_rewrite_module_entry)
         CXX_STANDARD 23
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF)
-    if(IVR_COMPILE_SETTINGS_TARGET)
+
+    if(IVR_GLOBAL_MODULE)
+        # A reusable global definition must never parse through the project
+        # generated include tree. Its normal IV imports therefore resolve only
+        # against the shared global tree, exactly as the canonicalized output
+        # will later do.
+        target_compile_features(${_iv_compile_db_target} PRIVATE cxx_std_23)
+        target_include_directories(${_iv_compile_db_target} PRIVATE
+            "${IV_INCLUDE_DIR}"
+            "${_iv_source_dir}")
+        if(DEFINED IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR AND
+           NOT IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR STREQUAL "")
+            target_include_directories(${_iv_compile_db_target} PRIVATE
+                "${IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR}")
+        endif()
+        if(DEFINED IV_THIRD_PARTY_INCLUDE_DIR AND
+           NOT IV_THIRD_PARTY_INCLUDE_DIR STREQUAL "")
+            target_include_directories(${_iv_compile_db_target} SYSTEM PRIVATE
+                "${IV_THIRD_PARTY_INCLUDE_DIR}")
+        endif()
+    elseif(IVR_COMPILE_SETTINGS_TARGET)
         target_link_libraries(${_iv_compile_db_target} PRIVATE ${IVR_COMPILE_SETTINGS_TARGET})
     endif()
-    if(IVR_PCH_HEADER)
+
+    if(IVR_PCH_HEADER AND NOT IVR_GLOBAL_MODULE)
         target_precompile_headers(${_iv_compile_db_target} PRIVATE "${IVR_PCH_HEADER}")
     endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -65,7 +86,7 @@ function(iv_rewrite_module_entry)
         endforeach()
 
         set(_iv_pch_dependency "")
-        if(IVR_PCH_HEADER AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(IVR_PCH_HEADER AND NOT IVR_GLOBAL_MODULE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             set(_iv_pch_dependency
                 "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${_iv_compile_db_target}.dir/cmake_pch.hxx.pch")
         endif()
