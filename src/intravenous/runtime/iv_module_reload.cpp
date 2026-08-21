@@ -1,6 +1,5 @@
 #include <intravenous/runtime/iv_module_reload.h>
 
-#include <intravenous/devices/audio_device.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
@@ -10,15 +9,6 @@
 
 namespace iv {
 namespace {
-ModuleExecutorTarget module_executor_target(RenderConfig const &config)
-{
-    return ModuleExecutorTarget{
-        .sample_rate = config.sample_rate,
-        .num_channels = config.num_channels,
-        .max_block_frames = config.max_block_frames,
-    };
-}
-
 std::string describe_exception(std::exception_ptr exception)
 {
     if (!exception) {
@@ -79,9 +69,7 @@ IvModuleReloadResults coalesce_results_by_definition(IvModuleReloadResults resul
 IvModuleReload::IvModuleReload(StartupConfigState startup_config_)
     : startup_config(std::move(startup_config_)),
       watcher(make_dependency_watcher())
-{
-    device_sample_period_ = sample_period(RenderConfig{});
-}
+{}
 
 void IvModuleReload::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
 {
@@ -120,14 +108,9 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
         startup_config.search_roots,
         startup_config.toolchain);
 
-    RenderConfig const render_config{};
-
     for (auto const &declaration : declarations) {
         try {
-            auto loaded_definition = loader.load_root_definition(
-                declaration.module_root,
-                module_executor_target(render_config),
-                &device_sample_period_);
+            auto loaded_definition = loader.load_root_definition(declaration.module_root);
 
             IvModuleReloadedDefinition loaded{
                 .definition_id = declaration.definition_id,
