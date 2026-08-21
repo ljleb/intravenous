@@ -35,14 +35,6 @@ namespace iv {
             _load_user_data(load_user_data)
         {}
 
-        // Temporary ABI-call-site bridge while loader.cpp is being reduced to
-        // GraphBuilder-only construction. The arguments are intentionally not
-        // retained or exposed by ModuleContext.
-        template<typename RuntimeConfig>
-        ModuleContext(GraphBuilder& builder, RuntimeConfig const&, Sample*)
-            : ModuleContext(builder)
-        {}
-
         GraphBuilder& builder() const { return *_builder; }
         TypeErasedModule (*load_fn() const)(void*, std::string_view) { return _load_fn; }
         void* load_user_data() const { return _load_user_data; }
