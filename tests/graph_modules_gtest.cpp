@@ -38,18 +38,23 @@ static_assert(std::same_as<std::invoke_result_t<decltype(&pass_module), GraphBui
 
 TEST(GraphModules, ModuleFunctionUsesTheRootGraphBuilderSignature)
 {
-    GraphBuilder g;
-    auto child = g.module<&pass_module>();
+    GraphBuilder root;
+    pass_module(root);
+    auto const root_built = root.build_root_node();
+    ASSERT_EQ(root_built.graph.outputs().size(), 1u);
+    EXPECT_EQ(root_built.graph.outputs().front().name, "out");
 
+    GraphBuilder parent;
+    auto child = parent.module<&pass_module>();
     EXPECT_EQ(child.sample_input_count(), 1u);
     EXPECT_EQ(child.sample_output_count(), 1u);
 
     child("in"_P = 0.25f);
-    g.outputs("main"_P = child["out"]);
+    parent.outputs("main"_P = child["out"]);
 
-    auto const built = g.build_root_node();
-    ASSERT_EQ(built.graph.outputs().size(), 1u);
-    EXPECT_EQ(built.graph.outputs().front().name, "main");
+    auto const nested_built = parent.build_root_node();
+    ASSERT_EQ(nested_built.graph.outputs().size(), 1u);
+    EXPECT_EQ(nested_built.graph.outputs().front().name, "main");
 }
 
 TEST(GraphModules, ModulesComposeRecursivelyThroughAuthoredGraphSplicing)
