@@ -3,11 +3,11 @@
 #include <intravenous/graph/builder.h>
 
 #include <cstdint>
-#include <cstring>
 #include <cstdio>
 #include <exception>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -21,6 +21,9 @@ namespace iv {
         size_t max_block_frames = 4096;
     };
 
+    // Transitional runtime ABI context. Authored modules no longer receive
+    // ModuleContext: their universal entry signature is void(GraphBuilder&).
+    // This remains only until the runtime consumes CompiledModuleDefinition.
     class ModuleContext {
         GraphBuilder* _builder = nullptr;
         ModuleExecutorTarget _render_config;
@@ -152,26 +155,28 @@ extern "C" {
 #define IV_MODULE_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define IV_EXPORT_MODULE(module_id, module_fn) \
-    extern "C" IV_MODULE_EXPORT iv_module_descriptor_v1 const* iv_get_module_descriptor_v1() \
-    { \
-        static thread_local char iv_module_last_error[2048]; \
-        static iv_module_descriptor_v1 descriptor { \
-            IV_MODULE_ABI_VERSION_V1, \
-            module_id, \
-            [](iv::ModuleContext const& context) -> char const* { \
-                try { \
-                    iv_module_last_error[0] = '\0'; \
-                    module_fn(context); \
-                    return nullptr; \
-                } catch (std::exception const& e) { \
-                    std::snprintf(iv_module_last_error, sizeof(iv_module_last_error), "%s", e.what()); \
-                    return iv_module_last_error; \
-                } catch (...) { \
-                    std::snprintf(iv_module_last_error, sizeof(iv_module_last_error), "%s", "non-std exception"); \
-                    return iv_module_last_error; \
-                } \
-            }, \
-        }; \
-        return &descriptor; \
+namespace iv::details {
+    // Used only by generated export translation units while the runtime still
+    // consumes descriptor v1. Authored source never needs an export wrapper.
+    template<auto Main>
+    char const* generated_module_build_v1(ModuleContext const& context) noexcept
+    {
+        static_assert(std::invocable<decltype(Main), GraphBuilder&>,
+            "iv_module.json main must name a function invocable as void(GraphBuilder&)");
+        static_assert(std::same_as<std::invoke_result_t<decltype(Main), GraphBuilder&>, void>,
+            "iv_module.json main must name void(GraphBuilder&)");
+
+        static thread_local char last_error[2048];
+        try {
+            last_error[0] = '\0';
+            Main(context.builder());
+            return nullptr;
+        } catch (std::exception const& e) {
+            std::snprintf(last_error, sizeof(last_error), "%s", e.what());
+            return last_error;
+        } catch (...) {
+            std::snprintf(last_error, sizeof(last_error), "%s", "non-std exception");
+            return last_error;
+        }
     }
+}
