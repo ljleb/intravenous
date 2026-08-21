@@ -9,14 +9,14 @@
 #include <type_traits>
 
 extern "C" {
-    [[maybe_unused]] static constexpr uint32_t IV_MODULE_ABI_VERSION_V1 = 1;
-    using iv_module_build_fn_v1 = char const* (*)(iv::GraphBuilder&);
-    struct iv_module_descriptor_v1 {
+    [[maybe_unused]] static constexpr uint32_t IV_MODULE_ABI_VERSION_V2 = 2;
+    using iv_module_build_fn_v2 = char const* (*)(iv::GraphBuilder&);
+    struct iv_module_descriptor_v2 {
         uint32_t abi_version;
         char const* id;
-        iv_module_build_fn_v1 build;
+        iv_module_build_fn_v2 build;
     };
-    using iv_get_module_descriptor_fn_v1 = iv_module_descriptor_v1 const* (*)();
+    using iv_get_module_descriptor_fn_v2 = iv_module_descriptor_v2 const* (*)();
 }
 
 #if defined(_WIN32)
@@ -27,7 +27,7 @@ extern "C" {
 
 namespace iv::details {
     template<auto Main>
-    char const* generated_module_build_v1(GraphBuilder& builder) noexcept
+    char const* generated_module_build_v2(GraphBuilder& builder) noexcept
     {
         static_assert(std::invocable<decltype(Main), GraphBuilder&>,
             "iv_module.json main must name void(GraphBuilder&)");
