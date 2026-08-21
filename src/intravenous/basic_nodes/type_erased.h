@@ -78,6 +78,21 @@ namespace iv {
             _type_info = &typeid(Node);
             validate_max_block_size(_max_block_size, "node max_block_size() must be a power of 2");
 
+            auto nested_context = [](auto const& ctx, auto& state) {
+                using ErasedContext = std::remove_cvref_t<decltype(ctx)>;
+                using ConcreteNode = Node;
+                return TickContext<ConcreteNode> {
+                    .inputs = ctx.inputs,
+                    .outputs = ctx.outputs,
+                    .event_inputs = ctx.event_inputs,
+                    .event_outputs = ctx.event_outputs,
+                    .sample_rate = ctx.sample_rate,
+                    .scc_feedback_latency = ctx.scc_feedback_latency,
+                    .buffer = state.nested_node_states[0]
+                };
+            };
+            (void)nested_context;
+
             if constexpr (std::is_empty_v<Node>) {
                 _node = NodeStoragePtr(nullptr, +[](void*) {});
                 _const_ptr_fn = +[](void const*) -> void const* { return nullptr; };
@@ -94,6 +109,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -108,6 +124,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -123,6 +140,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -149,6 +167,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -163,6 +182,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -178,6 +198,7 @@ namespace iv {
                             .outputs = ctx.outputs,
                             .event_inputs = ctx.event_inputs,
                             .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = ctx.scc_feedback_latency,
                             .buffer = state.nested_node_states[0]
                         },
@@ -188,78 +209,26 @@ namespace iv {
             }
         }
 
-        std::vector<InputConfig> const& inputs() const
-        {
-            return _inputs;
-        }
-
-        std::vector<OutputConfig> const& outputs() const
-        {
-            return _outputs;
-        }
-
-        std::vector<EventInputConfig> const& event_inputs() const
-        {
-            return _event_inputs;
-        }
-
-        std::vector<EventOutputConfig> const& event_outputs() const
-        {
-            return _event_outputs;
-        }
-
-        size_t internal_latency() const
-        {
-            return _internal_latency;
-        }
-
-        size_t max_block_size() const
-        {
-            return _max_block_size;
-        }
-
-        char const* type_name() const
-        {
-            return _type_name;
-        }
+        std::vector<InputConfig> const& inputs() const { return _inputs; }
+        std::vector<OutputConfig> const& outputs() const { return _outputs; }
+        std::vector<EventInputConfig> const& event_inputs() const { return _event_inputs; }
+        std::vector<EventOutputConfig> const& event_outputs() const { return _event_outputs; }
+        size_t internal_latency() const { return _internal_latency; }
+        size_t max_block_size() const { return _max_block_size; }
+        char const* type_name() const { return _type_name; }
 
         template<class Node>
         Node const* try_as() const
         {
-            if (*_type_info != typeid(Node)) {
-                return nullptr;
-            }
+            if (*_type_info != typeid(Node)) return nullptr;
             return static_cast<Node const*>(_const_ptr_fn(_node.get()));
         }
 
-        std::optional<size_t> ttl_samples() const
-        {
-            return _ttl_samples;
-        }
-
-        bool can_skip_block() const
-        {
-            return _can_skip_block;
-        }
-
-        void declare(DeclarationContext<TypeErasedNode> const& ctx) const
-        {
-            return _declare_fn(_node.get(), ctx);
-        }
-
-        void tick(TickSampleContext<TypeErasedNode> const& ctx) const
-        {
-            _tick_fn(_node.get(), ctx);
-        }
-
-        void tick_block(TickBlockContext<TypeErasedNode> const& ctx) const
-        {
-            _tick_block_fn(_node.get(), ctx);
-        }
-
-        void skip_block(SkipBlockContext<TypeErasedNode> const& ctx) const
-        {
-            _skip_block_fn(_node.get(), ctx);
-        }
+        std::optional<size_t> ttl_samples() const { return _ttl_samples; }
+        bool can_skip_block() const { return _can_skip_block; }
+        void declare(DeclarationContext<TypeErasedNode> const& ctx) const { return _declare_fn(_node.get(), ctx); }
+        void tick(TickSampleContext<TypeErasedNode> const& ctx) const { _tick_fn(_node.get(), ctx); }
+        void tick_block(TickBlockContext<TypeErasedNode> const& ctx) const { _tick_block_fn(_node.get(), ctx); }
+        void skip_block(SkipBlockContext<TypeErasedNode> const& ctx) const { _skip_block_fn(_node.get(), ctx); }
     };
 }
