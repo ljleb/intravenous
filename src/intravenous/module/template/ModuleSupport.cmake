@@ -27,18 +27,25 @@ function(iv_add_runtime_module target)
     set(oneValueArgs)
     set(multiValueArgs SOURCES)
     cmake_parse_arguments(IVM "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-    if(NOT IVM_SOURCES)
-        message(FATAL_ERROR "iv_add_runtime_module(${target}) requires SOURCES")
+
+    if(NOT DEFINED IV_MODULE_EXPORT_FILE OR IV_MODULE_EXPORT_FILE STREQUAL "")
+        message(FATAL_ERROR "iv_add_runtime_module(${target}) requires IV_MODULE_EXPORT_FILE")
     endif()
 
     iv_configure_iv_module_shared_import()
+
     add_library(${target}__compile_settings INTERFACE)
     target_compile_features(${target}__compile_settings INTERFACE cxx_std_23)
     target_include_directories(${target}__compile_settings INTERFACE
         ${IV_INCLUDE_DIR}
         ${IV_MODULE_SOURCE_DIR}
         ${IV_MODULE_GENERATED_INCLUDE_DIR})
+    if(DEFINED IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR AND NOT IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR STREQUAL "")
+        target_include_directories(${target}__compile_settings INTERFACE
+            ${IV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR})
+    endif()
     target_include_directories(${target}__compile_settings SYSTEM INTERFACE ${IV_THIRD_PARTY_INCLUDE_DIR})
+
     if(MSVC)
         target_compile_options(${target}__compile_settings INTERFACE /W4 /permissive-)
     else()
@@ -57,10 +64,17 @@ function(iv_add_runtime_module target)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=0)
     endif()
 
-    # Phase 2 compiles the generated root export TU. It includes the rewritten
-    # root definition; dependencies are recursively included through generated
-    # extensionless <iv/modules/...> definitions.
-    add_library(${target} SHARED ${IV_MODULE_EXPORT_FILE})
+    # The loader generates only IV-specific build glue. A custom CMakeLists.txt
+    # remains authoritative for all ordinary sources/libraries/settings and can
+    # call this helper like the generated default project does.
+    if(DEFINED IV_MODULE_GENERATED_CMAKE AND NOT IV_MODULE_GENERATED_CMAKE STREQUAL "")
+        if(NOT EXISTS "${IV_MODULE_GENERATED_CMAKE}")
+            message(FATAL_ERROR "IV_MODULE_GENERATED_CMAKE does not exist: ${IV_MODULE_GENERATED_CMAKE}")
+        endif()
+        include("${IV_MODULE_GENERATED_CMAKE}")
+    endif()
+
+    add_library(${target} SHARED ${IV_MODULE_EXPORT_FILE} ${IVM_SOURCES})
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES
@@ -72,8 +86,12 @@ function(iv_add_runtime_module target)
         LIBRARY_OUTPUT_DIRECTORY_DEBUG ${IV_MODULE_OUTPUT_DIR}
         LIBRARY_OUTPUT_DIRECTORY_RELEASE ${IV_MODULE_OUTPUT_DIR})
     target_link_libraries(${target} PRIVATE ${target}__compile_settings)
+
     if(TARGET iv_module_shared)
         target_link_libraries(${target} PRIVATE iv_module_shared)
+    endif()
+    if(TARGET iv_module_definitions)
+        add_dependencies(${target} iv_module_definitions)
     endif()
     if(DEFINED IV_MODULE_PCH_HEADER AND NOT IV_MODULE_PCH_HEADER STREQUAL "")
         target_precompile_headers(${target} PRIVATE ${IV_MODULE_PCH_HEADER})
