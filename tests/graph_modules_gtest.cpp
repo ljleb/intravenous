@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <ranges>
+
 namespace iv {
 namespace {
 
