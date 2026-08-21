@@ -172,17 +172,17 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
     auto const stale_root = workspace / "modules" / "saw";
     auto const moved_root = workspace / "modules" / "saw2";
     std::filesystem::create_directories(moved_root);
-    iv::test_support::write_text(moved_root / "iv_module.json", "{}\n");
+    iv::test_support::write_text(
+        moved_root / "iv_module.json",
+        "{\"schema\":1,\"id\":\"iv.test.module\",\"entry\":\"module.cpp\",\"main\":\"module_main\"}\n");
     iv::test_support::write_text(
         moved_root / "module.cpp",
         "#include <intravenous/dsl.h>\n\n"
-        "inline void module_main(iv::ModuleContext const& ctx)\n"
+        "inline void module_main(iv::GraphBuilder& g)\n"
         "{\n"
         "    using namespace iv;\n"
-        "    auto& g = ctx.builder();\n"
         "    g.outputs();\n"
-        "}\n\n"
-        "IV_EXPORT_MODULE(\"iv.test.module\", module_main);\n");
+        "}\n");
 
     iv::IvModuleInstances instances;
     iv::IvModuleSources sources(workspace, {});
