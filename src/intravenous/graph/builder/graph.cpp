@@ -78,32 +78,20 @@ GraphBuilder::GraphBuilder() : GraphBuilder(GraphBuilderIdentity(allocate_root_b
 GraphBuilder GraphBuilder::derive_nested_builder() {
   return GraphBuilder(GraphBuilderIdentity(_identity.child_id(_node_bundles.size())));
 }
-bool GraphBuilder::inside_subgraph_scope() const { return _subgraphs.active(); }
-ScopedSubgraph& GraphBuilder::current_scope() { return _subgraphs.current(); }
-void GraphBuilder::define_scope_outputs(std::span<OutputRefConfig const> refs) {
-  _subgraphs.define_sample_outputs(refs,*this,_node_bundles,_identity);
-}
-void GraphBuilder::define_scope_event_outputs(std::span<EventOutputRefConfig const> refs) {
-  _subgraphs.define_event_outputs(refs,*this,_node_bundles,_identity);
-}
 
 PublicSampleInputRef GraphBuilder::input() { return input(Sample{0.0f}); }
 PublicSampleInputRef GraphBuilder::input_named(std::string_view name, Sample value,
                                                std::optional<Sample> min,
                                                std::optional<Sample> max) {
-  if(inside_subgraph_scope()) return PublicSampleInputRef(_subgraphs.add_scope_sample_input(*this,_node_bundles,name,value,min,max,true));
   return PublicSampleInputRef(_public_ports.add_sample_input(*this,_node_bundles,name,value,min,max));
 }
 PublicSampleInputRef GraphBuilder::input(Sample value,std::optional<Sample> min,std::optional<Sample> max) {
-  if(inside_subgraph_scope()) return PublicSampleInputRef(_subgraphs.add_scope_sample_input(*this,_node_bundles,{},value,min,max,false));
   return PublicSampleInputRef(_public_ports.add_sample_input(*this,_node_bundles,{},value,min,max));
 }
 PublicEventInputRef GraphBuilder::event_input_named(std::string_view name, EventTypeId type) {
-  if(inside_subgraph_scope())return PublicEventInputRef(_subgraphs.add_scope_event_input(*this,_node_bundles,name,type,true));
   return PublicEventInputRef(_public_ports.add_event_input(*this,_node_bundles,name,type));
 }
 PublicEventInputRef GraphBuilder::event_input(EventTypeId type) {
-  if(inside_subgraph_scope())return PublicEventInputRef(_subgraphs.add_scope_event_input(*this,_node_bundles,{},type,false));
   return PublicEventInputRef(_public_ports.add_event_input(*this,_node_bundles,{},type));
 }
 
@@ -112,18 +100,33 @@ void GraphBuilder::annotate_public_sample_input_source_info(
   if(id.empty()||ref.port.graph_builder!=this)return;
   auto logical=_node_bundles.sample_output_port_for_channels(ref.port.channel_type,ref.port.channels);
   if(!logical)details::error("PublicSampleInputRef has no logical boundary port");
-  if(logical->node_bundle_handle==_public_ports.boundary_handle())
+  if(logical->node_bundle_handle==_public_ports.boundary_handle()) {
     _public_ports.annotate_sample_input_source_info(logical->port_ordinal,id,file,begin,end);
-  else _subgraphs.annotate_scope_input_source_info(*logical,_node_bundles,{.declaration_identity=std::string(id),.span={.file_path=std::string(file),.begin=begin,.end=end}});
+    return;
+  }
+  auto& boundary=_node_bundles.bundle(logical->node_bundle_handle);
+  if(!boundary.is_boundary()||logical->port_ordinal>=boundary.boundary_sample_inputs().size())
+    details::error("PublicSampleInputRef does not belong to a valid boundary input");
+  SourceInfo info{.declaration_identity=std::string(id),.span={.file_path=std::string(file),.begin=begin,.end=end}};
+  auto& infos=boundary.source_annotations().infos;
+  if(!std::ranges::contains(infos,info))infos.push_back(std::move(info));
 }
 void PublicSampleInputRef::_annotate_source_info(std::string_view id,std::string_view file,uint32_t begin,uint32_t end) const { if(port.graph_builder)port.graph_builder->annotate_public_sample_input_source_info(*this,id,file,begin,end); }
 void GraphBuilder::annotate_public_event_input_source_info(
     PublicEventInputRef const& ref,std::string_view id,std::string_view file,uint32_t begin,uint32_t end) {
   if(id.empty()||ref.port.graph_builder!=this)return;
   if(ref.port.sources.size()!=1)details::error("PublicEventInputRef has no unique logical boundary port");
-  auto source=ref.port.sources.front(); NodeBundlePortId logical{source.bundle,PortKind::event,source.port};
-  if(source.bundle==_public_ports.boundary_handle())_public_ports.annotate_event_input_source_info(source.port,id,file,begin,end);
-  else _subgraphs.annotate_scope_input_source_info(logical,_node_bundles,{.declaration_identity=std::string(id),.span={.file_path=std::string(file),.begin=begin,.end=end}});
+  auto source=ref.port.sources.front();
+  if(source.bundle==_public_ports.boundary_handle()) {
+    _public_ports.annotate_event_input_source_info(source.port,id,file,begin,end);
+    return;
+  }
+  auto& boundary=_node_bundles.bundle(source.bundle);
+  if(!boundary.is_boundary()||source.port>=boundary.boundary_event_inputs().size())
+    details::error("PublicEventInputRef does not belong to a valid boundary input");
+  SourceInfo info{.declaration_identity=std::string(id),.span={.file_path=std::string(file),.begin=begin,.end=end}};
+  auto& infos=boundary.source_annotations().infos;
+  if(!std::ranges::contains(infos,info))infos.push_back(std::move(info));
 }
 void PublicEventInputRef::_annotate_source_info(std::string_view id,std::string_view file,uint32_t begin,uint32_t end) const { if(port.graph_builder)port.graph_builder->annotate_public_event_input_source_info(*this,id,file,begin,end); }
 void GraphBuilder::annotate_public_sample_output_source_info(std::span<SourceInfo const> infos){for(size_t i=0;i<infos.size();++i)_public_ports.annotate_sample_output_source_info(i,infos[i]);}
@@ -144,10 +147,6 @@ void GraphBuilder::event_outputs(std::span<EventOutputRefConfig const> refs){_pu
 void GraphBuilder::outputs(std::initializer_list<NamedRef> refs){outputs(std::span<NamedRef const>(refs.begin(),refs.size()));}
 void GraphBuilder::outputs(std::span<OutputRefConfig const> refs){_public_ports.define_sample_outputs(*this,_node_bundles,_identity,refs);}
 void GraphBuilder::outputs(std::span<NamedRef const> refs){_public_ports.define_sample_outputs_from_named_refs(*this,_node_bundles,_identity,[&](auto&&v){return lift_to_sample_port(std::forward<decltype(v)>(v));},refs);}
-void GraphBuilder::subgraph_event_outputs(std::span<EventOutputRefConfig const> refs){if(!inside_subgraph_scope())details::error("g.subgraph_event_outputs(...) is only valid inside g.subgraph(...)");define_scope_event_outputs(refs);}
-void GraphBuilder::subgraph_outputs(std::initializer_list<NamedRef> refs){subgraph_outputs(std::span<NamedRef const>(refs.begin(),refs.size()));}
-void GraphBuilder::subgraph_outputs(std::span<OutputRefConfig const> refs){if(!inside_subgraph_scope())details::error("g.subgraph_outputs(...) is only valid inside g.subgraph(...)");define_scope_outputs(refs);}
-void GraphBuilder::subgraph_outputs(std::span<NamedRef const> refs){if(!inside_subgraph_scope())details::error("g.subgraph_outputs(...) is only valid inside g.subgraph(...)");_subgraphs.define_sample_outputs_from_named_refs(*this,_node_bundles,_identity,[&](auto&&v){return lift_to_sample_port(std::forward<decltype(v)>(v));},refs);}
 std::string GraphBuilder::allocate_root_builder_id(){static size_t next=0;return std::to_string(next++);}
 
 SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const& source,size_t latency) {

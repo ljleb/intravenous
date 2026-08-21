@@ -491,8 +491,12 @@ namespace {
             auto const* callee = call->getDirectCallee();
             if (!callee) return {};
             auto const name = callee->getQualifiedNameAsString();
-            if (name == "iv::GraphBuilder::input") return "iv::_annotate_public_input_source_info";
-            if (name == "iv::GraphBuilder::event_input") return "iv::_annotate_public_event_input_source_info";
+            if (name == "iv::GraphBuilder::input"
+                || name == "iv::SubgraphBuilder::input")
+                return "iv::_annotate_public_input_source_info";
+            if (name == "iv::GraphBuilder::event_input"
+                || name == "iv::SubgraphBuilder::event_input")
+                return "iv::_annotate_public_event_input_source_info";
             return {};
         }
 

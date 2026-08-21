@@ -256,4 +256,43 @@ TEST(GraphVirtualOutputsTest, ChannelPortsSupportConstexprEquality)
     EXPECT_FALSE(is_left.template operator()<stereo::right>());
 }
 
+TEST(GraphVirtualOutputsTest, FunctionalSubgraphUsesExplicitBoundaryFacade)
+{
+    GraphBuilder g;
+    auto nested = g.subgraph([&](SubgraphBuilder& boundary) {
+        auto input = boundary.input<"in">(0.0f);
+        auto passthrough = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+        passthrough(input);
+        boundary.outputs("out"_P = passthrough);
+    });
+
+    nested("in"_P = 0.25f);
+    g.outputs("main"_P = nested);
+
+    auto const built = g.build_root_node();
+    ASSERT_EQ(built.graph.outputs().size(), 1u);
+    EXPECT_EQ(built.graph.outputs().front().name, "main");
+}
+
+TEST(GraphVirtualOutputsTest, FunctionalSubgraphsCanNestWithoutAmbientScopeState)
+{
+    GraphBuilder g;
+    auto outer = g.subgraph([&](SubgraphBuilder& outer_boundary) {
+        auto outer_input = outer_boundary.input<"in">(0.0f);
+        auto inner = g.subgraph([&](SubgraphBuilder& inner_boundary) {
+            auto inner_input = inner_boundary.input<"in">(0.0f);
+            auto passthrough = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+            passthrough(inner_input);
+            inner_boundary.outputs("out"_P = passthrough);
+        });
+        inner("in"_P = outer_input);
+        outer_boundary.outputs("out"_P = inner);
+    });
+
+    outer("in"_P = 0.5f);
+    g.outputs("main"_P = outer);
+
+    EXPECT_NO_THROW((void)g.build_root_node());
+}
+
 } // namespace iv

@@ -44,7 +44,12 @@ namespace {
         }
     };
 
-    void detached_voice(iv::GraphBuilder& g, iv::SamplePortRef dt, iv::SamplePortRef noise, iv::Sample amplitude)
+    void detached_voice(
+        iv::GraphBuilder& g,
+        iv::SubgraphBuilder& boundary,
+        iv::SamplePortRef dt,
+        iv::SamplePortRef noise,
+        iv::Sample amplitude)
     {
         auto const reset = 1.0f;
         auto const frequency = 220.0f;
@@ -53,7 +58,7 @@ namespace {
 
         integrator((warper["aliased"].detach() * reset + frequency * 2.0f) * dt);
         warper(integrator + noise);
-        g.subgraph_outputs("out"_P = (warper["anti_aliased"] * amplitude));
+        boundary.outputs("out"_P = (warper["anti_aliased"] * amplitude));
     }
 }
 
@@ -68,11 +73,11 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     auto const dt = graph.node<iv::ValueSource>(&dt_value);
     auto const src_a = graph.node<iv::ValueSource>(&noise_a);
     auto const src_b = graph.node<iv::ValueSource>(&noise_b);
-    auto const voice_a = graph.subgraph([&] {
-        detached_voice(graph, dt, src_a, 0.5f);
+    auto const voice_a = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        detached_voice(graph, boundary, dt, src_a, 0.5f);
     });
-    auto const voice_b = graph.subgraph([&] {
-        detached_voice(graph, dt, src_b, 0.25f);
+    auto const voice_b = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        detached_voice(graph, boundary, dt, src_b, 0.25f);
     });
     auto const sink = graph.node<BufferSink>(output.data(), output.size());
 
@@ -101,10 +106,10 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
 TEST(DetachRegression, NestedFeedbackWithoutDetachStillFailsAfterFlattening)
 {
     iv::GraphBuilder graph;
-    auto const recursive = graph.subgraph([&] {
+    auto const recursive = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
         auto const integrator = graph.node<iv::PhaseIntegrator>();
         integrator(integrator);
-        graph.subgraph_outputs("phase"_P = integrator);
+        boundary.outputs("phase"_P = integrator);
     });
     (void)recursive;
     graph.outputs();

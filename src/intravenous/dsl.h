@@ -1,5 +1,6 @@
 #pragma once
 
+#include "intravenous/graph/builder/subgraphs.h"
 #ifdef IV_INTERNAL_TRANSLATION_UNIT
 #error "dsl.h is reserved for user-authored DSL code; include graph/builder.h or module/module.h from internal code."
 #endif
@@ -536,8 +537,8 @@ namespace iv {
 
         auto const midi = g.event_input<"midi">(EventTypeId::midi);
         auto process_lane = [&]<size_t VoiceIndex>() {
-            auto voice = g.subgraph([&] {
-                auto const voice_midi = g.event_input<"midi">(EventTypeId::midi);
+            auto voice = g.subgraph([&](auto& s){
+                auto const voice_midi = s.template event_input<"midi">(EventTypeId::midi);
                 auto midi_driver = g.node<MidiVoiceAllocator<VoiceIndex, voice_count>>();
                 midi_driver.connect_event_input("midi", voice_midi);
                 static_assert(requires {

@@ -56,13 +56,12 @@ class GraphBuilder {
   friend class GraphBuilderAnnotations;
   friend class GraphBuilderVirtualNodes;
   friend class GraphBuilderPublicPorts;
-  friend class SubgraphScopeManager;
+  friend class SubgraphBuilder;
 
   GraphBuilderIdentity _identity;
   GraphBuilderNodeBundles _node_bundles;
   GraphBuilderConnections _connections;
   GraphBuilderPublicPorts _public_ports;
-  SubgraphScopeManager _subgraphs;
   GraphBuilderDetach _detach;
   GraphBuilderAnnotations _annotations;
   GraphBuilderVirtualNodes _virtual_nodes;
@@ -76,10 +75,6 @@ class GraphBuilder {
 public:
   GraphBuilder();
   GraphBuilder derive_nested_builder();
-  bool inside_subgraph_scope() const;
-  ScopedSubgraph& current_scope();
-  void define_scope_outputs(std::span<OutputRefConfig const> refs);
-  void define_scope_event_outputs(std::span<EventOutputRefConfig const> refs);
   PublicSampleInputRef input();
   template<fixed_string Name>
   PublicSampleInputRef input(Sample default_value = 0.0,
@@ -112,17 +107,11 @@ public:
 
   template<class... Refs> void event_outputs(Refs&&... refs);
   void event_outputs(std::span<EventOutputRefConfig const> refs);
-  template<class... Refs> void subgraph_event_outputs(Refs&&... refs);
-  void subgraph_event_outputs(std::span<EventOutputRefConfig const> refs);
   template<class Fn> NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph");
   template<class... Refs> void outputs(Refs&&... refs);
   void outputs(std::initializer_list<NamedRef> refs);
   void outputs(std::span<OutputRefConfig const> refs);
   void outputs(std::span<NamedRef const> refs);
-  template<class... Refs> void subgraph_outputs(Refs&&... refs);
-  void subgraph_outputs(std::initializer_list<NamedRef> refs);
-  void subgraph_outputs(std::span<OutputRefConfig const> refs);
-  void subgraph_outputs(std::span<NamedRef const> refs);
 
   using VacantSampleInput = GraphBuilderVacantSampleInput;
   using VacantEventInput = GraphBuilderVacantEventInput;
@@ -263,39 +252,63 @@ void GraphBuilder::event_outputs(Refs&&... refs) {
   _public_ports.define_event_outputs_from_args(*this, _node_bundles, _identity,
                                                std::forward<Refs>(refs)...);
 }
-template<class... Refs>
-void GraphBuilder::subgraph_event_outputs(Refs&&... refs) {
-  if (!inside_subgraph_scope()) details::error("g.subgraph_event_outputs(...) is only valid inside g.subgraph(...)");
-  std::vector<EventOutputRefConfig> outputs; outputs.reserve(sizeof...(Refs));
-  constexpr bool require_names = sizeof...(Refs) > 1;
-  auto append=[&](auto&& ref){ using Ref=std::remove_cvref_t<decltype(ref)>;
-    if constexpr(details::is_named_arg_v<Ref>) outputs.push_back({.ref=static_cast<EventPortRef>(ref.value),.config={.name=std::string(Ref::name.view())}});
-    else { if constexpr(require_names)details::error("builder "+_identity.value+": event_outputs(...) requires names when exposing more than one event output"); outputs.push_back({.ref=static_cast<EventPortRef>(ref),.config={}}); }};
-  (append(std::forward<Refs>(refs)),...);
-  define_scope_event_outputs(outputs);
-}
+
 template<class Fn>
 NodeRef GraphBuilder::subgraph(Fn&& fn, std::string_view kind) {
-  return _subgraphs.run(*this, _node_bundles, std::forward<Fn>(fn), kind);
+  auto const boundary = _node_bundles.append_scope_boundary();
+  SubgraphBuilder subgraph_builder(*this, boundary);
+  auto const child_begin = _node_bundles.size();
+
+  if constexpr (std::invocable<decltype(std::forward<Fn>(fn)), SubgraphBuilder&>)
+  {
+    std::invoke(std::forward<Fn>(fn), subgraph_builder);
+  }
+  else if constexpr (std::invocable<decltype(std::forward<Fn>(fn))>)
+  {
+    std::invoke(std::forward<Fn>(fn));
+  }
+  else
+  {
+    static_assert(false, "iv::GraphBuilder::subgraph(Fn) requires a callback with no arguments or accepting iv::SubgraphBuilder&");
+  }
+
+  auto const child_count = _node_bundles.size() - child_begin;
+  NodeRef result(
+      *this,
+      _node_bundles.append_subgraph(
+          boundary, child_begin, child_count, kind));
+  for (auto const& info :
+       _node_bundles.bundle(boundary).source_annotations().infos) {
+    result._annotate_source_info(
+        info.declaration_identity, info.span.file_path,
+        info.span.begin, info.span.end);
+  }
+  return result;
 }
+
 template<class... Refs>
 void GraphBuilder::outputs(Refs&&... refs) {
   _public_ports.define_sample_outputs_from_args(*this, _node_bundles, _identity,
       [&](auto&& value){ return lift_to_sample_port(std::forward<decltype(value)>(value)); },
       std::forward<Refs>(refs)...);
 }
+
 template<class... Refs>
-void GraphBuilder::subgraph_outputs(Refs&&... refs) {
-  if (!inside_subgraph_scope()) details::error("g.subgraph_outputs(...) is only valid inside g.subgraph(...)");
-  std::vector<OutputRefConfig> outputs; outputs.reserve(sizeof...(Refs));
-  constexpr bool require_names = sizeof...(Refs)>1;
-  auto append=[&](auto&& ref){ using Ref=std::remove_cvref_t<decltype(ref)>;
-    if constexpr(details::is_channel_named_arg_v<Ref>) outputs.push_back({.ref=lift_to_sample_port(ref.value),.config={.name=std::string(Ref::name.view()),.channel_layout={.channel_type=ChannelTypeTraits<typename Ref::channel_type>::id,.sample_layout=SampleStreamLayout::planar}},.public_member={.family_name=std::string(Ref::name.view()),.channel_type=ChannelTypeTraits<typename Ref::channel_type>::id,.channel_index=Ref::channel_ordinal}});
-    else if constexpr(details::is_default_channel_named_arg_v<Ref>) outputs.push_back({.ref=lift_to_sample_port(ref.value),.config={.name="main",.channel_layout={.channel_type=ChannelTypeTraits<typename Ref::channel_type>::id,.sample_layout=SampleStreamLayout::planar}},.public_member={.family_name="main",.channel_type=ChannelTypeTraits<typename Ref::channel_type>::id,.channel_index=Ref::channel_ordinal}});
-    else if constexpr(details::is_named_arg_v<Ref>) { if constexpr(Ref::name.view().starts_with("__"))details::error("builder "+_identity.value+": generated channel assignments are not public outputs"); using Value=std::remove_cvref_t<decltype(ref.value)>; if constexpr(requires{typename Value::channel_type;{Value::sample_layout}->std::convertible_to<SampleStreamLayout>;}) outputs.push_back({.ref=lift_to_sample_port(ref.value),.config={.name=std::string(Ref::name.view()),.channel_layout={.channel_type=ChannelTypeTraits<typename Value::channel_type>::id,.sample_layout=Value::sample_layout}},.public_member={.family_name=std::string(Ref::name.view()),.channel_type=ChannelTypeTraits<typename Value::channel_type>::id,.whole_stream=true}}); else outputs.push_back({.ref=lift_to_sample_port(ref.value),.config={.name=std::string(Ref::name.view()),.channel_layout=mono_planar_channel_layout},.public_member={.family_name=std::string(Ref::name.view())}}); }
-    else { if constexpr(require_names)details::error("builder "+_identity.value+": outputs(...) requires names when exposing more than one sample output"); outputs.push_back({.ref=lift_to_sample_port(std::forward<decltype(ref)>(ref))}); }};
-  (append(std::forward<Refs>(refs)),...);
-  define_scope_outputs(outputs);
+void SubgraphBuilder::event_outputs(Refs&&... refs) {
+  _ports.define_event_outputs_from_args(
+      _builder, _builder._node_bundles, _builder._identity,
+      std::forward<Refs>(refs)...);
+}
+
+template<class... Refs>
+void SubgraphBuilder::outputs(Refs&&... refs) {
+  _ports.define_sample_outputs_from_args(
+      _builder, _builder._node_bundles, _builder._identity,
+      [&](auto&& value) {
+        return _builder.lift_to_sample_port(
+            std::forward<decltype(value)>(value));
+      },
+      std::forward<Refs>(refs)...);
 }
 
 // NodeRef and typed-ref definitions are semantic: every operation addresses a
