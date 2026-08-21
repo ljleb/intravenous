@@ -16,10 +16,9 @@
 namespace iv {
     class TypeErasedModule;
 
-    // Transitional descriptor-v1 authoring context. Runtime execution
-    // configuration deliberately does not live here: authored modules only
-    // receive a GraphBuilder, and DSP-time configuration belongs to tick
-    // contexts.
+    // Descriptor-v1 is only an ABI bridge. Runtime execution configuration is
+    // deliberately absent: authored modules receive GraphBuilder&, while DSP
+    // configuration belongs to tick contexts.
     class ModuleContext {
         GraphBuilder* _builder = nullptr;
         TypeErasedModule (*_load_fn)(void*, std::string_view) = nullptr;
@@ -34,6 +33,14 @@ namespace iv {
             _builder(&builder),
             _load_fn(load_fn),
             _load_user_data(load_user_data)
+        {}
+
+        // Temporary ABI-call-site bridge while loader.cpp is being reduced to
+        // GraphBuilder-only construction. The arguments are intentionally not
+        // retained or exposed by ModuleContext.
+        template<typename RuntimeConfig>
+        ModuleContext(GraphBuilder& builder, RuntimeConfig const&, Sample*)
+            : ModuleContext(builder)
         {}
 
         GraphBuilder& builder() const { return *_builder; }
