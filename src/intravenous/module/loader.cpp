@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -822,8 +823,7 @@ public:
             descriptor,
         });
         GraphBuilder builder;
-        ModuleContext context(builder);
-        if (char const *error = descriptor->build(context)) {
+        if (char const *error = descriptor->build(builder)) {
             throw std::runtime_error(
                 "failed to build root module definition '" + root.manifest.id + "': " + error);
         }
