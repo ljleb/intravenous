@@ -93,9 +93,13 @@ function(iv_rewrite_module_entry)
 
         set(_iv_global_postprocess "")
         if(IVR_GLOBAL_MODULE)
+            # Do not embed literal quotes in -DINPUT. With VERBATIM, CMake will
+            # quote the argv element as needed; embedded quotes become part of
+            # the variable value and make file(READ) look for a path containing
+            # quote characters.
             list(APPEND _iv_global_postprocess
                 COMMAND "${CMAKE_COMMAND}"
-                    -DINPUT="${_iv_output_abs}"
+                    "-DINPUT=${_iv_output_abs}"
                     -P "${IV_SOURCE_DIR}/module/template/CanonicalizeGlobalImports.cmake")
         endif()
 
