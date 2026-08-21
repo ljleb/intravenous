@@ -150,7 +150,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
         {
             iv::SourceRange{
                 .start = {.line = 7, .column = 1},
-                .end = {.line = 15, .column = 1},
+                .end = {.line = 18, .column = 1},
             },
         });
     ASSERT_FALSE(result.nodes.empty());
@@ -174,24 +174,21 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 
 namespace {
     template<int I>
-    iv::NodeRef make_value(iv::GraphBuilder& g, iv::ModuleContext const& context)
+    iv::NodeRef make_value(iv::GraphBuilder& g)
     {
-        (void)I;
-        return g.node<iv::ValueSource>(&context.sample_period()).node_ref();
+        static iv::Sample value{static_cast<float>(I)};
+        return g.node<iv::ValueSource>(&value).node_ref();
     }
 
-    void merged_virtual_module(iv::ModuleContext const& context)
+    void merged_virtual_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto& g = context.builder();
-        auto const a = make_value<0>(g, context);
-        auto const b = make_value<1>(g, context);
+        auto const a = make_value<0>(g);
+        auto const b = make_value<1>(g);
         auto const sink = a + b;
         g.outputs("main"_P = sink);
     }
 }
-
-IV_EXPORT_MODULE("iv.test.merged_virtual_module", merged_virtual_module);
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -203,14 +200,11 @@ IV_EXPORT_MODULE("iv.test.merged_virtual_module", merged_virtual_module);
 
     size_t value_source_count = 0;
     for (auto const &node : result.nodes) {
-        if (!node.kind.contains("ValueSource")) {
-            continue;
-        }
+        if (!node.kind.contains("ValueSource")) continue;
         ++value_source_count;
         EXPECT_EQ(node.member_count, 1u);
         EXPECT_FALSE(node.source_spans.empty());
     }
-
     EXPECT_EQ(value_source_count, 2u);
 }
 
@@ -221,16 +215,13 @@ TEST(IvModuleSourceIntrospection, GenericChannelOutputArgumentsArePublicOutputSo
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    void generic_channel_outputs(iv::ModuleContext const& context)
+    void generic_channel_outputs(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto& g = context.builder();
         auto const source = g.node<Constant>(0.25f);
         g.outputs("main"_P[stereo::left] = source, "main"_P[stereo::right] = source);
     }
 }
-
-IV_EXPORT_MODULE("iv.test.generic_channel_outputs", generic_channel_outputs);
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -264,20 +255,18 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableA
 #include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void annotated_symbol_module(iv::ModuleContext const& context)
+    void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto& g = context.builder();
+        static Sample value{};
         auto const a = _annotate_node_source_info(
-            g.node<ValueSource>(&context.sample_period()).node_ref(),
+            g.node<ValueSource>(&value).node_ref(),
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
         g.outputs("main"_P = sink);
     }
 }
-
-IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -291,26 +280,21 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     auto const initial_it = std::find_if(initial.nodes.begin(), initial.nodes.end(), [](auto const &node) {
         return node.kind.contains("ValueSource");
     });
-
     ASSERT_NE(initial_it, initial.nodes.end());
     auto const initial_id = initial_it->id;
     ASSERT_FALSE(initial_id.empty());
 
     auto const original_text = iv::test::read_text(module_cpp);
     iv::test::write_text(module_cpp, original_text + "\n");
-
     std::this_thread::sleep_for(1s);
     auto const reloaded = app.query_by_spans(
         module_cpp,
         {{.start = {.line = 1, .column = 1}, .end = {.line = 25, .column = 1}}});
-
     iv::test::write_text(module_cpp, original_text);
 
-    auto const reloaded_it =
-        std::find_if(reloaded.nodes.begin(), reloaded.nodes.end(), [](auto const &node) {
-            return node.kind.contains("ValueSource");
-        });
-
+    auto const reloaded_it = std::find_if(reloaded.nodes.begin(), reloaded.nodes.end(), [](auto const &node) {
+        return node.kind.contains("ValueSource");
+    });
     ASSERT_NE(reloaded_it, reloaded.nodes.end());
     EXPECT_EQ(reloaded_it->id, initial_id);
 }
@@ -323,20 +307,18 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedVirtualNode)
 #include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void annotated_symbol_module(iv::ModuleContext const& context)
+    void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto& g = context.builder();
+        static Sample value{};
         auto const a = _annotate_node_source_info(
-            g.node<ValueSource>(&context.sample_period()).node_ref(),
+            g.node<ValueSource>(&value).node_ref(),
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
         g.outputs("main"_P = sink);
     }
 }
-
-IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -349,7 +331,6 @@ IV_EXPORT_MODULE("iv.test.annotated_symbol_module", annotated_symbol_module);
     auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const &node) {
         return node.kind.contains("ValueSource");
     });
-
     ASSERT_NE(it, result.nodes.end());
     EXPECT_FALSE(it->id.empty());
     EXPECT_FALSE(it->source_spans.empty());
@@ -363,18 +344,16 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBa
 #include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void assigned_ref_module(iv::ModuleContext const& context)
+    void assigned_ref_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto& g = context.builder();
+        static Sample value{};
         NodeRef x;
-        x = g.node<ValueSource>(&context.sample_period()).node_ref();
+        x = g.node<ValueSource>(&value).node_ref();
         auto const& sink = x;
         g.outputs("main"_P = sink);
     }
 }
-
-IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -387,7 +366,6 @@ IV_EXPORT_MODULE("iv.test.assigned_ref_module", assigned_ref_module);
     auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const &node) {
         return node.kind.contains("ValueSource");
     });
-
     ASSERT_NE(it, result.nodes.end());
     EXPECT_FALSE(it->source_spans.empty());
 }
@@ -400,19 +378,17 @@ TEST(IvModuleSourceIntrospection, InitializationFailsWhenDeclarationBackedRefIsA
 #include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void assigned_twice_module(iv::ModuleContext const& context)
+    void assigned_twice_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto& g = context.builder();
+        static Sample value{};
         NodeRef x;
-        x = g.node<ValueSource>(&context.sample_period()).node_ref();
-        x = g.node<ValueSource>(&context.sample_period()).node_ref();
+        x = g.node<ValueSource>(&value).node_ref();
+        x = g.node<ValueSource>(&value).node_ref();
         auto const& sink = x;
         g.outputs("main"_P = sink);
     }
 }
-
-IV_EXPORT_MODULE("iv.test.assigned_twice_module", assigned_twice_module);
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -433,7 +409,6 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_schema_mismatch",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/arithmetic.h>
 
 namespace {
@@ -443,18 +418,15 @@ namespace {
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>().node_ref();
     }
 
-    void schema_mismatch_module(iv::ModuleContext const& context)
+    void schema_mismatch_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto& g = context.builder();
         auto const a = make_sum<2>(g);
         auto const b = make_sum<3>(g);
         auto const sink = a + b;
         g.outputs("main"_P = sink);
     }
 }
-
-IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -471,7 +443,6 @@ IV_EXPORT_MODULE("iv.test.schema_mismatch_module", schema_mismatch_module);
             ++singleton_sum_count;
         }
     }
-
     EXPECT_GE(singleton_sum_count, 2u);
 }
 
@@ -491,11 +462,11 @@ namespace {
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref();
     }
 
-    void mixed_connectivity_module(iv::ModuleContext const& context)
+    void mixed_connectivity_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto& g = context.builder();
-        auto const value = g.node<iv::ValueSource>(&context.sample_period()).node_ref();
+        static Sample value_storage{};
+        auto const value = g.node<iv::ValueSource>(&value_storage).node_ref();
         auto const a = make_sum<0>(g);
         auto const b = make_sum<1>(g);
         a(value);
@@ -503,8 +474,6 @@ namespace {
         g.outputs("main"_P = sink);
     }
 }
-
-IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module);
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -512,23 +481,19 @@ IV_EXPORT_MODULE("iv.test.mixed_connectivity_module", mixed_connectivity_module)
 
     auto const result = app.query_by_spans(
         std::filesystem::weakly_canonical(workspace / "module.cpp"),
-        {{.start = {.line = 1, .column = 1}, .end = {.line = 22, .column = 1}}});
+        {{.start = {.line = 1, .column = 1}, .end = {.line = 24, .column = 1}}});
 
     size_t connected_sum_count = 0;
     size_t disconnected_sum_count = 0;
     for (auto const &node : result.nodes) {
-        if (!node.kind.contains("Sum<") || node.sample_inputs.size() != 1) {
-            continue;
-        }
+        if (!node.kind.contains("Sum<") || node.sample_inputs.size() != 1) continue;
         EXPECT_EQ(node.member_count, 1u);
         if (node.sample_inputs.front().connectivity == iv::VirtualPortConnectivity::connected) {
             ++connected_sum_count;
-        } else if (
-            node.sample_inputs.front().connectivity == iv::VirtualPortConnectivity::disconnected) {
+        } else if (node.sample_inputs.front().connectivity == iv::VirtualPortConnectivity::disconnected) {
             ++disconnected_sum_count;
         }
     }
-
     EXPECT_EQ(connected_sum_count, 1u);
     EXPECT_EQ(disconnected_sum_count, 1u);
 }
@@ -541,33 +506,28 @@ TEST(IvModuleSourceIntrospection, QueryBySpansIntersectsMultipleSelections)
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
-    auto const dt_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
-    auto const sink_range =
-        iv::SourceRange{.start = {.line = 11, .column = 24}, .end = {.line = 11, .column = 24}};
+    auto const tone_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
+    auto const frequency_range = iv::SourceRange{.start = {.line = 11, .column = 24}, .end = {.line = 11, .column = 24}};
 
-    auto const dt_only = app.query_by_spans(module_cpp, {dt_range}, iv::SourceRangeMatchMode::intersection);
-    auto const sink_only = app.query_by_spans(module_cpp, {sink_range}, iv::SourceRangeMatchMode::intersection);
-    auto const both =
-        app.query_by_spans(module_cpp, {dt_range, sink_range}, iv::SourceRangeMatchMode::intersection);
+    auto const tone_only = app.query_by_spans(module_cpp, {tone_range}, iv::SourceRangeMatchMode::intersection);
+    auto const frequency_only = app.query_by_spans(module_cpp, {frequency_range}, iv::SourceRangeMatchMode::intersection);
+    auto const both = app.query_by_spans(
+        module_cpp, {tone_range, frequency_range}, iv::SourceRangeMatchMode::intersection);
 
     auto const ids = [](iv::ProjectQueryResult const &query) {
         std::set<std::string> node_ids;
-        for (auto const &node : query.nodes) {
-            node_ids.insert(node.id);
-        }
+        for (auto const &node : query.nodes) node_ids.insert(node.id);
         return node_ids;
     };
 
-    auto const dt_ids = ids(dt_only);
-    auto const sink_ids = ids(sink_only);
+    auto const tone_ids = ids(tone_only);
+    auto const frequency_ids = ids(frequency_only);
     auto const both_ids = ids(both);
 
     std::set<std::string> intersection;
     std::set_intersection(
-        dt_ids.begin(),
-        dt_ids.end(),
-        sink_ids.begin(),
-        sink_ids.end(),
+        tone_ids.begin(), tone_ids.end(),
+        frequency_ids.begin(), frequency_ids.end(),
         std::inserter(intersection, intersection.end()));
     EXPECT_EQ(both_ids, intersection);
 }
@@ -580,28 +540,26 @@ TEST(IvModuleSourceIntrospection, QueryBySpansUnionsMultipleSelections)
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
-    auto const dt_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
-    auto const sink_range =
-        iv::SourceRange{.start = {.line = 11, .column = 24}, .end = {.line = 11, .column = 24}};
+    auto const tone_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
+    auto const frequency_range = iv::SourceRange{.start = {.line = 11, .column = 24}, .end = {.line = 11, .column = 24}};
 
-    auto const dt_only = app.query_by_spans(module_cpp, {dt_range}, iv::SourceRangeMatchMode::intersection);
-    auto const sink_only = app.query_by_spans(module_cpp, {sink_range}, iv::SourceRangeMatchMode::intersection);
-    auto const both = app.query_by_spans(module_cpp, {dt_range, sink_range}, iv::SourceRangeMatchMode::union_);
+    auto const tone_only = app.query_by_spans(module_cpp, {tone_range}, iv::SourceRangeMatchMode::intersection);
+    auto const frequency_only = app.query_by_spans(module_cpp, {frequency_range}, iv::SourceRangeMatchMode::intersection);
+    auto const both = app.query_by_spans(
+        module_cpp, {tone_range, frequency_range}, iv::SourceRangeMatchMode::union_);
 
     auto const ids = [](iv::ProjectQueryResult const &query) {
         std::set<std::string> node_ids;
-        for (auto const &node : query.nodes) {
-            node_ids.insert(node.id);
-        }
+        for (auto const &node : query.nodes) node_ids.insert(node.id);
         return node_ids;
     };
 
-    auto const dt_ids = ids(dt_only);
-    auto const sink_ids = ids(sink_only);
+    auto const tone_ids = ids(tone_only);
+    auto const frequency_ids = ids(frequency_only);
     auto const both_ids = ids(both);
 
-    std::set<std::string> expected_union = dt_ids;
-    expected_union.insert(sink_ids.begin(), sink_ids.end());
+    std::set<std::string> expected_union = tone_ids;
+    expected_union.insert(frequency_ids.begin(), frequency_ids.end());
     EXPECT_EQ(both_ids, expected_union);
 }
 
@@ -627,15 +585,11 @@ TEST(IvModuleSourceIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
 
     std::set<std::string> expected_spans;
     for (auto const &node : nodes.nodes) {
-        for (auto const &span : node.source_spans) {
-            expected_spans.insert(span_key(span));
-        }
+        for (auto const &span : node.source_spans) expected_spans.insert(span_key(span));
     }
 
     std::set<std::string> actual_spans;
-    for (auto const &span : active_regions.source_spans) {
-        actual_spans.insert(span_key(span));
-    }
+    for (auto const &span : active_regions.source_spans) actual_spans.insert(span_key(span));
     EXPECT_EQ(actual_spans, expected_spans);
 }
 
@@ -644,27 +598,24 @@ TEST(IvModuleSourceIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExa
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_polyphonic_exact_spans",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-void polyphonic_module(iv::ModuleContext const& context)
+void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto& g = context.builder();
-    auto const dt = g.node<ValueSource>(&context.sample_period());
+
+
+
     iv::polyphonic<2>(g, [&]<size_t Voice>(auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
             "phase_offset"_P = 0.0,
-            "frequency"_P = 440.0,
-            "dt"_P = dt
+            "frequency"_P = 440.0
         );
         (void)Voice;
         g.outputs("main"_P = saw * m["amplitude"_P]);
     });
 }
-
-IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -703,10 +654,8 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     auto const virtual_override = app.get_virtual_node(virtual_node.id);
     ASSERT_EQ(virtual_override.members.size(), 2u);
     EXPECT_FLOAT_EQ(static_cast<float>(virtual_override.sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(virtual_override.members[0].sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(virtual_override.members[1].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(virtual_override.members[0].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(virtual_override.members[1].sample_inputs[1].current_value), 0.25f);
     EXPECT_FALSE(virtual_override.members[0].sample_inputs[1].has_concrete_override);
     EXPECT_FALSE(virtual_override.members[1].sample_inputs[1].has_concrete_override);
 
@@ -714,10 +663,8 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     auto const concrete_override = app.get_virtual_node(virtual_node.id);
     ASSERT_EQ(concrete_override.members.size(), 2u);
     EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(concrete_override.members[0].sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(concrete_override.members[1].sample_inputs[1].current_value), 0.75f);
+    EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.members[0].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.members[1].sample_inputs[1].current_value), 0.75f);
     EXPECT_FALSE(concrete_override.members[0].sample_inputs[1].has_concrete_override);
     EXPECT_TRUE(concrete_override.members[1].sample_inputs[1].has_concrete_override);
 
@@ -729,10 +676,8 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     auto const cleared_override = app.get_virtual_node(virtual_node.id);
     ASSERT_EQ(cleared_override.members.size(), 2u);
     EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(cleared_override.members[0].sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(cleared_override.members[1].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.members[0].sample_inputs[1].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.members[1].sample_inputs[1].current_value), 0.25f);
     EXPECT_FALSE(cleared_override.members[0].sample_inputs[1].has_concrete_override);
     EXPECT_FALSE(cleared_override.members[1].sample_inputs[1].has_concrete_override);
 
@@ -746,27 +691,24 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonic
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_polyphonic_interior_span",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-void polyphonic_module(iv::ModuleContext const& context)
+void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto& g = context.builder();
-    auto const dt = g.node<ValueSource>(&context.sample_period());
+
+
+
     iv::polyphonic<2>(g, [&]<size_t Voice>(auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
             "phase_offset"_P = 0.0,
-            "frequency"_P = 440.0,
-            "dt"_P = dt
+            "frequency"_P = 440.0
         );
         (void)Voice;
         g.outputs("main"_P = saw * m["amplitude"_P]);
     });
 }
-
-IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -798,17 +740,15 @@ TEST(IvModuleSourceIntrospection, ReloadKeepsVirtualNodeIdsAddressable)
 
     auto const initial = app.query_by_spans(
         std::filesystem::weakly_canonical(module_cpp),
-        {{.start = {.line = 7, .column = 1}, .end = {.line = 15, .column = 1}}});
+        {{.start = {.line = 7, .column = 1}, .end = {.line = 18, .column = 1}}});
     ASSERT_FALSE(initial.nodes.empty());
 
     auto const original_text = iv::test::read_text(module_cpp);
     iv::test::write_text(module_cpp, original_text + "\n");
-
     std::this_thread::sleep_for(1s);
     auto const reloaded = app.query_by_spans(
         std::filesystem::weakly_canonical(module_cpp),
-        {{.start = {.line = 7, .column = 1}, .end = {.line = 16, .column = 1}}});
-
+        {{.start = {.line = 7, .column = 1}, .end = {.line = 19, .column = 1}}});
     iv::test::write_text(module_cpp, original_text);
 
     EXPECT_FALSE(reloaded.nodes.empty());
