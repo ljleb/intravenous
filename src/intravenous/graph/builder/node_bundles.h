@@ -94,6 +94,10 @@ class NodeBundle {
     std::vector<EventOutputConfig> event_outputs{};
   };
 
+  // A subgraph owns hierarchy/lifetime identity, but its interface is owned by
+  // the referenced BoundaryNodeBundle. Counts are cached only so NodeRef can
+  // answer shape queries without owning GraphBuilderNodeBundles; all configs
+  // are resolved through the boundary by GraphBuilderNodeBundles.
   struct SubgraphNodeBundle {
     NodeBundleHandle boundary{};
     size_t child_begin = 0;
@@ -101,10 +105,10 @@ class NodeBundle {
     std::string kind{};
     NodeLifetime lifetime{};
     NodeTypeIdentity type_identity{};
-    std::vector<InputConfig> sample_input_configs{};
-    std::vector<OutputConfig> sample_output_configs{};
-    std::vector<EventInputConfig> event_input_configs{};
-    std::vector<EventOutputConfig> event_output_configs{};
+    size_t sample_input_count = 0;
+    size_t sample_output_count = 0;
+    size_t event_input_count = 0;
+    size_t event_output_count = 0;
   };
 
   using Payload = std::variant<ConcreteNodeBundle, TiledNodeBundle,
