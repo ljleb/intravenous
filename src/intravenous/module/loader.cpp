@@ -97,7 +97,7 @@ struct LoadedBinary {
     std::string id;
     std::filesystem::path artifact_path;
     std::shared_ptr<DynamicLibrary> library;
-    iv_module_descriptor_v1 const *descriptor = nullptr;
+    iv_module_descriptor_v2 const *descriptor = nullptr;
 };
 
 std::filesystem::path normalize(std::filesystem::path const &path)
@@ -642,10 +642,10 @@ class ModuleLoader::Impl {
         std::ostringstream export_tu;
         export_tu << "#include <intravenous/module/module.h>\n"
                   << "#include <" << root_include << ">\n"
-                  << "extern \"C\" IV_MODULE_EXPORT iv_module_descriptor_v1 const* iv_get_module_descriptor_v1() {\n"
-                  << "  static iv_module_descriptor_v1 const descriptor{IV_MODULE_ABI_VERSION_V1, \""
+                  << "extern \"C\" IV_MODULE_EXPORT iv_module_descriptor_v2 const* iv_get_module_descriptor_v2() {\n"
+                  << "  static iv_module_descriptor_v2 const descriptor{IV_MODULE_ABI_VERSION_V2, \""
                   << root.manifest.id
-                  << "\", &iv::details::generated_module_build_v1<&"
+                  << "\", &iv::details::generated_module_build_v2<&"
                   << root.manifest.main
                   << ">};\n  return &descriptor;\n}\n";
         write_text_if_different(export_file, export_tu.str());
@@ -661,7 +661,20 @@ class ModuleLoader::Impl {
                 "iv_add_runtime_module(iv_runtime_module)\n");
         }
 
+        auto const [cc, cxx] = compilers();
+        std::string generator = toolchain_.cmake_generator.value_or(
+            std::string(IV_CONFIGURED_CMAKE_GENERATOR));
+
         std::ostringstream signature;
+        signature << "module-descriptor-abi=2\n"
+                  << "config=" << config_name() << '\n'
+                  << "cmake=" << cmake_program().generic_string() << '\n'
+                  << "cc=" << cc.generic_string() << '\n'
+                  << "cxx=" << cxx.generic_string() << '\n'
+                  << "generator=" << generator << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/module.h") << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/template/SourceSpanRewrite.cmake") << '\n';
         for (auto const &module : closure.modules) {
             signature << key(module) << '\n'
                       << read_text(module.manifest_file) << '\n'
@@ -691,9 +704,6 @@ class ModuleLoader::Impl {
             include_list << include_dirs[i].generic_string();
         }
 
-        auto const [cc, cxx] = compilers();
-        std::string generator = toolchain_.cmake_generator.value_or(
-            std::string(IV_CONFIGURED_CMAKE_GENERATOR));
         std::ostringstream configure;
         configure << quote(cmake_program())
                   << " -S " << quote(source_dir)
@@ -799,17 +809,17 @@ public:
         auto artifact = build(root, closure, project_root);
 
         auto library = std::make_shared<DynamicLibrary>(artifact);
-        auto getter = reinterpret_cast<iv_get_module_descriptor_fn_v1>(
-            library->symbol("iv_get_module_descriptor_v1"));
+        auto getter = reinterpret_cast<iv_get_module_descriptor_fn_v2>(
+            library->symbol("iv_get_module_descriptor_v2"));
         if (!getter) {
             throw std::runtime_error(
-                "module '" + artifact.string() + "' does not export iv_get_module_descriptor_v1");
+                "module '" + artifact.string() + "' does not export iv_get_module_descriptor_v2");
         }
         auto descriptor = getter();
-        if (!descriptor || descriptor->abi_version != IV_MODULE_ABI_VERSION_V1 ||
+        if (!descriptor || descriptor->abi_version != IV_MODULE_ABI_VERSION_V2 ||
             !descriptor->build) {
             throw std::runtime_error(
-                "module '" + artifact.string() + "' has invalid descriptor v1");
+                "module '" + artifact.string() + "' has invalid descriptor v2");
         }
         if (!descriptor->id || root.manifest.id != descriptor->id) {
             throw std::runtime_error(
