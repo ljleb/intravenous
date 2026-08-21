@@ -289,20 +289,16 @@ TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutd
     auto const workspace = shared_inline_module_workspace(
         "runtime_integration_graph_input_lanes_initialize",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
 
 namespace {
-    void graph_input_module(iv::ModuleContext const& context)
+    void graph_input_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto& g = context.builder();
-        auto const dt = g.node<ValueSource>(&context.sample_period());
         auto const voice = g.node<SawOscillator>();
         voice(
             "phase_offset"_P = 0.0,
-            "frequency"_P = 440.0,
-            "dt"_P = dt
+            "frequency"_P = 440.0
         );
         auto const contribution = voice * 0.1;
         g.outputs(
@@ -310,8 +306,6 @@ namespace {
             "main"_P[stereo::right] = contribution);
     }
 }
-
-IV_EXPORT_MODULE("iv.test.graph_input_module", graph_input_module);
 )");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
@@ -442,27 +436,24 @@ TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
     auto const workspace = shared_inline_module_workspace(
         "runtime_integration_live_input_snapshots",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-void polyphonic_module(iv::ModuleContext const& context)
+void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto& g = context.builder();
-    auto const dt = g.node<ValueSource>(&context.sample_period());
+
+
+
     iv::polyphonic<2>(g, [&]<size_t Voice>(auto m) {
         auto const saw = g.node<SawOscillator>();
         saw(
             "phase_offset"_P = 0.0,
-            "frequency"_P = 440.0,
-            "dt"_P = dt
+            "frequency"_P = 440.0
         );
         (void)Voice;
         g.outputs("main"_P = saw * m["amplitude"_P]);
     });
 }
-
-IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
