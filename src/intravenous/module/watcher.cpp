@@ -13,6 +13,12 @@
 
 namespace iv {
     namespace {
+        bool is_ignored_dependency_directory(std::filesystem::path const& path)
+        {
+            auto const name = path.filename();
+            return name == "build" || name == ".git";
+        }
+
         std::filesystem::file_time_type compute_directory_stamp(std::filesystem::path const& dir)
         {
             std::error_code ec;
@@ -31,6 +37,12 @@ namespace iv {
                     return {};
                 }
                 auto const& entry = *it;
+                if (entry.is_directory()) {
+                    if (is_ignored_dependency_directory(entry.path())) {
+                        it.disable_recursion_pending();
+                    }
+                    continue;
+                }
                 if (!entry.is_regular_file()) {
                     continue;
                 }
@@ -38,9 +50,9 @@ namespace iv {
                     continue;
                 }
 
-                std::error_code ec;
-                auto stamp = std::filesystem::last_write_time(entry.path(), ec);
-                if (ec) {
+                std::error_code stamp_ec;
+                auto stamp = std::filesystem::last_write_time(entry.path(), stamp_ec);
+                if (stamp_ec) {
                     continue;
                 }
 
@@ -49,9 +61,9 @@ namespace iv {
             }
 
             if (!saw_file) {
-                std::error_code ec;
-                auto stamp = std::filesystem::last_write_time(dir, ec);
-                return ec ? std::filesystem::file_time_type {} : stamp;
+                std::error_code stamp_ec;
+                auto stamp = std::filesystem::last_write_time(dir, stamp_ec);
+                return stamp_ec ? std::filesystem::file_time_type {} : stamp;
             }
 
             return latest;
@@ -104,7 +116,10 @@ namespace iv {
             return;
         }
 
-        (void)inotify_add_watch(_fd, dir.string().c_str(), IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+        (void)inotify_add_watch(
+            _fd,
+            dir.string().c_str(),
+            IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
 
         auto const options = std::filesystem::directory_options::skip_permission_denied;
         for (std::filesystem::recursive_directory_iterator it(dir, options, ec), end;
@@ -114,9 +129,17 @@ namespace iv {
                 return;
             }
             auto const& entry = *it;
-            if (entry.is_directory()) {
-                (void)inotify_add_watch(_fd, entry.path().string().c_str(), IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+            if (!entry.is_directory()) {
+                continue;
             }
+            if (is_ignored_dependency_directory(entry.path())) {
+                it.disable_recursion_pending();
+                continue;
+            }
+            (void)inotify_add_watch(
+                _fd,
+                entry.path().string().c_str(),
+                IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
         }
     }
 #endif
