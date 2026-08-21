@@ -460,6 +460,7 @@ namespace iv {
                             .outputs = {},
                             .event_inputs = {},
                             .event_outputs = {},
+                            .sample_rate = ctx.sample_rate,
                             .scc_feedback_latency = 0,
                             .buffer = state.scc_states[scc_index]
                         },
@@ -602,6 +603,7 @@ namespace iv {
                         .outputs = {},
                         .event_inputs = {},
                         .event_outputs = {},
+                        .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = 0,
                         .buffer = state.scc_states[scc_index]
                     },

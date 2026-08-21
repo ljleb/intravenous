@@ -231,6 +231,7 @@ namespace iv {
                         .outputs = {},
                         .event_inputs = {},
                         .event_outputs = {},
+                        .sample_rate = ctx.sample_rate,
                         .scc_feedback_latency = _scc_feedback_latency,
                         .buffer = state.nested_node_states[node_i],
                     };

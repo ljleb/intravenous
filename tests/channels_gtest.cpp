@@ -361,6 +361,7 @@ void expect_static_stereo_copy(iv::ChannelLayout layout)
             .outputs = outputs,
             .event_inputs = {},
             .event_outputs = {},
+            .sample_rate = 48000,
             .scc_feedback_latency = 0,
             .buffer = {},
         }, 0, 4});
@@ -418,6 +419,7 @@ TEST(Channels, ChannelUnpackProjectsEachPlanarStereoChannelToMonoOutput)
             .outputs = outputs,
             .event_inputs = {},
             .event_outputs = {},
+            .sample_rate = 48000,
             .scc_feedback_latency = 0,
             .buffer = {},
         },
@@ -445,7 +447,7 @@ TEST(Channels, ChannelPackCombinesIndependentMonoInputsIntoPlanarStereoOutput)
     std::array<iv::OutputPort, 1> outputs{iv::OutputPort(output_data, 0)};
     iv::do_tick_block(Node{}, iv::TickBlockContext<Node>{iv::TickContext<Node>{
         .inputs = inputs, .outputs = outputs, .event_inputs = {}, .event_outputs = {},
-        .scc_feedback_latency = 0, .buffer = {}}, 0, 1});
+        .sample_rate = 48000, .scc_feedback_latency = 0, .buffer = {}}, 0, 1});
     EXPECT_EQ(output_samples[output_data.sample_index(0, 0)], iv::Sample{2.0f});
     EXPECT_EQ(output_samples[output_data.sample_index(0, 1)], iv::Sample{-3.0f});
 }
@@ -1108,6 +1110,7 @@ TEST(Channels, SampleProjectionInitializesUnwrittenOutputChannelsOnce)
                 .outputs = outputs,
                 .event_inputs = {},
                 .event_outputs = {},
+                .sample_rate = 48000,
                 .scc_feedback_latency = 0,
                 .buffer{},
             },
