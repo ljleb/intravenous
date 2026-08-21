@@ -1,17 +1,15 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
+#include <iv/modules/iv.test.behavior_voice>
 
 inline void behavior_project(iv::ModuleContext const& context)
 {
     using namespace iv;
     auto& g = context.builder();
     auto const dt = g.node<ValueSource>(&context.sample_period());
-
-    auto const voice_builder = context.load_builder("iv.test.behavior_voice");
     auto const phase = g.node<PhaseIntegrator>();
-    auto const voice = g.embed_subgraph(voice_builder);
-
+    auto const voice = g.module<&behavior_voice>();
     phase(0.0);
     auto const tone = voice(
         "amplitude"_P = 0.25,
@@ -19,8 +17,5 @@ inline void behavior_project(iv::ModuleContext const& context)
         "phase_offset"_P = phase,
         "dt"_P = dt
     );
-
     g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
-
-IV_EXPORT_MODULE("iv.test.behavior_project", behavior_project);
