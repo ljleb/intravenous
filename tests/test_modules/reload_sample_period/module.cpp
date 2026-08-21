@@ -1,13 +1,6 @@
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/dsl.h>
 
-namespace {
-void reload_sample_period(iv::ModuleContext const &context)
+void reload_sample_period(iv::GraphBuilder &g)
 {
-    auto &g = context.builder();
-    auto const dt = g.node<iv::ValueSource>(&context.sample_period());
-    g.outputs(dt);
+    g.outputs(0.0f);
 }
-} // namespace
-
-IV_EXPORT_MODULE("iv.test.reload_sample_period", reload_sample_period);
