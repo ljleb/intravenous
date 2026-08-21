@@ -684,20 +684,18 @@ IV_EXPORT_MODULE("iv.test.polyphonic_module", polyphonic_module);
     EXPECT_EQ(virtual_node.members[1].ordinal, 1u);
     EXPECT_EQ(virtual_node.members[0].kind, "iv::SawOscillator");
     EXPECT_EQ(virtual_node.members[1].kind, "iv::SawOscillator");
-    ASSERT_EQ(virtual_node.sample_inputs.size(), 3u);
+    ASSERT_EQ(virtual_node.sample_inputs.size(), 2u);
     EXPECT_EQ(virtual_node.sample_inputs[0].name, "phase_offset");
     EXPECT_EQ(virtual_node.sample_inputs[1].name, "frequency");
-    EXPECT_EQ(virtual_node.sample_inputs[2].name, "dt");
     ASSERT_EQ(virtual_node.sample_outputs.size(), 1u);
     EXPECT_EQ(virtual_node.sample_outputs[0].name, "out");
 
     auto const resolved = app.get_virtual_node(virtual_node.id);
     EXPECT_EQ(resolved.kind, "iv::SawOscillator");
     EXPECT_EQ(resolved.member_count, 2u);
-    ASSERT_EQ(resolved.sample_inputs.size(), 3u);
+    ASSERT_EQ(resolved.sample_inputs.size(), 2u);
     EXPECT_EQ(resolved.sample_inputs[0].name, "phase_offset");
     EXPECT_EQ(resolved.sample_inputs[1].name, "frequency");
-    EXPECT_EQ(resolved.sample_inputs[2].name, "dt");
     ASSERT_EQ(resolved.sample_outputs.size(), 1u);
     EXPECT_EQ(resolved.sample_outputs[0].name, "out");
 
