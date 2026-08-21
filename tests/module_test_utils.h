@@ -14,13 +14,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
-#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iterator>
 #include <iostream>
+#include <regex>
 #include <source_location>
 #include <sstream>
 #include <string>
@@ -311,122 +311,21 @@ namespace iv::test {
         return workspace;
     }
 
-    inline void replace_all(std::string& text, std::string_view from, std::string_view to)
-    {
-        if (from.empty()) return;
-        size_t pos = 0;
-        while ((pos = text.find(from, pos)) != std::string::npos) {
-            text.replace(pos, from.size(), to);
-            pos += to.size();
-        }
-    }
-
-    inline std::pair<std::string, std::string> legacy_inline_module_metadata(
-        std::string_view fallback_name,
+    inline std::pair<std::string, std::string> inline_module_metadata(
         std::string const& module_text)
     {
-        auto const marker = module_text.find("IV_EXPORT_MODULE");
-        if (marker == std::string::npos) {
-            return {"iv.test." + sanitize_test_token(fallback_name), sanitize_test_token(fallback_name)};
-        }
-        auto const first_quote = module_text.find('"', marker);
-        auto const second_quote = first_quote == std::string::npos
-            ? std::string::npos : module_text.find('"', first_quote + 1);
-        auto const comma = second_quote == std::string::npos
-            ? std::string::npos : module_text.find(',', second_quote + 1);
-        auto const close = comma == std::string::npos
-            ? std::string::npos : module_text.find(')', comma + 1);
-        if (first_quote == std::string::npos || second_quote == std::string::npos ||
-            comma == std::string::npos || close == std::string::npos) {
-            return {"iv.test." + sanitize_test_token(fallback_name), sanitize_test_token(fallback_name)};
-        }
-        auto id = module_text.substr(first_quote + 1, second_quote - first_quote - 1);
-        auto main = module_text.substr(comma + 1, close - comma - 1);
-        while (!main.empty() && std::isspace(static_cast<unsigned char>(main.front()))) main.erase(main.begin());
-        while (!main.empty() && std::isspace(static_cast<unsigned char>(main.back()))) main.pop_back();
-        return {std::move(id), std::move(main)};
-    }
-
-    inline void blank_line_preserving_offsets(std::string& source, size_t line_begin, size_t line_end)
-    {
-        std::fill(
-            source.begin() + static_cast<std::ptrdiff_t>(line_begin),
-            source.begin() + static_cast<std::ptrdiff_t>(line_end),
-            ' ');
-    }
-
-    inline void remove_obsolete_dt_plumbing(std::string& source)
-    {
-        size_t cursor = 0;
-        while (cursor < source.size()) {
-            auto const line_end_pos = source.find('\n', cursor);
-            auto const line_end = line_end_pos == std::string::npos ? source.size() : line_end_pos;
-            auto const line = std::string_view(source).substr(cursor, line_end - cursor);
-
-            bool const dt_declaration =
-                line.contains("auto const dt =") &&
-                (line.contains("context.sample_period()") || line.contains("g.node<ValueSource>") ||
-                 line.contains("g.node<iv::ValueSource>"));
-            bool const dt_argument = line.contains("\"dt\"_P") || line.contains("\"dt\"_F");
-
-            if (dt_argument) {
-                size_t previous_end = cursor;
-                if (previous_end > 0 && source[previous_end - 1] == '\n') --previous_end;
-                size_t previous_begin = previous_end == 0 ? 0 : source.rfind('\n', previous_end - 1);
-                previous_begin = previous_begin == std::string::npos ? 0 : previous_begin + 1;
-
-                size_t comma = previous_end;
-                while (comma > previous_begin && std::isspace(static_cast<unsigned char>(source[comma - 1]))) {
-                    --comma;
-                }
-                if (comma > previous_begin && source[comma - 1] == ',') {
-                    source[comma - 1] = ' ';
-                }
-                blank_line_preserving_offsets(source, cursor, line_end);
-            } else if (dt_declaration) {
-                blank_line_preserving_offsets(source, cursor, line_end);
-            }
-
-            if (line_end_pos == std::string::npos) break;
-            cursor = line_end_pos + 1;
-        }
-    }
-
-    inline std::string materialize_inline_module_source(std::string source)
-    {
-        // These transformations migrate historical source strings used by the
-        // tests. They deliberately do not exist in production module loading:
-        // authored modules must already use GraphBuilder& and DSP runtime values
-        // are supplied by TickContext rather than graph-authoring nodes/ports.
-        replace_all(source, ", iv::ModuleContext const& context", "");
-        replace_all(source, ", iv::ModuleContext const &context", "");
-        replace_all(source, "iv::ModuleContext const& context", "iv::GraphBuilder& g");
-        replace_all(source, "iv::ModuleContext const &context", "iv::GraphBuilder& g");
-        replace_all(source, "auto& g = context.builder();", "");
-        replace_all(source, "auto &g = context.builder();", "");
-        replace_all(source, "auto const& g = context.builder();", "");
-        replace_all(source, ", context)", ")");
-        replace_all(source, ", context);", ");");
-
-        // Historical declaration/introspection fixtures used sample_period only
-        // as a convenient address-backed ValueSource. Preserve a concrete node
-        // at the same source location without retaining any runtime config in
-        // module authoring. The padding keeps the replacement the same width as
-        // '&context.sample_period()' so column-based source-span expectations do
-        // not shift.
-        replace_all(source, "&context.sample_period()", "new iv::Sample{0.0f}    ");
-        remove_obsolete_dt_plumbing(source);
-
-        size_t marker = 0;
-        while ((marker = source.find("IV_EXPORT_MODULE", marker)) != std::string::npos) {
-            auto const line_begin = source.rfind('\n', marker);
-            auto const begin = line_begin == std::string::npos ? 0 : line_begin + 1;
-            auto const line_end = source.find('\n', marker);
-            auto const end = line_end == std::string::npos ? source.size() : line_end;
-            blank_line_preserving_offsets(source, begin, end);
-            marker = end;
-        }
-        return source;
+        static std::regex const main_pattern(
+            R"(\bvoid\s+([A-Za-z_][A-Za-z0-9_:]*)\s*\(\s*iv::GraphBuilder\s*&\s*[A-Za-z_][A-Za-z0-9_]*\s*\))");
+        std::smatch match;
+        require(
+            std::regex_search(module_text, match, main_pattern),
+            "inline module fixture must define void main(iv::GraphBuilder&)");
+        auto main = match[1].str();
+        auto const separator = main.rfind("::");
+        auto const id_component = separator == std::string::npos
+            ? main
+            : main.substr(separator + 2);
+        return {"iv.test." + id_component, std::move(main)};
     }
 
     inline void write_inline_module_manifest(
@@ -452,9 +351,9 @@ namespace iv::test {
         auto const workspace = fresh_module_fixture_workspace(test_name, location);
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
-        auto const [id, main] = legacy_inline_module_metadata(test_name, module_text);
+        auto const [id, main] = inline_module_metadata(module_text);
         write_inline_module_manifest(workspace, id, main);
-        write_text(workspace / "module.cpp", materialize_inline_module_source(module_text));
+        write_text(workspace / "module.cpp", module_text);
         return workspace;
     }
 
@@ -467,9 +366,9 @@ namespace iv::test {
             shared_test_fixtures_root() / (sanitize_test_token(test_name) + ".lock"));
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
-        auto const [id, main] = legacy_inline_module_metadata(test_name, module_text);
+        auto const [id, main] = inline_module_metadata(module_text);
         write_inline_module_manifest(workspace, id, main);
-        write_text(workspace / "module.cpp", materialize_inline_module_source(module_text));
+        write_text(workspace / "module.cpp", module_text);
         return workspace;
     }
 
