@@ -132,7 +132,7 @@ void PublicEventInputRef::_annotate_source_info(std::string_view id,std::string_
 void GraphBuilder::annotate_public_sample_output_source_info(std::span<SourceInfo const> infos){for(size_t i=0;i<infos.size();++i)_public_ports.annotate_sample_output_source_info(i,infos[i]);}
 void GraphBuilder::annotate_public_event_output_source_info(std::span<SourceInfo const> infos){for(size_t i=0;i<infos.size();++i)_public_ports.annotate_event_output_source_info(i,infos[i]);}
 
-NodeRef GraphBuilder::embed_subgraph(GraphBuilder const& child) {
+NodeRef GraphBuilder::embed_subgraph(GraphBuilder const& child,std::string_view kind) {
   if(!child._public_ports.sample_outputs_defined())details::error("builder "+child._identity.value+": g.outputs(...) must be called before insertion");
   auto const begin=_node_bundles.size();
   auto const offset=GraphBuilderChildEmbedder::embed(_node_bundles,_connections,_detach,_virtual_nodes,
@@ -140,7 +140,7 @@ NodeRef GraphBuilder::embed_subgraph(GraphBuilder const& child) {
   IV_ASSERT(offset==begin,"embedded child bundle offset changed unexpectedly");
   auto const boundary=offset+child._public_ports.boundary_handle();
   auto const count=child._node_bundles.size();
-  return NodeRef(*this,_node_bundles.append_subgraph(boundary,begin,count,"Subgraph"));
+  return NodeRef(*this,_node_bundles.append_subgraph(boundary,begin,count,kind));
 }
 
 void GraphBuilder::event_outputs(std::span<EventOutputRefConfig const> refs){_public_ports.define_event_outputs(*this,_node_bundles,_identity,refs);}
@@ -217,8 +217,36 @@ void GraphBuilder::connect_sample_output(NodeBundlePortId source,NodeRef const& 
   for(size_t i=0;i<sink.sample_input_count();++i)record_authored_sample_connection({target.node_bundle_handle(),PortKind::sample,i},semantic.select_channel(i));
 }
 EventPortRef GraphBuilder::event_output(NodeBundlePortId source) const{if(source.port_kind!=PortKind::event)details::error("attempted to read an event output from a sample NodeBundle port");return EventPortRef(const_cast<GraphBuilder&>(*this),source);}
-size_t GraphBuilder::sample_port_index(NodeBundleHandle h,bool inputs,std::string_view n) const{return inputs?_node_bundles.bundle(h).sample_input_index(n):_node_bundles.bundle(h).sample_output_index(n);}
-size_t GraphBuilder::event_port_index(NodeBundleHandle h,bool inputs,std::string_view n) const{return inputs?_node_bundles.bundle(h).event_input_index(n):_node_bundles.bundle(h).event_output_index(n);}
+size_t GraphBuilder::sample_port_index(NodeBundleHandle h,bool inputs,std::string_view n) const {
+  auto const& candidate=_node_bundles.bundle(h);
+  auto const count=inputs?candidate.sample_input_count():candidate.sample_output_count();
+  std::optional<size_t> match;
+  for(size_t i=0;i<count;++i){
+    auto const name=inputs
+      ? _node_bundles.resolve_sample_input({h,PortKind::sample,i}).config.name
+      : _node_bundles.resolve_sample_output({h,PortKind::sample,i}).config.name;
+    if(name!=n)continue;
+    if(match)details::error("NodeBundle port name '"+std::string(n)+"' is ambiguous");
+    match=i;
+  }
+  if(!match)details::error("NodeBundle port name '"+std::string(n)+"' does not exist");
+  return *match;
+}
+size_t GraphBuilder::event_port_index(NodeBundleHandle h,bool inputs,std::string_view n) const {
+  auto const& candidate=_node_bundles.bundle(h);
+  auto const count=inputs?candidate.event_input_count():candidate.event_output_count();
+  std::optional<size_t> match;
+  for(size_t i=0;i<count;++i){
+    auto const name=inputs
+      ? _node_bundles.resolve_event_input({h,PortKind::event,i}).config.name
+      : _node_bundles.resolve_event_output({h,PortKind::event,i}).config.name;
+    if(name!=n)continue;
+    if(match)details::error("NodeBundle port name '"+std::string(n)+"' is ambiguous");
+    match=i;
+  }
+  if(!match)details::error("NodeBundle port name '"+std::string(n)+"' does not exist");
+  return *match;
+}
 SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef const& p){if(p.graph_builder!=this)details::error("sample port belongs to another builder");return p;}
 SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef&& p){if(p.graph_builder!=this)details::error("sample port belongs to another builder");return std::move(p);}
 SamplePortRef GraphBuilder::lift_to_sample_port(NamedRef const& ref){return std::visit([&](auto const& v)->SamplePortRef{using T=std::remove_cvref_t<decltype(v)>;if constexpr(std::same_as<T,EventPortRef>)details::error("expected sample value, got event");else return lift_to_sample_port(v);},ref.value);}
