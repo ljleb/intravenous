@@ -27,6 +27,7 @@ class IvModuleInstancesExecution {
     };
 
     size_t block_size_ = 256;
+    size_t sample_rate_ = 48000;
     bool follows_transport_playhead_ = true;
     mutable std::mutex mutex_;
     std::unordered_map<std::string, InstanceTaskState> instances_by_id_;
@@ -36,13 +37,16 @@ class IvModuleInstancesExecution {
     static std::unique_ptr<BlockNodeExecutor> make_executor(
         GraphBuilder &builder,
         size_t block_size,
+        size_t sample_rate,
         std::optional<size_t> default_silence_ttl_samples);
 
 public:
     explicit IvModuleInstancesExecution(
         size_t block_size = 256,
-        bool initially_follows_transport_playhead = true)
+        bool initially_follows_transport_playhead = true,
+        size_t sample_rate = 48000)
       : block_size_(block_size),
+        sample_rate_(sample_rate),
         follows_transport_playhead_(initially_follows_transport_playhead)
     {}
 
