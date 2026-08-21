@@ -4,6 +4,8 @@
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder.h>
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -103,44 +105,21 @@ namespace {
         out << text;
     }
 
-    std::string json_string(std::string const& text, std::string_view key, std::filesystem::path const& path) {
-        std::string token = "\"" + std::string(key) + "\"";
-        auto p = text.find(token);
-        if (p == std::string::npos) throw std::runtime_error("manifest '" + path.string() + "' is missing string field '" + std::string(key) + "'");
-        p = text.find(':', p + token.size());
-        p = text.find('"', p + 1);
-        if (p == std::string::npos) throw std::runtime_error("manifest '" + path.string() + "' has invalid field '" + std::string(key) + "'");
-        std::string out;
-        for (++p; p < text.size(); ++p) {
-            if (text[p] == '"') return out;
-            if (text[p] == '\\' && p + 1 < text.size()) {
-                char c = text[++p];
-                if (c == 'n') out.push_back('\n'); else if (c == 't') out.push_back('\t'); else out.push_back(c);
-            } else out.push_back(text[p]);
-        }
-        throw std::runtime_error("manifest '" + path.string() + "' has unterminated field '" + std::string(key) + "'");
-    }
-
-    int json_int(std::string const& text, std::string_view key, std::filesystem::path const& path) {
-        std::string token = "\"" + std::string(key) + "\"";
-        auto p = text.find(token);
-        if (p == std::string::npos) throw std::runtime_error("manifest '" + path.string() + "' is missing integer field '" + std::string(key) + "'");
-        p = text.find(':', p + token.size());
-        if (p == std::string::npos) throw std::runtime_error("manifest '" + path.string() + "' has invalid field '" + std::string(key) + "'");
-        while (++p < text.size() && std::isspace(static_cast<unsigned char>(text[p]))) {}
-        size_t end = p;
-        while (end < text.size() && std::isdigit(static_cast<unsigned char>(text[end]))) ++end;
-        if (end == p) throw std::runtime_error("manifest '" + path.string() + "' has invalid integer field '" + std::string(key) + "'");
-        return std::stoi(text.substr(p, end - p));
-    }
-
     Manifest parse_manifest(std::filesystem::path const& file) {
-        auto text = read_text(file);
+        std::ifstream in(file);
+        if (!in) throw std::runtime_error("failed to open '" + file.string() + "'");
+
         Manifest m;
-        m.schema = json_int(text, "schema", file);
-        m.id = json_string(text, "id", file);
-        m.entry = json_string(text, "entry", file);
-        m.main = json_string(text, "main", file);
+        try {
+            auto const json = nlohmann::json::parse(in);
+            m.schema = json.at("schema").get<int>();
+            m.id = json.at("id").get<std::string>();
+            m.entry = json.at("entry").get<std::string>();
+            m.main = json.at("main").get<std::string>();
+        } catch (nlohmann::json::exception const& e) {
+            throw std::runtime_error("invalid module manifest '" + file.string() + "': " + e.what());
+        }
+
         if (m.schema != 1) throw std::runtime_error("manifest '" + file.string() + "' uses unsupported schema " + std::to_string(m.schema));
         if (m.id.empty()) throw std::runtime_error("manifest '" + file.string() + "' has empty id");
         if (m.entry.empty() || m.entry.is_absolute()) throw std::runtime_error("manifest '" + file.string() + "' entry must be a relative path");
