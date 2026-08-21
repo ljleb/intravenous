@@ -79,7 +79,6 @@ namespace iv {
             validate_max_block_size(_max_block_size, "node max_block_size() must be a power of 2");
 
             auto nested_context = [](auto const& ctx, auto& state) {
-                using ErasedContext = std::remove_cvref_t<decltype(ctx)>;
                 using ConcreteNode = Node;
                 return TickContext<ConcreteNode> {
                     .inputs = ctx.inputs,

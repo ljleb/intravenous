@@ -12,6 +12,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <cstring>
 #include <string_view>
 #include <sys/select.h>
 #include <sys/socket.h>
