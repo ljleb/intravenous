@@ -104,7 +104,9 @@ namespace iv::test {
 
     inline std::filesystem::path runtime_module_cache_root()
     {
-        return repo_root() / "build" / "iv_runtime_modules";
+        // Locks and other test-only shared state live here. Runtime module
+        // artifacts themselves are now owned by each project's build/iv tree.
+        return repo_root() / "build" / "test_module_locks";
     }
 
     inline std::filesystem::path shared_test_fixtures_root()
@@ -201,25 +203,34 @@ namespace iv::test {
         return out.str();
     }
 
+    inline std::filesystem::path project_root_for_module(std::filesystem::path module_dir)
+    {
+        module_dir = std::filesystem::weakly_canonical(module_dir).lexically_normal();
+        for (auto current = module_dir; !current.empty(); current = current.parent_path()) {
+            if (std::filesystem::exists(current / "iv_project.json") ||
+                std::filesystem::exists(current / "iv_project.jsonl")) {
+                return current;
+            }
+            if (current == current.root_path()) {
+                break;
+            }
+        }
+        if (module_dir.parent_path().filename() == "modules") {
+            return module_dir.parent_path().parent_path();
+        }
+        return module_dir;
+    }
+
     inline std::filesystem::path runtime_module_workspace_root(std::string_view id, std::filesystem::path const& module_dir)
     {
-        return runtime_module_cache_root() / (sanitize_module_id(id) + "_" + stable_path_hash(module_dir));
+        auto const project_root = project_root_for_module(module_dir);
+        return project_root / "build" / "iv" / "build" /
+            (sanitize_module_id(id) + "_" + stable_path_hash(module_dir));
     }
 
     inline std::filesystem::path runtime_module_workspace(std::string_view id, std::filesystem::path const& module_dir)
     {
-        auto const base = runtime_module_cache_root() / (sanitize_module_id(id) + "_" + stable_path_hash(module_dir));
-        auto const debug = base / "Debug";
-        auto const release = base / "Release";
-        auto const has_debug = std::filesystem::exists(debug);
-        auto const has_release = std::filesystem::exists(release);
-        if (has_debug && !has_release) {
-            return debug;
-        }
-        if (!has_debug && has_release) {
-            return release;
-        }
-        return base / active_build_config();
+        return runtime_module_workspace_root(id, module_dir) / active_build_config();
     }
 
     inline void require(bool condition, char const* message)
@@ -315,10 +326,6 @@ namespace iv::test {
     {
         auto const workspace = shared_test_fixtures_root() / sanitize_test_token(fixture_name);
         auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(fixture_name) + ".lock"));
-        // Shared fixtures are consumed concurrently by separate test processes.
-        // Initialize once instead of refreshing on every request: after this
-        // function returns, callers may be compiling or canonicalizing files in
-        // the workspace, so deleting it would race those readers.
         if (!std::filesystem::exists(workspace)) {
             copy_directory(test_modules_root() / fixture_name, workspace);
         }
@@ -338,6 +345,58 @@ namespace iv::test {
         return workspace;
     }
 
+    inline std::pair<std::string, std::string> legacy_inline_module_metadata(
+        std::string_view fallback_name,
+        std::string const& module_text)
+    {
+        auto const marker = module_text.find("IV_EXPORT_MODULE");
+        if (marker == std::string::npos) {
+            return {
+                "iv.test." + sanitize_test_token(fallback_name),
+                sanitize_test_token(fallback_name)
+            };
+        }
+
+        auto const first_quote = module_text.find('"', marker);
+        auto const second_quote = first_quote == std::string::npos
+            ? std::string::npos
+            : module_text.find('"', first_quote + 1);
+        auto const comma = second_quote == std::string::npos
+            ? std::string::npos
+            : module_text.find(',', second_quote + 1);
+        auto const close = comma == std::string::npos
+            ? std::string::npos
+            : module_text.find(')', comma + 1);
+        if (first_quote == std::string::npos || second_quote == std::string::npos ||
+            comma == std::string::npos || close == std::string::npos) {
+            return {
+                "iv.test." + sanitize_test_token(fallback_name),
+                sanitize_test_token(fallback_name)
+            };
+        }
+
+        auto id = module_text.substr(first_quote + 1, second_quote - first_quote - 1);
+        auto main = module_text.substr(comma + 1, close - comma - 1);
+        while (!main.empty() && std::isspace(static_cast<unsigned char>(main.front()))) main.erase(main.begin());
+        while (!main.empty() && std::isspace(static_cast<unsigned char>(main.back()))) main.pop_back();
+        return {std::move(id), std::move(main)};
+    }
+
+    inline void write_inline_module_manifest(
+        std::filesystem::path const& workspace,
+        std::string const& id,
+        std::string const& main)
+    {
+        std::ostringstream manifest;
+        manifest << "{\n"
+                 << "  \"schema\": 1,\n"
+                 << "  \"id\": \"" << id << "\",\n"
+                 << "  \"entry\": \"module.cpp\",\n"
+                 << "  \"main\": \"" << main << "\"\n"
+                 << "}\n";
+        write_text(workspace / "iv_module.json", manifest.str());
+    }
+
     inline std::filesystem::path make_inline_module_workspace(
         std::string_view test_name,
         std::string const& module_text,
@@ -346,6 +405,8 @@ namespace iv::test {
         auto const workspace = fresh_module_fixture_workspace(test_name, location);
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
+        auto const [id, main] = legacy_inline_module_metadata(test_name, module_text);
+        write_inline_module_manifest(workspace, id, main);
         write_text(workspace / "module.cpp", module_text);
         return workspace;
     }
@@ -358,6 +419,8 @@ namespace iv::test {
         auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(test_name) + ".lock"));
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
+        auto const [id, main] = legacy_inline_module_metadata(test_name, module_text);
+        write_inline_module_manifest(workspace, id, main);
         write_text(workspace / "module.cpp", module_text);
         return workspace;
     }
@@ -428,16 +491,7 @@ namespace iv::test {
             config.discovery_start,
             config.search_roots,
             config.toolchain);
-        iv::RenderConfig const render_config{};
-        iv::Sample device_sample_period = iv::sample_period(render_config);
-        auto loaded_graph = loader.load_root_definition(
-            module_root,
-            {
-                .sample_rate = render_config.sample_rate,
-                .num_channels = render_config.num_channels,
-                .max_block_frames = render_config.max_block_frames,
-            },
-            &device_sample_period);
+        auto loaded_graph = loader.load_root_definition(module_root);
         return iv::IvModuleReloadedDefinition{
             .definition_id = loaded_graph.module_id,
             .module_root = normalized_module_root,
@@ -489,10 +543,6 @@ namespace iv::test {
     )
     {
         write_text(path, text);
-        // Do not stamp inputs into the future. Ninja keeps regenerating its
-        // manifest while any CMake input remains newer than build.ninja.
-        // The write itself changes the timestamp; setting it to the current
-        // filesystem clock handles coarse timestamp resolutions as well.
         std::error_code ec;
         std::filesystem::last_write_time(
             path,
@@ -552,16 +602,6 @@ namespace iv::test {
     }
 
     template<typename Device>
-    inline iv::ModuleExecutorTarget module_executor_target(Device const& audio_device)
-    {
-        return iv::ModuleExecutorTarget{
-            .sample_rate = audio_device.config().sample_rate,
-            .num_channels = audio_device.config().num_channels,
-            .max_block_frames = audio_device.config().max_block_frames,
-        };
-    }
-
-    template<typename Device>
     inline iv::ResourceContext make_resource_context(Device const& audio_device)
     {
         iv::ResourceContext resources {};
@@ -576,7 +616,6 @@ namespace iv::test {
 #endif
         return resources;
     }
-
 
     inline void install_crash_handlers()
     {
