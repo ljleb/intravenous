@@ -2,25 +2,21 @@
 
 #include <intravenous/module/loader.h>
 #include <intravenous/compat.h>
-
 #include <intravenous/graph/builder.h>
 
 #include <algorithm>
 #include <chrono>
-#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <mutex>
 #include <optional>
-#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
-#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -29,1393 +25,397 @@
 #include <Windows.h>
 #else
 #include <dlfcn.h>
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
 #endif
 
 namespace iv {
-    namespace {
-        // The module cache is intentionally shared by independent runtime
-        // processes.  The in-process mutex below is therefore insufficient:
-        // two CTest workers (or two servers) can otherwise configure and
-        // rebuild the same workspace concurrently.
-        class WorkspaceBuildLock {
-#if !defined(_WIN32)
-            int fd_ = -1;
-#endif
+namespace {
+    struct Manifest {
+        int schema = 0;
+        std::string id;
+        std::filesystem::path entry;
+        std::string main;
+    };
 
-        public:
-            explicit WorkspaceBuildLock(std::filesystem::path const& workspace_root)
-            {
-#if !defined(_WIN32)
-                std::filesystem::create_directories(workspace_root);
-                auto const path = workspace_root / ".build.lock";
-                fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0666);
-                if (fd_ < 0 || ::flock(fd_, LOCK_EX) != 0) {
-                    if (fd_ >= 0) {
-                        ::close(fd_);
-                    }
-                    throw std::runtime_error("failed to lock module build workspace '" + workspace_root.string() + "'");
-                }
-#else
-                (void)workspace_root;
-#endif
-            }
+    struct ResolvedModule {
+        Manifest manifest;
+        std::filesystem::path module_dir;
+        std::filesystem::path manifest_file;
+        std::filesystem::path entry_file;
+        bool global = false;
+        std::filesystem::file_time_type source_stamp {};
+    };
 
-            ~WorkspaceBuildLock()
-            {
-#if !defined(_WIN32)
-                if (fd_ >= 0) {
-                    ::flock(fd_, LOCK_UN);
-                    ::close(fd_);
-                }
-#endif
-            }
-
-            WorkspaceBuildLock(WorkspaceBuildLock const&) = delete;
-            WorkspaceBuildLock& operator=(WorkspaceBuildLock const&) = delete;
-        };
-
-        struct DynamicLibrary {
+    struct DynamicLibrary {
 #if defined(_WIN32)
-            HMODULE handle = nullptr;
+        HMODULE handle = nullptr;
 #else
-            void* handle = nullptr;
+        void* handle = nullptr;
 #endif
-
-            explicit DynamicLibrary(std::filesystem::path const& path)
-            {
+        explicit DynamicLibrary(std::filesystem::path const& path) {
 #if defined(_WIN32)
-                handle = LoadLibraryW(path.c_str());
-                if (!handle) {
-                    throw std::runtime_error("LoadLibraryW failed for '" + path.string() + "'");
-                }
+            handle = LoadLibraryW(path.c_str());
+            if (!handle) throw std::runtime_error("LoadLibraryW failed for '" + path.string() + "'");
 #else
-                handle = dlopen(path.c_str(), RTLD_NOW);
-                if (!handle) {
-                    throw std::runtime_error("dlopen failed for '" + path.string() + "': " + dlerror());
-                }
+            handle = dlopen(path.c_str(), RTLD_NOW);
+            if (!handle) throw std::runtime_error("dlopen failed for '" + path.string() + "': " + dlerror());
 #endif
-            }
-
-            ~DynamicLibrary()
-            {
+        }
+        ~DynamicLibrary() {
 #if defined(_WIN32)
-                if (handle) {
-                    FreeLibrary(handle);
-                }
+            if (handle) FreeLibrary(handle);
 #else
-                if (handle) {
-                    dlclose(handle);
-                }
+            if (handle) dlclose(handle);
 #endif
-            }
-
-            DynamicLibrary(DynamicLibrary&& other) noexcept :
-                handle(std::exchange(other.handle, nullptr))
-            {}
-
-            DynamicLibrary& operator=(DynamicLibrary&& other) noexcept
-            {
-                if (this == &other) {
-                    return *this;
-                }
-
+        }
+        void* symbol(char const* name) const {
 #if defined(_WIN32)
-                if (handle) {
-                    FreeLibrary(handle);
-                }
+            return reinterpret_cast<void*>(GetProcAddress(handle, name));
 #else
-                if (handle) {
-                    dlclose(handle);
-                }
+            return dlsym(handle, name);
 #endif
-                handle = std::exchange(other.handle, nullptr);
-                return *this;
-            }
-
-            DynamicLibrary(DynamicLibrary const&) = delete;
-            DynamicLibrary& operator=(DynamicLibrary const&) = delete;
-
-            void* symbol(char const* name) const
-            {
-#if defined(_WIN32)
-                return reinterpret_cast<void*>(GetProcAddress(handle, name));
-#else
-                return dlsym(handle, name);
-#endif
-            }
-        };
-
-        struct ResolvedModule {
-            std::string id;
-            std::filesystem::path request_path;
-            std::filesystem::path module_dir;
-            std::filesystem::path entry_file;
-            std::filesystem::path cmake_dir;
-            bool has_custom_cmake = false;
-            std::filesystem::file_time_type source_stamp {};
-        };
-
-        struct LoadedBinary {
-            std::string id;
-            std::filesystem::path module_dir;
-            std::filesystem::path artifact_path;
-            std::shared_ptr<DynamicLibrary> library;
-            iv_module_descriptor_v1 const* descriptor = nullptr;
-        };
-
-        std::filesystem::path normalize_path(std::filesystem::path const& path)
-        {
-            std::error_code ec;
-            auto canonical = std::filesystem::weakly_canonical(path, ec);
-            if (!ec) {
-                return canonical;
-            }
-
-            return std::filesystem::absolute(path).lexically_normal();
-        }
-
-        std::string read_text(std::filesystem::path const& path)
-        {
-            std::ifstream in(path, std::ios::binary);
-            if (!in) {
-                throw std::runtime_error("failed to open '" + path.string() + "'");
-            }
-            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-
-        void write_text_if_different(std::filesystem::path const& path, std::string const& text)
-        {
-            if (std::filesystem::exists(path) && read_text(path) == text) {
-                return;
-            }
-
-            std::filesystem::create_directories(path.parent_path());
-            std::ofstream out(path, std::ios::binary | std::ios::trunc);
-            if (!out) {
-                throw std::runtime_error("failed to write '" + path.string() + "'");
-            }
-            out << text;
-        }
-
-        void copy_file_if_different(std::filesystem::path const& from, std::filesystem::path const& to)
-        {
-            write_text_if_different(to, read_text(from));
-        }
-
-        std::optional<std::string> parse_exported_module_id(std::filesystem::path const& file)
-        {
-            std::string text = read_text(file);
-            std::string const token = "IV_EXPORT_MODULE";
-            size_t token_pos = text.find(token);
-            if (token_pos == std::string::npos) {
-                return std::nullopt;
-            }
-
-            size_t quote_start = text.find('"', token_pos);
-            if (quote_start == std::string::npos) {
-                return std::nullopt;
-            }
-
-            size_t quote_end = quote_start + 1;
-            while (quote_end < text.size()) {
-                if (text[quote_end] == '"' && text[quote_end - 1] != '\\') {
-                    break;
-                }
-                ++quote_end;
-            }
-
-            if (quote_end >= text.size()) {
-                return std::nullopt;
-            }
-
-            return text.substr(quote_start + 1, quote_end - quote_start - 1);
-        }
-
-        std::filesystem::file_time_type compute_stamp_for_file(std::filesystem::path const& file)
-        {
-            std::error_code ec;
-            auto stamp = std::filesystem::last_write_time(file, ec);
-            if (ec) {
-                throw std::runtime_error("failed to read timestamp for '" + file.string() + "'");
-            }
-            return stamp;
-        }
-
-        std::filesystem::file_time_type compute_stamp_for_directory(std::filesystem::path const& dir)
-        {
-            std::filesystem::file_time_type latest {};
-            bool saw_file = false;
-            for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
-                if (!entry.is_regular_file()) {
-                    continue;
-                }
-                if (!is_module_dependency_source_path(entry.path())) {
-                    continue;
-                }
-
-                auto stamp = compute_stamp_for_file(entry.path());
-                latest = saw_file ? std::max(latest, stamp) : stamp;
-                saw_file = true;
-            }
-
-            if (!saw_file) {
-                return compute_stamp_for_file(dir);
-            }
-
-            return latest;
-        }
-
-        std::filesystem::path discover_repo_root(std::filesystem::path start)
-        {
-            start = normalize_path(start);
-            if (std::filesystem::is_regular_file(start)) {
-                start = start.parent_path();
-            }
-
-            for (auto current = start; !current.empty(); current = current.parent_path()) {
-                if (
-                    std::filesystem::exists(current / "CMakeLists.txt") &&
-                    std::filesystem::exists(current / "src" / "intravenous" / "dsl.h")
-                ) {
-                    return current;
-                }
-
-                if (current == current.root_path()) {
-                    break;
-                }
-            }
-
-            throw std::runtime_error("failed to discover repo root from '" + start.string() + "'");
-        }
-
-        std::string quote(std::filesystem::path const& path)
-        {
-            std::string text = path.generic_string();
-            std::string escaped;
-            escaped.reserve(text.size() + 2);
-            escaped.push_back('"');
-            for (char c : text) {
-                if (c == '"') {
-                    escaped += "\\\"";
-                } else {
-                    escaped.push_back(c);
-                }
-            }
-            escaped.push_back('"');
-            return escaped;
-        }
-
-        std::string sanitize_identifier(std::string_view text)
-        {
-            std::string sanitized(text);
-            if (sanitized.empty()) {
-                sanitized = "module";
-            }
-
-            for (char& c : sanitized) {
-                bool good =
-                    (c >= 'a' && c <= 'z') ||
-                    (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9');
-                if (!good) {
-                    c = '_';
-                }
-            }
-
-            return sanitized;
-        }
-
-        std::string stable_path_hash(std::filesystem::path const& path)
-        {
-            std::string const text = normalize_path(path).generic_string();
-            uint64_t hash = 1469598103934665603ull;
-            for (unsigned char c : text) {
-                hash ^= c;
-                hash *= 1099511628211ull;
-            }
-
-            std::ostringstream out;
-            out << std::hex << hash;
-            return out.str();
-        }
-
-        std::string shared_library_filename(std::string_view base_name)
-        {
-#if defined(_WIN32)
-            return std::string(base_name) + ".dll";
-#elif defined(__APPLE__)
-            return "lib" + std::string(base_name) + ".dylib";
-#else
-            return "lib" + std::string(base_name) + ".so";
-#endif
-        }
-
-        std::vector<std::filesystem::path> path_entries()
-        {
-            char const* value = std::getenv("PATH");
-            if (!value || !*value) {
-                return {};
-            }
-
-#if defined(_WIN32)
-            constexpr char separator = ';';
-#else
-            constexpr char separator = ':';
-#endif
-
-            std::vector<std::filesystem::path> entries;
-            std::string_view remaining(value);
-            while (!remaining.empty()) {
-                size_t split = remaining.find(separator);
-                std::string_view token = remaining.substr(0, split);
-                if (!token.empty()) {
-                    entries.emplace_back(std::string(token));
-                }
-                if (split == std::string_view::npos) {
-                    break;
-                }
-                remaining.remove_prefix(split + 1);
-            }
-
-            return entries;
-        }
-
-        std::optional<std::filesystem::path> find_program_on_path(std::string_view name)
-        {
-#if defined(_WIN32)
-            std::vector<std::string> suffixes;
-            char const* pathext = std::getenv("PATHEXT");
-            if (pathext && *pathext) {
-                std::string_view remaining(pathext);
-                while (!remaining.empty()) {
-                    size_t split = remaining.find(';');
-                    std::string_view token = remaining.substr(0, split);
-                    if (!token.empty()) {
-                        suffixes.emplace_back(token);
-                    }
-                    if (split == std::string_view::npos) {
-                        break;
-                    }
-                    remaining.remove_prefix(split + 1);
-                }
-            }
-            if (suffixes.empty()) {
-                suffixes = { ".exe", ".cmd", ".bat" };
-            }
-#endif
-
-            for (auto const& entry : path_entries()) {
-                std::filesystem::path base = entry / std::string(name);
-                std::error_code ec;
-                if (std::filesystem::exists(base, ec)) {
-                    return base;
-                }
-#if defined(_WIN32)
-                for (auto const& suffix : suffixes) {
-                    std::filesystem::path candidate = base;
-                    candidate += suffix;
-                    if (std::filesystem::exists(candidate, ec)) {
-                        return candidate;
-                    }
-                }
-#endif
-            }
-
-            return std::nullopt;
-        }
-
-        char const* active_build_config()
-        {
-#if defined(NDEBUG)
-            return "Release";
-#else
-            return "Debug";
-#endif
-        }
-
-        std::string elapsed_milliseconds(std::chrono::steady_clock::duration elapsed)
-        {
-            return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) + " ms";
-        }
-
-        void run_command(
-            std::string const& command,
-            ModuleLoader::LogSink const& log_sink = {},
-            std::string_view phase = "command")
-        {
-            auto capture_path = []() {
-                auto path = std::filesystem::temp_directory_path() / "intravenous_command_XXXXXX";
-#if defined(_WIN32)
-                path += ".log";
-                return path;
-#else
-                std::string templ = path.string();
-                std::vector<char> buffer(templ.begin(), templ.end());
-                buffer.push_back('\0');
-                int fd = mkstemp(buffer.data());
-                if (fd < 0) {
-                    throw std::runtime_error("failed to create temporary command log file");
-                }
-                close(fd);
-                return std::filesystem::path(buffer.data());
-#endif
-            };
-
-            auto const log_path = capture_path();
-            auto const started = std::chrono::steady_clock::now();
-            if (log_sink) {
-                log_sink("[" + std::string(phase) + "] running command: " + command);
-            }
-            std::string const redirected =
-                command + " > " + quote(log_path) + " 2>&1";
-            int const result = std::system(redirected.c_str());
-            std::string output;
-            try {
-                output = read_text(log_path);
-            } catch (...) {
-            }
-            if (!output.empty()) {
-                if (log_sink) {
-                    log_sink(output);
-                }
-            }
-            std::error_code ec;
-            std::filesystem::remove(log_path, ec);
-            auto const elapsed = elapsed_milliseconds(std::chrono::steady_clock::now() - started);
-            if (result != 0) {
-                if (log_sink) {
-                    log_sink("[" + std::string(phase) + "] failed after " + elapsed);
-                }
-                if (!output.empty()) {
-                    while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
-                        output.pop_back();
-                    }
-                    throw std::runtime_error(
-                        "command failed with exit code " + std::to_string(result) + ": " + command + "\n" + output
-                    );
-                }
-
-                throw std::runtime_error("command failed with exit code " + std::to_string(result) + ": " + command);
-            }
-            if (log_sink) {
-                log_sink("[" + std::string(phase) + "] completed in " + elapsed);
-            }
-        }
-
-        std::filesystem::file_time_type compute_module_build_stamp(std::filesystem::path const& dir)
-        {
-            std::filesystem::file_time_type latest {};
-            bool saw_file = false;
-
-            std::filesystem::path local_cmake = normalize_path(dir / "CMakeLists.txt");
-            for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
-                if (!entry.is_regular_file()) {
-                    continue;
-                }
-                if (normalize_path(entry.path()) == local_cmake) {
-                    continue;
-                }
-                if (!is_module_dependency_source_path(entry.path())) {
-                    continue;
-                }
-
-                auto stamp = compute_stamp_for_file(entry.path());
-                latest = saw_file ? std::max(latest, stamp) : stamp;
-                saw_file = true;
-            }
-
-            if (!saw_file) {
-                return compute_stamp_for_file(dir);
-            }
-
-            return latest;
-        }
-    }
-
-    class ModuleLoader::Impl {
-        struct BuildWorkspace {
-            std::filesystem::path root;
-            std::filesystem::path source_dir;
-            std::filesystem::path build_dir;
-            std::filesystem::path output_dir;
-            std::filesystem::path generations_dir;
-            std::filesystem::path configure_signature_file;
-            std::filesystem::path build_signature_file;
-            std::filesystem::path generator_file;
-        };
-
-        struct BuildSession {
-            Impl* impl = nullptr;
-            std::vector<ModuleRef> module_refs;
-            std::vector<ModuleDependency> dependencies;
-            std::unordered_map<std::string, std::shared_ptr<LoadedBinary>> binaries_by_id;
-            std::unordered_map<std::string, ResolvedModule> registry;
-            std::vector<std::filesystem::path> search_roots;
-            std::unordered_set<std::string> seen_dependencies;
-
-            TypeErasedModule load_module(std::string_view id)
-            {
-                auto it = registry.find(std::string(id));
-                if (it == registry.end()) {
-                    std::vector<std::string> known_ids;
-                    known_ids.reserve(registry.size());
-                    for (auto const& [known_id, _] : registry) {
-                        known_ids.push_back(known_id);
-                    }
-                    std::sort(known_ids.begin(), known_ids.end());
-
-                    std::ostringstream error;
-                    error << "unknown module id '" << id << "'";
-                    if (!search_roots.empty()) {
-                        error << " in search roots:";
-                        for (auto const& root : search_roots) {
-                            error << "\n  " << root.string();
-                        }
-                    }
-                    if (!known_ids.empty()) {
-                        error << "\nknown module ids:";
-                        size_t count = 0;
-                        for (auto const& known_id : known_ids) {
-                            error << "\n  " << known_id;
-                            if (++count == 8) {
-                                if (known_ids.size() > count) {
-                                    error << "\n  ...";
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    throw std::runtime_error(error.str());
-                }
-
-                ResolvedModule const& resolved = it->second;
-                if (!seen_dependencies.contains(resolved.id)) {
-                    dependencies.push_back(ModuleDependency {
-                        .id = resolved.id,
-                        .module_dir = resolved.module_dir,
-                        .entry_file = resolved.entry_file,
-                        .source_stamp = resolved.source_stamp,
-                    });
-                    seen_dependencies.insert(resolved.id);
-                }
-
-                if (auto found = binaries_by_id.find(resolved.id); found != binaries_by_id.end()) {
-                    auto binary = found->second;
-                    return TypeErasedModule([binary](ModuleContext const& context) {
-                        if (char const* error = binary->descriptor->build(context)) {
-                            throw std::runtime_error(error);
-                        }
-                    });
-                }
-
-                auto binary = impl->build_and_load_binary(resolved);
-                binaries_by_id.emplace(resolved.id, binary);
-                module_refs.push_back(binary);
-                return TypeErasedModule([binary](ModuleContext const& context) {
-                    if (char const* error = binary->descriptor->build(context)) {
-                        throw std::runtime_error(error);
-                    }
-                });
-            }
-
-            void ensure_loaded_binary_dependencies()
-            {
-                for (auto const& [id, _] : binaries_by_id) {
-                    if (seen_dependencies.contains(id)) {
-                        continue;
-                    }
-
-                    auto resolved = registry.find(id);
-                    if (resolved == registry.end()) {
-                        continue;
-                    }
-
-                    dependencies.push_back(ModuleDependency {
-                        .id = resolved->second.id,
-                        .module_dir = resolved->second.module_dir,
-                        .entry_file = resolved->second.entry_file,
-                        .source_stamp = resolved->second.source_stamp,
-                    });
-                    seen_dependencies.insert(id);
-                }
-            }
-        };
-
-    public:
-        std::filesystem::path repo_root;
-        std::filesystem::path iv_source_dir;
-        std::filesystem::path third_party_include_dir;
-        std::filesystem::path cache_root;
-        std::filesystem::path default_template_path;
-        std::filesystem::path default_pch_path;
-        std::vector<std::filesystem::path> extra_search_roots;
-        ModuleLoaderToolchainConfig toolchain;
-        LogSink log_sink;
-        mutable std::mutex build_mutex;
-
-        explicit Impl(
-            std::filesystem::path discovery_start,
-            std::vector<std::filesystem::path> extra_roots,
-            ModuleLoaderToolchainConfig toolchain_,
-            LogSink log_sink_
-        ) :
-            repo_root(discover_repo_root(std::move(discovery_start))),
-            iv_source_dir(repo_root / "src"),
-            third_party_include_dir(iv_source_dir / "intravenous" / "third_party"),
-            cache_root(repo_root / "build" / "iv_runtime_modules"),
-            default_template_path(iv_source_dir / "intravenous" / "module" / "template" / "CMakeLists.txt"),
-            default_pch_path(iv_source_dir / "intravenous" / "module" / "template" / "module_pch.h"),
-            toolchain(std::move(toolchain_)),
-            log_sink(std::move(log_sink_))
-        {
-            std::filesystem::create_directories(cache_root);
-            for (auto& root : extra_roots) {
-                extra_search_roots.push_back(normalize_path(root));
-            }
-        }
-
-        static TypeErasedModule load_from_context(void* session_ptr, std::string_view id)
-        {
-            return static_cast<BuildSession*>(session_ptr)->load_module(id);
-        }
-
-        ResolvedModule resolve_module_path(std::filesystem::path const& requested_path) const
-        {
-            std::filesystem::path normalized = normalize_path(requested_path);
-
-            if (std::filesystem::is_directory(normalized)) {
-                std::filesystem::path entry = normalized / "module.cpp";
-                if (!std::filesystem::exists(entry)) {
-                    throw std::runtime_error(
-                        "module directory '" + normalized.string() + "' does not contain module.cpp"
-                    );
-                }
-
-                auto id = parse_exported_module_id(entry);
-                if (!id.has_value()) {
-                    throw std::runtime_error(
-                        "module '" + entry.string() + "' does not declare IV_EXPORT_MODULE(\"id\", ...)"
-                    );
-                }
-
-                std::filesystem::path cmake = normalized / "CMakeLists.txt";
-                return ResolvedModule {
-                    .id = *id,
-                    .request_path = normalized,
-                    .module_dir = normalized,
-                    .entry_file = normalize_path(entry),
-                    .cmake_dir = normalized,
-                    .has_custom_cmake = std::filesystem::exists(cmake),
-                    .source_stamp = compute_stamp_for_directory(normalized),
-                };
-            }
-
-            if (!std::filesystem::exists(normalized)) {
-                throw std::runtime_error("module path '" + normalized.string() + "' does not exist");
-            }
-
-            if (normalized.extension() != ".cpp") {
-                throw std::runtime_error("module file '" + normalized.string() + "' must be a .cpp file");
-            }
-
-            auto id = parse_exported_module_id(normalized);
-            if (!id.has_value()) {
-                throw std::runtime_error(
-                    "module '" + normalized.string() + "' does not declare IV_EXPORT_MODULE(\"id\", ...)"
-                );
-            }
-
-            std::filesystem::path module_dir = normalized.parent_path();
-            std::filesystem::path cmake = module_dir / "CMakeLists.txt";
-            return ResolvedModule {
-                .id = *id,
-                .request_path = normalized,
-                .module_dir = module_dir,
-                .entry_file = normalized,
-                .cmake_dir = module_dir,
-                .has_custom_cmake = std::filesystem::exists(cmake),
-                .source_stamp = compute_stamp_for_directory(module_dir),
-            };
-        }
-
-        std::unordered_map<std::string, ResolvedModule> discover_registry(std::vector<std::filesystem::path> const& search_roots) const
-        {
-            std::unordered_map<std::string, ResolvedModule> registry;
-
-            for (auto const& search_root : search_roots) {
-                if (!std::filesystem::exists(search_root)) {
-                    continue;
-                }
-
-                for (auto const& entry : std::filesystem::recursive_directory_iterator(search_root)) {
-                    if (!entry.is_regular_file() || entry.path().filename() != "module.cpp") {
-                        continue;
-                    }
-
-                    if (!parse_exported_module_id(entry.path()).has_value()) {
-                        continue;
-                    }
-
-                    ResolvedModule resolved = resolve_module_path(entry.path().parent_path());
-                    if (auto it = registry.find(resolved.id); it != registry.end()) {
-                        if (it->second.entry_file != resolved.entry_file) {
-                            throw std::runtime_error(
-                                "duplicate module id '" + resolved.id + "' in '" +
-                                it->second.entry_file.string() + "' and '" + resolved.entry_file.string() + "'"
-                            );
-                        }
-                    } else {
-                        registry.emplace(resolved.id, std::move(resolved));
-                    }
-                }
-            }
-
-            return registry;
-        }
-
-        std::filesystem::path module_workspace(std::string_view id, std::filesystem::path const& module_dir) const
-        {
-            return cache_root / (sanitize_identifier(id) + "_" + stable_path_hash(module_dir)) / active_build_config();
-        }
-
-        BuildWorkspace build_workspace_for(ResolvedModule const& resolved) const
-        {
-            std::filesystem::path root = module_workspace(resolved.id, resolved.module_dir);
-            return BuildWorkspace {
-                .root = root,
-                .source_dir = root / "src",
-                .build_dir = root / "build",
-                .output_dir = root / "out",
-                .generations_dir = root / "generations",
-                .configure_signature_file = root / "configure.signature",
-                .build_signature_file = root / "build.signature",
-                .generator_file = root / "generator.txt",
-            };
-        }
-
-        std::string configure_signature(ResolvedModule const& resolved, std::filesystem::path const& output_dir, std::string const& output_name) const
-        {
-            auto const [c_compiler, cxx_compiler] = preferred_module_compilers();
-            auto const cmake_program = preferred_cmake_program();
-            auto const cmake_generator = preferred_cmake_generator();
-            auto const make_program = preferred_make_program();
-            auto const juce_dir = preferred_juce_dir();
-
-            std::ostringstream sig;
-            sig
-                << "id=" << resolved.id << '\n'
-                << "entry=" << resolved.entry_file.generic_string() << '\n'
-                << "module_dir=" << resolved.module_dir.generic_string() << '\n'
-                << "custom=" << resolved.has_custom_cmake << '\n'
-                << "template_stamp=" << compute_stamp_for_file(default_template_path).time_since_epoch().count() << '\n'
-                << "module_project_init_stamp=" << compute_stamp_for_file(repo_root / "src" / "intravenous" / "module" / "template" / "ModuleProjectInit.cmake").time_since_epoch().count() << '\n'
-                << "module_support_stamp=" << compute_stamp_for_file(repo_root / "src" / "intravenous" / "module" / "template" / "ModuleSupport.cmake").time_since_epoch().count() << '\n'
-                << "juce_support_stamp=" << compute_stamp_for_file(repo_root / "src" / "intravenous" / "module" / "template" / "JuceSupport.cmake").time_since_epoch().count() << '\n'
-                << "source_span_rewrite_stamp=" << compute_stamp_for_file(repo_root / "src" / "intravenous" / "module" / "template" / "SourceSpanRewrite.cmake").time_since_epoch().count() << '\n'
-                << "custom_stamp=" << (resolved.has_custom_cmake ? compute_stamp_for_file(resolved.cmake_dir / "CMakeLists.txt").time_since_epoch().count() : 0) << '\n'
-                << "iv_module_shared_library=" << IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY << '\n'
-                << "core_enable_juce_vst=" << IV_CONFIGURED_ENABLE_JUCE_VST << '\n'
-                << "juce_web_browser=" << IV_CONFIGURED_JUCE_WEB_BROWSER << '\n'
-                << "juce_use_curl=" << IV_CONFIGURED_JUCE_USE_CURL << '\n'
-                << "c_compiler=" << c_compiler.generic_string() << '\n'
-                << "cxx_compiler=" << cxx_compiler.generic_string() << '\n'
-                << "cmake_program=" << cmake_program.generic_string() << '\n'
-                << "cmake_generator=" << cmake_generator << '\n'
-                << "make_program=" << make_program.generic_string() << '\n'
-                << "source_span_rewriter=" << IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER << '\n'
-                << "juce_dir=" << juce_dir.generic_string() << '\n'
-                << "juce_modules_dir=" << IV_CONFIGURED_JUCE_MODULES_DIR << '\n'
-                << "output_name=" << output_name << '\n'
-                << "output_dir=" << output_dir.generic_string() << '\n'
-                << "build_profiling=always-on-v1\n";
-            return sig.str();
-        }
-
-        std::string build_signature(ResolvedModule const& resolved) const
-        {
-            std::ostringstream sig;
-            sig
-                << "id=" << resolved.id << '\n'
-                << "build_stamp=" << compute_module_build_stamp(resolved.module_dir).time_since_epoch().count() << '\n'
-                << "core_stamp=" << compute_stamp_for_directory(iv_source_dir).time_since_epoch().count() << '\n';
-            return sig.str();
-        }
-
-        std::filesystem::path ensure_default_template_workspace(std::filesystem::path const& source_dir) const
-        {
-            std::filesystem::create_directories(source_dir);
-            std::filesystem::path const template_dir = repo_root / "src" / "intravenous" / "module" / "template";
-            copy_file_if_different(default_template_path, source_dir / "CMakeLists.txt");
-            copy_file_if_different(template_dir / "ModuleProjectInit.cmake", source_dir / "ModuleProjectInit.cmake");
-            copy_file_if_different(template_dir / "ModuleSupport.cmake", source_dir / "ModuleSupport.cmake");
-            copy_file_if_different(template_dir / "JuceSupport.cmake", source_dir / "JuceSupport.cmake");
-            copy_file_if_different(template_dir / "SourceSpanRewrite.cmake", source_dir / "SourceSpanRewrite.cmake");
-            return source_dir;
-        }
-
-        std::optional<std::string> configured_generator(BuildWorkspace const& workspace) const
-        {
-            if (std::filesystem::exists(workspace.generator_file)) {
-                return read_text(workspace.generator_file);
-            }
-
-            std::filesystem::path cache_path = workspace.build_dir / "CMakeCache.txt";
-            if (!std::filesystem::exists(cache_path)) {
-                return std::nullopt;
-            }
-
-            std::ifstream in(cache_path);
-            std::string line;
-            while (std::getline(in, line)) {
-                static std::string const prefix = "CMAKE_GENERATOR:INTERNAL=";
-                if (line.starts_with(prefix)) {
-                    return line.substr(prefix.size());
-                }
-            }
-
-            return std::nullopt;
-        }
-
-        std::string preferred_cmake_generator() const
-        {
-            if (toolchain.cmake_generator.has_value()) {
-                return *toolchain.cmake_generator;
-            }
-
-            if (std::string_view(IV_CONFIGURED_CMAKE_GENERATOR).size() != 0) {
-                return IV_CONFIGURED_CMAKE_GENERATOR;
-            }
-
-            return {};
-        }
-
-        std::filesystem::path existing_program_or_empty(std::optional<std::filesystem::path> const& configured) const
-        {
-            if (!configured.has_value()) {
-                return {};
-            }
-            if (!std::filesystem::exists(*configured)) {
-                throw std::runtime_error("configured program does not exist: " + configured->string());
-            }
-            return *configured;
-        }
-
-        std::filesystem::path preferred_cmake_program() const
-        {
-            if (auto configured = existing_program_or_empty(toolchain.cmake_program); !configured.empty()) {
-                return configured;
-            }
-
-            if (std::string_view(IV_CONFIGURED_CMAKE_COMMAND).size() != 0) {
-                return std::filesystem::path(IV_CONFIGURED_CMAKE_COMMAND);
-            }
-
-            if (auto found = find_program_on_path("cmake"); found.has_value()) {
-                return *found;
-            }
-
-            throw std::runtime_error("runtime module configure requires cmake, but it was not found");
-        }
-
-        std::filesystem::path preferred_make_program() const
-        {
-            if (auto configured = existing_program_or_empty(toolchain.make_program); !configured.empty()) {
-                return configured;
-            }
-
-            if (std::string_view(IV_CONFIGURED_MAKE_PROGRAM).size() != 0) {
-                std::filesystem::path configured = IV_CONFIGURED_MAKE_PROGRAM;
-                if (!configured.empty() && std::filesystem::exists(configured)) {
-                    return configured;
-                }
-            }
-
-            return {};
-        }
-
-        std::filesystem::path preferred_juce_dir() const
-        {
-            if (toolchain.juce_dir.has_value()) {
-                return *toolchain.juce_dir;
-            }
-
-            if (std::string_view(IV_CONFIGURED_JUCE_DIR).size() != 0) {
-                return std::filesystem::path(IV_CONFIGURED_JUCE_DIR);
-            }
-
-            return {};
-        }
-
-        std::pair<std::filesystem::path, std::filesystem::path> preferred_module_compilers() const
-        {
-            if (toolchain.c_compiler.has_value() || toolchain.cxx_compiler.has_value()) {
-                if (!toolchain.c_compiler.has_value() || !toolchain.cxx_compiler.has_value()) {
-                    throw std::runtime_error("runtime module toolchain override requires both c_compiler and cxx_compiler");
-                }
-                if (!std::filesystem::exists(*toolchain.c_compiler)) {
-                    throw std::runtime_error("configured C compiler does not exist: " + toolchain.c_compiler->string());
-                }
-                if (!std::filesystem::exists(*toolchain.cxx_compiler)) {
-                    throw std::runtime_error("configured C++ compiler does not exist: " + toolchain.cxx_compiler->string());
-                }
-                return {*toolchain.c_compiler, *toolchain.cxx_compiler};
-            }
-
-            if (
-                std::string_view(IV_CONFIGURED_C_COMPILER).size() != 0 &&
-                std::string_view(IV_CONFIGURED_CXX_COMPILER).size() != 0 &&
-                std::filesystem::exists(std::filesystem::path(IV_CONFIGURED_C_COMPILER)) &&
-                std::filesystem::exists(std::filesystem::path(IV_CONFIGURED_CXX_COMPILER))
-            ) {
-                return {
-                    std::filesystem::path(IV_CONFIGURED_C_COMPILER),
-                    std::filesystem::path(IV_CONFIGURED_CXX_COMPILER),
-                };
-            }
-
-            auto clangxx = find_program_on_path("clang++");
-            if (!clangxx.has_value()) {
-                throw std::runtime_error(
-                    "runtime module configure requires clang++, but it was not found on PATH"
-                );
-            }
-
-            auto clang = find_program_on_path("clang");
-            if (!clang.has_value()) {
-                throw std::runtime_error(
-                    "runtime module configure requires clang, but it was not found on PATH"
-                );
-            }
-
-            return {*clang, *clangxx};
-        }
-
-        std::string choose_generator(BuildWorkspace const& workspace, bool should_configure) const
-        {
-            if (should_configure) {
-                return preferred_cmake_generator();
-            }
-
-            if (auto configured = configured_generator(workspace); configured.has_value() && !configured->empty()) {
-                return *configured;
-            }
-
-            return {};
-        }
-
-        void configure_workspace(
-            BuildWorkspace const& workspace,
-            ResolvedModule const& resolved,
-            std::filesystem::path const& configure_source,
-            std::string const& output_name,
-            std::string const& configure_signature_text,
-            std::string const& generator,
-            ModuleLoader::LogSink const& command_log
-        ) const
-        {
-            auto const [c_compiler, cxx_compiler] = preferred_module_compilers();
-
-            if (!generator.empty()) {
-                if (
-                    auto existing = configured_generator(workspace);
-                    existing.has_value() &&
-                    *existing != generator &&
-                    std::filesystem::exists(workspace.build_dir / "CMakeCache.txt")
-                ) {
-                    std::filesystem::remove_all(workspace.build_dir);
-                }
-            }
-
-            std::ostringstream configure;
-            configure
-                << quote(preferred_cmake_program()) << " -S " << quote(configure_source)
-                << " -B " << quote(workspace.build_dir);
-            if (!generator.empty()) {
-                configure << " -G " << quote(std::filesystem::path(generator));
-                auto const make_program = preferred_make_program();
-                if (!make_program.empty()) {
-                    configure << " -DCMAKE_MAKE_PROGRAM=" << quote(make_program);
-                }
-            }
-            configure
-                << " -DCMAKE_BUILD_TYPE=" << active_build_config()
-                << " -DCMAKE_C_COMPILER=" << quote(c_compiler)
-                << " -DCMAKE_CXX_COMPILER=" << quote(cxx_compiler)
-                << " -DCMAKE_PROJECT_INCLUDE=" << quote(repo_root / "src" / "intravenous" / "module" / "template" / "ModuleProjectInit.cmake")
-                << " -DIV_MODULE_ENTRY_FILE=" << quote(resolved.entry_file)
-                << " -DIV_MODULE_SOURCE_DIR=" << quote(resolved.module_dir)
-                << " -DIV_INCLUDE_DIR=" << quote(iv_source_dir)
-                << " -DIV_SOURCE_DIR=" << quote(iv_source_dir / "intravenous")
-                << " -DIV_THIRD_PARTY_INCLUDE_DIR=" << quote(third_party_include_dir)
-                << " -DIV_CORE_ENABLE_JUCE_VST=" << IV_CONFIGURED_ENABLE_JUCE_VST
-                << " -DJUCE_WEB_BROWSER=" << IV_CONFIGURED_JUCE_WEB_BROWSER
-                << " -DJUCE_USE_CURL=" << IV_CONFIGURED_JUCE_USE_CURL
-                << " -DIV_MODULE_OUTPUT_DIR=" << quote(workspace.output_dir)
-                << " -DIV_MODULE_OUTPUT_NAME=" << quote(std::filesystem::path(output_name))
-                << " -DIV_MODULE_PCH_HEADER=" << quote(default_pch_path);
-            if (std::string_view(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY).size() != 0) {
-                configure << " -DIV_MODULE_SHARED_LIBRARY=" << quote(std::filesystem::path(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY));
-            }
-            if (std::string_view(IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER).size() != 0) {
-                configure << " -DIV_SOURCE_SPAN_REWRITER=" << quote(std::filesystem::path(IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER));
-            }
-            if (std::string_view(IV_CONFIGURED_JUCE_MODULES_DIR).size() != 0) {
-                configure << " -DIV_JUCE_MODULES_DIR=" << quote(std::filesystem::path(IV_CONFIGURED_JUCE_MODULES_DIR));
-            }
-            if (auto juce_dir = preferred_juce_dir(); !juce_dir.empty()) {
-                configure << " -DJUCE_DIR=" << quote(juce_dir);
-            }
-            configure
-                << " -DIV_MODULE_ENABLE_TIME_TRACE=ON"
-                << " -DIV_MODULE_PROFILE_BUILD_STEPS=ON"
-                << " -DIV_MODULE_PROFILE_COMPILATION=ON";
-            run_command(configure.str(), command_log, "configure");
-
-            write_text_if_different(workspace.configure_signature_file, configure_signature_text);
-            write_text_if_different(workspace.generator_file, generator);
-        }
-
-        void build_workspace(BuildWorkspace const& workspace, std::string const&, ModuleLoader::LogSink const& command_log) const
-        {
-            std::ostringstream build;
-            build
-                << quote(preferred_cmake_program()) << " --build " << quote(workspace.build_dir)
-                << " --config " << active_build_config()
-                << " --parallel";
-            build << " --verbose";
-            run_command(build.str(), command_log, "build");
-        }
-
-        void publish_compile_database(
-            ResolvedModule const& resolved,
-            BuildWorkspace const& workspace) const noexcept
-        {
-            if (!find_program_on_path("clangd")) {
-                return;
-            }
-
-            std::error_code ec;
-            auto const source = workspace.build_dir / "compile_commands.json";
-            if (!std::filesystem::is_regular_file(source, ec) || ec) {
-                return;
-            }
-
-            auto const legacy_metadata_dir = resolved.module_dir / ".intravenous-tooling";
-            std::filesystem::remove(
-                legacy_metadata_dir / "compile_commands.owner",
-                ec);
-            ec.clear();
-            std::filesystem::remove(legacy_metadata_dir, ec);
-            ec.clear();
-
-            auto const destination = resolved.module_dir / "compile_commands.json";
-            auto const destination_exists = std::filesystem::exists(destination, ec);
-            if (ec) {
-                return;
-            }
-            if (destination_exists) {
-                try {
-                    if (read_text(source) == read_text(destination)) {
-                        return;
-                    }
-                } catch (...) {
-                    // A failed comparison should not prevent a best-effort refresh.
-                }
-            }
-
-            auto const temporary = resolved.module_dir / "compile_commands.json.tmp";
-            std::filesystem::copy_file(
-                source,
-                temporary,
-                std::filesystem::copy_options::overwrite_existing,
-                ec);
-            if (ec) {
-                return;
-            }
-
-            std::filesystem::rename(temporary, destination, ec);
-            if (ec) {
-                std::filesystem::remove(temporary, ec);
-                return;
-            }
-        }
-
-        std::filesystem::path build_artifact(ResolvedModule const& resolved) const
-        {
-            std::lock_guard lock(build_mutex);
-
-            std::string output_name = sanitize_identifier(resolved.id);
-            BuildWorkspace workspace = build_workspace_for(resolved);
-            WorkspaceBuildLock const workspace_lock(workspace.root);
-            std::filesystem::create_directories(workspace.output_dir);
-            std::filesystem::create_directories(workspace.generations_dir);
-
-            std::filesystem::path const trace_path = workspace.root / "build.trace.log";
-            ModuleLoader::LogSink const trace = [trace_path](std::string const& message) {
-                std::ofstream out(trace_path, std::ios::app);
-                if (out) {
-                    out << message;
-                    if (!message.ends_with('\n')) {
-                        out << '\n';
-                    }
-                }
-            };
-            auto const build_started = std::chrono::steady_clock::now();
-            if (log_sink) {
-                log_sink("module build started: " + resolved.id);
-            }
-            trace("module=" + resolved.id);
-            trace("workspace=" + workspace.root.string());
-
-            std::filesystem::path configure_source =
-                resolved.has_custom_cmake
-                    ? resolved.cmake_dir
-                    : ensure_default_template_workspace(workspace.source_dir);
-
-            std::string configure_signature_text = configure_signature(resolved, workspace.output_dir, output_name);
-            bool should_configure = !std::filesystem::exists(workspace.build_dir / "CMakeCache.txt");
-            std::string configure_reason = should_configure ? "build directory is not configured" : "configuration signature matches";
-            if (!should_configure) {
-                should_configure =
-                    !std::filesystem::exists(workspace.configure_signature_file) ||
-                    read_text(workspace.configure_signature_file) != configure_signature_text;
-                if (should_configure) {
-                    configure_reason = "configuration signature changed";
-                }
-            }
-
-            std::string generator = choose_generator(workspace, should_configure);
-            if (should_configure) {
-                trace("configure=required: " + configure_reason);
-                configure_workspace(
-                    workspace,
-                    resolved,
-                    configure_source,
-                    output_name,
-                    configure_signature_text,
-                    generator,
-                    trace
-                );
-            } else {
-                trace("configure=skipped: " + configure_reason);
-            }
-            publish_compile_database(resolved, workspace);
-
-            std::filesystem::path stable_artifact = workspace.output_dir / shared_library_filename(output_name);
-            std::filesystem::path config_artifact =
-                workspace.output_dir / active_build_config() / shared_library_filename(output_name);
-            if (!std::filesystem::exists(stable_artifact) && std::filesystem::exists(config_artifact)) {
-                stable_artifact = config_artifact;
-            }
-
-            std::string build_signature_text = build_signature(resolved);
-            bool should_build = should_configure || !std::filesystem::exists(stable_artifact);
-            std::string build_reason = should_configure ? "configuration ran" : (!std::filesystem::exists(stable_artifact) ? "artifact is missing" : "build signature matches");
-            if (!should_build) {
-                should_build =
-                    !std::filesystem::exists(workspace.build_signature_file) ||
-                    read_text(workspace.build_signature_file) != build_signature_text;
-                if (should_build) {
-                    build_reason = "build signature changed";
-                }
-            }
-
-            if (should_build) {
-                trace("build=required: " + build_reason);
-                build_workspace(workspace, generator, trace);
-                write_text_if_different(workspace.build_signature_file, build_signature_text);
-                stable_artifact = workspace.output_dir / shared_library_filename(output_name);
-                config_artifact = workspace.output_dir / active_build_config() / shared_library_filename(output_name);
-                if (!std::filesystem::exists(stable_artifact) && std::filesystem::exists(config_artifact)) {
-                    stable_artifact = config_artifact;
-                }
-            } else {
-                trace("build=skipped: " + build_reason);
-            }
-
-            if (!std::filesystem::exists(stable_artifact)) {
-                throw std::runtime_error(
-                    "module build did not produce expected artifact '" + stable_artifact.string() + "'"
-                );
-            }
-
-            std::string generation = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-            std::filesystem::path generation_dir = workspace.generations_dir / generation;
-            std::filesystem::create_directories(generation_dir);
-            std::filesystem::path generation_artifact = generation_dir / stable_artifact.filename();
-            std::filesystem::copy_file(stable_artifact, generation_artifact, std::filesystem::copy_options::overwrite_existing);
-            auto const elapsed = elapsed_milliseconds(std::chrono::steady_clock::now() - build_started);
-            trace("module build pipeline completed in " + elapsed);
-            if (log_sink) {
-                log_sink("module build completed: " + resolved.id + " (" + elapsed + ")");
-            }
-            return generation_artifact;
-        }
-
-        std::shared_ptr<LoadedBinary> build_and_load_binary(ResolvedModule const& resolved) const
-        {
-            std::filesystem::path artifact = build_artifact(resolved);
-            auto library = std::make_shared<DynamicLibrary>(artifact);
-            auto* get_descriptor = reinterpret_cast<iv_get_module_descriptor_fn_v1>(
-                library->symbol("iv_get_module_descriptor_v1")
-            );
-            if (!get_descriptor) {
-                throw std::runtime_error(
-                    "module '" + artifact.string() + "' does not export iv_get_module_descriptor_v1"
-                );
-            }
-
-            iv_module_descriptor_v1 const* descriptor = get_descriptor();
-            if (!descriptor) {
-                throw std::runtime_error("module '" + artifact.string() + "' returned a null descriptor");
-            }
-            if (descriptor->abi_version != IV_MODULE_ABI_VERSION_V1) {
-                throw std::runtime_error(
-                    "module '" + artifact.string() + "' uses unsupported ABI version " +
-                    std::to_string(descriptor->abi_version)
-                );
-            }
-            if (!descriptor->id || std::strcmp(descriptor->id, resolved.id.c_str()) != 0) {
-                throw std::runtime_error("module '" + artifact.string() + "' exported unexpected id");
-            }
-            if (!descriptor->build) {
-                throw std::runtime_error("module '" + artifact.string() + "' has no build function");
-            }
-
-            return std::make_shared<LoadedBinary>(LoadedBinary {
-                .id = resolved.id,
-                .module_dir = resolved.module_dir,
-                .artifact_path = artifact,
-                .library = std::move(library),
-                .descriptor = descriptor,
-            });
-        }
-
-        LoadedDefinition load_root_definition(
-            std::filesystem::path const& module_path,
-            ModuleExecutorTarget render_config,
-            Sample* sample_period
-        ) const
-        {
-            ResolvedModule root = resolve_module_path(module_path);
-            std::vector<std::filesystem::path> search_roots { root.module_dir };
-            for (auto const& extra : extra_search_roots) {
-                if (std::find(search_roots.begin(), search_roots.end(), extra) == search_roots.end()) {
-                    search_roots.push_back(extra);
-                }
-            }
-
-            BuildSession session;
-            session.impl = const_cast<Impl*>(this);
-            session.registry = discover_registry(search_roots);
-            session.search_roots = search_roots;
-
-            GraphBuilder builder;
-            ModuleContext context(
-                builder,
-                render_config,
-                sample_period,
-                &Impl::load_from_context,
-                &session
-            );
-            TypeErasedModule root_module = session.load_module(root.id);
-            GraphBuilder root_builder;
-            GraphIntrospectionMetadata introspection = [&]() {
-                try {
-                    root_builder = root_module.builder(context);
-                    return root_builder.build_metadata();
-                } catch (std::exception const& e) {
-                    throw std::runtime_error(wrap_exception(
-                        "failed to build root module definition '" + root.id + "' from '" + root.request_path.string() + "'",
-                        e
-                    ));
-                } catch (...) {
-                    throw std::runtime_error(
-                        "failed to build root module definition '" + root.id + "' from '" + root.request_path.string() + "'"
-                    );
-                }
-            }();
-            session.ensure_loaded_binary_dependencies();
-
-            return LoadedDefinition(
-                std::move(session.module_refs),
-                std::make_unique<GraphBuilder>(std::move(root_builder)),
-                std::move(introspection),
-                root.request_path,
-                root.id,
-                std::move(session.dependencies)
-            );
         }
     };
 
-    ModuleLoader::LoadedGraph::LoadedGraph(
-        TypeErasedNode root_,
-        std::vector<ModuleRef> module_refs_,
-        std::unique_ptr<GraphBuilder> canonical_builder_,
-        GraphIntrospectionMetadata introspection_,
-        GraphBuildMetadata graph_build_metadata_,
-        std::filesystem::path module_path_,
-        std::string module_id_,
-        std::vector<ModuleDependency> dependencies_
-    ) :
-        module_refs(std::move(module_refs_)),
-        root(std::move(root_)),
-        canonical_builder(std::move(canonical_builder_)),
-        introspection(std::move(introspection_)),
-        graph_build_metadata(std::move(graph_build_metadata_)),
-        module_path(std::move(module_path_)),
-        module_id(std::move(module_id_)),
-        dependencies(std::move(dependencies_))
-    {}
+    struct LoadedBinary {
+        std::string id;
+        std::filesystem::path artifact_path;
+        std::shared_ptr<DynamicLibrary> library;
+        iv_module_descriptor_v1 const* descriptor = nullptr;
+    };
 
-    ModuleLoader::LoadedDefinition::LoadedDefinition(
-        std::vector<ModuleRef> module_refs_,
-        std::unique_ptr<GraphBuilder> canonical_builder_,
-        GraphIntrospectionMetadata introspection_,
-        std::filesystem::path module_path_,
-        std::string module_id_,
-        std::vector<ModuleDependency> dependencies_
-    ) :
-        module_refs(std::move(module_refs_)),
-        canonical_builder(std::move(canonical_builder_)),
-        introspection(std::move(introspection_)),
-        module_path(std::move(module_path_)),
-        module_id(std::move(module_id_)),
-        dependencies(std::move(dependencies_))
-    {}
-
-    ModuleLoader::ModuleLoader(
-        std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots,
-        ModuleLoaderToolchainConfig toolchain,
-        LogSink log_sink
-    ) :
-        _impl(std::make_unique<Impl>(
-            std::move(discovery_start),
-            std::move(extra_search_roots),
-            std::move(toolchain),
-            std::move(log_sink)
-        ))
-    {}
-
-    ModuleLoader::~ModuleLoader() = default;
-    ModuleLoader::ModuleLoader(ModuleLoader&&) noexcept = default;
-    ModuleLoader& ModuleLoader::operator=(ModuleLoader&&) noexcept = default;
-
-    ModuleLoader::LoadedDefinition ModuleLoader::load_root_definition(
-        std::filesystem::path const& module_path,
-        ModuleExecutorTarget render_config,
-        Sample* sample_period
-    ) const
-    {
-        return _impl->load_root_definition(module_path, render_config, sample_period);
+    std::filesystem::path normalize(std::filesystem::path const& path) {
+        std::error_code ec;
+        auto p = std::filesystem::weakly_canonical(path, ec);
+        return ec ? std::filesystem::absolute(path).lexically_normal() : p;
     }
 
-    std::vector<std::filesystem::path> const& ModuleLoader::extra_search_roots() const
-    {
-        return _impl->extra_search_roots;
+    std::string read_text(std::filesystem::path const& path) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) throw std::runtime_error("failed to open '" + path.string() + "'");
+        return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
     }
+
+    void write_text_if_different(std::filesystem::path const& path, std::string const& text) {
+        if (std::filesystem::exists(path) && read_text(path) == text) return;
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) throw std::runtime_error("failed to write '" + path.string() + "'");
+        out << text;
+    }
+
+    std::string json_string(std::string const& text, std::string_view key, std::filesystem::path const& path) {
+        std::string token = "\"" + std::string(key) + "\"";
+        auto p = text.find(token);
+        if (p == std::string::npos) throw std::runtime_error("manifest '" + path.string() + "' is missing string field '" + std::string(key) + "'");
+        p = text.find(':', p + token.size());
+        p = text.find('"', p + 1);
+        if (p == std::string::npos) throw std::runtime_error("manifest '" + path.string() + "' has invalid field '" + std::string(key) + "'");
+        std::string out;
+        for (++p; p < text.size(); ++p) {
+            if (text[p] == '"') return out;
+            if (text[p] == '\\' && p + 1 < text.size()) {
+                char c = text[++p];
+                if (c == 'n') out.push_back('\n'); else if (c == 't') out.push_back('\t'); else out.push_back(c);
+            } else out.push_back(text[p]);
+        }
+        throw std::runtime_error("manifest '" + path.string() + "' has unterminated field '" + std::string(key) + "'");
+    }
+
+    int json_int(std::string const& text, std::string_view key, std::filesystem::path const& path) {
+        std::string token = "\"" + std::string(key) + "\"";
+        auto p = text.find(token);
+        if (p == std::string::npos) throw std::runtime_error("manifest '" + path.string() + "' is missing integer field '" + std::string(key) + "'");
+        p = text.find(':', p + token.size());
+        if (p == std::string::npos) throw std::runtime_error("manifest '" + path.string() + "' has invalid field '" + std::string(key) + "'");
+        while (++p < text.size() && std::isspace(static_cast<unsigned char>(text[p]))) {}
+        size_t end = p;
+        while (end < text.size() && std::isdigit(static_cast<unsigned char>(text[end]))) ++end;
+        if (end == p) throw std::runtime_error("manifest '" + path.string() + "' has invalid integer field '" + std::string(key) + "'");
+        return std::stoi(text.substr(p, end - p));
+    }
+
+    Manifest parse_manifest(std::filesystem::path const& file) {
+        auto text = read_text(file);
+        Manifest m;
+        m.schema = json_int(text, "schema", file);
+        m.id = json_string(text, "id", file);
+        m.entry = json_string(text, "entry", file);
+        m.main = json_string(text, "main", file);
+        if (m.schema != 1) throw std::runtime_error("manifest '" + file.string() + "' uses unsupported schema " + std::to_string(m.schema));
+        if (m.id.empty()) throw std::runtime_error("manifest '" + file.string() + "' has empty id");
+        if (m.entry.empty() || m.entry.is_absolute()) throw std::runtime_error("manifest '" + file.string() + "' entry must be a relative path");
+        if (m.main.empty()) throw std::runtime_error("manifest '" + file.string() + "' has empty main");
+        return m;
+    }
+
+    std::filesystem::file_time_type directory_stamp(std::filesystem::path const& dir) {
+        std::filesystem::file_time_type latest{};
+        bool any = false;
+        std::error_code ec;
+        for (std::filesystem::recursive_directory_iterator it(dir, std::filesystem::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file() || !is_module_dependency_source_path(it->path())) continue;
+            auto stamp = std::filesystem::last_write_time(it->path(), ec);
+            if (!ec) { latest = any ? std::max(latest, stamp) : stamp; any = true; }
+        }
+        return any ? latest : std::filesystem::file_time_type{};
+    }
+
+    std::string sanitize(std::string_view s) {
+        std::string out(s);
+        for (char& c : out) if (!std::isalnum(static_cast<unsigned char>(c))) c = '_';
+        return out.empty() ? "module" : out;
+    }
+
+    std::string stable_hash(std::filesystem::path const& path) {
+        uint64_t h = 1469598103934665603ull;
+        for (unsigned char c : normalize(path).generic_string()) { h ^= c; h *= 1099511628211ull; }
+        std::ostringstream out; out << std::hex << h; return out.str();
+    }
+
+    std::string lib_name(std::string_view base) {
+#if defined(_WIN32)
+        return std::string(base) + ".dll";
+#elif defined(__APPLE__)
+        return "lib" + std::string(base) + ".dylib";
+#else
+        return "lib" + std::string(base) + ".so";
+#endif
+    }
+
+    char const* config_name() {
+#if defined(NDEBUG)
+        return "Release";
+#else
+        return "Debug";
+#endif
+    }
+
+    std::string q(std::filesystem::path const& p) {
+        std::string s = p.generic_string(), out = "\"";
+        for (char c : s) { if (c == '"') out += '\\'; out += c; }
+        return out + "\"";
+    }
+
+    std::filesystem::path discover_repo(std::filesystem::path start) {
+        start = normalize(start);
+        if (std::filesystem::is_regular_file(start)) start = start.parent_path();
+        for (auto p = start; !p.empty(); p = p.parent_path()) {
+            if (std::filesystem::exists(p / "src/intravenous/dsl.h")) return p;
+            if (p == p.root_path()) break;
+        }
+        throw std::runtime_error("failed to discover repo root from '" + start.string() + "'");
+    }
+
+    void run(std::string const& command, ModuleLoader::LogSink const& sink, std::string_view phase) {
+        if (sink) sink("[" + std::string(phase) + "] " + command);
+        int rc = std::system(command.c_str());
+        if (rc != 0) throw std::runtime_error("command failed with exit code " + std::to_string(rc) + ": " + command);
+    }
+}
+
+class ModuleLoader::Impl {
+    std::filesystem::path repo_root;
+    std::filesystem::path cache_root;
+    ModuleLoaderToolchainConfig toolchain;
+    LogSink log_sink;
+    mutable std::mutex mutex;
+
+    struct Registry {
+        std::unordered_map<std::string, ResolvedModule> project;
+        std::unordered_map<std::string, ResolvedModule> global;
+        std::unordered_map<std::string, ResolvedModule> effective;
+    };
+
+    ResolvedModule resolve_dir(std::filesystem::path dir, bool global) const {
+        dir = normalize(dir);
+        auto manifest_file = dir / "iv_module.json";
+        if (!std::filesystem::exists(manifest_file)) throw std::runtime_error("module directory '" + dir.string() + "' does not contain iv_module.json");
+        auto manifest = parse_manifest(manifest_file);
+        auto entry = normalize(dir / manifest.entry);
+        if (!std::filesystem::exists(entry) || !std::filesystem::is_regular_file(entry)) throw std::runtime_error("manifest '" + manifest_file.string() + "' entry does not exist: " + manifest.entry.string());
+        auto rel = entry.lexically_relative(dir);
+        if (rel.empty() || rel.native().starts_with("..")) throw std::runtime_error("manifest entry escapes module directory: " + manifest.entry.string());
+        return {manifest, dir, normalize(manifest_file), entry, global, directory_stamp(dir)};
+    }
+
+    void scan_root(std::filesystem::path const& root, bool global, std::unordered_map<std::string, ResolvedModule>& out) const {
+        if (!std::filesystem::exists(root)) return;
+        std::error_code ec;
+        for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file() || it->path().filename() != "iv_module.json") continue;
+            auto resolved = resolve_dir(it->path().parent_path(), global);
+            auto [pos, inserted] = out.emplace(resolved.manifest.id, resolved);
+            if (!inserted && pos->second.manifest_file != resolved.manifest_file) {
+                throw std::runtime_error("duplicate module id '" + resolved.manifest.id + "' in '" + pos->second.manifest_file.string() + "' and '" + resolved.manifest_file.string() + "'");
+            }
+            it.disable_recursion_pending();
+        }
+    }
+
+    Registry registry_for(ResolvedModule const& root) const {
+        Registry r;
+        // A root module belongs to the project containing its siblings. Extra
+        // search roots are the shared/global registry.
+        scan_root(root.module_dir.parent_path(), false, r.project);
+        for (auto const& path : extra_search_roots) scan_root(path, true, r.global);
+        r.effective = r.global;
+        for (auto const& [id, module] : r.project) {
+            if (r.global.contains(id) && log_sink) log_sink("warning: project module '" + id + "' shadows global module '" + r.global.at(id).manifest_file.string() + "'");
+            r.effective[id] = module;
+        }
+        r.effective[root.manifest.id] = root;
+        return r;
+    }
+
+    std::filesystem::path cmake_program() const {
+        if (toolchain.cmake_program) return *toolchain.cmake_program;
+        if (std::string_view(IV_CONFIGURED_CMAKE_COMMAND).size()) return IV_CONFIGURED_CMAKE_COMMAND;
+        return "cmake";
+    }
+
+    std::pair<std::filesystem::path, std::filesystem::path> compilers() const {
+        if (toolchain.c_compiler && toolchain.cxx_compiler) return {*toolchain.c_compiler, *toolchain.cxx_compiler};
+        return {IV_CONFIGURED_C_COMPILER, IV_CONFIGURED_CXX_COMPILER};
+    }
+
+    std::filesystem::path workspace(ResolvedModule const& root) const {
+        return cache_root / (sanitize(root.manifest.id) + "_" + stable_hash(root.module_dir)) / config_name();
+    }
+
+    static std::string generated_import_path(ResolvedModule const& m) {
+        return std::string("iv/") + (m.global ? "modules-global/" : "modules/") + m.manifest.id;
+    }
+
+    std::filesystem::path build(ResolvedModule const& root, Registry const& registry) const {
+        auto ws = workspace(root);
+        auto source = ws / "src";
+        auto build_dir = ws / "build";
+        auto out_dir = ws / "out";
+        auto gen_include = ws / "generated/include";
+        auto export_file = ws / "generated/root_export.cpp";
+        std::filesystem::create_directories(source);
+        std::filesystem::create_directories(out_dir);
+
+        std::vector<ResolvedModule> modules;
+        modules.reserve(registry.effective.size());
+        for (auto const& [_, m] : registry.effective) modules.push_back(m);
+        std::sort(modules.begin(), modules.end(), [](auto const& a, auto const& b) { return a.manifest.id < b.manifest.id; });
+
+        std::ostringstream cmake;
+        cmake << "cmake_minimum_required(VERSION 3.20)\nproject(iv_runtime_module LANGUAGES CXX)\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n";
+        cmake << "include(" << q(repo_root / "src/intravenous/module/template/ModuleSupport.cmake") << ")\n";
+        cmake << "add_library(iv_phase2_settings INTERFACE)\ntarget_compile_features(iv_phase2_settings INTERFACE cxx_std_23)\n";
+        cmake << "target_include_directories(iv_phase2_settings INTERFACE " << q(repo_root / "src") << " " << q(gen_include) << ")\n";
+        cmake << "target_include_directories(iv_phase2_settings SYSTEM INTERFACE " << q(repo_root / "src/intravenous/third_party") << ")\n";
+        cmake << "set(_iv_defs)\n";
+        for (auto const& m : modules) {
+            auto generated = gen_include / generated_import_path(m);
+            auto target = "iv_rewrite_" + sanitize(m.manifest.id);
+            cmake << "iv_rewrite_module_entry(TARGET " << target << " SOURCE " << q(m.entry_file) << " OUTPUT " << q(generated)
+                  << " COMPILE_SETTINGS_TARGET iv_phase2_settings" << (m.global ? " GLOBAL_MODULE" : "") << ")\n";
+            cmake << "list(APPEND _iv_defs " << q(generated) << ")\n";
+        }
+        cmake << "add_custom_target(iv_phase2_definitions DEPENDS ${_iv_defs})\n";
+        cmake << "add_library(iv_runtime_module SHARED " << q(export_file) << ")\nadd_dependencies(iv_runtime_module iv_phase2_definitions)\n";
+        cmake << "target_link_libraries(iv_runtime_module PRIVATE iv_phase2_settings)\n";
+        cmake << "set_target_properties(iv_runtime_module PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES OUTPUT_NAME iv_module_" << sanitize(root.manifest.id)
+              << " RUNTIME_OUTPUT_DIRECTORY " << q(out_dir) << " LIBRARY_OUTPUT_DIRECTORY " << q(out_dir) << ")\n";
+        if (std::string_view(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY).size()) {
+            cmake << "add_library(iv_module_shared SHARED IMPORTED GLOBAL)\nset_target_properties(iv_module_shared PROPERTIES IMPORTED_LOCATION " << q(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY)
+                  << " INTERFACE_INCLUDE_DIRECTORIES " << q(repo_root / "src") << ")\ntarget_link_libraries(iv_runtime_module PRIVATE iv_module_shared)\n";
+        }
+        write_text_if_different(source / "CMakeLists.txt", cmake.str());
+
+        auto root_generated = gen_include / generated_import_path(root);
+        std::ostringstream export_tu;
+        export_tu << "#include <intravenous/module/module.h>\n#include <" << generated_import_path(root) << ">\n";
+        export_tu << "extern \"C\" IV_MODULE_EXPORT iv_module_descriptor_v1 const* iv_get_module_descriptor_v1() {\n";
+        export_tu << "  static iv_module_descriptor_v1 const d{IV_MODULE_ABI_VERSION_V1, \"" << root.manifest.id << "\", &iv::details::generated_module_build_v1<&" << root.manifest.main << ">};\n  return &d;\n}\n";
+        write_text_if_different(export_file, export_tu.str());
+
+        std::ostringstream signature;
+        signature << read_text(root.manifest_file) << '\n';
+        for (auto const& m : modules) signature << m.manifest.id << '=' << m.source_stamp.time_since_epoch().count() << '\n';
+        auto sig_file = ws / "build.signature";
+        auto artifact = out_dir / lib_name("iv_module_" + sanitize(root.manifest.id));
+        bool needs = !std::filesystem::exists(artifact) || !std::filesystem::exists(sig_file) || read_text(sig_file) != signature.str();
+
+        auto [cc, cxx] = compilers();
+        std::string generator = toolchain.cmake_generator.value_or(std::string(IV_CONFIGURED_CMAKE_GENERATOR));
+        std::ostringstream configure;
+        configure << q(cmake_program()) << " -S " << q(source) << " -B " << q(build_dir) << " -DCMAKE_BUILD_TYPE=" << config_name();
+        if (!generator.empty()) configure << " -G " << q(generator);
+        if (!cc.empty()) configure << " -DCMAKE_C_COMPILER=" << q(cc);
+        if (!cxx.empty()) configure << " -DCMAKE_CXX_COMPILER=" << q(cxx);
+        configure << " -DIV_INCLUDE_DIR=" << q(repo_root / "src") << " -DIV_SOURCE_DIR=" << q(repo_root / "src/intravenous")
+                  << " -DIV_THIRD_PARTY_INCLUDE_DIR=" << q(repo_root / "src/intravenous/third_party");
+        if (std::string_view(IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER).size()) configure << " -DIV_SOURCE_SPAN_REWRITER=" << q(IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER);
+
+        if (needs || !std::filesystem::exists(build_dir / "CMakeCache.txt")) {
+            run(configure.str(), log_sink, "configure");
+            run(q(cmake_program()) + " --build " + q(build_dir) + " --config " + config_name(), log_sink, "build");
+            write_text_if_different(sig_file, signature.str());
+        }
+        if (!std::filesystem::exists(artifact)) {
+            auto config_artifact = out_dir / config_name() / artifact.filename();
+            if (std::filesystem::exists(config_artifact)) artifact = config_artifact;
+        }
+        if (!std::filesystem::exists(artifact)) throw std::runtime_error("module build did not produce expected artifact '" + artifact.string() + "'");
+        return artifact;
+    }
+
+public:
+    std::vector<std::filesystem::path> extra_search_roots;
+
+    Impl(std::filesystem::path discovery_start, std::vector<std::filesystem::path> roots, ModuleLoaderToolchainConfig tc, LogSink sink)
+        : repo_root(discover_repo(std::move(discovery_start))), cache_root(repo_root / "build/iv_runtime_modules"), toolchain(std::move(tc)), log_sink(std::move(sink)) {
+        std::filesystem::create_directories(cache_root);
+        for (auto const& r : roots) extra_search_roots.push_back(normalize(r));
+    }
+
+    LoadedDefinition load_root_definition(std::filesystem::path const& path, ModuleExecutorTarget render_config, Sample* sample_period) const {
+        std::lock_guard lock(mutex);
+        auto p = normalize(path);
+        if (std::filesystem::is_regular_file(p)) {
+            if (p.filename() == "iv_module.json") p = p.parent_path();
+            else throw std::runtime_error("root module path must be a module directory or iv_module.json");
+        }
+        auto root = resolve_dir(p, false);
+        auto registry = registry_for(root);
+        auto artifact = build(root, registry);
+        auto library = std::make_shared<DynamicLibrary>(artifact);
+        auto getter = reinterpret_cast<iv_get_module_descriptor_fn_v1>(library->symbol("iv_get_module_descriptor_v1"));
+        if (!getter) throw std::runtime_error("module '" + artifact.string() + "' does not export iv_get_module_descriptor_v1");
+        auto descriptor = getter();
+        if (!descriptor || descriptor->abi_version != IV_MODULE_ABI_VERSION_V1 || !descriptor->build) throw std::runtime_error("module '" + artifact.string() + "' has invalid descriptor v1");
+        if (!descriptor->id || root.manifest.id != descriptor->id) throw std::runtime_error("module '" + artifact.string() + "' exported unexpected id");
+
+        auto binary = std::make_shared<LoadedBinary>(LoadedBinary{root.manifest.id, artifact, library, descriptor});
+        GraphBuilder builder;
+        ModuleContext context(builder, render_config, sample_period);
+        if (char const* error = descriptor->build(context)) throw std::runtime_error("failed to build root module definition '" + root.manifest.id + "': " + error);
+        auto introspection = builder.build_metadata();
+
+        std::vector<ModuleDependency> dependencies;
+        dependencies.reserve(registry.effective.size());
+        for (auto const& [id, m] : registry.effective) dependencies.push_back({id, m.module_dir, m.entry_file, m.source_stamp});
+        std::sort(dependencies.begin(), dependencies.end(), [](auto const& a, auto const& b) { return a.id < b.id; });
+        std::vector<ModuleRef> refs{binary};
+        return LoadedDefinition(std::move(refs), std::make_unique<GraphBuilder>(std::move(builder)), std::move(introspection), root.module_dir, root.manifest.id, std::move(dependencies));
+    }
+};
+
+ModuleLoader::LoadedGraph::LoadedGraph(TypeErasedNode root_, std::vector<ModuleRef> refs, std::unique_ptr<GraphBuilder> builder, GraphIntrospectionMetadata introspection_, GraphBuildMetadata build_metadata, std::filesystem::path path, std::string id, std::vector<ModuleDependency> deps)
+    : module_refs(std::move(refs)), root(std::move(root_)), canonical_builder(std::move(builder)), introspection(std::move(introspection_)), graph_build_metadata(std::move(build_metadata)), module_path(std::move(path)), module_id(std::move(id)), dependencies(std::move(deps)) {}
+ModuleLoader::LoadedDefinition::LoadedDefinition(std::vector<ModuleRef> refs, std::unique_ptr<GraphBuilder> builder, GraphIntrospectionMetadata introspection_, std::filesystem::path path, std::string id, std::vector<ModuleDependency> deps)
+    : module_refs(std::move(refs)), canonical_builder(std::move(builder)), introspection(std::move(introspection_)), module_path(std::move(path)), module_id(std::move(id)), dependencies(std::move(deps)) {}
+ModuleLoader::ModuleLoader(std::filesystem::path start, std::vector<std::filesystem::path> roots, ModuleLoaderToolchainConfig tc, LogSink sink)
+    : _impl(std::make_unique<Impl>(std::move(start), std::move(roots), std::move(tc), std::move(sink))) {}
+ModuleLoader::~ModuleLoader() = default;
+ModuleLoader::ModuleLoader(ModuleLoader&&) noexcept = default;
+ModuleLoader& ModuleLoader::operator=(ModuleLoader&&) noexcept = default;
+ModuleLoader::LoadedDefinition ModuleLoader::load_root_definition(std::filesystem::path const& path, ModuleExecutorTarget config, Sample* period) const { return _impl->load_root_definition(path, config, period); }
+std::vector<std::filesystem::path> const& ModuleLoader::extra_search_roots() const { return _impl->extra_search_roots; }
 }
