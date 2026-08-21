@@ -86,7 +86,6 @@ namespace iv {
             return std::array {
                 InputConfig { .name = "phase_offset", .history = 1 },
                 InputConfig { .name = "frequency", .history = 1 },
-                InputConfig { .name = "dt", .history = 1, .default_value = 1.0 },
             };
         }
 
@@ -102,12 +101,12 @@ namespace iv {
             auto& state = ctx.state();
             auto const phi = ctx.inputs[0].get();
             auto const f = ctx.inputs[1].get();
-            auto const dt = ctx.inputs[2].get();
+            auto const dt = ctx.sample_period();
             auto& out = ctx.outputs[0];
 
             auto const phase_advance = f * 2 * dt;
             auto const x0 = state.phase + phase_advance + phi;
-            auto const prev_phase_advance = ctx.inputs[1].get(1) * 2 * ctx.inputs[2].get(1);
+            auto const prev_phase_advance = ctx.inputs[1].get(1) * 2 * dt;
             auto const prev_base_phase = warp_pm1(state.phase - prev_phase_advance, 1);
             auto const x1 = prev_base_phase + prev_phase_advance + ctx.inputs[0].get(1);
             auto const prev_output = out.get();
@@ -139,10 +138,7 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array {
-                InputConfig { "f" },
-                InputConfig { .name = "dt", .default_value = 1.0 },
-            };
+            return std::array { InputConfig { "f" } };
         }
 
         static constexpr auto outputs()
@@ -153,9 +149,8 @@ namespace iv {
         void tick(TickSampleContext<PhaseOffsetPredictor> const& state) const
         {
             auto const f = state.inputs[0].get();
-            auto const dt = state.inputs[1].get();
             Sample const extra_latency = _latency > 0 ? (_latency - 1) : 0;
-            state.outputs[0].push(f * dt * extra_latency);
+            state.outputs[0].push(f * state.sample_period() * extra_latency);
         }
     };
 
