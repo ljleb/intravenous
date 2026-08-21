@@ -226,6 +226,9 @@ add_library(intravenous_module_loader OBJECT
     module/loader.cpp
 )
 iv_configure_intravenous_target(intravenous_module_loader PUBLIC)
+target_link_libraries(intravenous_module_loader PRIVATE
+    nlohmann_json::nlohmann_json
+)
 
 add_library(intravenous_module_watcher OBJECT
     module/watcher.cpp
