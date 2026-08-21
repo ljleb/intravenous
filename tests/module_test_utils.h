@@ -56,17 +56,13 @@ namespace iv::test {
     {
         static std::string cached = [] {
             auto sanitize = [](std::string text) {
-                if (text.empty()) {
-                    text = "unknown_test";
-                }
+                if (text.empty()) text = "unknown_test";
                 for (char& c : text) {
                     bool good =
                         (c >= 'a' && c <= 'z') ||
                         (c >= 'A' && c <= 'Z') ||
                         (c >= '0' && c <= '9');
-                    if (!good) {
-                        c = '_';
-                    }
+                    if (!good) c = '_';
                 }
                 return text;
             };
@@ -86,9 +82,7 @@ namespace iv::test {
             auto pid = static_cast<unsigned long>(::getpid());
 #endif
             auto name = executable.stem().string();
-            if (name.empty()) {
-                name = "unknown_test";
-            }
+            if (name.empty()) name = "unknown_test";
 
             std::ostringstream out;
             out << sanitize(std::move(name)) << "_" << pid;
@@ -104,8 +98,6 @@ namespace iv::test {
 
     inline std::filesystem::path runtime_module_cache_root()
     {
-        // Locks and other test-only shared state live here. Runtime module
-        // artifacts themselves are now owned by each project's build/iv tree.
         return repo_root() / "build" / "test_module_locks";
     }
 
@@ -117,62 +109,46 @@ namespace iv::test {
     inline std::string sanitize_module_id(std::string_view id)
     {
         std::string sanitized(id);
-        if (sanitized.empty()) {
-            sanitized = "module";
-        }
-
+        if (sanitized.empty()) sanitized = "module";
         for (char& c : sanitized) {
             bool good =
                 (c >= 'a' && c <= 'z') ||
                 (c >= 'A' && c <= 'Z') ||
                 (c >= '0' && c <= '9');
-            if (!good) {
-                c = '_';
-            }
+            if (!good) c = '_';
         }
-
         return sanitized;
     }
 
     inline std::string sanitize_test_token(std::string_view text)
     {
         std::string sanitized(text);
-        if (sanitized.empty()) {
-            sanitized = "test";
-        }
-
+        if (sanitized.empty()) sanitized = "test";
         for (char& c : sanitized) {
             bool good =
                 (c >= 'a' && c <= 'z') ||
                 (c >= 'A' && c <= 'Z') ||
                 (c >= '0' && c <= '9');
-            if (!good) {
-                c = '_';
-            }
+            if (!good) c = '_';
         }
-
         return sanitized;
     }
 
     inline std::string test_location_id(
         std::string_view base_name,
-        std::source_location location = std::source_location::current()
-    )
+        std::source_location location = std::source_location::current())
     {
         std::filesystem::path file = location.file_name();
         std::ostringstream out;
         out << sanitize_test_token(base_name)
-            << "_"
-            << sanitize_test_token(file.stem().string())
-            << "_L"
-            << location.line();
+            << "_" << sanitize_test_token(file.stem().string())
+            << "_L" << location.line();
         return out.str();
     }
 
     inline std::filesystem::path fresh_module_fixture_workspace(
         std::string_view base_name,
-        std::source_location location = std::source_location::current()
-    )
+        std::source_location location = std::source_location::current())
     {
         auto const workspace = runtime_modules_root() / test_location_id(base_name, location);
         std::filesystem::remove_all(workspace);
@@ -197,7 +173,6 @@ namespace iv::test {
             hash ^= c;
             hash *= 1099511628211ull;
         }
-
         std::ostringstream out;
         out << std::hex << hash;
         return out.str();
@@ -211,9 +186,7 @@ namespace iv::test {
                 std::filesystem::exists(current / "iv_project.jsonl")) {
                 return current;
             }
-            if (current == current.root_path()) {
-                break;
-            }
+            if (current == current.root_path()) break;
         }
         if (module_dir.parent_path().filename() == "modules") {
             return module_dir.parent_path().parent_path();
@@ -221,14 +194,18 @@ namespace iv::test {
         return module_dir;
     }
 
-    inline std::filesystem::path runtime_module_workspace_root(std::string_view id, std::filesystem::path const& module_dir)
+    inline std::filesystem::path runtime_module_workspace_root(
+        std::string_view id,
+        std::filesystem::path const& module_dir)
     {
         auto const project_root = project_root_for_module(module_dir);
         return project_root / "build" / "iv" / "build" /
             (sanitize_module_id(id) + "_" + stable_path_hash(module_dir));
     }
 
-    inline std::filesystem::path runtime_module_workspace(std::string_view id, std::filesystem::path const& module_dir)
+    inline std::filesystem::path runtime_module_workspace(
+        std::string_view id,
+        std::filesystem::path const& module_dir)
     {
         return runtime_module_workspace_root(id, module_dir) / active_build_config();
     }
@@ -251,14 +228,10 @@ namespace iv::test {
         auto const cache_path = repo_root() / "build" / "CMakeCache.txt";
         std::ifstream in(cache_path);
         require(static_cast<bool>(in), "failed to open top-level CMakeCache.txt");
-
         for (std::string line; std::getline(in, line);) {
             static std::string const prefix = "CMAKE_GENERATOR:INTERNAL=";
-            if (line.starts_with(prefix)) {
-                return line.substr(prefix.size());
-            }
+            if (line.starts_with(prefix)) return line.substr(prefix.size());
         }
-
         require(false, "failed to find CMAKE_GENERATOR in top-level CMakeCache.txt");
         return {};
     }
@@ -267,10 +240,7 @@ namespace iv::test {
     {
         std::ifstream in(path, std::ios::binary);
         require(static_cast<bool>(in), "failed to open input file");
-        return std::string(
-            std::istreambuf_iterator<char>(in),
-            std::istreambuf_iterator<char>()
-        );
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     }
 
     inline void write_text(std::filesystem::path const& path, std::string const& text)
@@ -284,7 +254,6 @@ namespace iv::test {
 #if !defined(_WIN32)
         int _fd = -1;
 #endif
-
     public:
         explicit ScopedFileLock(std::filesystem::path const& path)
         {
@@ -297,7 +266,6 @@ namespace iv::test {
             (void)path;
 #endif
         }
-
         ~ScopedFileLock()
         {
 #if !defined(_WIN32)
@@ -307,7 +275,6 @@ namespace iv::test {
             }
 #endif
         }
-
         ScopedFileLock(ScopedFileLock const&) = delete;
         ScopedFileLock& operator=(ScopedFileLock const&) = delete;
     };
@@ -325,7 +292,8 @@ namespace iv::test {
     inline std::filesystem::path shared_fixture_workspace(std::string const& fixture_name)
     {
         auto const workspace = shared_test_fixtures_root() / sanitize_test_token(fixture_name);
-        auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(fixture_name) + ".lock"));
+        auto const lock = ScopedFileLock(
+            shared_test_fixtures_root() / (sanitize_test_token(fixture_name) + ".lock"));
         if (!std::filesystem::exists(workspace)) {
             copy_directory(test_modules_root() / fixture_name, workspace);
         }
@@ -336,13 +304,20 @@ namespace iv::test {
     {
         auto const workspace = shared_fixture_workspace(fixture_name);
         auto const lock = ScopedFileLock(
-            shared_test_fixtures_root() /
-            (sanitize_test_token(fixture_name) + ".project.lock"));
+            shared_test_fixtures_root() / (sanitize_test_token(fixture_name) + ".project.lock"));
         auto const project_file = workspace / "iv_project.jsonl";
-        if (!std::filesystem::exists(project_file)) {
-            write_text(project_file, "");
-        }
+        if (!std::filesystem::exists(project_file)) write_text(project_file, "");
         return workspace;
+    }
+
+    inline void replace_all(std::string& text, std::string_view from, std::string_view to)
+    {
+        if (from.empty()) return;
+        size_t pos = 0;
+        while ((pos = text.find(from, pos)) != std::string::npos) {
+            text.replace(pos, from.size(), to);
+            pos += to.size();
+        }
     }
 
     inline std::pair<std::string, std::string> legacy_inline_module_metadata(
@@ -351,35 +326,56 @@ namespace iv::test {
     {
         auto const marker = module_text.find("IV_EXPORT_MODULE");
         if (marker == std::string::npos) {
-            return {
-                "iv.test." + sanitize_test_token(fallback_name),
-                sanitize_test_token(fallback_name)
-            };
+            return {"iv.test." + sanitize_test_token(fallback_name), sanitize_test_token(fallback_name)};
         }
-
         auto const first_quote = module_text.find('"', marker);
         auto const second_quote = first_quote == std::string::npos
-            ? std::string::npos
-            : module_text.find('"', first_quote + 1);
+            ? std::string::npos : module_text.find('"', first_quote + 1);
         auto const comma = second_quote == std::string::npos
-            ? std::string::npos
-            : module_text.find(',', second_quote + 1);
+            ? std::string::npos : module_text.find(',', second_quote + 1);
         auto const close = comma == std::string::npos
-            ? std::string::npos
-            : module_text.find(')', comma + 1);
+            ? std::string::npos : module_text.find(')', comma + 1);
         if (first_quote == std::string::npos || second_quote == std::string::npos ||
             comma == std::string::npos || close == std::string::npos) {
-            return {
-                "iv.test." + sanitize_test_token(fallback_name),
-                sanitize_test_token(fallback_name)
-            };
+            return {"iv.test." + sanitize_test_token(fallback_name), sanitize_test_token(fallback_name)};
         }
-
         auto id = module_text.substr(first_quote + 1, second_quote - first_quote - 1);
         auto main = module_text.substr(comma + 1, close - comma - 1);
         while (!main.empty() && std::isspace(static_cast<unsigned char>(main.front()))) main.erase(main.begin());
         while (!main.empty() && std::isspace(static_cast<unsigned char>(main.back()))) main.pop_back();
         return {std::move(id), std::move(main)};
+    }
+
+    inline std::string materialize_inline_module_source(std::string source)
+    {
+        // These transformations migrate historical source strings used by the
+        // introspection tests. They deliberately do not exist in production
+        // module loading: on-disk/authored modules must already use GraphBuilder&.
+        replace_all(source, ", iv::ModuleContext const& context", "");
+        replace_all(source, ", iv::ModuleContext const &context", "");
+        replace_all(source, "iv::ModuleContext const& context", "iv::GraphBuilder& g");
+        replace_all(source, "iv::ModuleContext const &context", "iv::GraphBuilder& g");
+        replace_all(source, "auto& g = context.builder();", "");
+        replace_all(source, "auto &g = context.builder();", "");
+        replace_all(source, "auto const& g = context.builder();", "");
+        replace_all(source, ", context)", ")");
+        replace_all(source, ", context);", ");");
+        replace_all(
+            source,
+            "context.sample_period()",
+            "([]() -> iv::Sample& { static iv::Sample value{}; return value; }())");
+
+        size_t marker = 0;
+        while ((marker = source.find("IV_EXPORT_MODULE", marker)) != std::string::npos) {
+            auto const line_begin = source.rfind('\n', marker);
+            auto const begin = line_begin == std::string::npos ? 0 : line_begin + 1;
+            auto const line_end = source.find('\n', marker);
+            auto const end = line_end == std::string::npos ? source.size() : line_end;
+            std::fill(source.begin() + static_cast<std::ptrdiff_t>(begin),
+                      source.begin() + static_cast<std::ptrdiff_t>(end), ' ');
+            marker = end;
+        }
+        return source;
     }
 
     inline void write_inline_module_manifest(
@@ -407,7 +403,7 @@ namespace iv::test {
         write_text(workspace / "iv_project.jsonl", "");
         auto const [id, main] = legacy_inline_module_metadata(test_name, module_text);
         write_inline_module_manifest(workspace, id, main);
-        write_text(workspace / "module.cpp", module_text);
+        write_text(workspace / "module.cpp", materialize_inline_module_source(module_text));
         return workspace;
     }
 
@@ -416,12 +412,13 @@ namespace iv::test {
         std::string const& module_text)
     {
         auto const workspace = shared_test_fixtures_root() / sanitize_test_token(test_name);
-        auto const lock = ScopedFileLock(shared_test_fixtures_root() / (sanitize_test_token(test_name) + ".lock"));
+        auto const lock = ScopedFileLock(
+            shared_test_fixtures_root() / (sanitize_test_token(test_name) + ".lock"));
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
         auto const [id, main] = legacy_inline_module_metadata(test_name, module_text);
         write_inline_module_manifest(workspace, id, main);
-        write_text(workspace / "module.cpp", module_text);
+        write_text(workspace / "module.cpp", materialize_inline_module_source(module_text));
         return workspace;
     }
 
@@ -429,20 +426,12 @@ namespace iv::test {
     {
         std::string command = "command -v " + name;
         FILE* pipe = popen(command.c_str(), "r");
-        if (!pipe) {
-            return {};
-        }
-
+        if (!pipe) return {};
         std::string output;
         char buffer[256];
-        while (fgets(buffer, sizeof(buffer), pipe)) {
-            output += buffer;
-        }
+        while (fgets(buffer, sizeof(buffer), pipe)) output += buffer;
         pclose(pipe);
-
-        while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
-            output.pop_back();
-        }
+        while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) output.pop_back();
         return output;
     }
 
@@ -450,32 +439,22 @@ namespace iv::test {
         std::string const& name,
         char const* configured_path)
     {
-        if (configured_path != nullptr && *configured_path != '\0') {
-            return configured_path;
-        }
+        if (configured_path != nullptr && *configured_path != '\0') return configured_path;
         return find_program(name);
     }
 
     struct ScopedEnvVar {
         std::string key;
         std::optional<std::string> original;
-
-        ScopedEnvVar(std::string key_, std::string value)
-            : key(std::move(key_))
+        ScopedEnvVar(std::string key_, std::string value) : key(std::move(key_))
         {
-            if (char const* existing = std::getenv(key.c_str())) {
-                original = existing;
-            }
+            if (char const* existing = std::getenv(key.c_str())) original = existing;
             setenv(key.c_str(), value.c_str(), 1);
         }
-
         ~ScopedEnvVar()
         {
-            if (original.has_value()) {
-                setenv(key.c_str(), original->c_str(), 1);
-            } else {
-                unsetenv(key.c_str());
-            }
+            if (original.has_value()) setenv(key.c_str(), original->c_str(), 1);
+            else unsetenv(key.c_str());
         }
     };
 
@@ -483,14 +462,11 @@ namespace iv::test {
         iv::StartupConfigState const& config,
         std::filesystem::path module_root)
     {
-        auto const normalized_module_root = std::filesystem::weakly_canonical(module_root).lexically_normal();
+        auto const normalized_module_root =
+            std::filesystem::weakly_canonical(module_root).lexically_normal();
         auto const load_lock = ScopedFileLock(
-            runtime_module_cache_root() /
-            ("load_" + stable_path_hash(normalized_module_root) + ".lock"));
-        iv::ModuleLoader loader(
-            config.discovery_start,
-            config.search_roots,
-            config.toolchain);
+            runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_module_root) + ".lock"));
+        iv::ModuleLoader loader(config.discovery_start, config.search_roots, config.toolchain);
         auto loaded_graph = loader.load_root_definition(module_root);
         return iv::IvModuleReloadedDefinition{
             .definition_id = loaded_graph.module_id,
@@ -509,7 +485,8 @@ namespace iv::test {
         iv::GraphIntrospectionMetadata introspection = {},
         std::vector<iv::ModuleDependency> dependencies = {})
     {
-        auto const normalized_module_root = std::filesystem::weakly_canonical(module_root).lexically_normal();
+        auto const normalized_module_root =
+            std::filesystem::weakly_canonical(module_root).lexically_normal();
         return iv::IvModuleReloadedDefinition{
             .definition_id = module_id,
             .module_root = normalized_module_root,
@@ -521,7 +498,9 @@ namespace iv::test {
         };
     }
 
-    inline void advance_write_time(std::filesystem::path const& path, std::chrono::seconds delta = std::chrono::seconds(2))
+    inline void advance_write_time(
+        std::filesystem::path const& path,
+        std::chrono::seconds delta = std::chrono::seconds(2))
     {
         std::error_code ec;
         auto const current = std::filesystem::last_write_time(path, ec);
@@ -539,19 +518,13 @@ namespace iv::test {
     inline void write_text_advancing_timestamp(
         std::filesystem::path const& path,
         std::string const& text,
-        std::chrono::seconds /*delta*/ = std::chrono::seconds(2)
-    )
+        std::chrono::seconds = std::chrono::seconds(2))
     {
         write_text(path, text);
         std::error_code ec;
-        std::filesystem::last_write_time(
-            path,
-            std::filesystem::file_time_type::clock::now(),
-            ec
-        );
+        std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now(), ec);
         if (ec) {
-            std::cerr << "failed to update timestamp for '" << path.string()
-                      << "': " << ec.message() << '\n';
+            std::cerr << "failed to update timestamp for '" << path.string() << "': " << ec.message() << '\n';
             std::exit(1);
         }
     }
@@ -577,7 +550,8 @@ namespace iv::test {
                 std::filesystem::create_directories(target);
             } else if (entry.is_regular_file()) {
                 std::filesystem::create_directories(target.parent_path());
-                std::filesystem::copy_file(entry.path(), target, std::filesystem::copy_options::overwrite_existing);
+                std::filesystem::copy_file(
+                    entry.path(), target, std::filesystem::copy_options::overwrite_existing);
             }
         }
     }
@@ -591,12 +565,12 @@ namespace iv::test {
             require_contains(e.what(), needle, message);
             return;
         }
-
         std::cerr << message << '\n';
         std::exit(1);
     }
 
-    inline iv::ModuleLoader make_loader(std::vector<std::filesystem::path> extra_roots = { test_modules_root() })
+    inline iv::ModuleLoader make_loader(
+        std::vector<std::filesystem::path> extra_roots = {test_modules_root()})
     {
         return iv::ModuleLoader(repo_root(), std::move(extra_roots));
     }
@@ -610,8 +584,7 @@ namespace iv::test {
         static std::vector<std::unique_ptr<iv::JuceVstRuntimeSupport>> juce_vst_runtime_supports;
         juce_vst_runtime_supports.push_back(std::make_unique<iv::JuceVstRuntimeSupport>(
             juce_vst_runtime_manager,
-            static_cast<double>(audio_device.config().sample_rate)
-        ));
+            static_cast<double>(audio_device.config().sample_rate)));
         resources = juce_vst_runtime_supports.back()->resources();
 #endif
         return resources;
