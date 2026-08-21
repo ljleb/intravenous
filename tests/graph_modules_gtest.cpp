@@ -74,7 +74,17 @@ TEST(GraphModules, ModulesComposeRecursivelyThroughAuthoredGraphSplicing)
     child("in"_P = 0.5f);
     g.outputs("main"_P = child["out"]);
 
-    EXPECT_NO_THROW((void)g.build_root_node());
+    auto const built = g.build_root_node();
+    ASSERT_EQ(built.metadata.lowered_subgraphs.size(), 2u);
+
+    size_t nested_scope_count = 0;
+    for (auto const& scope : built.metadata.lowered_subgraphs) {
+        if (scope.parent_scope == GRAPH_ID)
+            continue;
+        ++nested_scope_count;
+        EXPECT_LT(scope.parent_scope, built.metadata.lowered_subgraphs.size());
+    }
+    EXPECT_EQ(nested_scope_count, 1u);
 }
 
 TEST(GraphModules, FirstClassTiledNodeBundlesSurviveModuleSplicing)
@@ -95,6 +105,14 @@ TEST(GraphModules, FirstClassTiledNodeBundlesSurviveModuleSplicing)
     ASSERT_EQ(built.graph.outputs().size(), 1u);
     EXPECT_EQ(built.graph.outputs().front().channel_layout.channel_type,
               ChannelTypeId::stereo);
+
+    ASSERT_EQ(built.metadata.lowered_subgraphs.size(), 1u);
+    auto const& scope = built.metadata.lowered_subgraphs.front();
+    ASSERT_EQ(scope.sample_output_sources.size(), 1u);
+    EXPECT_EQ(scope.member_nodes.size(), 3u);
+    EXPECT_NE(std::ranges::find(scope.member_nodes,
+                               scope.sample_output_sources.front().node),
+              scope.member_nodes.end());
 }
 
 TEST(GraphModules, EventInterfacesResolveThroughTheImportedBoundary)
