@@ -1,4 +1,5 @@
 #include <intravenous/basic_nodes/arithmetic.h>
+#include <intravenous/basic_nodes/routing.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
 
@@ -29,6 +30,15 @@ void tiled_module(GraphBuilder& g)
     auto tiled = g.node<Sum<mono, SampleStreamLayout::planar, 1>, stereo>();
     tiled(input);
     g.outputs("out"_P = tiled);
+}
+
+void event_module(GraphBuilder& g)
+{
+    auto input = g.event_input<"event">(EventTypeId::empty);
+    auto relay = g.node<EventConcatenation>(1, EventTypeId::empty);
+    relay.connect_event_input(0, input);
+    g.event_outputs("event"_P = relay.event_port());
+    g.outputs();
 }
 
 static_assert(std::invocable<decltype(&pass_module), GraphBuilder&>);
@@ -85,6 +95,22 @@ TEST(GraphModules, FirstClassTiledNodeBundlesSurviveModuleSplicing)
     ASSERT_EQ(built.graph.outputs().size(), 1u);
     EXPECT_EQ(built.graph.outputs().front().channel_layout.channel_type,
               ChannelTypeId::stereo);
+}
+
+TEST(GraphModules, EventInterfacesResolveThroughTheImportedBoundary)
+{
+    GraphBuilder g;
+    auto child = g.module<&event_module>();
+    EXPECT_EQ(child.event_input_count(), 1u);
+    EXPECT_EQ(child.event_output_count(), 1u);
+
+    auto source = g.node<EventConcatenation>(0, EventTypeId::empty);
+    child.connect_event_input("event", source.event_port());
+    auto sink = g.node<DummyEventSink>();
+    sink.connect_event_input(0, child.event_port("event"));
+    g.outputs();
+
+    EXPECT_NO_THROW((void)g.build_root_node());
 }
 
 TEST(GraphModules, FunctionalSubgraphRemainsAnExplicitBoundaryFacade)
