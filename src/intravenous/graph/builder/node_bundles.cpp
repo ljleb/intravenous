@@ -80,9 +80,12 @@ SampleInputPortDescriptor NodeBundle::sample_input_descriptor(size_t i) const {
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return descriptor<SampleInputPortDescriptor>(
               payload.ports.sample_inputs, i);
-        } else {
+        } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
           return descriptor<SampleInputPortDescriptor>(
               payload.sample_input_configs, i);
+        } else {
+          details::error(
+              "SubgraphNodeBundle port configs must be resolved through its boundary");
         }
       },
       *_payload);
@@ -100,9 +103,12 @@ SampleOutputPortDescriptor NodeBundle::sample_output_descriptor(size_t i) const 
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return descriptor<SampleOutputPortDescriptor>(
               payload.ports.sample_outputs, i);
-        } else {
+        } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
           return descriptor<SampleOutputPortDescriptor>(
               payload.sample_output_configs, i);
+        } else {
+          details::error(
+              "SubgraphNodeBundle port configs must be resolved through its boundary");
         }
       },
       *_payload);
@@ -120,9 +126,12 @@ EventInputPortDescriptor NodeBundle::event_input_descriptor(size_t i) const {
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return descriptor<EventInputPortDescriptor>(
               payload.ports.event_input_configs, i);
-        } else {
+        } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
           return descriptor<EventInputPortDescriptor>(
               payload.event_input_configs, i);
+        } else {
+          details::error(
+              "SubgraphNodeBundle port configs must be resolved through its boundary");
         }
       },
       *_payload);
@@ -140,9 +149,12 @@ EventOutputPortDescriptor NodeBundle::event_output_descriptor(size_t i) const {
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return descriptor<EventOutputPortDescriptor>(
               payload.ports.event_output_configs, i);
-        } else {
+        } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
           return descriptor<EventOutputPortDescriptor>(
               payload.event_output_configs, i);
+        } else {
+          details::error(
+              "SubgraphNodeBundle port configs must be resolved through its boundary");
         }
       },
       *_payload);
@@ -291,7 +303,8 @@ size_t NodeBundle::sample_input_count() const {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
     if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) return payload.sample_outputs.size();
     else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) return payload.ports.sample_inputs.size();
-    else return payload.sample_input_configs.size();
+    else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) return payload.sample_input_configs.size();
+    else return payload.sample_input_count;
   }, *_payload);
 }
 size_t NodeBundle::sample_output_count() const {
@@ -300,7 +313,8 @@ size_t NodeBundle::sample_output_count() const {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
     if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) return payload.sample_inputs.size();
     else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) return payload.ports.sample_outputs.size();
-    else return payload.sample_output_configs.size();
+    else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) return payload.sample_output_configs.size();
+    else return payload.sample_output_count;
   }, *_payload);
 }
 size_t NodeBundle::event_input_count() const {
@@ -309,7 +323,8 @@ size_t NodeBundle::event_input_count() const {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
     if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) return payload.event_outputs.size();
     else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) return payload.ports.event_input_configs.size();
-    else return payload.event_input_configs.size();
+    else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) return payload.event_input_configs.size();
+    else return payload.event_input_count;
   }, *_payload);
 }
 size_t NodeBundle::event_output_count() const {
@@ -318,7 +333,8 @@ size_t NodeBundle::event_output_count() const {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
     if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) return payload.event_inputs.size();
     else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) return payload.ports.event_output_configs.size();
-    else return payload.event_output_configs.size();
+    else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) return payload.event_output_configs.size();
+    else return payload.event_output_count;
   }, *_payload);
 }
 
@@ -431,21 +447,21 @@ NodeBundleHandle GraphBuilderNodeBundles::append_subgraph(
   if (!boundary_bundle.is_boundary()) details::error("subgraph boundary is not a BoundaryNodeBundle");
   if (child_begin + child_count > _bundles.size()) details::error("subgraph child bundle range is out of bounds");
 
+  auto const sample_input_count = boundary_bundle.boundary_sample_inputs().size();
+  auto const sample_output_count = boundary_bundle.boundary_sample_outputs().size();
+  auto const event_input_count = boundary_bundle.boundary_event_inputs().size();
+  auto const event_output_count = boundary_bundle.boundary_event_outputs().size();
   NodeBundle::SubgraphNodeBundle payload{
       .boundary = boundary,
       .child_begin = child_begin,
       .child_count = child_count,
       .kind = std::string(kind),
       .type_identity = NodeTypeIdentity{.value = "lowered-subgraph:" + std::string(kind)},
+      .sample_input_count = sample_input_count,
+      .sample_output_count = sample_output_count,
+      .event_input_count = event_input_count,
+      .event_output_count = event_output_count,
   };
-  payload.sample_input_configs.assign(boundary_bundle.boundary_sample_inputs().begin(),
-                                      boundary_bundle.boundary_sample_inputs().end());
-  payload.sample_output_configs.assign(boundary_bundle.boundary_sample_outputs().begin(),
-                                       boundary_bundle.boundary_sample_outputs().end());
-  payload.event_input_configs.assign(boundary_bundle.boundary_event_inputs().begin(),
-                                     boundary_bundle.boundary_event_inputs().end());
-  payload.event_output_configs.assign(boundary_bundle.boundary_event_outputs().begin(),
-                                      boundary_bundle.boundary_event_outputs().end());
 
   auto const handle = _bundles.size();
   _bundles.push_back(NodeBundle(std::move(payload)));
@@ -463,19 +479,39 @@ NodeBundle &GraphBuilderNodeBundles::bundle(NodeBundleHandle handle) {
 
 SampleInputPortDescriptor GraphBuilderNodeBundles::resolve_sample_input(NodeBundlePortId id) const {
   if (id.port_kind != PortKind::sample) details::error("sample input address has event kind");
-  return bundle(id.node_bundle_handle).sample_input_descriptor(id.port_ordinal);
+  auto const &candidate = bundle(id.node_bundle_handle);
+  if (auto boundary = candidate.subgraph_boundary_handle()) {
+    return descriptor<SampleInputPortDescriptor>(
+        bundle(*boundary).boundary_sample_inputs(), id.port_ordinal);
+  }
+  return candidate.sample_input_descriptor(id.port_ordinal);
 }
 SampleOutputPortDescriptor GraphBuilderNodeBundles::resolve_sample_output(NodeBundlePortId id) const {
   if (id.port_kind != PortKind::sample) details::error("sample output address has event kind");
-  return bundle(id.node_bundle_handle).sample_output_descriptor(id.port_ordinal);
+  auto const &candidate = bundle(id.node_bundle_handle);
+  if (auto boundary = candidate.subgraph_boundary_handle()) {
+    return descriptor<SampleOutputPortDescriptor>(
+        bundle(*boundary).boundary_sample_outputs(), id.port_ordinal);
+  }
+  return candidate.sample_output_descriptor(id.port_ordinal);
 }
 EventInputPortDescriptor GraphBuilderNodeBundles::resolve_event_input(NodeBundlePortId id) const {
   if (id.port_kind != PortKind::event) details::error("event input address has sample kind");
-  return bundle(id.node_bundle_handle).event_input_descriptor(id.port_ordinal);
+  auto const &candidate = bundle(id.node_bundle_handle);
+  if (auto boundary = candidate.subgraph_boundary_handle()) {
+    return descriptor<EventInputPortDescriptor>(
+        bundle(*boundary).boundary_event_inputs(), id.port_ordinal);
+  }
+  return candidate.event_input_descriptor(id.port_ordinal);
 }
 EventOutputPortDescriptor GraphBuilderNodeBundles::resolve_event_output(NodeBundlePortId id) const {
   if (id.port_kind != PortKind::event) details::error("event output address has sample kind");
-  return bundle(id.node_bundle_handle).event_output_descriptor(id.port_ordinal);
+  auto const &candidate = bundle(id.node_bundle_handle);
+  if (auto boundary = candidate.subgraph_boundary_handle()) {
+    return descriptor<EventOutputPortDescriptor>(
+        bundle(*boundary).boundary_event_outputs(), id.port_ordinal);
+  }
+  return candidate.event_output_descriptor(id.port_ordinal);
 }
 
 std::vector<SampleInputChannelId> GraphBuilderNodeBundles::sample_input_channels(NodeBundlePortId id) const {
