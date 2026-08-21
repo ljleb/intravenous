@@ -17,13 +17,33 @@ function(iv_rewrite_module_entry)
     get_filename_component(_iv_output_abs "${IVR_OUTPUT}" ABSOLUTE)
     get_filename_component(_iv_output_dir "${_iv_output_abs}" DIRECTORY)
 
+    # Build a real file-level rewrite DAG from authored generated-import
+    # includes. The rewriter parses imports, so their definition files must
+    # exist before the importing entry is rewritten (not merely before the
+    # final shared library is compiled).
+    set(_iv_import_dependencies "")
+    string(FIND "${_iv_output_abs}" "/iv/" _iv_import_root_end REVERSE)
+    if(NOT _iv_import_root_end EQUAL -1)
+        string(SUBSTRING "${_iv_output_abs}" 0 ${_iv_import_root_end} _iv_generated_include_root)
+        file(STRINGS "${_iv_source_abs}" _iv_import_lines
+            REGEX "^[ \t]*#[ \t]*include[ \t]*<iv/modules(-global)?/[^>]+>")
+        foreach(_iv_line IN LISTS _iv_import_lines)
+            string(REGEX REPLACE ".*<iv/(modules(-global)?/[^>]+)>.*" "\\1" _iv_import_rel "${_iv_line}")
+            if(IVR_GLOBAL_MODULE)
+                string(REGEX REPLACE "^modules/" "modules-global/" _iv_import_rel "${_iv_import_rel}")
+            endif()
+            list(APPEND _iv_import_dependencies
+                "${_iv_generated_include_root}/iv/${_iv_import_rel}")
+        endforeach()
+        list(REMOVE_DUPLICATES _iv_import_dependencies)
+    endif()
+
     set(_iv_compile_db_target "${IVR_TARGET}__source_span_compile_db")
     add_library(${_iv_compile_db_target} OBJECT EXCLUDE_FROM_ALL "${_iv_source_abs}")
     set_target_properties(${_iv_compile_db_target} PROPERTIES
         CXX_STANDARD 23
         CXX_STANDARD_REQUIRED ON
-        CXX_EXTENSIONS OFF
-    )
+        CXX_EXTENSIONS OFF)
     if(IVR_COMPILE_SETTINGS_TARGET)
         target_link_libraries(${_iv_compile_db_target} PRIVATE ${IVR_COMPILE_SETTINGS_TARGET})
     endif()
@@ -36,8 +56,7 @@ function(iv_rewrite_module_entry)
     endif()
     foreach(_iv_include_dir IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
         if(_iv_include_dir AND EXISTS "${_iv_include_dir}")
-            target_compile_options(${_iv_compile_db_target} PRIVATE
-                "-isystem${_iv_include_dir}")
+            target_compile_options(${_iv_compile_db_target} PRIVATE "-isystem${_iv_include_dir}")
         endif()
     endforeach()
 
@@ -46,7 +65,7 @@ function(iv_rewrite_module_entry)
             OUTPUT "${_iv_output_abs}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_iv_output_dir}"
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_iv_source_abs}" "${_iv_output_abs}"
-            DEPENDS "${_iv_source_abs}" ${IVR_DEPENDS}
+            DEPENDS "${_iv_source_abs}" ${_iv_import_dependencies} ${IVR_DEPENDS}
             VERBATIM)
     else()
         if(NOT EXISTS "${IV_SOURCE_SPAN_REWRITER}")
@@ -94,6 +113,7 @@ function(iv_rewrite_module_entry)
                 "${CMAKE_BINARY_DIR}/compile_commands.json"
                 "${IV_SOURCE_SPAN_REWRITER}"
                 ${_iv_pch_dependency}
+                ${_iv_import_dependencies}
                 ${IVR_DEPENDS}
             VERBATIM)
     endif()
@@ -101,8 +121,7 @@ function(iv_rewrite_module_entry)
     set_source_files_properties("${_iv_output_abs}" PROPERTIES GENERATED TRUE)
 endfunction()
 
-# Compatibility helper for non-module rewrite users. Phase 2 module builds use
-# iv_rewrite_module_entry so output locations and dependency ordering are explicit.
+# Compatibility helper for non-module rewrite users.
 function(iv_rewrite_sources_to_build_dir out_var)
     set(options)
     set(oneValueArgs TARGET COMPILE_SETTINGS_TARGET PCH_HEADER)
