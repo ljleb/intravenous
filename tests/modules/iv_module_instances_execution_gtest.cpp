@@ -29,6 +29,17 @@ namespace {
         }
     };
 
+    struct SampleRateRecordingNode {
+        size_t *sample_rate = nullptr;
+        float *sample_period = nullptr;
+
+        void tick_block(iv::TickBlockContext<SampleRateRecordingNode> const &ctx) const
+        {
+            if (sample_rate) *sample_rate = ctx.sample_rate;
+            if (sample_period) *sample_period = static_cast<float>(ctx.sample_period());
+        }
+    };
+
     struct ReleaseRequiresLiveModuleNode {
         bool *module_is_live = nullptr;
         bool *release_saw_live_module = nullptr;
@@ -160,6 +171,36 @@ TEST(IvModuleInstancesExecution, TaskCallbackTicksTheBuiltGraph)
     callback.invoke(callback.context);
 
     EXPECT_EQ(ticks, 2);
+}
+
+TEST(IvModuleInstancesExecution, PropagatesConfiguredSampleRateToTickContext)
+{
+    constexpr size_t sample_rate = 96000;
+    iv::IvModuleInstancesExecution execution(8, true, sample_rate);
+    auto instance = make_instance("instance:1");
+    iv::GraphBuilder builder;
+    size_t observed_sample_rate = 0;
+    float observed_sample_period = 0.0f;
+    (void)builder.node<SampleRateRecordingNode>(&observed_sample_rate, &observed_sample_period);
+    builder.outputs();
+
+    auto update = execution.handle_instance_builders_changed(
+        iv::IvModuleInstanceBuildersChanged {
+            .created = {
+                iv::IvModuleInstanceBuilderRef {
+                    .instance = &instance,
+                    .builder = &builder,
+                },
+            },
+        });
+
+    ASSERT_EQ(update.update.to_create.size(), 1u);
+    auto const callback = update.update.to_create[0].callback;
+    ASSERT_NE(callback.invoke, nullptr);
+    callback.invoke(callback.context);
+
+    EXPECT_EQ(observed_sample_rate, sample_rate);
+    EXPECT_FLOAT_EQ(observed_sample_period, 1.0f / static_cast<float>(sample_rate));
 }
 
 TEST(IvModuleInstancesExecution, ResumeResetsBlockIndexWhileOngoingTicksKeepAdvancing)
