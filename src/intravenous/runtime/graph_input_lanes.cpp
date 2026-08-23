@@ -20,14 +20,14 @@
 namespace iv {
 using namespace graph_input_lanes_details;
 
-std::vector<GraphInputLanes::DesiredGraphInputPort>
+std::vector<GraphInputLanes::DesiredGraphPort>
 GraphInputLanes::graph_input_port_descriptors_for(
     IvModuleInstance const &instance)
 {
     return GraphInputLanesPortCatalog::graph_inputs(instance);
 }
 
-std::vector<GraphInputLanes::DesiredGraphInputPort>
+std::vector<GraphInputLanes::DesiredGraphPort>
 GraphInputLanes::graph_output_port_descriptors_for(
     IvModuleInstance const &instance)
 {
@@ -36,18 +36,16 @@ GraphInputLanes::graph_output_port_descriptors_for(
 
 std::vector<GraphInputLanes::DesiredPublicGraphPort>
 GraphInputLanes::public_graph_input_ports_for(
-    std::string const &instance_id,
-    GraphBuilder const &builder)
+    IvModuleInstance const &instance)
 {
-    return GraphInputLanesPortCatalog::public_inputs(instance_id, builder);
+    return GraphInputLanesPortCatalog::public_inputs(instance);
 }
 
 std::vector<GraphInputLanes::DesiredPublicGraphPort>
 GraphInputLanes::public_graph_output_ports_for(
-    std::string const &instance_id,
-    GraphBuilder const &builder)
+    IvModuleInstance const &instance)
 {
-    return GraphInputLanesPortCatalog::public_outputs(instance_id, builder);
+    return GraphInputLanesPortCatalog::public_outputs(instance);
 }
 int GraphInputLanes::module_instance_numeric_id(std::string_view instance_id)
 {
@@ -89,7 +87,7 @@ std::string GraphInputLanes::node_bundle_override_key(
     return node_bundle_key(virtual_node_id, member_ordinal) + "\x1finput:" + std::to_string(input_ordinal);
 }
 
-std::string GraphInputLanes::desired_port_key(DesiredGraphInputPort const &port)
+std::string GraphInputLanes::desired_port_key(DesiredGraphPort const &port)
 {
     auto const virtual_node_id = hash_string(port.port.virtual_node_id);
     auto const node_bundle_port_id = hash_string(
@@ -204,7 +202,7 @@ GraphInputPortDescriptor GraphInputLanes::sample_input_descriptor(
 }
 
 LaneMetadata GraphInputLanes::graph_input_metadata(
-    DesiredGraphInputPort const &port,
+    DesiredGraphPort const &port,
     bool knob,
     bool is_virtual,
     bool concrete,
@@ -261,7 +259,7 @@ LaneMetadata GraphInputLanes::graph_input_metadata(
 }
 
 LaneMetadata GraphInputLanes::graph_output_metadata(
-    DesiredGraphInputPort const &port,
+    DesiredGraphPort const &port,
     bool is_virtual,
     bool concrete,
     bool sample,
@@ -359,7 +357,7 @@ LaneMetadata GraphInputLanes::public_graph_port_metadata(
 
 bool GraphInputLanes::lane_metadata_matches_port(
     LaneMetadata const &metadata,
-    DesiredGraphInputPort const &port)
+    DesiredGraphPort const &port)
 {
     auto const virtual_node_id = metadata.int_value(metadata_virtual_node_id);
     auto const node_bundle_port_id = metadata.int_value(metadata_node_bundle_node_id);
@@ -392,8 +390,8 @@ bool GraphInputLanes::lane_metadata_matches_port(
 }
 
 bool GraphInputLanes::has_node_bundle_descriptor_for_port(
-    std::span<DesiredGraphInputPort const> ports,
-    DesiredGraphInputPort const &virtual_port)
+    std::span<DesiredGraphPort const> ports,
+    DesiredGraphPort const &virtual_port)
 {
     for (auto const &port : ports) {
         if (port.instance_id != virtual_port.instance_id) {
@@ -426,35 +424,39 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
             if (created.instance == nullptr) {
                 continue;
             }
-            // A builder is the authoritative port description.  Replacing it
-            // briefly with the lossy introspection description (which lacks
-            // graph-builder channel/family information) makes reconciliation
-            // remove live lane-connected inputs before complete_builder()
-            // restores them.  Apart from causing needless churn, that drops
-            // timeline connections during a source rebuild.
-            if (created.builder == nullptr || !builder_has_graph_port_descriptions(*created.builder)) {
-                desired_ports_by_instance_id[created.instance->instance_id] =
-                    graph_input_port_descriptors_for(*created.instance);
-                desired_output_ports_by_instance_id[created.instance->instance_id] =
-                    graph_output_port_descriptors_for(*created.instance);
-            }
+            runtime_bindings_by_instance_id[created.instance->instance_id] =
+                created.instance->runtime_bindings;
+            desired_ports_by_instance_id[created.instance->instance_id] =
+                graph_input_port_descriptors_for(*created.instance);
+            desired_output_ports_by_instance_id[created.instance->instance_id] =
+                graph_output_port_descriptors_for(*created.instance);
+            desired_public_input_ports_by_instance_id[created.instance->instance_id] =
+                public_graph_input_ports_for(*created.instance);
+            desired_public_output_ports_by_instance_id[created.instance->instance_id] =
+                public_graph_output_ports_for(*created.instance);
         }
         for (auto const &updated : diff.updated) {
             if (updated.instance == nullptr) {
                 continue;
             }
-            if (updated.builder == nullptr || !builder_has_graph_port_descriptions(*updated.builder)) {
-                desired_ports_by_instance_id[updated.instance->instance_id] =
-                    graph_input_port_descriptors_for(*updated.instance);
-                desired_output_ports_by_instance_id[updated.instance->instance_id] =
-                    graph_output_port_descriptors_for(*updated.instance);
-            }
+            runtime_bindings_by_instance_id[updated.instance->instance_id] =
+                updated.instance->runtime_bindings;
+            desired_ports_by_instance_id[updated.instance->instance_id] =
+                graph_input_port_descriptors_for(*updated.instance);
+            desired_output_ports_by_instance_id[updated.instance->instance_id] =
+                graph_output_port_descriptors_for(*updated.instance);
+            desired_public_input_ports_by_instance_id[updated.instance->instance_id] =
+                public_graph_input_ports_for(*updated.instance);
+            desired_public_output_ports_by_instance_id[updated.instance->instance_id] =
+                public_graph_output_ports_for(*updated.instance);
         }
         for (auto const &deleted_instance_id : diff.deleted_instance_ids) {
             desired_ports_by_instance_id.erase(deleted_instance_id);
             desired_output_ports_by_instance_id.erase(deleted_instance_id);
             desired_public_input_ports_by_instance_id.erase(deleted_instance_id);
             desired_public_output_ports_by_instance_id.erase(deleted_instance_id);
+            runtime_bindings_by_instance_id.erase(deleted_instance_id);
+            pending_runtime_binding_syncs.erase(deleted_instance_id);
         }
         refresh_desired_ports_locked();
         refresh_desired_output_ports_locked();
@@ -463,6 +465,26 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
         (void)reconcile_ports_locked(&batch);
         reconcile_output_ports_locked(&batch);
         reconcile_public_ports_locked(&batch);
+        for (auto const &created : diff.created) {
+            if (created.instance == nullptr) continue;
+            sync_runtime_bindings_locked(created.instance->instance_id);
+            if (ack_builder != nullptr) {
+                ack_builder->set_prerequisite_lanes(
+                    created.instance->instance_id,
+                    prerequisite_lanes_for_instance_locked(
+                        created.instance->instance_id));
+            }
+        }
+        for (auto const &updated : diff.updated) {
+            if (updated.instance == nullptr) continue;
+            sync_runtime_bindings_locked(updated.instance->instance_id);
+            if (ack_builder != nullptr) {
+                ack_builder->set_prerequisite_lanes(
+                    updated.instance->instance_id,
+                    prerequisite_lanes_for_instance_locked(
+                        updated.instance->instance_id));
+            }
+        }
         queue_timeline_batch_locked(batch);
         if (ack_builder != nullptr) {
             ack_builder->set_version_index(current_update_version_index_);
@@ -479,42 +501,6 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
             + std::to_string(ack_builder != nullptr ? current_update_version_index_ : diff.version_index));
     }
 
-    for (auto const &created : diff.created) {
-        if (created.instance == nullptr || created.builder == nullptr) {
-            continue;
-        }
-        auto completion = complete_builder(created.instance->instance_id, *created.builder);
-        emit_debug_message(
-            "graph input lanes completed builder: instance=" + created.instance->instance_id
-            + " prerequisiteLanes=" + std::to_string(completion.prerequisite_lanes.size())
-            + " batchUpserts=" + std::to_string(completion.timeline_batch.upserts.size())
-            + " batchRemovals=" + std::to_string(completion.timeline_batch.removals.size())
-            + " batchConnectionsAdd=" + std::to_string(completion.timeline_batch.connections_to_add.size())
-            + " batchConnectionsRemove=" + std::to_string(completion.timeline_batch.connections_to_remove.size()));
-        if (ack_builder != nullptr) {
-            ack_builder->set_prerequisite_lanes(
-                created.instance->instance_id,
-                completion.prerequisite_lanes);
-        }
-    }
-    for (auto const &updated : diff.updated) {
-        if (updated.instance == nullptr || updated.builder == nullptr) {
-            continue;
-        }
-        auto completion = complete_builder(updated.instance->instance_id, *updated.builder);
-        emit_debug_message(
-            "graph input lanes recompleted builder: instance=" + updated.instance->instance_id
-            + " prerequisiteLanes=" + std::to_string(completion.prerequisite_lanes.size())
-            + " batchUpserts=" + std::to_string(completion.timeline_batch.upserts.size())
-            + " batchRemovals=" + std::to_string(completion.timeline_batch.removals.size())
-            + " batchConnectionsAdd=" + std::to_string(completion.timeline_batch.connections_to_add.size())
-            + " batchConnectionsRemove=" + std::to_string(completion.timeline_batch.connections_to_remove.size()));
-        if (ack_builder != nullptr) {
-            ack_builder->set_prerequisite_lanes(
-                updated.instance->instance_id,
-                completion.prerequisite_lanes);
-        }
-    }
 }
 
 std::vector<IvModuleSourceIntrospectionLiveInputSnapshot>
@@ -667,37 +653,48 @@ GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
 void GraphInputLanes::handle_task_runner_after_pass(
     TasksRunnerAfterPass const &finished)
 {
-    std::vector<std::string> instance_ids;
     std::vector<TimelineLaneBatchUpdate> timeline_batches;
+    std::vector<std::string> binding_syncs;
+    auto const update_version = finished.graph_revision + 1;
     {
         std::scoped_lock lock(mutex);
-        current_update_version_index_ = finished.graph_revision + 1;
-        instance_ids.assign(
-            pending_rebuild_instance_ids.begin(),
-            pending_rebuild_instance_ids.end());
-        pending_rebuild_instance_ids.clear();
+        current_update_version_index_ = update_version;
         timeline_batches = take_pending_timeline_batches_locked();
+        binding_syncs.assign(
+            pending_runtime_binding_syncs.begin(),
+            pending_runtime_binding_syncs.end());
+        pending_runtime_binding_syncs.clear();
     }
     for (auto const &batch : timeline_batches) {
         apply_timeline_batch(batch);
     }
-    if (!timeline_batches.empty() || !instance_ids.empty()) {
+    GraphInputLanesRuntimeDependenciesChanged dependencies{
+        .version_index = update_version,
+    };
+    {
+        std::scoped_lock lock(mutex);
+        std::ranges::sort(binding_syncs);
+        dependencies.instances.reserve(binding_syncs.size());
+        for (auto const& instance_id : binding_syncs) {
+            sync_runtime_bindings_locked(instance_id);
+            dependencies.instances.push_back(GraphInputLanesRuntimeDependency{
+                .instance_id = instance_id,
+                .prerequisite_lanes =
+                    prerequisite_lanes_for_instance_locked(instance_id),
+            });
+        }
+    }
+    if (!dependencies.instances.empty()) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_graph_input_lanes_runtime_dependencies_changed_event,
+            dependencies);
+    }
+    if (!timeline_batches.empty()) {
         emit_debug_message(
             "graph input lanes pass: revision="
             + std::to_string(finished.graph_revision)
-            + " timelineBatches=" + std::to_string(timeline_batches.size())
-            + " rebuildInstances=" + std::to_string(instance_ids.size()));
+            + " timelineBatches=" + std::to_string(timeline_batches.size()));
     }
-    if (instance_ids.empty()) {
-        return;
-    }
-    std::ranges::sort(instance_ids);
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_graph_input_lanes_rebuild_requested_event,
-        GraphInputLanesRebuildRequested{
-            .version_index = finished.graph_revision + 1,
-            .instance_ids = std::move(instance_ids),
-        });
 }
 
 void GraphInputLanes::handle_sample_block_published(
@@ -714,12 +711,22 @@ void GraphInputLanes::handle_event_block_published(
     publish_event_output_block(lane, events);
 }
 
-OwnedSampleBlock GraphInputLanes::handle_sample_block_requested(LaneId lane) const
+void GraphInputLanes::prepare_sample_output_block(LaneId lane)
+{
+    output_blocks_.prepare_sample(lane);
+}
+
+void GraphInputLanes::prepare_event_output_block(LaneId lane)
+{
+    output_blocks_.prepare_event(lane);
+}
+
+BorrowedSampleBlock GraphInputLanes::handle_sample_block_requested(LaneId lane) const
 {
     return sample_output_block(lane);
 }
 
-std::vector<TimedEvent> GraphInputLanes::handle_event_block_requested(LaneId lane) const
+std::span<TimedEvent const> GraphInputLanes::handle_event_block_requested(LaneId lane) const
 {
     return event_output_block(lane);
 }

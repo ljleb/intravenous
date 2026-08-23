@@ -26,7 +26,6 @@ struct PreparedBuilderGraph {
       .node_virtual_ids = {}, .node_source_infos = {},
       .node_construction_order = {}, .node_kinds = {},
       .node_type_identities = {}, .edges = {}, .event_edges = {},
-      .timeline_filled_input_ports = {}, .timeline_filled_event_input_ports = {},
       .detached_info_by_source = {}, .detached_reader_outputs = {},
   };
   std::vector<size_t> runtime_node_indices;
@@ -255,19 +254,6 @@ struct PreparedBuilderGraph {
           GraphEventEdge{resolve_event_source(edge.source), {}, edge.conversion},
           edge.target);
     });
-  }
-
-  void copy_runtime_filled_inputs() {
-    for (auto port : lowered.runtime_filled_sample_inputs) {
-      if (port.node == GRAPH_ID || topology.is_subgraph_node(port.node)) continue;
-      graph.timeline_filled_input_ports.insert(
-          {runtime_node_indices[port.node], port.port});
-    }
-    for (auto port : lowered.runtime_filled_event_inputs) {
-      if (port.node == GRAPH_ID || topology.is_subgraph_node(port.node)) continue;
-      graph.timeline_filled_event_input_ports.insert(
-          {runtime_node_indices[port.node], port.port});
-    }
   }
 
   ConcretePortId materialize_subgraph_default(size_t subgraph_node,
@@ -525,7 +511,8 @@ GraphIntrospectionMetadata GraphBuilderFinalizer::build_metadata(
   auto scopes = prepared.build_lowered_scopes();
   auto [virtual_nodes, _] =
       details::build_virtual_metadata(prepared.graph, scopes);
-  GraphIntrospectionMetadata metadata{.virtual_nodes = std::move(virtual_nodes)};
+  GraphIntrospectionMetadata metadata;
+  metadata.virtual_nodes = std::move(virtual_nodes);
   details::apply_virtual_port_metadata(metadata, bundles, virtuals, connections);
   return metadata;
 }
@@ -534,21 +521,29 @@ GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
     GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
     GraphBuilderNodeBundles const& bundles,
     GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
+    GraphBuilderPublicPorts const& ports, size_t detach_offset,
+    bool execution_root) {
   if (!ports.sample_outputs_defined())
     details::error("builder " + identity.value +
                    ": g.outputs(...) must be called before build()");
-  auto const sample_inputs = ports.sample_inputs(bundles);
-  auto const sample_outputs = ports.sample_outputs(bundles);
-  auto const event_inputs = ports.event_inputs(bundles);
-  auto const event_outputs = ports.event_outputs(bundles);
+  auto const sample_inputs = execution_root
+      ? std::span<InputConfig const>{}
+      : ports.sample_inputs(bundles);
+  auto const sample_outputs = execution_root
+      ? std::span<OutputConfig const>{}
+      : ports.sample_outputs(bundles);
+  auto const event_inputs = execution_root
+      ? std::span<EventInputConfig const>{}
+      : ports.event_inputs(bundles);
+  auto const event_outputs = execution_root
+      ? std::span<EventOutputConfig const>{}
+      : ports.event_outputs(bundles);
   PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
   prepared.append_materialized_nodes(detach_offset);
-  prepared.copy_runtime_filled_inputs();
   prepared.lower_edges();
   prepared.add_subgraph_default_edges();
   prepared.copy_detach_info();
-  details::expand_hyperedge_ports(prepared.graph, sample_outputs, identity.value);
+  details::expand_hyperedge_ports(prepared.graph, identity.value);
   details::stub_dangling_ports(prepared.graph, sample_inputs.size(), identity.value);
   details::validate_graph(prepared.graph, sample_inputs.size(), sample_outputs.size());
   details::validate_detached_edges(prepared.graph, identity.value);

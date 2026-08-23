@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/basic_nodes/routing.h>
-#include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/graph/build_types.h>
 #include <intravenous/graph/types.h>
@@ -35,40 +34,6 @@ namespace iv::details {
     }
 
     template<class ChannelType, SampleStreamLayout Layout>
-    inline TypeErasedNode make_sum_node(size_t arity)
-    {
-        if (arity == 0 || arity > 64) {
-            error("sum node arity must be between 1 and 64; got " + std::to_string(arity));
-        }
-
-        std::optional<TypeErasedNode> result;
-        [&]<size_t... I>(std::index_sequence<I...>) {
-            ((arity == (I + 1)
-                ? (void)(result.emplace(Sum<ChannelType, Layout, I + 1>{}))
-                : (void)0), ...);
-        }(std::make_index_sequence<64>{});
-
-        IV_ASSERT(result.has_value(), "sum node instantiation must succeed for supported arities");
-        return std::move(*result);
-    }
-
-    inline TypeErasedNode make_sum_node(size_t arity, ChannelLayout layout)
-    {
-        switch (layout.channel_type) {
-        case ChannelTypeId::mono:
-            return layout.sample_layout == SampleStreamLayout::planar
-                ? make_sum_node<mono, SampleStreamLayout::planar>(arity)
-                : make_sum_node<mono, SampleStreamLayout::interleaved>(arity);
-        case ChannelTypeId::stereo:
-            return layout.sample_layout == SampleStreamLayout::planar
-                ? make_sum_node<stereo, SampleStreamLayout::planar>(arity)
-                : make_sum_node<stereo, SampleStreamLayout::interleaved>(arity);
-        case ChannelTypeId::count:
-            break;
-        }
-        error("unsupported channel layout for generated sum node");
-    }
-
     inline TypeErasedNode make_broadcast_node(size_t arity)
     {
         if (arity == 0 || arity > 64) {
@@ -78,12 +43,29 @@ namespace iv::details {
         std::optional<TypeErasedNode> result;
         [&]<size_t... I>(std::index_sequence<I...>) {
             ((arity == (I + 1)
-                ? (void)(result.emplace(Broadcast<I + 1>{}))
+                ? (void)(result.emplace(Broadcast<I + 1, ChannelType, Layout>{}))
                 : (void)0), ...);
         }(std::make_index_sequence<64>{});
 
         IV_ASSERT(result.has_value(), "broadcast node instantiation must succeed for supported arities");
         return std::move(*result);
+    }
+
+    inline TypeErasedNode make_broadcast_node(size_t arity, ChannelLayout layout)
+    {
+        switch (layout.channel_type) {
+        case ChannelTypeId::mono:
+            return layout.sample_layout == SampleStreamLayout::planar
+                ? make_broadcast_node<mono, SampleStreamLayout::planar>(arity)
+                : make_broadcast_node<mono, SampleStreamLayout::interleaved>(arity);
+        case ChannelTypeId::stereo:
+            return layout.sample_layout == SampleStreamLayout::planar
+                ? make_broadcast_node<stereo, SampleStreamLayout::planar>(arity)
+                : make_broadcast_node<stereo, SampleStreamLayout::interleaved>(arity);
+        case ChannelTypeId::count:
+            break;
+        }
+        error("unsupported channel layout for generated broadcast node");
     }
 
     struct PreparedGraph {
@@ -97,8 +79,6 @@ namespace iv::details {
         std::vector<std::string> node_type_identities;
         std::unordered_set<GraphEdge> edges;
         std::unordered_set<GraphEventEdge> event_edges;
-        std::unordered_set<ConcretePortId> timeline_filled_input_ports;
-        std::unordered_set<ConcretePortId> timeline_filled_event_input_ports;
         std::unordered_map<ConcretePortId, DetachedInfo> detached_info_by_source;
         std::unordered_set<ConcretePortId> detached_reader_outputs;
     };
@@ -369,7 +349,6 @@ namespace iv::details {
 
     inline void expand_hyperedge_ports(
         PreparedGraph& g,
-        std::span<OutputConfig const> public_outputs,
         std::string_view builder_id)
     {
         std::unordered_map<ConcretePortId, std::vector<GraphEdge>> reverse_edges_map;
@@ -383,68 +362,12 @@ namespace iv::details {
             reverse_event_edges_map[edge.target].push_back(edge);
         }
 
+        for (auto const& [_, incoming] : reverse_edges_map) {
+            if (incoming.size() > 1)
+                error("sample fan-in reached the compiler instead of one ConnectionNode");
+        }
+
         size_t nodes_size = g.nodes.size();
-        for (size_t node = 0; node < nodes_size; ++node)
-        {
-            size_t const num_inputs = get_num_inputs(g.nodes[node]);
-            for (size_t in_port = 0; in_port < num_inputs; ++in_port)
-            {
-                auto it = reverse_edges_map.find({ node, in_port });
-                if (it == reverse_edges_map.end()) continue;
-
-                auto const& edges_to_expand = it->second;
-                size_t const port_arity = edges_to_expand.size();
-                if (port_arity <= 1) continue;
-
-                g.nodes.push_back(make_sum_node(
-                    port_arity,
-                    effective_channel_layout(g.nodes[node].inputs()[in_port])));
-                g.explicit_ttl_samples.push_back(std::nullopt);
-                g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
-                g.node_virtual_ids.emplace_back();
-                g.node_source_infos.emplace_back();
-                g.node_construction_order.push_back(next_construction_order(g));
-                size_t const sum_node = g.nodes.size() - 1;
-
-                for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
-                {
-                    GraphEdge const& to_rewire = edges_to_expand[out_port];
-                    g.edges.erase(to_rewire);
-                    g.edges.insert(GraphEdge{ to_rewire.source, { sum_node, out_port } });
-                }
-                g.edges.insert(GraphEdge{ { sum_node, 0 }, { node, in_port } });
-            }
-        }
-
-        for (size_t output_port = 0; output_port < public_outputs.size(); ++output_port)
-        {
-            auto it = reverse_edges_map.find({ GRAPH_ID, output_port });
-            if (it == reverse_edges_map.end()) continue;
-
-            auto const& edges_to_expand = it->second;
-            size_t const port_arity = edges_to_expand.size();
-            if (port_arity <= 1) continue;
-
-            g.nodes.push_back(make_sum_node(
-                port_arity,
-                effective_channel_layout(public_outputs[output_port])));
-            g.explicit_ttl_samples.push_back(std::nullopt);
-            g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
-            g.node_virtual_ids.emplace_back();
-            g.node_source_infos.emplace_back();
-            g.node_construction_order.push_back(next_construction_order(g));
-            size_t const sum_node = g.nodes.size() - 1;
-
-            for (size_t input_port = 0; input_port < edges_to_expand.size(); ++input_port)
-            {
-                GraphEdge const& to_rewire = edges_to_expand[input_port];
-                g.edges.erase(to_rewire);
-                g.edges.insert(GraphEdge{ to_rewire.source, { sum_node, input_port } });
-            }
-            g.edges.insert(GraphEdge{ { sum_node, 0 }, { GRAPH_ID, output_port } });
-        }
-
-        nodes_size = g.nodes.size();
         for (size_t node = 0; node < nodes_size; ++node)
         {
             size_t const num_inputs = get_num_event_inputs(g.nodes[node]);
@@ -504,7 +427,9 @@ namespace iv::details {
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
-                g.nodes.push_back(make_broadcast_node(port_arity));
+                g.nodes.push_back(make_broadcast_node(
+                    port_arity,
+                    effective_channel_layout(g.nodes[node].outputs()[out_port])));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_virtual_ids.emplace_back();
@@ -725,26 +650,6 @@ namespace iv::details {
             sorted_event_edges.insert(std::move(edge));
         }
         g.event_edges.swap(sorted_event_edges);
-
-        std::unordered_set<ConcretePortId> sorted_timeline_filled_input_ports;
-        sorted_timeline_filled_input_ports.reserve(g.timeline_filled_input_ports.size());
-        for (ConcretePortId port : g.timeline_filled_input_ports) {
-            if (port.node != GRAPH_ID) {
-                port.node = reverse_sorted[port.node];
-            }
-            sorted_timeline_filled_input_ports.insert(port);
-        }
-        g.timeline_filled_input_ports.swap(sorted_timeline_filled_input_ports);
-
-        std::unordered_set<ConcretePortId> sorted_timeline_filled_event_input_ports;
-        sorted_timeline_filled_event_input_ports.reserve(g.timeline_filled_event_input_ports.size());
-        for (ConcretePortId port : g.timeline_filled_event_input_ports) {
-            if (port.node != GRAPH_ID) {
-                port.node = reverse_sorted[port.node];
-            }
-            sorted_timeline_filled_event_input_ports.insert(port);
-        }
-        g.timeline_filled_event_input_ports.swap(sorted_timeline_filled_event_input_ports);
 
         for (auto& [_, info] : g.detached_info_by_source)
         {

@@ -35,6 +35,46 @@ void LoweredTopology::add_event_edge(TopologyEventEdge edge) {
   _event_edges.emplace(std::move(edge));
 }
 
+void LoweredTopology::replace_sample_source(TopologyPortId from, TopologyPortId to) {
+  std::unordered_set<TopologyEdge, TopologyEdgeHash> replaced;
+  replaced.reserve(_edges.size());
+  for (auto edge : _edges) {
+    if (edge.source == from) edge.source = to;
+    replaced.emplace(std::move(edge));
+  }
+  _edges = std::move(replaced);
+}
+
+void LoweredTopology::replace_sample_target(TopologyPortId from, TopologyPortId to) {
+  std::unordered_set<TopologyEdge, TopologyEdgeHash> replaced;
+  replaced.reserve(_edges.size());
+  for (auto edge : _edges) {
+    if (edge.target == from) edge.target = to;
+    replaced.emplace(std::move(edge));
+  }
+  _edges = std::move(replaced);
+}
+
+void LoweredTopology::replace_event_source(TopologyPortId from, TopologyPortId to) {
+  std::unordered_set<TopologyEventEdge, TopologyEventEdgeHash> replaced;
+  replaced.reserve(_event_edges.size());
+  for (auto edge : _event_edges) {
+    if (edge.source == from) edge.source = to;
+    replaced.emplace(std::move(edge));
+  }
+  _event_edges = std::move(replaced);
+}
+
+void LoweredTopology::replace_event_target(TopologyPortId from, TopologyPortId to) {
+  std::unordered_set<TopologyEventEdge, TopologyEventEdgeHash> replaced;
+  replaced.reserve(_event_edges.size());
+  for (auto edge : _event_edges) {
+    if (edge.target == from) edge.target = to;
+    replaced.emplace(std::move(edge));
+  }
+  _event_edges = std::move(replaced);
+}
+
 TopologyPortId LoweredTopology::append_scope_sample_input(OutputConfig) {
   auto const ordinal = _scope_boundary_port_count++;
   return {GRAPH_ID - 1 - ordinal, 0};

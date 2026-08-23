@@ -281,6 +281,66 @@ namespace {
         EXPECT_EQ(ctx.invocations.load(), 0);
     }
 
+    TEST_F(TasksRunnerTest, DeferredGraphActivatesOnlyAfterPreparedCommitHook)
+    {
+        LogState log;
+        RecordingContext ctx{ .name = "a", .log = &log };
+        iv::TasksRunner runner(1);
+        runner.update_tasks(iv::VersionedTaskGraphUpdate{
+            .version_index = 1,
+            .update = iv::TaskGraphUpdate{
+                .to_create = { task("a", {}, &record_callback, &ctx) },
+            },
+            .activation_deferred = true,
+        });
+
+        std::this_thread::sleep_for(20ms);
+        EXPECT_EQ(runner.active_graph_revision(), 0u);
+        EXPECT_EQ(ctx.invocations.load(), 0);
+
+        bool committed = false;
+        ASSERT_TRUE(runner.activate_deferred_graph_after([&] {
+            committed = true;
+        }));
+        EXPECT_TRUE(committed);
+        ASSERT_TRUE(wait_until([&] {
+            return runner.active_graph_revision() == 1 &&
+                ctx.invocations.load() > 0;
+        }));
+    }
+
+    TEST_F(TasksRunnerTest, DeferredGraphWaitsForDependenciesBeforeCommitHook)
+    {
+        LogState log;
+        RecordingContext a{ .name = "a", .log = &log };
+        RecordingContext b{ .name = "b", .log = &log };
+        iv::TasksRunner runner(1);
+        runner.update_tasks(iv::VersionedTaskGraphUpdate{
+            .version_index = 1,
+            .update = iv::TaskGraphUpdate{
+                .to_create = { task("a", {"b"}, &record_callback, &a) },
+            },
+            .activation_deferred = true,
+        });
+
+        bool committed = false;
+        EXPECT_FALSE(runner.activate_deferred_graph_after([&] {
+            committed = true;
+        }));
+        EXPECT_FALSE(committed);
+
+        runner.update_tasks(versioned(1, iv::TaskGraphUpdate{
+            .to_create = { task("b", {}, &record_callback, &b) },
+        }));
+        EXPECT_TRUE(runner.activate_deferred_graph_after([&] {
+            committed = true;
+        }));
+        EXPECT_TRUE(committed);
+        ASSERT_TRUE(wait_until([&] {
+            return a.invocations.load() > 0 && b.invocations.load() > 0;
+        }));
+    }
+
     TEST_F(TasksRunnerTest, CycleThrows)
     {
         LogState log;

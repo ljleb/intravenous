@@ -175,6 +175,10 @@ namespace iv {
         std::string _identity;
 
     public:
+        struct State {
+            std::span<Sample> samples {};
+        };
+
         static std::string nominal_identity(LaneId lane)
         {
             return "graph-output-sample-sink:" + std::to_string(lane.value);
@@ -195,9 +199,17 @@ namespace iv {
             return _identity;
         }
 
+        void declare(DeclarationContext<GraphSampleOutputSink> const& ctx) const
+        {
+            ctx.local_array(
+                ctx.state().samples,
+                channel_count(ChannelType) * ctx.max_block_size());
+        }
+
         void tick_block(TickBlockContext<GraphSampleOutputSink<ChannelType>> const& ctx) const
         {
-            std::vector<Sample> samples(channel_count(ChannelType) * ctx.block_size);
+            auto samples = ctx.state().samples.first(
+                channel_count(ChannelType) * ctx.block_size);
             for (size_t channel = 0; channel < channel_count(ChannelType); ++channel) {
                 auto const block = ctx.inputs[channel].get_block(ctx.block_size);
                 for (size_t i = 0; i < ctx.block_size; ++i) {
@@ -226,6 +238,10 @@ namespace iv {
         std::string _identity;
 
     public:
+        struct State {
+            std::span<TimedEvent> events {};
+        };
+
         static std::string nominal_identity(LaneId lane)
         {
             return "graph-output-event-sink:" + std::to_string(lane.value);
@@ -249,14 +265,25 @@ namespace iv {
             return _identity;
         }
 
+        void declare(DeclarationContext<GraphEventOutputSink> const& ctx) const
+        {
+            ctx.local_array(
+                ctx.state().events,
+                calculate_event_port_buffer_capacity(
+                    ctx.event_port_buffer_base_multiplier(), _type));
+        }
+
         void tick_block(TickBlockContext<GraphEventOutputSink> const& ctx) const
         {
-            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
-            std::vector<TimedEvent> stored(events.begin(), events.end());
+            auto const input =
+                ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            auto const count = std::min(input.size(), ctx.state().events.size());
+            for (size_t i = 0; i < count; ++i)
+                ctx.state().events[i] = input[i];
             IV_INVOKE_SINGLETON_EVENT(
                 iv_runtime_graph_input_lanes_event_block_published_event,
                 _lane,
-                std::span<TimedEvent const>(stored));
+                ctx.state().events.first(count));
         }
     };
 }

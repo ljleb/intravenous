@@ -231,6 +231,36 @@ TEST_F(IvModuleInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPubl
         witness.listed_instances->front().default_silence_ttl_samples.has_value());
 }
 
+TEST_F(IvModuleInstancesTest, DefinitionReloadCreatesNewRuntimeBindingGeneration)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
+        "iv_module_instances_binding_generation");
+    auto const module_root = std::filesystem::weakly_canonical(workspace);
+    iv::IvModuleInstances instances;
+
+    (void)instances.create_instance(module_id, module_root);
+    instances.handle_iv_module_definitions_changed(iv::IvModuleDefinitionsChanged{
+        .created = {make_definition(module_root)},
+    });
+    ASSERT_TRUE(witness.instances_diff.has_value());
+    ASSERT_EQ(witness.instances_diff->created.size(), 1u);
+    auto const original_bindings =
+        witness.instances_diff->created.front().runtime_bindings;
+    ASSERT_NE(original_bindings, nullptr);
+    witness.reset();
+
+    instances.handle_iv_module_definitions_changed(iv::IvModuleDefinitionsChanged{
+        .updated = {make_definition(module_root)},
+    });
+
+    ASSERT_TRUE(witness.instances_diff.has_value());
+    ASSERT_EQ(witness.instances_diff->updated.size(), 1u);
+    auto const replacement_bindings =
+        witness.instances_diff->updated.front().runtime_bindings;
+    ASSERT_NE(replacement_bindings, nullptr);
+    EXPECT_NE(replacement_bindings, original_bindings);
+}
+
 TEST_F(IvModuleInstancesTest, SettingPerInstanceDefaultSilenceTtlRepublishesRealizedBuilder)
 {
     auto const workspace =

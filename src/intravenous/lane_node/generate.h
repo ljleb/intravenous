@@ -350,7 +350,7 @@ namespace iv {
 
         void push(TimedEvent const& event) const
         {
-            if (!_events) {
+            if (!_events || _events->size() == _events->capacity()) {
                 return;
             }
             _events->push_back(event);

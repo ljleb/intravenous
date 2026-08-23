@@ -12,6 +12,16 @@
 #include <vector>
 
 namespace iv {
+struct GraphInputLanesRuntimeDependency {
+    std::string instance_id {};
+    std::vector<LaneId> prerequisite_lanes {};
+};
+
+struct GraphInputLanesRuntimeDependenciesChanged {
+    std::uint64_t version_index = 0;
+    std::vector<GraphInputLanesRuntimeDependency> instances {};
+};
+
 class GraphInputLanesAckBuilder {
     std::optional<std::string> error_message;
     bool handled = false;
@@ -23,30 +33,30 @@ public:
 };
 
 class GraphInputLanesSampleBlockBuilder {
-    OwnedSampleBlock block_ {};
+    BorrowedSampleBlock block_ {};
 
 public:
-    void succeed(OwnedSampleBlock block)
+    void succeed(BorrowedSampleBlock block)
     {
-        block_ = std::move(block);
+        block_ = block;
     }
 
-    [[nodiscard]] OwnedSampleBlock build() const
+    [[nodiscard]] BorrowedSampleBlock build() const
     {
         return block_;
     }
 };
 
 class GraphInputLanesEventBlockBuilder {
-    std::vector<TimedEvent> events_ {};
+    std::span<TimedEvent const> events_ {};
 
 public:
-    void succeed(std::vector<TimedEvent> events)
+    void succeed(std::span<TimedEvent const> events)
     {
-        events_ = std::move(events);
+        events_ = events;
     }
 
-    [[nodiscard]] std::vector<TimedEvent> build() const
+    [[nodiscard]] std::span<TimedEvent const> build() const
     {
         return events_;
     }
@@ -54,14 +64,9 @@ public:
 
 using GraphInputLanesTimelineBatchRequestedEvent =
     void (*)(TimelineLaneBatchUpdate const &, GraphInputLanesAckBuilder &);
+using GraphInputLanesRuntimeDependenciesChangedEvent =
+    void (*)(GraphInputLanesRuntimeDependenciesChanged const &);
 
-struct GraphInputLanesRebuildRequested {
-    std::uint64_t version_index = 0;
-    std::vector<std::string> instance_ids {};
-};
-
-using GraphInputLanesRebuildRequestedEvent =
-    void (*)(GraphInputLanesRebuildRequested const &);
 // A knob's value is mutable DSP state.  Updating it must not change graph
 // topology or request an IV module rebuild.
 using GraphInputLanesKnobValueUpdatedEvent = void (*)(LaneId, Sample);
@@ -78,8 +83,8 @@ IV_DECLARE_LINKER_EVENT(
     GraphInputLanesTimelineBatchRequestedEvent,
     iv_runtime_graph_input_lanes_timeline_batch_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    GraphInputLanesRebuildRequestedEvent,
-    iv_runtime_graph_input_lanes_rebuild_requested_event);
+    GraphInputLanesRuntimeDependenciesChangedEvent,
+    iv_runtime_graph_input_lanes_runtime_dependencies_changed_event);
 IV_DECLARE_SINGLETON_EVENT(
     GraphInputLanesKnobValueUpdatedEvent,
     iv_runtime_graph_input_lanes_knob_value_updated_event);

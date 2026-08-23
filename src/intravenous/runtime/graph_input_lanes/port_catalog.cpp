@@ -7,7 +7,7 @@ namespace iv {
 namespace {
 std::string runtime_virtual_node_id(std::string_view instance_id, std::string_view virtual_node_id)
 {
-    return std::string(instance_id) + ":" + std::string(virtual_node_id);
+    return std::string(instance_id) + "\x1fvirtual:" + std::string(virtual_node_id);
 }
 
 int module_instance_numeric_id(std::string_view instance_id)
@@ -25,65 +25,83 @@ int module_instance_numeric_id(std::string_view instance_id)
 }
 
 void append_descriptors(
-    std::vector<GraphInputLanes::DesiredGraphInputPort>& ports,
+    std::vector<GraphInputLanes::DesiredGraphPort>& ports,
     std::string const& instance_id,
     int module_instance_id,
     std::string const& virtual_node_id,
     PortKind port_kind,
-    std::span<IntrospectionPortInfo const> virtual_ports)
+    std::span<IntrospectionPortInfo const> virtual_ports,
+    std::optional<size_t> member_ordinal = std::nullopt)
 {
     ports.reserve(ports.size() + virtual_ports.size());
     for (auto const& port : virtual_ports) {
-        ports.push_back(GraphInputLanes::DesiredGraphInputPort{
+        ports.push_back(GraphInputLanes::DesiredGraphPort{
             .instance_id = instance_id,
             .module_instance_id = module_instance_id,
             .port = GraphInputPortDescriptor{
                 .virtual_node_id = virtual_node_id,
+                .node_bundle_port_ordinal = member_ordinal,
                 .port_kind = port_kind,
                 .port_ordinal = port.ordinal,
                 .port_name = port.name,
                 .port_type = port.type,
                 .sample_channel_type = port.sample_channel_type,
             },
-            .default_connected = port.connectivity != VirtualPortConnectivity::disconnected,
+            .authored_connected = port.connectivity != VirtualPortConnectivity::disconnected,
+            .default_value = port.default_value,
+            .min = port.min,
+            .max = port.max,
         });
     }
 }
 } // namespace
 
 auto GraphInputLanesPortCatalog::graph_inputs(IvModuleInstance const& instance)
-    -> std::vector<GraphInputLanes::DesiredGraphInputPort>
+    -> std::vector<GraphInputLanes::DesiredGraphPort>
 {
-    std::vector<GraphInputLanes::DesiredGraphInputPort> ports;
+    std::vector<GraphInputLanes::DesiredGraphPort> ports;
     auto const module_instance_id = module_instance_numeric_id(instance.instance_id);
     for (auto const& node : instance.introspection.virtual_nodes) {
         auto const node_id = runtime_virtual_node_id(instance.instance_id, node.id);
         append_descriptors(ports, instance.instance_id, module_instance_id, node_id, PortKind::sample, node.sample_inputs);
         append_descriptors(ports, instance.instance_id, module_instance_id, node_id, PortKind::event, node.event_inputs);
+        for (auto const& member : node.members) {
+            append_descriptors(ports, instance.instance_id, module_instance_id, node_id,
+                               PortKind::sample, member.sample_inputs, member.ordinal);
+            append_descriptors(ports, instance.instance_id, module_instance_id, node_id,
+                               PortKind::event, member.event_inputs, member.ordinal);
+        }
     }
     return ports;
 }
 
 auto GraphInputLanesPortCatalog::graph_outputs(IvModuleInstance const& instance)
-    -> std::vector<GraphInputLanes::DesiredGraphInputPort>
+    -> std::vector<GraphInputLanes::DesiredGraphPort>
 {
-    std::vector<GraphInputLanes::DesiredGraphInputPort> ports;
+    std::vector<GraphInputLanes::DesiredGraphPort> ports;
     auto const module_instance_id = module_instance_numeric_id(instance.instance_id);
     for (auto const& node : instance.introspection.virtual_nodes) {
         auto const node_id = runtime_virtual_node_id(instance.instance_id, node.id);
         append_descriptors(ports, instance.instance_id, module_instance_id, node_id, PortKind::sample, node.sample_outputs);
         append_descriptors(ports, instance.instance_id, module_instance_id, node_id, PortKind::event, node.event_outputs);
+        for (auto const& member : node.members) {
+            append_descriptors(ports, instance.instance_id, module_instance_id, node_id,
+                               PortKind::sample, member.sample_outputs, member.ordinal);
+            append_descriptors(ports, instance.instance_id, module_instance_id, node_id,
+                               PortKind::event, member.event_outputs, member.ordinal);
+        }
     }
     return ports;
 }
 
 auto GraphInputLanesPortCatalog::public_inputs(
-    std::string const& instance_id, GraphBuilder const& builder)
+    IvModuleInstance const& instance)
     -> std::vector<GraphInputLanes::DesiredPublicGraphPort>
 {
     std::vector<GraphInputLanes::DesiredPublicGraphPort> ports;
+    auto const& instance_id = instance.instance_id;
     auto const module_instance_id = module_instance_numeric_id(instance_id);
-    for (auto const& family : builder.public_sample_input_families().families) {
+    for (auto const& family : instance.introspection.public_sample_inputs) {
         std::vector<GraphInputLanes::DesiredPublicGraphPortChannel> channels;
         channels.reserve(family.channels.size());
         for (auto const& channel : family.channels) {
@@ -96,33 +114,31 @@ auto GraphInputLanesPortCatalog::public_inputs(
             .default_value = family.input_config.default_value, .min = family.input_config.min, .max = family.input_config.max,
             .source_infos = family.source_infos,
             .source_identity = family.source_infos.empty() ? std::string{} : family.source_infos.front().declaration_identity,
-            .graph_connected = [&] { return std::ranges::any_of(family.channels, [&](auto const& channel) {
-                return std::ranges::any_of(channel.port_ordinals, [&](auto ordinal) { return builder.public_sample_input_is_connected(ordinal); });
-            }); }(),
+            .graph_connected = family.authored_connected,
             .channels = std::move(channels),
         });
     }
-    for (auto const& input : builder.public_event_inputs()) {
-        auto const infos = builder.public_event_input_source_infos(input.port_ordinal);
+    for (auto const& input : instance.introspection.public_event_inputs) {
         ports.push_back({
             .instance_id = instance_id, .module_instance_id = module_instance_id, .input = true,
             .port_kind = PortKind::event, .port_ordinal = input.port_ordinal, .port_name = input.config.name,
             .port_type = details::event_type_name(input.config.type), .event_type = input.config.type,
-            .source_infos = {infos.begin(), infos.end()},
-            .source_identity = infos.empty() ? std::string{} : infos.front().declaration_identity,
-            .graph_connected = builder.public_event_input_is_connected(input.port_ordinal),
+            .source_infos = input.source_infos,
+            .source_identity = input.source_infos.empty() ? std::string{} : input.source_infos.front().declaration_identity,
+            .graph_connected = input.graph_connected,
         });
     }
     return ports;
 }
 
 auto GraphInputLanesPortCatalog::public_outputs(
-    std::string const& instance_id, GraphBuilder const& builder)
+    IvModuleInstance const& instance)
     -> std::vector<GraphInputLanes::DesiredPublicGraphPort>
 {
     std::vector<GraphInputLanes::DesiredPublicGraphPort> ports;
+    auto const& instance_id = instance.instance_id;
     auto const module_instance_id = module_instance_numeric_id(instance_id);
-    for (auto const& family : builder.public_sample_output_families().families) {
+    for (auto const& family : instance.introspection.public_sample_outputs) {
         std::vector<GraphInputLanes::DesiredPublicGraphPortChannel> channels;
         channels.reserve(family.channels.size());
         for (auto const& channel : family.channels) {
@@ -150,7 +166,7 @@ auto GraphInputLanesPortCatalog::public_outputs(
             });
         }
     }
-    for (auto const& output : builder.public_event_outputs()) {
+    for (auto const& output : instance.introspection.public_event_outputs) {
         ports.push_back({
             .instance_id = instance_id, .module_instance_id = module_instance_id, .input = false,
             .port_kind = PortKind::event, .port_ordinal = output.port_ordinal, .port_name = output.config.name,

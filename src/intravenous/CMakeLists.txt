@@ -320,7 +320,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/graph_input_lanes/lane_reconciler.cpp
     runtime/graph_input_lanes/port_catalog.cpp
     runtime/graph_input_lanes_events.cpp
-    runtime/graph_input_lanes_iv_module_instances_bridge.cpp
     runtime/graph_input_lanes_timeline_bridge.cpp
     runtime/iv_module_definitions.cpp
     runtime/iv_module_definitions_builder_bridge.cpp
@@ -352,6 +351,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/iv_module_source_introspection_graph_input_lanes_bridge.cpp
     runtime/project_persistence.cpp
     runtime/project_persistence_builder.cpp
+    runtime/runtime_graph_bindings.cpp
     runtime/project_autosave.cpp
     runtime/runtime_project_events.cpp
     runtime/runtime_project_audio_device_lanes_bridge.cpp

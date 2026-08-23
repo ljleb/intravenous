@@ -76,8 +76,45 @@ namespace iv {
         std::vector<Member> members {};
     };
 
+    struct GraphBuilderPublicSamplePortChannel {
+        std::vector<size_t> port_ordinals {};
+        std::vector<SourceInfo> source_infos {};
+    };
+
+    struct GraphBuilderPublicSamplePortFamily {
+        size_t family_ordinal = 0;
+        std::string family_name {};
+        InputConfig input_config {};
+        OutputConfig output_config {};
+        ChannelTypeId channel_type = ChannelTypeId::mono;
+        std::vector<GraphBuilderPublicSamplePortChannel> channels {};
+        std::vector<SourceInfo> source_infos {};
+        bool authored_connected = false;
+    };
+
+    struct GraphBuilderPublicSamplePortFamilies {
+        std::vector<GraphBuilderPublicSamplePortFamily> families {};
+    };
+
+    struct GraphBuilderPublicEventInput {
+        size_t port_ordinal = 0;
+        EventInputConfig config {};
+        std::vector<SourceInfo> source_infos {};
+        bool graph_connected = false;
+    };
+
+    struct GraphBuilderPublicEventOutput {
+        size_t port_ordinal = 0;
+        EventOutputConfig config {};
+        std::vector<SourceInfo> source_infos {};
+    };
+
     struct GraphIntrospectionMetadata {
         std::vector<IntrospectionVirtualNode> virtual_nodes;
+        std::vector<GraphBuilderPublicSamplePortFamily> public_sample_inputs;
+        std::vector<GraphBuilderPublicEventInput> public_event_inputs;
+        std::vector<GraphBuilderPublicSamplePortFamily> public_sample_outputs;
+        std::vector<GraphBuilderPublicEventOutput> public_event_outputs;
     };
 
     struct GraphBuildMetadata {

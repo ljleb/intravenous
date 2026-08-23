@@ -4,6 +4,7 @@
 #include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/iv_module_instances_execution_events.h>
 #include <intravenous/runtime/audio_device_lanes_events.h>
+#include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/timeline_execution_events.h>
 
@@ -46,10 +47,21 @@ void handle_iv_module_instance_builders_completed(
     maybe_publish(bound_execution->handle_instance_builders_changed(changed));
 }
 
+void handle_graph_input_lanes_runtime_dependencies_changed(
+    GraphInputLanesRuntimeDependenciesChanged const& changed)
+{
+    if (!bound_execution) return;
+    maybe_publish(bound_execution->handle_runtime_dependencies_changed(changed));
+}
+
 IV_SUBSCRIBE_LINKER_EVENT(
     IvModuleInstanceBuildersCompletedEvent,
     iv_runtime_iv_module_instance_builders_completed_event,
     handle_iv_module_instance_builders_completed);
+IV_SUBSCRIBE_LINKER_EVENT(
+    GraphInputLanesRuntimeDependenciesChangedEvent,
+    iv_runtime_graph_input_lanes_runtime_dependencies_changed_event,
+    handle_graph_input_lanes_runtime_dependencies_changed);
 IV_SUBSCRIBE_LINKER_EVENT(
     AudioDeviceLanesSetRealtimeStartIndexEvent,
     iv_runtime_audio_device_lanes_set_realtime_start_index_event,

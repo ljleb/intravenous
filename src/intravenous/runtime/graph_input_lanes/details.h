@@ -114,7 +114,7 @@ inline void emit_debug_message(std::string message)
 }
 
 inline void append_graph_input_port_descriptors(
-    std::vector<GraphInputLanes::DesiredGraphInputPort> &ports,
+    std::vector<GraphInputLanes::DesiredGraphPort> &ports,
     std::string const &instance_id,
     int module_instance_id,
     std::string const &virtual_node_id,
@@ -124,7 +124,7 @@ inline void append_graph_input_port_descriptors(
 {
     ports.reserve(ports.size() + virtual_ports.size());
     for (auto const &port : virtual_ports) {
-        ports.push_back(GraphInputLanes::DesiredGraphInputPort{
+        ports.push_back(GraphInputLanes::DesiredGraphPort{
             .instance_id = instance_id,
             .module_instance_id = module_instance_id,
             .port = GraphInputPortDescriptor{
@@ -136,7 +136,10 @@ inline void append_graph_input_port_descriptors(
                 .port_type = port.type,
                 .sample_channel_type = port.sample_channel_type,
             },
-            .default_connected = port.connectivity != VirtualPortConnectivity::disconnected,
+            .authored_connected = port.connectivity != VirtualPortConnectivity::disconnected,
+            .default_value = port.default_value,
+            .min = port.min,
+            .max = port.max,
         });
     }
 }
@@ -152,7 +155,7 @@ inline bool batch_has_changes(TimelineLaneBatchUpdate const &batch)
 }
 
 inline std::optional<ChannelTypeId> resolve_sample_channel_type(
-    std::span<GraphInputLanes::DesiredGraphInputPort const> ports,
+    std::span<GraphInputLanes::DesiredGraphPort const> ports,
     std::string_view virtual_node_id,
     std::optional<size_t> node_bundle_port_ordinal,
     size_t port_ordinal)
@@ -175,7 +178,7 @@ inline std::optional<ChannelTypeId> resolve_sample_channel_type(
     return std::nullopt;
 }
 
-inline std::string virtual_knob_key(GraphInputLanes::DesiredGraphInputPort const &port)
+inline std::string virtual_knob_key(GraphInputLanes::DesiredGraphPort const &port)
 {
     auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);
     auto const node_bundle_port_id = local_hash_string(
@@ -197,7 +200,7 @@ inline std::string virtual_knob_key(GraphInputLanes::DesiredGraphInputPort const
             : std::string("none"));
 }
 
-inline std::string virtual_event_input_key(GraphInputLanes::DesiredGraphInputPort const &port)
+inline std::string virtual_event_input_key(GraphInputLanes::DesiredGraphPort const &port)
 {
     auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);
     auto const node_bundle_port_id = local_hash_string(
@@ -213,7 +216,7 @@ inline std::string virtual_event_input_key(GraphInputLanes::DesiredGraphInputPor
         + "\x1f" + "channel:none";
 }
 
-inline std::string sample_input_key(GraphInputLanes::DesiredGraphInputPort const &port)
+inline std::string sample_input_key(GraphInputLanes::DesiredGraphPort const &port)
 {
     auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);
     auto const node_bundle_port_id = local_hash_string(
@@ -235,7 +238,7 @@ inline std::string sample_input_key(GraphInputLanes::DesiredGraphInputPort const
             : std::string("none"));
 }
 
-inline std::string event_input_key(GraphInputLanes::DesiredGraphInputPort const &port)
+inline std::string event_input_key(GraphInputLanes::DesiredGraphPort const &port)
 {
     auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);
     auto const node_bundle_port_id = local_hash_string(
@@ -255,7 +258,7 @@ inline std::string event_input_key(GraphInputLanes::DesiredGraphInputPort const 
 }
 
 inline std::string output_identity_key(
-    GraphInputLanes::DesiredGraphInputPort const &port,
+    GraphInputLanes::DesiredGraphPort const &port,
     std::string_view role)
 {
     auto const virtual_node_id = local_hash_string(port.port.virtual_node_id);

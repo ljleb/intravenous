@@ -399,6 +399,7 @@ TasksRunner::~TasksRunner()
             shutdown_requested_ = true;
             pending_graph_ = std::make_shared<GraphVersion>();
             pending_graph_->revision = next_revision_;
+            pending_graph_activation_deferred_ = false;
             next_revision_ += 1;
             state_cv_.notify_all();
         }
@@ -428,6 +429,7 @@ void TasksRunner::update_tasks(VersionedTaskGraphUpdate const &update)
 
     std::shared_ptr<GraphVersion const> base;
     std::uint64_t revision = 0;
+    bool activation_deferred = update.activation_deferred;
     {
         std::scoped_lock state_lock(state_mutex_);
         if (shutdown_requested_) {
@@ -442,6 +444,8 @@ void TasksRunner::update_tasks(VersionedTaskGraphUpdate const &update)
         }
         base = pending_graph_ ? std::const_pointer_cast<GraphVersion const>(pending_graph_)
                               : std::const_pointer_cast<GraphVersion const>(active_graph_);
+        activation_deferred = activation_deferred ||
+            (pending_graph_ && pending_graph_activation_deferred_);
         revision = next_revision_;
         next_revision_ += 1;
     }
@@ -451,6 +455,7 @@ void TasksRunner::update_tasks(VersionedTaskGraphUpdate const &update)
         std::scoped_lock state_lock(state_mutex_);
         pending_graph_ = std::move(next_graph);
         pending_graph_is_complete_ = pending_graph_->is_complete;
+        pending_graph_activation_deferred_ = activation_deferred;
         if (!pending_graph_is_complete_) {
             if (!pending_update_version_index_.has_value()) {
                 pending_update_version_index_ = update.version_index;
@@ -502,8 +507,10 @@ void TasksRunner::coordinator_loop()
     std::unique_lock lock(state_mutex_);
     while (true) {
         if (!current_pass_) {
-            if (pending_graph_ && pending_graph_is_complete_) {
+            if (pending_graph_ && pending_graph_is_complete_ &&
+                !pending_graph_activation_deferred_) {
                 active_graph_ = std::move(pending_graph_);
+                pending_graph_activation_deferred_ = false;
             }
             if (shutdown_requested_ && active_graph_->compiled_plan.groups.empty()) {
                 workers_should_exit_ = true;
@@ -529,7 +536,8 @@ void TasksRunner::coordinator_loop()
                 }
                 state_cv_.wait_for(lock, empty_graph_pass_interval, [&] {
                     return workers_should_exit_
-                        || (pending_graph_ != nullptr && pending_graph_is_complete_)
+                        || (pending_graph_ != nullptr && pending_graph_is_complete_ &&
+                            !pending_graph_activation_deferred_)
                         || shutdown_requested_;
                 });
                 continue;
@@ -549,8 +557,10 @@ void TasksRunner::coordinator_loop()
             if (current_pass_) {
                 continue;
             }
-            if (pending_graph_ && pending_graph_is_complete_) {
+            if (pending_graph_ && pending_graph_is_complete_ &&
+                !pending_graph_activation_deferred_) {
                 active_graph_ = std::move(pending_graph_);
+                pending_graph_activation_deferred_ = false;
             }
             if (active_graph_->compiled_plan.groups.empty()) {
                 continue;

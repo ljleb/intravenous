@@ -10,12 +10,12 @@ namespace iv {
 class GraphInputLanesPortCatalog {
 public:
     static auto graph_inputs(IvModuleInstance const& instance)
-        -> std::vector<GraphInputLanes::DesiredGraphInputPort>;
+        -> std::vector<GraphInputLanes::DesiredGraphPort>;
     static auto graph_outputs(IvModuleInstance const& instance)
-        -> std::vector<GraphInputLanes::DesiredGraphInputPort>;
-    static auto public_inputs(std::string const& instance_id, GraphBuilder const& builder)
+        -> std::vector<GraphInputLanes::DesiredGraphPort>;
+    static auto public_inputs(IvModuleInstance const& instance)
         -> std::vector<GraphInputLanes::DesiredPublicGraphPort>;
-    static auto public_outputs(std::string const& instance_id, GraphBuilder const& builder)
+    static auto public_outputs(IvModuleInstance const& instance)
         -> std::vector<GraphInputLanes::DesiredPublicGraphPort>;
 };
 } // namespace iv

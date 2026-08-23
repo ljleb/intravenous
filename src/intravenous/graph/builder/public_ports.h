@@ -17,29 +17,6 @@
 namespace iv {
 class GraphBuilder;
 
-struct GraphBuilderPublicSamplePortChannel {
-  std::vector<size_t> port_ordinals{};
-  std::vector<SourceInfo> source_infos{};
-};
-struct GraphBuilderPublicSamplePortFamily {
-  size_t family_ordinal = 0;
-  std::string family_name{};
-  InputConfig input_config{};
-  OutputConfig output_config{};
-  ChannelTypeId channel_type = ChannelTypeId::mono;
-  std::vector<GraphBuilderPublicSamplePortChannel> channels{};
-  std::vector<SourceInfo> source_infos{};
-};
-struct GraphBuilderPublicSamplePortFamilies {
-  std::vector<GraphBuilderPublicSamplePortFamily> families{};
-};
-struct GraphBuilderPublicEventInput { size_t port_ordinal = 0; EventInputConfig config{}; };
-struct GraphBuilderPublicEventOutput {
-  size_t port_ordinal = 0;
-  EventOutputConfig config{};
-  std::vector<SourceInfo> source_infos{};
-};
-
 class GraphBuilderPublicPorts {
 public:
   explicit GraphBuilderPublicPorts(NodeBundleHandle boundary) : _boundary(boundary) {}

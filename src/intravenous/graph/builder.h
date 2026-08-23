@@ -41,6 +41,7 @@
 #include <vector>
 
 namespace iv {
+class GraphRuntimeBindings;
 class GraphBuilder;
 namespace details {}
 
@@ -150,8 +151,6 @@ public:
   void connect_sample_input(NodeBundlePortId target, SamplePortRef source);
   void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
   void connect_event_input(NodeBundlePortId target, EventPortRef source);
-  void mark_runtime_filled_sample_input(NodeBundlePortId target);
-  void mark_runtime_filled_event_input(NodeBundlePortId target);
   bool sample_input_is_connected(NodeBundlePortId target) const;
   bool event_input_is_connected(NodeBundlePortId target) const;
   void connect_sample_output(NodeBundlePortId source, NodeRef const& target);
@@ -160,10 +159,11 @@ public:
   size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
   GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
   RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
-  RootNodeBuildResult build_execution_root_node(size_t detach_id_offset = 0) const;
+  RootNodeBuildResult build_execution_root_node(
+      std::shared_ptr<GraphRuntimeBindings> runtime_bindings = {},
+      size_t detach_id_offset = 0) const;
 
 private:
-  static std::string allocate_root_builder_id();
   SamplePortRef detach_sample_port(SamplePortRef const&, size_t loop_extra_latency);
   void record_authored_sample_connection(NodeBundlePortId, SamplePortRef const&);
   void record_authored_sample_connection(SampleInputChannelId, SamplePortRef const&);

@@ -49,8 +49,7 @@ build_virtual_metadata(PreparedGraph const &g,
                        std::span<LoweredSubgraphSpec const> lowered_scopes) {
   auto sample_input_connected = [&](size_t node, size_t port) {
     return std::ranges::any_of(g.edges, [&](GraphEdge const &edge) {
-      return edge.target.node == node && edge.target.port == port &&
-             !g.timeline_filled_input_ports.contains(edge.target);
+      return edge.target.node == node && edge.target.port == port;
     });
   };
   auto sample_output_connected = [&](size_t node, size_t port) {
@@ -60,8 +59,7 @@ build_virtual_metadata(PreparedGraph const &g,
   };
   auto event_input_connected = [&](size_t node, size_t port) {
     return std::ranges::any_of(g.event_edges, [&](GraphEventEdge const &edge) {
-      return edge.target.node == node && edge.target.port == port &&
-             !g.timeline_filled_event_input_ports.contains(edge.target);
+      return edge.target.node == node && edge.target.port == port;
     });
   };
   auto event_output_connected = [&](size_t node, size_t port) {

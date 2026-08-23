@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/channel_layout.h>
+#include <intravenous/lane_id.h>
 #include <intravenous/ports.h>
 
 #include <atomic>
@@ -17,17 +18,6 @@ namespace iv {
     enum class LaneDomain : std::uint8_t {
         compiled,
         realtime,
-    };
-
-    struct LaneId {
-        std::uint64_t value = 0;
-
-        constexpr explicit operator bool() const noexcept
-        {
-            return value != 0;
-        }
-
-        bool operator==(LaneId const&) const = default;
     };
 
     struct LaneIdHash {

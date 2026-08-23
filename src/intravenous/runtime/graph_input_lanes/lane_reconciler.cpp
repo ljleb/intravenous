@@ -91,11 +91,12 @@ std::atomic<Sample::storage> const* GraphInputLanes::live_input_value_ptr_or_loc
     return &ensure_live_input_value_locked(key, input_ordinal);
 }
 
-void GraphInputLanes::mark_instances_requiring_rebuild_locked(
+void GraphInputLanes::schedule_instances_for_input_locked(
     std::string_view virtual_node_id,
     std::optional<size_t> member_ordinal,
     size_t input_ordinal)
 {
+    std::unordered_set<std::string> instance_ids;
     for (auto const &port : desired_ports) {
         if (port.port.port_kind != PortKind::sample) {
             continue;
@@ -111,21 +112,23 @@ void GraphInputLanes::mark_instances_requiring_rebuild_locked(
                 continue;
             }
         }
-        pending_rebuild_instance_ids.insert(port.instance_id);
+        instance_ids.insert(port.instance_id);
     }
+    for (auto const& instance_id : instance_ids)
+        schedule_runtime_binding_sync_locked(instance_id);
 }
 
-void GraphInputLanes::mark_instances_requiring_rebuild_for_virtual_sample_input_locked(
+void GraphInputLanes::schedule_instances_for_virtual_sample_input_locked(
     std::string_view virtual_node_id,
     size_t input_ordinal)
 {
-    mark_instances_requiring_rebuild_locked(
+    schedule_instances_for_input_locked(
         virtual_node_id,
         std::nullopt,
         input_ordinal);
 }
 
-std::optional<GraphInputLanes::DesiredGraphInputPort> GraphInputLanes::find_desired_port_locked(
+std::optional<GraphInputLanes::DesiredGraphPort> GraphInputLanes::find_desired_port_locked(
     std::string const &instance_id,
     GraphInputPortDescriptor const &port) const
 {
@@ -494,7 +497,7 @@ std::optional<LaneId> GraphInputLanes::effective_public_event_input_lane_locked(
 
 std::optional<GraphInputLanes::NodeBundleOutputState>
 GraphInputLanes::effective_node_bundle_output_state_locked(
-    DesiredGraphInputPort const &port) const
+    DesiredGraphPort const &port) const
 {
     auto virtual_port = port;
     virtual_port.port.node_bundle_port_ordinal = std::nullopt;
@@ -513,7 +516,7 @@ GraphInputLanes::effective_node_bundle_output_state_locked(
 }
 
 bool GraphInputLanes::virtual_output_is_timeline_lane_locked(
-    DesiredGraphInputPort const &port) const
+    DesiredGraphPort const &port) const
 {
     auto const it = virtual_output_states_by_key.find(graph_input_port_key(port.port));
     return it != virtual_output_states_by_key.end()
@@ -686,12 +689,13 @@ LaneId GraphInputLanes::graph_output_lane_for(
     return LaneId{};
 }
 
-void GraphInputLanes::mark_instances_requiring_output_rebuild_locked(
+void GraphInputLanes::schedule_instances_for_output_locked(
     std::string_view virtual_node_id,
     std::optional<size_t> member_ordinal,
     size_t output_ordinal,
     PortKind port_kind)
 {
+    std::unordered_set<std::string> instance_ids;
     for (auto const &port : desired_output_ports) {
         if (port.port.port_kind != port_kind) {
             continue;
@@ -705,8 +709,10 @@ void GraphInputLanes::mark_instances_requiring_output_rebuild_locked(
         if (member_ordinal.has_value() && port.port.node_bundle_port_ordinal != member_ordinal) {
             continue;
         }
-        pending_rebuild_instance_ids.insert(port.instance_id);
+        instance_ids.insert(port.instance_id);
     }
+    for (auto const& instance_id : instance_ids)
+        schedule_runtime_binding_sync_locked(instance_id);
 }
 
 GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatchUpdate *batch)
@@ -813,7 +819,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
             continue;
         }
 
-        auto const virtual_key = virtual_knob_key(DesiredGraphInputPort{
+        auto const virtual_key = virtual_knob_key(DesiredGraphPort{
             .instance_id = port.instance_id,
             .module_instance_id = port.module_instance_id,
             .port = GraphInputPortDescriptor{
@@ -892,7 +898,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
         });
     }
 
-    auto ensure_virtual_event_lane = [&](DesiredGraphInputPort const &port) {
+    auto ensure_virtual_event_lane = [&](DesiredGraphPort const &port) {
         auto virtual_port = port;
         virtual_port.port.node_bundle_port_ordinal = std::nullopt;
         auto const key = virtual_event_input_key(virtual_port);
@@ -951,7 +957,7 @@ GraphInputLaneBindings GraphInputLanes::reconcile_ports_locked(TimelineLaneBatch
         }
 
         NodeBundleEventInputState state =
-            port.default_connected
+            port.authored_connected
                 ? NodeBundleEventInputState::disconnected
                 : NodeBundleEventInputState::virtual_follow;
         if (auto const it =
@@ -1117,12 +1123,12 @@ void GraphInputLanes::publish_event_output_block(
     output_blocks_.publish_event(lane, events);
 }
 
-OwnedSampleBlock GraphInputLanes::sample_output_block(LaneId lane) const
+BorrowedSampleBlock GraphInputLanes::sample_output_block(LaneId lane) const
 {
     return output_blocks_.sample(lane);
 }
 
-std::vector<TimedEvent> GraphInputLanes::event_output_block(LaneId lane) const
+std::span<TimedEvent const> GraphInputLanes::event_output_block(LaneId lane) const
 {
     return output_blocks_.event(lane);
 }

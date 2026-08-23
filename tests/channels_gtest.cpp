@@ -1,16 +1,97 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/basic_nodes/routing.h>
-#include <intravenous/graph/sample_projection_node.h>
 #include <intravenous/node/tick.h>
 #include <intravenous/node/block_executor.h>
 #include <intravenous/graph/builder.h>
+#include <intravenous/graph/connection_node.h>
+#include <intravenous/graph/runtime_bindings.h>
 #include <intravenous/dsl.h>
+#include <intravenous/runtime/runtime_graph_bindings.h>
 #include <intravenous/runtime/sample_stream_blocks.h>
+#include <intravenous/runtime/timeline_execution_events.h>
 
 #include <gtest/gtest.h>
 
 namespace {
 using iv::operator""_F;
+
+std::array<iv::Sample, 2> published_runtime_samples {};
+std::uint64_t published_runtime_target = 0;
+std::array<iv::TimedEvent, 4> runtime_event_input {};
+size_t runtime_event_input_count = 0;
+std::array<iv::TimedEvent, 4> published_runtime_events {};
+size_t published_runtime_event_count = 0;
+std::uint64_t published_runtime_event_target = 0;
+iv::BorrowedSampleBlock runtime_timeline_sample_block {};
+iv::ChannelLayout requested_runtime_sample_layout {};
+size_t connection_conversion_call_count = 0;
+size_t connection_conversion_frame_count = 0;
+
+void provide_runtime_timeline_sample_block(
+    iv::LaneId,
+    iv::TimelineExecutionRealtimeSampleBlockBuilder& builder)
+{
+    builder.succeed(runtime_timeline_sample_block);
+}
+
+void read_runtime_stereo_pattern(
+    iv::LaneId,
+    size_t,
+    size_t,
+    size_t,
+    size_t block_size,
+    iv::ChannelLayout target_layout,
+    std::span<iv::Sample> target)
+{
+    requested_runtime_sample_layout = target_layout;
+    iv::SampleBlockView<iv::Sample> view(target, target_layout, block_size);
+    for (size_t frame = 0; frame < block_size; ++frame) {
+        view.set(frame, 0, iv::Sample{static_cast<float>(frame + 1)});
+        view.set(frame, 1, iv::Sample{static_cast<float>((frame + 1) * 10)});
+    }
+}
+
+void tracked_mono_block_copy(
+    iv::Sample const* source,
+    iv::Sample* target,
+    size_t frames)
+{
+    ++connection_conversion_call_count;
+    connection_conversion_frame_count = frames;
+    std::copy_n(source, frames, target);
+}
+
+void capture_runtime_sample_block(
+    iv::LaneId target,
+    std::span<iv::Sample const> samples,
+    iv::ChannelLayout,
+    size_t)
+{
+    published_runtime_target = target.value;
+    for (size_t i = 0;
+         i < std::min(samples.size(), published_runtime_samples.size()); ++i)
+        published_runtime_samples[i] = samples[i];
+}
+
+iv::RuntimeEventBlockView read_runtime_event_block(
+    iv::LaneId, size_t, size_t)
+{
+    return {
+        .data = runtime_event_input.data(),
+        .size = runtime_event_input_count,
+    };
+}
+
+void capture_runtime_event_block(
+    iv::LaneId target,
+    std::span<iv::TimedEvent const> events)
+{
+    published_runtime_event_target = target.value;
+    published_runtime_event_count =
+        std::min(events.size(), published_runtime_events.size());
+    for (size_t i = 0; i < published_runtime_event_count; ++i)
+        published_runtime_events[i] = events[i];
+}
 
 static_assert(iv::channel_count(iv::ChannelTypeId::mono) == 1);
 static_assert(iv::channel_count(iv::ChannelTypeId::stereo) == 2);
@@ -149,6 +230,31 @@ struct StereoBufferSink {
     }
 };
 
+struct InterleavedStereoBlockSink {
+    std::span<iv::Sample> left {};
+    std::span<iv::Sample> right {};
+
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 1>{iv::InputConfig{
+            .name = "in",
+            .channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            },
+        }};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<InterleavedStereoBlockSink> const& ctx) const
+    {
+        for (size_t frame = 0; frame < ctx.block_size; ++frame) {
+            left[frame] = ctx.inputs[0].get_frame(frame, 0);
+            right[frame] = ctx.inputs[0].get_frame(frame, 1);
+        }
+    }
+};
+
 struct NonConstexprPorts {
     static auto inputs() { return std::array<iv::InputConfig, 1>{}; }
     static auto outputs() { return std::array<iv::OutputConfig, 1>{}; }
@@ -196,6 +302,26 @@ struct MonoPass {
     }
 };
 
+struct DefaultMonoPass {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 1>{iv::InputConfig{
+            .name = "in",
+            .default_value = iv::Sample{0.75f},
+        }};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 1>{iv::OutputConfig{.name = "out"}};
+    }
+
+    void tick(iv::TickSampleContext<DefaultMonoPass> const& ctx) const
+    {
+        ctx.outputs[0].push(ctx.inputs[0].get());
+    }
+};
+
 struct EventfulMonoPass {
     static constexpr auto inputs()
     {
@@ -218,6 +344,39 @@ struct EventfulMonoPass {
     void tick(iv::TickSampleContext<EventfulMonoPass> const& ctx) const
     {
         ctx.outputs[0].push(ctx.inputs[0].get());
+    }
+};
+
+struct RuntimeEventSink {
+    size_t* event_count = nullptr;
+
+    static constexpr auto event_inputs()
+    {
+        return std::array<iv::EventInputConfig, 1>{iv::EventInputConfig{
+            .name = "trigger", .type = iv::EventTypeId::trigger}};
+    }
+
+    void tick_block(iv::TickBlockContext<RuntimeEventSink> const& ctx) const
+    {
+        *event_count =
+            ctx.event_inputs[0].get_block(ctx.index, ctx.block_size).size();
+    }
+};
+
+struct ScheduledTriggerSource {
+    size_t sample_offset = 0;
+
+    static constexpr auto event_outputs()
+    {
+        return std::array<iv::EventOutputConfig, 1>{iv::EventOutputConfig{
+            .name = "trigger", .type = iv::EventTypeId::trigger}};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<ScheduledTriggerSource> const& ctx) const
+    {
+        ctx.event_outputs[0].push(
+            iv::TriggerEvent{}, sample_offset, ctx.index, ctx.block_size);
     }
 };
 
@@ -512,7 +671,7 @@ TEST(Channels, SampleRefsExposeOrderedStructuralChannelIdentity)
     EXPECT_FALSE(has_generated_type(
         built.metadata.concrete_node_type_identities, "ChannelUnpack"));
     EXPECT_FALSE(has_generated_type(
-        built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+        built.metadata.concrete_node_type_identities, "ConnectionNode"));
 }
 
 TEST(Channels, GraphBuilderTileIsPureStructuralComposition)
@@ -535,7 +694,7 @@ TEST(Channels, GraphBuilderTileIsPureStructuralComposition)
     EXPECT_FALSE(has_generated_type(
         built.metadata.concrete_node_type_identities, "ChannelUnpack"));
     EXPECT_FALSE(has_generated_type(
-        built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+        built.metadata.concrete_node_type_identities, "ConnectionNode"));
 }
 
 TEST(Channels, ChannelQualifiedPublicOutputsAreProjectedOnlyAtCompletion)
@@ -566,7 +725,7 @@ TEST(Channels, ChannelQualifiedPublicOutputsAreProjectedOnlyAtCompletion)
         std::ranges::count_if(
             built.metadata.concrete_node_type_identities,
             [](std::string const& type) {
-                return type.contains("SampleProjectionNode");
+                return type.contains("ConnectionNode");
             }),
         1);
     EXPECT_FALSE(has_generated_type(
@@ -597,7 +756,7 @@ TEST(Channels, DetachAuthorsOnlyItsExplicitWriterAndReaderNodes)
         std::ranges::count_if(
             built.metadata.concrete_node_type_identities,
             [](std::string const& type) {
-                return type.contains("SampleProjectionNode");
+                return type.contains("ConnectionNode");
             }),
         1);
     EXPECT_FALSE(has_generated_type(
@@ -620,7 +779,7 @@ TEST(Channels, StructuralTileProjectsOnlyWhenNativeStereoIsMaterialized)
 
     auto built = g.build_root_node();
     EXPECT_TRUE(has_generated_type(
-        built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+        built.metadata.concrete_node_type_identities, "ConnectionNode"));
     EXPECT_FALSE(has_generated_type(
         built.metadata.concrete_node_type_identities, "ChannelPack"));
     EXPECT_FALSE(has_generated_type(
@@ -645,7 +804,7 @@ TEST(Channels, SelectedNativeChannelProjectsOnlyWhenMaterialized)
 
     auto built = g.build_root_node();
     EXPECT_TRUE(has_generated_type(
-        built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+        built.metadata.concrete_node_type_identities, "ConnectionNode"));
     EXPECT_FALSE(has_generated_type(
         built.metadata.concrete_node_type_identities, "ChannelPack"));
     EXPECT_FALSE(has_generated_type(
@@ -684,7 +843,7 @@ TEST(Channels, TiledNodesLowerMatchingChannelsToIndependentMonoEdges)
     auto const built = g.build_root_node();
     EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelPack"));
     EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelUnpack"));
-    EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+    EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ConnectionNode"));
 }
 
 TEST(Channels, TiledEventPortsBroadcastInputsAndMergeOutputs)
@@ -728,7 +887,7 @@ TEST(Channels, TiledOutputAutomaticallyProjectsForNativeStereoInput)
     g.node<StereoBufferSink>(&left, &right)(tiled[iv::PortName<"out">{}]);
     g.outputs();
     auto built = g.build_root_node();
-    EXPECT_TRUE(has_generated_type(built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+    EXPECT_TRUE(has_generated_type(built.metadata.concrete_node_type_identities, "ConnectionNode"));
     EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelPack"));
     EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelUnpack"));
     auto executor = iv::BlockNodeExecutor::create(iv::TypeErasedNode(std::move(built.graph)), 1);
@@ -750,7 +909,7 @@ TEST(Channels, NativeStereoOutputAutomaticallyProjectsForTiledInput)
     g.node<MonoBufferSink>(&right)(stream[iv::stereo::right]);
     g.outputs();
     auto built = g.build_root_node();
-    EXPECT_TRUE(has_generated_type(built.metadata.concrete_node_type_identities, "SampleProjectionNode"));
+    EXPECT_TRUE(has_generated_type(built.metadata.concrete_node_type_identities, "ConnectionNode"));
     EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelPack"));
     EXPECT_FALSE(has_generated_type(built.metadata.concrete_node_type_identities, "ChannelUnpack"));
     auto executor = iv::BlockNodeExecutor::create(iv::TypeErasedNode(std::move(built.graph)), 1);
@@ -1021,7 +1180,7 @@ TEST(Channels, ReconstructedNativeChannelSequenceLowersAsWholePort)
     auto built = g.build_root_node();
     EXPECT_FALSE(has_generated_type(
         built.metadata.concrete_node_type_identities,
-        "SampleProjectionNode"));
+        "ConnectionNode"));
 
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(std::move(built.graph)), 1);
@@ -1030,7 +1189,7 @@ TEST(Channels, ReconstructedNativeChannelSequenceLowersAsWholePort)
     EXPECT_EQ(right, iv::Sample{-0.5f});
 }
 
-TEST(Channels, ReorderedNativeChannelsUseOneSampleProjection)
+TEST(Channels, ReorderedNativeChannelsUseOneConnectionNode)
 {
     iv::GraphBuilder g;
     auto source = g.node<NamedStereoSource>(
@@ -1052,7 +1211,7 @@ TEST(Channels, ReorderedNativeChannelsUseOneSampleProjection)
         std::ranges::count_if(
             built.metadata.concrete_node_type_identities,
             [](std::string const& type) {
-                return type.contains("SampleProjectionNode");
+                return type.contains("ConnectionNode");
             }),
         1);
     EXPECT_FALSE(has_generated_type(
@@ -1067,65 +1226,383 @@ TEST(Channels, ReorderedNativeChannelsUseOneSampleProjection)
     EXPECT_EQ(right, iv::Sample{0.25f});
 }
 
-TEST(Channels, SampleProjectionInitializesUnwrittenOutputChannelsOnce)
+TEST(Channels, ConnectionNodeFanInStartsFromZeroInsteadOfInputDefault)
 {
-    constexpr auto mono_layout = iv::ChannelLayout{
-        .channel_type = iv::ChannelTypeId::mono,
-        .sample_layout = iv::SampleStreamLayout::planar,
-    };
-    constexpr auto stereo_layout = iv::ChannelLayout{
+    iv::GraphBuilder g;
+    auto pass = g.node<DefaultMonoPass>();
+    pass(g.node<iv::Constant>(iv::Sample{0.25f}));
+    pass(g.node<iv::Constant>(iv::Sample{-0.5f}));
+    iv::Sample result{};
+    g.node<MonoBufferSink>(&result)(pass);
+    g.outputs();
+
+    auto built = g.build_root_node();
+    EXPECT_TRUE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ConnectionNode"));
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(result, iv::Sample{-0.25f});
+}
+
+TEST(Channels, ConnectionNodeUsesDefaultForCompletelyVacantInput)
+{
+    iv::GraphBuilder g;
+    auto pass = g.node<DefaultMonoPass>();
+    iv::Sample result{};
+    g.node<MonoBufferSink>(&result)(pass);
+    g.outputs();
+
+    auto built = g.build_root_node();
+    EXPECT_TRUE(has_generated_type(
+        built.metadata.concrete_node_type_identities, "ConnectionNode"));
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(result, iv::Sample{0.75f});
+}
+
+TEST(Channels, ExecutionRootBindsRuntimeSampleContributionWithoutTopologyChange)
+{
+    iv::GraphBuilder g;
+    iv::Sample result{};
+    auto sink = iv::_annotate_node_source_info(
+        g.node<MonoBufferSink>(&result).node_ref(), "runtime-sink");
+    (void)sink;
+    g.outputs();
+
+    auto bindings = std::make_shared<iv::GraphRuntimeBindings>();
+    auto binding = bindings->sample_input(iv::runtime_virtual_port_key(
+        true, iv::PortKind::sample, "runtime-sink", 0, 0));
+    binding->value = iv::Sample{0.375f};
+    binding->mode = iv::RuntimeSampleInputMode::scalar;
+
+    auto built = g.build_execution_root_node(bindings);
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(result, iv::Sample{0.375f});
+}
+
+TEST(Channels, RuntimeTimelineSampleReaderWritesTheRequestedInterleavedLayout)
+{
+    constexpr auto planar = iv::ChannelLayout{
         .channel_type = iv::ChannelTypeId::stereo,
         .sample_layout = iv::SampleStreamLayout::planar,
     };
-
-    iv::SampleProjectionNode node(
-        {iv::InputConfig{.channel_layout = mono_layout, .default_value = 0}},
-        {iv::OutputConfig{.channel_layout = stereo_layout}},
-        {iv::SampleProjectionNode::Route{
-            .source_type = iv::ChannelTypeId::mono,
-            .target_type = iv::ChannelTypeId::mono,
-            .sources = {{.port = 0, .channel = 0}},
-            .targets = {{.port = 0, .channel = 0}},
-        }});
-
-    std::array<iv::Sample, 8> input_samples{
-        iv::Sample{1.0f}, iv::Sample{2.0f},
-        iv::Sample{3.0f}, iv::Sample{4.0f},
+    constexpr auto interleaved = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
     };
-    std::array<iv::Sample, 16> output_samples;
-    output_samples.fill(iv::Sample{0.0f});
+    std::array<iv::Sample, 6> source{
+        iv::Sample{1}, iv::Sample{2}, iv::Sample{3},
+        iv::Sample{10}, iv::Sample{20}, iv::Sample{30},
+    };
+    std::array<iv::Sample, 6> target{};
+    runtime_timeline_sample_block = borrowed_block(source, planar, 3);
 
-    iv::SharedPortData input_data(input_samples, 0, mono_layout, 8);
-    iv::SharedPortData output_data(output_samples, 0, stereo_layout, 8);
-    std::array<iv::InputPort, 1> inputs{
-        iv::InputPort(input_data, 0)};
-    std::array<iv::OutputPort, 1> outputs{
-        iv::OutputPort(output_data, 0)};
+    auto const previous_subscriber =
+        iv::iv_runtime_timeline_execution_realtime_sample_block_requested_event;
+    iv::iv_runtime_timeline_execution_realtime_sample_block_requested_event =
+        &provide_runtime_timeline_sample_block;
+    auto bindings = iv::make_graph_runtime_bindings();
+    auto binding = bindings->sample_input("interleaved-reader-regression");
+    binding->read_timeline_block(
+        iv::LaneId{1}, 0, 0, 0, 3, interleaved, target);
+    iv::iv_runtime_timeline_execution_realtime_sample_block_requested_event =
+        previous_subscriber;
+
+    EXPECT_EQ(target, (std::array<iv::Sample, 6>{
+        iv::Sample{1}, iv::Sample{10},
+        iv::Sample{2}, iv::Sample{20},
+        iv::Sample{3}, iv::Sample{30},
+    }));
+}
+
+TEST(Channels, ConnectionNodePreservesInterleavedRuntimeBufferFrames)
+{
+    std::array<iv::Sample, 4> left{};
+    std::array<iv::Sample, 4> right{};
+    requested_runtime_sample_layout = {};
+
+    iv::GraphBuilder g;
+    auto sink = iv::_annotate_node_source_info(
+        g.node<InterleavedStereoBlockSink>(left, right).node_ref(),
+        "interleaved-runtime-sink");
+    (void)sink;
+    g.outputs();
+
+    auto bindings = std::make_shared<iv::GraphRuntimeBindings>(
+        iv::GraphRuntimeBindings::Callbacks{
+            .read_timeline_sample_block = &read_runtime_stereo_pattern,
+            .read_timeline_event_block = nullptr,
+            .publish_sample_block = nullptr,
+            .publish_event_block = nullptr,
+        });
+    auto binding = bindings->sample_input(iv::runtime_virtual_port_key(
+        true,
+        iv::PortKind::sample,
+        "interleaved-runtime-sink",
+        0,
+        0));
+    binding->timeline_lane = iv::LaneId{1};
+    binding->mode = iv::RuntimeSampleInputMode::timeline;
+
+    auto built = g.build_execution_root_node(bindings);
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 4);
+    executor.tick_block(0);
+
+    EXPECT_EQ(requested_runtime_sample_layout, (iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::stereo,
+        .sample_layout = iv::SampleStreamLayout::interleaved,
+    }));
+    EXPECT_EQ(left, (std::array<iv::Sample, 4>{
+        iv::Sample{1}, iv::Sample{2}, iv::Sample{3}, iv::Sample{4}}));
+    EXPECT_EQ(right, (std::array<iv::Sample, 4>{
+        iv::Sample{10}, iv::Sample{20}, iv::Sample{30}, iv::Sample{40}}));
+}
+
+TEST(Channels, ConnectionNodeConvertsEachEphemeralExpressionAsOneBlock)
+{
+    constexpr auto mono_planar = iv::ChannelLayout{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    connection_conversion_call_count = 0;
+    connection_conversion_frame_count = 0;
+
+    iv::ConnectionNode connection(
+        std::vector<iv::ConnectionNodeInputConfig>{
+            iv::ConnectionNodeInputConfig{
+                .input = iv::InputConfig{.channel_layout = mono_planar},
+                .channel_copies = {{
+                    .input_channel = 0,
+                    .ephemeral_port = 0,
+                    .ephemeral_channel = 0,
+                }},
+            },
+        },
+        std::vector<iv::ConnectionNodeEphemeralPortConfig>{
+            iv::ConnectionNodeEphemeralPortConfig{
+                .channel_layout = mono_planar,
+                .conversion = iv::ChannelConversionPlan{
+                    .source = mono_planar,
+                    .target = mono_planar,
+                    .convert = &tracked_mono_block_copy,
+                },
+                .output_channel_copies = {{
+                    .converted_channel = 0,
+                    .output_channel = 0,
+                }},
+            },
+        },
+        iv::OutputConfig{.channel_layout = mono_planar},
+        iv::Sample{0});
+
+    std::array<iv::Sample, 8> input_samples{};
+    std::ranges::fill(input_samples, iv::Sample{0.5f});
+    std::array<iv::Sample, 8> output_samples{};
+    iv::SharedPortData input_data(input_samples, 0, mono_planar, 8);
+    iv::SharedPortData output_data(output_samples, 0, mono_planar, 8);
+    std::array<iv::InputPort, 1> inputs{iv::InputPort(input_data, 0)};
+    std::array<iv::OutputPort, 1> outputs{iv::OutputPort(output_data, 0)};
+    std::array<iv::Sample, 8> output_scratch{};
+    std::array<iv::Sample, 8> gathered_scratch{};
+    std::array<iv::Sample, 8> converted_scratch{};
+    alignas(iv::ConnectionNode::State)
+        std::array<std::byte, sizeof(iv::ConnectionNode::State)> state_storage{};
+    auto* state = std::construct_at(
+        reinterpret_cast<iv::ConnectionNode::State*>(state_storage.data()),
+        iv::ConnectionNode::State{
+            .output = output_scratch,
+            .gathered = gathered_scratch,
+            .converted = converted_scratch,
+        });
 
     iv::do_tick_block(
-        node,
-        iv::TickBlockContext<iv::SampleProjectionNode>{
-            iv::TickContext<iv::SampleProjectionNode>{
+        connection,
+        iv::TickBlockContext<iv::ConnectionNode>{
+            iv::TickContext<iv::ConnectionNode>{
                 .inputs = inputs,
                 .outputs = outputs,
                 .event_inputs = {},
                 .event_outputs = {},
                 .sample_rate = 48000,
                 .scc_feedback_latency = 0,
-                .buffer{},
+                .buffer = state_storage,
             },
             0,
-            4,
+            8,
         });
+    std::destroy_at(state);
 
-    for (size_t frame = 0; frame < 4; ++frame) {
-        EXPECT_EQ(
-            output_samples[output_data.sample_index(frame, 0)],
-            input_samples[input_data.sample_index(frame, 0)]);
-    }
-    for (size_t frame = 0; frame < 8; ++frame) {
-        EXPECT_EQ(
-            output_samples[output_data.sample_index(frame, 1)],
-            iv::Sample{0.0f});
-    }
+    EXPECT_EQ(connection_conversion_call_count, 1u);
+    EXPECT_EQ(connection_conversion_frame_count, 8u);
+    EXPECT_EQ(output_samples, input_samples);
+}
+
+TEST(Channels, ExecutionRootMaterializesPublicPortsWithoutBoundaryFacade)
+{
+    published_runtime_samples = {};
+    published_runtime_target = 0;
+
+    iv::GraphBuilder g;
+    auto input = g.input(iv::Sample{-1.0f});
+    iv::Sample received = 0.0f;
+    g.node<MonoBufferSink>(&received)(input);
+    g.outputs(iv::PortName<"main">{} = iv::Sample{0.75f});
+
+    auto bindings = std::make_shared<iv::GraphRuntimeBindings>(
+        iv::GraphRuntimeBindings::Callbacks{
+            .read_timeline_sample_block = nullptr,
+            .read_timeline_event_block = nullptr,
+            .publish_sample_block = &capture_runtime_sample_block,
+            .publish_event_block = nullptr,
+        });
+    auto input_binding = bindings->sample_input(iv::runtime_public_port_key(
+        true, iv::PortKind::sample, 0));
+    input_binding->value = iv::Sample{0.25f};
+    input_binding->mode = iv::RuntimeSampleInputMode::scalar;
+    bindings->output(iv::runtime_public_port_key(
+        false, iv::PortKind::sample, 0))->target_lane = iv::LaneId{74};
+
+    auto built = g.build_execution_root_node(bindings);
+    EXPECT_TRUE(built.graph.inputs().empty());
+    EXPECT_TRUE(built.graph.outputs().empty());
+    EXPECT_TRUE(built.graph.event_inputs().empty());
+    EXPECT_TRUE(built.graph.event_outputs().empty());
+
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(received, iv::Sample{0.25f});
+    EXPECT_EQ(published_runtime_target, 74u);
+    EXPECT_EQ(published_runtime_samples[0], iv::Sample{0.75f});
+}
+
+TEST(Channels, ExecutionRootContainsFixedVirtualSampleOutputObserver)
+{
+    published_runtime_samples = {};
+    published_runtime_target = 0;
+
+    iv::GraphBuilder g;
+    auto source = iv::_annotate_node_source_info(
+        g.node<iv::Constant>(iv::Sample{0.625f}).node_ref(),
+        "runtime-source");
+    (void)source;
+    g.outputs();
+
+    auto bindings = std::make_shared<iv::GraphRuntimeBindings>(
+        iv::GraphRuntimeBindings::Callbacks{
+            .read_timeline_sample_block = nullptr,
+            .read_timeline_event_block = nullptr,
+            .publish_sample_block = &capture_runtime_sample_block,
+            .publish_event_block = nullptr,
+        });
+    auto member = bindings->output(iv::runtime_virtual_port_key(
+        false, iv::PortKind::sample, "runtime-source", 0, 0));
+    member->target_lane = iv::LaneId{73};
+
+    auto built = g.build_execution_root_node(bindings);
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(published_runtime_target, 73u);
+    EXPECT_EQ(published_runtime_samples[0], iv::Sample{0.625f});
+}
+
+TEST(Channels, ExecutionRootContainsFixedVirtualEventInput)
+{
+    runtime_event_input[0] = iv::TimedEvent{
+        .time = 2,
+        .value = iv::TriggerEvent{},
+    };
+    runtime_event_input_count = 1;
+
+    iv::GraphBuilder g;
+    size_t received = 0;
+    auto sink = iv::_annotate_node_source_info(
+        g.node<RuntimeEventSink>(&received).node_ref(),
+        "runtime-event-sink");
+    (void)sink;
+    g.outputs();
+
+    auto bindings = std::make_shared<iv::GraphRuntimeBindings>(
+        iv::GraphRuntimeBindings::Callbacks{
+            .read_timeline_sample_block = nullptr,
+            .read_timeline_event_block = &read_runtime_event_block,
+            .publish_sample_block = nullptr,
+            .publish_event_block = nullptr,
+        });
+    auto binding = bindings->event_input(iv::runtime_virtual_port_key(
+        true, iv::PortKind::event, "runtime-event-sink", 0, 0));
+    binding->timeline_lane = iv::LaneId{1};
+
+    auto built = g.build_execution_root_node(bindings);
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 8);
+    executor.tick_block(0);
+    EXPECT_EQ(received, 1u);
+}
+
+TEST(Channels, FixedVirtualEventOutputObserverMergesMembersByTime)
+{
+    published_runtime_event_count = 0;
+    published_runtime_event_target = 0;
+
+    iv::GraphBuilder g;
+    auto late = iv::_annotate_node_source_info(
+        g.node<ScheduledTriggerSource>(4).node_ref(), "runtime-events");
+    auto early = iv::_annotate_node_source_info(
+        g.node<ScheduledTriggerSource>(1).node_ref(), "runtime-events");
+    (void)late;
+    (void)early;
+    g.outputs();
+
+    auto bindings = std::make_shared<iv::GraphRuntimeBindings>(
+        iv::GraphRuntimeBindings::Callbacks{
+            .read_timeline_sample_block = nullptr,
+            .read_timeline_event_block = nullptr,
+            .publish_sample_block = nullptr,
+            .publish_event_block = &capture_runtime_event_block,
+        });
+    bindings->output(iv::runtime_virtual_port_key(
+        false, iv::PortKind::event, "runtime-events", 0, 0))
+        ->include_in_aggregate = true;
+    bindings->output(iv::runtime_virtual_port_key(
+        false, iv::PortKind::event, "runtime-events", 1, 0))
+        ->include_in_aggregate = true;
+    bindings->output(iv::runtime_virtual_port_key(
+        false, iv::PortKind::event, "runtime-events", std::nullopt, 0))
+        ->target_lane = iv::LaneId{91};
+
+    auto built = g.build_execution_root_node(bindings);
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 8);
+    executor.tick_block(0);
+    EXPECT_EQ(published_runtime_event_target, 91u);
+    ASSERT_EQ(published_runtime_event_count, 2u);
+    EXPECT_EQ(published_runtime_events[0].time, 1u);
+    EXPECT_EQ(published_runtime_events[1].time, 4u);
+}
+
+TEST(Channels, ConnectionNodeDefaultsUnconnectedTiledMember)
+{
+    iv::GraphBuilder g;
+    auto pass = g.node<MonoPass, iv::stereo>();
+    pass[iv::stereo::left](g.node<iv::Constant>(iv::Sample{0.25f}));
+    auto stream = pass[iv::PortName<"out">{}];
+    iv::Sample left = iv::Sample{-1.0f};
+    iv::Sample right = iv::Sample{-1.0f};
+    g.node<MonoBufferSink>(&left)(stream[iv::stereo::left]);
+    g.node<MonoBufferSink>(&right)(stream[iv::stereo::right]);
+    g.outputs();
+
+    auto built = g.build_root_node();
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(std::move(built.graph)), 1);
+    executor.tick_block(0);
+    EXPECT_EQ(left, iv::Sample{0.25f});
+    EXPECT_EQ(right, iv::Sample{0.0f});
 }

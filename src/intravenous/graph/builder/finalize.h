@@ -14,6 +14,7 @@ public:
   static GraphBuilderRootNodeBuildResult build_root_node(
       GraphBuilderIdentity const&, LoweredBuilderGraph const&,
       GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset);
+      GraphBuilderPublicPorts const&, size_t detach_id_offset,
+      bool execution_root = false);
 };
 } // namespace iv

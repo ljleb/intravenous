@@ -4,6 +4,7 @@
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/iv_module_definitions.h>
 #include <intravenous/runtime/lane_graph.h>
+#include <intravenous/runtime/runtime_graph_bindings.h>
 
 #include <filesystem>
 #include <cstdint>
@@ -28,8 +29,6 @@ struct IvModuleRequiredDefinitionsChanged {
     std::vector<std::string> deleted_definition_ids{};
 };
 
-struct GraphInputLanesRebuildRequested;
-
 struct IvModuleInstance {
     std::string instance_id{};
     std::string definition_id{};
@@ -37,6 +36,8 @@ struct IvModuleInstance {
     std::filesystem::path module_root{};
     std::string module_id{};
     GraphIntrospectionMetadata introspection{};
+    std::shared_ptr<GraphRuntimeBindings> runtime_bindings =
+        make_graph_runtime_bindings();
     std::optional<size_t> default_silence_ttl_samples{};
 };
 
@@ -105,7 +106,5 @@ public:
 
     void handle_iv_module_definitions_changed(
         IvModuleDefinitionsChanged const &diff);
-    void handle_graph_input_lanes_rebuild_requested(
-        GraphInputLanesRebuildRequested const &request);
 };
 } // namespace iv

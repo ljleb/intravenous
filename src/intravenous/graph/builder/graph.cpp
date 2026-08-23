@@ -74,7 +74,7 @@ std::string GraphBuilderIdentity::child_id(size_t index) const {
 
 GraphBuilder::GraphBuilder(GraphBuilderIdentity identity)
     : _identity(std::move(identity)), _public_ports(_node_bundles.append_boundary()) {}
-GraphBuilder::GraphBuilder() : GraphBuilder(GraphBuilderIdentity(allocate_root_builder_id())) {}
+GraphBuilder::GraphBuilder() : GraphBuilder(GraphBuilderIdentity("root")) {}
 GraphBuilder GraphBuilder::derive_nested_builder() {
   return GraphBuilder(GraphBuilderIdentity(_identity.child_id(_node_bundles.size())));
 }
@@ -147,8 +147,6 @@ void GraphBuilder::event_outputs(std::span<EventOutputRefConfig const> refs){_pu
 void GraphBuilder::outputs(std::initializer_list<NamedRef> refs){outputs(std::span<NamedRef const>(refs.begin(),refs.size()));}
 void GraphBuilder::outputs(std::span<OutputRefConfig const> refs){_public_ports.define_sample_outputs(*this,_node_bundles,_identity,refs);}
 void GraphBuilder::outputs(std::span<NamedRef const> refs){_public_ports.define_sample_outputs_from_named_refs(*this,_node_bundles,_identity,[&](auto&&v){return lift_to_sample_port(std::forward<decltype(v)>(v));},refs);}
-std::string GraphBuilder::allocate_root_builder_id(){static size_t next=0;return std::to_string(next++);}
-
 SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const& source,size_t latency) {
   if(!source.graph_builder||source.graph_builder!=this)details::error("cannot detach a sample port from another builder");
   if(source.channels.empty())details::error("cannot detach a sample port with no semantic channels");
@@ -206,8 +204,6 @@ void GraphBuilder::record_authored_event_connection(NodeBundlePortId target,Even
 void GraphBuilder::connect_sample_input(NodeBundlePortId target,SamplePortRef source){record_authored_sample_connection(target,source);}
 void GraphBuilder::connect_sample_input(NodeBundlePortId target,std::span<SamplePortRef const> sources){record_authored_sample_connection(target,sources);}
 void GraphBuilder::connect_event_input(NodeBundlePortId target,EventPortRef source){record_authored_event_connection(target,source);}
-void GraphBuilder::mark_runtime_filled_sample_input(NodeBundlePortId target){for(auto c:_node_bundles.sample_input_channels(target))_connections.mark_runtime_filled_sample_input(c);}
-void GraphBuilder::mark_runtime_filled_event_input(NodeBundlePortId target){for(auto p:_node_bundles.event_input_ports(target))_connections.mark_runtime_filled_event_input(p);}
 bool GraphBuilder::sample_input_is_connected(NodeBundlePortId target) const{if(target.port_kind!=PortKind::sample)details::error("sample connectivity requested for event port");auto c=_node_bundles.sample_input_channels(target);return std::ranges::any_of(c,[&](auto x){return _connections.sample_input_is_connected(x);});}
 bool GraphBuilder::event_input_is_connected(NodeBundlePortId target) const{if(target.port_kind!=PortKind::event)details::error("event connectivity requested for sample port");auto p=_node_bundles.event_input_ports(target);return std::ranges::any_of(p,[&](auto x){return _connections.event_input_is_connected(x);});}
 void GraphBuilder::connect_sample_output(NodeBundlePortId source,NodeRef const& target) {
@@ -252,16 +248,44 @@ SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef&& p){if(p.graph_bu
 SamplePortRef GraphBuilder::lift_to_sample_port(NamedRef const& ref){return std::visit([&](auto const& v)->SamplePortRef{using T=std::remove_cvref_t<decltype(v)>;if constexpr(std::same_as<T,EventPortRef>)details::error("expected sample value, got event");else return lift_to_sample_port(v);},ref.value);}
 
 GraphIntrospectionMetadata GraphBuilder::build_metadata(size_t detach_offset) const {
-  auto lowered=GraphBuilderLowering::lower(_node_bundles,_connections,_public_ports,_detach);
-  return GraphBuilderFinalizer::build_metadata(_identity,lowered,_node_bundles,_virtual_nodes,_connections,detach_offset);
+  auto lowered=GraphBuilderLowering::lower(
+      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach);
+  auto metadata=GraphBuilderFinalizer::build_metadata(
+      _identity,lowered,_node_bundles,_virtual_nodes,_connections,detach_offset);
+  auto sample_inputs=public_sample_input_families();
+  for(auto& family:sample_inputs.families) {
+    family.authored_connected=std::ranges::any_of(
+        family.channels,[&](auto const& channel){
+          return std::ranges::any_of(channel.port_ordinals,[&](auto ordinal){
+            return public_sample_input_is_connected(ordinal);
+          });
+        });
+  }
+  metadata.public_sample_inputs=std::move(sample_inputs.families);
+  metadata.public_event_inputs=public_event_inputs();
+  for(auto& input:metadata.public_event_inputs)
+    input.graph_connected=public_event_input_is_connected(input.port_ordinal);
+  metadata.public_sample_outputs=public_sample_output_families().families;
+  metadata.public_event_outputs=public_event_outputs();
+  return metadata;
 }
 GraphBuilder::RootNodeBuildResult GraphBuilder::build_root_node(size_t detach_offset) const {
-  auto lowered=GraphBuilderLowering::lower(_node_bundles,_connections,_public_ports,_detach);
+  auto lowered=GraphBuilderLowering::lower(
+      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach);
   return GraphBuilderFinalizer::build_root_node(
       _identity, lowered, _node_bundles, _virtual_nodes, _public_ports,
       detach_offset);
 }
-GraphBuilder::RootNodeBuildResult GraphBuilder::build_execution_root_node(size_t detach_offset) const {
-  GraphBuilder execution; execution.embed_subgraph(*this); execution.outputs({}); return execution.build_root_node(detach_offset);
+GraphBuilder::RootNodeBuildResult GraphBuilder::build_execution_root_node(
+    std::shared_ptr<GraphRuntimeBindings> runtime_bindings,
+    size_t detach_offset) const {
+  if (!runtime_bindings)
+    runtime_bindings = std::make_shared<GraphRuntimeBindings>();
+  auto lowered=GraphBuilderLowering::lower(
+      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach,
+      std::move(runtime_bindings),true);
+  return GraphBuilderFinalizer::build_root_node(
+      _identity,lowered,_node_bundles,_virtual_nodes,_public_ports,
+      detach_offset,true);
 }
 } // namespace iv

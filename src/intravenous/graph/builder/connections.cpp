@@ -17,10 +17,6 @@ bool GraphBuilderConnections::sample_output_is_connected(
   return std::ranges::any_of(_authored_sample_connections,
       [&](auto const& c) { return std::ranges::contains(c.source_channels, source); });
 }
-bool GraphBuilderConnections::sample_input_is_runtime_filled(
-    SampleInputChannelId target) const {
-  return std::ranges::contains(_runtime_filled_sample_channels, target);
-}
 bool GraphBuilderConnections::event_input_is_connected(
     EventInputPortId target) const {
   return std::ranges::any_of(_authored_event_connections,
@@ -30,10 +26,6 @@ bool GraphBuilderConnections::event_output_is_connected(
     EventOutputPortId source) const {
   return std::ranges::any_of(_authored_event_connections,
       [&](auto const& c) { return std::ranges::contains(c.sources, source); });
-}
-bool GraphBuilderConnections::event_input_is_runtime_filled(
-    EventInputPortId target) const {
-  return std::ranges::contains(_runtime_filled_event_ports, target);
 }
 
 void GraphBuilderConnections::record_authored_sample_connection(
@@ -57,25 +49,6 @@ void GraphBuilderConnections::record_authored_event_connection(
 std::span<AuthoredEventConnection const>
 GraphBuilderConnections::authored_event_connections() const {
   return _authored_event_connections;
-}
-
-void GraphBuilderConnections::mark_runtime_filled_sample_input(
-    SampleInputChannelId target) {
-  if (!std::ranges::contains(_runtime_filled_sample_channels, target))
-    _runtime_filled_sample_channels.push_back(target);
-}
-void GraphBuilderConnections::mark_runtime_filled_event_input(
-    EventInputPortId target) {
-  if (!std::ranges::contains(_runtime_filled_event_ports, target))
-    _runtime_filled_event_ports.push_back(target);
-}
-std::span<SampleInputChannelId const>
-GraphBuilderConnections::runtime_filled_sample_channels() const {
-  return _runtime_filled_sample_channels;
-}
-std::span<EventInputPortId const>
-GraphBuilderConnections::runtime_filled_event_ports() const {
-  return _runtime_filled_event_ports;
 }
 
 GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
@@ -121,8 +94,7 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
         result.sample.push_back({
             target, virtual_node.id, member,
             bundles.resolve_sample_input(target).config,
-            std::ranges::any_of(channels, [&](auto c) { return sample_input_is_connected(c); }),
-            std::ranges::any_of(channels, [&](auto c) { return sample_input_is_runtime_filled(c); })});
+            std::ranges::any_of(channels, [&](auto c) { return sample_input_is_connected(c); })});
       }
       for (size_t input = 0; input < bundle.event_input_count(); ++input) {
         NodeBundlePortId const target{handle, PortKind::event, input};
@@ -130,8 +102,7 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
         result.event.push_back({
             target, virtual_node.id, member,
             bundles.resolve_event_input(target).config,
-            std::ranges::any_of(ports, [&](auto p) { return event_input_is_connected(p); }),
-            std::ranges::any_of(ports, [&](auto p) { return event_input_is_runtime_filled(p); })});
+            std::ranges::any_of(ports, [&](auto p) { return event_input_is_connected(p); })});
       }
     }
   }
@@ -158,7 +129,6 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
         auto& channel = channels[target.channel];
         if (!std::ranges::contains(channel.targets, target)) channel.targets.push_back(target);
         channel.has_existing_connection |= sample_input_is_connected(target);
-        channel.runtime_filled |= sample_input_is_runtime_filled(target);
       }
       result.families.push_back({
           .virtual_node_id = virtual_node.id,
@@ -249,16 +219,6 @@ void GraphBuilderConnections::import_child(
     for (auto& source : connection.sources) source.bundle += bundle_offset;
     for (auto& target : connection.targets) target.bundle += bundle_offset;
     _authored_event_connections.push_back(std::move(connection));
-  }
-  for (auto channel : child._runtime_filled_sample_channels) {
-    channel.bundle += bundle_offset;
-    if (!std::ranges::contains(_runtime_filled_sample_channels, channel))
-      _runtime_filled_sample_channels.push_back(channel);
-  }
-  for (auto port : child._runtime_filled_event_ports) {
-    port.bundle += bundle_offset;
-    if (!std::ranges::contains(_runtime_filled_event_ports, port))
-      _runtime_filled_event_ports.push_back(port);
   }
 }
 } // namespace iv

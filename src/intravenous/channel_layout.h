@@ -4,6 +4,7 @@
 #include <intravenous/compat.h>
 #include <intravenous/sample.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -112,38 +113,68 @@ namespace iv {
             SampleStreamLayout DstLayout>
         void convert_block(Sample const* src, Sample* dst, size_t frames)
         {
-            for (size_t frame = 0; frame < frames; ++frame) {
-                Sample dst_values[2] {};
-
-                if constexpr (SrcType == ChannelTypeId::mono && DstType == ChannelTypeId::mono) {
-                    dst_values[0] = read_sample<ChannelTypeId::mono, SrcLayout>(src, frame, 0, frames);
-                } else if constexpr (SrcType == ChannelTypeId::mono && DstType == ChannelTypeId::stereo) {
-                    Sample const value = read_sample<ChannelTypeId::mono, SrcLayout>(src, frame, 0, frames);
-                    dst_values[0] = value;
-                    dst_values[1] = value;
-                } else if constexpr (SrcType == ChannelTypeId::stereo && DstType == ChannelTypeId::mono) {
-                    Sample const left = read_sample<ChannelTypeId::stereo, SrcLayout>(src, frame, 0, frames);
-                    Sample const right = read_sample<ChannelTypeId::stereo, SrcLayout>(src, frame, 1, frames);
-                    dst_values[0] = (left + right) * 0.5f;
-                } else if constexpr (SrcType == ChannelTypeId::stereo && DstType == ChannelTypeId::stereo) {
-                    dst_values[0] = read_sample<ChannelTypeId::stereo, SrcLayout>(src, frame, 0, frames);
-                    dst_values[1] = read_sample<ChannelTypeId::stereo, SrcLayout>(src, frame, 1, frames);
-                } else {
-                    static_assert(
-                        SrcType == ChannelTypeId::mono || SrcType == ChannelTypeId::stereo,
-                        "unsupported source channel type");
+            if constexpr (SrcType == DstType && SrcLayout == DstLayout) {
+                std::copy_n(src, frames * channel_count(SrcType), dst);
+            } else if constexpr (
+                SrcType == ChannelTypeId::mono &&
+                DstType == ChannelTypeId::mono) {
+                // A mono block has the same representation under both layout
+                // tags, so its entire storage is contiguous.
+                std::copy_n(src, frames, dst);
+            } else if constexpr (
+                SrcType == ChannelTypeId::mono &&
+                DstType == ChannelTypeId::stereo &&
+                DstLayout == SampleStreamLayout::planar) {
+                // Read the source once as a contiguous block and write each
+                // destination channel contiguously.
+                std::copy_n(src, frames, dst);
+                std::copy_n(src, frames, dst + frames);
+            } else if constexpr (
+                SrcType == ChannelTypeId::mono &&
+                DstType == ChannelTypeId::stereo) {
+                for (size_t frame = 0; frame < frames; ++frame) {
+                    auto const value = src[frame];
+                    dst[frame * 2] = value;
+                    dst[frame * 2 + 1] = value;
                 }
-
-                if constexpr (DstType == ChannelTypeId::mono) {
-                    write_sample<ChannelTypeId::mono, DstLayout>(dst, frame, 0, frames, dst_values[0]);
-                } else if constexpr (DstType == ChannelTypeId::stereo) {
-                    write_sample<ChannelTypeId::stereo, DstLayout>(dst, frame, 0, frames, dst_values[0]);
-                    write_sample<ChannelTypeId::stereo, DstLayout>(dst, frame, 1, frames, dst_values[1]);
-                } else {
-                    static_assert(
-                        DstType == ChannelTypeId::mono || DstType == ChannelTypeId::stereo,
-                        "unsupported destination channel type");
+            } else if constexpr (
+                SrcType == ChannelTypeId::stereo &&
+                DstType == ChannelTypeId::mono &&
+                SrcLayout == SampleStreamLayout::planar) {
+                auto const* left = src;
+                auto const* right = src + frames;
+                for (size_t frame = 0; frame < frames; ++frame)
+                    dst[frame] = (left[frame] + right[frame]) * 0.5f;
+            } else if constexpr (
+                SrcType == ChannelTypeId::stereo &&
+                DstType == ChannelTypeId::mono) {
+                for (size_t frame = 0; frame < frames; ++frame)
+                    dst[frame] =
+                        (src[frame * 2] + src[frame * 2 + 1]) * 0.5f;
+            } else if constexpr (
+                SrcType == ChannelTypeId::stereo &&
+                DstType == ChannelTypeId::stereo &&
+                SrcLayout == SampleStreamLayout::planar) {
+                auto const* left = src;
+                auto const* right = src + frames;
+                for (size_t frame = 0; frame < frames; ++frame) {
+                    dst[frame * 2] = left[frame];
+                    dst[frame * 2 + 1] = right[frame];
                 }
+            } else if constexpr (
+                SrcType == ChannelTypeId::stereo &&
+                DstType == ChannelTypeId::stereo) {
+                auto* left = dst;
+                auto* right = dst + frames;
+                for (size_t frame = 0; frame < frames; ++frame) {
+                    left[frame] = src[frame * 2];
+                    right[frame] = src[frame * 2 + 1];
+                }
+            } else {
+                static_assert(
+                    SrcType == ChannelTypeId::mono ||
+                        SrcType == ChannelTypeId::stereo,
+                    "unsupported source channel type");
             }
         }
 

@@ -3,6 +3,7 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ParentMapContext.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -237,6 +238,96 @@ namespace {
         std::vector<WrapSpec> _wraps;
         std::vector<InsertSpec> _insertions;
         std::unordered_map<std::string, clang::VarDecl const*> _graph_local_bindings;
+
+        std::string node_state_structure_expression(
+            clang::CXXRecordDecl const& state) const
+        {
+            clang::QualType const state_type =
+                _context.getCanonicalTagType(&state);
+            auto const& layout = _context.getASTRecordLayout(&state);
+            clang::PrintingPolicy policy(_lang_options);
+            policy.SuppressTagKeyword = false;
+            policy.FullyQualifiedName = true;
+
+            std::string expression = "iv::NodeStateStructure{"
+                ".size_bits=" +
+                std::to_string(_context.getTypeSize(state_type)) +
+                ",.alignment_bits=" +
+                std::to_string(_context.getTypeAlign(state_type)) +
+                ",.fields={";
+
+            size_t field_index = 0;
+            for (auto const* field : state.fields()) {
+                expression += "iv::NodeStateFieldStructure{.name=" +
+                    cxx_string_literal(field->getNameAsString()) +
+                    ",.type_name=" + cxx_string_literal(
+                        field->getType().getCanonicalType().getAsString(policy)) +
+                    ",.bit_offset=" +
+                    std::to_string(layout.getFieldOffset(field_index)) +
+                    ",.size_bits=" + std::to_string(
+                        _context.getTypeSize(field->getType())) +
+                    ",.alignment_bits=" + std::to_string(
+                        _context.getTypeAlign(field->getType()));
+                if (field->isBitField()) {
+                    expression += ",.bit_width=" +
+                        std::to_string(field->getBitWidthValue());
+                }
+                expression += "},";
+                ++field_index;
+            }
+            expression += "}}";
+            return expression;
+        }
+
+        void maybe_add_node_state_structure(
+            clang::CXXRecordDecl* state)
+        {
+            if (!state || !state->isThisDeclarationADefinition() ||
+                state->getName() != "State" ||
+                !is_user_source_location(state->getLocation())) {
+                return;
+            }
+            auto const* node = llvm::dyn_cast<clang::CXXRecordDecl>(
+                state->getDeclContext());
+            if (!node || !node->isThisDeclarationADefinition() ||
+                node->getDescribedClassTemplate() ||
+                !is_user_source_location(node->getLocation())) {
+                return;
+            }
+            bool const has_node_lifecycle_method = std::ranges::any_of(
+                node->methods(), [](clang::CXXMethodDecl const* method) {
+                    auto const name = method->getName();
+                    return name == "tick_block" || name == "declare";
+                });
+            if (!has_node_lifecycle_method) return;
+            clang::QualType const state_type =
+                _context.getCanonicalTagType(state);
+            if (state_type.isNull() || state_type->isDependentType() ||
+                state_type->isIncompleteType()) {
+                return;
+            }
+            if (state->getNumBases() != 0) {
+                unsigned const id = _context.getDiagnostics().getCustomDiagID(
+                    clang::DiagnosticsEngine::Error,
+                    "Node::State must not derive from another class");
+                _context.getDiagnostics().Report(state->getLocation(), id);
+                return;
+            }
+            auto const closing_brace = token_range_for_location(
+                node->getBraceRange().getEnd());
+            if (!closing_brace) return;
+
+            auto const structure = node_state_structure_expression(*state);
+            _insertions.push_back(InsertSpec{
+                .offset = closing_brace->begin,
+                .text = "\nstatic_assert(std::is_default_constructible_v<State>, "
+                    "\"Node::State must be default constructible\");\n"
+                    "friend iv::NodeStateStructure "
+                    "iv_rewritten_node_state_structure(" +
+                    node->getNameAsString() +
+                    " const*) { return " + structure + "; }\n",
+            });
+        }
 
         bool is_user_source_path(llvm::StringRef path) const
         {
@@ -990,6 +1081,12 @@ namespace {
             validate_unique_graph_local_binding(decl);
             maybe_add_binding_wrap(decl);
             maybe_add_empty_declaration_init(decl);
+            return true;
+        }
+
+        bool VisitCXXRecordDecl(clang::CXXRecordDecl* decl)
+        {
+            maybe_add_node_state_structure(decl);
             return true;
         }
 

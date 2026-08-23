@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/builder/topology.h>
 #include <intravenous/graph/builder/node_bundles.h>
+#include <intravenous/graph/runtime_bindings.h>
 
 #include <limits>
 #include <optional>
@@ -13,6 +14,7 @@ namespace iv {
 class GraphBuilderConnections;
 class GraphBuilderPublicPorts;
 class GraphBuilderDetach;
+class GraphBuilderVirtualNodes;
 
 struct LoweredNodeBundleProjection {
   std::vector<std::vector<TopologyPortId>> sample_inputs{};
@@ -38,8 +40,6 @@ struct LoweredBuilderGraph {
       subgraph_input_of_boundary_source{};
   std::unordered_map<TopologyPortId, TopologyPortId>
       subgraph_event_input_of_boundary_source{};
-  std::unordered_set<TopologyPortId> runtime_filled_sample_inputs{};
-  std::unordered_set<TopologyPortId> runtime_filled_event_inputs{};
   std::unordered_map<TopologyPortId, DetachedSamplePortInfo>
       detached_info_by_source{};
   std::unordered_set<TopologyPortId> detached_reader_outputs{};
@@ -49,6 +49,9 @@ class GraphBuilderLowering {
 public:
   static LoweredBuilderGraph lower(
       GraphBuilderNodeBundles const&, GraphBuilderConnections const&,
-      GraphBuilderPublicPorts const&, GraphBuilderDetach const&);
+      GraphBuilderPublicPorts const&, GraphBuilderVirtualNodes const&,
+      GraphBuilderDetach const&,
+      std::shared_ptr<GraphRuntimeBindings> runtime_bindings = {},
+      bool execution_root = false);
 };
 } // namespace iv

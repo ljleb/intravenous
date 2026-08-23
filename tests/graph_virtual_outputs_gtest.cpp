@@ -129,23 +129,6 @@ TEST(GraphVirtualOutputsTest, MetadataReportsMixedAuthoredStereoConnectivity)
               VirtualPortConnectivity::mixed);
 }
 
-TEST(GraphVirtualOutputsTest, RuntimeFilledTiledInputsAreTrackedSemantically)
-{
-    GraphBuilder g;
-    auto tiled = g.node<Sum<mono, SampleStreamLayout::planar, 1>, stereo>();
-    auto annotated = _annotate_node_source_info(tiled.node_ref(), "tiled");
-    (void)annotated;
-    g.mark_runtime_filled_sample_input(
-        {tiled.node_bundle_handle(), PortKind::sample, 0});
-
-    auto const families = g.virtual_sample_input_families();
-    ASSERT_EQ(families.families.size(), 1u);
-    auto const& family = families.families.front();
-    ASSERT_EQ(family.channels.size(), 2u);
-    EXPECT_TRUE(family.channels[0].runtime_filled);
-    EXPECT_TRUE(family.channels[1].runtime_filled);
-}
-
 TEST(GraphVirtualOutputsTest, NamedChannelOutputsKeepNameAndChannelAsSeparateIdentity)
 {
     GraphBuilder g;

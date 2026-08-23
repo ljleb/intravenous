@@ -561,7 +561,20 @@ void TimelineExecution::rebuild_runtime_storage_locked()
 
     for (auto const &[lane, tracked] : tracked_lanes_) {
         if (is_realtime_event_output(tracked.output)) {
-            realtime_event_blocks_[lane].clear();
+            auto &events = realtime_event_blocks_[lane];
+            events.clear();
+            auto const capacity = std::max({
+                calculate_event_port_buffer_capacity(
+                    DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
+                    EventTypeId::midi),
+                calculate_event_port_buffer_capacity(
+                    DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
+                    EventTypeId::trigger),
+                calculate_event_port_buffer_capacity(
+                    DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
+                    EventTypeId::boundary),
+            });
+            events.reserve(capacity);
         } else {
             realtime_event_blocks_.erase(lane);
         }

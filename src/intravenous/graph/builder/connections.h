@@ -34,7 +34,6 @@ struct GraphBuilderVirtualSampleInput {
   size_t member_ordinal = 0;
   InputConfig config{};
   bool has_existing_connection = false;
-  bool runtime_filled = false;
 };
 struct GraphBuilderVirtualEventInput {
   NodeBundlePortId target{};
@@ -42,7 +41,6 @@ struct GraphBuilderVirtualEventInput {
   size_t member_ordinal = 0;
   EventInputConfig config{};
   bool has_existing_connection = false;
-  bool runtime_filled = false;
 };
 struct GraphBuilderVirtualInputs {
   std::vector<GraphBuilderVirtualSampleInput> sample{};
@@ -52,7 +50,6 @@ struct GraphBuilderVirtualInputs {
 struct GraphBuilderVirtualSampleInputChannel {
   std::vector<SampleInputChannelId> targets{};
   bool has_existing_connection = false;
-  bool runtime_filled = false;
 };
 struct GraphBuilderVirtualSampleInputFamily {
   std::string virtual_node_id{};
@@ -128,16 +125,8 @@ public:
 
   bool sample_input_is_connected(SampleInputChannelId) const;
   bool sample_output_is_connected(SampleOutputChannelId) const;
-  bool sample_input_is_runtime_filled(SampleInputChannelId) const;
   bool event_input_is_connected(EventInputPortId) const;
   bool event_output_is_connected(EventOutputPortId) const;
-  bool event_input_is_runtime_filled(EventInputPortId) const;
-
-  void mark_runtime_filled_sample_input(SampleInputChannelId);
-  void mark_runtime_filled_event_input(EventInputPortId);
-
-  std::span<SampleInputChannelId const> runtime_filled_sample_channels() const;
-  std::span<EventInputPortId const> runtime_filled_event_ports() const;
 
   GraphBuilderVacantInputs collect_vacant_inputs(
       GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
@@ -155,7 +144,5 @@ public:
 private:
   std::vector<AuthoredSampleConnection> _authored_sample_connections{};
   std::vector<AuthoredEventConnection> _authored_event_connections{};
-  std::vector<SampleInputChannelId> _runtime_filled_sample_channels{};
-  std::vector<EventInputPortId> _runtime_filled_event_ports{};
 };
 } // namespace iv

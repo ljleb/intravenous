@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace iv {
@@ -38,6 +39,7 @@ struct TaskGraphUpdate {
 struct VersionedTaskGraphUpdate {
     std::uint64_t version_index = 0;
     TaskGraphUpdate update {};
+    bool activation_deferred = false;
 };
 
 class TasksRunner {
@@ -58,6 +60,7 @@ private:
     std::shared_ptr<PassState> current_pass_;
     std::optional<std::uint64_t> pending_update_version_index_;
     bool pending_graph_is_complete_ = true;
+    bool pending_graph_activation_deferred_ = false;
     std::uint64_t next_revision_ = 1;
     bool shutdown_requested_ = false;
     bool workers_should_exit_ = false;
@@ -82,6 +85,28 @@ public:
 
     void update_tasks(TaskGraphUpdate const &update);
     void update_tasks(VersionedTaskGraphUpdate const &update);
+
+    template<class BeforeActivation>
+    bool activate_deferred_graph_after(BeforeActivation&& before_activation)
+    {
+        std::scoped_lock update_lock(update_mutex_);
+        {
+            std::scoped_lock state_lock(state_mutex_);
+            if (!pending_graph_ || !pending_graph_is_complete_ ||
+                !pending_graph_activation_deferred_) {
+                return false;
+            }
+        }
+
+        std::forward<BeforeActivation>(before_activation)();
+
+        {
+            std::scoped_lock state_lock(state_mutex_);
+            pending_graph_activation_deferred_ = false;
+        }
+        state_cv_.notify_all();
+        return true;
+    }
 
     std::uint64_t active_graph_revision() const;
     std::optional<std::uint64_t> pending_graph_revision() const;

@@ -5,6 +5,6 @@ IV_DEFINE_LINKER_EVENT(
     GraphInputLanesTimelineBatchRequestedEvent,
     iv_runtime_graph_input_lanes_timeline_batch_requested_event);
 IV_DEFINE_LINKER_EVENT(
-    GraphInputLanesRebuildRequestedEvent,
-    iv_runtime_graph_input_lanes_rebuild_requested_event);
+    GraphInputLanesRuntimeDependenciesChangedEvent,
+    iv_runtime_graph_input_lanes_runtime_dependencies_changed_event);
 } // namespace iv

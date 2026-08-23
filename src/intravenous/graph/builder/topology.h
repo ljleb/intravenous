@@ -61,6 +61,10 @@ public:
 
   void add_sample_edge(TopologyEdge);
   void add_event_edge(TopologyEventEdge);
+  void replace_sample_source(TopologyPortId from, TopologyPortId to);
+  void replace_sample_target(TopologyPortId from, TopologyPortId to);
+  void replace_event_source(TopologyPortId from, TopologyPortId to);
+  void replace_event_target(TopologyPortId from, TopologyPortId to);
 
   template<class Fn>
   void for_each_sample_edge(Fn&& fn) const {

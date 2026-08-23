@@ -142,7 +142,17 @@ GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_output_fami
   return result;
 }
 std::vector<GraphBuilderPublicEventInput> GraphBuilderPublicPorts::collected_event_inputs(GraphBuilderNodeBundles const& b) const {
-  std::vector<GraphBuilderPublicEventInput> r; auto c = event_inputs(b); for (size_t i=0;i<c.size();++i) r.push_back({i,c[i]}); return r;
+  std::vector<GraphBuilderPublicEventInput> r;
+  auto configs = event_inputs(b);
+  for (size_t i = 0; i < configs.size(); ++i) {
+    auto infos = event_input_source_infos(i);
+    r.push_back({
+        .port_ordinal = i,
+        .config = configs[i],
+        .source_infos = {infos.begin(), infos.end()},
+    });
+  }
+  return r;
 }
 std::vector<GraphBuilderPublicEventOutput> GraphBuilderPublicPorts::collected_event_outputs(GraphBuilderNodeBundles const& b) const {
   std::vector<GraphBuilderPublicEventOutput> r; auto c = event_outputs(b); for (size_t i=0;i<c.size();++i) r.push_back({i,c[i], i<_event_output_source_infos.size()?_event_output_source_infos[i]:std::vector<SourceInfo>{}}); return r;

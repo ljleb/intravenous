@@ -145,11 +145,6 @@ IV_SUBSCRIBE_LINKER_EVENT(
         builder.succeed();
     });
 
-IV_SUBSCRIBE_LINKER_EVENT(
-    iv::GraphInputLanesRebuildRequestedEvent,
-    iv_runtime_graph_input_lanes_rebuild_requested_event,
-    +[](iv::GraphInputLanesRebuildRequested const &) {});
-
 Json parse_json_line(std::string_view line)
 {
     return Json::parse(line);
@@ -227,6 +222,7 @@ iv::IvModuleInstance make_instance_with_ports()
         .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
         .default_value = 440.0f,
+        .sample_channel_type = iv::ChannelTypeId::mono,
     });
     node.event_inputs.push_back(iv::IntrospectionPortInfo{
         .name = "trigger",
@@ -251,6 +247,7 @@ iv::IvModuleInstance make_instance_with_member_ports()
         .connectivity = iv::VirtualPortConnectivity::disconnected,
         .ordinal = 0,
         .default_value = 440.0f,
+        .sample_channel_type = iv::ChannelTypeId::mono,
     });
     member.event_inputs.push_back(iv::IntrospectionPortInfo{
         .name = "trigger",

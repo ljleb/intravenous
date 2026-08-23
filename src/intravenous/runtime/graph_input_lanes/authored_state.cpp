@@ -55,7 +55,7 @@ void GraphInputLanes::set_sample_input_value(
             ensure_live_input_value_locked(request.node_id, request.input_ordinal)
                 .store(request.value.value, std::memory_order_relaxed);
             if (timeline_knob) {
-                knob_lane = stable_lane_id_for_key(virtual_knob_key(DesiredGraphInputPort{
+                knob_lane = stable_lane_id_for_key(virtual_knob_key(DesiredGraphPort{
                     .port = sample_input_descriptor(
                         request.node_id,
                         std::nullopt,
@@ -89,6 +89,13 @@ void GraphInputLanes::set_sample_input_value(
                     .store(request.value.value, std::memory_order_relaxed);
             }
         }
+        if (request.member_ordinal.has_value()) {
+            schedule_instances_for_input_locked(
+                request.node_id, request.member_ordinal, request.input_ordinal);
+        } else {
+            schedule_instances_for_virtual_sample_input_locked(
+                request.node_id, request.input_ordinal);
+        }
     }
     if (knob_lane.has_value()) {
         IV_INVOKE_SINGLETON_EVENT(
@@ -105,7 +112,7 @@ void GraphInputLanes::set_sample_input_state(
     {
         std::scoped_lock lock(mutex);
         if (request.member_ordinal.has_value()) {
-            auto const sample_key = sample_input_key(DesiredGraphInputPort{
+            auto const sample_key = sample_input_key(DesiredGraphPort{
                 .instance_id = {},
                 .module_instance_id = 0,
                 .port = sample_input_descriptor(
@@ -169,12 +176,12 @@ void GraphInputLanes::set_sample_input_state(
                 break;
             }
 
-            mark_instances_requiring_rebuild_locked(
+            schedule_instances_for_input_locked(
                 request.node_id,
                 request.member_ordinal,
                 request.input_ordinal);
         } else {
-            auto const virtual_key = virtual_knob_key(DesiredGraphInputPort{
+            auto const virtual_key = virtual_knob_key(DesiredGraphPort{
                 .instance_id = {},
                 .module_instance_id = 0,
                 .port = sample_input_descriptor(
@@ -218,7 +225,7 @@ void GraphInputLanes::set_sample_input_state(
                 throw std::runtime_error(
                     "virtual sample input state only supports overridden or timeline_lane");
             }
-            mark_instances_requiring_rebuild_for_virtual_sample_input_locked(
+            schedule_instances_for_virtual_sample_input_locked(
                 request.node_id,
                 request.input_ordinal);
         }
@@ -244,7 +251,7 @@ void GraphInputLanes::set_public_sample_input_state(
             && request.state == ProjectSampleInputState::default_) {
             public_sample_input_states_by_key.erase(state_key);
             public_sample_input_lane_ids_by_key.erase(state_key);
-            pending_rebuild_instance_ids.insert(request.instance_id);
+            schedule_runtime_binding_sync_locked(request.instance_id);
             reconcile_public_ports_locked(&batch);
             queue_timeline_batch_locked(batch);
             return;
@@ -258,7 +265,7 @@ void GraphInputLanes::set_public_sample_input_state(
         } else if (request.state == ProjectSampleInputState::default_) {
             public_sample_input_states_by_key.erase(state_key);
             public_sample_input_lane_ids_by_key.erase(state_key);
-            pending_rebuild_instance_ids.insert(request.instance_id);
+            schedule_runtime_binding_sync_locked(request.instance_id);
             reconcile_public_ports_locked(&batch);
             queue_timeline_batch_locked(batch);
             return;
@@ -274,7 +281,7 @@ void GraphInputLanes::set_public_sample_input_state(
         } else {
             public_sample_input_lane_ids_by_key.erase(state_key);
         }
-        pending_rebuild_instance_ids.insert(request.instance_id);
+        schedule_runtime_binding_sync_locked(request.instance_id);
         reconcile_public_ports_locked(&batch);
         queue_timeline_batch_locked(batch);
     }
@@ -317,6 +324,7 @@ void GraphInputLanes::set_public_sample_input_value(
                 live_value_lanes.push_back(public_graph_port_lane_for(port));
             }
         }
+        schedule_runtime_binding_sync_locked(instance_id);
     }
     for (auto const lane : live_value_lanes) {
         IV_INVOKE_SINGLETON_EVENT(
@@ -354,7 +362,7 @@ void GraphInputLanes::set_public_event_input_state(
                 public_event_input_lane_ids_by_key.erase(key);
             }
         }
-        pending_rebuild_instance_ids.insert(instance_id);
+        schedule_runtime_binding_sync_locked(instance_id);
         reconcile_public_ports_locked(&batch);
         queue_timeline_batch_locked(batch);
     }
@@ -525,7 +533,7 @@ void GraphInputLanes::set_event_input_state(
     TimelineLaneBatchUpdate batch;
     {
         std::scoped_lock lock(mutex);
-        auto const node_bundle_key_value = event_input_key(DesiredGraphInputPort{
+        auto const node_bundle_key_value = event_input_key(DesiredGraphPort{
             .instance_id = {},
             .module_instance_id = 0,
             .port = GraphInputPortDescriptor{
@@ -535,7 +543,7 @@ void GraphInputLanes::set_event_input_state(
                 .port_ordinal = request.input_ordinal,
             },
         });
-        auto const virtual_key_value = virtual_event_input_key(DesiredGraphInputPort{
+        auto const virtual_key_value = virtual_event_input_key(DesiredGraphPort{
             .instance_id = {},
             .module_instance_id = 0,
             .port = GraphInputPortDescriptor{
@@ -609,7 +617,7 @@ void GraphInputLanes::set_event_input_state(
             virtual_event_input_lane_ids_by_key.erase(virtual_key_value);
         }
 
-        mark_instances_requiring_rebuild_locked(
+        schedule_instances_for_input_locked(
             request.node_id,
             request.member_ordinal,
             request.input_ordinal);
@@ -643,11 +651,12 @@ void GraphInputLanes::set_sample_output_state(
                 }
             }
             (void)reconcile_ports_locked(&batch);
+            schedule_runtime_binding_sync_locked(public_output->first);
             queue_timeline_batch_locked(batch);
             return;
         }
         auto const identity_key = output_identity_key(
-            DesiredGraphInputPort{
+            DesiredGraphPort{
                 .instance_id = {},
                 .module_instance_id = 0,
                 .port = GraphInputPortDescriptor{
@@ -715,7 +724,7 @@ void GraphInputLanes::set_sample_output_state(
             }
         }
 
-        mark_instances_requiring_output_rebuild_locked(
+        schedule_instances_for_output_locked(
             request.node_id,
             request.member_ordinal,
             request.output_ordinal,
@@ -750,11 +759,12 @@ void GraphInputLanes::set_event_output_state(
                 }
             }
             (void)reconcile_ports_locked(&batch);
+            schedule_runtime_binding_sync_locked(public_output->first);
             queue_timeline_batch_locked(batch);
             return;
         }
         auto const identity_key = output_identity_key(
-            DesiredGraphInputPort{
+            DesiredGraphPort{
                 .instance_id = {},
                 .module_instance_id = 0,
                 .port = GraphInputPortDescriptor{
@@ -811,7 +821,7 @@ void GraphInputLanes::set_event_output_state(
             }
         }
 
-        mark_instances_requiring_output_rebuild_locked(
+        schedule_instances_for_output_locked(
             request.node_id,
             request.member_ordinal,
             request.output_ordinal,

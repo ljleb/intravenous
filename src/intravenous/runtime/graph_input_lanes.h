@@ -53,11 +53,14 @@ public:
         timeline_lane,
     };
 
-    struct DesiredGraphInputPort {
+    struct DesiredGraphPort {
         std::string instance_id {};
         int module_instance_id = 0;
         GraphInputPortDescriptor port {};
-        bool default_connected = false;
+        bool authored_connected = false;
+        Sample default_value = 0.0f;
+        std::optional<Sample> min {};
+        std::optional<Sample> max {};
     };
 
     struct DesiredPublicGraphPortChannel {
@@ -92,11 +95,6 @@ public:
         LaneMetadata metadata {};
     };
 
-    struct BuilderCompletionDiff {
-        TimelineLaneBatchUpdate timeline_batch {};
-        std::vector<LaneId> prerequisite_lanes {};
-    };
-
     struct AuthoredStateSnapshot {
         std::vector<ProjectSetSampleInputValueRequest> sample_input_values {};
         std::vector<ProjectSetSampleInputStateRequest> sample_input_states {};
@@ -109,10 +107,10 @@ private:
     mutable std::mutex mutex;
     GraphInputLanesBlockStore output_blocks_;
     LaneIdAllocator lane_ids;
-    std::unordered_map<std::string, std::vector<DesiredGraphInputPort>> desired_ports_by_instance_id;
-    std::vector<DesiredGraphInputPort> desired_ports;
-    std::unordered_map<std::string, std::vector<DesiredGraphInputPort>> desired_output_ports_by_instance_id;
-    std::vector<DesiredGraphInputPort> desired_output_ports;
+    std::unordered_map<std::string, std::vector<DesiredGraphPort>> desired_ports_by_instance_id;
+    std::vector<DesiredGraphPort> desired_ports;
+    std::unordered_map<std::string, std::vector<DesiredGraphPort>> desired_output_ports_by_instance_id;
+    std::vector<DesiredGraphPort> desired_output_ports;
     std::unordered_map<std::string, std::vector<DesiredPublicGraphPort>> desired_public_input_ports_by_instance_id;
     std::vector<DesiredPublicGraphPort> desired_public_input_ports;
     std::unordered_map<std::string, std::vector<DesiredPublicGraphPort>> desired_public_output_ports_by_instance_id;
@@ -140,20 +138,20 @@ private:
     std::unordered_map<std::string, ProjectSampleOutputState> public_sample_output_states_by_key;
     std::unordered_map<std::string, ProjectEventOutputState> public_event_output_states_by_key;
     std::unordered_map<std::string, std::unique_ptr<std::atomic<Sample::storage>>> public_sample_input_values;
-    std::unordered_set<std::string> pending_rebuild_instance_ids;
+    std::unordered_map<std::string, std::shared_ptr<GraphRuntimeBindings>>
+        runtime_bindings_by_instance_id;
+    std::unordered_set<std::string> pending_runtime_binding_syncs;
     std::vector<TimelineLaneBatchUpdate> pending_timeline_batches;
     std::uint64_t current_update_version_index_ = 1;
 
-    static std::vector<DesiredGraphInputPort> graph_input_port_descriptors_for(
+    static std::vector<DesiredGraphPort> graph_input_port_descriptors_for(
         IvModuleInstance const &instance);
-    static std::vector<DesiredGraphInputPort> graph_output_port_descriptors_for(
+    static std::vector<DesiredGraphPort> graph_output_port_descriptors_for(
         IvModuleInstance const &instance);
     static std::vector<DesiredPublicGraphPort> public_graph_input_ports_for(
-        std::string const &instance_id,
-        GraphBuilder const &builder);
+        IvModuleInstance const &instance);
     static std::vector<DesiredPublicGraphPort> public_graph_output_ports_for(
-        std::string const &instance_id,
-        GraphBuilder const &builder);
+        IvModuleInstance const &instance);
     static int module_instance_numeric_id(std::string_view instance_id);
     static int hash_string(std::string const &value);
     static std::string node_bundle_key(std::string_view virtual_node_id, size_t member_ordinal);
@@ -162,7 +160,7 @@ private:
         std::string_view virtual_node_id,
         size_t member_ordinal,
         size_t input_ordinal);
-    static std::string desired_port_key(DesiredGraphInputPort const &port);
+    static std::string desired_port_key(DesiredGraphPort const &port);
     static std::string graph_input_port_key(GraphInputPortDescriptor const &port);
     static std::string sample_default_value_key(
         std::string_view instance_id,
@@ -176,24 +174,24 @@ private:
         size_t input_ordinal,
         ChannelTypeId channel_type = ChannelTypeId::mono);
     static LaneMetadata graph_input_metadata(
-        DesiredGraphInputPort const &port,
+        DesiredGraphPort const &port,
         bool knob,
         bool is_virtual,
         bool concrete,
         bool sample,
         bool event);
     static LaneMetadata graph_output_metadata(
-        DesiredGraphInputPort const &port,
+        DesiredGraphPort const &port,
         bool is_virtual,
         bool concrete,
         bool sample,
         bool event);
     static bool lane_metadata_matches_port(
         LaneMetadata const &metadata,
-        DesiredGraphInputPort const &port);
+        DesiredGraphPort const &port);
     static bool has_node_bundle_descriptor_for_port(
-        std::span<DesiredGraphInputPort const> ports,
-        DesiredGraphInputPort const &virtual_port);
+        std::span<DesiredGraphPort const> ports,
+        DesiredGraphPort const &virtual_port);
     static std::string public_port_key(DesiredPublicGraphPort const &port);
     static std::string public_sample_input_state_key(
         std::string_view instance_id,
@@ -217,30 +215,34 @@ private:
         size_t input_ordinal,
         Sample fallback) const;
     std::atomic<Sample::storage> const* live_input_value_ptr_or_locked(std::string_view key, size_t input_ordinal);
-    void mark_instances_requiring_rebuild_locked(
+    void schedule_instances_for_input_locked(
         std::string_view virtual_node_id,
         std::optional<size_t> member_ordinal,
         size_t input_ordinal);
-    void mark_instances_requiring_rebuild_for_virtual_sample_input_locked(
+    void schedule_instances_for_virtual_sample_input_locked(
         std::string_view virtual_node_id,
         size_t input_ordinal);
-    std::optional<DesiredGraphInputPort> find_desired_port_locked(
+    std::optional<DesiredGraphPort> find_desired_port_locked(
         std::string const &instance_id,
         GraphInputPortDescriptor const &port) const;
     GraphInputLaneBindings reconcile_ports_locked(TimelineLaneBatchUpdate *batch = nullptr);
     void reconcile_output_ports_locked(TimelineLaneBatchUpdate *batch = nullptr);
     std::optional<NodeBundleOutputState> effective_node_bundle_output_state_locked(
-        DesiredGraphInputPort const &port) const;
+        DesiredGraphPort const &port) const;
     bool virtual_output_is_timeline_lane_locked(
-        DesiredGraphInputPort const &port) const;
+        DesiredGraphPort const &port) const;
     LaneId graph_output_lane_for(
         GraphInputPortDescriptor const &port,
         bool virtual_aggregation);
-    void mark_instances_requiring_output_rebuild_locked(
+    void schedule_instances_for_output_locked(
         std::string_view virtual_node_id,
         std::optional<size_t> member_ordinal,
         size_t output_ordinal,
         PortKind port_kind);
+    void sync_runtime_bindings_locked(std::string const &instance_id);
+    void schedule_runtime_binding_sync_locked(std::string const &instance_id);
+    std::vector<LaneId> prerequisite_lanes_for_instance_locked(
+        std::string const &instance_id) const;
     void refresh_desired_ports_locked();
     void refresh_desired_output_ports_locked();
     void refresh_desired_public_input_ports_locked();
@@ -269,8 +271,8 @@ private:
     void apply_timeline_batch(TimelineLaneBatchUpdate const &batch);
     void publish_sample_output_block(LaneId lane, BorrowedSampleBlock const &block);
     void publish_event_output_block(LaneId lane, std::span<TimedEvent const> events);
-    OwnedSampleBlock sample_output_block(LaneId lane) const;
-    std::vector<TimedEvent> event_output_block(LaneId lane) const;
+    BorrowedSampleBlock sample_output_block(LaneId lane) const;
+    std::span<TimedEvent const> event_output_block(LaneId lane) const;
 
 public:
     GraphInputLanes() = default;
@@ -310,12 +312,11 @@ public:
         ProjectGraphInputLaneBindingsRequest const &request);
     [[nodiscard]] AuthoredStateSnapshot authored_state() const;
     void handle_task_runner_after_pass(TasksRunnerAfterPass const &finished);
-    BuilderCompletionDiff complete_builder(
-        std::string const &instance_id,
-        GraphBuilder &builder);
     void handle_sample_block_published(LaneId lane, BorrowedSampleBlock const &block);
     void handle_event_block_published(LaneId lane, std::span<TimedEvent const> events);
-    OwnedSampleBlock handle_sample_block_requested(LaneId lane) const;
-    std::vector<TimedEvent> handle_event_block_requested(LaneId lane) const;
+    void prepare_sample_output_block(LaneId lane);
+    void prepare_event_output_block(LaneId lane);
+    BorrowedSampleBlock handle_sample_block_requested(LaneId lane) const;
+    std::span<TimedEvent const> handle_event_block_requested(LaneId lane) const;
 };
 } // namespace iv

@@ -119,6 +119,37 @@ TEST(IvModuleInstancesExecution, BuilderPrerequisiteLanesBecomeTaskDependencies)
         }));
 }
 
+TEST(IvModuleInstancesExecution, RuntimeRouteChangesUpdateDependenciesWithoutReloadingExecutor)
+{
+    iv::IvModuleInstancesExecution execution;
+    auto instance = make_instance("instance:1");
+    iv::GraphBuilder builder;
+    builder.outputs();
+    (void)execution.handle_instance_builders_changed(
+        iv::IvModuleInstanceBuildersChanged{
+            .created = {iv::IvModuleInstanceBuilderRef{
+                .instance = &instance,
+                .builder = &builder,
+            }},
+        });
+
+    auto const update = execution.handle_runtime_dependencies_changed(
+        iv::GraphInputLanesRuntimeDependenciesChanged{
+            .version_index = 7,
+            .instances = {iv::GraphInputLanesRuntimeDependency{
+                .instance_id = "instance:1",
+                .prerequisite_lanes = {iv::LaneId{3}, iv::LaneId{9}},
+            }},
+        });
+
+    EXPECT_EQ(update.version_index, 7u);
+    ASSERT_EQ(update.update.to_update.size(), 1u);
+    EXPECT_EQ(
+        *update.update.to_update.front().depends_on,
+        (std::vector<std::string>{"timeline:lane:3", "timeline:lane:9"}));
+    EXPECT_FALSE(update.update.to_update.front().callback.has_value());
+}
+
 TEST(IvModuleInstancesExecution, DeletingInstanceDeletesTask)
 {
     iv::IvModuleInstancesExecution execution;
@@ -319,8 +350,62 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
             },
         });
 
+    execution.commit_prepared_reloads(1);
+
+    EXPECT_TRUE(old_release_saw_live_module);
+    EXPECT_TRUE(old_module_is_live);
+
+    // A later completed task-graph revision proves that the old callback
+    // context can no longer be referenced. Reclamation then happens on this
+    // control-thread call, not in the after-pass callback.
+    execution.commit_prepared_reloads(2);
+    (void)execution.handle_instance_builders_changed({});
+
     iv::unbind_iv_module_instances_iv_module_instances_execution_bridge(execution);
 
     EXPECT_TRUE(old_release_saw_live_module);
     EXPECT_FALSE(old_module_is_live);
+}
+
+TEST(IvModuleInstancesExecution, PreparedReloadKeepsOldGraphUntilAfterPassCommit)
+{
+    iv::IvModuleInstancesExecution execution(8);
+    auto instance = make_instance("instance:1");
+    int old_ticks = 0;
+    iv::GraphBuilder old_builder;
+    (void)old_builder.node<CountingNode>(&old_ticks);
+    old_builder.outputs();
+
+    auto created = execution.handle_instance_builders_changed(
+        iv::IvModuleInstanceBuildersChanged{
+            .created = {iv::IvModuleInstanceBuilderRef{
+                .instance = &instance,
+                .builder = &old_builder,
+            }},
+        });
+    auto const old_callback = created.update.to_create.front().callback;
+    old_callback.invoke(old_callback.context);
+
+    int new_ticks = 0;
+    iv::GraphBuilder new_builder;
+    (void)new_builder.node<CountingNode>(&new_ticks);
+    new_builder.outputs();
+    auto changed = execution.handle_instance_builders_changed(
+        iv::IvModuleInstanceBuildersChanged{
+            .updated = {iv::IvModuleInstanceBuilderRef{
+                .instance = &instance,
+                .builder = &new_builder,
+            }},
+        });
+    auto const new_callback = *changed.update.to_update.front().callback;
+
+    old_callback.invoke(old_callback.context);
+    EXPECT_EQ(old_ticks, 2);
+    EXPECT_EQ(new_ticks, 0);
+
+    execution.commit_prepared_reloads(1);
+    new_callback.invoke(new_callback.context);
+
+    EXPECT_EQ(old_ticks, 2);
+    EXPECT_EQ(new_ticks, 1);
 }
