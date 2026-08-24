@@ -425,7 +425,7 @@ namespace iv::test {
             .introspection = loaded_graph.introspection,
             .dependencies = loaded_graph.dependencies,
             .module_refs = loaded_graph.module_refs,
-            .canonical_builder = *loaded_graph.canonical_builder,
+            .root = loaded_graph.root,
         };
     }
 
@@ -444,7 +444,7 @@ namespace iv::test {
             .introspection = std::move(introspection),
             .dependencies = std::move(dependencies),
             .module_refs = {},
-            .canonical_builder = {},
+            .root = {},
         };
     }
 
