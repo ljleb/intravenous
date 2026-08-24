@@ -32,10 +32,17 @@ function(iv_add_runtime_module target)
         message(FATAL_ERROR "iv_add_runtime_module(${target}) requires IV_MODULE_EXPORT_FILE")
     endif()
 
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+        message(FATAL_ERROR
+            "IV modules require GCC 16 or newer for C++26 reflection; configured compiler is "
+            "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER})")
+    endif()
+
     iv_configure_iv_module_shared_import()
 
     add_library(${target}__compile_settings INTERFACE)
-    target_compile_features(${target}__compile_settings INTERFACE cxx_std_23)
+    target_compile_features(${target}__compile_settings INTERFACE cxx_std_26)
+    target_compile_options(${target}__compile_settings INTERFACE -freflection)
     target_include_directories(${target}__compile_settings INTERFACE
         ${IV_INCLUDE_DIR}
         ${IV_MODULE_SOURCE_DIR}
@@ -49,19 +56,7 @@ function(iv_add_runtime_module target)
     endif()
     target_include_directories(${target}__compile_settings SYSTEM INTERFACE ${IV_THIRD_PARTY_INCLUDE_DIR})
 
-    if(MSVC)
-        target_compile_options(${target}__compile_settings INTERFACE /W4 /permissive-)
-    else()
-        target_compile_options(${target}__compile_settings INTERFACE -Wall -Wextra -Wpedantic)
-        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            target_compile_options(${target}__compile_settings INTERFACE
-                -Wno-unused-comparison
-                -Wno-c2y-extensions
-                # IV entry sources are definition-bearing includes consumed by
-                # generated code, not standalone translation units.
-                -Wno-unused-function)
-        endif()
-    endif()
+    target_compile_options(${target}__compile_settings INTERFACE -Wall -Wextra -Wpedantic)
 
     if(IVM_ENABLE_JUCE AND DEFINED IV_CORE_ENABLE_JUCE_VST AND IV_CORE_ENABLE_JUCE_VST)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=1 JUCE_PLUGINHOST_VST3=1)
@@ -87,7 +82,7 @@ function(iv_add_runtime_module target)
 
     add_library(${target} SHARED ${IV_MODULE_EXPORT_FILE} ${IVM_SOURCES})
     set_target_properties(${target} PROPERTIES
-        CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+        CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES
         OUTPUT_NAME ${IV_MODULE_OUTPUT_NAME}
         RUNTIME_OUTPUT_DIRECTORY ${IV_MODULE_OUTPUT_DIR}
