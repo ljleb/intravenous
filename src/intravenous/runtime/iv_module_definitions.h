@@ -1,7 +1,7 @@
 #pragma once
 
+#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/graph/build_types.h>
-#include <intravenous/graph/builder.h>
 #include <intravenous/module/dependency.h>
 
 #include <filesystem>
@@ -32,7 +32,7 @@ struct IvModuleDefinition {
     GraphIntrospectionMetadata introspection{};
     std::vector<ModuleDependency> dependencies{};
     std::vector<ModuleRef> module_refs{};
-    GraphBuilder const *canonical_builder = nullptr;
+    WeakTypeErasedNode root{};
 };
 
 struct IvModuleDefinitionsChanged {
@@ -58,7 +58,6 @@ public:
     struct DefinitionState {
         std::vector<ModuleRef> module_refs{};
         IvModuleDefinition snapshot{};
-        GraphBuilder canonical_builder{};
     };
 
 private:
@@ -84,7 +83,5 @@ public:
     void seed_loaded_definition(IvModuleReloadedDefinition loaded_definition);
 
     [[nodiscard]] std::vector<IvModuleDefinition> loaded_definitions() const;
-    [[nodiscard]] GraphBuilder const *builder_for_definition(
-        std::string const &definition_id) const;
 };
 } // namespace iv
