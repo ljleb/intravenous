@@ -21,7 +21,7 @@ extern "C" {
     };
     using iv_get_module_descriptor_fn_v2 = iv_module_descriptor_v2 const* (*)();
 
-    using iv_module_create_root_fn = iv::WeakTypeErasedNode (*)();
+    using iv_module_graph_fn = iv::WeakTypeErasedNode (*)();
 }
 
 #if defined(_WIN32)
@@ -32,7 +32,7 @@ extern "C" {
 
 namespace iv::details {
     template<auto Main>
-    consteval Graph generated_module_graph()
+    consteval Graph generated_module_graph_value()
     {
         static_assert(std::invocable<decltype(Main), GraphBuilder&>,
             "iv_module.json main must name void(GraphBuilder&)");
@@ -45,9 +45,9 @@ namespace iv::details {
     }
 
     template<auto Main>
-    WeakTypeErasedNode generated_module_create_root() noexcept
+    WeakTypeErasedNode generated_module_graph() noexcept
     {
-        static constexpr Graph graph = generated_module_graph<Main>();
+        static constexpr Graph graph = generated_module_graph_value<Main>();
         return WeakTypeErasedNode(graph);
     }
 
