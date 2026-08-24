@@ -21,9 +21,9 @@ extern "C" {
     };
     using iv_get_module_descriptor_fn_v2 = iv_module_descriptor_v2 const* (*)();
 
-    // The executable module ABI exposes only the module-owned weak DSP node.
+    // The executable module ABI exposes only the non-owning DSP node facade.
     // The concrete compiled graph remains an implementation detail of the DSO.
-    using iv_module_graph_fn = iv::WeakTypeErasedNode const* (*)();
+    using iv_module_graph_fn = iv::WeakTypeErasedNode (*)();
 }
 
 #if defined(_WIN32)
@@ -47,11 +47,10 @@ namespace iv::details {
     }
 
     template<auto Main>
-    WeakTypeErasedNode const* generated_module_graph() noexcept
+    WeakTypeErasedNode generated_module_graph() noexcept
     {
         static constexpr Graph graph = generated_module_graph_value<Main>();
-        static const WeakTypeErasedNode root(graph);
-        return &root;
+        return WeakTypeErasedNode(graph);
     }
 
     template<auto Main>
