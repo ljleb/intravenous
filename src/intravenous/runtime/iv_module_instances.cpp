@@ -140,7 +140,7 @@ void IvModuleInstances::remove_instance(std::string const &instance_id)
             builders_diff.deleted_instance_ids.push_back(instance_id);
         }
         realized_module_refs_by_id.erase(instance_id);
-        realized_builders_by_id.erase(instance_id);
+        realized_roots_by_id.erase(instance_id);
 
         bool still_required = false;
         for (auto const &entry : desired_instances_by_id) {
@@ -182,7 +182,6 @@ void IvModuleInstances::remove_instance(std::string const &instance_id)
             iv_runtime_iv_module_instances_list_changed_event,
             list_instances());
     }
-
 }
 
 void IvModuleInstances::set_default_silence_ttl_samples(
@@ -234,11 +233,11 @@ void IvModuleInstances::update_instances(std::vector<Update> updates)
                 if (realized != realized_instances_by_id.end()) {
                     realized->second.default_silence_ttl_samples =
                         update.default_silence_ttl_samples;
-                    auto builder_it = realized_builders_by_id.find(update.instance_id);
-                    if (builder_it != realized_builders_by_id.end()) {
+                    auto root_it = realized_roots_by_id.find(update.instance_id);
+                    if (root_it != realized_roots_by_id.end()) {
                         builders_diff.updated.push_back(IvModuleInstanceBuilderRef{
                             .instance = &realized->second,
-                            .builder = &builder_it->second,
+                            .root = root_it->second,
                             .module_refs = realized_module_refs_by_id[update.instance_id],
                             .default_silence_ttl_samples =
                                 update.default_silence_ttl_samples,
@@ -358,67 +357,44 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
     IvModuleInstanceBuildersChanged builders_diff{};
     bool list_changed = false;
 
+    auto const realize_definition = [&](IvModuleDefinition const &definition) {
+        for (auto const &entry : desired_instances_by_id) {
+            if (entry.second.definition_id != definition.definition_id) {
+                continue;
+            }
+            auto const is_new_instance =
+                !realized_instances_by_id.contains(entry.second.instance_id);
+            auto instance = make_instance_from_definition(
+                definition,
+                entry.second.instance_id,
+                entry.second.display_name,
+                entry.second.default_silence_ttl_samples);
+            auto &stored_instance = realized_instances_by_id[entry.second.instance_id];
+            stored_instance = instance;
+            realized_module_refs_by_id[entry.second.instance_id] = definition.module_refs;
+            realized_roots_by_id[entry.second.instance_id] = definition.root;
+            (is_new_instance ? instance_diff.created : instance_diff.updated)
+                .push_back(std::move(instance));
+            auto root_ref = IvModuleInstanceBuilderRef{
+                .instance = &stored_instance,
+                .root = definition.root,
+                .module_refs = definition.module_refs,
+                .default_silence_ttl_samples =
+                    entry.second.default_silence_ttl_samples,
+            };
+            (is_new_instance ? builders_diff.created : builders_diff.updated)
+                .push_back(std::move(root_ref));
+            list_changed = true;
+        }
+    };
+
     {
         std::scoped_lock lock(mutex);
         for (auto const &definition : diff.created) {
-            for (auto const &entry : desired_instances_by_id) {
-                if (entry.second.definition_id != definition.definition_id) {
-                    continue;
-                }
-                auto const is_new_instance = !realized_instances_by_id.contains(entry.second.instance_id);
-                auto instance = make_instance_from_definition(
-                    definition,
-                    entry.second.instance_id,
-                    entry.second.display_name,
-                    entry.second.default_silence_ttl_samples);
-                auto &stored_instance = realized_instances_by_id[entry.second.instance_id];
-                stored_instance = instance;
-                realized_module_refs_by_id[entry.second.instance_id] = definition.module_refs;
-                auto &stored_builder = realized_builders_by_id[entry.second.instance_id];
-                stored_builder = definition.canonical_builder != nullptr
-                    ? *definition.canonical_builder
-                    : GraphBuilder{};
-                (is_new_instance ? instance_diff.created : instance_diff.updated).push_back(std::move(instance));
-                auto builder_ref = IvModuleInstanceBuilderRef{
-                    .instance = &stored_instance,
-                    .builder = &stored_builder,
-                    .module_refs = definition.module_refs,
-                    .default_silence_ttl_samples =
-                        entry.second.default_silence_ttl_samples,
-                };
-                (is_new_instance ? builders_diff.created : builders_diff.updated).push_back(std::move(builder_ref));
-                list_changed = true;
-            }
+            realize_definition(definition);
         }
         for (auto const &definition : diff.updated) {
-            for (auto const &entry : desired_instances_by_id) {
-                if (entry.second.definition_id != definition.definition_id) {
-                    continue;
-                }
-                auto const is_new_instance = !realized_instances_by_id.contains(entry.second.instance_id);
-                auto instance = make_instance_from_definition(
-                    definition,
-                    entry.second.instance_id,
-                    entry.second.display_name,
-                    entry.second.default_silence_ttl_samples);
-                auto &stored_instance = realized_instances_by_id[entry.second.instance_id];
-                stored_instance = instance;
-                realized_module_refs_by_id[entry.second.instance_id] = definition.module_refs;
-                auto &stored_builder = realized_builders_by_id[entry.second.instance_id];
-                stored_builder = definition.canonical_builder != nullptr
-                    ? *definition.canonical_builder
-                    : GraphBuilder{};
-                (is_new_instance ? instance_diff.created : instance_diff.updated).push_back(std::move(instance));
-                auto builder_ref = IvModuleInstanceBuilderRef{
-                    .instance = &stored_instance,
-                    .builder = &stored_builder,
-                    .module_refs = definition.module_refs,
-                    .default_silence_ttl_samples =
-                        entry.second.default_silence_ttl_samples,
-                };
-                (is_new_instance ? builders_diff.created : builders_diff.updated).push_back(std::move(builder_ref));
-                list_changed = true;
-            }
+            realize_definition(definition);
         }
         for (auto const &definition_id : diff.deleted_definition_ids) {
             for (auto it = realized_instances_by_id.begin();
@@ -427,7 +403,7 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
                     instance_diff.deleted_instance_ids.push_back(it->second.instance_id);
                     builders_diff.deleted_instance_ids.push_back(it->second.instance_id);
                     realized_module_refs_by_id.erase(it->second.instance_id);
-                    realized_builders_by_id.erase(it->second.instance_id);
+                    realized_roots_by_id.erase(it->second.instance_id);
                     it = realized_instances_by_id.erase(it);
                     list_changed = true;
                 } else {
@@ -485,9 +461,9 @@ void IvModuleInstances::handle_iv_module_definitions_changed(
             << "iv instances realized: created=" << instance_diff.created.size()
             << " updated=" << instance_diff.updated.size()
             << " deleted=" << instance_diff.deleted_instance_ids.size()
-            << " buildersCreated=" << builders_diff.created.size()
-            << " buildersUpdated=" << builders_diff.updated.size()
-            << " buildersDeleted=" << builders_diff.deleted_instance_ids.size()
+            << " rootsCreated=" << builders_diff.created.size()
+            << " rootsUpdated=" << builders_diff.updated.size()
+            << " rootsDeleted=" << builders_diff.deleted_instance_ids.size()
             << " totalInstances=" << instances.size()
             << " realizedInstances=" << realized_count;
         emit_debug_message(message.str());
