@@ -169,7 +169,8 @@ public:
       size_t detach_id_offset = 0) const;
 
 private:
-  SamplePortRef detach_sample_port(SamplePortRef const&, size_t loop_extra_latency);
+  constexpr SamplePortRef detach_sample_port(
+      SamplePortRef const&, size_t loop_extra_latency);
   constexpr void record_authored_sample_connection(
       NodeBundlePortId, SamplePortRef const&);
   void record_authored_sample_connection(SampleInputChannelId, SamplePortRef const&);
@@ -194,11 +195,11 @@ private:
   template<class T>
     requires std::is_arithmetic_v<std::remove_cvref_t<T>> ||
              std::is_same_v<std::remove_cvref_t<T>, Sample>
-  SamplePortRef lift_to_sample_port(T value) {
+  constexpr SamplePortRef lift_to_sample_port(T value) {
     auto constant = node<Constant>(static_cast<Sample>(value));
     return static_cast<SamplePortRef>(constant);
   }
-  SamplePortRef lift_to_sample_port(NamedRef const& ref);
+  constexpr SamplePortRef lift_to_sample_port(NamedRef const& ref);
 };
 
 constexpr void GraphBuilderPublicPorts::define_sample_outputs(
@@ -400,6 +401,62 @@ constexpr auto GraphBuilder::node(Args&&... args) {
         std::remove_cvref_t<Node>,
         ChannelType> {};
   }
+}
+
+constexpr SamplePortRef SamplePortRef::detach(size_t latency) const {
+  if (!graph_builder)
+    details::error("attempted to detach an empty sample port");
+  return graph_builder->detach_sample_port(*this, latency);
+}
+
+constexpr SamplePortRef GraphBuilder::detach_sample_port(
+    SamplePortRef const& source, size_t latency) {
+  if (!source.graph_builder || source.graph_builder != this)
+    details::error("cannot detach a sample port from another builder");
+  if (source.channels.empty())
+    details::error("cannot detach a sample port with no semantic channels");
+  if (_detach.reader_output_exists(source.channel_type, source.channels))
+    return source;
+  if (auto existing = _detach.info_for_source(source.channel_type, source.channels)) {
+    if (existing->loop_extra_latency != latency)
+      details::error("detach loop extra latency conflict");
+    return SamplePortRef(
+        *this, {existing->reader_bundle, PortKind::sample, 0});
+  }
+  if (latency < 1)
+    details::error("detach loop extra latency must be at least 1");
+  auto id = _detach.allocate_detach_id();
+  auto writer = node<DetachWriterNode>(id, latency);
+  record_authored_sample_connection(
+      {writer.node_bundle_handle(), PortKind::sample, 0}, source);
+  auto reader = node<DetachReaderNode>(id, latency);
+  SamplePortRef detached = static_cast<SamplePortRef>(reader);
+  if (detached.channel_type != ChannelTypeId::mono ||
+      detached.channels.size() != 1)
+    details::error("detach reader must expose exactly one mono sample channel");
+  _detach.record_detached_source({
+      .detach_id = id,
+      .source_type = source.channel_type,
+      .source_channels = source.channels,
+      .writer_bundle = writer.node_bundle_handle(),
+      .reader_bundle = reader.node_bundle_handle(),
+      .reader_channel = detached.channels.front(),
+      .loop_extra_latency = latency,
+  });
+  return detached;
+}
+
+constexpr SamplePortRef GraphBuilder::lift_to_sample_port(
+    NamedRef const& ref) {
+  return std::visit(
+      [&](auto const& value) -> SamplePortRef {
+        using T = std::remove_cvref_t<decltype(value)>;
+        if constexpr (std::same_as<T, EventPortRef>)
+          details::error("expected sample value, got event");
+        else
+          return lift_to_sample_port(value);
+      },
+      ref.value);
 }
 
 template<class ChannelType, class... Refs>
