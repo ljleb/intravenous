@@ -1,6 +1,5 @@
 #include <intravenous/runtime/iv_module_reload.h>
 
-#include <intravenous/graph/builder.h>
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
 
@@ -119,7 +118,7 @@ IvModuleReloadResults IvModuleReload::reload_declarations(
                 .introspection = loaded_definition.introspection,
                 .dependencies = loaded_definition.dependencies,
                 .module_refs = loaded_definition.module_refs,
-                .canonical_builder = *loaded_definition.canonical_builder,
+                .root = loaded_definition.root,
             };
             {
                 std::scoped_lock lock(mutex);
