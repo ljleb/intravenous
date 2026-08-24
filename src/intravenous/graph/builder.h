@@ -7,6 +7,7 @@
 #include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/finalize.h>
 #include <intravenous/graph/builder/identity.h>
+#include <intravenous/graph/builder/lowering.h>
 #include <intravenous/graph/builder/node_refs.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
@@ -281,6 +282,27 @@ constexpr GraphBuilder::GraphBuilder(GraphBuilderIdentity identity)
 constexpr GraphBuilder::GraphBuilder()
     : GraphBuilder(GraphBuilderIdentity("root"))
 {}
+
+consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_root_node(
+    size_t detach_offset) const
+{
+  auto lowered=GraphBuilderLowering::lower(
+      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach);
+  return GraphBuilderFinalizer::build_root_node(
+      _identity,lowered,_node_bundles,_virtual_nodes,_public_ports,
+      detach_offset);
+}
+
+consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_execution_root_node(
+    size_t detach_offset) const
+{
+  auto lowered=GraphBuilderLowering::lower(
+      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach,
+      true);
+  return GraphBuilderFinalizer::build_root_node(
+      _identity,lowered,_node_bundles,_virtual_nodes,_public_ports,
+      detach_offset,true);
+}
 
 constexpr SamplePortRef::SamplePortRef(
     GraphBuilder& builder,
