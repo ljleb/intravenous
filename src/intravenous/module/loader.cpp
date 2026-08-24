@@ -647,7 +647,11 @@ class ModuleLoader::Impl {
                   << root.manifest.id
                   << "\", &iv::details::generated_module_build_v2<&"
                   << root.manifest.main
-                  << ">};\n  return &descriptor;\n}\n";
+                  << ">};\n  return &descriptor;\n}\n"
+                  << "extern \"C\" IV_MODULE_EXPORT iv::Graph const* iv_module_graph() {\n"
+                  << "  return iv::details::generated_module_graph<&"
+                  << root.manifest.main
+                  << ">();\n}\n";
         write_text_if_different(export_file, export_tu.str());
 
         if (!std::filesystem::exists(custom_cmake)) {
@@ -835,6 +839,12 @@ public:
             throw std::runtime_error(
                 "module '" + artifact.string() + "' does not export iv_get_module_descriptor_v2");
         }
+        auto graph = reinterpret_cast<iv_module_graph_fn>(
+            library->symbol("iv_module_graph"));
+        if (!graph) {
+            throw std::runtime_error(
+                "module '" + artifact.string() + "' does not export iv_module_graph");
+        }
         auto descriptor = getter();
         if (!descriptor || descriptor->abi_version != IV_MODULE_ABI_VERSION_V2 ||
             !descriptor->build) {
@@ -844,6 +854,11 @@ public:
         if (!descriptor->id || root.manifest.id != descriptor->id) {
             throw std::runtime_error(
                 "module '" + artifact.string() + "' exported unexpected id");
+        }
+        auto const *graph_value = graph();
+        if (!graph_value) {
+            throw std::runtime_error(
+                "module '" + artifact.string() + "' exported a null graph");
         }
 
         auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
@@ -880,7 +895,7 @@ public:
         std::vector<ModuleRef> refs{binary};
         return LoadedDefinition(
             std::move(refs),
-            std::make_unique<GraphBuilder>(std::move(builder)),
+            WeakTypeErasedNode(*graph_value),
             std::move(introspection),
             root.module_dir,
             root.manifest.id,
@@ -888,34 +903,15 @@ public:
     }
 };
 
-ModuleLoader::LoadedGraph::LoadedGraph(
-    TypeErasedNode root_,
-    std::vector<ModuleRef> refs,
-    std::unique_ptr<GraphBuilder> builder,
-    GraphIntrospectionMetadata introspection_,
-    GraphBuildMetadata build_metadata,
-    std::filesystem::path path,
-    std::string id,
-    std::vector<ModuleDependency> deps)
-    : module_refs(std::move(refs)),
-      root(std::move(root_)),
-      canonical_builder(std::move(builder)),
-      introspection(std::move(introspection_)),
-      graph_build_metadata(std::move(build_metadata)),
-      module_path(std::move(path)),
-      module_id(std::move(id)),
-      dependencies(std::move(deps))
-{}
-
 ModuleLoader::LoadedDefinition::LoadedDefinition(
     std::vector<ModuleRef> refs,
-    std::unique_ptr<GraphBuilder> builder,
+    WeakTypeErasedNode root_,
     GraphIntrospectionMetadata introspection_,
     std::filesystem::path path,
     std::string id,
     std::vector<ModuleDependency> deps)
     : module_refs(std::move(refs)),
-      canonical_builder(std::move(builder)),
+      root(root_),
       introspection(std::move(introspection_)),
       module_path(std::move(path)),
       module_id(std::move(id)),
