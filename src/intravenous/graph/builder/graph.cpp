@@ -25,10 +25,6 @@ SamplePortRef SamplePortRef::select_channel(size_t channel) const {
   if (channel >= channels.size()) details::error("sample channel ordinal is out of bounds");
   return SamplePortRef(*graph_builder, ChannelTypeId::mono, {channels[channel]});
 }
-SamplePortRef SamplePortRef::detach(size_t latency) const {
-  if (!graph_builder) details::error("attempted to detach an empty sample port");
-  return graph_builder->detach_sample_port(*this, latency);
-}
 std::string SamplePortRef::to_string() const {
   if (!graph_builder) return "empty sample port";
   if (auto logical = graph_builder->_node_bundles.sample_output_port_for_channels(channel_type, channels))
@@ -132,23 +128,6 @@ void GraphBuilder::event_outputs(std::span<EventOutputRefConfig const> refs){_pu
 void GraphBuilder::outputs(std::initializer_list<NamedRef> refs){outputs(std::span<NamedRef const>(refs.begin(),refs.size()));}
 void GraphBuilder::outputs(std::span<OutputRefConfig const> refs){_public_ports.define_sample_outputs(*this,_node_bundles,_identity,refs);}
 void GraphBuilder::outputs(std::span<NamedRef const> refs){_public_ports.define_sample_outputs_from_named_refs(*this,_node_bundles,_identity,[&](auto&&v){return lift_to_sample_port(std::forward<decltype(v)>(v));},refs);}
-SamplePortRef GraphBuilder::detach_sample_port(SamplePortRef const& source,size_t latency) {
-  if(!source.graph_builder||source.graph_builder!=this)details::error("cannot detach a sample port from another builder");
-  if(source.channels.empty())details::error("cannot detach a sample port with no semantic channels");
-  if(_detach.reader_output_exists(source.channel_type,source.channels))return source;
-  if(auto existing=_detach.info_for_source(source.channel_type,source.channels)){
-    if(existing->loop_extra_latency!=latency)details::error("detach loop extra latency conflict");
-    return SamplePortRef(*this,{existing->reader_bundle,PortKind::sample,0});
-  }
-  if(latency<1)details::error("detach loop extra latency must be at least 1");
-  auto id=_detach.allocate_detach_id(); auto writer=node<DetachWriterNode>(id,latency);
-  record_authored_sample_connection({writer.node_bundle_handle(),PortKind::sample,0},source);
-  auto reader=node<DetachReaderNode>(id,latency); SamplePortRef detached=static_cast<SamplePortRef>(reader);
-  if(detached.channel_type!=ChannelTypeId::mono||detached.channels.size()!=1)details::error("detach reader must expose exactly one mono sample channel");
-  _detach.record_detached_source({.detach_id=id,.source_type=source.channel_type,.source_channels=source.channels,
-      .writer_bundle=writer.node_bundle_handle(),.reader_bundle=reader.node_bundle_handle(),.reader_channel=detached.channels.front(),.loop_extra_latency=latency});
-  return detached;
-}
 
 GraphBuilder::VacantInputs GraphBuilder::vacant_inputs() const{return _connections.collect_vacant_inputs(_node_bundles,_virtual_nodes);}
 GraphBuilder::VirtualInputs GraphBuilder::virtual_inputs() const{return _connections.collect_virtual_inputs(_node_bundles,_virtual_nodes);}
@@ -222,7 +201,6 @@ size_t GraphBuilder::event_port_index(NodeBundleHandle h,bool inputs,std::string
   if(!match)details::error("NodeBundle port name '"+std::string(n)+"' does not exist");
   return *match;
 }
-SamplePortRef GraphBuilder::lift_to_sample_port(NamedRef const& ref){return std::visit([&](auto const& v)->SamplePortRef{using T=std::remove_cvref_t<decltype(v)>;if constexpr(std::same_as<T,EventPortRef>)details::error("expected sample value, got event");else return lift_to_sample_port(v);},ref.value);}
 
 GraphIntrospectionMetadata GraphBuilder::build_metadata(size_t detach_offset) const {
   auto lowered=GraphBuilderLowering::lower(
