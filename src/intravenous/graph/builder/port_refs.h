@@ -45,7 +45,7 @@ struct SamplePortRef {
   SamplePortRef& operator=(SamplePortRef&&) noexcept = default;
   SamplePortRef _clone_handle() const;
   SamplePortRef select_channel(size_t channel) const;
-  SamplePortRef detach(size_t loop_extra_latency = 1) const;
+  constexpr SamplePortRef detach(size_t loop_extra_latency = 1) const;
   std::string to_string() const;
 };
 
