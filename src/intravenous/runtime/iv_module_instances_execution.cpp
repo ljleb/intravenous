@@ -1,24 +1,15 @@
 #include <intravenous/runtime/iv_module_instances_execution.h>
 
 namespace iv {
-namespace {
-GraphBuilder::RootNodeBuildResult build_execution_root(GraphBuilder &builder)
-{
-    return builder.build_execution_root_node();
-}
-}
-
 std::shared_ptr<BlockNodeExecutor> IvModuleInstancesExecution::make_executor(
-    GraphBuilder &builder,
-    IvModuleInstance const& instance,
+    WeakTypeErasedNode root,
     size_t block_size,
     size_t sample_rate,
     std::optional<size_t> default_silence_ttl_samples)
 {
-    (void)instance;
     return std::make_shared<BlockNodeExecutor>(
         BlockNodeExecutor::create(
-            TypeErasedNode(build_execution_root(builder).graph),
+            TypeErasedNode(root),
             block_size,
             {},
             default_silence_ttl_samples,
@@ -49,12 +40,11 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
     }
 
     for (auto const &created : diff.created) {
-        if (!created.instance || !created.builder) {
+        if (!created.instance || !created.root) {
             continue;
         }
         auto executor = make_executor(
-            *created.builder,
-            *created.instance,
+            created.root,
             block_size_,
             sample_rate_,
             created.default_silence_ttl_samples);
@@ -63,7 +53,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             std::scoped_lock lock(mutex_);
             auto &state = instances_by_id_[created.instance->instance_id];
             state.instance = created.instance;
-            state.builder = created.builder;
+            state.root = created.root;
             state.default_silence_ttl_samples =
                 created.default_silence_ttl_samples;
             state.module_refs = created.module_refs;
@@ -91,7 +81,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
     }
 
     for (auto const &changed : diff.updated) {
-        if (!changed.instance || !changed.builder) {
+        if (!changed.instance || !changed.root) {
             continue;
         }
         std::shared_ptr<BlockNodeExecutor> active_executor;
@@ -101,7 +91,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             if (it != instances_by_id_.end()) active_executor = it->second.executor;
         }
 
-        auto root = TypeErasedNode(build_execution_root(*changed.builder).graph);
+        auto root = TypeErasedNode(changed.root);
         std::optional<BlockNodeExecutor::PreparedReload> prepared;
         std::shared_ptr<BlockNodeExecutor> replacement;
         if (active_executor) {
@@ -131,7 +121,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
                 state.pending_reload.emplace(InstanceTaskState::PendingReload{
                     .module_refs = changed.module_refs,
                     .instance = changed.instance,
-                    .builder = changed.builder,
+                    .root = changed.root,
                     .default_silence_ttl_samples =
                         changed.default_silence_ttl_samples,
                     .prepared = std::move(*prepared),
@@ -139,7 +129,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             } else {
                 state.executor = std::move(replacement);
                 state.instance = changed.instance;
-                state.builder = changed.builder;
+                state.root = changed.root;
                 state.default_silence_ttl_samples =
                     changed.default_silence_ttl_samples;
                 state.module_refs = changed.module_refs;
@@ -226,7 +216,7 @@ void IvModuleInstancesExecution::commit_prepared_reloads(
             });
             state.module_refs = std::move(pending.module_refs);
             state.instance = pending.instance;
-            state.builder = pending.builder;
+            state.root = pending.root;
             state.default_silence_ttl_samples =
                 pending.default_silence_ttl_samples;
             state.active_context = std::move(state.pending_context);
