@@ -1,3 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(iv_clang_source_span_rewriter LANGUAGES CXX)
+
 include(FetchContent)
 
 set(_iv_default_llvm_tooling_version "22.1.3")
