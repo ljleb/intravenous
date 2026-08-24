@@ -1,36 +1,6 @@
 #include <intravenous/graph/builder/stored_node.h>
 
 namespace iv {
-std::vector<InputConfig> const& NodePorts::inputs() const
-{
-    return sample_inputs;
-}
-
-std::vector<OutputConfig> const& NodePorts::outputs() const
-{
-    return sample_outputs;
-}
-
-std::vector<EventInputConfig> const& NodePorts::event_inputs() const
-{
-    return event_input_configs;
-}
-
-std::vector<EventOutputConfig> const& NodePorts::event_outputs() const
-{
-    return event_output_configs;
-}
-
-bool NodeMaterialization::is_placeholder() const
-{
-    return !factory;
-}
-
-TypeErasedNode NodeMaterialization::make(size_t detach_id_offset) const
-{
-    return factory(detach_id_offset);
-}
-
 bool LoweredSubgraphBinding::active() const
 {
     return count != 0

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/graph/builder/node_bundles.h>
+#include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/compiler.h>
 #include <intravenous/channel_ports.h>
 
@@ -36,7 +36,8 @@ struct SamplePortRef {
   SamplePortRef() = default;
   SamplePortRef(SamplePortRef const&) = default;
   SamplePortRef(SamplePortRef&&) noexcept = default;
-  explicit SamplePortRef(GraphBuilder&, NodeBundlePortId bundle_port);
+  constexpr explicit SamplePortRef(
+      GraphBuilder&, NodeBundlePortId bundle_port);
   explicit SamplePortRef(GraphBuilder&, ChannelTypeId,
                          std::vector<SampleOutputChannelId>);
 

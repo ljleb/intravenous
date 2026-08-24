@@ -1,9 +1,9 @@
 #include <intravenous/graph/builder/metadata.h>
 
-#include <intravenous/graph/builder/connections.h>
+#include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/names.h>
-#include <intravenous/graph/builder/node_bundles.h>
-#include <intravenous/graph/builder/virtual_nodes.h>
+#include <intravenous/graph/builder/node_bundles.hpp>
+#include <intravenous/graph/builder/virtual_nodes.hpp>
 
 namespace iv::details {
 
@@ -45,7 +45,7 @@ source_spans_for(std::span<VirtualConcreteNode const *const> nodes) {
   return spans;
 }
 
-VirtualMetadataBuildResult
+constexpr VirtualMetadataBuildResult
 build_virtual_metadata(PreparedGraph const &g,
                        std::span<LoweredSubgraphSpec const> lowered_scopes) {
   auto sample_input_connected = [&](size_t node, size_t port) {
@@ -78,7 +78,7 @@ build_virtual_metadata(PreparedGraph const &g,
     concrete.id = g.node_ids[node_i];
     concrete.kind = node_i < g.node_kinds.size()
                         ? g.node_kinds[node_i]
-                        : demangle_type_name(g.nodes[node_i].type_name());
+                        : std::string(g.nodes[node_i].type_name);
     concrete.construction_order = node_i < g.node_construction_order.size()
                                       ? g.node_construction_order[node_i]
                                       : node_i;
@@ -347,7 +347,7 @@ build_virtual_metadata(PreparedGraph const &g,
               return a.backing_node_ids < b.backing_node_ids;
             });
 
-  std::unordered_map<std::string, std::vector<std::string>>
+  std::flat_map<std::string, std::vector<std::string>>
       virtual_node_ids_by_backing_node_id;
   for (auto const &virtual_node : virtual_nodes) {
     for (auto const &backing_node_id : virtual_node.backing_node_ids) {
@@ -355,7 +355,7 @@ build_virtual_metadata(PreparedGraph const &g,
           virtual_node.id);
     }
   }
-  for (auto &[_, virtual_ids] : virtual_node_ids_by_backing_node_id) {
+  for (auto &&[_, virtual_ids] : virtual_node_ids_by_backing_node_id) {
     std::sort(virtual_ids.begin(), virtual_ids.end());
     virtual_ids.erase(std::unique(virtual_ids.begin(), virtual_ids.end()),
                       virtual_ids.end());

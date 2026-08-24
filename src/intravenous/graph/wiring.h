@@ -4,12 +4,26 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace iv {
+    namespace wiring_details {
+        constexpr void append_decimal(std::string& string, size_t value)
+        {
+            char digits[std::numeric_limits<size_t>::digits10 + 2] {};
+            size_t begin = sizeof(digits);
+            do {
+                digits[--begin] = static_cast<char>('0' + value % 10);
+                value /= 10;
+            } while (value != 0);
+            string.append(digits + begin, digits + sizeof(digits));
+        }
+    }
+
     struct PortBufferPlan {
         size_t connection_max_block_size;
         size_t corrected_latency;
@@ -17,67 +31,67 @@ namespace iv {
         size_t output_history;
     };
 
-    inline std::string port_data_export_id(std::string_view node_id)
+    constexpr std::string port_data_export_id(std::string_view node_id)
     {
         std::string id = "port_data:";
         id += node_id;
         return id;
     }
 
-    inline std::string port_data_export_id(std::string_view node_id, size_t port_index)
+    constexpr std::string port_data_export_id(std::string_view node_id, size_t port_index)
     {
         std::string id = port_data_export_id(node_id);
         id += ":";
-        id += std::to_string(port_index);
+        wiring_details::append_decimal(id, port_index);
         return id;
     }
 
-    inline std::string graph_port_data_export_id(std::string_view graph_id)
+    constexpr std::string graph_port_data_export_id(std::string_view graph_id)
     {
         std::string id = "graph_port_data:";
         id += graph_id;
         return id;
     }
 
-    inline std::string graph_port_data_export_id(std::string_view graph_id, size_t port_index)
+    constexpr std::string graph_port_data_export_id(std::string_view graph_id, size_t port_index)
     {
         std::string id = graph_port_data_export_id(graph_id);
         id += ":";
-        id += std::to_string(port_index);
+        wiring_details::append_decimal(id, port_index);
         return id;
     }
 
-    inline std::string event_port_data_export_id(std::string_view node_id)
+    constexpr std::string event_port_data_export_id(std::string_view node_id)
     {
         std::string id = "event_port_data:";
         id += node_id;
         return id;
     }
 
-    inline std::string event_port_data_export_id(std::string_view node_id, size_t port_index)
+    constexpr std::string event_port_data_export_id(std::string_view node_id, size_t port_index)
     {
         std::string id = event_port_data_export_id(node_id);
         id += ":";
-        id += std::to_string(port_index);
+        wiring_details::append_decimal(id, port_index);
         return id;
     }
 
-    inline std::string graph_event_port_data_export_id(std::string_view graph_id)
+    constexpr std::string graph_event_port_data_export_id(std::string_view graph_id)
     {
         std::string id = "graph_event_port_data:";
         id += graph_id;
         return id;
     }
 
-    inline std::string graph_event_port_data_export_id(std::string_view graph_id, size_t port_index)
+    constexpr std::string graph_event_port_data_export_id(std::string_view graph_id, size_t port_index)
     {
         std::string id = graph_event_port_data_export_id(graph_id);
         id += ":";
-        id += std::to_string(port_index);
+        wiring_details::append_decimal(id, port_index);
         return id;
     }
 
-    inline std::string graph_dormancy_node_skip_export_id(std::string_view graph_id)
+    constexpr std::string graph_dormancy_node_skip_export_id(std::string_view graph_id)
     {
         std::string id = "graph_dormancy_node_skip:";
         id += graph_id;

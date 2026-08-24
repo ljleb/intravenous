@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <concepts>
+#include <compare>
 #include <cstdint>
 #include <array>
 #include <functional>
@@ -123,7 +124,7 @@ namespace iv {
             return steps[index];
         }
 
-        bool operator==(EventConversionPlan const&) const = default;
+        auto operator<=>(EventConversionPlan const&) const = default;
     };
 
     class EventConversionRegistry {

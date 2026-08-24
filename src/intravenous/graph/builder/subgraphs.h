@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/graph/builder/public_ports.h>
+#include <intravenous/graph/builder/public_ports.hpp>
 
 #include <initializer_list>
 #include <optional>

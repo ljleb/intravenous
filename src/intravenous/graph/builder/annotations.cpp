@@ -1,7 +1,7 @@
 #include <intravenous/graph/builder/annotations.h>
 
-#include <intravenous/graph/builder/node_bundles.h>
-#include <intravenous/graph/builder/virtual_nodes.h>
+#include <intravenous/graph/builder/node_bundles.hpp>
+#include <intravenous/graph/builder/virtual_nodes.hpp>
 
 #include <algorithm>
 

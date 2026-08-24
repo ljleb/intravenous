@@ -54,7 +54,7 @@ namespace iv {
             _virtual_declaration_id(declaration_identity),
             _allows_single_assignment(true)
         {}
-        explicit NodeRef(GraphBuilder& graph_builder, size_t index) :
+        constexpr explicit NodeRef(GraphBuilder& graph_builder, size_t index) :
             _graph_builder(&graph_builder),
             _index(index)
         {}
@@ -82,7 +82,7 @@ namespace iv {
                 return event_port(Name.view());
             }
         }
-        operator SamplePortRef() const;
+        constexpr operator SamplePortRef() const;
         size_t sample_input_count() const;
         size_t sample_output_count() const;
         size_t event_input_count() const;
@@ -135,7 +135,7 @@ namespace iv {
             return derived();
         }
 
-        Derived _clone_handle() const
+        constexpr Derived _clone_handle() const
         {
             if (!this->_graph_builder) {
                 return Derived{};
@@ -201,7 +201,7 @@ namespace iv {
             Base::operator=(std::move(rhs));
             return *this;
         }
-        NodePorts const& ports() const;
+        constexpr NodePorts const& ports() const;
 
         SamplePortRef operator[](size_t output_index) const;
         SamplePortRef operator[](std::string_view output_name) const;
@@ -225,10 +225,10 @@ namespace iv {
         EventPortRef event_port(size_t output_index) const;
         EventPortRef event_port(std::string_view output_name) const;
         EventPortRef event_port() const;
-        operator SamplePortRef() const;
+        constexpr operator SamplePortRef() const;
         template<class... Args>
         requires(details::node_call_enabled<NodeType, Args...>)
-        TypedNodeRef operator()(Args&&... args) const;
+        constexpr TypedNodeRef operator()(Args&&... args) const;
 
         template<class... Args>
         requires(!details::node_call_enabled<NodeType, Args...>)

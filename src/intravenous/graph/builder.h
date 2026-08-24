@@ -3,15 +3,15 @@
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/channel_ports.h>
 #include <intravenous/graph/builder/annotations.h>
-#include <intravenous/graph/builder/connections.h>
-#include <intravenous/graph/builder/detach.h>
+#include <intravenous/graph/builder/connections.hpp>
+#include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/finalize.h>
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_refs.h>
-#include <intravenous/graph/builder/node_bundles.h>
-#include <intravenous/graph/builder/public_ports.h>
+#include <intravenous/graph/builder/node_bundles.hpp>
+#include <intravenous/graph/builder/public_ports.hpp>
 #include <intravenous/graph/builder/subgraphs.h>
-#include <intravenous/graph/builder/virtual_nodes.h>
+#include <intravenous/graph/builder/virtual_nodes.hpp>
 
 #include <algorithm>
 #include <array>
@@ -70,7 +70,7 @@ class GraphBuilder {
   GraphBuilderAnnotations _annotations;
   GraphBuilderVirtualNodes _virtual_nodes;
 
-  explicit GraphBuilder(GraphBuilderIdentity identity);
+  constexpr explicit GraphBuilder(GraphBuilderIdentity identity);
   GraphBuilder derive_nested_builder();
   NodeRef embed_subgraph(GraphBuilder const& child, std::string_view kind = "Subgraph");
   PublicSampleInputRef input_named(std::string_view name, Sample default_value,
@@ -79,7 +79,7 @@ class GraphBuilder {
   PublicEventInputRef event_input_named(std::string_view name, EventTypeId type);
 
 public:
-  GraphBuilder();
+  constexpr GraphBuilder();
   PublicSampleInputRef input();
   template<fixed_string Name>
   PublicSampleInputRef input(Sample default_value = 0.0,
@@ -102,18 +102,21 @@ public:
   void annotate_public_event_output_source_info(std::span<SourceInfo const> infos);
 
   template<class Config>
-  static void validate_output_port_configs(std::span<Config const> configs,
-                                           std::string_view node_label,
-                                           std::string_view kind);
-  template<class Node, class... Args> details::node_ref_for_t<Node> node(Args&&... args);
-  template<class Node, class ChannelType, class... Args> auto node(Args&&... args);
+  static constexpr void validate_output_port_configs(
+      std::span<Config const> configs,
+      std::string_view node_label,
+      std::string_view kind);
+  template<class Node, class... Args>
+  constexpr details::node_ref_for_t<Node> node(Args&&... args);
+  template<class Node, class ChannelType, class... Args>
+  constexpr auto node(Args&&... args);
   template<class ChannelType, class... Refs> auto tile(Refs&&... refs);
   template<auto Module> NodeRef module(std::string_view kind = "Module");
 
   template<class... Refs> void event_outputs(Refs&&... refs);
   void event_outputs(std::span<EventOutputRefConfig const> refs);
   template<class Fn> NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph");
-  template<class... Refs> void outputs(Refs&&... refs);
+  template<class... Refs> constexpr void outputs(Refs&&... refs);
   void outputs(std::initializer_list<NamedRef> refs);
   void outputs(std::span<OutputRefConfig const> refs);
   void outputs(std::span<NamedRef const> refs);
@@ -150,7 +153,8 @@ public:
   GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
   std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
 
-  void connect_sample_input(NodeBundlePortId target, SamplePortRef source);
+  constexpr void connect_sample_input(
+      NodeBundlePortId target, SamplePortRef source);
   void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
   void connect_event_input(NodeBundlePortId target, EventPortRef source);
   bool sample_input_is_connected(NodeBundlePortId target) const;
@@ -162,22 +166,23 @@ public:
   GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
   RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
   RootNodeBuildResult build_execution_root_node(
-      std::shared_ptr<GraphRuntimeBindings> runtime_bindings = {},
       size_t detach_id_offset = 0) const;
 
 private:
   SamplePortRef detach_sample_port(SamplePortRef const&, size_t loop_extra_latency);
-  void record_authored_sample_connection(NodeBundlePortId, SamplePortRef const&);
+  constexpr void record_authored_sample_connection(
+      NodeBundlePortId, SamplePortRef const&);
   void record_authored_sample_connection(SampleInputChannelId, SamplePortRef const&);
   void record_authored_sample_connection(NodeBundlePortId, std::span<SamplePortRef const>);
   void record_authored_event_connection(NodeBundlePortId, EventPortRef const&);
-  SamplePortRef lift_to_sample_port(SamplePortRef const& sample_port);
-  SamplePortRef lift_to_sample_port(SamplePortRef&& sample_port);
+  constexpr SamplePortRef lift_to_sample_port(
+      SamplePortRef const& sample_port);
+  constexpr SamplePortRef lift_to_sample_port(SamplePortRef&& sample_port);
   template<class T>
     requires(!std::same_as<std::remove_cvref_t<T>, SamplePortRef> &&
              requires(std::remove_cvref_t<T> const& ref) { ref.node_ref(); } &&
              std::convertible_to<T, SamplePortRef>)
-  SamplePortRef lift_to_sample_port(T&& sample_port) {
+  constexpr SamplePortRef lift_to_sample_port(T&& sample_port) {
     return lift_to_sample_port(static_cast<SamplePortRef>(std::forward<T>(sample_port)));
   }
   template<class ChannelType, SampleStreamLayout Layout>
@@ -196,6 +201,70 @@ private:
   SamplePortRef lift_to_sample_port(NamedRef const& ref);
 };
 
+constexpr void GraphBuilderPublicPorts::define_sample_outputs(
+    GraphBuilder& builder, GraphBuilderNodeBundles& bundles,
+    GraphBuilderIdentity const& identity, std::span<OutputRefConfig const> refs) {
+  _last_sample_output_port_ordinals.clear();
+  bool require_names = refs.size() > 1;
+  for (size_t i = 0; i < refs.size(); ++i) {
+    auto const& ref = refs[i].ref; auto const& config = refs[i].config;
+    if (!ref.graph_builder) details::error("builder " + identity.value + ": outputs(...): empty SamplePortRef");
+    if (ref.graph_builder != &builder) details::error("builder " + identity.value + ": outputs(...): SamplePortRef belongs to another builder");
+    if (require_names && config.name.empty()) details::error("builder " + identity.value + ": outputs(...) requires names when exposing more than one sample output");
+    auto existing = !refs[i].public_member.family_name.empty()
+      ? std::find_if(_sample_output_members.begin(), _sample_output_members.end(), [&](auto const& m) {
+          auto const& n = refs[i].public_member; return m.family_name == n.family_name && m.channel_type == n.channel_type && m.channel_index == n.channel_index && m.whole_stream == n.whole_stream; })
+      : _sample_output_members.end();
+    size_t output = existing == _sample_output_members.end()
+      ? bundles.bundle(_boundary).boundary_sample_outputs().size()
+      : static_cast<size_t>(existing - _sample_output_members.begin());
+    if (existing == _sample_output_members.end()) {
+      IV_ASSERT(bundles.bundle(_boundary).append_boundary_sample_output(config) == output, "public output metadata mismatch");
+      _sample_output_members.push_back(refs[i].public_member); _sample_output_source_infos.emplace_back();
+    }
+    NodeBundlePortId const target{_boundary, PortKind::sample, output};
+    if (refs[i].target_channel_ordinal) {
+      auto channels = bundles.sample_input_channels(target); auto channel = *refs[i].target_channel_ordinal;
+      if (channel >= channels.size()) details::error("public sample output channel ordinal is out of bounds");
+      builder.record_authored_sample_connection(channels[channel], ref);
+    } else builder.record_authored_sample_connection(target, ref);
+    _last_sample_output_port_ordinals.push_back(output);
+  }
+  _sample_outputs_defined = true;
+}
+
+constexpr void GraphBuilderPublicPorts::define_event_outputs(
+    GraphBuilder& builder, GraphBuilderNodeBundles& bundles,
+    GraphBuilderIdentity const& identity,
+    std::span<EventOutputRefConfig const> refs)
+{
+  auto& boundary = bundles.bundle(_boundary);
+  boundary.clear_boundary_event_outputs();
+  _event_output_source_infos.resize(refs.size());
+  bool const require_names = refs.size() > 1;
+  for (size_t i = 0; i < refs.size(); ++i) {
+    auto const& ref = refs[i].ref;
+    if (!ref.graph_builder)
+      details::error(
+          "builder " + identity.value +
+          ": event_outputs(...): empty EventPortRef");
+    if (ref.graph_builder != &builder)
+      details::error(
+          "builder " + identity.value +
+          ": event_outputs(...): EventPortRef belongs to another builder");
+    if (require_names && refs[i].config.name.empty())
+      details::error(
+          "builder " + identity.value +
+          ": event_outputs(...) requires names when exposing more than one "
+          "event output");
+    auto config = refs[i].config;
+    config.type = ref.type;
+    auto output = boundary.append_boundary_event_output(std::move(config));
+    builder.record_authored_event_connection(
+        {_boundary, PortKind::event, output}, ref);
+  }
+}
+
 template<class ChannelType, SampleStreamLayout Layout>
 SamplePortRef GraphBuilder::lift_to_sample_port(TypedSamplePortRef<ChannelType, Layout> const& p) { return lift_to_sample_port(static_cast<SamplePortRef>(p)); }
 template<class ChannelType, SampleStreamLayout Layout, class Member>
@@ -203,40 +272,134 @@ SamplePortRef GraphBuilder::lift_to_sample_port(TypedSamplePortChannelRef<Channe
 template<class ChannelType, SampleStreamLayout Layout>
 SamplePortRef GraphBuilder::lift_to_sample_port(TypedSamplePortTileRef<ChannelType, Layout> const& p) { return lift_to_sample_port(p.erased()); }
 
+constexpr GraphBuilder::GraphBuilder(GraphBuilderIdentity identity)
+    : _identity(std::move(identity))
+    , _public_ports(_node_bundles.append_boundary())
+{}
+
+constexpr GraphBuilder::GraphBuilder()
+    : GraphBuilder(GraphBuilderIdentity("root"))
+{}
+
+constexpr SamplePortRef::SamplePortRef(
+    GraphBuilder& builder,
+    NodeBundlePortId port)
+    : graph_builder(&builder)
+{
+  if (port.port_kind != PortKind::sample)
+    details::error(
+        "attempted to create a SamplePortRef from an event NodeBundle port");
+  channel_type = builder._node_bundles.resolve_sample_output(
+      port).config.channel_layout.channel_type;
+  channels = builder._node_bundles.sample_output_channels(port);
+}
+
+constexpr SamplePortRef GraphBuilder::lift_to_sample_port(
+    SamplePortRef const& port)
+{
+  if (port.graph_builder != this)
+    details::error("sample port belongs to another builder");
+  return port;
+}
+
+constexpr SamplePortRef GraphBuilder::lift_to_sample_port(
+    SamplePortRef&& port)
+{
+  if (port.graph_builder != this)
+    details::error("sample port belongs to another builder");
+  return std::move(port);
+}
+
+constexpr void GraphBuilder::record_authored_sample_connection(
+    NodeBundlePortId target,
+    SamplePortRef const& source)
+{
+  if (target.port_kind != PortKind::sample || !source.graph_builder
+      || source.graph_builder != this)
+    details::error("invalid authored sample connection");
+  auto descriptor = _node_bundles.resolve_sample_input(target);
+  _connections.record_authored_sample_connection({
+      source.channel_type,
+      source.channels,
+      descriptor.config.channel_layout.channel_type,
+      _node_bundles.sample_input_channels(target),
+  });
+}
+
+constexpr void GraphBuilder::connect_sample_input(
+    NodeBundlePortId target,
+    SamplePortRef source)
+{
+  record_authored_sample_connection(target, source);
+}
+
 template<class Config>
-void GraphBuilder::validate_output_port_configs(std::span<Config const> configs,
-                                                std::string_view node_label,
-                                                std::string_view kind) {
+constexpr void GraphBuilder::validate_output_port_configs(
+    std::span<Config const> configs,
+    std::string_view node_label,
+    std::string_view kind) {
   GraphBuilderNodeBundles::validate_output_port_configs(configs, node_label, kind);
 }
 
 template<class Node, class... Args>
-details::node_ref_for_t<Node> GraphBuilder::node(Args&&... args) {
-  auto const handle = _node_bundles.append_concrete<Node>(std::forward<Args>(args)...);
-  using StoredNode = std::remove_cvref_t<Node>;
-  if constexpr (details::should_preserve_node_type_v<StoredNode>) return TypedNodeRef<StoredNode>(*this, handle);
-  else return NodeRef(*this, handle);
+constexpr details::node_ref_for_t<Node> GraphBuilder::node(Args&&... args) {
+  if consteval {
+    using StoredNode = std::remove_cvref_t<Node>;
+    StoredNode node_value(std::forward<Args>(args)...);
+    auto concrete = GraphBuilderNodeBundles::make_concrete_node(
+        details::reflect_node(node_value));
+    auto const handle = _node_bundles.append_concrete(std::move(concrete));
+    if constexpr (details::should_preserve_node_type_v<StoredNode>) {
+      return TypedNodeRef<StoredNode>(*this, handle);
+    } else {
+      return NodeRef(*this, handle);
+    }
+  } else {
+    details::runtime_graph_builder_node_call_is_forbidden();
+    return {};
+  }
 }
 
 template<class Node, class ChannelType, class... Args>
-auto GraphBuilder::node(Args&&... args) {
-  using StoredNode = std::remove_cvref_t<Node>;
-  static_assert(details::has_constexpr_sample_port_configs<StoredNode>,
-      "tiled DSP nodes must provide constexpr static inputs()/outputs() configurations");
-  static_assert((std::copy_constructible<std::remove_cvref_t<Args>> && ...),
-      "tiled-node construction requires reusable constructor arguments");
-  static_assert([] consteval {
-    if constexpr (requires { StoredNode::inputs(); }) for (auto const& config : StoredNode::inputs()) if (config.channel_layout.channel_type != ChannelTypeId::mono) return false;
-    if constexpr (requires { StoredNode::outputs(); }) for (auto const& config : StoredNode::outputs()) if (config.channel_layout.channel_type != ChannelTypeId::mono) return false;
-    return true;
-  }(), "the tiled-node model requires fully mono concrete sample nodes");
-  std::array<NodeBundleHandle, ChannelType::channel_count> members{};
-  for (size_t channel=0; channel<ChannelType::channel_count; ++channel)
-    members[channel] = _node_bundles.append_concrete<StoredNode>(args...);
-  auto const handle = _node_bundles.append_tiled(members,
-      ChannelLayout{.channel_type = ChannelTypeTraits<ChannelType>::id,
-                    .sample_layout = SampleStreamLayout::planar});
-  return TiledNodeRef<StoredNode, ChannelType>(*this, handle);
+constexpr auto GraphBuilder::node(Args&&... args) {
+  if consteval {
+    using StoredNode = std::remove_cvref_t<Node>;
+    static_assert((std::copy_constructible<std::remove_cvref_t<Args>> && ...),
+        "tiled-node construction requires reusable constructor arguments");
+
+    StoredNode node_value(args...);
+    auto concrete = GraphBuilderNodeBundles::make_concrete_node(
+        details::reflect_node(node_value));
+    for (auto const& config : concrete.inputs()) {
+      if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+        details::error(
+            "the tiled-node model requires fully mono concrete sample nodes");
+      }
+    }
+    for (auto const& config : concrete.outputs()) {
+      if (config.channel_layout.channel_type != ChannelTypeId::mono) {
+        details::error(
+            "the tiled-node model requires fully mono concrete sample nodes");
+      }
+    }
+
+    std::array<NodeBundleHandle, ChannelType::channel_count> members {};
+    for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
+      members[channel] = _node_bundles.append_concrete(concrete);
+    }
+    auto const handle = _node_bundles.append_tiled(
+        members,
+        ChannelLayout{
+            .channel_type = ChannelTypeTraits<ChannelType>::id,
+            .sample_layout = SampleStreamLayout::planar,
+        });
+    return TiledNodeRef<StoredNode, ChannelType>(*this, handle);
+  } else {
+    details::runtime_graph_builder_node_call_is_forbidden();
+    return TiledNodeRef<
+        std::remove_cvref_t<Node>,
+        ChannelType> {};
+  }
 }
 
 template<class ChannelType, class... Refs>
@@ -303,7 +466,7 @@ NodeRef GraphBuilder::subgraph(Fn&& fn, std::string_view kind) {
 }
 
 template<class... Refs>
-void GraphBuilder::outputs(Refs&&... refs) {
+constexpr void GraphBuilder::outputs(Refs&&... refs) {
   _public_ports.define_sample_outputs_from_args(*this, _node_bundles, _identity,
       [&](auto&& value){ return lift_to_sample_port(std::forward<decltype(value)>(value)); },
       std::forward<Refs>(refs)...);
@@ -330,7 +493,7 @@ void SubgraphBuilder::outputs(Refs&&... refs) {
 // NodeRef and typed-ref definitions are semantic: every operation addresses a
 // NodeBundle and no authored ref can be projected to a topology address.
 template<class Node, class PortProjection>
-inline NodePorts const& TypedNodeRef<Node, PortProjection>::ports() const {
+constexpr NodePorts const& TypedNodeRef<Node, PortProjection>::ports() const {
   if (!_graph_builder) details::error("attempted to use a null NodeRef");
   return _graph_builder->_node_bundles.typed_ports(_index);
 }
@@ -342,7 +505,7 @@ inline SamplePortRef NodeRef::operator[](size_t output_port) const {
   return SamplePortRef(*_graph_builder,{_index,PortKind::sample,output_port});
 }
 inline SamplePortRef NodeRef::operator[](std::string_view name) const { return (*this)[_graph_builder->sample_port_index(_index,false,name)]; }
-inline NodeRef::operator SamplePortRef() const { if(!_graph_builder)details::error("attempted to use a null NodeRef"); if(sample_output_count()!=1)details::error(to_string()+" does not have exactly 1 output port"); return (*this)[0]; }
+constexpr NodeRef::operator SamplePortRef() const { if(!_graph_builder)details::error("attempted to use a null NodeRef"); if(sample_output_count()!=1)details::error(to_string()+" does not have exactly 1 output port"); return (*this)[0]; }
 inline size_t NodeRef::sample_input_count() const { return _graph_builder->_node_bundles.bundle(node_bundle_handle()).sample_input_count(); }
 inline size_t NodeRef::sample_output_count() const { return _graph_builder->_node_bundles.bundle(node_bundle_handle()).sample_output_count(); }
 inline size_t NodeRef::event_input_count() const { return _graph_builder->_node_bundles.bundle(node_bundle_handle()).event_input_count(); }
@@ -388,12 +551,12 @@ template<class Node,class PortProjection> inline SamplePortRef TypedNodeRef<Node
 template<class Node,class PortProjection> inline EventPortRef TypedNodeRef<Node,PortProjection>::event_port(size_t i) const { if(i>=ports().event_outputs().size())details::error("event output port out of bounds");return NodeRef::event_port(i); }
 template<class Node,class PortProjection> inline EventPortRef TypedNodeRef<Node,PortProjection>::event_port(std::string_view n) const { auto const& outputs=ports().event_outputs();std::optional<size_t> match;for(size_t i=0;i<outputs.size();++i)if(outputs[i].name==n){if(match)details::error("event output name is ambiguous");match=i;}if(match)return NodeRef::event_port(*match);details::error("event output port does not exist on "+to_string()); }
 template<class Node,class PortProjection> inline EventPortRef TypedNodeRef<Node,PortProjection>::event_port() const { if(ports().event_outputs().size()!=1)details::error(to_string()+" does not have exactly 1 event output port");return event_port(0); }
-template<class Node,class PortProjection> inline TypedNodeRef<Node,PortProjection>::operator SamplePortRef() const { if(get_num_outputs(ports())!=1)details::error(to_string()+" does not have exactly 1 output port");return SamplePortRef(*_graph_builder,{_index,PortKind::sample,0}); }
+template<class Node,class PortProjection> constexpr TypedNodeRef<Node,PortProjection>::operator SamplePortRef() const { if(get_num_outputs(ports())!=1)details::error(to_string()+" does not have exactly 1 output port");return SamplePortRef(*_graph_builder,{_index,PortKind::sample,0}); }
 
 template <class Node, class PortProjection>
 template <class... Args>
     requires(details::node_call_enabled<std::remove_cvref_t<Node>, Args...>)
-inline TypedNodeRef<Node, PortProjection>
+constexpr TypedNodeRef<Node, PortProjection>
 TypedNodeRef<Node, PortProjection>::operator()(Args&&... args) const
 {
     if (!this->_graph_builder)

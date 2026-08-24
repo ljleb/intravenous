@@ -2,6 +2,7 @@
 
 #include <intravenous/ports.h>
 
+#include <compare>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -15,11 +16,11 @@ namespace iv {
         size_t node;
         size_t port;
 
-        ConcretePortId(size_t node = 0, size_t port = 0) :
+        constexpr ConcretePortId(size_t node = 0, size_t port = 0) :
             node(node), port(port)
         {}
 
-        bool operator==(ConcretePortId const&) const = default;
+        auto operator<=>(ConcretePortId const&) const = default;
     };
 
     // Stable authored identity. It is intentionally independent of a
@@ -36,7 +37,7 @@ namespace iv {
         ConcretePortId source, target;
         ChannelConversionPlan conversion;
 
-        GraphEdge(
+        constexpr GraphEdge(
             ConcretePortId source = {},
             ConcretePortId target = {},
             ChannelConversionPlan conversion = {}
@@ -46,9 +47,16 @@ namespace iv {
 
         // Edge identity is its topology. The conversion is derived metadata
         // populated after lowering, and must not affect rewiring/erasure.
-        bool operator==(GraphEdge const& other) const
+        constexpr bool operator==(GraphEdge const& other) const
         {
             return source == other.source && target == other.target;
+        }
+
+        constexpr auto operator<=>(GraphEdge const& other) const
+        {
+            if (auto ordering = source <=> other.source; ordering != 0)
+                return ordering;
+            return target <=> other.target;
         }
     };
 
@@ -56,7 +64,7 @@ namespace iv {
         ConcretePortId source, target;
         EventConversionPlan conversion;
 
-        GraphEventEdge(
+        constexpr GraphEventEdge(
             ConcretePortId source = {},
             ConcretePortId target = {},
             EventConversionPlan conversion = {}
@@ -64,7 +72,7 @@ namespace iv {
             source(source), target(target), conversion(std::move(conversion))
         {}
 
-        bool operator==(GraphEventEdge const&) const = default;
+        auto operator<=>(GraphEventEdge const&) const = default;
     };
 
     struct EventOutputBinding {

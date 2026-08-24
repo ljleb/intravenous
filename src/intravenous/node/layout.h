@@ -126,6 +126,9 @@ namespace iv {
         template<typename Node>
         size_t register_node(Node const& node);
 
+        template<auto NodeValue>
+        size_t register_reflected_node();
+
         template<typename Node, typename A>
         A const* local_object(size_t node_index);
 
@@ -198,6 +201,9 @@ namespace iv {
 
         template<typename Node>
         static NodeLifecycleCallbacks make_lifecycle_callbacks();
+
+        template<auto NodeValue>
+        static NodeLifecycleCallbacks make_reflected_lifecycle_callbacks();
 
         template<typename A>
         static void const* type_token();
@@ -290,6 +296,14 @@ namespace iv {
 
     public:
         explicit DeclarationContext(NodeLayoutBuilder& builder, Node const& node);
+
+        template<auto NodeValue>
+            requires std::same_as<
+                std::remove_cvref_t<decltype(NodeValue)>,
+                Node>
+        explicit DeclarationContext(
+            NodeLayoutBuilder& builder,
+            std::integral_constant<decltype(NodeValue), NodeValue>);
         ~DeclarationContext();
 
         template<typename Node2>
@@ -317,6 +331,9 @@ namespace iv {
         bool has_export_array(std::string const& id) const;
 
         void nested_node_states(std::span<std::span<std::byte>> const& nodes) const;
+
+        void declare_reflected_child(
+            size_t (*declare)(NodeLayoutBuilder&)) const;
 
         size_t max_block_size() const;
         size_t event_port_buffer_base_multiplier() const;
@@ -466,6 +483,24 @@ namespace iv {
     }
 
     template<typename Node>
+    template<auto NodeValue>
+        requires std::same_as<
+            std::remove_cvref_t<decltype(NodeValue)>,
+            Node>
+    inline DeclarationContext<Node>::DeclarationContext(
+        NodeLayoutBuilder& builder,
+        std::integral_constant<decltype(NodeValue), NodeValue>)
+    : _builder(&builder)
+    , _node_index(_builder->template register_reflected_node<NodeValue>())
+    {
+        if constexpr (!std::is_void_v<State>) {
+            _state_marker = _builder->template local_object<Node, State>(_node_index);
+        } else {
+            _state_marker = nullptr;
+        }
+    }
+
+    template<typename Node>
     inline DeclarationContext<Node>::~DeclarationContext()
     {
         if (_nested_nodes_region_index) {
@@ -539,6 +574,14 @@ namespace iv {
     }
 
     template<typename Node>
+    inline void DeclarationContext<Node>::declare_reflected_child(
+        size_t (*declare)(NodeLayoutBuilder&)) const
+    {
+        IV_ASSERT(declare, "reflected child declaration callback cannot be null");
+        _direct_nested_node_indices.push_back(declare(*_builder));
+    }
+
+    template<typename Node>
     inline size_t DeclarationContext<Node>::max_block_size() const
     {
         return _builder->max_block_size();
@@ -569,6 +612,38 @@ namespace iv {
                 static_cast<Node const*>(nullptr));
         }
         record.lifecycle = make_lifecycle_callbacks<Node>();
+        if constexpr (std::is_void_v<typename NodeState<Node>::Type>) {
+            record.state_size = 0;
+            record.state_alignment = 1;
+
+            NodeLayout::Region region;
+            region.kind = NodeLayout::Region::Kind::state;
+            region.owner_node = node_index;
+            region.size = 0;
+            region.alignment = 1;
+            _regions.push_back(region);
+        }
+        _nodes.push_back(std::move(record));
+        return node_index;
+    }
+
+    template<auto NodeValue>
+    size_t NodeLayoutBuilder::register_reflected_node()
+    {
+        using Node = std::remove_cvref_t<decltype(NodeValue)>;
+        size_t const node_index = _nodes.size();
+
+        NodeLayout::NodeRecord record;
+        record.node_type = type_token<Node>();
+        record.node_type_name = typeid(Node).name();
+        if constexpr (requires {
+            iv_rewritten_node_state_structure(
+                static_cast<Node const*>(nullptr));
+        }) {
+            record.node_state_structure = iv_rewritten_node_state_structure(
+                static_cast<Node const*>(nullptr));
+        }
+        record.lifecycle = make_reflected_lifecycle_callbacks<NodeValue>();
         if constexpr (std::is_void_v<typename NodeState<Node>::Type>) {
             record.state_size = 0;
             record.state_alignment = 1;
@@ -907,6 +982,79 @@ namespace iv {
                     ReleaseContext<Node> ctx(storage, state, *storage.resources);
                     node.release(ctx);
                 }
+            };
+        }
+
+        return callbacks;
+    }
+
+    template<auto NodeValue>
+    NodeLifecycleCallbacks NodeLayoutBuilder::make_reflected_lifecycle_callbacks()
+    {
+        using Node = std::remove_cvref_t<decltype(NodeValue)>;
+        NodeLifecycleCallbacks callbacks;
+
+        if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
+            using State = typename NodeState<Node>::Type;
+            static_assert(
+                std::is_default_constructible_v<State>,
+                "Node::State must be default constructible");
+            callbacks.default_construct_state_fn = [](void* ptr) {
+                new (ptr) State();
+            };
+            callbacks.destroy_state_fn = [](void* ptr) {
+                std::destroy_at(static_cast<State*>(ptr));
+            };
+        }
+
+        if constexpr (requires(MoveContext<Node> ctx) { NodeValue.move(ctx); }) {
+            callbacks.move_fn = [](
+                void const*,
+                size_t node_index,
+                size_t previous_node_index,
+                NodeStorage& storage,
+                NodeStorage const& previous_storage) {
+                void* state = storage.state_ptr(node_index);
+                void* previous_state = previous_storage.state_ptr(previous_node_index);
+                MoveContext<Node> ctx(
+                    storage,
+                    state,
+                    previous_storage,
+                    previous_state,
+                    *storage.resources);
+                NodeValue.move(ctx);
+            };
+        }
+
+        if constexpr (requires {
+            { NodeValue.identity() } -> std::convertible_to<std::string>;
+        }) {
+            callbacks.identity_fn = [](void const*) -> std::string {
+                return std::string(NodeValue.identity());
+            };
+        }
+
+        if constexpr (requires(InitializationContext<Node> ctx) {
+            NodeValue.initialize(ctx);
+        }) {
+            callbacks.initialize_fn = [](
+                void const*, size_t node_index, NodeStorage& storage) {
+                void* state = storage.state_ptr(node_index);
+                InitializationContext<Node> ctx(
+                    storage, state, *storage.resources);
+                NodeValue.initialize(ctx);
+            };
+        }
+
+        if constexpr (requires(ReleaseContext<Node> ctx) {
+            NodeValue.release(ctx);
+        }) {
+            callbacks.release_fn = [](
+                void const*, size_t node_index, NodeStorage& storage) {
+                void* state = storage.state_ptr(node_index);
+                ReleaseContext<Node> ctx(
+                    storage, state, *storage.resources);
+                NodeValue.release(ctx);
             };
         }
 

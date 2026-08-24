@@ -1,16 +1,18 @@
 #include <intravenous/graph/builder/finalize.h>
 
-#include <intravenous/graph/builder/connections.h>
+#include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/lowering.h>
 #include <intravenous/graph/builder/metadata.h>
-#include <intravenous/graph/builder/node_bundles.h>
-#include <intravenous/graph/builder/public_ports.h>
-#include <intravenous/graph/builder/virtual_nodes.h>
+#include <intravenous/graph/builder/node_bundles.hpp>
+#include <intravenous/graph/builder/public_ports.hpp>
+#include <intravenous/graph/builder/virtual_nodes.hpp>
+#include <intravenous/graph/generated_node_spec.hpp>
+#include <intravenous/graph/reflected_node.hpp>
 
 #include <algorithm>
 #include <limits>
 #include <optional>
-#include <unordered_map>
+#include <flat_map>
 #include <vector>
 
 namespace iv {
@@ -29,13 +31,14 @@ struct PreparedBuilderGraph {
       .detached_info_by_source = {}, .detached_reader_outputs = {},
   };
   std::vector<size_t> runtime_node_indices;
-  std::unordered_map<TopologyPortId, TopologyPortId> source_of;
-  std::unordered_map<TopologyPortId, TopologyEventEdge> event_source_of;
+  std::flat_map<TopologyPortId, TopologyPortId> source_of;
+  std::flat_map<TopologyPortId, TopologyEventEdge> event_source_of;
 
-  PreparedBuilderGraph(GraphBuilderIdentity const& identity_,
-                       LoweredBuilderGraph const& lowered_,
-                       GraphBuilderNodeBundles const& bundles,
-                       GraphBuilderVirtualNodes const& virtuals)
+  constexpr PreparedBuilderGraph(
+      GraphBuilderIdentity const& identity_,
+      LoweredBuilderGraph const& lowered_,
+      GraphBuilderNodeBundles const& bundles,
+      GraphBuilderVirtualNodes const& virtuals)
       : identity(identity_), lowered(lowered_), topology(lowered_.topology),
         node_bundles(bundles), virtual_nodes(virtuals),
         runtime_node_indices(topology.node_count(), GRAPH_ID) {
@@ -46,7 +49,8 @@ struct PreparedBuilderGraph {
     });
   }
 
-  std::optional<NodeBundleHandle> bundle_for_lowered_node(size_t node) const {
+  constexpr std::optional<NodeBundleHandle>
+  bundle_for_lowered_node(size_t node) const {
     if (node >= lowered.bundle_by_lowered_node.size()) return std::nullopt;
     return lowered.bundle_by_lowered_node[node];
   }
@@ -63,28 +67,49 @@ struct PreparedBuilderGraph {
       if (topology.is_subgraph_node(node_i)) continue;
       auto const& node = topology.concrete_node(node_i);
       runtime_node_indices[node_i] = graph.nodes.size();
-      graph.nodes.push_back(TypeErasedNode(details::MetadataGraphNode{
-          .input_configs = node.ports.sample_inputs,
-          .output_configs = node.ports.sample_outputs,
-          .event_input_configs = node.ports.event_input_configs,
-          .event_output_configs = node.ports.event_output_configs,
-      }));
+      graph.nodes.push_back(ReflectedNodeDescription{
+          .ports = node.ports,
+          .type_name = node.type_identity.value,
+          .internal_latency_samples = node.internal_latency_samples,
+          .maximum_block_size = node.maximum_block_size,
+          .default_ttl_samples = node.default_ttl_samples,
+          .block_skippable = node.block_skippable,
+      });
       append_node_metadata(node_i, node, node.type_identity.value);
     }
   }
 
-  void append_materialized_nodes(size_t detach_offset) {
+  constexpr void append_reflected_nodes(size_t detach_offset) {
     for (size_t node_i = 0; node_i < topology.node_count(); ++node_i) {
       if (topology.is_subgraph_node(node_i)) continue;
       auto const& node = topology.concrete_node(node_i);
       runtime_node_indices[node_i] = graph.nodes.size();
-      graph.nodes.push_back(node.materialization.make(detach_offset));
-      append_node_metadata(node_i, node, graph.nodes.back().type_name());
+      ReflectedNodeDescription description;
+      if (node.operations.valid()) {
+        description = {
+            .ports = node.ports,
+            .operations = node.operations.apply_detach_id_offset(detach_offset),
+            .type_name = node.type_identity.value,
+            .internal_latency_samples = node.internal_latency_samples,
+            .maximum_block_size = node.maximum_block_size,
+            .default_ttl_samples = node.default_ttl_samples,
+            .block_skippable = node.block_skippable,
+        };
+      } else if consteval {
+        description = details::reflect_generated_node(node.generated_node);
+        description.operations =
+            description.operations.apply_detach_id_offset(detach_offset);
+      } else {
+        details::runtime_graph_builder_node_call_is_forbidden();
+      }
+      graph.nodes.push_back(description);
+      append_node_metadata(
+          node_i, node, std::string(graph.nodes.back().type_name));
     }
   }
 
-  void append_node_metadata(size_t node_i, ConcreteNode const& node,
-                            std::string kind) {
+  constexpr void append_node_metadata(size_t node_i, ConcreteNode const& node,
+                                      std::string kind) {
     graph.explicit_ttl_samples.push_back(node.lifetime.ttl_samples);
     graph.node_ids.push_back(identity.child_id(node_i));
     std::vector<std::string> virtual_ids;
@@ -107,7 +132,8 @@ struct PreparedBuilderGraph {
     graph.node_type_identities.push_back(node.type_identity.value);
   }
 
-  ConcretePortId resolve_sample_source(TopologyPortId source) const {
+  constexpr ConcretePortId
+  resolve_sample_source(TopologyPortId source) const {
     if (auto boundary = lowered.subgraph_input_of_boundary_source.find(source);
         boundary != lowered.subgraph_input_of_boundary_source.end()) {
       auto incoming = source_of.find(boundary->second);
@@ -209,7 +235,8 @@ struct PreparedBuilderGraph {
     return resolve_event_source_topology(passthrough);
   }
 
-  void add_sample_target_edges(ConcretePortId source, TopologyPortId target) {
+  constexpr void add_sample_target_edges(ConcretePortId source,
+                                         TopologyPortId target) {
     if (target.node == GRAPH_ID) {
       graph.edges.emplace(GraphEdge{source, {GRAPH_ID, target.port}});
       return;
@@ -242,7 +269,7 @@ struct PreparedBuilderGraph {
           GraphEventEdge{edge.source, {}, edge.conversion}, child);
   }
 
-  void lower_edges() {
+  constexpr void lower_edges() {
     topology.for_each_sample_edge([&](TopologyEdge const& edge) {
       if (lowered.subgraph_input_of_boundary_source.contains(edge.source)) return;
       add_sample_target_edges(resolve_sample_source(edge.source), edge.target);
@@ -256,11 +283,17 @@ struct PreparedBuilderGraph {
     });
   }
 
-  ConcretePortId materialize_subgraph_default(size_t subgraph_node,
-                                               size_t input_port) {
+  constexpr ConcretePortId materialize_subgraph_default(
+      size_t subgraph_node, size_t input_port) {
     runtime_node_indices.push_back(graph.nodes.size());
-    graph.nodes.push_back(TypeErasedNode(Constant(
-        topology.subgraph_node(subgraph_node).inputs()[input_port].default_value)));
+    if consteval {
+      graph.nodes.push_back(details::reflect_node(Constant(
+          topology.subgraph_node(subgraph_node)
+              .inputs()[input_port]
+              .default_value)));
+    } else {
+      details::runtime_graph_builder_node_call_is_forbidden();
+    }
     graph.explicit_ttl_samples.push_back(std::nullopt);
     graph.node_ids.push_back(identity.child_id(subgraph_node) + ".default." +
                              std::to_string(input_port));
@@ -270,7 +303,7 @@ struct PreparedBuilderGraph {
     return {graph.nodes.size() - 1, 0};
   }
 
-  void add_subgraph_default_edges() {
+  constexpr void add_subgraph_default_edges() {
     for (size_t node_i = 0; node_i < topology.node_count(); ++node_i) {
       if (!topology.is_subgraph_node(node_i)) continue;
       auto const& node = topology.subgraph_node(node_i);
@@ -284,7 +317,7 @@ struct PreparedBuilderGraph {
     }
   }
 
-  void copy_detach_info() {
+  constexpr void copy_detach_info() {
     for (auto const& [source, info] : lowered.detached_info_by_source) {
       auto remapped = resolve_sample_source(source);
       graph.detached_info_by_source.emplace(
@@ -415,12 +448,13 @@ struct PreparedBuilderGraph {
            child_handle < parent_info.child_begin + parent_info.child_count;
   }
 
-  std::vector<iv::LoweredSubgraphSpec> build_lowered_scopes() const {
+  constexpr std::vector<iv::LoweredSubgraphSpec>
+  build_lowered_scopes() const {
     std::vector<size_t> subgraphs;
     for (size_t i = 0; i < topology.node_count(); ++i)
       if (topology.is_subgraph_node(i)) subgraphs.push_back(i);
 
-    std::unordered_map<size_t, size_t> scope_index;
+    std::flat_map<size_t, size_t> scope_index;
     std::vector<iv::LoweredSubgraphSpec> scopes;
     for (auto subgraph_i : subgraphs) {
       auto const& subgraph = topology.subgraph_node(subgraph_i);
@@ -499,7 +533,7 @@ struct PreparedBuilderGraph {
 };
 } // namespace
 
-GraphIntrospectionMetadata GraphBuilderFinalizer::build_metadata(
+constexpr GraphIntrospectionMetadata GraphBuilderFinalizer::build_metadata(
     GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
     GraphBuilderNodeBundles const& bundles,
     GraphBuilderVirtualNodes const& virtuals,
@@ -517,7 +551,7 @@ GraphIntrospectionMetadata GraphBuilderFinalizer::build_metadata(
   return metadata;
 }
 
-GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
+consteval GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
     GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
     GraphBuilderNodeBundles const& bundles,
     GraphBuilderVirtualNodes const& virtuals,
@@ -539,7 +573,7 @@ GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
       ? std::span<EventOutputConfig const>{}
       : ports.event_outputs(bundles);
   PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepared.append_materialized_nodes(detach_offset);
+  prepared.append_reflected_nodes(detach_offset);
   prepared.lower_edges();
   prepared.add_subgraph_default_edges();
   prepared.copy_detach_info();

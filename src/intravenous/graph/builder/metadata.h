@@ -9,7 +9,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
-#include <unordered_map>
+#include <flat_map>
 #include <utility>
 #include <vector>
 
@@ -98,9 +98,9 @@ inline std::vector<IntrospectionPortInfo> aggregate_ports(
 
 using VirtualMetadataBuildResult = std::pair<
     std::vector<IntrospectionVirtualNode>,
-    std::unordered_map<std::string, std::vector<std::string>>>;
+    std::flat_map<std::string, std::vector<std::string>>>;
 
-VirtualMetadataBuildResult build_virtual_metadata(
+constexpr VirtualMetadataBuildResult build_virtual_metadata(
     PreparedGraph const& g,
     std::span<LoweredSubgraphSpec const> lowered_scopes);
 

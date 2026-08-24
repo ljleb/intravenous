@@ -1,17 +1,17 @@
 #include <intravenous/graph/builder/lowering.h>
 
 #include <intravenous/basic_nodes/routing.h>
-#include <intravenous/graph/builder/connections.h>
-#include <intravenous/graph/builder/detach.h>
-#include <intravenous/graph/builder/public_ports.h>
-#include <intravenous/graph/builder/virtual_nodes.h>
+#include <intravenous/graph/builder/connections.hpp>
+#include <intravenous/graph/builder/detach.hpp>
+#include <intravenous/graph/builder/public_ports.hpp>
+#include <intravenous/graph/builder/virtual_nodes.hpp>
 #include <intravenous/graph/connection_node.h>
 #include <intravenous/graph/runtime_binding_nodes.h>
 
 #include <algorithm>
+#include <flat_map>
 #include <optional>
 #include <ranges>
-#include <unordered_map>
 #include <utility>
 
 namespace iv {
@@ -22,12 +22,11 @@ class Lowerer {
   GraphBuilderPublicPorts const& public_ports;
   GraphBuilderVirtualNodes const& virtuals;
   GraphBuilderDetach const& detach;
-  std::shared_ptr<GraphRuntimeBindings> runtime_bindings;
   bool execution_root = false;
   LoweredBuilderGraph out;
-  std::unordered_map<NodeBundleHandle, size_t> subgraph_by_boundary;
+  std::flat_map<NodeBundleHandle, size_t> subgraph_by_boundary;
 
-  size_t append_generated(ConcreteNode node) {
+  constexpr size_t append_generated(ConcreteNode node) {
     auto const index = out.topology.append_node(std::move(node));
     if (out.bundle_by_lowered_node.size() <= index)
       out.bundle_by_lowered_node.resize(index + 1);
@@ -35,7 +34,7 @@ class Lowerer {
     return index;
   }
 
-  void project_bundles() {
+  constexpr void project_bundles() {
     out.bundle_projections.resize(bundles.size());
     auto const root_boundary = public_ports.boundary_handle();
     for (NodeBundleHandle handle=0; handle<bundles.size(); ++handle) {
@@ -129,13 +128,14 @@ class Lowerer {
         for(size_t i=0;i<bundle.sample_output_count();++i)p.sample_outputs.push_back({{node,i}});
         for(size_t i=0;i<bundle.event_input_count();++i)p.event_inputs.push_back({{node,i}});
         for(size_t i=0;i<bundle.event_output_count();++i)p.event_outputs.push_back({{node,i}});
-        if(subgraph_by_boundary.contains(info.boundary))details::error("boundary belongs to more than one subgraph");
-        subgraph_by_boundary[info.boundary]=node;
+        if (subgraph_by_boundary.contains(info.boundary))
+          details::error("boundary belongs to more than one subgraph");
+        subgraph_by_boundary.emplace(info.boundary, node);
         auto const& bp=out.bundle_projections[info.boundary];
         for(size_t i=0;i<bp.sample_outputs.size();++i)
-          if(!bp.sample_outputs[i].empty())out.subgraph_input_of_boundary_source[bp.sample_outputs[i].front()]={node,i};
+          if(!bp.sample_outputs[i].empty())out.subgraph_input_of_boundary_source.emplace(bp.sample_outputs[i].front(),TopologyPortId{node,i});
         for(size_t i=0;i<bp.event_outputs.size();++i)
-          if(!bp.event_outputs[i].empty())out.subgraph_event_input_of_boundary_source[bp.event_outputs[i].front()]={node,i};
+          if(!bp.event_outputs[i].empty())out.subgraph_event_input_of_boundary_source.emplace(bp.event_outputs[i].front(),TopologyPortId{node,i});
       }
     }
   }
@@ -152,7 +152,7 @@ class Lowerer {
     size_t channel = 0;
   };
 
-  ResolvedSampleSourceChannel resolve_sample_source_channel(
+  constexpr ResolvedSampleSourceChannel resolve_sample_source_channel(
       SampleOutputChannelId channel) const {
     NodeBundlePortId logical{
         channel.bundle, PortKind::sample, channel.port};
@@ -181,7 +181,7 @@ class Lowerer {
     details::error("sample source has invalid lowered endpoint count");
   }
 
-  ResolvedSampleTargetChannel resolve_sample_target_channel(
+  constexpr ResolvedSampleTargetChannel resolve_sample_target_channel(
       SampleInputChannelId channel) const {
     NodeBundlePortId logical{
         channel.bundle, PortKind::sample, channel.port};
@@ -216,7 +216,7 @@ class Lowerer {
     details::error("sample target has invalid lowered endpoint count");
   }
 
-  std::optional<TopologyPortId> direct_sample_source(
+  constexpr std::optional<TopologyPortId> direct_sample_source(
       ChannelTypeId type,
       std::span<SampleOutputChannelId const> channels) const {
     if (channels.empty())
@@ -247,14 +247,13 @@ class Lowerer {
       std::vector<ConnectionNodeInputConfig> inputs,
       std::vector<ConnectionNodeEphemeralPortConfig> ephemeral_ports,
       OutputConfig output, Sample default_value,
-      std::shared_ptr<RuntimeSampleInputBinding> runtime_binding = {},
+      std::string runtime_binding_id = {},
       size_t runtime_source_channel_offset = 0) const {
-    ConnectionNode node(std::move(inputs), std::move(ephemeral_ports),
-                        std::move(output), default_value,
-                        std::move(runtime_binding),
-                        runtime_source_channel_offset);
-    auto const input_configs = node.inputs();
-    auto const output_configs = node.outputs();
+    std::vector<InputConfig> input_configs;
+    input_configs.reserve(inputs.size());
+    for (auto const& input : inputs)
+      input_configs.push_back(input.input);
+    std::vector<OutputConfig> output_configs{output};
 
     return ConcreteNode{
         .ports = NodePorts{
@@ -265,23 +264,26 @@ class Lowerer {
                 std::vector<OutputConfig>(
                     output_configs.begin(), output_configs.end()),
         },
-        .materialization = NodeMaterialization{
-            .factory =
-                [node = std::move(node)](size_t) {
-                  return TypeErasedNode(node);
-                },
-        },
         .type_identity =
             NodeTypeIdentity{.value = "iv::ConnectionNode"},
+        .generated_node = ConnectionNodeSpec{
+            .input_configs = std::move(inputs),
+            .ephemeral_port_configs = std::move(ephemeral_ports),
+            .output_config = std::move(output),
+            .default_value = default_value,
+            .runtime_binding_id = std::move(runtime_binding_id),
+            .runtime_source_channel_offset = runtime_source_channel_offset,
+        },
     };
   }
 
-  template<class Node>
-  ConcreteNode make_generated_runtime_node(Node node, std::string type_identity) const {
-    auto inputs = get_inputs(node);
-    auto outputs = get_outputs(node);
-    auto event_inputs = get_event_inputs(node);
-    auto event_outputs = get_event_outputs(node);
+  template<class Spec>
+  constexpr ConcreteNode make_generated_node(
+      Spec spec, std::string type_identity) const {
+    auto inputs = get_inputs(spec);
+    auto outputs = get_outputs(spec);
+    auto event_inputs = get_event_inputs(spec);
+    auto event_outputs = get_event_outputs(spec);
     return ConcreteNode{
         .ports = NodePorts{
             .sample_inputs = std::vector<InputConfig>(
@@ -293,12 +295,8 @@ class Lowerer {
             .event_output_configs = std::vector<EventOutputConfig>(
                 event_outputs.begin(), event_outputs.end()),
         },
-        .materialization = NodeMaterialization{
-            .factory = [node = std::move(node)](size_t) {
-              return TypeErasedNode(node);
-            },
-        },
         .type_identity = NodeTypeIdentity{.value = std::move(type_identity)},
+        .generated_node = std::move(spec),
     };
   }
 
@@ -307,7 +305,7 @@ class Lowerer {
     std::vector<AuthoredSampleConnection const*> connections{};
   };
 
-  std::vector<SampleGroup> sample_groups() const {
+  constexpr std::vector<SampleGroup> sample_groups() const {
     std::vector<SampleGroup> groups;
     for (auto const& c : connections.authored_sample_connections()) {
       if (c.target_channels.empty())
@@ -337,7 +335,7 @@ class Lowerer {
   };
 
   struct RuntimeSampleBindingRef {
-    std::shared_ptr<RuntimeSampleInputBinding> binding {};
+    std::string binding_id {};
     size_t source_channel_offset = 0;
   };
 
@@ -355,7 +353,6 @@ class Lowerer {
           if (!concrete_target || !std::ranges::contains(endpoints, *concrete_target))
             continue;
         }
-        if (!runtime_bindings) return {};
         size_t source_channel_offset = 0;
         auto const& endpoints = out.bundle_projections.at(
             target.node_bundle_handle).sample_inputs.at(target.port_ordinal);
@@ -366,9 +363,9 @@ class Lowerer {
           source_channel_offset = static_cast<size_t>(endpoint - endpoints.begin());
         }
         return {
-            .binding = runtime_bindings->sample_input(runtime_virtual_port_key(
+            .binding_id = runtime_virtual_port_key(
                 true, PortKind::sample, input.id.virtual_node_id, member,
-                input.id.port_ordinal)),
+                input.id.port_ordinal),
             .source_channel_offset = source_channel_offset,
         };
       }
@@ -376,7 +373,7 @@ class Lowerer {
     return {};
   }
 
-  bool has_runtime_sample_capability(
+  constexpr bool has_runtime_sample_capability(
       NodeBundlePortId semantic_target,
       std::optional<TopologyPortId> concrete_target) const {
     auto const virtual_ports = virtuals.ports(bundles);
@@ -519,7 +516,7 @@ class Lowerer {
             .channel_layout = target_config.channel_layout,
         },
         target_config.default_value,
-        runtime_binding.binding,
+        runtime_binding.binding_id,
         runtime_binding.source_channel_offset));
 
     for (size_t input = 0; input < used_input_sources.size(); ++input)
@@ -600,7 +597,7 @@ class Lowerer {
     return !edges.empty();
   }
 
-  void lower_samples() {
+  constexpr void lower_samples() {
     std::vector<NodeBundlePortId> assigned_subgraph_outputs;
     std::vector<TopologyPortId> bound_targets;
     auto mark_bound = [&](TopologyPortId target) {
@@ -619,12 +616,13 @@ class Lowerer {
           bundles.resolve_sample_input(group.target)
               .config.channel_layout.channel_type;
 
-      if (auto it =
-              subgraph_by_boundary.find(group.target.node_bundle_handle);
+      if (auto it = subgraph_by_boundary.find(
+              group.target.node_bundle_handle);
           it != subgraph_by_boundary.end()) {
-        auto& binding =
-            out.topology.subgraph_node(it->second).lowered_subgraph;
-        if (group.target.port_ordinal >= binding.sample_output_sources.size())
+        auto const subgraph_node = it->second;
+        if (group.target.port_ordinal >= out.topology
+                .subgraph_node(subgraph_node)
+                .lowered_subgraph.sample_output_sources.size())
           details::error("subgraph sample output out of bounds");
         if (std::ranges::contains(assigned_subgraph_outputs, group.target))
           details::error("subgraph sample output has more than one source");
@@ -642,7 +640,9 @@ class Lowerer {
         if (!source)
           source = lower_connection_node(group, std::nullopt).output;
 
-        binding.sample_output_sources[group.target.port_ordinal] = *source;
+        out.topology.subgraph_node(subgraph_node)
+            .lowered_subgraph
+            .sample_output_sources[group.target.port_ordinal] = *source;
         continue;
       }
 
@@ -747,18 +747,18 @@ class Lowerer {
     return {node,0};
   }
 
-  void lower_runtime_event_inputs() {
-    if (!runtime_bindings) return;
+  constexpr void lower_runtime_event_inputs() {
     auto const virtual_ports = virtuals.ports(bundles);
     for (auto const& input : virtual_ports.event_inputs) {
       for (size_t member = 0; member < input.node_bundle_ports.size(); ++member) {
         auto const target = input.node_bundle_ports[member];
-        auto const node = append_generated(make_generated_runtime_node(
-            RuntimeEventInputNode(
-                input.config.type,
-                runtime_bindings->event_input(runtime_virtual_port_key(
+        auto const node = append_generated(make_generated_node(
+            RuntimeEventInputNodeSpec{
+                .type = input.config.type,
+                .binding_id = runtime_virtual_port_key(
                     true, PortKind::event, input.id.virtual_node_id, member,
-                    input.id.port_ordinal))),
+                    input.id.port_ordinal),
+            },
             "iv::RuntimeEventInputNode"));
         auto const& endpoints = out.bundle_projections.at(
             target.node_bundle_handle).event_inputs.at(target.port_ordinal);
@@ -773,7 +773,7 @@ class Lowerer {
     }
   }
 
-  void lower_events() {
+  constexpr void lower_events() {
     std::vector<NodeBundlePortId> assigned_subgraph_outputs;
     for(auto const& c:connections.authored_event_connections()) {
       auto source=materialize_event_source(c);
@@ -808,7 +808,7 @@ class Lowerer {
     }
   }
 
-  void lower_detach() {
+  constexpr void lower_detach() {
     for(auto const& info:detach.authored_infos()) {
       auto writer=out.bundle_projections.at(info.writer_bundle).topology_node;
       if(!writer)details::error("detach writer is not a concrete lowered node");
@@ -822,7 +822,7 @@ class Lowerer {
         details::error("detach reader output must be one concrete channel");
       auto const reader = reader_channel.port;
       out.detached_info_by_source.emplace(*source,DetachedSamplePortInfo{info.detach_id,*source,*writer,reader,info.loop_extra_latency});
-      out.detached_reader_outputs.insert(reader);
+      out.detached_reader_outputs.emplace(reader);
     }
   }
 
@@ -911,17 +911,16 @@ class Lowerer {
     return {node, 0};
   }
 
-  void lower_runtime_output_observers() {
-    if (!runtime_bindings) return;
+  constexpr void lower_runtime_output_observers() {
     auto const virtual_ports = virtuals.ports(bundles);
 
     for (auto const& output : virtual_ports.sample_outputs) {
       std::vector<TopologyPortId> sources;
       std::vector<InputConfig> inputs;
-      std::vector<std::shared_ptr<RuntimeOutputBinding>> member_bindings;
+      std::vector<std::string> member_binding_ids;
       sources.reserve(output.node_bundle_ports.size());
       inputs.reserve(output.node_bundle_ports.size());
-      member_bindings.reserve(output.node_bundle_ports.size());
+      member_binding_ids.reserve(output.node_bundle_ports.size());
       for (size_t member = 0;
            member < output.node_bundle_ports.size(); ++member) {
         sources.push_back(materialize_sample_output_port(
@@ -930,17 +929,18 @@ class Lowerer {
             .name = output.config.name,
             .channel_layout = output.config.channel_layout,
         });
-        member_bindings.push_back(runtime_bindings->output(
-            runtime_virtual_port_key(
+        member_binding_ids.push_back(runtime_virtual_port_key(
                 false, PortKind::sample, output.id.virtual_node_id, member,
-                output.id.port_ordinal)));
+                output.id.port_ordinal));
       }
-      auto const node = append_generated(make_generated_runtime_node(
-          RuntimeSampleOutputFamilyNode(
-              std::move(inputs), std::move(member_bindings),
-              runtime_bindings->output(runtime_virtual_port_key(
+      auto const node = append_generated(make_generated_node(
+          RuntimeSampleOutputFamilyNodeSpec{
+              .input_configs = std::move(inputs),
+              .member_binding_ids = std::move(member_binding_ids),
+              .aggregate_binding_id = runtime_virtual_port_key(
                   false, PortKind::sample, output.id.virtual_node_id,
-                  std::nullopt, output.id.port_ordinal))),
+                  std::nullopt, output.id.port_ordinal),
+          },
           "iv::RuntimeSampleOutputFamilyNode"));
       for (size_t input = 0; input < sources.size(); ++input)
         out.topology.add_sample_edge({sources[input], {node, input}});
@@ -948,24 +948,26 @@ class Lowerer {
 
     for (auto const& output : virtual_ports.event_outputs) {
       std::vector<TopologyPortId> sources;
-      std::vector<std::shared_ptr<RuntimeOutputBinding>> member_bindings;
+      std::vector<std::string> member_binding_ids;
       sources.reserve(output.node_bundle_ports.size());
-      member_bindings.reserve(output.node_bundle_ports.size());
+      member_binding_ids.reserve(output.node_bundle_ports.size());
       for (size_t member = 0;
            member < output.node_bundle_ports.size(); ++member) {
         sources.push_back(materialize_event_output_port(
             output.node_bundle_ports[member], output.config.type));
-        member_bindings.push_back(runtime_bindings->output(
-            runtime_virtual_port_key(
+        member_binding_ids.push_back(runtime_virtual_port_key(
                 false, PortKind::event, output.id.virtual_node_id, member,
-                output.id.port_ordinal)));
+                output.id.port_ordinal));
       }
-      auto const node = append_generated(make_generated_runtime_node(
-          RuntimeEventOutputFamilyNode(
-              output.config.type, sources.size(), std::move(member_bindings),
-              runtime_bindings->output(runtime_virtual_port_key(
+      auto const node = append_generated(make_generated_node(
+          RuntimeEventOutputFamilyNodeSpec{
+              .type = output.config.type,
+              .member_count = sources.size(),
+              .member_binding_ids = std::move(member_binding_ids),
+              .aggregate_binding_id = runtime_virtual_port_key(
                   false, PortKind::event, output.id.virtual_node_id,
-                  std::nullopt, output.id.port_ordinal))),
+                  std::nullopt, output.id.port_ordinal),
+          },
           "iv::RuntimeEventOutputFamilyNode"));
       for (size_t input = 0; input < sources.size(); ++input)
         out.topology.add_event_edge({
@@ -975,23 +977,22 @@ class Lowerer {
     }
   }
 
-  void lower_execution_root_ports() {
+  constexpr void lower_execution_root_ports() {
     if (!execution_root) return;
-    if (!runtime_bindings)
-      details::error("execution-root lowering requires runtime bindings");
 
     auto const sample_inputs = public_ports.sample_inputs(bundles);
     for (size_t port = 0; port < sample_inputs.size(); ++port) {
       auto const& input = sample_inputs[port];
       auto node = append_generated(
-          make_generated_runtime_node(RuntimeSampleInputNode(
-              OutputConfig{
+          make_generated_node(RuntimeSampleInputNodeSpec{
+              .output = OutputConfig{
                   .name = input.name,
                   .channel_layout = input.channel_layout,
               },
-              input.default_value,
-              runtime_bindings->sample_input(runtime_public_port_key(
-                  true, PortKind::sample, port))),
+              .default_value = input.default_value,
+              .binding_id = runtime_public_port_key(
+                  true, PortKind::sample, port),
+          },
               "iv::RuntimeSampleInputNode"));
       out.topology.replace_sample_source({GRAPH_ID, port}, {node, 0});
     }
@@ -999,10 +1000,11 @@ class Lowerer {
     auto const event_inputs = public_ports.event_inputs(bundles);
     for (size_t port = 0; port < event_inputs.size(); ++port) {
       auto node = append_generated(
-          make_generated_runtime_node(RuntimeEventInputNode(
-              event_inputs[port].type,
-              runtime_bindings->event_input(runtime_public_port_key(
-                  true, PortKind::event, port))),
+          make_generated_node(RuntimeEventInputNodeSpec{
+              .type = event_inputs[port].type,
+              .binding_id = runtime_public_port_key(
+                  true, PortKind::event, port),
+          },
               "iv::RuntimeEventInputNode"));
       out.topology.replace_event_source({GRAPH_ID, port}, {node, 0});
     }
@@ -1011,13 +1013,14 @@ class Lowerer {
     for (size_t port = 0; port < sample_outputs.size(); ++port) {
       auto const& output = sample_outputs[port];
       auto node = append_generated(
-          make_generated_runtime_node(RuntimeSampleOutputNode(
-              InputConfig{
+          make_generated_node(RuntimeSampleOutputNodeSpec{
+              .input = InputConfig{
                   .name = output.name,
                   .channel_layout = output.channel_layout,
               },
-              runtime_bindings->output(runtime_public_port_key(
-                  false, PortKind::sample, port))),
+              .binding_id = runtime_public_port_key(
+                  false, PortKind::sample, port),
+          },
               "iv::RuntimeSampleOutputNode"));
       out.topology.replace_sample_target({GRAPH_ID, port}, {node, 0});
     }
@@ -1025,35 +1028,43 @@ class Lowerer {
     auto const event_outputs = public_ports.event_outputs(bundles);
     for (size_t port = 0; port < event_outputs.size(); ++port) {
       auto node = append_generated(
-          make_generated_runtime_node(RuntimeEventOutputNode(
-              event_outputs[port].type,
-              runtime_bindings->output(runtime_public_port_key(
-                  false, PortKind::event, port))),
+          make_generated_node(RuntimeEventOutputNodeSpec{
+              .type = event_outputs[port].type,
+              .binding_id = runtime_public_port_key(
+                  false, PortKind::event, port),
+          },
               "iv::RuntimeEventOutputNode"));
       out.topology.replace_event_target({GRAPH_ID, port}, {node, 0});
     }
   }
 
 public:
-  Lowerer(GraphBuilderNodeBundles const& b, GraphBuilderConnections const& c,
+  constexpr Lowerer(GraphBuilderNodeBundles const& b, GraphBuilderConnections const& c,
           GraphBuilderPublicPorts const& p, GraphBuilderVirtualNodes const& v,
           GraphBuilderDetach const& d,
-          std::shared_ptr<GraphRuntimeBindings> bindings,
           bool is_execution_root)
       : bundles(b),connections(c),public_ports(p),virtuals(v),detach(d),
-        runtime_bindings(std::move(bindings)),
         execution_root(is_execution_root) {}
-  LoweredBuilderGraph run(){project_bundles();lower_samples();lower_events();lower_detach();lower_runtime_output_observers();lower_execution_root_ports();return std::move(out);}
+  constexpr LoweredBuilderGraph run()
+  {
+    project_bundles();
+    lower_samples();
+    lower_events();
+    lower_detach();
+    lower_runtime_output_observers();
+    lower_execution_root_ports();
+    out.topology.normalize_edges();
+    return std::move(out);
+  }
 };
 } // namespace
 
-LoweredBuilderGraph GraphBuilderLowering::lower(
+constexpr LoweredBuilderGraph GraphBuilderLowering::lower(
     GraphBuilderNodeBundles const& bundles, GraphBuilderConnections const& connections,
     GraphBuilderPublicPorts const& ports, GraphBuilderVirtualNodes const& virtuals,
     GraphBuilderDetach const& detach,
-    std::shared_ptr<GraphRuntimeBindings> runtime_bindings,
     bool execution_root) {
   return Lowerer(bundles,connections,ports,virtuals,detach,
-                 std::move(runtime_bindings),execution_root).run();
+                 execution_root).run();
 }
 } // namespace iv

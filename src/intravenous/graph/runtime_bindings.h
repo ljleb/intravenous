@@ -5,6 +5,7 @@
 #include <intravenous/ports.h>
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -137,7 +138,18 @@ private:
         outputs_ {};
 };
 
-inline std::string runtime_virtual_port_key(
+constexpr std::string runtime_binding_ordinal(size_t value)
+{
+    char digits[std::numeric_limits<size_t>::digits10 + 2] {};
+    size_t begin = sizeof(digits);
+    do {
+        digits[--begin] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    } while (value != 0);
+    return std::string(digits + begin, digits + sizeof(digits));
+}
+
+constexpr std::string runtime_virtual_port_key(
     bool input,
     PortKind kind,
     std::string_view virtual_node_id,
@@ -147,18 +159,18 @@ inline std::string runtime_virtual_port_key(
     return std::string(input ? "input/" : "output/")
         + (kind == PortKind::sample ? "sample/" : "event/")
         + std::string(virtual_node_id) + "/"
-        + (member_ordinal ? std::to_string(*member_ordinal) : "virtual") + "/"
-        + std::to_string(port_ordinal);
+        + (member_ordinal ? runtime_binding_ordinal(*member_ordinal) : "virtual")
+        + "/" + runtime_binding_ordinal(port_ordinal);
 }
 
-inline std::string runtime_public_port_key(
+constexpr std::string runtime_public_port_key(
     bool input,
     PortKind kind,
     size_t port_ordinal)
 {
     return std::string(input ? "public-input/" : "public-output/")
         + (kind == PortKind::sample ? "sample/" : "event/")
-        + std::to_string(port_ordinal);
+        + runtime_binding_ordinal(port_ordinal);
 }
 
 } // namespace iv

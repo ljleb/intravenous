@@ -7,11 +7,11 @@ class GraphBuilderNodeBundles; class GraphBuilderConnections; class GraphBuilder
 struct GraphBuilderRootNodeBuildResult { Graph graph; GraphBuildMetadata metadata; };
 class GraphBuilderFinalizer {
 public:
-  static GraphIntrospectionMetadata build_metadata(
+  static constexpr GraphIntrospectionMetadata build_metadata(
       GraphBuilderIdentity const&, LoweredBuilderGraph const&,
       GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
       GraphBuilderConnections const&, size_t detach_id_offset);
-  static GraphBuilderRootNodeBuildResult build_root_node(
+  static consteval GraphBuilderRootNodeBuildResult build_root_node(
       GraphBuilderIdentity const&, LoweredBuilderGraph const&,
       GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
       GraphBuilderPublicPorts const&, size_t detach_id_offset,

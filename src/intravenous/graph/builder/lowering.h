@@ -1,13 +1,12 @@
 #pragma once
 
 #include <intravenous/graph/builder/topology.h>
-#include <intravenous/graph/builder/node_bundles.h>
-#include <intravenous/graph/runtime_bindings.h>
+#include <intravenous/graph/builder/node_bundles.hpp>
 
+#include <flat_map>
+#include <flat_set>
 #include <limits>
 #include <optional>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace iv {
@@ -36,22 +35,21 @@ struct LoweredBuilderGraph {
   LoweredTopology topology{};
   std::vector<LoweredNodeBundleProjection> bundle_projections{};
   std::vector<std::optional<NodeBundleHandle>> bundle_by_lowered_node{};
-  std::unordered_map<TopologyPortId, TopologyPortId>
+  std::flat_map<TopologyPortId, TopologyPortId>
       subgraph_input_of_boundary_source{};
-  std::unordered_map<TopologyPortId, TopologyPortId>
+  std::flat_map<TopologyPortId, TopologyPortId>
       subgraph_event_input_of_boundary_source{};
-  std::unordered_map<TopologyPortId, DetachedSamplePortInfo>
+  std::flat_map<TopologyPortId, DetachedSamplePortInfo>
       detached_info_by_source{};
-  std::unordered_set<TopologyPortId> detached_reader_outputs{};
+  std::flat_set<TopologyPortId> detached_reader_outputs{};
 };
 
 class GraphBuilderLowering {
 public:
-  static LoweredBuilderGraph lower(
+  static constexpr LoweredBuilderGraph lower(
       GraphBuilderNodeBundles const&, GraphBuilderConnections const&,
       GraphBuilderPublicPorts const&, GraphBuilderVirtualNodes const&,
       GraphBuilderDetach const&,
-      std::shared_ptr<GraphRuntimeBindings> runtime_bindings = {},
       bool execution_root = false);
 };
 } // namespace iv

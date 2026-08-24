@@ -1,34 +1,15 @@
 #pragma once
 
-#include <intravenous/graph/node.h>
 #include <intravenous/graph/builder/topology_port.h>
+#include <intravenous/graph/generated_node_spec.h>
+#include <intravenous/graph/reflected_node.h>
 
-#include <functional>
 #include <optional>
 #include <string>
 #include <variant>
 #include <vector>
 
 namespace iv {
-struct NodePorts {
-  std::vector<InputConfig> sample_inputs{};
-  std::vector<OutputConfig> sample_outputs{};
-  std::vector<EventInputConfig> event_input_configs{};
-  std::vector<EventOutputConfig> event_output_configs{};
-
-  std::vector<InputConfig> const &inputs() const;
-  std::vector<OutputConfig> const &outputs() const;
-  std::vector<EventInputConfig> const &event_inputs() const;
-  std::vector<EventOutputConfig> const &event_outputs() const;
-};
-
-struct NodeMaterialization {
-  std::function<TypeErasedNode(size_t)> factory{};
-
-  bool is_placeholder() const;
-  TypeErasedNode make(size_t detach_id_offset) const;
-};
-
 struct NodeLifetime {
   std::optional<size_t> ttl_samples{};
 };
@@ -56,9 +37,14 @@ struct NodeTypeIdentity {
 // Lowered execution-topology IR produced from semantic NodeBundles.
 struct ConcreteNode {
   NodePorts ports{};
-  NodeMaterialization materialization{};
+  ReflectedNodeOperations operations{};
   NodeLifetime lifetime{};
   NodeTypeIdentity type_identity{};
+  size_t internal_latency_samples = 0;
+  size_t maximum_block_size = MAX_BLOCK_SIZE;
+  std::optional<size_t> default_ttl_samples{};
+  bool block_skippable = false;
+  GeneratedNodeSpec generated_node{};
 
   std::vector<InputConfig> const &inputs() const;
   std::vector<OutputConfig> const &outputs() const;

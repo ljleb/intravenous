@@ -7,13 +7,6 @@
 #include <ranges>
 
 namespace iv {
-SamplePortRef::SamplePortRef(GraphBuilder& builder, NodeBundlePortId port)
-    : graph_builder(&builder) {
-  if (port.port_kind != PortKind::sample)
-    details::error("attempted to create a SamplePortRef from an event NodeBundle port");
-  channel_type = builder._node_bundles.resolve_sample_output(port).config.channel_layout.channel_type;
-  channels = builder._node_bundles.sample_output_channels(port);
-}
 SamplePortRef::SamplePortRef(GraphBuilder& builder, ChannelTypeId type,
                              std::vector<SampleOutputChannelId> channels_)
     : graph_builder(&builder), channel_type(type), channels(std::move(channels_)) {
@@ -67,14 +60,6 @@ std::string EventPortRef::to_string() const {
   return "structural event expression with " + std::to_string(sources.size()) + " source(s) in builder " + graph_builder->_identity.value;
 }
 
-GraphBuilderIdentity::GraphBuilderIdentity(std::string value_) : value(std::move(value_)) {}
-std::string GraphBuilderIdentity::child_id(size_t index) const {
-  auto result=value; if(!result.empty())result+='.'; result+=std::to_string(index); return result;
-}
-
-GraphBuilder::GraphBuilder(GraphBuilderIdentity identity)
-    : _identity(std::move(identity)), _public_ports(_node_bundles.append_boundary()) {}
-GraphBuilder::GraphBuilder() : GraphBuilder(GraphBuilderIdentity("root")) {}
 GraphBuilder GraphBuilder::derive_nested_builder() {
   return GraphBuilder(GraphBuilderIdentity(_identity.child_id(_node_bundles.size())));
 }
@@ -179,11 +164,6 @@ std::span<SourceInfo const> GraphBuilder::public_event_input_source_infos(size_t
 GraphBuilderPublicSamplePortFamilies GraphBuilder::public_sample_output_families() const{return _public_ports.sample_output_families(_node_bundles);}
 std::vector<GraphBuilderPublicEventOutput> GraphBuilder::public_event_outputs() const{return _public_ports.collected_event_outputs(_node_bundles);}
 
-void GraphBuilder::record_authored_sample_connection(NodeBundlePortId target,SamplePortRef const& source) {
-  if(target.port_kind!=PortKind::sample||!source.graph_builder||source.graph_builder!=this)details::error("invalid authored sample connection");
-  auto descriptor=_node_bundles.resolve_sample_input(target);
-  _connections.record_authored_sample_connection({source.channel_type,source.channels,descriptor.config.channel_layout.channel_type,_node_bundles.sample_input_channels(target)});
-}
 void GraphBuilder::record_authored_sample_connection(SampleInputChannelId target,SamplePortRef const& source) {
   if(!source.graph_builder||source.graph_builder!=this)details::error("invalid authored sample channel connection");
   auto channels=_node_bundles.sample_input_channels({target.bundle,PortKind::sample,target.port});
@@ -201,7 +181,6 @@ void GraphBuilder::record_authored_event_connection(NodeBundlePortId target,Even
   auto target_type=_node_bundles.resolve_event_input(target).config.type;
   _connections.record_authored_event_connection({source.type,source.sources,target_type,_node_bundles.event_input_ports(target)});
 }
-void GraphBuilder::connect_sample_input(NodeBundlePortId target,SamplePortRef source){record_authored_sample_connection(target,source);}
 void GraphBuilder::connect_sample_input(NodeBundlePortId target,std::span<SamplePortRef const> sources){record_authored_sample_connection(target,sources);}
 void GraphBuilder::connect_event_input(NodeBundlePortId target,EventPortRef source){record_authored_event_connection(target,source);}
 bool GraphBuilder::sample_input_is_connected(NodeBundlePortId target) const{if(target.port_kind!=PortKind::sample)details::error("sample connectivity requested for event port");auto c=_node_bundles.sample_input_channels(target);return std::ranges::any_of(c,[&](auto x){return _connections.sample_input_is_connected(x);});}
@@ -243,8 +222,6 @@ size_t GraphBuilder::event_port_index(NodeBundleHandle h,bool inputs,std::string
   if(!match)details::error("NodeBundle port name '"+std::string(n)+"' does not exist");
   return *match;
 }
-SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef const& p){if(p.graph_builder!=this)details::error("sample port belongs to another builder");return p;}
-SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef&& p){if(p.graph_builder!=this)details::error("sample port belongs to another builder");return std::move(p);}
 SamplePortRef GraphBuilder::lift_to_sample_port(NamedRef const& ref){return std::visit([&](auto const& v)->SamplePortRef{using T=std::remove_cvref_t<decltype(v)>;if constexpr(std::same_as<T,EventPortRef>)details::error("expected sample value, got event");else return lift_to_sample_port(v);},ref.value);}
 
 GraphIntrospectionMetadata GraphBuilder::build_metadata(size_t detach_offset) const {
@@ -277,13 +254,10 @@ GraphBuilder::RootNodeBuildResult GraphBuilder::build_root_node(size_t detach_of
       detach_offset);
 }
 GraphBuilder::RootNodeBuildResult GraphBuilder::build_execution_root_node(
-    std::shared_ptr<GraphRuntimeBindings> runtime_bindings,
     size_t detach_offset) const {
-  if (!runtime_bindings)
-    runtime_bindings = std::make_shared<GraphRuntimeBindings>();
   auto lowered=GraphBuilderLowering::lower(
       _node_bundles,_connections,_public_ports,_virtual_nodes,_detach,
-      std::move(runtime_bindings),true);
+      true);
   return GraphBuilderFinalizer::build_root_node(
       _identity,lowered,_node_bundles,_virtual_nodes,_public_ports,
       detach_offset,true);

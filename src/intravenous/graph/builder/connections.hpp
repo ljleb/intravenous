@@ -1,57 +1,211 @@
-#include <intravenous/graph/builder/connections.h>
+#pragma once
 
-#include <intravenous/graph/builder/node_bundles.h>
-#include <intravenous/graph/builder/virtual_nodes.h>
+#include <intravenous/graph/builder/port_refs.h>
+#include <intravenous/graph/builder/virtual_nodes.hpp>
+#include <intravenous/channel_layout.h>
 
 #include <algorithm>
 #include <ranges>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace iv {
-bool GraphBuilderConnections::sample_input_is_connected(
+class GraphBuilderNodeBundles;
+class GraphBuilderVirtualNodes;
+
+struct GraphBuilderVacantSampleInput {
+  NodeBundlePortId target{};
+  std::string virtual_node_id{};
+  size_t member_ordinal = 0;
+  InputConfig config{};
+};
+struct GraphBuilderVacantEventInput {
+  NodeBundlePortId target{};
+  std::string virtual_node_id{};
+  size_t member_ordinal = 0;
+  EventInputConfig config{};
+};
+struct GraphBuilderVacantInputs {
+  std::vector<GraphBuilderVacantSampleInput> sample{};
+  std::vector<GraphBuilderVacantEventInput> event{};
+};
+
+struct GraphBuilderVirtualSampleInput {
+  NodeBundlePortId target{};
+  std::string virtual_node_id{};
+  size_t member_ordinal = 0;
+  InputConfig config{};
+  bool has_existing_connection = false;
+};
+struct GraphBuilderVirtualEventInput {
+  NodeBundlePortId target{};
+  std::string virtual_node_id{};
+  size_t member_ordinal = 0;
+  EventInputConfig config{};
+  bool has_existing_connection = false;
+};
+struct GraphBuilderVirtualInputs {
+  std::vector<GraphBuilderVirtualSampleInput> sample{};
+  std::vector<GraphBuilderVirtualEventInput> event{};
+};
+
+struct GraphBuilderVirtualSampleInputChannel {
+  std::vector<SampleInputChannelId> targets{};
+  bool has_existing_connection = false;
+};
+struct GraphBuilderVirtualSampleInputFamily {
+  std::string virtual_node_id{};
+  size_t member_ordinal = 0;
+  size_t family_ordinal = 0;
+  std::string family_name{};
+  InputConfig config{};
+  ChannelTypeId channel_type = ChannelTypeId::mono;
+  std::vector<GraphBuilderVirtualSampleInputChannel> channels{};
+};
+struct GraphBuilderVirtualSampleInputFamilies {
+  std::vector<GraphBuilderVirtualSampleInputFamily> families{};
+};
+
+struct GraphBuilderVirtualSampleOutput {
+  NodeBundlePortId source{};
+  std::string virtual_node_id{};
+  size_t member_ordinal = 0;
+  OutputConfig config{};
+  bool has_existing_downstream_connection = false;
+};
+struct GraphBuilderVirtualEventOutput {
+  NodeBundlePortId source{};
+  std::string virtual_node_id{};
+  size_t member_ordinal = 0;
+  EventOutputConfig config{};
+  bool has_existing_downstream_connection = false;
+};
+struct GraphBuilderVirtualOutputs {
+  std::vector<GraphBuilderVirtualSampleOutput> sample{};
+  std::vector<GraphBuilderVirtualEventOutput> event{};
+};
+
+struct GraphBuilderVirtualSampleOutputChannel {
+  std::vector<SampleOutputChannelId> sources{};
+  bool has_existing_downstream_connection = false;
+};
+struct GraphBuilderVirtualSampleOutputFamily {
+  std::string virtual_node_id{};
+  size_t member_ordinal = 0;
+  size_t family_ordinal = 0;
+  std::string family_name{};
+  OutputConfig config{};
+  ChannelTypeId channel_type = ChannelTypeId::mono;
+  std::vector<GraphBuilderVirtualSampleOutputChannel> channels{};
+};
+struct GraphBuilderVirtualSampleOutputFamilies {
+  std::vector<GraphBuilderVirtualSampleOutputFamily> families{};
+};
+
+struct AuthoredSampleConnection {
+  ChannelTypeId source_type = ChannelTypeId::mono;
+  std::vector<SampleOutputChannelId> source_channels{};
+  ChannelTypeId target_type = ChannelTypeId::mono;
+  std::vector<SampleInputChannelId> target_channels{};
+  bool operator==(AuthoredSampleConnection const&) const = default;
+};
+
+struct AuthoredEventConnection {
+  EventTypeId source_type = EventTypeId::empty;
+  std::vector<EventOutputPortId> sources{};
+  EventTypeId target_type = EventTypeId::empty;
+  std::vector<EventInputPortId> targets{};
+  bool operator==(AuthoredEventConnection const&) const = default;
+};
+
+class GraphBuilderConnections {
+public:
+  constexpr void record_authored_sample_connection(
+      AuthoredSampleConnection connection)
+  {
+    if (connection.source_channels.size()
+        != channel_count(connection.source_type))
+      details::error(
+          "authored sample connection source does not match its channel type");
+    if (connection.target_channels.size()
+        != channel_count(connection.target_type))
+      details::error(
+          "authored sample connection target does not match its channel type");
+    _authored_sample_connections.push_back(std::move(connection));
+  }
+  constexpr std::span<AuthoredSampleConnection const>
+      authored_sample_connections() const;
+  constexpr void record_authored_event_connection(AuthoredEventConnection);
+  constexpr std::span<AuthoredEventConnection const>
+      authored_event_connections() const;
+
+  constexpr bool sample_input_is_connected(SampleInputChannelId) const;
+  constexpr bool sample_output_is_connected(SampleOutputChannelId) const;
+  constexpr bool event_input_is_connected(EventInputPortId) const;
+  constexpr bool event_output_is_connected(EventOutputPortId) const;
+
+  constexpr GraphBuilderVacantInputs collect_vacant_inputs(
+      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
+  constexpr GraphBuilderVirtualInputs collect_virtual_inputs(
+      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
+  constexpr GraphBuilderVirtualSampleInputFamilies
+      collect_virtual_sample_input_families(
+      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
+  constexpr GraphBuilderVirtualOutputs collect_virtual_outputs(
+      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
+  constexpr GraphBuilderVirtualSampleOutputFamilies
+      collect_virtual_sample_output_families(
+      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
+
+  constexpr void import_child(
+      GraphBuilderConnections const&, size_t node_bundle_offset);
+
+private:
+  std::vector<AuthoredSampleConnection> _authored_sample_connections{};
+  std::vector<AuthoredEventConnection> _authored_event_connections{};
+};
+} // namespace iv
+namespace iv {
+constexpr bool GraphBuilderConnections::sample_input_is_connected(
     SampleInputChannelId target) const {
   return std::ranges::any_of(_authored_sample_connections,
       [&](auto const& c) { return std::ranges::contains(c.target_channels, target); });
 }
-bool GraphBuilderConnections::sample_output_is_connected(
+constexpr bool GraphBuilderConnections::sample_output_is_connected(
     SampleOutputChannelId source) const {
   return std::ranges::any_of(_authored_sample_connections,
       [&](auto const& c) { return std::ranges::contains(c.source_channels, source); });
 }
-bool GraphBuilderConnections::event_input_is_connected(
+constexpr bool GraphBuilderConnections::event_input_is_connected(
     EventInputPortId target) const {
   return std::ranges::any_of(_authored_event_connections,
       [&](auto const& c) { return std::ranges::contains(c.targets, target); });
 }
-bool GraphBuilderConnections::event_output_is_connected(
+constexpr bool GraphBuilderConnections::event_output_is_connected(
     EventOutputPortId source) const {
   return std::ranges::any_of(_authored_event_connections,
       [&](auto const& c) { return std::ranges::contains(c.sources, source); });
 }
 
-void GraphBuilderConnections::record_authored_sample_connection(
-    AuthoredSampleConnection connection) {
-  if (connection.source_channels.size() != channel_count(connection.source_type))
-    details::error("authored sample connection source does not match its channel type");
-  if (connection.target_channels.size() != channel_count(connection.target_type))
-    details::error("authored sample connection target does not match its channel type");
-  _authored_sample_connections.push_back(std::move(connection));
-}
-std::span<AuthoredSampleConnection const>
+constexpr std::span<AuthoredSampleConnection const>
 GraphBuilderConnections::authored_sample_connections() const {
   return _authored_sample_connections;
 }
-void GraphBuilderConnections::record_authored_event_connection(
+constexpr void GraphBuilderConnections::record_authored_event_connection(
     AuthoredEventConnection connection) {
   if (connection.sources.empty()) details::error("authored event connection has no source");
   if (connection.targets.empty()) details::error("authored event connection has no target");
   _authored_event_connections.push_back(std::move(connection));
 }
-std::span<AuthoredEventConnection const>
+constexpr std::span<AuthoredEventConnection const>
 GraphBuilderConnections::authored_event_connections() const {
   return _authored_event_connections;
 }
 
-GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
+constexpr GraphBuilderVacantInputs
+GraphBuilderConnections::collect_vacant_inputs(
     GraphBuilderNodeBundles const& bundles,
     GraphBuilderVirtualNodes const& virtual_nodes) const {
   GraphBuilderVacantInputs result;
@@ -80,7 +234,8 @@ GraphBuilderVacantInputs GraphBuilderConnections::collect_vacant_inputs(
   return result;
 }
 
-GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
+constexpr GraphBuilderVirtualInputs
+GraphBuilderConnections::collect_virtual_inputs(
     GraphBuilderNodeBundles const& bundles,
     GraphBuilderVirtualNodes const& virtual_nodes) const {
   GraphBuilderVirtualInputs result;
@@ -109,7 +264,7 @@ GraphBuilderVirtualInputs GraphBuilderConnections::collect_virtual_inputs(
   return result;
 }
 
-GraphBuilderVirtualSampleInputFamilies
+constexpr GraphBuilderVirtualSampleInputFamilies
 GraphBuilderConnections::collect_virtual_sample_input_families(
     GraphBuilderNodeBundles const& bundles,
     GraphBuilderVirtualNodes const& virtual_nodes) const {
@@ -143,7 +298,8 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
   return result;
 }
 
-GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
+constexpr GraphBuilderVirtualOutputs
+GraphBuilderConnections::collect_virtual_outputs(
     GraphBuilderNodeBundles const& bundles,
     GraphBuilderVirtualNodes const& virtual_nodes) const {
   GraphBuilderVirtualOutputs result;
@@ -174,7 +330,7 @@ GraphBuilderVirtualOutputs GraphBuilderConnections::collect_virtual_outputs(
   return result;
 }
 
-GraphBuilderVirtualSampleOutputFamilies
+constexpr GraphBuilderVirtualSampleOutputFamilies
 GraphBuilderConnections::collect_virtual_sample_output_families(
     GraphBuilderNodeBundles const& bundles,
     GraphBuilderVirtualNodes const& virtual_nodes) const {
@@ -208,7 +364,7 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
   return result;
 }
 
-void GraphBuilderConnections::import_child(
+constexpr void GraphBuilderConnections::import_child(
     GraphBuilderConnections const& child, size_t bundle_offset) {
   for (auto connection : child._authored_sample_connections) {
     for (auto& channel : connection.source_channels) channel.bundle += bundle_offset;
