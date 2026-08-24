@@ -41,7 +41,7 @@ void SubgraphBuilder::event_outputs(
       _builder, _builder._node_bundles, _builder._identity, refs);
 }
 
-void SubgraphBuilder::outputs(std::initializer_list<NamedRef> refs) {
+constexpr void SubgraphBuilder::outputs(std::initializer_list<NamedRef> refs) {
   outputs(std::span<NamedRef const>(refs.begin(), refs.size()));
 }
 
@@ -50,7 +50,7 @@ void SubgraphBuilder::outputs(std::span<OutputRefConfig const> refs) {
       _builder, _builder._node_bundles, _builder._identity, refs);
 }
 
-void SubgraphBuilder::outputs(std::span<NamedRef const> refs) {
+constexpr void SubgraphBuilder::outputs(std::span<NamedRef const> refs) {
   _ports.define_sample_outputs_from_named_refs(
       _builder, _builder._node_bundles, _builder._identity,
       [&](auto&& value) {
