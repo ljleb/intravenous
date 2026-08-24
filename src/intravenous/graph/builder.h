@@ -117,9 +117,9 @@ public:
   void event_outputs(std::span<EventOutputRefConfig const> refs);
   template<class Fn> NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph");
   template<class... Refs> constexpr void outputs(Refs&&... refs);
-  void outputs(std::initializer_list<NamedRef> refs);
+  constexpr void outputs(std::initializer_list<NamedRef> refs);
   void outputs(std::span<OutputRefConfig const> refs);
-  void outputs(std::span<NamedRef const> refs);
+  constexpr void outputs(std::span<NamedRef const> refs);
 
   using VacantSampleInput = GraphBuilderVacantSampleInput;
   using VacantEventInput = GraphBuilderVacantEventInput;
