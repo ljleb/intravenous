@@ -25,13 +25,13 @@ class IvModuleInstancesExecution {
             // must be gone before its binary generations are released.
             std::vector<ModuleRef> module_refs {};
             IvModuleInstance const* instance = nullptr;
-            GraphBuilder* builder = nullptr;
+            WeakTypeErasedNode root {};
             std::optional<size_t> default_silence_ttl_samples {};
             BlockNodeExecutor::PreparedReload prepared;
         };
 
         IvModuleInstance const *instance = nullptr;
-        GraphBuilder *builder = nullptr;
+        WeakTypeErasedNode root {};
         std::optional<size_t> default_silence_ttl_samples {};
         std::vector<ModuleRef> module_refs {};
         std::shared_ptr<BlockNodeExecutor> executor {};
@@ -64,8 +64,7 @@ class IvModuleInstancesExecution {
 
     static void invoke_instance_task(void *);
     static std::shared_ptr<BlockNodeExecutor> make_executor(
-        GraphBuilder &builder,
-        IvModuleInstance const& instance,
+        WeakTypeErasedNode root,
         size_t block_size,
         size_t sample_rate,
         std::optional<size_t> default_silence_ttl_samples);
