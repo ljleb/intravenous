@@ -54,11 +54,11 @@ public:
   constexpr PublicEventInputRef event_input(EventTypeId type);
 
   template<class... Refs>
-  constexpr void event_outputs(Refs&&... refs);
+  void event_outputs(Refs&&... refs);
   constexpr void event_outputs(std::span<EventOutputRefConfig const> refs);
 
   template<class... Refs>
-  constexpr void outputs(Refs&&... refs);
+  void outputs(Refs&&... refs);
   constexpr void outputs(std::initializer_list<NamedRef> refs);
   constexpr void outputs(std::span<OutputRefConfig const> refs);
   constexpr void outputs(std::span<NamedRef const> refs);
