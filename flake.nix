@@ -5,9 +5,8 @@
     nixpkgs.url = "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1038038.421eebfd0ec7/nixexprs.tar.xz";
 
     # GCC 16 is intentionally sourced independently from the rest of the
-    # development environment. Intravenous still uses Clang/LLVM tooling for
-    # source rewriting, while reflection compilation requires GCC's C++26
-    # implementation.
+    # development environment. Intravenous uses GCC for production C++26
+    # reflection compilation and keeps Clang/LLVM only for source rewriting.
     gcc-reflection-nixpkgs.url = "github:NixOS/nixpkgs/2c423e03bbafcff28bfadc6781a4a8257f205cb5";
   };
 
@@ -56,12 +55,15 @@
             ];
 
             shellHook = ''
-              export CC=clang
-              export CXX=clang++
               ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-                export IV_REFLECTION_CC=${reflectionPkgs.gcc16}/bin/gcc
-                export IV_REFLECTION_CXX=${reflectionPkgs.gcc16}/bin/g++
+                export CC=${reflectionPkgs.gcc16}/bin/gcc
+                export CXX=${reflectionPkgs.gcc16}/bin/g++
               ''}
+              ${pkgs.lib.optionalString (!pkgs.stdenv.isLinux) ''
+                export CC=clang
+                export CXX=clang++
+              ''}
+              export IV_CLANG_CXX=${pkgs.llvmPackages_22.clang}/bin/clang++
               export JUCE_DIR=${pkgs.juce}
               export IV_VST3_PATH="$HOME/vst"
 
@@ -70,9 +72,7 @@
               echo "intravenous dev shell ready"
               echo "CC=$CC"
               echo "CXX=$CXX"
-              ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-                echo "IV_REFLECTION_CXX=$IV_REFLECTION_CXX"
-              ''}
+              echo "IV_CLANG_CXX=$IV_CLANG_CXX"
               echo "JUCE_DIR=$JUCE_DIR"
               echo "IV_VST3_PATH=$IV_VST3_PATH"
               echo "Configure with: cmake -S . -B build -G Ninja -DJUCE_DIR=$JUCE_DIR"
