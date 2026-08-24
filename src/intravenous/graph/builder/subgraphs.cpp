@@ -2,14 +2,15 @@
 #include <intravenous/graph/builder.h>
 
 namespace iv {
-SubgraphBuilder::SubgraphBuilder(GraphBuilder& builder, NodeBundleHandle boundary)
+constexpr SubgraphBuilder::SubgraphBuilder(
+    GraphBuilder& builder, NodeBundleHandle boundary)
     : _builder(builder), _ports(boundary) {}
 
-PublicSampleInputRef SubgraphBuilder::input() {
+constexpr PublicSampleInputRef SubgraphBuilder::input() {
   return input(Sample{0.0f});
 }
 
-PublicSampleInputRef SubgraphBuilder::input_named(
+constexpr PublicSampleInputRef SubgraphBuilder::input_named(
     std::string_view name, Sample value, std::optional<Sample> min,
     std::optional<Sample> max) {
   return PublicSampleInputRef(
@@ -17,25 +18,25 @@ PublicSampleInputRef SubgraphBuilder::input_named(
                               name, value, min, max));
 }
 
-PublicSampleInputRef SubgraphBuilder::input(
+constexpr PublicSampleInputRef SubgraphBuilder::input(
     Sample value, std::optional<Sample> min, std::optional<Sample> max) {
   return PublicSampleInputRef(
       _ports.add_sample_input(_builder, _builder._node_bundles,
                               {}, value, min, max));
 }
 
-PublicEventInputRef SubgraphBuilder::event_input_named(
+constexpr PublicEventInputRef SubgraphBuilder::event_input_named(
     std::string_view name, EventTypeId type) {
   return PublicEventInputRef(
       _ports.add_event_input(_builder, _builder._node_bundles, name, type));
 }
 
-PublicEventInputRef SubgraphBuilder::event_input(EventTypeId type) {
+constexpr PublicEventInputRef SubgraphBuilder::event_input(EventTypeId type) {
   return PublicEventInputRef(
       _ports.add_event_input(_builder, _builder._node_bundles, {}, type));
 }
 
-void SubgraphBuilder::event_outputs(
+constexpr void SubgraphBuilder::event_outputs(
     std::span<EventOutputRefConfig const> refs) {
   _ports.define_event_outputs(
       _builder, _builder._node_bundles, _builder._identity, refs);
@@ -45,7 +46,7 @@ constexpr void SubgraphBuilder::outputs(std::initializer_list<NamedRef> refs) {
   outputs(std::span<NamedRef const>(refs.begin(), refs.size()));
 }
 
-void SubgraphBuilder::outputs(std::span<OutputRefConfig const> refs) {
+constexpr void SubgraphBuilder::outputs(std::span<OutputRefConfig const> refs) {
   _ports.define_sample_outputs(
       _builder, _builder._node_bundles, _builder._identity, refs);
 }
