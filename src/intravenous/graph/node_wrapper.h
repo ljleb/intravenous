@@ -355,6 +355,46 @@ namespace iv {
             }
         }
 
+        template<auto Node>
+        static IV_FORCEINLINE void tick_static(
+            TickBlockContext<GraphNodeWrapper> const& ctx)
+        {
+            auto& state = ctx.state();
+            Node._operations.tick_block(
+                ReflectedNodeTickContext {
+                    .inputs = state.inputs,
+                    .outputs = state.outputs,
+                    .event_inputs = state.event_inputs,
+                    .event_outputs = state.event_outputs,
+                    .sample_rate = ctx.sample_rate,
+                    .scc_feedback_latency = ctx.scc_feedback_latency,
+                    .state = state.nested_node_states[0],
+                },
+                ctx.index,
+                ctx.block_size
+            );
+        }
+
+        template<auto Node>
+        static IV_FORCEINLINE void skip_static(
+            SkipBlockContext<GraphNodeWrapper> const& ctx)
+        {
+            auto& state = ctx.state();
+            Node._operations.skip_block(
+                ReflectedNodeTickContext {
+                    .inputs = state.inputs,
+                    .outputs = state.outputs,
+                    .event_inputs = state.event_inputs,
+                    .event_outputs = state.event_outputs,
+                    .sample_rate = ctx.sample_rate,
+                    .scc_feedback_latency = ctx.scc_feedback_latency,
+                    .state = state.nested_node_states[0],
+                },
+                ctx.index,
+                ctx.block_size
+            );
+        }
+
         void tick_block(TickBlockContext<GraphNodeWrapper> const& ctx) const
         {
             auto& state = ctx.state();
