@@ -4,6 +4,7 @@
 
 #include <array>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -27,27 +28,24 @@ namespace iv {
     };
 
     class TypeErasedNode {
-        void const* _node = nullptr;
-        std::vector<InputConfig> (*_inputs_fn)(void const*) = nullptr;
-        std::vector<OutputConfig> (*_outputs_fn)(void const*) = nullptr;
-        std::vector<EventInputConfig> (*_event_inputs_fn)(void const*) = nullptr;
-        std::vector<EventOutputConfig> (*_event_outputs_fn)(void const*) = nullptr;
-        size_t (*_internal_latency_fn)(void const*) = nullptr;
-        size_t (*_max_block_size_fn)(void const*) = nullptr;
-        std::optional<size_t> (*_ttl_samples_fn)(void const*) = nullptr;
-        bool (*_can_skip_block_fn)(void const*) = nullptr;
+        using NodeStoragePtr = std::unique_ptr<void, void(*)(void*)>;
+
+        NodeStoragePtr _node { nullptr, +[](void*) {} };
+        std::vector<InputConfig> _inputs;
+        std::vector<OutputConfig> _outputs;
+        std::vector<EventInputConfig> _event_inputs;
+        std::vector<EventOutputConfig> _event_outputs;
+        size_t _internal_latency;
+        size_t _max_block_size;
+        std::optional<size_t> _ttl_samples;
+        bool _can_skip_block = false;
         char const* _type_name = "<unknown>";
         std::type_info const* _type_info = &typeid(void);
-        void (*_declare_fn)(void const*, DeclarationContext<TypeErasedNode> const&) = nullptr;
-        void (*_tick_fn)(void const*, TickSampleContext<TypeErasedNode> const&) = nullptr;
-        void (*_tick_block_fn)(void const*, TickBlockContext<TypeErasedNode> const&) = nullptr;
-        void (*_skip_block_fn)(void const*, SkipBlockContext<TypeErasedNode> const&) = nullptr;
-
-        template<class Config, class Range>
-        static std::vector<Config> copy_configs(Range&& range)
-        {
-            return {range.begin(), range.end()};
-        }
+        void const* (*_const_ptr_fn)(void const*) = +[](void const*) -> void const* { return nullptr; };
+        void (*_declare_fn)(void*, DeclarationContext<TypeErasedNode> const&) = nullptr;
+        void (*_tick_fn)(void*, TickSampleContext<TypeErasedNode> const&) = nullptr;
+        void (*_tick_block_fn)(void*, TickBlockContext<TypeErasedNode> const&) = nullptr;
+        void (*_skip_block_fn)(void*, SkipBlockContext<TypeErasedNode> const&) = nullptr;
 
     public:
         struct State {
@@ -55,128 +53,167 @@ namespace iv {
         };
 
         TypeErasedNode() = default;
-        TypeErasedNode(TypeErasedNode const&) = default;
-        TypeErasedNode& operator=(TypeErasedNode const&) = default;
+        TypeErasedNode(TypeErasedNode const&) = delete;
+        TypeErasedNode& operator=(TypeErasedNode const&) = delete;
+
         TypeErasedNode(TypeErasedNode&&) noexcept = default;
         TypeErasedNode& operator=(TypeErasedNode&&) noexcept = default;
 
-        template<class Node>
-            requires (!std::same_as<std::remove_cvref_t<Node>, TypeErasedNode>)
-        /*implicit*/ TypeErasedNode(Node const& node)
-            : _node(&node)
+        template<typename Node>
+        /*implicit*/ TypeErasedNode(Node node)
         {
-            _inputs_fn = [](void const* node_ptr) {
-                return copy_configs<InputConfig>(
-                    get_inputs(*static_cast<Node const*>(node_ptr)));
-            };
-            _outputs_fn = [](void const* node_ptr) {
-                return copy_configs<OutputConfig>(
-                    get_outputs(*static_cast<Node const*>(node_ptr)));
-            };
-            _event_inputs_fn = [](void const* node_ptr) {
-                return copy_configs<EventInputConfig>(
-                    get_event_inputs(*static_cast<Node const*>(node_ptr)));
-            };
-            _event_outputs_fn = [](void const* node_ptr) {
-                return copy_configs<EventOutputConfig>(
-                    get_event_outputs(*static_cast<Node const*>(node_ptr)));
-            };
-            _internal_latency_fn = [](void const* node_ptr) {
-                return get_internal_latency(*static_cast<Node const*>(node_ptr));
-            };
-            _max_block_size_fn = [](void const* node_ptr) {
-                return get_max_block_size(*static_cast<Node const*>(node_ptr));
-            };
-            _ttl_samples_fn = [](void const* node_ptr) {
-                return get_ttl_samples(*static_cast<Node const*>(node_ptr));
-            };
-            _can_skip_block_fn = [](void const* node_ptr) {
-                return get_can_skip_block(*static_cast<Node const*>(node_ptr));
-            };
+            auto const inputs = get_inputs(node);
+            auto const outputs = get_outputs(node);
+            auto const event_inputs = get_event_inputs(node);
+            auto const event_outputs = get_event_outputs(node);
+            _inputs.assign(inputs.begin(), inputs.end());
+            _outputs.assign(outputs.begin(), outputs.end());
+            _event_inputs.assign(event_inputs.begin(), event_inputs.end());
+            _event_outputs.assign(event_outputs.begin(), event_outputs.end());
+            _internal_latency = get_internal_latency(node);
+            _max_block_size = get_max_block_size(node);
+            _ttl_samples = get_ttl_samples(node);
+            _can_skip_block = get_can_skip_block(node);
             _type_name = typeid(Node).name();
             _type_info = &typeid(Node);
-            validate_max_block_size(
-                _max_block_size_fn(_node),
-                "node max_block_size() must be a power of 2");
+            validate_max_block_size(_max_block_size, "node max_block_size() must be a power of 2");
 
-            _declare_fn = [](void const* node_ptr, DeclarationContext<TypeErasedNode> const& ctx) {
-                auto const& state = ctx.state();
-                do_declare(*static_cast<Node const*>(node_ptr), ctx);
-                ctx.nested_node_states(state.nested_node_states);
-            };
-            _tick_fn = [](void const* node_ptr, TickSampleContext<TypeErasedNode> const& ctx) {
-                auto& state = ctx.state();
-                do_tick(*static_cast<Node const*>(node_ptr), TickSampleContext<Node> {
-                    TickContext<Node> {
-                        .inputs = ctx.inputs,
-                        .outputs = ctx.outputs,
-                        .event_inputs = ctx.event_inputs,
-                        .event_outputs = ctx.event_outputs,
-                        .sample_rate = ctx.sample_rate,
-                        .scc_feedback_latency = ctx.scc_feedback_latency,
-                        .buffer = state.nested_node_states[0]
-                    },
-                    ctx.index,
-                });
-            };
-            _tick_block_fn = [](void const* node_ptr, TickBlockContext<TypeErasedNode> const& ctx) {
-                auto& state = ctx.state();
-                do_tick_block(*static_cast<Node const*>(node_ptr), TickBlockContext<Node> {
-                    TickContext<Node> {
-                        .inputs = ctx.inputs,
-                        .outputs = ctx.outputs,
-                        .event_inputs = ctx.event_inputs,
-                        .event_outputs = ctx.event_outputs,
-                        .sample_rate = ctx.sample_rate,
-                        .scc_feedback_latency = ctx.scc_feedback_latency,
-                        .buffer = state.nested_node_states[0]
-                    },
-                    ctx.index,
-                    ctx.block_size,
-                });
-            };
-            _skip_block_fn = [](void const* node_ptr, SkipBlockContext<TypeErasedNode> const& ctx) {
-                auto& state = ctx.state();
-                do_skip_block(*static_cast<Node const*>(node_ptr), SkipBlockContext<Node> {
-                    TickContext<Node> {
-                        .inputs = ctx.inputs,
-                        .outputs = ctx.outputs,
-                        .event_inputs = ctx.event_inputs,
-                        .event_outputs = ctx.event_outputs,
-                        .sample_rate = ctx.sample_rate,
-                        .scc_feedback_latency = ctx.scc_feedback_latency,
-                        .buffer = state.nested_node_states[0]
-                    },
-                    ctx.index,
-                    ctx.block_size,
-                });
-            };
+            if constexpr (std::is_empty_v<Node>) {
+                _node = NodeStoragePtr(nullptr, +[](void*) {});
+                _const_ptr_fn = +[](void const*) -> void const* { return nullptr; };
+                _declare_fn = [](void*, DeclarationContext<TypeErasedNode> const& ctx) {
+                    auto const& state = ctx.state();
+                    do_declare(Node{}, ctx);
+                    ctx.nested_node_states(state.nested_node_states);
+                };
+                _tick_fn = [](void*, TickSampleContext<TypeErasedNode> const& ctx) {
+                    auto& state = ctx.state();
+                    do_tick(Node{}, TickSampleContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .event_inputs = ctx.event_inputs,
+                            .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .buffer = state.nested_node_states[0]
+                        },
+                        ctx.index,
+                    });
+                };
+                _tick_block_fn = [](void*, TickBlockContext<TypeErasedNode> const& ctx) {
+                    auto& state = ctx.state();
+                    do_tick_block(Node{}, TickBlockContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .event_inputs = ctx.event_inputs,
+                            .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .buffer = state.nested_node_states[0]
+                        },
+                        ctx.index,
+                        ctx.block_size,
+                    });
+                };
+                _skip_block_fn = [](void*, SkipBlockContext<TypeErasedNode> const& ctx) {
+                    auto& state = ctx.state();
+                    do_skip_block(Node{}, SkipBlockContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .event_inputs = ctx.event_inputs,
+                            .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .buffer = state.nested_node_states[0]
+                        },
+                        ctx.index,
+                        ctx.block_size,
+                    });
+                };
+            } else {
+                _node = NodeStoragePtr(
+                    new Node(std::move(node)),
+                    +[](void* ptr) { delete static_cast<Node*>(ptr); }
+                );
+                _const_ptr_fn = +[](void const* ptr) -> void const* { return ptr; };
+                _declare_fn = [](void* node, DeclarationContext<TypeErasedNode> const& ctx) {
+                    auto const& state = ctx.state();
+                    do_declare(*static_cast<Node*>(node), ctx);
+                    ctx.nested_node_states(state.nested_node_states);
+                };
+                _tick_fn = [](void* node, TickSampleContext<TypeErasedNode> const& ctx) {
+                    auto& state = ctx.state();
+                    do_tick(*static_cast<Node*>(node), TickSampleContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .event_inputs = ctx.event_inputs,
+                            .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .buffer = state.nested_node_states[0]
+                        },
+                        ctx.index,
+                    });
+                };
+                _tick_block_fn = [](void* node, TickBlockContext<TypeErasedNode> const& ctx) {
+                    auto& state = ctx.state();
+                    do_tick_block(*static_cast<Node*>(node), TickBlockContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .event_inputs = ctx.event_inputs,
+                            .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .buffer = state.nested_node_states[0]
+                        },
+                        ctx.index,
+                        ctx.block_size,
+                    });
+                };
+                _skip_block_fn = [](void* node, SkipBlockContext<TypeErasedNode> const& ctx) {
+                    auto& state = ctx.state();
+                    do_skip_block(*static_cast<Node*>(node), SkipBlockContext<Node> {
+                        TickContext<Node> {
+                            .inputs = ctx.inputs,
+                            .outputs = ctx.outputs,
+                            .event_inputs = ctx.event_inputs,
+                            .event_outputs = ctx.event_outputs,
+                            .sample_rate = ctx.sample_rate,
+                            .scc_feedback_latency = ctx.scc_feedback_latency,
+                            .buffer = state.nested_node_states[0]
+                        },
+                        ctx.index,
+                        ctx.block_size,
+                    });
+                };
+            }
         }
 
-        template<class Node>
-            requires (!std::is_lvalue_reference_v<Node>)
-        TypeErasedNode(Node&&) = delete;
-
-        std::vector<InputConfig> inputs() const { return _inputs_fn(_node); }
-        std::vector<OutputConfig> outputs() const { return _outputs_fn(_node); }
-        std::vector<EventInputConfig> event_inputs() const { return _event_inputs_fn(_node); }
-        std::vector<EventOutputConfig> event_outputs() const { return _event_outputs_fn(_node); }
-        size_t internal_latency() const { return _internal_latency_fn(_node); }
-        size_t max_block_size() const { return _max_block_size_fn(_node); }
+        std::vector<InputConfig> const& inputs() const { return _inputs; }
+        std::vector<OutputConfig> const& outputs() const { return _outputs; }
+        std::vector<EventInputConfig> const& event_inputs() const { return _event_inputs; }
+        std::vector<EventOutputConfig> const& event_outputs() const { return _event_outputs; }
+        size_t internal_latency() const { return _internal_latency; }
+        size_t max_block_size() const { return _max_block_size; }
         char const* type_name() const { return _type_name; }
 
         template<class Node>
         Node const* try_as() const
         {
             if (*_type_info != typeid(Node)) return nullptr;
-            return static_cast<Node const*>(_node);
+            return static_cast<Node const*>(_const_ptr_fn(_node.get()));
         }
 
-        std::optional<size_t> ttl_samples() const { return _ttl_samples_fn(_node); }
-        bool can_skip_block() const { return _can_skip_block_fn(_node); }
-        void declare(DeclarationContext<TypeErasedNode> const& ctx) const { return _declare_fn(_node, ctx); }
-        void tick(TickSampleContext<TypeErasedNode> const& ctx) const { _tick_fn(_node, ctx); }
-        void tick_block(TickBlockContext<TypeErasedNode> const& ctx) const { _tick_block_fn(_node, ctx); }
-        void skip_block(SkipBlockContext<TypeErasedNode> const& ctx) const { _skip_block_fn(_node, ctx); }
+        std::optional<size_t> ttl_samples() const { return _ttl_samples; }
+        bool can_skip_block() const { return _can_skip_block; }
+        void declare(DeclarationContext<TypeErasedNode> const& ctx) const { return _declare_fn(_node.get(), ctx); }
+        void tick(TickSampleContext<TypeErasedNode> const& ctx) const { _tick_fn(_node.get(), ctx); }
+        void tick_block(TickBlockContext<TypeErasedNode> const& ctx) const { _tick_block_fn(_node.get(), ctx); }
+        void skip_block(SkipBlockContext<TypeErasedNode> const& ctx) const { _skip_block_fn(_node.get(), ctx); }
     };
 }
