@@ -56,9 +56,9 @@ public:
 
   template<class... Refs>
   void outputs(Refs&&... refs);
-  void outputs(std::initializer_list<NamedRef> refs);
+  constexpr void outputs(std::initializer_list<NamedRef> refs);
   void outputs(std::span<OutputRefConfig const> refs);
-  void outputs(std::span<NamedRef const> refs);
+  constexpr void outputs(std::span<NamedRef const> refs);
 };
 
 } // namespace iv
