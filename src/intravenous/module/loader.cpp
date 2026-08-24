@@ -741,6 +741,26 @@ class ModuleLoader::Impl {
             write_text_if_different(signature_file, signature.str());
         }
 
+        auto const compile_database = build_dir / "compile_commands.json";
+        if (std::filesystem::exists(compile_database)) {
+            auto const database_text = read_text(compile_database);
+            for (auto const& module : closure.modules) {
+                try {
+                    write_text_if_different(
+                        module.module_dir / "compile_commands.json",
+                        database_text
+                    );
+                } catch (std::exception const& error) {
+                    if (log_sink_) {
+                        log_sink_(
+                            "warning: could not publish module compile database to '" +
+                            module.module_dir.string() + "': " + error.what()
+                        );
+                    }
+                }
+            }
+        }
+
         if (!std::filesystem::exists(artifact)) {
             auto configured_artifact = output_dir / config_name() / artifact_name;
             if (std::filesystem::exists(configured_artifact)) {

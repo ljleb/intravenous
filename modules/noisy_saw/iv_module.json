@@ -1,1 +1,6 @@
-{}
+{
+  "schema": 1,
+  "id": "iv.test.noisy_saw",
+  "entry": "module.cpp",
+  "main": "noisy_saw_project"
+}

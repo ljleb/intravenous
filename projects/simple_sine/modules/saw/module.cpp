@@ -41,11 +41,8 @@ struct FunNode
 
 namespace
 {
-void simple_sine(iv::ModuleContext const& context)
+void simple_sine(iv::GraphBuilder& g)
 {
-    auto& g = context.builder();
-
-    auto const dt = g.node<ValueSource>(&context.sample_period());
     auto const phase = g.node<PhaseIntegrator>();
     auto const tt = g.node<FunNode>();
 
@@ -66,8 +63,7 @@ void simple_sine(iv::ModuleContext const& context)
 
         voice(
             "frequency"_P = p,
-            "phase_offset"_P = phase,
-            "dt"_P = dt);
+            "phase_offset"_P = phase);
 
         auto const res = voice * 0.1 * tt;
         auto const res_k = "main1"_P;
@@ -75,9 +71,5 @@ void simple_sine(iv::ModuleContext const& context)
     };
     make_channel.template operator()<stereo::left>();
     make_channel.template operator()<stereo::right>();
-
-    g.outputs();
 }
 }
-
-IV_EXPORT_MODULE("iv.project.simple_sine", simple_sine);

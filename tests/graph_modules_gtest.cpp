@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <ranges>
 
 namespace iv {
@@ -87,6 +88,28 @@ TEST(GraphModules, ModulesComposeRecursivelyThroughAuthoredGraphSplicing)
         EXPECT_LT(scope.parent_scope, built.metadata.lowered_subgraphs.size());
     }
     EXPECT_EQ(nested_scope_count, 1u);
+}
+
+TEST(GraphModules, AnnotatedModuleHasOneTypedVirtualNode)
+{
+    GraphBuilder g;
+    auto child = _annotate_node_source_info(
+        g.module<&pass_module>(),
+        "module-call");
+    child("in"_P = 0.5f);
+    g.outputs("main"_P = child["out"]);
+
+    auto const metadata = g.build_metadata();
+    auto const matching_nodes = std::ranges::count_if(
+        metadata.virtual_nodes,
+        [](auto const& node) {
+            return node.source_identity == "module-call";
+        });
+
+    EXPECT_EQ(matching_nodes, 1);
+    ASSERT_EQ(metadata.virtual_nodes.size(), 1u);
+    EXPECT_TRUE(metadata.virtual_nodes.front().id.starts_with(
+        "module-call#type:"));
 }
 
 TEST(GraphModules, FirstClassTiledNodeBundlesSurviveModuleSplicing)

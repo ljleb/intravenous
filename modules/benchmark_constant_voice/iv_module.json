@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "id": "iv.test.benchmark_constant_voice",
+  "entry": "module.cpp",
+  "main": "benchmark_constant_voice"
+}

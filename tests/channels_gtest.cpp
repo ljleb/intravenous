@@ -963,7 +963,7 @@ TEST(Channels, SourceAnnotationProjectsATiledBundleAsOneStereoVirtualPort)
     auto const inputs = g.virtual_sample_input_families();
     ASSERT_EQ(inputs.families.size(), 1u);
     auto const& input = inputs.families.front();
-    EXPECT_EQ(input.virtual_node_id, "tiled-pass");
+    EXPECT_TRUE(input.virtual_node_id.starts_with("tiled-pass#type:"));
     EXPECT_EQ(input.channel_type, iv::ChannelTypeId::stereo);
     ASSERT_EQ(input.channels.size(), 2u);
     ASSERT_EQ(input.channels[0].targets.size(), 1u);
@@ -975,7 +975,7 @@ TEST(Channels, SourceAnnotationProjectsATiledBundleAsOneStereoVirtualPort)
     auto const outputs = g.virtual_sample_output_families();
     ASSERT_EQ(outputs.families.size(), 1u);
     auto const& output = outputs.families.front();
-    EXPECT_EQ(output.virtual_node_id, "tiled-pass");
+    EXPECT_EQ(output.virtual_node_id, input.virtual_node_id);
     EXPECT_EQ(output.channel_type, iv::ChannelTypeId::stereo);
     ASSERT_EQ(output.channels.size(), 2u);
     ASSERT_EQ(output.channels[0].sources.size(), 1u);
@@ -1270,10 +1270,11 @@ TEST(Channels, ExecutionRootBindsRuntimeSampleContributionWithoutTopologyChange)
         g.node<MonoBufferSink>(&result).node_ref(), "runtime-sink");
     (void)sink;
     g.outputs();
+    auto const virtual_node_id = g.build_metadata().virtual_nodes.front().id;
 
     auto bindings = std::make_shared<iv::GraphRuntimeBindings>();
     auto binding = bindings->sample_input(iv::runtime_virtual_port_key(
-        true, iv::PortKind::sample, "runtime-sink", 0, 0));
+        true, iv::PortKind::sample, virtual_node_id, 0, 0));
     binding->value = iv::Sample{0.375f};
     binding->mode = iv::RuntimeSampleInputMode::scalar;
 
@@ -1331,6 +1332,7 @@ TEST(Channels, ConnectionNodePreservesInterleavedRuntimeBufferFrames)
         "interleaved-runtime-sink");
     (void)sink;
     g.outputs();
+    auto const virtual_node_id = g.build_metadata().virtual_nodes.front().id;
 
     auto bindings = std::make_shared<iv::GraphRuntimeBindings>(
         iv::GraphRuntimeBindings::Callbacks{
@@ -1342,7 +1344,7 @@ TEST(Channels, ConnectionNodePreservesInterleavedRuntimeBufferFrames)
     auto binding = bindings->sample_input(iv::runtime_virtual_port_key(
         true,
         iv::PortKind::sample,
-        "interleaved-runtime-sink",
+        virtual_node_id,
         0,
         0));
     binding->timeline_lane = iv::LaneId{1};
@@ -1492,6 +1494,7 @@ TEST(Channels, ExecutionRootContainsFixedVirtualSampleOutputObserver)
         "runtime-source");
     (void)source;
     g.outputs();
+    auto const virtual_node_id = g.build_metadata().virtual_nodes.front().id;
 
     auto bindings = std::make_shared<iv::GraphRuntimeBindings>(
         iv::GraphRuntimeBindings::Callbacks{
@@ -1501,7 +1504,7 @@ TEST(Channels, ExecutionRootContainsFixedVirtualSampleOutputObserver)
             .publish_event_block = nullptr,
         });
     auto member = bindings->output(iv::runtime_virtual_port_key(
-        false, iv::PortKind::sample, "runtime-source", 0, 0));
+        false, iv::PortKind::sample, virtual_node_id, 0, 0));
     member->target_lane = iv::LaneId{73};
 
     auto built = g.build_execution_root_node(bindings);
@@ -1527,6 +1530,7 @@ TEST(Channels, ExecutionRootContainsFixedVirtualEventInput)
         "runtime-event-sink");
     (void)sink;
     g.outputs();
+    auto const virtual_node_id = g.build_metadata().virtual_nodes.front().id;
 
     auto bindings = std::make_shared<iv::GraphRuntimeBindings>(
         iv::GraphRuntimeBindings::Callbacks{
@@ -1536,7 +1540,7 @@ TEST(Channels, ExecutionRootContainsFixedVirtualEventInput)
             .publish_event_block = nullptr,
         });
     auto binding = bindings->event_input(iv::runtime_virtual_port_key(
-        true, iv::PortKind::event, "runtime-event-sink", 0, 0));
+        true, iv::PortKind::event, virtual_node_id, 0, 0));
     binding->timeline_lane = iv::LaneId{1};
 
     auto built = g.build_execution_root_node(bindings);
@@ -1559,6 +1563,7 @@ TEST(Channels, FixedVirtualEventOutputObserverMergesMembersByTime)
     (void)late;
     (void)early;
     g.outputs();
+    auto const virtual_node_id = g.build_metadata().virtual_nodes.front().id;
 
     auto bindings = std::make_shared<iv::GraphRuntimeBindings>(
         iv::GraphRuntimeBindings::Callbacks{
@@ -1568,13 +1573,13 @@ TEST(Channels, FixedVirtualEventOutputObserverMergesMembersByTime)
             .publish_event_block = &capture_runtime_event_block,
         });
     bindings->output(iv::runtime_virtual_port_key(
-        false, iv::PortKind::event, "runtime-events", 0, 0))
+        false, iv::PortKind::event, virtual_node_id, 0, 0))
         ->include_in_aggregate = true;
     bindings->output(iv::runtime_virtual_port_key(
-        false, iv::PortKind::event, "runtime-events", 1, 0))
+        false, iv::PortKind::event, virtual_node_id, 1, 0))
         ->include_in_aggregate = true;
     bindings->output(iv::runtime_virtual_port_key(
-        false, iv::PortKind::event, "runtime-events", std::nullopt, 0))
+        false, iv::PortKind::event, virtual_node_id, std::nullopt, 0))
         ->target_lane = iv::LaneId{91};
 
     auto built = g.build_execution_root_node(bindings);

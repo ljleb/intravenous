@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "id": "iv.test.dc_offset",
+  "entry": "module.cpp",
+  "main": "dc_offset"
+}

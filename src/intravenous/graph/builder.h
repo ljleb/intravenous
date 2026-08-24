@@ -43,7 +43,9 @@
 namespace iv {
 class GraphRuntimeBindings;
 class GraphBuilder;
-namespace details {}
+namespace details {
+    struct GraphBuilderTestAccess;
+}
 
 class GraphBuilder {
   friend class NodeRef;
@@ -58,6 +60,7 @@ class GraphBuilder {
   friend class GraphBuilderVirtualNodes;
   friend class GraphBuilderPublicPorts;
   friend class SubgraphBuilder;
+  friend struct details::GraphBuilderTestAccess;
 
   GraphBuilderIdentity _identity;
   GraphBuilderNodeBundles _node_bundles;
@@ -68,6 +71,8 @@ class GraphBuilder {
   GraphBuilderVirtualNodes _virtual_nodes;
 
   explicit GraphBuilder(GraphBuilderIdentity identity);
+  GraphBuilder derive_nested_builder();
+  NodeRef embed_subgraph(GraphBuilder const& child, std::string_view kind = "Subgraph");
   PublicSampleInputRef input_named(std::string_view name, Sample default_value,
                                    std::optional<Sample> min,
                                    std::optional<Sample> max);
@@ -75,7 +80,6 @@ class GraphBuilder {
 
 public:
   GraphBuilder();
-  GraphBuilder derive_nested_builder();
   PublicSampleInputRef input();
   template<fixed_string Name>
   PublicSampleInputRef input(Sample default_value = 0.0,
@@ -104,8 +108,6 @@ public:
   template<class Node, class... Args> details::node_ref_for_t<Node> node(Args&&... args);
   template<class Node, class ChannelType, class... Args> auto node(Args&&... args);
   template<class ChannelType, class... Refs> auto tile(Refs&&... refs);
-  NodeRef embed_subgraph(GraphBuilder const& child,
-                         std::string_view kind = "Subgraph");
   template<auto Module> NodeRef module(std::string_view kind = "Module");
 
   template<class... Refs> void event_outputs(Refs&&... refs);
@@ -388,15 +390,73 @@ template<class Node,class PortProjection> inline EventPortRef TypedNodeRef<Node,
 template<class Node,class PortProjection> inline EventPortRef TypedNodeRef<Node,PortProjection>::event_port() const { if(ports().event_outputs().size()!=1)details::error(to_string()+" does not have exactly 1 event output port");return event_port(0); }
 template<class Node,class PortProjection> inline TypedNodeRef<Node,PortProjection>::operator SamplePortRef() const { if(get_num_outputs(ports())!=1)details::error(to_string()+" does not have exactly 1 output port");return SamplePortRef(*_graph_builder,{_index,PortKind::sample,0}); }
 
-template<class Node,class PortProjection>
-template<class... Args>
-  requires(details::node_call_enabled<std::remove_cvref_t<Node>,Args...>)
-inline TypedNodeRef<Node,PortProjection> TypedNodeRef<Node,PortProjection>::operator()(Args&&... args) const {
-  if(!_graph_builder)details::error("attempted to use a null NodeRef"); auto inputs=get_inputs(ports()); auto const& events=ports().event_inputs();
-  auto sample=[&](SamplePortRef const& ref,size_t i){if(i>=inputs.size())details::error("too many sample inputs");if(ref.graph_builder!=_graph_builder)details::error("sample source belongs to another builder");_graph_builder->connect_sample_input({_index,PortKind::sample,i},ref);};
-  auto event=[&](EventPortRef ref,size_t i){if(i>=events.size())details::error("too many event inputs");if(ref.graph_builder!=_graph_builder)details::error("event source belongs to another builder");_graph_builder->connect_event_input({_index,PortKind::event,i},ref);};
-  size_t ps=0,pe=0; auto process=[&](auto&& arg){using A=std::remove_cvref_t<decltype(arg)>;if constexpr(details::is_named_arg_v<A>){if constexpr(A::kind==NamedPortKind::event){for(size_t i=0;i<events.size();++i)if(events[i].name==A::name.view()){event(lift_event_operand(arg.value),i);return;}details::error("named event input does not exist");}else{for(size_t i=0;i<inputs.size();++i)if(inputs[i].name==A::name.view()){sample(_graph_builder->lift_to_sample_port(arg.value),i);return;}details::error("named sample input does not exist");}}else if constexpr(details::graph_builder_event_port_like<decltype(arg)>)event(static_cast<EventPortRef>(std::forward<decltype(arg)>(arg)),pe++);else sample(_graph_builder->lift_to_sample_port(std::forward<decltype(arg)>(arg)),ps++);};
-  (process(std::forward<Args>(args)),...); return this->_clone_handle();
+template <class Node, class PortProjection>
+template <class... Args>
+    requires(details::node_call_enabled<std::remove_cvref_t<Node>, Args...>)
+inline TypedNodeRef<Node, PortProjection>
+TypedNodeRef<Node, PortProjection>::operator()(Args&&... args) const
+{
+    if (!this->_graph_builder)
+        details::error("attempted to use a null NodeRef");
+
+    auto inputs = get_inputs(ports());
+    auto const& events = ports().event_inputs();
+    auto sample = [&](SamplePortRef const& ref, size_t i) {
+        if (i >= inputs.size())
+            details::error("too many sample inputs");
+        if (ref.graph_builder != this->_graph_builder)
+            details::error("sample source belongs to another builder");
+        this->_graph_builder->connect_sample_input(
+            { this->_index, PortKind::sample, i },
+            ref
+        );
+    };
+    auto event = [&](EventPortRef ref, size_t i) {
+        if (i >= events.size())
+            details::error("too many event inputs");
+        if (ref.graph_builder != this->_graph_builder)
+            details::error("event source belongs to another builder");
+        this->_graph_builder->connect_event_input(
+            { this->_index, PortKind::event, i },
+            ref
+        );
+    };
+
+    size_t ps = 0;
+    size_t pe = 0;
+    auto process = [&](auto&& arg) {
+        using A = std::remove_cvref_t<decltype(arg)>;
+        if constexpr (details::is_named_arg_v<A>) {
+            if constexpr (A::kind == NamedPortKind::event) {
+                for (size_t i = 0; i < events.size(); ++i) {
+                    if (events[i].name == A::name.view()) {
+                        event(lift_event_operand(arg.value), i);
+                        return;
+                    }
+                }
+                details::error("named event input does not exist");
+            } else {
+                for (size_t i = 0; i < inputs.size(); ++i) {
+                    if (inputs[i].name == A::name.view()) {
+                        sample(this->_graph_builder->lift_to_sample_port(arg.value), i);
+                        return;
+                    }
+                }
+                details::error("named sample input does not exist");
+            }
+        } else if constexpr (details::graph_builder_event_port_like<decltype(arg)>) {
+            event(static_cast<EventPortRef>(std::forward<decltype(arg)>(arg)), pe++);
+        } else {
+            sample(
+                this->_graph_builder->lift_to_sample_port(
+                    std::forward<decltype(arg)>(arg)
+                ),
+                ps++
+            );
+        }
+    };
+    (process(std::forward<Args>(args)), ...);
+    return this->_clone_handle();
 }
 template<class Node,class PortProjection> template<class T> inline TypedNodeRef<Node,PortProjection> TypedNodeRef<Node,PortProjection>::connect_input(size_t i,T&& value) const {auto inputs=get_inputs(ports());if(i>=inputs.size())details::error("sample input out of bounds");auto ref=_graph_builder->lift_to_sample_port(std::forward<T>(value));_graph_builder->connect_sample_input({_index,PortKind::sample,i},ref);return this->_clone_handle();}
 template<class Node,class PortProjection> template<class T> inline TypedNodeRef<Node,PortProjection> TypedNodeRef<Node,PortProjection>::connect_input(std::string_view n,T&& value) const {auto inputs=get_inputs(ports());std::optional<size_t> m;for(size_t i=0;i<inputs.size();++i)if(inputs[i].name==n){if(m)details::error("input name is ambiguous");m=i;}if(m)return connect_input(*m,std::forward<T>(value));details::error("input port does not exist");}

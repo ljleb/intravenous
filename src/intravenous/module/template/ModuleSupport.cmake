@@ -54,7 +54,12 @@ function(iv_add_runtime_module target)
     else()
         target_compile_options(${target}__compile_settings INTERFACE -Wall -Wextra -Wpedantic)
         if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            target_compile_options(${target}__compile_settings INTERFACE -Wno-unused-comparison -Wno-c2y-extensions)
+            target_compile_options(${target}__compile_settings INTERFACE
+                -Wno-unused-comparison
+                -Wno-c2y-extensions
+                # IV entry sources are definition-bearing includes consumed by
+                # generated code, not standalone translation units.
+                -Wno-unused-function)
         endif()
     endif()
 

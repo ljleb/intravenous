@@ -446,6 +446,79 @@ namespace {
     EXPECT_GE(singleton_sum_count, 2u);
 }
 
+TEST(IvModuleSourceIntrospection, SameLvalueWithDifferentNodeTypesProducesIndependentVirtualNodes)
+{
+    auto const workspace = shared_inline_module_workspace(
+        "iv_module_source_introspection_split_lvalue_types",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    void split_lvalue_types_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto make_branch = [&]<bool Add>(auto output) {
+            auto const value = g.node<Constant>(1.0f);
+            NodeRef p;
+            if constexpr (Add) {
+                p = value + 1.0f;
+            } else {
+                p = value - 1.0f;
+            }
+            g.outputs(output = p);
+        };
+
+        make_branch.template operator()<true>("first_sum"_P);
+        make_branch.template operator()<false>("difference"_P);
+        make_branch.template operator()<true>("second_sum"_P);
+    }
+}
+)"
+    );
+
+    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    app.initialize();
+
+    auto const result = app.query_by_spans(
+        std::filesystem::weakly_canonical(workspace / "module.cpp"),
+        { { .start = { .line = 1, .column = 1 }, .end = { .line = 28, .column = 1 } } }
+    );
+
+    std::vector<iv::VirtualNodeInfo const*> split_nodes;
+    for (auto const& node : result.nodes) {
+        if (node.source_identity.ends_with("@p"))
+            split_nodes.push_back(&node);
+    }
+    ASSERT_EQ(split_nodes.size(), 2u);
+    EXPECT_EQ(split_nodes[0]->source_identity, split_nodes[1]->source_identity);
+    EXPECT_NE(split_nodes[0]->id, split_nodes[1]->id);
+    EXPECT_NE(split_nodes[0]->type_identity, split_nodes[1]->type_identity);
+    EXPECT_TRUE(split_nodes[0]->id.contains("#type:"));
+    EXPECT_TRUE(split_nodes[1]->id.contains("#type:"));
+
+    auto const sum = std::ranges::find_if(split_nodes, [](auto const* node) {
+        return node->kind.contains("Sum<");
+    });
+    auto const difference = std::ranges::find_if(split_nodes, [](auto const* node) {
+        return node->kind.contains("BinaryOpNode");
+    });
+    ASSERT_NE(sum, split_nodes.end());
+    ASSERT_NE(difference, split_nodes.end());
+    ASSERT_EQ((*sum)->members.size(), 2u);
+    EXPECT_EQ((*sum)->members[0].ordinal, 0u);
+    EXPECT_EQ((*sum)->members[1].ordinal, 1u);
+    ASSERT_EQ((*difference)->members.size(), 1u);
+    EXPECT_EQ((*difference)->members[0].ordinal, 0u);
+
+    app.set_sample_input_value((*sum)->id, 0, 0.25f);
+    auto const updated_sum = app.get_virtual_node((*sum)->id);
+    auto const untouched_difference = app.get_virtual_node((*difference)->id);
+    EXPECT_FLOAT_EQ(static_cast<float>(updated_sum.sample_inputs[0].current_value), 0.25f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(untouched_difference.sample_inputs[0].current_value),
+        0.0f
+    );
+}
+
 TEST(IvModuleSourceIntrospection, QueryBySpansAggregatesMixedConnectivity)
 {
     auto const workspace = shared_inline_module_workspace(

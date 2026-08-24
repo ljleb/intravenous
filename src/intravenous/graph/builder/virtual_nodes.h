@@ -33,6 +33,8 @@ struct VirtualEventPortMapping {
 
 struct VirtualNodeRecord {
   std::string id{};
+  std::string source_identity {};
+  std::string type_identity {};
   std::vector<SourceInfo> source_infos{};
   std::vector<NodeBundleHandle> node_bundle_handles{};
   std::vector<VirtualSampleInputPortMapping> sample_inputs{};
@@ -84,11 +86,11 @@ public:
   std::vector<std::string> ids_for_bundle(NodeBundle const&) const;
 
 private:
-  VirtualNodeHandle get_or_create(std::string_view);
-  void attach_member(GraphBuilderNodeBundles&, VirtualNodeHandle,
-                     NodeBundleHandle, SourceInfo const*);
+    VirtualNodeHandle get_or_create(std::string_view source_identity, std::string_view type_identity);
+    void attach_member(GraphBuilderNodeBundles&, VirtualNodeHandle, NodeBundleHandle, SourceInfo const*);
 
-  std::vector<VirtualNodeRecord> _records{};
-  std::unordered_map<std::string, VirtualNodeHandle> _handles_by_id{};
+    std::vector<VirtualNodeRecord> _records {};
+    std::unordered_map<std::string, std::vector<VirtualNodeHandle>>
+        _handles_by_source_identity {};
 };
 } // namespace iv

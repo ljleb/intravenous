@@ -53,4 +53,12 @@ std::string stable_identity_suffix(std::string_view value)
     out << std::hex << hash;
     return out.str();
 }
+
+std::string typed_virtual_node_id(
+    std::string_view source_identity,
+    std::string_view type_identity)
+{
+    return std::string(source_identity) + "#type:"
+        + stable_identity_suffix(type_identity);
+}
 }

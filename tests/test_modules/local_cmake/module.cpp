@@ -1,7 +1,7 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-using iv::operator""_P;
+using namespace iv;
 
 void local_cmake_module(iv::GraphBuilder& g)
 {

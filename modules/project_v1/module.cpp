@@ -10,20 +10,17 @@
 #include <iostream>
 #include <string>
 
-inline void project_v1(iv::ModuleContext const& c)
+inline void project_v1(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto& g = c.builder();
     auto make_channel = [&]<auto Channel>() {
         polyphonic<16>(g, [&]<size_t Voice>(auto m) {
             auto& [a, f] = m;
             auto saw = g.node<SawOscillator>();
             (void)Voice;
-            g.outputs("main"_P[Channel] = saw(f) * a);
+            g.outputs("main"_P[Channel] = saw("frequency"_P = f) * a);
         });
     };
     make_channel.template operator()<stereo::left>();
     make_channel.template operator()<stereo::right>();
 }
-
-IV_EXPORT_MODULE("iv.project.v1", project_v1);

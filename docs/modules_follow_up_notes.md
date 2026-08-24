@@ -2,6 +2,9 @@
 
 ## Source lifecycle and tooling
 
+- Explore one-promotion runtime PGO for hot-reloadable module definitions. The
+  discovery, safety constraints, and proposed ownership are recorded in
+  [Runtime PGO For Hot-Reloadable IV Modules](iv_module_runtime_pgo_direction.md).
 - Give newly created local module sources a predefined, identical
   `compile_commands.json`.
 - Investigate why clangd does not reliably reload its compilation database after

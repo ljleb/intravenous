@@ -197,7 +197,8 @@ void GraphInputLanes::sync_runtime_bindings_locked(
                             instance_id, port.source_identity, port.default_value);
                         bind_scalar(
                             *binding,
-                            Sample{value.load(std::memory_order_relaxed)});
+                            value
+                        );
                     } else {
                         bind_none(*binding);
                     }

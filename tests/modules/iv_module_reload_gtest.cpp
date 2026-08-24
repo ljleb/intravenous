@@ -14,6 +14,15 @@
 #include <string>
 #include <string_view>
 
+namespace iv::details {
+    struct GraphBuilderTestAccess {
+        static NodeRef embed_subgraph(GraphBuilder& parent, GraphBuilder const& child)
+        {
+            return parent.embed_subgraph(child);
+        }
+    };
+}
+
 namespace {
 struct IvModuleReloadWitness {
     std::optional<iv::IvModuleReloadResults> results {};
@@ -160,7 +169,10 @@ TEST_F(IvModuleReloadTest, RetainsSamplePeriodForCompiledDefinitionBuilders)
 
     auto builder = std::move(witness.results->loaded.front().canonical_builder);
     iv::GraphBuilder execution_builder;
-    auto const embedded = execution_builder.embed_subgraph(builder);
+    auto const embedded = iv::details::GraphBuilderTestAccess::embed_subgraph(
+        execution_builder,
+        builder
+    );
     iv::Sample observed = 0.0f;
     execution_builder.node<SampleCapture>(&observed)(embedded[0]);
     execution_builder.outputs({});

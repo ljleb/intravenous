@@ -15,7 +15,7 @@ TEST(GraphVirtualOutputsTest, EnumeratesVirtualNodeOutputPorts)
     auto const outputs = g.virtual_outputs();
     ASSERT_EQ(outputs.sample.size(), 1u);
     auto const &output = outputs.sample.front();
-    EXPECT_EQ(output.virtual_node_id, "node-1");
+    EXPECT_TRUE(output.virtual_node_id.starts_with("node-1#type:"));
     EXPECT_EQ(output.member_ordinal, 0u);
     EXPECT_EQ(output.source.port_ordinal, 0u);
     EXPECT_FALSE(output.has_existing_downstream_connection);
@@ -44,7 +44,7 @@ TEST(GraphVirtualOutputsTest, ReportsAuthoredEventDownstreamConnection)
 
     auto const outputs = g.virtual_outputs();
     ASSERT_EQ(outputs.event.size(), 1u);
-    EXPECT_EQ(outputs.event.front().virtual_node_id, "event-source");
+    EXPECT_TRUE(outputs.event.front().virtual_node_id.starts_with("event-source#type:"));
     EXPECT_TRUE(outputs.event.front().has_existing_downstream_connection);
 }
 
@@ -68,8 +68,8 @@ TEST(GraphVirtualOutputsTest, GroupsConcreteMembersOfSharedVirtualNode)
 
     auto const outputs = g.virtual_outputs();
     ASSERT_EQ(outputs.sample.size(), 2u);
-    EXPECT_EQ(outputs.sample[0].virtual_node_id, "shared");
-    EXPECT_EQ(outputs.sample[1].virtual_node_id, "shared");
+    EXPECT_EQ(outputs.sample[0].virtual_node_id, outputs.sample[1].virtual_node_id);
+    EXPECT_TRUE(outputs.sample[0].virtual_node_id.starts_with("shared#type:"));
     EXPECT_NE(outputs.sample[0].member_ordinal, outputs.sample[1].member_ordinal);
 }
 
@@ -83,7 +83,7 @@ TEST(GraphVirtualOutputsTest, GroupsStereoChannelOutputsIntoOneFamily)
     auto const families = g.virtual_sample_output_families();
     ASSERT_EQ(families.families.size(), 1u);
     auto const& family = families.families.front();
-    EXPECT_EQ(family.virtual_node_id, "stereo");
+    EXPECT_TRUE(family.virtual_node_id.starts_with("stereo#type:"));
     EXPECT_EQ(family.family_ordinal, 0u);
     EXPECT_EQ(family.channel_type, ChannelTypeId::stereo);
     EXPECT_EQ(family.channels.size(), 2u);
@@ -121,12 +121,46 @@ TEST(GraphVirtualOutputsTest, MetadataReportsMixedAuthoredStereoConnectivity)
 
     auto const metadata = g.build_metadata();
     auto const it = std::find_if(
-        metadata.virtual_nodes.begin(), metadata.virtual_nodes.end(),
-        [](auto const& node) { return node.id == "stereo"; });
+        metadata.virtual_nodes.begin(), metadata.virtual_nodes.end(), [](auto const& node) {
+            return node.source_identity == "stereo";
+        }
+    );
     ASSERT_NE(it, metadata.virtual_nodes.end());
     ASSERT_EQ(it->sample_outputs.size(), 1u);
     EXPECT_EQ(it->sample_outputs.front().connectivity,
               VirtualPortConnectivity::mixed);
+}
+
+TEST(GraphVirtualOutputsTest, TypedIdentityDoesNotChangeWhenAnotherTypeSharesTheSource)
+{
+    GraphBuilder single;
+    auto single_sum = _annotate_node_source_info(
+        single.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(),
+        "shared"
+    );
+    (void)single_sum;
+    auto const single_id = single.virtual_outputs().sample.front().virtual_node_id;
+
+    GraphBuilder split;
+    auto split_sum = _annotate_node_source_info(
+        split.node<Sum<mono, SampleStreamLayout::planar, 1>>().node_ref(),
+        "shared"
+    );
+    auto split_events = _annotate_node_source_info(
+        split.node<EventConcatenation>(1, EventTypeId::empty).node_ref(),
+        "shared"
+    );
+    (void)split_sum;
+    (void)split_events;
+
+    auto const outputs = split.virtual_outputs();
+    ASSERT_EQ(outputs.sample.size(), 1u);
+    ASSERT_EQ(outputs.event.size(), 1u);
+    EXPECT_EQ(outputs.sample.front().virtual_node_id, single_id);
+    EXPECT_NE(
+        outputs.sample.front().virtual_node_id,
+        outputs.event.front().virtual_node_id
+    );
 }
 
 TEST(GraphVirtualOutputsTest, NamedChannelOutputsKeepNameAndChannelAsSeparateIdentity)

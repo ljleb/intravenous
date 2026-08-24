@@ -279,25 +279,26 @@ TEST_F(GraphInputLanesTest, TiledBundleUsesOneStereoVirtualPortAndOneConcreteMem
     (void)tiled;
     builder.outputs({});
     instance.introspection = builder.build_metadata();
+    auto const authored_virtual_node_id = instance.introspection.virtual_nodes.front().id;
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
     });
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
-        .node_id = runtime_node_id(instance.instance_id, "tiled-node"),
+        .node_id = runtime_node_id(instance.instance_id, authored_virtual_node_id),
         .member_ordinal = std::nullopt,
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,
     });
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
-        .node_id = runtime_node_id(instance.instance_id, "tiled-node"),
+        .node_id = runtime_node_id(instance.instance_id, authored_virtual_node_id),
         .member_ordinal = 0,
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,
     });
     lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
-    auto const virtual_id = runtime_node_id(instance.instance_id, "tiled-node");
+    auto const virtual_id = runtime_node_id(instance.instance_id, authored_virtual_node_id);
     auto const bindings = lanes.graph_input_lane_bindings(
         iv::ProjectGraphInputLaneBindingsRequest{.ports = {
             iv::GraphInputPortDescriptor{
@@ -564,6 +565,7 @@ TEST_F(GraphInputLanesTest, VirtualSampleInputTimelineStatePublishesTimelineDepe
         "node-1");
     (void)node;
     instance.introspection = builder.build_metadata();
+    auto const authored_virtual_node_id = instance.introspection.virtual_nodes.front().id;
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
@@ -574,7 +576,7 @@ TEST_F(GraphInputLanesTest, VirtualSampleInputTimelineStatePublishesTimelineDepe
     witness.rebuild_requests.clear();
 
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
-        .node_id = runtime_node_id(instance.instance_id, "node-1"),
+        .node_id = runtime_node_id(instance.instance_id, authored_virtual_node_id),
         .member_ordinal = std::nullopt,
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,
@@ -614,7 +616,7 @@ TEST_F(GraphInputLanesTest, VirtualSampleInputTimelineStatePublishesTimelineDepe
 
     auto const bindings = lanes.graph_input_lane_bindings(iv::ProjectGraphInputLaneBindingsRequest{
         .ports = {iv::GraphInputPortDescriptor{
-            .virtual_node_id = runtime_node_id(instance.instance_id, "node-1"),
+            .virtual_node_id = runtime_node_id(instance.instance_id, authored_virtual_node_id),
             .port_kind = iv::PortKind::sample,
             .port_ordinal = 0,
             .sample_channel_type = iv::ChannelTypeId::mono,
@@ -664,6 +666,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputTimelineStatePublishesTimelineDep
         "node-1");
     (void)node;
     instance.introspection = builder.build_metadata();
+    auto const authored_virtual_node_id = instance.introspection.virtual_nodes.front().id;
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
@@ -674,7 +677,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputTimelineStatePublishesTimelineDep
     witness.rebuild_requests.clear();
 
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
-        .node_id = runtime_node_id(instance.instance_id, "node-1"),
+        .node_id = runtime_node_id(instance.instance_id, authored_virtual_node_id),
         .member_ordinal = 0u,
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,
@@ -710,6 +713,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
         "node-1");
     (void)node;
     instance.introspection = builder.build_metadata();
+    auto const authored_virtual_node_id = instance.introspection.virtual_nodes.front().id;
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
@@ -717,7 +721,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
     lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
 
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
-        .node_id = runtime_node_id(instance.instance_id, "node-1"),
+        .node_id = runtime_node_id(instance.instance_id, authored_virtual_node_id),
         .member_ordinal = 0u,
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::timeline_lane,
@@ -728,7 +732,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
     witness.rebuild_requests.clear();
 
     lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
-        .node_id = runtime_node_id(instance.instance_id, "node-1"),
+        .node_id = runtime_node_id(instance.instance_id, authored_virtual_node_id),
         .member_ordinal = 0u,
         .input_ordinal = 0,
         .state = iv::ProjectSampleInputState::default_,
@@ -1336,6 +1340,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLan
         "node-1");
     (void)node;
     instance.introspection = builder.build_metadata();
+    auto const authored_virtual_node_id = instance.introspection.virtual_nodes.front().id;
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
         .created = {iv::IvModuleInstanceBuilderRef{.instance = &instance, .builder = &builder}},
@@ -1343,7 +1348,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLan
     lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     witness.timeline_batches.clear();
     lanes.set_sample_output_state(iv::ProjectSetSampleOutputStateRequest{
-        .node_id = runtime_node_id(instance.instance_id, "node-1"),
+        .node_id = runtime_node_id(instance.instance_id, authored_virtual_node_id),
         .member_ordinal = 0u,
         .output_ordinal = 0,
         .state = iv::ProjectSampleOutputState::timeline_lane,

@@ -1,19 +1,29 @@
 {
   description = "Intravenous development environment";
 
-  inputs.nixpkgs.url = "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1038038.421eebfd0ec7/nixexprs.tar.xz";
+  inputs = {
+    nixpkgs.url = "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1038038.421eebfd0ec7/nixexprs.tar.xz";
 
-  outputs = { nixpkgs, ... }:
+    # GCC 16 is intentionally sourced independently from the rest of the
+    # development environment. Intravenous still uses Clang/LLVM tooling for
+    # source rewriting, while reflection compilation requires GCC's C++26
+    # implementation.
+    gcc-reflection-nixpkgs.url = "github:NixOS/nixpkgs/2c423e03bbafcff28bfadc6781a4a8257f205cb5";
+  };
+
+  outputs = { nixpkgs, gcc-reflection-nixpkgs, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in {
       devShells = forAllSystems (system:
-        let pkgs = import nixpkgs {
-          inherit system;
-          config.allowUnfreePredicate = pkg:
-            builtins.elem (pkg.pname or "") [ "claude-code" ];
-        };
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = pkg:
+              builtins.elem (pkg.pname or "") [ "claude-code" ];
+          };
+          reflectionPkgs = import gcc-reflection-nixpkgs { inherit system; };
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
@@ -41,11 +51,17 @@
               xorg.libXinerama.dev
               xorg.libXext.dev
               xorg.libXcursor.dev
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              reflectionPkgs.gcc16
             ];
 
             shellHook = ''
               export CC=clang
               export CXX=clang++
+              ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                export IV_REFLECTION_CC=${reflectionPkgs.gcc16}/bin/gcc
+                export IV_REFLECTION_CXX=${reflectionPkgs.gcc16}/bin/g++
+              ''}
               export JUCE_DIR=${pkgs.juce}
               export IV_VST3_PATH="$HOME/vst"
 
@@ -54,6 +70,9 @@
               echo "intravenous dev shell ready"
               echo "CC=$CC"
               echo "CXX=$CXX"
+              ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                echo "IV_REFLECTION_CXX=$IV_REFLECTION_CXX"
+              ''}
               echo "JUCE_DIR=$JUCE_DIR"
               echo "IV_VST3_PATH=$IV_VST3_PATH"
               echo "Configure with: cmake -S . -B build -G Ninja -DJUCE_DIR=$JUCE_DIR"

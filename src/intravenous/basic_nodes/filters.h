@@ -43,7 +43,6 @@ namespace iv {
             return std::array {
                 InputConfig { .name = "in", .history = 1 },
                 InputConfig { .name = "cutoff" },
-                InputConfig { .name = "dt", .default_value = 1.0 },
             };
         }
 
@@ -56,7 +55,7 @@ namespace iv {
         {
             auto& in = ctx.inputs[0];
             auto const ctrl = ctx.inputs[1].get();
-            auto const dx = ctx.inputs[2].get();
+            auto const dx = ctx.sample_period();
             auto& out = ctx.outputs[0];
 
             auto const usableMax = std::min<Sample>(FMAX, 0.5f / dx);
@@ -82,7 +81,6 @@ namespace iv {
             return std::array {
                 InputConfig { .name = "in", .history = 1 },
                 InputConfig { .name = "cutoff" },
-                InputConfig { .name = "dt", .default_value = 1.0 },
             };
         }
 
@@ -95,7 +93,7 @@ namespace iv {
         {
             auto& in_port = ctx.inputs[0];
             auto const ctrl = ctx.inputs[1].get();
-            auto const dt = ctx.inputs[2].get();
+            auto const dt = ctx.sample_period();
             auto& out = ctx.outputs[0];
 
             auto const usableMax = std::min<Sample>(FMAX, 0.5f / dt);

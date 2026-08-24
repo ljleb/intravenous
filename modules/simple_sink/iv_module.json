@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "id": "iv.test.simple_sink",
+  "entry": "module.cpp",
+  "main": "simple_sink"
+}

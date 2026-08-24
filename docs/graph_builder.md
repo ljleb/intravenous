@@ -62,7 +62,7 @@ public:
     outputs(...);
     event_outputs(...);
     subgraph(...);
-    embed_subgraph(...);
+    module<&M>();
     vacant_inputs() const;
     build_metadata(...) const;
     build_root_node(...) const;
@@ -467,8 +467,6 @@ class GraphBuilder {
 public:
     GraphBuilder();
 
-    GraphBuilder derive_nested_builder();
-
     SamplePortRef input();
     SamplePortRef input(std::string_view name, Sample default_value = 0.0);
 
@@ -487,7 +485,8 @@ public:
     template<class Fn>
     NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph");
 
-    NodeRef embed_subgraph(GraphBuilder const& child);
+    template<auto Module>
+    NodeRef module(std::string_view kind = "Module");
 
     VacantInputs vacant_inputs() const;
 
@@ -512,9 +511,12 @@ SamplePortRef GraphBuilder::input(std::string_view name, Sample default_value)
 ```
 
 ```cpp
-NodeRef GraphBuilder::embed_subgraph(GraphBuilder const& child)
+template<auto Module>
+NodeRef GraphBuilder::module(std::string_view kind)
 {
-    return ChildGraphEmbedder::embed(*this, child);
+    auto child = derive_nested_builder();
+    std::invoke(Module, child);
+    return embed_subgraph(child, kind);
 }
 ```
 

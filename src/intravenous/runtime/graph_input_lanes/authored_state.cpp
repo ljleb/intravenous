@@ -26,14 +26,7 @@ void GraphInputLanes::set_sample_input_value(
                 node_bundle_override_key(request.node_id, *request.member_ordinal, request.input_ordinal));
             node_bundle_sample_input_states_by_key[port_key] =
                 NodeBundleSampleInputState::overridden;
-            ensure_live_input_value_locked(key, request.input_ordinal)
-                .store(request.value.value, std::memory_order_relaxed);
-            auto &slots = ensure_live_input_slots_locked(key, request.input_ordinal);
-            for (auto *slot : slots) {
-                if (slot) {
-                    *slot = request.value;
-                }
-            }
+            ensure_live_input_value_locked(key, request.input_ordinal) = request.value;
         } else {
             auto const sample_channel_type = resolve_sample_channel_type(
                 desired_ports,
@@ -52,8 +45,7 @@ void GraphInputLanes::set_sample_input_value(
                 virtual_sample_knob_states_by_key[port_key] =
                     VirtualSampleKnobState::overridden;
             }
-            ensure_live_input_value_locked(request.node_id, request.input_ordinal)
-                .store(request.value.value, std::memory_order_relaxed);
+            ensure_live_input_value_locked(request.node_id, request.input_ordinal) = request.value;
             if (timeline_knob) {
                 knob_lane = stable_lane_id_for_key(virtual_knob_key(DesiredGraphPort{
                     .port = sample_input_descriptor(
@@ -63,30 +55,16 @@ void GraphInputLanes::set_sample_input_value(
                         sample_channel_type),
                 }));
             }
-            if (auto it = live_inputs.find(std::string(request.node_id));
-                it != live_inputs.end() && it->second.size() > request.input_ordinal) {
-                for (auto *slot : it->second[request.input_ordinal]) {
-                    if (slot) {
-                        *slot = request.value;
-                    }
-                }
-            }
             std::string const prefix = node_bundle_key_prefix(request.node_id);
-            for (auto &[key, slots_by_input] : live_inputs) {
-                if (!key.starts_with(prefix) || slots_by_input.size() <= request.input_ordinal) {
+            for (auto& [key, values] : live_input_values) {
+                if (!key.starts_with(prefix) || values.size() <= request.input_ordinal) {
                     continue;
                 }
                 auto const input_override_key = key + "\x1finput:" + std::to_string(request.input_ordinal);
                 if (node_bundle_live_input_overrides.contains(input_override_key)) {
                     continue;
                 }
-                for (auto *slot : slots_by_input[request.input_ordinal]) {
-                    if (slot) {
-                        *slot = request.value;
-                    }
-                }
-                ensure_live_input_value_locked(key, request.input_ordinal)
-                    .store(request.value.value, std::memory_order_relaxed);
+                ensure_live_input_value_locked(key, request.input_ordinal) = request.value;
             }
         }
         if (request.member_ordinal.has_value()) {
@@ -299,8 +277,7 @@ void GraphInputLanes::set_public_sample_input_value(
     {
         std::scoped_lock lock(mutex);
         auto const key = public_sample_input_state_key(instance_id, source_identity, std::nullopt);
-        ensure_public_sample_input_value_locked(instance_id, source_identity, Sample{0.0f})
-            .store(value.value, std::memory_order_relaxed);
+        ensure_public_sample_input_value_locked(instance_id, source_identity, Sample { 0.0f }) = value;
         auto const state = public_sample_input_states_by_key.find(key);
         bool const timeline_input = state == public_sample_input_states_by_key.end()
             || state->second == ProjectSampleInputState::timeline_lane;
@@ -386,9 +363,9 @@ std::vector<PublicSampleInputInfo> GraphInputLanes::public_sample_inputs() const
                 ? ProjectSampleInputState::timeline_lane
                 : state_it->second;
             auto const value_it = public_sample_input_values.find(key);
-            auto const current_value = value_it == public_sample_input_values.end()
-                ? port.default_value
-                : Sample{value_it->second->load(std::memory_order_relaxed)};
+            auto current_value = port.default_value;
+            if (value_it != public_sample_input_values.end())
+                current_value = value_it->second;
             result.push_back(PublicSampleInputInfo{
                 .instance_id = port.instance_id,
                 .source_identity = port.source_identity,
@@ -868,12 +845,13 @@ GraphInputLanes::AuthoredStateSnapshot GraphInputLanes::authored_state() const
                 : state_it->second;
             if (state == ProjectSampleInputState::overridden) {
                 auto const value_it = public_sample_input_values.find(virtual_key);
-                snapshot.sample_input_values.push_back(ProjectSetSampleInputValueRequest{
+                auto value = port.default_value;
+                if (value_it != public_sample_input_values.end())
+                    value = value_it->second;
+                snapshot.sample_input_values.push_back(ProjectSetSampleInputValueRequest {
                     .node_id = synthetic_node_id,
                     .input_ordinal = 0,
-                    .value = value_it == public_sample_input_values.end()
-                        ? port.default_value
-                        : Sample{value_it->second->load(std::memory_order_relaxed)},
+                    .value = value,
                 });
             }
             // Persist the choice as well as an overridden value. Replaying

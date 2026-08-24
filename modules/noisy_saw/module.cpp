@@ -10,11 +10,9 @@
 #include <iostream>
 #include <string>
 
-inline void noisy_saw_project(iv::ModuleContext const& c)
+inline void noisy_saw_project(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto& g = c.builder();
-    auto dt = g.node<ValueSource>(&c.sample_period());
 
     // auto const sup = juce::vst(g, "ValhallaSupermassive");
     // info(sup.node());
@@ -29,32 +27,25 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
     SamplePortRef left;
     SamplePortRef right;
     auto make_channel = [&]<auto Ch>() {
-        auto lp = g.node<SimpleIirLowPass>();
-        polyphonic<16>(g, [&]<size_t Voice>(auto m) {
-            // m.connect_event_input("midi", midi);
+        auto const saw = g.node<SawOscillator>();
+        auto const phi = g.node<PhaseIntegrator>();
+        auto const generator = g.node<DeterministicUniformAESNoise>(seed++);
+        auto const u_to_n = g.node<UniformToGaussian>(0.0, 0.5);
+        auto const lo_pass = g.node<SimpleIirLowPass>();
+        auto const hi_pass = g.node<SimpleIirHighPass>();
+        auto const lp = g.node<SimpleIirLowPass>();
 
-            auto saw = g.node<SawOscillator>();
-            auto phi = g.node<PhaseIntegrator>();
-            auto generator = g.node<DeterministicUniformAESNoise>(seed++);
-            auto u_to_n = g.node<UniformToGaussian>(0.0, 0.5);
-            auto lo_pass = g.node<SimpleIirLowPass>();
-            auto hi_pass = g.node<SimpleIirHighPass>();
-
-            saw(
-                "frequency"_P = m["frequency"_P],
-                "phase_offset"_P = phi,
-                "dt"_P = dt
-            );
-            phi < hi_pass * 0.1;
-            hi_pass(lo_pass, 0.3, dt);
-            lo_pass(u_to_n, 0.0, dt);
-            u_to_n < generator;
-
-            (void)Voice;
-            lp.connect_input("in", saw * m["amplitude"_P]);
-        });
-        auto const channel_output = lp("dt"_P = dt) * 0.5;
-        if constexpr (std::same_as<decltype(Ch), decltype(stereo::left)>) {
+        u_to_n(generator);
+        lo_pass(u_to_n, 0.0);
+        hi_pass(lo_pass, 0.3);
+        phi(hi_pass * 0.1);
+        saw(
+            "frequency"_P = 110.0,
+            "phase_offset"_P = phi
+        );
+        lp(saw * 0.1, 0.5);
+        auto const channel_output = lp * 0.5;
+        if constexpr (Ch == stereo::left) {
             left = channel_output;
         } else {
             right = channel_output;
@@ -63,7 +54,5 @@ inline void noisy_saw_project(iv::ModuleContext const& c)
     make_channel.template operator()<stereo::left>();
     make_channel.template operator()<stereo::right>();
 
-    g.outputs("main"_P[stereo::left] = left, "main"_P[stereo::right] = right);
+    g.outputs("main"_P = g.tile<stereo>(left, right));
 }
-
-IV_EXPORT_MODULE("iv.test.noisy_saw", noisy_saw_project);

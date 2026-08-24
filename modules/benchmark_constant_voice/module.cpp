@@ -1,24 +1,19 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-inline void benchmark_constant_voice(iv::ModuleContext const& context)
+inline void benchmark_constant_voice(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto& g = context.builder();
 
-    auto const amplitude = g.input("amplitude", 0.1);
-    auto const frequency = g.input("frequency", 110.0);
-    auto const phase_offset = g.input("phase_offset", 0.0);
-    auto const dt = g.input("dt", 1.0);
+    auto const amplitude = g.input<"amplitude">(0.1);
+    auto const frequency = g.input<"frequency">(110.0);
+    auto const phase_offset = g.input<"phase_offset">(0.0);
 
     auto const saw = g.node<SawOscillator>();
     saw(
         "frequency"_P = frequency,
-        "phase_offset"_P = phase_offset,
-        "dt"_P = dt
+        "phase_offset"_P = phase_offset
     );
 
     g.outputs("out"_P = saw * amplitude);
 }
-
-IV_EXPORT_MODULE("iv.test.benchmark_constant_voice", benchmark_constant_voice);

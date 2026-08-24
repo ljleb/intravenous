@@ -12,7 +12,6 @@
 #include <intravenous/runtime/uuid.h>
 
 #include <functional>
-#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -118,8 +117,7 @@ private:
     std::unordered_map<std::string, VirtualOutputState> virtual_output_states_by_key;
     std::unordered_map<std::string, NodeBundleOutputState> node_bundle_output_states_by_key;
     std::vector<ExistingTrackedLane> tracked_lanes;
-    std::unordered_map<std::string, std::vector<std::vector<Sample*>>> live_inputs;
-    std::unordered_map<std::string, std::vector<std::unique_ptr<std::atomic<Sample::storage>>>> live_input_values;
+    std::unordered_map<std::string, std::vector<std::optional<Sample>>> live_input_values;
     std::unordered_map<std::string, Sample> sample_input_default_values;
     std::unordered_set<std::string> node_bundle_live_input_overrides;
     std::unordered_map<std::string, VirtualSampleKnobState> virtual_sample_knob_states_by_key;
@@ -137,7 +135,7 @@ private:
     std::unordered_map<std::string, InternedString> public_event_input_lane_ids_by_key;
     std::unordered_map<std::string, ProjectSampleOutputState> public_sample_output_states_by_key;
     std::unordered_map<std::string, ProjectEventOutputState> public_event_output_states_by_key;
-    std::unordered_map<std::string, std::unique_ptr<std::atomic<Sample::storage>>> public_sample_input_values;
+    std::unordered_map<std::string, Sample> public_sample_input_values;
     std::unordered_map<std::string, std::shared_ptr<GraphRuntimeBindings>>
         runtime_bindings_by_instance_id;
     std::unordered_set<std::string> pending_runtime_binding_syncs;
@@ -202,19 +200,18 @@ private:
         DesiredPublicGraphPort const &port,
         bool sample,
         bool event);
-    std::vector<Sample*>& ensure_live_input_slots_locked(std::string_view key, size_t input_ordinal);
-    std::atomic<Sample::storage>& ensure_live_input_value_locked(std::string_view key, size_t input_ordinal);
-    std::atomic<Sample::storage>& ensure_live_input_value_initialized_locked(
+    Sample& ensure_live_input_value_locked(std::string_view key, size_t input_ordinal);
+    Sample& ensure_live_input_value_initialized_locked(
         std::string_view key,
         size_t input_ordinal,
-        Sample initial_value);
+        Sample initial_value
+    );
     Sample live_input_value_or_locked(std::string_view virtual_node_id, size_t input_ordinal, Sample fallback) const;
     Sample live_input_value_or_locked(
         std::string_view virtual_node_id,
         size_t member_ordinal,
         size_t input_ordinal,
         Sample fallback) const;
-    std::atomic<Sample::storage> const* live_input_value_ptr_or_locked(std::string_view key, size_t input_ordinal);
     void schedule_instances_for_input_locked(
         std::string_view virtual_node_id,
         std::optional<size_t> member_ordinal,
@@ -253,10 +250,11 @@ private:
         DesiredPublicGraphPort const &port) const;
     std::optional<LaneId> effective_public_event_input_lane_locked(
         DesiredPublicGraphPort const &port) const;
-    std::atomic<Sample::storage>& ensure_public_sample_input_value_locked(
-        std::string const &instance_id,
-        std::string const &source_identity,
-        Sample default_value);
+    Sample& ensure_public_sample_input_value_locked(
+        std::string const& instance_id,
+        std::string const& source_identity,
+        Sample default_value
+    );
     GraphInputLaneBindings sample_input_bindings(
         std::string const &node_id,
         std::optional<size_t> member_ordinal,

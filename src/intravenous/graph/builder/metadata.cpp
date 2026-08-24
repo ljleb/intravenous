@@ -1,6 +1,7 @@
 #include <intravenous/graph/builder/metadata.h>
 
 #include <intravenous/graph/builder/connections.h>
+#include <intravenous/graph/builder/names.h>
 #include <intravenous/graph/builder/node_bundles.h>
 #include <intravenous/graph/builder/virtual_nodes.h>
 
@@ -206,8 +207,11 @@ build_virtual_metadata(PreparedGraph const &g,
       if (info.declaration_identity.empty()) {
         continue;
       }
-      if (!std::ranges::contains(virtual_node_ids, info.declaration_identity)) {
-        virtual_node_ids.push_back(info.declaration_identity);
+      auto const virtual_node_id = typed_virtual_node_id(
+          info.declaration_identity,
+          concrete_nodes.back().type_identity);
+      if (!std::ranges::contains(virtual_node_ids, virtual_node_id)) {
+        virtual_node_ids.push_back(virtual_node_id);
       }
     }
     concrete_node_virtual_ids.push_back(std::move(virtual_node_ids));
@@ -507,13 +511,16 @@ void apply_virtual_port_metadata(
       spans.reserve(record.source_infos.size());
       for (auto const &info : record.source_infos) spans.push_back(info.span);
       sort_and_deduplicate_spans(spans);
-      metadata.virtual_nodes.push_back(IntrospectionVirtualNode{
+      metadata.virtual_nodes.push_back(IntrospectionVirtualNode {
           .id = record.id,
-          .source_identity = record.id,
+          .source_identity = record.source_identity,
+          .type_identity = record.type_identity,
           .source_spans = std::move(spans),
       });
       it = std::prev(metadata.virtual_nodes.end());
     }
+    it->source_identity = record.source_identity;
+    it->type_identity = record.type_identity;
     it->sample_inputs = project_virtual_sample_ports(
         record.sample_inputs, node_bundles, connections, true);
     it->sample_outputs = project_virtual_sample_ports(

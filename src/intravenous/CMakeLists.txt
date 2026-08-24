@@ -215,6 +215,10 @@ add_library(intravenous_module_source_template_tooling OBJECT EXCLUDE_FROM_ALL
 )
 iv_configure_intravenous_target(intravenous_module_source_template_tooling PUBLIC)
 target_link_libraries(intravenous_module_source_template_tooling PRIVATE iv_module_shared)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(intravenous_module_source_template_tooling PRIVATE
+        -Wno-unused-function)
+endif()
 foreach(iv_implicit_include_dir IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
     if(iv_implicit_include_dir AND EXISTS "${iv_implicit_include_dir}")
         target_compile_options(intravenous_module_source_template_tooling PRIVATE

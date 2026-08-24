@@ -10,11 +10,8 @@
 #include <iostream>
 #include <string>
 
-inline void noisy_saw_project(iv::ModuleContext const& context)
+inline void dc_offset(iv::GraphBuilder& g)
 {
     using namespace iv;
-    GraphBuilder& g = context.builder();
     g.outputs("main"_P[stereo::left] = 0.01, "main"_P[stereo::right] = 0.01);
 }
-
-IV_EXPORT_MODULE("iv.test.dc_offset", noisy_saw_project);

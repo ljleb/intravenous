@@ -8,44 +8,33 @@
 namespace iv {
 using namespace graph_input_lanes_details;
 
-std::vector<Sample*>& GraphInputLanes::ensure_live_input_slots_locked(
+Sample& GraphInputLanes::ensure_live_input_value_locked(
     std::string_view key,
-    size_t input_ordinal)
-{
-    auto &slots = live_inputs[std::string(key)];
-    if (slots.size() <= input_ordinal) {
-        slots.resize(input_ordinal + 1);
-    }
-    return slots[input_ordinal];
-}
-
-std::atomic<Sample::storage>& GraphInputLanes::ensure_live_input_value_locked(
-    std::string_view key,
-    size_t input_ordinal)
+    size_t input_ordinal
+)
 {
     auto &values = live_input_values[std::string(key)];
     if (values.size() <= input_ordinal) {
         values.resize(input_ordinal + 1);
     }
     if (!values[input_ordinal]) {
-        values[input_ordinal] =
-            std::make_unique<std::atomic<Sample::storage>>(Sample{0.0f}.value);
+        values[input_ordinal] = Sample { 0.0f };
     }
     return *values[input_ordinal];
 }
 
-std::atomic<Sample::storage>& GraphInputLanes::ensure_live_input_value_initialized_locked(
+Sample& GraphInputLanes::ensure_live_input_value_initialized_locked(
     std::string_view key,
     size_t input_ordinal,
-    Sample initial_value)
+    Sample initial_value
+)
 {
     auto &values = live_input_values[std::string(key)];
     if (values.size() <= input_ordinal) {
         values.resize(input_ordinal + 1);
     }
     if (!values[input_ordinal]) {
-        values[input_ordinal] =
-            std::make_unique<std::atomic<Sample::storage>>(initial_value.value);
+        values[input_ordinal] = initial_value;
     }
     return *values[input_ordinal];
 }
@@ -62,7 +51,7 @@ Sample GraphInputLanes::live_input_value_or_locked(
     if (!it->second[input_ordinal]) {
         return fallback;
     }
-    return Sample{it->second[input_ordinal]->load(std::memory_order_relaxed)};
+    return *it->second[input_ordinal];
 }
 
 Sample GraphInputLanes::live_input_value_or_locked(
@@ -78,17 +67,10 @@ Sample GraphInputLanes::live_input_value_or_locked(
         if (it != live_input_values.end()
             && it->second.size() > input_ordinal
             && it->second[input_ordinal]) {
-            return Sample{it->second[input_ordinal]->load(std::memory_order_relaxed)};
+            return *it->second[input_ordinal];
         }
     }
     return live_input_value_or_locked(virtual_node_id, input_ordinal, fallback);
-}
-
-std::atomic<Sample::storage> const* GraphInputLanes::live_input_value_ptr_or_locked(
-    std::string_view key,
-    size_t input_ordinal)
-{
-    return &ensure_live_input_value_locked(key, input_ordinal);
 }
 
 void GraphInputLanes::schedule_instances_for_input_locked(
@@ -419,17 +401,14 @@ LaneId GraphInputLanes::public_graph_port_lane_for(DesiredPublicGraphPort const 
     return stable_lane_id_for_key(public_port_key(port));
 }
 
-std::atomic<Sample::storage>& GraphInputLanes::ensure_public_sample_input_value_locked(
-    std::string const &instance_id,
-    std::string const &source_identity,
-    Sample default_value)
+Sample& GraphInputLanes::ensure_public_sample_input_value_locked(
+    std::string const& instance_id,
+    std::string const& source_identity,
+    Sample default_value
+)
 {
     auto const key = public_sample_input_state_key(instance_id, source_identity, std::nullopt);
-    auto [it, inserted] = public_sample_input_values.try_emplace(key);
-    if (inserted) {
-        it->second = std::make_unique<std::atomic<Sample::storage>>(default_value.value);
-    }
-    return *it->second;
+    return public_sample_input_values.try_emplace(key, default_value).first->second;
 }
 
 std::optional<LaneId> GraphInputLanes::effective_public_sample_input_lane_locked(

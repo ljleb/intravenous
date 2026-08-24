@@ -1,4 +1,5 @@
 #include <intravenous/graph/builder/virtual_nodes.h>
+#include <intravenous/graph/builder/names.h>
 
 #include <algorithm>
 #include <ranges>
@@ -73,13 +74,26 @@ void append_bundle_mappings(VirtualNodeRecord& virtual_node,
 } // namespace
 
 VirtualNodeHandle GraphBuilderVirtualNodes::get_or_create(
-    std::string_view virtual_node_id) {
-  auto const it = _handles_by_id.find(std::string(virtual_node_id));
-  if (it != _handles_by_id.end()) return it->second;
-  auto const handle = _records.size();
-  _records.push_back({.id = std::string(virtual_node_id)});
-  _handles_by_id.emplace(_records.back().id, handle);
-  return handle;
+    std::string_view source_identity, std::string_view type_identity
+)
+{
+    auto& handles = _handles_by_source_identity[std::string(source_identity)];
+    auto const existing = std::find_if(
+        handles.begin(), handles.end(), [&](VirtualNodeHandle handle) {
+            return _records[handle].type_identity == type_identity;
+        }
+    );
+    if (existing != handles.end())
+        return *existing;
+
+    auto const handle = _records.size();
+    _records.push_back({
+        .id = details::typed_virtual_node_id(source_identity, type_identity),
+        .source_identity = std::string(source_identity),
+        .type_identity = std::string(type_identity),
+    });
+    handles.push_back(handle);
+    return handle;
 }
 
 void GraphBuilderVirtualNodes::attach_member(
@@ -100,20 +114,27 @@ void GraphBuilderVirtualNodes::attach_bundle_member(
     GraphBuilderNodeBundles& bundles, NodeBundleHandle bundle_handle,
     std::string_view virtual_node_id, SourceInfo const* source_info) {
   if (virtual_node_id.empty()) return;
-  attach_member(bundles, get_or_create(virtual_node_id), bundle_handle, source_info);
+  attach_member(
+      bundles,
+      get_or_create(virtual_node_id, bundles.bundle(bundle_handle).type_identity()),
+      bundle_handle,
+      source_info
+  );
 }
 
 void GraphBuilderVirtualNodes::import_child(
     GraphBuilderNodeBundles& bundles, GraphBuilderVirtualNodes const& child,
     size_t bundle_offset) {
   for (auto const& child_record : child.records()) {
-    auto const handle = get_or_create(child_record.id);
-    auto& record = _records[handle];
-    for (auto child_bundle : child_record.node_bundle_handles)
-      attach_member(bundles, handle, child_bundle + bundle_offset, nullptr);
-    for (auto const& info : child_record.source_infos)
-      if (!std::ranges::contains(record.source_infos, info))
-        record.source_infos.push_back(info);
+      auto const handle = get_or_create(
+          child_record.source_identity, child_record.type_identity
+      );
+      auto& record = _records[handle];
+      for (auto child_bundle : child_record.node_bundle_handles)
+          attach_member(bundles, handle, child_bundle + bundle_offset, nullptr);
+      for (auto const& info : child_record.source_infos)
+          if (!std::ranges::contains(record.source_infos, info))
+              record.source_infos.push_back(info);
   }
 }
 
