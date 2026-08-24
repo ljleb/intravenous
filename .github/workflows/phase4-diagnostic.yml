@@ -1,0 +1,24 @@
+name: phase4 diagnostic
+
+on:
+  push:
+    branches:
+      - phase4
+
+permissions:
+  contents: read
+
+jobs:
+  gcc16:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: TypeErasedNode users
+        run: grep -R -n --exclude-dir=.git --exclude='*.md' 'TypeErasedNode' . || true
+      - name: Configure and build
+        run: |
+          nix develop --command bash -lc '
+            cmake -S . -B build -G Ninja -DJUCE_DIR="$JUCE_DIR"
+            cmake --build build -j16
+          '
