@@ -2,11 +2,9 @@
 
 namespace iv {
 namespace {
-GraphBuilder::RootNodeBuildResult build_execution_root(
-    GraphBuilder &builder,
-    IvModuleInstance const& instance)
+GraphBuilder::RootNodeBuildResult build_execution_root(GraphBuilder &builder)
 {
-    return builder.build_execution_root_node(instance.runtime_bindings);
+    return builder.build_execution_root_node();
 }
 }
 
@@ -17,9 +15,10 @@ std::shared_ptr<BlockNodeExecutor> IvModuleInstancesExecution::make_executor(
     size_t sample_rate,
     std::optional<size_t> default_silence_ttl_samples)
 {
+    (void)instance;
     return std::make_shared<BlockNodeExecutor>(
         BlockNodeExecutor::create(
-            TypeErasedNode(build_execution_root(builder, instance).graph),
+            TypeErasedNode(build_execution_root(builder).graph),
             block_size,
             {},
             default_silence_ttl_samples,
@@ -102,8 +101,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             if (it != instances_by_id_.end()) active_executor = it->second.executor;
         }
 
-        auto root = TypeErasedNode(build_execution_root(
-            *changed.builder, *changed.instance).graph);
+        auto root = TypeErasedNode(build_execution_root(*changed.builder).graph);
         std::optional<BlockNodeExecutor::PreparedReload> prepared;
         std::shared_ptr<BlockNodeExecutor> replacement;
         if (active_executor) {
