@@ -648,7 +648,7 @@ class ModuleLoader::Impl {
                   << "\", &iv::details::generated_module_build_v2<&"
                   << root.manifest.main
                   << ">};\n  return &descriptor;\n}\n"
-                  << "extern \"C\" IV_MODULE_EXPORT iv::Graph const* iv_module_graph() {\n"
+                  << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode const* iv_module_graph() {\n"
                   << "  return iv::details::generated_module_graph<&"
                   << root.manifest.main
                   << ">();\n}\n";
@@ -759,7 +759,7 @@ class ModuleLoader::Impl {
                         log_sink_(
                             "warning: could not publish module compile database to '" +
                             module.module_dir.string() + "': " + error.what()
-                        );
+                    );
                     }
                 }
             }
@@ -855,10 +855,10 @@ public:
             throw std::runtime_error(
                 "module '" + artifact.string() + "' exported unexpected id");
         }
-        auto const *graph_value = graph();
-        if (!graph_value) {
+        auto const *root_node = graph();
+        if (!root_node || !*root_node) {
             throw std::runtime_error(
-                "module '" + artifact.string() + "' exported a null graph");
+                "module '" + artifact.string() + "' exported an invalid graph root");
         }
 
         auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
@@ -895,7 +895,7 @@ public:
         std::vector<ModuleRef> refs{binary};
         return LoadedDefinition(
             std::move(refs),
-            WeakTypeErasedNode(*graph_value),
+            *root_node,
             std::move(introspection),
             root.module_dir,
             root.manifest.id,
