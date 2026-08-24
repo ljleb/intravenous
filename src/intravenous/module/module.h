@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/graph/builder.h>
 
 #include <concepts>
@@ -20,7 +21,9 @@ extern "C" {
     };
     using iv_get_module_descriptor_fn_v2 = iv_module_descriptor_v2 const* (*)();
 
-    using iv_module_graph_fn = iv::Graph const* (*)();
+    // The executable module ABI exposes only the module-owned weak DSP node.
+    // The concrete compiled graph remains an implementation detail of the DSO.
+    using iv_module_graph_fn = iv::WeakTypeErasedNode const* (*)();
 }
 
 #if defined(_WIN32)
@@ -44,10 +47,11 @@ namespace iv::details {
     }
 
     template<auto Main>
-    Graph const* generated_module_graph() noexcept
+    WeakTypeErasedNode const* generated_module_graph() noexcept
     {
         static constexpr Graph graph = generated_module_graph_value<Main>();
-        return &graph;
+        static const WeakTypeErasedNode root(graph);
+        return &root;
     }
 
     template<auto Main>
