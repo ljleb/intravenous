@@ -224,20 +224,4 @@ GraphIntrospectionMetadata GraphBuilder::build_metadata(size_t detach_offset) co
   metadata.public_event_outputs=public_event_outputs();
   return metadata;
 }
-consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_root_node(size_t detach_offset) const {
-  auto lowered=GraphBuilderLowering::lower(
-      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach);
-  return GraphBuilderFinalizer::build_root_node(
-      _identity, lowered, _node_bundles, _virtual_nodes, _public_ports,
-      detach_offset);
-}
-consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_execution_root_node(
-    size_t detach_offset) const {
-  auto lowered=GraphBuilderLowering::lower(
-      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach,
-      true);
-  return GraphBuilderFinalizer::build_root_node(
-      _identity,lowered,_node_bundles,_virtual_nodes,_public_ports,
-      detach_offset,true);
-}
 } // namespace iv
