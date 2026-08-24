@@ -164,8 +164,8 @@ public:
   size_t sample_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
   size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
   GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
-  RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
-  RootNodeBuildResult build_execution_root_node(
+  consteval RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
+  consteval RootNodeBuildResult build_execution_root_node(
       size_t detach_id_offset = 0) const;
 
 private:
