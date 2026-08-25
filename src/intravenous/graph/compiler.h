@@ -108,7 +108,13 @@ namespace iv::details {
             id += ".";
         }
         id += "generated.";
-        id += std::to_string(generated_index);
+        char digits[std::numeric_limits<size_t>::digits10 + 2] {};
+        size_t begin = sizeof(digits);
+        do {
+            digits[--begin] = static_cast<char>('0' + generated_index % 10);
+            generated_index /= 10;
+        } while (generated_index != 0);
+        id.append(digits + begin, digits + sizeof(digits));
         return id;
     }
 
