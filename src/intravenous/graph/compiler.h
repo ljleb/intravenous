@@ -736,14 +736,14 @@ namespace iv::details {
         }
 
         std::vector<bool> seen(outgoing.size(), false);
-        std::deque<size_t> q;
+        std::vector<size_t> q;
         q.push_back(start);
         seen[start] = true;
 
-        while (!q.empty())
+        size_t q_index = 0;
+        while (q_index < q.size())
         {
-            size_t u = q.front();
-            q.pop_front();
+            size_t u = q[q_index++];
 
             for (size_t v : outgoing[u])
             {
