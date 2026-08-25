@@ -2,7 +2,6 @@
 
 #include <intravenous/module/loader.h>
 #include <intravenous/compat.h>
-#include <intravenous/graph/builder.h>
 
 #include <nlohmann/json.hpp>
 
@@ -97,7 +96,6 @@ struct LoadedBinary {
     std::string id;
     std::filesystem::path artifact_path;
     std::shared_ptr<DynamicLibrary> library;
-    iv_module_descriptor_v2 const *descriptor = nullptr;
 };
 
 std::filesystem::path normalize(std::filesystem::path const &path)
@@ -642,14 +640,12 @@ class ModuleLoader::Impl {
         std::ostringstream export_tu;
         export_tu << "#include <intravenous/module/module.h>\n"
                   << "#include <" << root_include << ">\n"
-                  << "extern \"C\" IV_MODULE_EXPORT iv_module_descriptor_v2 const* iv_get_module_descriptor_v2() {\n"
-                  << "  static iv_module_descriptor_v2 const descriptor{IV_MODULE_ABI_VERSION_V2, \""
-                  << root.manifest.id
-                  << "\", &iv::details::generated_module_build_v2<&"
-                  << root.manifest.main
-                  << ">};\n  return &descriptor;\n}\n"
                   << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode iv_module_graph() {\n"
                   << "  return iv::details::generated_module_graph<&"
+                  << root.manifest.main
+                  << ">();\n}\n"
+                  << "extern \"C\" IV_MODULE_EXPORT iv::StaticGraphIntrospectionMetadata iv_module_metadata() {\n"
+                  << "  return iv::details::generated_module_metadata<&"
                   << root.manifest.main
                   << ">();\n}\n";
         write_text_if_different(export_file, export_tu.str());
@@ -670,13 +666,14 @@ class ModuleLoader::Impl {
             std::string(IV_CONFIGURED_CMAKE_GENERATOR));
 
         std::ostringstream signature;
-        signature << "module-descriptor-abi=2\n"
+        signature << "module-constexpr-products-abi=1\n"
                   << "config=" << config_name() << '\n'
                   << "cmake=" << cmake_program().generic_string() << '\n'
                   << "cc=" << cc.generic_string() << '\n'
                   << "cxx=" << cxx.generic_string() << '\n'
                   << "generator=" << generator << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/module.h") << '\n'
+                  << read_text(repo_root_ / "src/intravenous/graph/static_metadata.hpp") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/SourceSpanRewrite.cmake") << '\n';
         for (auto const &module : closure.modules) {
@@ -833,46 +830,30 @@ public:
         auto artifact = build(root, closure, project_root);
 
         auto library = std::make_shared<DynamicLibrary>(artifact);
-        auto getter = reinterpret_cast<iv_get_module_descriptor_fn_v2>(
-            library->symbol("iv_get_module_descriptor_v2"));
-        if (!getter) {
-            throw std::runtime_error(
-                "module '" + artifact.string() + "' does not export iv_get_module_descriptor_v2");
-        }
         auto graph = reinterpret_cast<iv_module_graph_fn>(
             library->symbol("iv_module_graph"));
         if (!graph) {
             throw std::runtime_error(
                 "module '" + artifact.string() + "' does not export iv_module_graph");
         }
-        auto descriptor = getter();
-        if (!descriptor || descriptor->abi_version != IV_MODULE_ABI_VERSION_V2 ||
-            !descriptor->build) {
+        auto metadata = reinterpret_cast<iv_module_metadata_fn>(
+            library->symbol("iv_module_metadata"));
+        if (!metadata) {
             throw std::runtime_error(
-                "module '" + artifact.string() + "' has invalid descriptor v2");
-        }
-        if (!descriptor->id || root.manifest.id != descriptor->id) {
-            throw std::runtime_error(
-                "module '" + artifact.string() + "' exported unexpected id");
+                "module '" + artifact.string() + "' does not export iv_module_metadata");
         }
         auto root_node = graph();
         if (!root_node) {
             throw std::runtime_error(
                 "module '" + artifact.string() + "' exported an invalid graph root");
         }
+        auto introspection = metadata().metadata();
 
         auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
             root.manifest.id,
             artifact,
             library,
-            descriptor,
         });
-        GraphBuilder builder;
-        if (char const *error = descriptor->build(builder)) {
-            throw std::runtime_error(
-                "failed to build root module definition '" + root.manifest.id + "': " + error);
-        }
-        auto introspection = builder.build_metadata();
 
         std::vector<ModuleDependency> dependencies;
         dependencies.reserve(closure.modules.size());
