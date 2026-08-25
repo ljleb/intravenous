@@ -132,13 +132,6 @@ GraphBuilder::VirtualSampleInputFamilies GraphBuilder::virtual_sample_input_fami
 GraphBuilder::VirtualOutputs GraphBuilder::virtual_outputs() const{return _connections.collect_virtual_outputs(_node_bundles,_virtual_nodes);}
 GraphBuilder::VirtualSampleOutputFamilies GraphBuilder::virtual_sample_output_families() const{return _connections.collect_virtual_sample_output_families(_node_bundles,_virtual_nodes);}
 GraphBuilder::VirtualPorts GraphBuilder::virtual_ports() const{return _virtual_nodes.ports(_node_bundles);}
-GraphBuilderPublicSamplePortFamilies GraphBuilder::public_sample_input_families() const{return _public_ports.sample_input_families(_node_bundles);}
-bool GraphBuilder::public_sample_input_is_connected(size_t i) const{auto channels=_node_bundles.sample_output_channels({_public_ports.boundary_handle(),PortKind::sample,i});return std::ranges::any_of(channels,[&](auto c){return _connections.sample_output_is_connected(c);});}
-std::vector<GraphBuilderPublicEventInput> GraphBuilder::public_event_inputs() const{return _public_ports.collected_event_inputs(_node_bundles);}
-bool GraphBuilder::public_event_input_is_connected(size_t i) const{auto ports=_node_bundles.event_output_ports({_public_ports.boundary_handle(),PortKind::event,i});return std::ranges::any_of(ports,[&](auto p){return _connections.event_output_is_connected(p);});}
-std::span<SourceInfo const> GraphBuilder::public_event_input_source_infos(size_t i) const{return _public_ports.event_input_source_infos(i);}
-GraphBuilderPublicSamplePortFamilies GraphBuilder::public_sample_output_families() const{return _public_ports.sample_output_families(_node_bundles);}
-std::vector<GraphBuilderPublicEventOutput> GraphBuilder::public_event_outputs() const{return _public_ports.collected_event_outputs(_node_bundles);}
 
 void GraphBuilder::record_authored_sample_connection(SampleInputChannelId target,SamplePortRef const& source) {
   if(!source.graph_builder||source.graph_builder!=this)details::error("invalid authored sample channel connection");
