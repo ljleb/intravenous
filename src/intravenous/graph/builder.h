@@ -146,13 +146,13 @@ public:
   VirtualOutputs virtual_outputs() const;
   VirtualSampleOutputFamilies virtual_sample_output_families() const;
   VirtualPorts virtual_ports() const;
-  GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
-  bool public_sample_input_is_connected(size_t port_ordinal) const;
-  std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
-  bool public_event_input_is_connected(size_t port_ordinal) const;
-  std::span<SourceInfo const> public_event_input_source_infos(size_t) const;
-  GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
-  std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
+  constexpr GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
+  constexpr bool public_sample_input_is_connected(size_t port_ordinal) const;
+  constexpr std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
+  constexpr bool public_event_input_is_connected(size_t port_ordinal) const;
+  constexpr std::span<SourceInfo const> public_event_input_source_infos(size_t) const;
+  constexpr GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
+  constexpr std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
 
   constexpr void connect_sample_input(
       NodeBundlePortId target, SamplePortRef source);
@@ -164,7 +164,7 @@ public:
   EventPortRef event_output(NodeBundlePortId source) const;
   size_t sample_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
   size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
-  GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
+  consteval GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
   consteval RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
   consteval RootNodeBuildResult build_execution_root_node(
       size_t detach_id_offset = 0) const;
@@ -354,6 +354,74 @@ constexpr GraphBuilder::GraphBuilder(GraphBuilderIdentity identity)
 constexpr GraphBuilder::GraphBuilder()
     : GraphBuilder(GraphBuilderIdentity("root"))
 {}
+
+constexpr GraphBuilderPublicSamplePortFamilies
+GraphBuilder::public_sample_input_families() const {
+  return _public_ports.sample_input_families(_node_bundles);
+}
+
+constexpr bool GraphBuilder::public_sample_input_is_connected(size_t i) const {
+  auto channels = _node_bundles.sample_output_channels(
+      {_public_ports.boundary_handle(), PortKind::sample, i});
+  return std::ranges::any_of(channels, [&](auto c) {
+    return _connections.sample_output_is_connected(c);
+  });
+}
+
+constexpr std::vector<GraphBuilderPublicEventInput>
+GraphBuilder::public_event_inputs() const {
+  return _public_ports.collected_event_inputs(_node_bundles);
+}
+
+constexpr bool GraphBuilder::public_event_input_is_connected(size_t i) const {
+  auto ports = _node_bundles.event_output_ports(
+      {_public_ports.boundary_handle(), PortKind::event, i});
+  return std::ranges::any_of(ports, [&](auto p) {
+    return _connections.event_output_is_connected(p);
+  });
+}
+
+constexpr std::span<SourceInfo const>
+GraphBuilder::public_event_input_source_infos(size_t i) const {
+  return _public_ports.event_input_source_infos(i);
+}
+
+constexpr GraphBuilderPublicSamplePortFamilies
+GraphBuilder::public_sample_output_families() const {
+  return _public_ports.sample_output_families(_node_bundles);
+}
+
+constexpr std::vector<GraphBuilderPublicEventOutput>
+GraphBuilder::public_event_outputs() const {
+  return _public_ports.collected_event_outputs(_node_bundles);
+}
+
+consteval GraphIntrospectionMetadata GraphBuilder::build_metadata(
+    size_t detach_offset) const
+{
+  auto lowered = GraphBuilderLowering::lower(
+      _node_bundles, _connections, _public_ports, _virtual_nodes, _detach);
+  auto metadata = GraphBuilderFinalizer::build_metadata(
+      _identity, lowered, _node_bundles, _virtual_nodes, _connections,
+      detach_offset);
+  auto sample_inputs = public_sample_input_families();
+  for (auto& family : sample_inputs.families) {
+    family.authored_connected = std::ranges::any_of(
+        family.channels, [&](auto const& channel) {
+          return std::ranges::any_of(
+              channel.port_ordinals, [&](auto ordinal) {
+                return public_sample_input_is_connected(ordinal);
+              });
+        });
+  }
+  metadata.public_sample_inputs = std::move(sample_inputs.families);
+  metadata.public_event_inputs = public_event_inputs();
+  for (auto& input : metadata.public_event_inputs)
+    input.graph_connected = public_event_input_is_connected(input.port_ordinal);
+  metadata.public_sample_outputs = public_sample_output_families().families;
+  metadata.public_event_outputs = public_event_outputs();
+  return metadata;
+}
 
 consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_root_node(
     size_t detach_offset) const
