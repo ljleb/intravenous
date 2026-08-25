@@ -1,7 +1,6 @@
 #include <intravenous/graph/builder.h>
 
 #include <intravenous/graph/builder/embedder.h>
-#include <intravenous/graph/builder/lowering.hpp>
 
 #include <algorithm>
 #include <ranges>
@@ -198,28 +197,5 @@ size_t GraphBuilder::event_port_index(NodeBundleHandle h,bool inputs,std::string
   }
   if(!match)details::error("NodeBundle port name '"+std::string(n)+"' does not exist");
   return *match;
-}
-
-GraphIntrospectionMetadata GraphBuilder::build_metadata(size_t detach_offset) const {
-  auto lowered=GraphBuilderLowering::lower(
-      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach);
-  auto metadata=GraphBuilderFinalizer::build_metadata(
-      _identity,lowered,_node_bundles,_virtual_nodes,_connections,detach_offset);
-  auto sample_inputs=public_sample_input_families();
-  for(auto& family:sample_inputs.families) {
-    family.authored_connected=std::ranges::any_of(
-        family.channels,[&](auto const& channel){
-          return std::ranges::any_of(channel.port_ordinals,[&](auto ordinal){
-            return public_sample_input_is_connected(ordinal);
-          });
-        });
-  }
-  metadata.public_sample_inputs=std::move(sample_inputs.families);
-  metadata.public_event_inputs=public_event_inputs();
-  for(auto& input:metadata.public_event_inputs)
-    input.graph_connected=public_event_input_is_connected(input.port_ordinal);
-  metadata.public_sample_outputs=public_sample_output_families().families;
-  metadata.public_event_outputs=public_event_outputs();
-  return metadata;
 }
 } // namespace iv
