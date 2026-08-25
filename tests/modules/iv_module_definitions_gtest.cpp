@@ -25,7 +25,7 @@ TEST(IvModuleDefinitions, SeedLoadedDefinitionPublishesLoadedSnapshot)
     ASSERT_EQ(loaded_definitions.size(), 1u);
     EXPECT_EQ(loaded_definitions.front().definition_id, definition_id);
     EXPECT_EQ(loaded_definitions.front().module_root, std::filesystem::weakly_canonical(workspace));
-    EXPECT_NE(loaded_definitions.front().canonical_builder, nullptr);
+    EXPECT_EQ(static_cast<bool>(loaded_definitions.front().root), static_cast<bool>(loaded.root));
 }
 
 TEST(IvModuleDefinitions, RemoveDefinitionClearsLoadedSnapshot)
