@@ -27,10 +27,10 @@ struct TopologyEventEdge {
   TopologyPortId source{};
   TopologyPortId target{};
   EventConversionPlan conversion{};
-  bool operator==(TopologyEventEdge const& rhs) const {
+  constexpr bool operator==(TopologyEventEdge const& rhs) const {
     return source == rhs.source && target == rhs.target;
   }
-  auto operator<=>(TopologyEventEdge const& rhs) const {
+  constexpr auto operator<=>(TopologyEventEdge const& rhs) const {
     if (auto ordering = source <=> rhs.source; ordering != 0)
       return ordering;
     return target <=> rhs.target;
