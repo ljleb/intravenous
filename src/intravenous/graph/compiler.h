@@ -31,7 +31,7 @@ namespace iv::details {
         }
     }
 
-    inline size_t floor_power_of_2(size_t value)
+    constexpr size_t floor_power_of_2(size_t value)
     {
         if (value == 0) {
             return 0;
@@ -101,7 +101,7 @@ namespace iv::details {
         std::flat_set<ConcretePortId> detached_reader_outputs;
     };
 
-    inline std::string generated_node_id(std::string_view builder_id, size_t generated_index)
+    constexpr std::string generated_node_id(std::string_view builder_id, size_t generated_index)
     {
         std::string id(builder_id);
         if (!id.empty()) {
@@ -112,7 +112,7 @@ namespace iv::details {
         return id;
     }
 
-    inline size_t next_construction_order(PreparedGraph const& g)
+    constexpr size_t next_construction_order(PreparedGraph const& g)
     {
         return g.node_construction_order.empty()
             ? 0
@@ -720,7 +720,7 @@ namespace iv::details {
         apply_node_permutation(g, sorted);
     }
 
-    inline bool has_path(
+    constexpr bool has_path(
         std::vector<std::flat_set<size_t>> const& outgoing,
         size_t start,
         size_t goal)
@@ -1169,9 +1169,6 @@ namespace iv::details {
         std::vector<DormancyGroup> dormancy_groups
     )
     {
-        // Lowering and hyperedge expansion can introduce replacement edges.
-        // Resolve conversion metadata here, after topology is final, rather
-        // than relying on every topology transform to preserve it.
         std::flat_set<GraphEdge> resolved_edges;
         auto output_layout_for = [&](ConcretePortId port) {
             return port.node == GRAPH_ID
