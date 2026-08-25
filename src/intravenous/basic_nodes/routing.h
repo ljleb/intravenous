@@ -304,7 +304,7 @@ namespace iv {
     };
 
     struct DummyEventSink {
-        auto event_inputs() const
+        constexpr auto event_inputs() const
         {
             return std::array<EventInputConfig, 1> {{
                 { .type = EventTypeId::empty }
