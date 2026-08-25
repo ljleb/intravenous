@@ -183,8 +183,7 @@ function(iv_add_host_runtime_objects target)
 endfunction()
 
 add_library(intravenous_graph_builder OBJECT
-    graph/builder/annotations.cpp
-    graph/builder/graph.cpp
+    graph/builder/link.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 
