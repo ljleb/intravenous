@@ -1,7 +1,7 @@
 #include <intravenous/graph/builder.h>
 
 #include <intravenous/graph/builder/embedder.h>
-#include <intravenous/graph/builder/lowering.h>
+#include <intravenous/graph/builder/lowering.hpp>
 
 #include <algorithm>
 #include <ranges>
@@ -125,9 +125,7 @@ NodeRef GraphBuilder::embed_subgraph(GraphBuilder const& child,std::string_view 
 }
 
 void GraphBuilder::event_outputs(std::span<EventOutputRefConfig const> refs){_public_ports.define_event_outputs(*this,_node_bundles,_identity,refs);}
-constexpr void GraphBuilder::outputs(std::initializer_list<NamedRef> refs){outputs(std::span<NamedRef const>(refs.begin(),refs.size()));}
 void GraphBuilder::outputs(std::span<OutputRefConfig const> refs){_public_ports.define_sample_outputs(*this,_node_bundles,_identity,refs);}
-constexpr void GraphBuilder::outputs(std::span<NamedRef const> refs){_public_ports.define_sample_outputs_from_named_refs(*this,_node_bundles,_identity,[&](auto&&v){return lift_to_sample_port(std::forward<decltype(v)>(v));},refs);}
 
 GraphBuilder::VacantInputs GraphBuilder::vacant_inputs() const{return _connections.collect_vacant_inputs(_node_bundles,_virtual_nodes);}
 GraphBuilder::VirtualInputs GraphBuilder::virtual_inputs() const{return _connections.collect_virtual_inputs(_node_bundles,_virtual_nodes);}
