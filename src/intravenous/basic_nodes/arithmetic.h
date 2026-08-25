@@ -19,8 +19,6 @@ namespace iv {
 
     template<typename BinaryOp, size_t NumInputs>
     class FixedBinaryOpNode {
-        BinaryOp _binary_op;
-
     public:
         static_assert(NumInputs >= 1, "FixedBinaryOpNode requires at least one input");
 
@@ -44,7 +42,7 @@ namespace iv {
             auto& out = ctx.outputs[0];
             Sample result = binary_op_default_v<BinaryOp>;
             for (auto& input : ctx.inputs) {
-                result = _binary_op(result, input.get());
+                result = BinaryOp{}(result, input.get());
             }
             out.push(result);
         }
@@ -52,8 +50,6 @@ namespace iv {
 
     template<typename BinaryOp>
     class BinaryOpNode {
-        BinaryOp _binary_op;
-
     public:
         static constexpr auto inputs()
         {
@@ -70,7 +66,7 @@ namespace iv {
             auto& out = ctx.outputs[0];
             auto& in0 = ctx.inputs[0];
             auto& in1 = ctx.inputs[1];
-            out.push(_binary_op(in0.get(), in1.get()));
+            out.push(BinaryOp{}(in0.get(), in1.get()));
         }
     };
 
