@@ -1,8 +1,8 @@
 #pragma once
 
 #include <intravenous/graph/builder/topology_port.h>
-#include <intravenous/graph/generated_node_spec.h>
-#include <intravenous/graph/reflected_node.h>
+#include <intravenous/graph/generated_node_spec.hpp>
+#include <intravenous/graph/reflected_node.hpp>
 #include <intravenous/graph/types.h>
 
 #include <optional>
