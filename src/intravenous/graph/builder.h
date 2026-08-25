@@ -5,13 +5,13 @@
 #include <intravenous/graph/builder/annotations.h>
 #include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/detach.hpp>
-#include <intravenous/graph/builder/finalize.h>
+#include <intravenous/graph/builder/finalize.hpp>
 #include <intravenous/graph/builder/identity.h>
-#include <intravenous/graph/builder/lowering.h>
+#include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/builder/node_refs.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
-#include <intravenous/graph/builder/subgraphs.h>
+#include <intravenous/graph/builder/subgraphs.hpp>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
 
 #include <algorithm>
