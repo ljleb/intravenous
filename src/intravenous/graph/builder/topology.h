@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/graph/builder/stored_node.h>
+#include <intravenous/graph/builder/stored_node.hpp>
 #include <intravenous/graph/builder/topology_port.h>
 
 #include <intravenous/graph/compiler.h>
@@ -62,7 +62,6 @@ public:
       std::vector<std::vector<TopologyPortId>> subgraph_event_input_targets,
       std::vector<TopologyPortId> subgraph_event_output_sources);
 
-  // Allocate lowering-only sentinel sources for non-root semantic boundaries.
   constexpr TopologyPortId append_scope_sample_input(OutputConfig);
   constexpr TopologyPortId append_scope_event_input(EventOutputConfig);
 
