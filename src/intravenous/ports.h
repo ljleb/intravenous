@@ -277,10 +277,9 @@ namespace iv {
         }
 
     public:
-        static EventConversionRegistry const& instance()
+        static constexpr EventConversionRegistry instance()
         {
-            static EventConversionRegistry registry;
-            return registry;
+            return {};
         }
 
         static constexpr EventConversionPlan plan(EventTypeId source, EventTypeId target)
