@@ -7,8 +7,8 @@
 #include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
-#include <intravenous/graph/connection_node.h>
-#include <intravenous/graph/runtime_binding_nodes.h>
+#include <intravenous/graph/connection_node.hpp>
+#include <intravenous/graph/runtime_binding_nodes.hpp>
 
 #include <algorithm>
 #include <flat_map>
@@ -251,7 +251,7 @@ class Lowerer {
     return std::nullopt;
   }
 
-  ConcreteNode make_connection_node(
+  constexpr ConcreteNode make_connection_node(
       std::vector<ConnectionNodeInputConfig> inputs,
       std::vector<ConnectionNodeEphemeralPortConfig> ephemeral_ports,
       OutputConfig output, Sample default_value,
@@ -329,7 +329,7 @@ class Lowerer {
     size_t source_channel_offset = 0;
   };
 
-  RuntimeSampleBindingRef runtime_sample_binding_for(
+  constexpr RuntimeSampleBindingRef runtime_sample_binding_for(
       NodeBundlePortId semantic_target,
       std::optional<TopologyPortId> concrete_target) const {
     auto const virtual_ports = virtuals.ports(bundles);
@@ -371,7 +371,7 @@ class Lowerer {
     return false;
   }
 
-  LoweredConnection lower_connection_node(
+  constexpr LoweredConnection lower_connection_node(
       SampleGroup const& group,
       std::optional<TopologyPortId> target_endpoint) {
     std::vector<TopologyPortId> input_sources;
@@ -454,7 +454,7 @@ class Lowerer {
     return {.output = source, .target = target_endpoint};
   }
 
-  bool lower_tiled_group_direct(SampleGroup const& group, std::span<TopologyPortId const> endpoints) {
+  constexpr bool lower_tiled_group_direct(SampleGroup const& group, std::span<TopologyPortId const> endpoints) {
     auto const target_channels = bundles.sample_input_channels(group.target);
     auto const target_type = bundles.resolve_sample_input(group.target).config.channel_layout.channel_type;
     if (group.connections.size() == 1) {
@@ -581,7 +581,7 @@ class Lowerer {
     }
   }
 
-  TopologyPortId materialize_event_source(AuthoredEventConnection const& c) {
+  constexpr TopologyPortId materialize_event_source(AuthoredEventConnection const& c) {
     std::vector<TopologyPortId> endpoints;
     for(auto source:c.sources) {
       auto const config=bundles.resolve_event_output({source.bundle,PortKind::event,source.port}).config;
@@ -660,7 +660,7 @@ class Lowerer {
     }
   }
 
-  TopologyPortId materialize_sample_output_port(NodeBundlePortId logical, OutputConfig output_config) {
+  constexpr TopologyPortId materialize_sample_output_port(NodeBundlePortId logical, OutputConfig output_config) {
     auto const semantic_channels = bundles.sample_output_channels(logical);
     if (semantic_channels.size() != channel_count(output_config.channel_layout.channel_type)) details::error("virtual sample output member channel count changed");
     auto const& endpoints = out.bundle_projections.at(logical.node_bundle_handle).sample_outputs.at(logical.port_ordinal);
@@ -691,7 +691,7 @@ class Lowerer {
     return {node, 0};
   }
 
-  TopologyPortId materialize_event_output_port(NodeBundlePortId logical, EventTypeId type) {
+  constexpr TopologyPortId materialize_event_output_port(NodeBundlePortId logical, EventTypeId type) {
     auto const& endpoints = out.bundle_projections.at(logical.node_bundle_handle).event_outputs.at(logical.port_ordinal);
     if (endpoints.empty()) details::error("virtual event output member has no lowered endpoint");
     if (endpoints.size() == 1) return endpoints.front();
