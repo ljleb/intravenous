@@ -1,6 +1,6 @@
 #pragma once
 
-#include "intravenous/graph/builder/subgraphs.h"
+#include "intravenous/graph/builder/subgraphs.hpp"
 #ifdef IV_INTERNAL_TRANSLATION_UNIT
 #error "dsl.h is reserved for user-authored DSL code; include graph/builder.h or module/module.h from internal code."
 #endif

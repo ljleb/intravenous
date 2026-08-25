@@ -186,8 +186,6 @@ add_library(intravenous_graph_builder OBJECT
     graph/builder/annotations.cpp
     graph/builder/embedder.cpp
     graph/builder/graph.cpp
-    graph/builder/names.cpp
-    graph/builder/metadata.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 

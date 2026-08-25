@@ -3,7 +3,7 @@
 #include <intravenous/node/tick.h>
 #include <intravenous/node/block_executor.h>
 #include <intravenous/graph/builder.h>
-#include <intravenous/graph/connection_node.h>
+#include <intravenous/graph/connection_node.hpp>
 #include <intravenous/graph/runtime_bindings.h>
 #include <intravenous/dsl.h>
 #include <intravenous/runtime/runtime_graph_bindings.h>
