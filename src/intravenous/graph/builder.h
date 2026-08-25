@@ -2,7 +2,7 @@
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/channel_ports.h>
-#include <intravenous/graph/builder/annotations.h>
+#include <intravenous/graph/builder/annotations.hpp>
 #include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/finalize.hpp>
@@ -72,35 +72,35 @@ class GraphBuilder {
   GraphBuilderVirtualNodes _virtual_nodes;
 
   constexpr explicit GraphBuilder(GraphBuilderIdentity identity);
-  GraphBuilder derive_nested_builder();
-  NodeRef embed_subgraph(GraphBuilder const& child, std::string_view kind = "Subgraph");
+  constexpr GraphBuilder derive_nested_builder();
+  constexpr NodeRef embed_subgraph(GraphBuilder const& child, std::string_view kind = "Subgraph");
   constexpr PublicSampleInputRef input_named(std::string_view name, Sample default_value,
                                    std::optional<Sample> min,
                                    std::optional<Sample> max);
-  PublicEventInputRef event_input_named(std::string_view name, EventTypeId type);
+  constexpr PublicEventInputRef event_input_named(std::string_view name, EventTypeId type);
 
 public:
   constexpr GraphBuilder();
-  PublicSampleInputRef input();
+  constexpr PublicSampleInputRef input();
   template<fixed_string Name>
   constexpr PublicSampleInputRef input(Sample default_value = 0.0,
                              std::optional<Sample> min = std::nullopt,
                              std::optional<Sample> max = std::nullopt) {
     return input_named(Name.view(), default_value, min, max);
   }
-  PublicSampleInputRef input(Sample default_value,
+  constexpr PublicSampleInputRef input(Sample default_value,
                              std::optional<Sample> min = std::nullopt,
                              std::optional<Sample> max = std::nullopt);
   template<fixed_string Name>
-  PublicEventInputRef event_input(EventTypeId type) { return event_input_named(Name.view(), type); }
-  PublicEventInputRef event_input(EventTypeId type);
+  constexpr PublicEventInputRef event_input(EventTypeId type) { return event_input_named(Name.view(), type); }
+  constexpr PublicEventInputRef event_input(EventTypeId type);
 
-  void annotate_public_sample_input_source_info(PublicSampleInputRef const&,
+  constexpr void annotate_public_sample_input_source_info(PublicSampleInputRef const&,
       std::string_view, std::string_view, uint32_t, uint32_t);
-  void annotate_public_event_input_source_info(PublicEventInputRef const&,
+  constexpr void annotate_public_event_input_source_info(PublicEventInputRef const&,
       std::string_view, std::string_view, uint32_t, uint32_t);
-  void annotate_public_sample_output_source_info(std::span<SourceInfo const> infos);
-  void annotate_public_event_output_source_info(std::span<SourceInfo const> infos);
+  constexpr void annotate_public_sample_output_source_info(std::span<SourceInfo const> infos);
+  constexpr void annotate_public_event_output_source_info(std::span<SourceInfo const> infos);
 
   template<class Config>
   static constexpr void validate_output_port_configs(
@@ -112,14 +112,14 @@ public:
   template<class Node, class ChannelType, class... Args>
   constexpr auto node(Args&&... args);
   template<class ChannelType, class... Refs> constexpr auto tile(Refs&&... refs);
-  template<auto Module> NodeRef module(std::string_view kind = "Module");
+  template<auto Module> constexpr NodeRef module(std::string_view kind = "Module");
 
-  template<class... Refs> void event_outputs(Refs&&... refs);
-  void event_outputs(std::span<EventOutputRefConfig const> refs);
-  template<class Fn> NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph");
+  template<class... Refs> constexpr void event_outputs(Refs&&... refs);
+  constexpr void event_outputs(std::span<EventOutputRefConfig const> refs);
+  template<class Fn> constexpr NodeRef subgraph(Fn&& fn, std::string_view kind = "Subgraph");
   template<class... Refs> constexpr void outputs(Refs&&... refs);
   constexpr void outputs(std::initializer_list<NamedRef> refs);
-  void outputs(std::span<OutputRefConfig const> refs);
+  constexpr void outputs(std::span<OutputRefConfig const> refs);
   constexpr void outputs(std::span<NamedRef const> refs);
 
   using VacantSampleInput = GraphBuilderVacantSampleInput;
@@ -140,12 +140,12 @@ public:
   using VirtualSampleOutputFamilies = GraphBuilderVirtualSampleOutputFamilies;
   using VirtualPorts = GraphBuilderVirtualPorts;
 
-  VacantInputs vacant_inputs() const;
-  VirtualInputs virtual_inputs() const;
-  VirtualSampleInputFamilies virtual_sample_input_families() const;
-  VirtualOutputs virtual_outputs() const;
-  VirtualSampleOutputFamilies virtual_sample_output_families() const;
-  VirtualPorts virtual_ports() const;
+  constexpr VacantInputs vacant_inputs() const;
+  constexpr VirtualInputs virtual_inputs() const;
+  constexpr VirtualSampleInputFamilies virtual_sample_input_families() const;
+  constexpr VirtualOutputs virtual_outputs() const;
+  constexpr VirtualSampleOutputFamilies virtual_sample_output_families() const;
+  constexpr VirtualPorts virtual_ports() const;
   constexpr GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
   constexpr bool public_sample_input_is_connected(size_t port_ordinal) const;
   constexpr std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
@@ -156,14 +156,14 @@ public:
 
   constexpr void connect_sample_input(
       NodeBundlePortId target, SamplePortRef source);
-  void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
-  void connect_event_input(NodeBundlePortId target, EventPortRef source);
-  bool sample_input_is_connected(NodeBundlePortId target) const;
-  bool event_input_is_connected(NodeBundlePortId target) const;
-  void connect_sample_output(NodeBundlePortId source, NodeRef const& target);
-  EventPortRef event_output(NodeBundlePortId source) const;
-  size_t sample_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
-  size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
+  constexpr void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
+  constexpr void connect_event_input(NodeBundlePortId target, EventPortRef source);
+  constexpr bool sample_input_is_connected(NodeBundlePortId target) const;
+  constexpr bool event_input_is_connected(NodeBundlePortId target) const;
+  constexpr void connect_sample_output(NodeBundlePortId source, NodeRef const& target);
+  constexpr EventPortRef event_output(NodeBundlePortId source) const;
+  constexpr size_t sample_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
+  constexpr size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
   consteval GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
   consteval RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
   consteval RootNodeBuildResult build_execution_root_node(
@@ -175,8 +175,8 @@ private:
   constexpr void record_authored_sample_connection(
       NodeBundlePortId, SamplePortRef const&);
   constexpr void record_authored_sample_connection(SampleInputChannelId, SamplePortRef const&);
-  void record_authored_sample_connection(NodeBundlePortId, std::span<SamplePortRef const>);
-  void record_authored_event_connection(NodeBundlePortId, EventPortRef const&);
+  constexpr void record_authored_sample_connection(NodeBundlePortId, std::span<SamplePortRef const>);
+  constexpr void record_authored_event_connection(NodeBundlePortId, EventPortRef const&);
   constexpr SamplePortRef lift_to_sample_port(
       SamplePortRef const& sample_port);
   constexpr SamplePortRef lift_to_sample_port(SamplePortRef&& sample_port);
@@ -655,13 +655,13 @@ constexpr auto GraphBuilder::tile(Refs&&... refs) {
 }
 
 template<class... Refs>
-void GraphBuilder::event_outputs(Refs&&... refs) {
+constexpr void GraphBuilder::event_outputs(Refs&&... refs) {
   _public_ports.define_event_outputs_from_args(*this, _node_bundles, _identity,
                                                std::forward<Refs>(refs)...);
 }
 
 template<auto Module>
-NodeRef GraphBuilder::module(std::string_view kind) {
+constexpr NodeRef GraphBuilder::module(std::string_view kind) {
   static_assert(std::invocable<decltype(Module), GraphBuilder&>,
       "iv::GraphBuilder::module<Module>() requires Module(GraphBuilder&)");
   static_assert(std::same_as<std::invoke_result_t<decltype(Module), GraphBuilder&>, void>,
@@ -673,7 +673,7 @@ NodeRef GraphBuilder::module(std::string_view kind) {
 }
 
 template<class Fn>
-NodeRef GraphBuilder::subgraph(Fn&& fn, std::string_view kind) {
+constexpr NodeRef GraphBuilder::subgraph(Fn&& fn, std::string_view kind) {
   auto const boundary = _node_bundles.append_scope_boundary();
   SubgraphBuilder subgraph_builder(*this, boundary);
   auto const child_begin = _node_bundles.size();
@@ -713,14 +713,14 @@ constexpr void GraphBuilder::outputs(Refs&&... refs) {
 }
 
 template<class... Refs>
-void SubgraphBuilder::event_outputs(Refs&&... refs) {
+constexpr void SubgraphBuilder::event_outputs(Refs&&... refs) {
   _ports.define_event_outputs_from_args(
       _builder, _builder._node_bundles, _builder._identity,
       std::forward<Refs>(refs)...);
 }
 
 template<class... Refs>
-void SubgraphBuilder::outputs(Refs&&... refs) {
+constexpr void SubgraphBuilder::outputs(Refs&&... refs) {
   _ports.define_sample_outputs_from_args(
       _builder, _builder._node_bundles, _builder._identity,
       [&](auto&& value) {
@@ -867,3 +867,5 @@ template<class Node,class PortProjection> constexpr TypedNodeRef<Node,PortProjec
 template<class Node,class PortProjection> constexpr TypedNodeRef<Node,PortProjection> TypedNodeRef<Node,PortProjection>::connect_event_input(std::string_view n,EventPortRef value) const {auto const& inputs=ports().event_inputs();std::optional<size_t> m;for(size_t i=0;i<inputs.size();++i)if(inputs[i].name==n){if(m)details::error("event input name is ambiguous");m=i;}if(m)return connect_event_input(*m,value);details::error("event input port does not exist");}
 template<class Node,class PortProjection> constexpr SamplePortRef TypedNodeRef<Node,PortProjection>::detach(size_t latency) const {return static_cast<SamplePortRef>(*this).detach(latency);}
 } // namespace iv
+
+#include <intravenous/graph/builder/graph.hpp>
