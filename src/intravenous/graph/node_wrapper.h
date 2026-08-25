@@ -2,7 +2,7 @@
 
 #include <intravenous/graph/event_port_data_node.h>
 #include <intravenous/graph/port_data_node.h>
-#include <intravenous/graph/reflected_node.h>
+#include <intravenous/graph/reflected_node.hpp>
 #include <intravenous/graph/runtime.h>
 #include <intravenous/graph/static_storage.hpp>
 #include <intravenous/graph/types.h>
