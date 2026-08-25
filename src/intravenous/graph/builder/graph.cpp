@@ -1,6 +1,6 @@
 #include <intravenous/graph/builder.h>
 
-#include <intravenous/graph/builder/embedder.h>
+#include <intravenous/graph/builder/embedder.hpp>
 
 #include <algorithm>
 #include <ranges>
