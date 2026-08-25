@@ -60,11 +60,6 @@ GraphBuilder GraphBuilder::derive_nested_builder() {
 }
 
 PublicSampleInputRef GraphBuilder::input() { return input(Sample{0.0f}); }
-PublicSampleInputRef GraphBuilder::input_named(std::string_view name, Sample value,
-                                               std::optional<Sample> min,
-                                               std::optional<Sample> max) {
-  return PublicSampleInputRef(_public_ports.add_sample_input(*this,_node_bundles,name,value,min,max));
-}
 PublicSampleInputRef GraphBuilder::input(Sample value,std::optional<Sample> min,std::optional<Sample> max) {
   return PublicSampleInputRef(_public_ports.add_sample_input(*this,_node_bundles,{},value,min,max));
 }
@@ -133,12 +128,6 @@ GraphBuilder::VirtualOutputs GraphBuilder::virtual_outputs() const{return _conne
 GraphBuilder::VirtualSampleOutputFamilies GraphBuilder::virtual_sample_output_families() const{return _connections.collect_virtual_sample_output_families(_node_bundles,_virtual_nodes);}
 GraphBuilder::VirtualPorts GraphBuilder::virtual_ports() const{return _virtual_nodes.ports(_node_bundles);}
 
-void GraphBuilder::record_authored_sample_connection(SampleInputChannelId target,SamplePortRef const& source) {
-  if(!source.graph_builder||source.graph_builder!=this)details::error("invalid authored sample channel connection");
-  auto channels=_node_bundles.sample_input_channels({target.bundle,PortKind::sample,target.port});
-  if(target.channel>=channels.size()||channels[target.channel]!=target)details::error("sample input channel does not belong to its NodeBundle port");
-  _connections.record_authored_sample_connection({source.channel_type,source.channels,ChannelTypeId::mono,{target}});
-}
 void GraphBuilder::record_authored_sample_connection(NodeBundlePortId target,std::span<SamplePortRef const> sources) {
   auto targets=_node_bundles.sample_input_channels(target); auto type=_node_bundles.resolve_sample_input(target).config.channel_layout.channel_type;
   if(sources.size()!=targets.size())details::error("sample channel source count does not match NodeBundle port layout");
