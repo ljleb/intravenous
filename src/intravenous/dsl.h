@@ -16,17 +16,35 @@ namespace iv {
         uint32_t end;
     };
 
-    inline SourceInfo _public_output_source_info(PublicOutputSourceSpan span)
+    namespace details {
+        constexpr void append_dsl_source_position(std::string& result, uint32_t value)
+        {
+            char digits[11] {};
+            size_t begin = sizeof(digits);
+            do {
+                digits[--begin] = static_cast<char>('0' + value % 10);
+                value /= 10;
+            } while (value != 0);
+            result.append(digits + begin, digits + sizeof(digits));
+        }
+    }
+
+    constexpr SourceInfo _public_output_source_info(PublicOutputSourceSpan span)
     {
+        std::string declaration_identity = "public-output:";
+        declaration_identity += span.file_path;
+        declaration_identity += ':';
+        details::append_dsl_source_position(declaration_identity, span.begin);
+        declaration_identity += ':';
+        details::append_dsl_source_position(declaration_identity, span.end);
         return SourceInfo{
-            .declaration_identity = "public-output:" + std::string(span.file_path) + ":"
-                + std::to_string(span.begin) + ":" + std::to_string(span.end),
+            .declaration_identity = std::move(declaration_identity),
             .span = SourceSpan{ .file_path = std::string(span.file_path), .begin = span.begin, .end = span.end },
         };
     }
 
     template<class Fn>
-    void _define_public_sample_outputs_with_source_info(
+    constexpr void _define_public_sample_outputs_with_source_info(
         GraphBuilder& builder, std::initializer_list<PublicOutputSourceSpan> spans, Fn&& define)
     {
         std::forward<Fn>(define)();
@@ -37,7 +55,7 @@ namespace iv {
     }
 
     template<class Fn>
-    void _define_public_event_outputs_with_source_info(
+    constexpr void _define_public_event_outputs_with_source_info(
         GraphBuilder& builder, std::initializer_list<PublicOutputSourceSpan> spans, Fn&& define)
     {
         std::forward<Fn>(define)();
@@ -58,7 +76,7 @@ namespace iv {
 
     template<class Ref>
     requires SourceInfoAnnotatableRef<Ref>
-    Ref&& _annotate_node_source_info(
+    constexpr Ref&& _annotate_node_source_info(
         Ref&& ref,
         std::string_view declaration_identity
     )
@@ -67,7 +85,7 @@ namespace iv {
         return std::forward<Ref>(ref);
     }
 
-    inline PublicSampleInputRef&& _annotate_public_input_source_info(
+    constexpr PublicSampleInputRef&& _annotate_public_input_source_info(
         PublicSampleInputRef&& ref,
         std::string_view declaration_identity,
         std::string_view file_path,
@@ -78,7 +96,7 @@ namespace iv {
         return std::move(ref);
     }
 
-    inline PublicSampleInputRef& _annotate_public_input_source_info(
+    constexpr PublicSampleInputRef& _annotate_public_input_source_info(
         PublicSampleInputRef& ref,
         std::string_view declaration_identity,
         std::string_view file_path,
@@ -89,7 +107,7 @@ namespace iv {
         return ref;
     }
 
-    inline PublicSampleInputRef const& _annotate_public_input_source_info(
+    constexpr PublicSampleInputRef const& _annotate_public_input_source_info(
         PublicSampleInputRef const& ref,
         std::string_view declaration_identity,
         std::string_view file_path,
@@ -100,7 +118,7 @@ namespace iv {
         return ref;
     }
 
-    inline PublicEventInputRef&& _annotate_public_event_input_source_info(
+    constexpr PublicEventInputRef&& _annotate_public_event_input_source_info(
         PublicEventInputRef&& ref, std::string_view declaration_identity,
         std::string_view file_path, uint32_t begin, uint32_t end)
     {
@@ -108,7 +126,7 @@ namespace iv {
         return std::move(ref);
     }
 
-    inline PublicEventInputRef& _annotate_public_event_input_source_info(
+    constexpr PublicEventInputRef& _annotate_public_event_input_source_info(
         PublicEventInputRef& ref, std::string_view declaration_identity,
         std::string_view file_path, uint32_t begin, uint32_t end)
     {
@@ -116,7 +134,7 @@ namespace iv {
         return ref;
     }
 
-    inline PublicEventInputRef const& _annotate_public_event_input_source_info(
+    constexpr PublicEventInputRef const& _annotate_public_event_input_source_info(
         PublicEventInputRef const& ref, std::string_view declaration_identity,
         std::string_view file_path, uint32_t begin, uint32_t end)
     {
@@ -126,7 +144,7 @@ namespace iv {
 
     template<class Ref>
     requires SourceInfoAnnotatableRef<Ref>
-    Ref&& _annotate_node_source_info(
+    constexpr Ref&& _annotate_node_source_info(
         Ref&& ref,
         std::string_view declaration_identity,
         std::string_view file_path,
@@ -153,12 +171,12 @@ namespace iv {
         return PortName<Name, NamedPortKind::event>{};
     }
 
-    inline SamplePortRef lift(GraphBuilder& g, Sample value)
+    constexpr SamplePortRef lift(GraphBuilder& g, Sample value)
     {
         return g.node<Constant>(value);
     }
 
-    inline SamplePortRef lift(SamplePortRef s)
+    constexpr SamplePortRef lift(SamplePortRef s)
     {
         if (!s.graph_builder) {
             details::error("cannot lift an empty sample port");
@@ -212,13 +230,13 @@ namespace iv {
 
     template<class T>
     requires NodeLike<T>
-    NodeRef _materialize_node_ref(T&& value)
+    constexpr NodeRef _materialize_node_ref(T&& value)
     {
         return value.node_ref();
     }
 
     template<class T>
-    EventPortRef lift_event_operand(T&& x)
+    constexpr EventPortRef lift_event_operand(T&& x)
     {
         if constexpr (EventPortLike<T>) {
             return std::forward<T>(x);
@@ -228,7 +246,7 @@ namespace iv {
     }
 
     template<class T>
-    SamplePortRef lift_sample_operand(GraphBuilder& g, T&& x)
+    constexpr SamplePortRef lift_sample_operand(GraphBuilder& g, T&& x)
     {
         if constexpr (SamplePortLike<T>) {
             SamplePortRef s = static_cast<SamplePortRef>(std::forward<T>(x));
@@ -249,7 +267,7 @@ namespace iv {
 
     template<class Node, class L, class R>
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
-    auto make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
+    constexpr auto make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
     {
         GraphBuilder* g = nullptr;
 
@@ -282,7 +300,7 @@ namespace iv {
         (SamplePortLike<L> || ScalarLike<L>) &&
         (SamplePortLike<R> || ScalarLike<R>) &&
         !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
-    NodeRef operator+(L&& lhs, R&& rhs)
+    constexpr NodeRef operator+(L&& lhs, R&& rhs)
     {
         return make_binary_op<Sum<mono, SampleStreamLayout::planar, 2>>(
             std::forward<L>(lhs),
@@ -296,7 +314,7 @@ namespace iv {
         (TypedSamplePortLike<L> || ScalarLike<L>) &&
         (TypedSamplePortLike<R> || ScalarLike<R>) &&
         (TypedSamplePortLike<L> || TypedSamplePortLike<R>))
-    auto operator+(L&& lhs, R&& rhs)
+    constexpr auto operator+(L&& lhs, R&& rhs)
     {
         using Left = typed_sample_port_traits<std::remove_cvref_t<L>>;
         using Right = typed_sample_port_traits<std::remove_cvref_t<R>>;
@@ -327,7 +345,7 @@ namespace iv {
 
     template<class L, class R>
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
-    NodeRef operator-(L&& lhs, R&& rhs)
+    constexpr NodeRef operator-(L&& lhs, R&& rhs)
     {
         return make_binary_op<Subtract>(
             std::forward<L>(lhs),
@@ -338,7 +356,7 @@ namespace iv {
 
     template<class L, class R>
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
-    NodeRef operator*(L&& lhs, R&& rhs)
+    constexpr NodeRef operator*(L&& lhs, R&& rhs)
     {
         return make_binary_op<Product<2>>(
             std::forward<L>(lhs),
@@ -349,7 +367,7 @@ namespace iv {
 
     template<class L, class R>
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
-    NodeRef operator/(L&& lhs, R&& rhs)
+    constexpr NodeRef operator/(L&& lhs, R&& rhs)
     {
         return make_binary_op<Quotient>(
             std::forward<L>(lhs),
@@ -358,12 +376,12 @@ namespace iv {
         );
     }
 
-    inline SamplePortRef operator~(SamplePortRef const& sample_port)
+    constexpr SamplePortRef operator~(SamplePortRef const& sample_port)
     {
         return sample_port.detach();
     }
 
-    inline SamplePortRef operator~(SamplePortRef&& sample_port)
+    constexpr SamplePortRef operator~(SamplePortRef&& sample_port)
     {
         return sample_port.detach();
     }
@@ -374,20 +392,20 @@ namespace iv {
         !std::same_as<std::remove_cvref_t<T>, SamplePortRef> &&
         !TypedSamplePortLike<T>
     )
-    SamplePortRef operator~(T&& value)
+    constexpr SamplePortRef operator~(T&& value)
     {
         return static_cast<SamplePortRef>(std::forward<T>(value)).detach();
     }
 
     template<class ChannelType, SampleStreamLayout Layout>
-    TypedSamplePortRef<ChannelType, Layout> operator~(
+    constexpr TypedSamplePortRef<ChannelType, Layout> operator~(
         TypedSamplePortRef<ChannelType, Layout> const& value)
     {
         return TypedSamplePortRef<ChannelType, Layout>{value.erased().detach()};
     }
 
     template<class ChannelType, SampleStreamLayout Layout>
-    TypedSamplePortRef<ChannelType, Layout> operator~(
+    constexpr TypedSamplePortRef<ChannelType, Layout> operator~(
         TypedSamplePortTileRef<ChannelType, Layout> const& value)
     {
         return TypedSamplePortRef<ChannelType, Layout>{
@@ -399,7 +417,7 @@ namespace iv {
         SamplePortLike<L> &&
         NodeLike<R>
     )
-    auto connect_unary_node(L&& lhs, R&& rhs, std::string_view op_name)
+    constexpr auto connect_unary_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
         SamplePortRef source = static_cast<SamplePortRef>(std::forward<L>(lhs));
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
@@ -440,7 +458,7 @@ namespace iv {
         SamplePortLike<L> &&
         NodeLike<R>
     )
-    auto operator>(L&& lhs, R&& rhs)
+    constexpr auto operator>(L&& lhs, R&& rhs)
     {
         return connect_unary_node(std::forward<L>(lhs), std::forward<R>(rhs), "operator>");
     }
@@ -450,7 +468,7 @@ namespace iv {
         NodeLike<L> &&
         SamplePortLike<R>
     )
-    auto operator<(L&& lhs, R&& rhs)
+    constexpr auto operator<(L&& lhs, R&& rhs)
     {
         return connect_unary_node(std::forward<R>(rhs), std::forward<L>(lhs), "operator<");
     }
@@ -460,7 +478,7 @@ namespace iv {
         EventPortLike<L> &&
         NodeLike<R>
     )
-    auto connect_unary_event_node(L&& lhs, R&& rhs, std::string_view op_name)
+    constexpr auto connect_unary_event_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
         EventPortRef source = std::forward<L>(lhs);
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
@@ -493,7 +511,7 @@ namespace iv {
         EventPortLike<L> &&
         NodeLike<R>
     )
-    auto operator>(L&& lhs, R&& rhs)
+    constexpr auto operator>(L&& lhs, R&& rhs)
     {
         return connect_unary_event_node(std::forward<L>(lhs), std::forward<R>(rhs), "operator>");
     }
@@ -503,7 +521,7 @@ namespace iv {
         NodeLike<L> &&
         EventPortLike<R>
     )
-    auto operator<(L&& lhs, R&& rhs)
+    constexpr auto operator<(L&& lhs, R&& rhs)
     {
         return connect_unary_event_node(
             std::forward<R>(rhs),
@@ -513,25 +531,25 @@ namespace iv {
     }
 
     template<size_t I, class Node, class PortProjection>
-    auto get(TypedNodeRef<Node, PortProjection> const& node_ref)
+    constexpr auto get(TypedNodeRef<Node, PortProjection> const& node_ref)
     {
         return node_ref.template get<I>();
     }
 
     template<size_t I, class Node, class PortProjection>
-    auto get(TypedNodeRef<Node, PortProjection>& node_ref)
+    constexpr auto get(TypedNodeRef<Node, PortProjection>& node_ref)
     {
         return node_ref.template get<I>();
     }
 
     template<size_t I, class Node, class PortProjection>
-    auto get(TypedNodeRef<Node, PortProjection>&& node_ref)
+    constexpr auto get(TypedNodeRef<Node, PortProjection>&& node_ref)
     {
         return node_ref.template get<I>();
     }
 
     template<size_t voice_count, class Fn>
-    void polyphonic(GraphBuilder& g, Fn&& make_voice)
+    constexpr void polyphonic(GraphBuilder& g, Fn&& make_voice)
     {
         static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
 
