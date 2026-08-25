@@ -20,6 +20,16 @@ class GraphBuilderVirtualNodes;
 class GraphBuilderConnections;
 
 namespace details {
+constexpr std::string decimal_string(size_t value) {
+  char digits[std::numeric_limits<size_t>::digits10 + 2] {};
+  size_t begin = sizeof(digits);
+  do {
+    digits[--begin] = static_cast<char>('0' + value % 10);
+    value /= 10;
+  } while (value != 0);
+  return std::string(digits + begin, digits + sizeof(digits));
+}
+
 struct VirtualConcretePortInfo {
   std::string name;
   std::string type;
@@ -608,7 +618,7 @@ constexpr void apply_virtual_port_metadata(
       if (it->kind.empty()) it->kind = kind;
       if (it->type_identity.empty()) it->type_identity = type_identity;
       auto const backing_id = "node-bundle:" + record.id + ":" +
-                              std::to_string(bundle_ordinal);
+                              decimal_string(bundle_ordinal);
       it->backing_node_ids.push_back(backing_id);
       it->members.push_back(IntrospectionVirtualNode::Member{
           .ordinal = bundle_ordinal,
