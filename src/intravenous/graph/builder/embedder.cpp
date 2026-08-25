@@ -1,9 +1,5 @@
 #include <intravenous/graph/builder/embedder.h>
-#include <intravenous/graph/builder/connections.hpp>
-#include <intravenous/graph/builder/detach.hpp>
-#include <intravenous/graph/builder/public_ports.hpp>
-#include <intravenous/graph/builder/node_bundles.hpp>
-#include <intravenous/graph/builder/virtual_nodes.hpp>
+#include <intravenous/graph/builder.h>
 
 namespace iv {
 size_t GraphBuilderChildEmbedder::embed(
