@@ -49,8 +49,6 @@ namespace iv {
     }
 
     class MidiPitch {
-        Sample _pitch_bend_range_semitones = 2.0f;
-
         static Sample bend_multiplier(std::uint16_t bend_value, Sample bend_range)
         {
             double const normalized = (static_cast<int>(bend_value) - 8192) / 8192.0;
@@ -59,6 +57,8 @@ namespace iv {
         }
 
     public:
+        Sample pitch_bend_range_semitones = 2.0f;
+
         struct State {
             std::array<std::uint16_t, 128> note_counts {};
             std::array<std::uint8_t, 128> note_stack {};
@@ -67,11 +67,11 @@ namespace iv {
             std::span<Sample> block;
         };
 
-        explicit MidiPitch(Sample pitch_bend_range_semitones = 2.0f) :
-            _pitch_bend_range_semitones(pitch_bend_range_semitones)
+        constexpr explicit MidiPitch(Sample pitch_bend_range_semitones = 2.0f) :
+            pitch_bend_range_semitones(pitch_bend_range_semitones)
         {}
 
-        auto event_inputs() const
+        constexpr auto event_inputs() const
         {
             return std::array<EventInputConfig, 1> {{
                 { .name = "midi", .type = EventTypeId::midi }
@@ -126,7 +126,7 @@ namespace iv {
             }
 
             std::uint8_t const note = state.note_stack[state.note_stack_size - 1];
-            return static_cast<Sample>(NOTE_NUMBER_TO_FREQUENCY[note]) * bend_multiplier(state.pitch_bend, _pitch_bend_range_semitones);
+            return static_cast<Sample>(NOTE_NUMBER_TO_FREQUENCY[note]) * bend_multiplier(state.pitch_bend, pitch_bend_range_semitones);
         }
 
         void apply_midi(State& state, MidiEvent const& midi) const
@@ -172,7 +172,7 @@ namespace iv {
             std::span<Sample> block;
         };
 
-        auto event_inputs() const
+        constexpr auto event_inputs() const
         {
             return std::array<EventInputConfig, 1> {{
                 { .name = "midi", .type = EventTypeId::midi }
@@ -241,8 +241,6 @@ namespace iv {
         static_assert(voice_count > 0, "MidiVoiceAllocator requires at least one voice");
         static_assert(voice_id < voice_count, "MidiVoiceAllocator voice id must be within voice count");
 
-        Sample _pitch_bend_range_semitones = 2.0f;
-
         static Sample bend_multiplier(std::uint16_t bend_value, Sample bend_range)
         {
             double const normalized = (static_cast<int>(bend_value) - 8192) / 8192.0;
@@ -275,10 +273,12 @@ namespace iv {
 
         Sample current_frequency(std::uint8_t note, std::uint16_t pitch_bend) const
         {
-            return static_cast<Sample>(NOTE_NUMBER_TO_FREQUENCY[note]) * bend_multiplier(pitch_bend, _pitch_bend_range_semitones);
+            return static_cast<Sample>(NOTE_NUMBER_TO_FREQUENCY[note]) * bend_multiplier(pitch_bend, pitch_bend_range_semitones);
         }
 
     public:
+        Sample pitch_bend_range_semitones = 2.0f;
+
         struct State {
             FastBitset<voice_count> allocated {};
             std::array<std::uint8_t, voice_count> notes {};
@@ -289,11 +289,11 @@ namespace iv {
             Sample frequency = 0;
         };
 
-        explicit MidiVoiceAllocator(Sample pitch_bend_range_semitones = 2) :
-            _pitch_bend_range_semitones(pitch_bend_range_semitones)
+        constexpr explicit MidiVoiceAllocator(Sample pitch_bend_range_semitones = 2) :
+            pitch_bend_range_semitones(pitch_bend_range_semitones)
         {}
 
-        auto event_inputs() const
+        constexpr auto event_inputs() const
         {
             return std::array<EventInputConfig, 1> {{
                 { .name = "midi", .type = EventTypeId::midi }
@@ -308,7 +308,7 @@ namespace iv {
             }};
         }
 
-        auto event_outputs() const
+        constexpr auto event_outputs() const
         {
             return std::array<EventOutputConfig, 1> {{
                 { .name = "trigger", .type = EventTypeId::trigger }
