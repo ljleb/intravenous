@@ -1,14 +1,25 @@
 #pragma once
 
 #include <intravenous/graph/connection_node.hpp>
-#include <intravenous/graph/generated_node_spec.h>
 #include <intravenous/graph/reflected_node.hpp>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
 
+#include <stdexcept>
 #include <type_traits>
 #include <variant>
 
-namespace iv::details {
+namespace iv {
+using GeneratedNodeSpec = std::variant<
+    std::monostate,
+    ConnectionNodeSpec,
+    RuntimeSampleInputNodeSpec,
+    RuntimeEventInputNodeSpec,
+    RuntimeSampleOutputNodeSpec,
+    RuntimeEventOutputNodeSpec,
+    RuntimeSampleOutputFamilyNodeSpec,
+    RuntimeEventOutputFamilyNodeSpec>;
+
+namespace details {
 consteval ReflectedNodeDescription reflect_generated_node(
     GeneratedNodeSpec const& spec)
 {
@@ -22,4 +33,5 @@ consteval ReflectedNodeDescription reflect_generated_node(
         },
         spec);
 }
-}
+} // namespace details
+} // namespace iv
