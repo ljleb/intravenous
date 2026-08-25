@@ -183,13 +183,9 @@ function(iv_add_host_runtime_objects target)
 endfunction()
 
 add_library(intravenous_graph_builder OBJECT
-    graph/builder/stored_node.cpp
-    graph/builder/lowering.cpp
-    graph/builder/subgraphs.cpp
     graph/builder/annotations.cpp
     graph/builder/embedder.cpp
     graph/builder/graph.cpp
-    graph/builder/finalize.cpp
     graph/builder/names.cpp
     graph/builder/metadata.cpp
 )
