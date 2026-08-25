@@ -254,7 +254,8 @@ namespace details {
         }
 
         description.operations = reflected_node_operations<NodeValue>();
-        description.type_name = std::meta::display_string_of(^^Node);
+        description.type_name = std::meta::display_string_of(
+            std::meta::dealias(^^Node));
         description.internal_latency_samples = get_internal_latency(NodeValue);
         description.maximum_block_size = get_max_block_size(NodeValue);
         description.default_ttl_samples = get_ttl_samples(NodeValue);
