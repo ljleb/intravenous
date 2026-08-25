@@ -440,18 +440,18 @@ build_virtual_metadata(PreparedGraph const& g,
 }
 
 namespace {
-inline bool sample_channel_is_connected(
+constexpr bool sample_channel_is_connected(
     GraphBuilderConnections const& connections, SampleInputChannelId channel) {
   return connections.sample_input_is_connected(channel);
 }
 
-inline bool sample_channel_is_connected(
+constexpr bool sample_channel_is_connected(
     GraphBuilderConnections const& connections, SampleOutputChannelId channel) {
   return connections.sample_output_is_connected(channel);
 }
 
 template <class Mapping>
-inline std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
+constexpr std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
     std::vector<Mapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
     GraphBuilderConnections const& connections, bool inputs) {
@@ -504,7 +504,7 @@ inline std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
 }
 
 template <class Mapping>
-inline std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
+constexpr std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
     std::vector<Mapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
     GraphBuilderConnections const& connections, NodeBundleHandle bundle_handle,
@@ -523,7 +523,7 @@ inline std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
       bundle_mappings, node_bundles, connections, inputs);
 }
 
-inline std::vector<IntrospectionPortInfo> project_bundle_event_ports(
+constexpr std::vector<IntrospectionPortInfo> project_bundle_event_ports(
     GraphBuilderNodeBundles const& node_bundles,
     GraphBuilderConnections const& connections,
     NodeBundleHandle bundle_handle, bool inputs) {
@@ -562,14 +562,14 @@ inline std::vector<IntrospectionPortInfo> project_bundle_event_ports(
   return project(inputs ? bundle.event_input_count() : bundle.event_output_count());
 }
 
-inline std::pair<std::string, std::string> bundle_display_type(
+constexpr std::pair<std::string, std::string> bundle_display_type(
     NodeBundle const& bundle) {
   auto const type = std::string(bundle.type_identity());
   return {type, type};
 }
 } // namespace
 
-inline void apply_virtual_port_metadata(
+constexpr void apply_virtual_port_metadata(
     GraphIntrospectionMetadata& metadata,
     GraphBuilderNodeBundles const& node_bundles,
     GraphBuilderVirtualNodes const& virtual_nodes,
