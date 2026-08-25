@@ -292,7 +292,7 @@ TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutd
 #include <intravenous/basic_nodes/shaping.h>
 
 namespace {
-    void graph_input_module(iv::GraphBuilder& g)
+    constexpr void graph_input_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const voice = g.node<SawOscillator>();
@@ -438,7 +438,7 @@ TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-void polyphonic_module(iv::GraphBuilder& g)
+constexpr void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 

@@ -87,22 +87,6 @@ inline LaneId stable_lane_id_for_key(std::string const &key)
     return LaneId{hash};
 }
 
-inline NodeRef add_graph_sample_output_sink(
-    GraphBuilder& builder,
-    LaneId lane,
-    ChannelTypeId channel_type)
-{
-    switch (channel_type) {
-    case ChannelTypeId::mono:
-        return builder.node<GraphSampleOutputSink<ChannelTypeId::mono>>(lane);
-    case ChannelTypeId::stereo:
-        return builder.node<GraphSampleOutputSink<ChannelTypeId::stereo>>(lane);
-    case ChannelTypeId::count:
-        break;
-    }
-    details::error("invalid channel type for graph sample output sink");
-}
-
 inline void emit_debug_message(std::string message)
 {
     IV_INVOKE_LINKER_EVENT(

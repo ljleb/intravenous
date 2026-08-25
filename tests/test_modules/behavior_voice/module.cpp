@@ -1,7 +1,7 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-inline void behavior_voice(iv::GraphBuilder& g)
+constexpr void behavior_voice(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto const amplitude = g.input<"amplitude">(0.1);

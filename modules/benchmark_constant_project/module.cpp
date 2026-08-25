@@ -3,7 +3,7 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <iv/modules/iv.test.benchmark_constant_project.voice>
 
-inline void benchmark_constant_project(iv::GraphBuilder& g)
+constexpr void benchmark_constant_project(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto const phase = g.node<PhaseIntegrator>();

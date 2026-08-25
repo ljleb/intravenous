@@ -174,13 +174,13 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 
 namespace {
     template<int I>
-    iv::NodeRef make_value(iv::GraphBuilder& g)
+    constexpr iv::NodeRef make_value(iv::GraphBuilder& g)
     {
         static iv::Sample value{static_cast<float>(I)};
         return g.node<iv::ValueSource>(&value).node_ref();
     }
 
-    void merged_virtual_module(iv::GraphBuilder& g)
+    constexpr void merged_virtual_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_value<0>(g);
@@ -215,7 +215,7 @@ TEST(IvModuleSourceIntrospection, GenericChannelOutputArgumentsArePublicOutputSo
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    void generic_channel_outputs(iv::GraphBuilder& g)
+    constexpr void generic_channel_outputs(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const source = g.node<Constant>(0.25f);
@@ -255,7 +255,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableA
 #include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void annotated_symbol_module(iv::GraphBuilder& g)
+    constexpr void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         static Sample value{};
@@ -307,7 +307,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedVirtualNode)
 #include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void annotated_symbol_module(iv::GraphBuilder& g)
+    constexpr void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         static Sample value{};
@@ -344,7 +344,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBa
 #include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void assigned_ref_module(iv::GraphBuilder& g)
+    constexpr void assigned_ref_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         static Sample value{};
@@ -378,7 +378,7 @@ TEST(IvModuleSourceIntrospection, InitializationFailsWhenDeclarationBackedRefIsA
 #include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void assigned_twice_module(iv::GraphBuilder& g)
+    constexpr void assigned_twice_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         static Sample value{};
@@ -413,12 +413,12 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
 
 namespace {
     template<size_t Inputs>
-    iv::NodeRef make_sum(iv::GraphBuilder& g)
+    constexpr iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>().node_ref();
     }
 
-    void schema_mismatch_module(iv::GraphBuilder& g)
+    constexpr void schema_mismatch_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_sum<2>(g);
@@ -453,7 +453,7 @@ TEST(IvModuleSourceIntrospection, SameLvalueWithDifferentNodeTypesProducesIndepe
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    void split_lvalue_types_module(iv::GraphBuilder& g)
+    constexpr void split_lvalue_types_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto make_branch = [&]<bool Add>(auto output) {
@@ -529,13 +529,13 @@ TEST(IvModuleSourceIntrospection, QueryBySpansAggregatesMixedConnectivity)
 
 namespace {
     template<int I>
-    iv::NodeRef make_sum(iv::GraphBuilder& g)
+    constexpr iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         (void)I;
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref();
     }
 
-    void mixed_connectivity_module(iv::GraphBuilder& g)
+    constexpr void mixed_connectivity_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         static Sample value_storage{};
@@ -673,7 +673,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExa
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-void polyphonic_module(iv::GraphBuilder& g)
+constexpr void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 
@@ -766,7 +766,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonic
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-void polyphonic_module(iv::GraphBuilder& g)
+constexpr void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 

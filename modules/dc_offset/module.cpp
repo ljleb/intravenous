@@ -10,7 +10,7 @@
 #include <iostream>
 #include <string>
 
-inline void dc_offset(iv::GraphBuilder& g)
+constexpr void dc_offset(iv::GraphBuilder& g)
 {
     using namespace iv;
     g.outputs("main"_P[stereo::left] = 0.01, "main"_P[stereo::right] = 0.01);

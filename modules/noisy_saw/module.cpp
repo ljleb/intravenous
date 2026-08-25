@@ -10,7 +10,7 @@
 #include <iostream>
 #include <string>
 
-inline void noisy_saw_project(iv::GraphBuilder& g)
+constexpr void noisy_saw_project(iv::GraphBuilder& g)
 {
     using namespace iv;
 

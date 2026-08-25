@@ -2,7 +2,7 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <iv/modules/iv.test.nested_loader_voice>
 
-inline void nested_loader_project(iv::GraphBuilder& g)
+constexpr void nested_loader_project(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto const phase = g.node<PhaseIntegrator>();

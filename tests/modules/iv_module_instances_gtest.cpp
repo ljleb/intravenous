@@ -178,7 +178,7 @@ TEST_F(IvModuleInstancesTest, RefreshSourceRootsMovesDefinitionToDiscoveredSourc
     iv::test_support::write_text(
         moved_root / "module.cpp",
         "#include <intravenous/dsl.h>\n\n"
-        "inline void module_main(iv::GraphBuilder& g)\n"
+        "constexpr void module_main(iv::GraphBuilder& g)\n"
         "{\n"
         "    using namespace iv;\n"
         "    g.outputs();\n"

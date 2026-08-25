@@ -1,7 +1,7 @@
 #include <intravenous/dsl.h>
 
 namespace {
-    void duplicate_two(iv::ModuleContext const& context)
+    constexpr void duplicate_two(iv::ModuleContext const& context)
     {
         auto& g = context.builder();
         for (size_t channel = 0; channel < context.render_config().num_channels; ++channel) {
@@ -11,5 +11,3 @@ namespace {
         g.outputs();
     }
 }
-
-IV_EXPORT_MODULE("iv.test.duplicate", duplicate_two);

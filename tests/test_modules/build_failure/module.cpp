@@ -1,7 +1,7 @@
 #include <intravenous/dsl.h>
 
 namespace {
-void build_failure(iv::GraphBuilder& g)
+constexpr void build_failure(iv::GraphBuilder& g)
 {
     g.outputs();
 }
