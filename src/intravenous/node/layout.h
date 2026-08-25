@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <meta>
 #include <memory>
 #include <new>
 #include <limits>
@@ -56,6 +57,55 @@ namespace iv {
 
         bool operator==(NodeStateStructure const&) const = default;
     };
+
+    namespace details {
+        template<typename Node>
+        NodeStateStructure reflect_node_state_structure()
+        {
+            using State = typename NodeState<Node>::Type;
+            static_assert(!std::is_void_v<State>);
+            static_assert(
+                std::is_default_constructible_v<State>,
+                "Node::State must be default constructible");
+
+            NodeStateStructure structure {
+                .size_bits = sizeof(State) * 8,
+                .alignment_bits = alignof(State) * 8,
+            };
+
+            if constexpr (std::is_class_v<State>) {
+                static_assert(
+                    std::meta::bases_of(
+                        ^^State,
+                        std::meta::access_context::unchecked()).empty(),
+                    "Node::State must not derive from another class");
+                static constexpr auto fields = std::define_static_array(
+                    std::meta::nonstatic_data_members_of(
+                        ^^State,
+                        std::meta::access_context::unchecked()));
+                template for (constexpr auto field : fields) {
+                    NodeStateFieldStructure reflected_field {
+                        .name = std::string(std::meta::identifier_of(field)),
+                        .type_name = std::string(
+                            std::meta::display_string_of(
+                                std::meta::type_of(field))),
+                        .bit_offset = std::meta::offset_of(field).total_bits(),
+                        .size_bits = std::meta::size_of(
+                            std::meta::type_of(field)) * 8,
+                        .alignment_bits = std::meta::alignment_of(
+                            std::meta::type_of(field)) * 8,
+                    };
+                    if constexpr (std::meta::is_bit_field(field)) {
+                        reflected_field.bit_width =
+                            std::meta::bit_size_of(field);
+                    }
+                    structure.fields.push_back(std::move(reflected_field));
+                }
+            }
+
+            return structure;
+        }
+    }
 
     struct NodeLifecycleCallbacks {
         void (*move_fn)(void const*, size_t, size_t, NodeStorage&, NodeStorage const&) = nullptr;
@@ -604,12 +654,9 @@ namespace iv {
         }
         record.node_type = type_token<Node>();
         record.node_type_name = typeid(Node).name();
-        if constexpr (requires {
-            iv_rewritten_node_state_structure(
-                static_cast<Node const*>(nullptr));
-        }) {
-            record.node_state_structure = iv_rewritten_node_state_structure(
-                static_cast<Node const*>(nullptr));
+        if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
+            record.node_state_structure =
+                details::reflect_node_state_structure<Node>();
         }
         record.lifecycle = make_lifecycle_callbacks<Node>();
         if constexpr (std::is_void_v<typename NodeState<Node>::Type>) {
@@ -636,12 +683,9 @@ namespace iv {
         NodeLayout::NodeRecord record;
         record.node_type = type_token<Node>();
         record.node_type_name = typeid(Node).name();
-        if constexpr (requires {
-            iv_rewritten_node_state_structure(
-                static_cast<Node const*>(nullptr));
-        }) {
-            record.node_state_structure = iv_rewritten_node_state_structure(
-                static_cast<Node const*>(nullptr));
+        if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
+            record.node_state_structure =
+                details::reflect_node_state_structure<Node>();
         }
         record.lifecycle = make_reflected_lifecycle_callbacks<NodeValue>();
         if constexpr (std::is_void_v<typename NodeState<Node>::Type>) {
@@ -1208,11 +1252,11 @@ namespace iv {
             node.node_type_name && previous_node.node_type_name &&
             std::strcmp(
                 node.node_type_name, previous_node.node_type_name) == 0;
-        auto const same_rewritten_structure =
+        auto const same_state_structure =
             node.node_state_structure.has_value() &&
             node.node_state_structure == previous_node.node_state_structure;
         auto const same_node_type = node.node_type == previous_node.node_type ||
-            (same_node_name && same_rewritten_structure);
+            (same_node_name && same_state_structure);
         if (!same_node_type || node.state_size != previous_node.state_size) {
             return false;
         }

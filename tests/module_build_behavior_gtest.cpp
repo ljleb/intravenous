@@ -30,11 +30,13 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     auto const project_cache = project_workspace / "cmake-build" / "CMakeCache.txt";
     EXPECT_TRUE(std::filesystem::exists(project_cache));
 
-    auto const rewrite_root = runtime_root / "build" / "iv" / "rewrite" / "iv" / "modules";
-    auto const project_rewrite = rewrite_root / "iv.test.behavior_project";
-    auto const voice_rewrite = rewrite_root / "iv.test.behavior_voice";
-    EXPECT_TRUE(std::filesystem::exists(project_rewrite));
-    EXPECT_TRUE(std::filesystem::exists(voice_rewrite));
+    auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "modules";
+    auto const project_import = import_root / "iv.test.behavior_project";
+    auto const voice_import = import_root / "iv.test.behavior_voice";
+    EXPECT_TRUE(std::filesystem::exists(project_import));
+    EXPECT_TRUE(std::filesystem::exists(voice_import));
+    EXPECT_NE(iv::test::read_text(project_import).find(project_dst.generic_string()), std::string::npos);
+    EXPECT_NE(iv::test::read_text(voice_import).find(voice_dst.generic_string()), std::string::npos);
 
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto const project_needle = std::string("    using namespace iv;");
@@ -48,7 +50,6 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
     (void)loader.load_root_definition(project_dst);
-    EXPECT_NE(iv::test::read_text(project_rewrite).find("behavior source marker"), std::string::npos);
 
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto const voice_needle =
@@ -63,7 +64,6 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);
 
     (void)loader.load_root_definition(project_dst);
-    EXPECT_NE(iv::test::read_text(voice_rewrite).find("behavior dependency marker"), std::string::npos);
 
     {
         auto definition = loader.load_root_definition(local_dst);

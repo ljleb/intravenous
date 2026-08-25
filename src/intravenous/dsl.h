@@ -156,6 +156,55 @@ namespace iv {
         return std::forward<Ref>(ref);
     }
 
+    template<class Ref>
+    constexpr void _annotate_source_info_after_statement(
+        Ref* ref,
+        char const* declaration_identity,
+        char const* file_path,
+        uint32_t begin,
+        uint32_t end)
+    {
+        using Value = std::remove_cv_t<Ref>;
+        if constexpr (SourceInfoAnnotatableRef<Value>) {
+            ref->_annotate_source_info(
+                declaration_identity, file_path, begin, end);
+        } else if constexpr (std::same_as<Value, PublicSampleInputRef>
+                             || std::same_as<Value, PublicEventInputRef>) {
+            ref->_annotate_source_info(
+                declaration_identity, file_path, begin, end);
+        } else {
+            static_assert(false, "unsupported source-annotatable DSL reference");
+        }
+    }
+
+    constexpr void _prepare_virtual_empty_after_statement(
+        NodeRef* ref,
+        char const* declaration_identity,
+        char const*,
+        uint32_t,
+        uint32_t)
+    {
+        ref->_prepare_virtual_empty(declaration_identity);
+    }
+
+    constexpr void _annotate_public_output_after_statement(
+        GraphBuilder* builder,
+        bool event,
+        size_t ordinal,
+        char const* file_path,
+        uint32_t begin,
+        uint32_t end)
+    {
+        auto info = _public_output_source_info({file_path, begin, end});
+        if (event) {
+            builder->annotate_public_event_output_source_info(
+                ordinal, std::move(info));
+        } else {
+            builder->annotate_public_sample_output_source_info(
+                ordinal, std::move(info));
+        }
+    }
+
     template<fixed_string Name>
     inline constexpr PortName<Name, NamedPortKind::sample> named{};
 

@@ -73,6 +73,8 @@ class Lowerer {
   bool execution_root = false;
   LoweredBuilderGraph out;
   std::flat_map<NodeBundleHandle, size_t> subgraph_by_boundary;
+  std::vector<std::pair<NodeBundlePortId, TopologyPortId>>
+      materialized_event_output_ports;
 
   constexpr size_t append_generated(ConcreteNode node) {
     auto const index = out.topology.append_node(std::move(node));
@@ -581,13 +583,37 @@ class Lowerer {
     }
   }
 
+  constexpr TopologyPortId materialize_event_output_port(
+      NodeBundlePortId logical, EventTypeId type) {
+    if (auto const existing = std::ranges::find_if(
+            materialized_event_output_ports,
+            [&](auto const& entry) { return entry.first == logical; });
+        existing != materialized_event_output_ports.end())
+      return existing->second;
+    auto const& endpoints = out.bundle_projections.at(
+        logical.node_bundle_handle).event_outputs.at(logical.port_ordinal);
+    if (endpoints.empty())
+      details::error("virtual event output member has no lowered endpoint");
+    if (endpoints.size() == 1) return endpoints.front();
+    auto const node = append_generated(
+        GraphBuilderNodeBundles::make_concrete_node<EventConcatenation>(
+            endpoints.size(), type));
+    for (size_t input = 0; input < endpoints.size(); ++input)
+      out.topology.add_event_edge({
+          endpoints[input], {node, input},
+          EventConversionRegistry::instance().plan(type, type)});
+    return materialized_event_output_ports.emplace_back(
+        logical, TopologyPortId{node, 0}).second;
+  }
+
   constexpr TopologyPortId materialize_event_source(AuthoredEventConnection const& c) {
     std::vector<TopologyPortId> endpoints;
     for(auto source:c.sources) {
-      auto const config=bundles.resolve_event_output({source.bundle,PortKind::event,source.port}).config;
+      NodeBundlePortId const logical{
+          source.bundle, PortKind::event, source.port};
+      auto const config=bundles.resolve_event_output(logical).config;
       if(config.type!=c.source_type)details::error("event source type changed before lowering");
-      auto const& p=out.bundle_projections.at(source.bundle).event_outputs.at(source.port);
-      endpoints.insert(endpoints.end(),p.begin(),p.end());
+      endpoints.push_back(materialize_event_output_port(logical, c.source_type));
     }
     if(endpoints.empty())details::error("event source has no lowered endpoint");
     if(endpoints.size()==1)return endpoints.front();
@@ -688,16 +714,6 @@ class Lowerer {
     }
     auto const node = append_generated(make_connection_node(std::move(input_configs), std::vector<ConnectionNodeEphemeralPortConfig>{std::move(ephemeral)}, std::move(output_config), Sample{0.0f}));
     for (size_t input = 0; input < input_sources.size(); ++input) out.topology.add_sample_edge({input_sources[input], {node, input}});
-    return {node, 0};
-  }
-
-  constexpr TopologyPortId materialize_event_output_port(NodeBundlePortId logical, EventTypeId type) {
-    auto const& endpoints = out.bundle_projections.at(logical.node_bundle_handle).event_outputs.at(logical.port_ordinal);
-    if (endpoints.empty()) details::error("virtual event output member has no lowered endpoint");
-    if (endpoints.size() == 1) return endpoints.front();
-    auto const node = append_generated(GraphBuilderNodeBundles::make_concrete_node<EventConcatenation>(endpoints.size(), type));
-    for (size_t input = 0; input < endpoints.size(); ++input)
-      out.topology.add_event_edge({endpoints[input], {node, input}, EventConversionRegistry::instance().plan(type, type)});
     return {node, 0};
   }
 

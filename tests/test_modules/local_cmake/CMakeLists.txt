@@ -5,8 +5,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(${IV_SOURCE_DIR}/module/template/ModuleSupport.cmake)
 
-# This file intentionally remains custom CMake. IV supplies the generated
-# definition imports and root export TU through variables; this project remains
+# This file intentionally remains custom CMake. IV supplies generated import
+# forwarders and the root export TU through variables; this project remains
 # free to add ordinary sources, libraries, compile options, JUCE setup, etc.
 iv_add_runtime_module(iv_runtime_module)
 

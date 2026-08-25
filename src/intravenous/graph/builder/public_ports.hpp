@@ -102,7 +102,7 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs_from_args(
     auto config = source_config(source); config.name = std::string(name);
     config.channel_layout.sample_layout = SampleStreamLayout::planar; return config;
   };
-  auto append = [&](auto&& ref) {
+  [[maybe_unused]] auto append = [&](auto&& ref) {
     using Ref = std::remove_cvref_t<decltype(ref)>;
     if constexpr (details::is_channel_named_arg_v<Ref>) {
       using C = typename Ref::channel_type;

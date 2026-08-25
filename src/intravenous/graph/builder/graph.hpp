@@ -184,6 +184,18 @@ constexpr void GraphBuilder::annotate_public_event_output_source_info(
     _public_ports.annotate_event_output_source_info(i, infos[i]);
 }
 
+constexpr void GraphBuilder::annotate_public_sample_output_source_info(
+    size_t ordinal, SourceInfo info) {
+  _public_ports.annotate_sample_output_source_info(
+      ordinal, std::move(info));
+}
+
+constexpr void GraphBuilder::annotate_public_event_output_source_info(
+    size_t ordinal, SourceInfo info) {
+  _public_ports.annotate_event_output_source_info(
+      ordinal, std::move(info));
+}
+
 constexpr NodeRef GraphBuilder::embed_subgraph(
     GraphBuilder const& child, std::string_view kind) {
   if (!child._public_ports.sample_outputs_defined())

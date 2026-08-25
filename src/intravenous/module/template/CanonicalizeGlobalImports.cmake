@@ -1,6 +1,0 @@
-if(NOT DEFINED INPUT OR INPUT STREQUAL "")
-    message(FATAL_ERROR "CanonicalizeGlobalImports.cmake requires INPUT")
-endif()
-file(READ "${INPUT}" _iv_text)
-string(REPLACE "#include <iv/modules/" "#include <iv/modules-global/" _iv_text "${_iv_text}")
-file(WRITE "${INPUT}" "${_iv_text}")

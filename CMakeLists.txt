@@ -17,7 +17,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-freflection>)
 
 set(JUCE_DIR "" CACHE PATH "Path to a JUCE source tree or installed JUCE package root")
-option(IV_BUILD_CLANG_SOURCE_SPAN_TOOL "Build the Clang node source span rewriter (set to OFF to skip it)" ON)
 
 # avoid pulling heavy GUI/web dependencies
 # unless explicitly re-enabled by the user at configure time.
@@ -62,38 +61,30 @@ function(iv_force_cxx26 directory)
 endfunction()
 iv_force_cxx26("${CMAKE_SOURCE_DIR}")
 
-if(IV_BUILD_CLANG_SOURCE_SPAN_TOOL)
-    include(ExternalProject)
+include(ExternalProject)
 
-    set(IV_CLANG_CXX "$ENV{IV_CLANG_CXX}" CACHE FILEPATH
-        "Clang++ executable used only to build the source span rewriter")
-    if(NOT IV_CLANG_CXX)
-        find_program(IV_CLANG_CXX NAMES clang++ REQUIRED)
-    endif()
+set(_iv_gcc_plugin_build_dir "${CMAKE_BINARY_DIR}/tools-gcc")
+set(_iv_gcc_plugin_file
+    "${_iv_gcc_plugin_build_dir}/iv_gcc_source_introspection_plugin${CMAKE_SHARED_MODULE_SUFFIX}")
 
-    set(_iv_source_span_rewriter_build_dir "${CMAKE_BINARY_DIR}/tools-clang")
-    set(_iv_source_span_rewriter_executable
-        "${_iv_source_span_rewriter_build_dir}/iv_clang_source_span_rewriter${CMAKE_EXECUTABLE_SUFFIX}")
+ExternalProject_Add(iv_gcc_source_introspection_plugin_build
+    SOURCE_DIR "${CMAKE_SOURCE_DIR}/tools"
+    BINARY_DIR "${_iv_gcc_plugin_build_dir}"
+    CMAKE_ARGS
+        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+    BUILD_BYPRODUCTS "${_iv_gcc_plugin_file}"
+    INSTALL_COMMAND "")
 
-    ExternalProject_Add(iv_clang_source_span_rewriter_build
-        SOURCE_DIR "${CMAKE_SOURCE_DIR}/tools"
-        BINARY_DIR "${_iv_source_span_rewriter_build_dir}"
-        CMAKE_ARGS
-            "-DCMAKE_CXX_COMPILER=${IV_CLANG_CXX}"
-            "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-        BUILD_BYPRODUCTS "${_iv_source_span_rewriter_executable}"
-        INSTALL_COMMAND "")
+add_library(iv_gcc_source_introspection_plugin MODULE IMPORTED GLOBAL)
+set_target_properties(iv_gcc_source_introspection_plugin PROPERTIES
+    IMPORTED_LOCATION "${_iv_gcc_plugin_file}")
+add_dependencies(
+    iv_gcc_source_introspection_plugin
+    iv_gcc_source_introspection_plugin_build)
 
-    add_executable(iv_clang_source_span_rewriter IMPORTED GLOBAL)
-    set_target_properties(iv_clang_source_span_rewriter PROPERTIES
-        IMPORTED_LOCATION "${_iv_source_span_rewriter_executable}")
-    add_dependencies(iv_clang_source_span_rewriter iv_clang_source_span_rewriter_build)
-
-    target_compile_definitions(intravenous_module_loader PRIVATE
-        IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER="$<TARGET_FILE:iv_clang_source_span_rewriter>"
-    )
-else()
-    target_compile_definitions(intravenous_module_loader PRIVATE
-        IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER=""
-    )
-endif()
+add_dependencies(
+    intravenous_module_loader
+    iv_gcc_source_introspection_plugin_build)
+target_compile_definitions(intravenous_module_loader PRIVATE
+    IV_CONFIGURED_GCC_SOURCE_INTROSPECTION_PLUGIN="$<TARGET_FILE:iv_gcc_source_introspection_plugin>")

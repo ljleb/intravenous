@@ -28,7 +28,7 @@ namespace iv {
     };
 
     struct GraphNodeWrapper {
-        ReflectedNodeOperations _operations {};
+        ReflectedNodeRuntimeOperations _operations {};
         StaticSpan<StaticInputConfig> _inputs {};
         StaticSpan<StaticOutputConfig> _outputs {};
         StaticSpan<StaticEventInputConfig> _event_inputs {};
@@ -55,7 +55,7 @@ namespace iv {
             std::vector<SampleOutputBinding> output_targets,
             std::vector<EventOutputBinding> event_output_targets
         )
-        : _operations(node.operations)
+        : _operations(node.operations.runtime)
         , _inputs(details::define_static_configs<StaticInputConfig>(node.inputs()))
         , _outputs(details::define_static_configs<StaticOutputConfig>(node.outputs()))
         , _event_inputs(details::define_static_configs<StaticEventInputConfig>(
@@ -368,7 +368,7 @@ namespace iv {
                     .event_outputs = state.event_outputs,
                     .sample_rate = ctx.sample_rate,
                     .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .state = state.nested_node_states[0],
+                    .state = state.nested_node_states.back(),
                 },
                 ctx.index,
                 ctx.block_size
@@ -388,7 +388,7 @@ namespace iv {
                     .event_outputs = state.event_outputs,
                     .sample_rate = ctx.sample_rate,
                     .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .state = state.nested_node_states[0],
+                    .state = state.nested_node_states.back(),
                 },
                 ctx.index,
                 ctx.block_size
@@ -406,7 +406,7 @@ namespace iv {
                     .event_outputs = state.event_outputs,
                     .sample_rate = ctx.sample_rate,
                     .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .state = state.nested_node_states[0],
+                    .state = state.nested_node_states.back(),
                 },
                 ctx.index,
                 ctx.block_size
@@ -424,7 +424,7 @@ namespace iv {
                     .event_outputs = state.event_outputs,
                     .sample_rate = ctx.sample_rate,
                     .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .state = state.nested_node_states[0],
+                    .state = state.nested_node_states.back(),
                 },
                 ctx.index,
                 ctx.block_size

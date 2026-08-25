@@ -14,7 +14,6 @@ add_compile_definitions(
 
 include("${CMAKE_CURRENT_LIST_DIR}/ModuleSupport.cmake")
 
-# The authored entry is represented by its rewritten definition-bearing import
-# and is included by the generated export TU. It is not compiled as a separate
-# source file.
+# The authored entry is reached through a generated forwarding import included
+# by the export translation unit. It is parsed and compiled exactly once.
 iv_add_runtime_module(iv_runtime_module ENABLE_JUCE)

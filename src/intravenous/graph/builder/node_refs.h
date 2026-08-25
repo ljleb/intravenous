@@ -109,6 +109,8 @@ namespace iv {
             uint32_t begin,
             uint32_t end
         ) const;
+        constexpr void _prepare_virtual_empty(
+            std::string_view declaration_identity);
     };
 
     // Internal only: it supplies covariant fluent returns for the two typed

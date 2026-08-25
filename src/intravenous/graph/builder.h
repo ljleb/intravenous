@@ -101,6 +101,10 @@ public:
       std::string_view, std::string_view, uint32_t, uint32_t);
   constexpr void annotate_public_sample_output_source_info(std::span<SourceInfo const> infos);
   constexpr void annotate_public_event_output_source_info(std::span<SourceInfo const> infos);
+  constexpr void annotate_public_sample_output_source_info(
+      size_t ordinal, SourceInfo info);
+  constexpr void annotate_public_event_output_source_info(
+      size_t ordinal, SourceInfo info);
 
   template<class Config>
   static constexpr void validate_output_port_configs(
@@ -785,6 +789,17 @@ constexpr void NodeRef::_annotate_source_info(std::string_view declaration_ident
   if(!_graph_builder)return;
   _graph_builder->_annotations.annotate_node_source_info(_graph_builder->_node_bundles,_graph_builder->_virtual_nodes,_graph_builder->_identity,_index,declaration_identity,file_path,begin,end);
 }
+constexpr void NodeRef::_prepare_virtual_empty(
+    std::string_view declaration_identity)
+{
+    if (_graph_builder || !_virtual_declaration_id.empty()
+        || _allows_single_assignment) {
+        details::error(
+            "cannot prepare a non-empty NodeRef as a virtual declaration");
+    }
+    _virtual_declaration_id = declaration_identity;
+    _allows_single_assignment = true;
+}
 
 template<class Node,class PortProjection> constexpr SamplePortRef TypedNodeRef<Node,PortProjection>::operator[](size_t i) const { return NodeRef::operator[](i); }
 template<class Node,class PortProjection> constexpr SamplePortRef TypedNodeRef<Node,PortProjection>::operator[](std::string_view n) const { if(!_graph_builder)details::error("attempted to use a null NodeRef");auto outputs=get_outputs(ports());std::optional<size_t> match;for(size_t i=0;i<outputs.size();++i)if(outputs[i].name==n){if(match)details::error("output name is ambiguous");match=i;}if(match)return NodeRef::operator[](*match);details::error("output port does not exist on "+to_string()); }
@@ -827,7 +842,7 @@ TypedNodeRef<Node, PortProjection>::operator()(Args&&... args) const
 
     size_t ps = 0;
     size_t pe = 0;
-    auto process = [&](auto&& arg) {
+    [[maybe_unused]] auto process = [&](auto&& arg) {
         using A = std::remove_cvref_t<decltype(arg)>;
         if constexpr (details::is_named_arg_v<A>) {
             if constexpr (A::kind == NamedPortKind::event) {

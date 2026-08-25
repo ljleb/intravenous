@@ -58,7 +58,7 @@ struct ReflectedNodeTickContext {
 
 // Every function is specialized on the exact reflected structural node value.
 // No authored node object or erased object pointer is stored here.
-struct ReflectedNodeOperations {
+struct ReflectedNodeRuntimeOperations {
     size_t (*declare_node)(NodeLayoutBuilder&) = nullptr;
     void (*tick_block)(
         ReflectedNodeTickContext const&,
@@ -68,12 +68,21 @@ struct ReflectedNodeOperations {
         ReflectedNodeTickContext const&,
         size_t,
         size_t) = nullptr;
-    ReflectedNodeOperations (*apply_detach_id_offset)(size_t) = nullptr;
 
     constexpr bool valid() const
     {
         return declare_node != nullptr && tick_block != nullptr
-            && skip_block != nullptr && apply_detach_id_offset != nullptr;
+            && skip_block != nullptr;
+    }
+};
+
+struct ReflectedNodeOperations {
+    ReflectedNodeRuntimeOperations runtime {};
+    ReflectedNodeOperations (*apply_detach_id_offset)(size_t) = nullptr;
+
+    constexpr bool valid() const
+    {
+        return runtime.valid() && apply_detach_id_offset != nullptr;
     }
 };
 
@@ -196,23 +205,18 @@ namespace details {
     }
 
     template<auto NodeValue>
-    constexpr ReflectedNodeOperations apply_reflected_detach_id_offset(
+    consteval ReflectedNodeOperations apply_reflected_detach_id_offset(
         size_t offset)
     {
-        if consteval {
-            using Node = std::remove_cvref_t<decltype(NodeValue)>;
-            if constexpr (
-                std::same_as<Node, DetachWriterNode>
-                || std::same_as<Node, DetachReaderNode>) {
-                auto adjusted = NodeValue;
-                adjusted.id.id += offset;
-                return reflect_node(adjusted).operations;
-            } else {
-                return reflected_node_operations<NodeValue>();
-            }
+        using Node = std::remove_cvref_t<decltype(NodeValue)>;
+        if constexpr (
+            std::same_as<Node, DetachWriterNode>
+            || std::same_as<Node, DetachReaderNode>) {
+            auto adjusted = NodeValue;
+            adjusted.id.id += offset;
+            return reflect_node(adjusted).operations;
         } else {
-            runtime_graph_builder_node_call_is_forbidden();
-            return {};
+            return reflected_node_operations<NodeValue>();
         }
     }
 
@@ -220,9 +224,11 @@ namespace details {
     constexpr ReflectedNodeOperations reflected_node_operations()
     {
         return {
-            .declare_node = &declare_reflected_node<NodeValue>,
-            .tick_block = &tick_reflected_node_block<NodeValue>,
-            .skip_block = &skip_reflected_node_block<NodeValue>,
+            .runtime = {
+                .declare_node = &declare_reflected_node<NodeValue>,
+                .tick_block = &tick_reflected_node_block<NodeValue>,
+                .skip_block = &skip_reflected_node_block<NodeValue>,
+            },
             .apply_detach_id_offset =
                 &apply_reflected_detach_id_offset<NodeValue>,
         };

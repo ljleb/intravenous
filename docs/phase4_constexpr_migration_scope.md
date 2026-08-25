@@ -66,9 +66,9 @@ by the existing compiler/runtime interfaces.
 - Move template configuration such as `Sum` arity/layout into structural
   constructor state where this removes fixed-maximum template dispatch.
 - `Node::State` remains a runtime type. It must be default constructible and
-  must not derive from another class. Its reflected field descriptor continues
-  to come from the source rewriter so hot reload can structurally compare state
-  types before applying `Node::move`.
+  must not derive from another class. `GraphBuilder` reflects its members and
+  registers their names, types, offsets, sizes, and alignment directly so hot
+  reload can structurally compare state types before applying `Node::move`.
 
 ## Required migration strategy
 
@@ -122,7 +122,13 @@ operation may occur in `tick_block()` or another audio-thread execution path.
 ## Compiler and verification rules
 
 - Project and module compilation use GCC 16 or newer with C++26 reflection.
-- Clang remains only for the source rewriter.
+- A GCC plugin annotates source identities and token spans in the same parse
+  that compiles the module. It inserts void annotation calls after authored
+  statements in both the saved function body and GCC's constexpr body.
+- The plugin owns only information unavailable through C++ reflection. It must
+  not register node types or `Node::State` structure.
+- Module imports are generated forwarding headers to the original authored
+  files. There is no rewritten source tree and no separate Clang parse.
 - Do not use `-fimplicit-constexpr`; annotate every required function.
 - Do not add compiler-selection macros or transitional conditional paths.
 - Validate uncertain C++ or reflection behavior with one focused prototype
@@ -152,5 +158,5 @@ Phase 4 is complete only when:
 - GraphInputLanes still controls the existing fixed ConnectionNode contribution
   points;
 - runtime NodeLayout, NodeStorage, and hot-reload move behavior remain intact;
-- GCC builds the project/modules, Clang builds the rewriter, and relevant tests
-  pass.
+- GCC builds the project, plugin, and modules in one module parse, and relevant
+  tests pass.

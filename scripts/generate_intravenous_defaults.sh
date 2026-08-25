@@ -33,8 +33,8 @@ fi
 
 defaults_path="$intravenous_dir/.intravenous_defaults"
 
-c_compiler="$(resolve_program "${CC:-}")" || c_compiler="$(resolve_program clang)" || c_compiler=""
-cxx_compiler="$(resolve_program "${CXX:-}")" || cxx_compiler="$(resolve_program clang++)" || cxx_compiler=""
+c_compiler="$(resolve_program "${CC:-}")" || c_compiler="$(resolve_program gcc)" || c_compiler=""
+cxx_compiler="$(resolve_program "${CXX:-}")" || cxx_compiler="$(resolve_program g++)" || cxx_compiler=""
 cmake_program="$(resolve_program cmake)" || cmake_program=""
 make_program="$(resolve_program "${CMAKE_MAKE_PROGRAM:-}")" || make_program="$(resolve_program ninja)" || make_program=""
 juce_dir="${JUCE_DIR:-}"

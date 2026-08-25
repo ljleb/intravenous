@@ -1,7 +1,6 @@
 include_guard(GLOBAL)
 
 include(${IV_SOURCE_DIR}/module/template/JuceSupport.cmake)
-include(${IV_SOURCE_DIR}/module/template/SourceSpanRewrite.cmake)
 include(${IV_SOURCE_DIR}/module/template/ModuleProjectInit.cmake)
 
 function(iv_configure_iv_module_shared_import)
@@ -37,12 +36,22 @@ function(iv_add_runtime_module target)
             "IV modules require GCC 16 or newer for C++26 reflection; configured compiler is "
             "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER})")
     endif()
+    if(NOT DEFINED IV_GCC_SOURCE_INTROSPECTION_PLUGIN
+       OR IV_GCC_SOURCE_INTROSPECTION_PLUGIN STREQUAL ""
+       OR NOT EXISTS "${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}")
+        message(FATAL_ERROR
+            "iv_add_runtime_module(${target}) requires a built "
+            "IV_GCC_SOURCE_INTROSPECTION_PLUGIN")
+    endif()
 
     iv_configure_iv_module_shared_import()
 
     add_library(${target}__compile_settings INTERFACE)
     target_compile_features(${target}__compile_settings INTERFACE cxx_std_26)
-    target_compile_options(${target}__compile_settings INTERFACE -freflection)
+    target_compile_options(${target}__compile_settings INTERFACE
+        -freflection
+        "-fplugin=${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"
+        "-fplugin-arg-iv_gcc_source_introspection_plugin-core-source-dir=${IV_SOURCE_DIR}")
     target_include_directories(${target}__compile_settings INTERFACE
         ${IV_INCLUDE_DIR}
         ${IV_MODULE_SOURCE_DIR}
@@ -67,19 +76,6 @@ function(iv_add_runtime_module target)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=0)
     endif()
 
-    # The loader generates only IV-specific build glue. A custom CMakeLists.txt
-    # remains authoritative for ordinary sources/libraries/settings. Rewriter
-    # compile-database targets link the same interface settings target, so
-    # settings added by custom CMake are visible to both rewriting and final
-    # compilation.
-    if(DEFINED IV_MODULE_GENERATED_CMAKE AND NOT IV_MODULE_GENERATED_CMAKE STREQUAL "")
-        if(NOT EXISTS "${IV_MODULE_GENERATED_CMAKE}")
-            message(FATAL_ERROR "IV_MODULE_GENERATED_CMAKE does not exist: ${IV_MODULE_GENERATED_CMAKE}")
-        endif()
-        set(IV_MODULE_DEFINITION_COMPILE_SETTINGS_TARGET ${target}__compile_settings)
-        include("${IV_MODULE_GENERATED_CMAKE}")
-    endif()
-
     add_library(${target} SHARED ${IV_MODULE_EXPORT_FILE} ${IVM_SOURCES})
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
@@ -95,9 +91,6 @@ function(iv_add_runtime_module target)
 
     if(TARGET iv_module_shared)
         target_link_libraries(${target} PRIVATE iv_module_shared)
-    endif()
-    if(TARGET iv_module_definitions)
-        add_dependencies(${target} iv_module_definitions)
     endif()
     if(DEFINED IV_MODULE_PCH_HEADER AND NOT IV_MODULE_PCH_HEADER STREQUAL "")
         target_precompile_headers(${target} PRIVATE ${IV_MODULE_PCH_HEADER})
