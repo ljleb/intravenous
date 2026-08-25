@@ -7,6 +7,10 @@
 #include <vector>
 
 namespace {
+    struct NoopNode {
+        void tick_block(iv::TickBlockContext<NoopNode> const&) const {}
+    };
+
     struct CountingNode {
         int *ticks = nullptr;
 
@@ -65,19 +69,18 @@ namespace {
     }
 }
 
-TEST(IvModuleInstancesExecution, CreatesOneTaskPerBuilderInstance)
+TEST(IvModuleInstancesExecution, CreatesOneTaskPerRootInstance)
 {
     iv::IvModuleInstancesExecution execution;
     auto instance = make_instance("instance:1");
-    iv::GraphBuilder builder;
-    builder.outputs();
+    NoopNode root;
 
     auto update = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged {
             .created = {
                 iv::IvModuleInstanceBuilderRef {
                     .instance = &instance,
-                    .builder = &builder,
+                    .root = iv::WeakTypeErasedNode(root),
                 },
             },
         });
@@ -88,19 +91,18 @@ TEST(IvModuleInstancesExecution, CreatesOneTaskPerBuilderInstance)
     EXPECT_TRUE(update.update.to_delete.empty());
 }
 
-TEST(IvModuleInstancesExecution, BuilderPrerequisiteLanesBecomeTaskDependencies)
+TEST(IvModuleInstancesExecution, RootPrerequisiteLanesBecomeTaskDependencies)
 {
     iv::IvModuleInstancesExecution execution;
     auto instance = make_instance("instance:1");
-    iv::GraphBuilder builder;
-    builder.outputs();
+    NoopNode root;
 
     auto update = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged {
             .created = {
                 iv::IvModuleInstanceBuilderRef {
                     .instance = &instance,
-                    .builder = &builder,
+                    .root = iv::WeakTypeErasedNode(root),
                     .prerequisite_lanes = {
                         iv::LaneId {4},
                         iv::LaneId {8},
@@ -123,13 +125,12 @@ TEST(IvModuleInstancesExecution, RuntimeRouteChangesUpdateDependenciesWithoutRel
 {
     iv::IvModuleInstancesExecution execution;
     auto instance = make_instance("instance:1");
-    iv::GraphBuilder builder;
-    builder.outputs();
+    NoopNode root;
     (void)execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged{
             .created = {iv::IvModuleInstanceBuilderRef{
                 .instance = &instance,
-                .builder = &builder,
+                .root = iv::WeakTypeErasedNode(root),
             }},
         });
 
@@ -154,15 +155,14 @@ TEST(IvModuleInstancesExecution, DeletingInstanceDeletesTask)
 {
     iv::IvModuleInstancesExecution execution;
     auto instance = make_instance("instance:1");
-    iv::GraphBuilder builder;
-    builder.outputs();
+    NoopNode root;
 
     (void)execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged {
             .created = {
                 iv::IvModuleInstanceBuilderRef {
                     .instance = &instance,
-                    .builder = &builder,
+                    .root = iv::WeakTypeErasedNode(root),
                 },
             },
         });
@@ -176,21 +176,19 @@ TEST(IvModuleInstancesExecution, DeletingInstanceDeletesTask)
     EXPECT_EQ(update.update.to_delete[0], "iv_module_instance:dsp:instance:1");
 }
 
-TEST(IvModuleInstancesExecution, TaskCallbackTicksTheBuiltGraph)
+TEST(IvModuleInstancesExecution, TaskCallbackTicksTheRoot)
 {
     iv::IvModuleInstancesExecution execution(8);
     auto instance = make_instance("instance:1");
-    iv::GraphBuilder builder;
     int ticks = 0;
-    (void)builder.node<CountingNode>(&ticks);
-    builder.outputs();
+    CountingNode root {&ticks};
 
     auto update = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged {
             .created = {
                 iv::IvModuleInstanceBuilderRef {
                     .instance = &instance,
-                    .builder = &builder,
+                    .root = iv::WeakTypeErasedNode(root),
                 },
             },
         });
@@ -209,18 +207,16 @@ TEST(IvModuleInstancesExecution, PropagatesConfiguredSampleRateToTickContext)
     constexpr size_t sample_rate = 96000;
     iv::IvModuleInstancesExecution execution(8, true, sample_rate);
     auto instance = make_instance("instance:1");
-    iv::GraphBuilder builder;
     size_t observed_sample_rate = 0;
     float observed_sample_period = 0.0f;
-    (void)builder.node<SampleRateRecordingNode>(&observed_sample_rate, &observed_sample_period);
-    builder.outputs();
+    SampleRateRecordingNode root {&observed_sample_rate, &observed_sample_period};
 
     auto update = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged {
             .created = {
                 iv::IvModuleInstanceBuilderRef {
                     .instance = &instance,
-                    .builder = &builder,
+                    .root = iv::WeakTypeErasedNode(root),
                 },
             },
         });
@@ -238,17 +234,15 @@ TEST(IvModuleInstancesExecution, ResumeResetsBlockIndexWhileOngoingTicksKeepAdva
 {
     iv::IvModuleInstancesExecution execution(8);
     auto instance = make_instance("instance:1");
-    iv::GraphBuilder builder;
     std::vector<size_t> indices;
-    (void)builder.node<IndexRecordingNode>(&indices);
-    builder.outputs();
+    IndexRecordingNode root {&indices};
 
     auto update = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged {
             .created = {
                 iv::IvModuleInstanceBuilderRef {
                     .instance = &instance,
-                    .builder = &builder,
+                    .root = iv::WeakTypeErasedNode(root),
                 },
             },
         });
@@ -270,17 +264,15 @@ TEST(IvModuleInstancesExecution, PausedPreviewIgnoresTransportPlayheadUntilFollo
 {
     iv::IvModuleInstancesExecution execution(8, false);
     auto instance = make_instance("instance:1");
-    iv::GraphBuilder builder;
     std::vector<size_t> indices;
-    (void)builder.node<IndexRecordingNode>(&indices);
-    builder.outputs();
+    IndexRecordingNode root {&indices};
 
     auto update = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged {
             .created = {
                 iv::IvModuleInstanceBuilderRef {
                     .instance = &instance,
-                    .builder = &builder,
+                    .root = iv::WeakTypeErasedNode(root),
                 },
             },
         });
@@ -316,11 +308,10 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
             delete static_cast<int *>(value);
         });
 
-    iv::GraphBuilder old_builder;
-    (void)old_builder.node<ReleaseRequiresLiveModuleNode>(
+    ReleaseRequiresLiveModuleNode old_root {
         &old_module_is_live,
-        &old_release_saw_live_module);
-    old_builder.outputs();
+        &old_release_saw_live_module,
+    };
     instances.handle_iv_module_definitions_changed(
         iv::IvModuleDefinitionsChanged {
             .created = {
@@ -328,7 +319,7 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
                     .definition_id = definition_id,
                     .module_root = module_root,
                     .module_refs = old_module_refs,
-                    .canonical_builder = &old_builder,
+                    .root = iv::WeakTypeErasedNode(old_root),
                 },
             },
         });
@@ -337,15 +328,14 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
     // execution releases the old graph.
     old_module_refs.clear();
 
-    iv::GraphBuilder new_builder;
-    new_builder.outputs();
+    NoopNode new_root;
     instances.handle_iv_module_definitions_changed(
         iv::IvModuleDefinitionsChanged {
             .updated = {
                 iv::IvModuleDefinition {
                     .definition_id = definition_id,
                     .module_root = module_root,
-                    .canonical_builder = &new_builder,
+                    .root = iv::WeakTypeErasedNode(new_root),
                 },
             },
         });
@@ -367,34 +357,30 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
     EXPECT_FALSE(old_module_is_live);
 }
 
-TEST(IvModuleInstancesExecution, PreparedReloadKeepsOldGraphUntilAfterPassCommit)
+TEST(IvModuleInstancesExecution, PreparedReloadKeepsOldRootUntilAfterPassCommit)
 {
     iv::IvModuleInstancesExecution execution(8);
     auto instance = make_instance("instance:1");
     int old_ticks = 0;
-    iv::GraphBuilder old_builder;
-    (void)old_builder.node<CountingNode>(&old_ticks);
-    old_builder.outputs();
+    CountingNode old_root {&old_ticks};
 
     auto created = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged{
             .created = {iv::IvModuleInstanceBuilderRef{
                 .instance = &instance,
-                .builder = &old_builder,
+                .root = iv::WeakTypeErasedNode(old_root),
             }},
         });
     auto const old_callback = created.update.to_create.front().callback;
     old_callback.invoke(old_callback.context);
 
     int new_ticks = 0;
-    iv::GraphBuilder new_builder;
-    (void)new_builder.node<CountingNode>(&new_ticks);
-    new_builder.outputs();
+    CountingNode new_root {&new_ticks};
     auto changed = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged{
             .updated = {iv::IvModuleInstanceBuilderRef{
                 .instance = &instance,
-                .builder = &new_builder,
+                .root = iv::WeakTypeErasedNode(new_root),
             }},
         });
     auto const new_callback = *changed.update.to_update.front().callback;
