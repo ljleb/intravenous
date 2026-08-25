@@ -562,11 +562,11 @@ int main()
     }
 
     {
-        iv::GraphNodeWrapper wrapper(
-            iv::TypeErasedNode(StatefulTickingNode {}),
-            {},
+        static constexpr iv::GraphNodeWrapper wrapper(
+            iv::details::reflect_node(StatefulTickingNode {}),
+            std::vector<iv::PortBufferPlan>{},
             "standalone",
-            {}
+            std::vector<iv::SampleOutputBinding>{}
         );
 
         iv::NodeLayoutBuilder builder(8);
