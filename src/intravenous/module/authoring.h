@@ -23,7 +23,8 @@ consteval Graph generated_module_graph_value()
 template<auto Main>
 WeakTypeErasedNode generated_module_graph() noexcept
 {
-    static constexpr Graph graph = generated_module_graph_value<Main>();
+    static constexpr StaticGraphRoot<generated_module_graph_value<Main>()>
+        graph {};
     return WeakTypeErasedNode(graph);
 }
 

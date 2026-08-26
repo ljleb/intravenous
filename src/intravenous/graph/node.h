@@ -416,7 +416,8 @@ namespace iv {
             return !_dormancy_groups.empty();
         }
 
-        void declare(DeclarationContext<Graph> const& ctx) const
+        template<class RootNode>
+        void declare(DeclarationContext<RootNode> const& ctx) const
         {
             auto const& state = ctx.state();
             ctx.local_array(state.ingress_outputs, num_inputs());
@@ -447,32 +448,33 @@ namespace iv {
             ctx.local_array(state.egress_inputs, num_outputs());
             ctx.local_array(state.egress_event_inputs, num_event_outputs());
             for (size_t output_i = 0; output_i < num_outputs(); ++output_i) {
-                ctx.require_export_array<SharedPortData>(
+                ctx.template require_export_array<SharedPortData>(
                     graph_port_data_export_id(_graph_id, output_i)
                 );
             }
             for (size_t output_i = 0; output_i < num_event_outputs(); ++output_i) {
-                ctx.require_export_array<EventSharedPortData>(
+                ctx.template require_export_array<EventSharedPortData>(
                     graph_event_port_data_export_id(_graph_id, output_i)
                 );
             }
             for (GraphEdge const& edge : _edges) {
                 if (edge.source.node == GRAPH_ID) {
-                    ctx.require_export_array<SharedPortData>(
+                    ctx.template require_export_array<SharedPortData>(
                         ingress_target_export_id(edge.target)
                     );
                 }
             }
             for (GraphEventEdge const& edge : _event_edges) {
                 if (edge.source.node == GRAPH_ID) {
-                    ctx.require_export_array<EventSharedPortData>(
+                    ctx.template require_export_array<EventSharedPortData>(
                         ingress_event_target_export_id(edge.target)
                     );
                 }
             }
         }
 
-        void initialize(InitializationContext<Graph> const& ctx) const
+        template<class RootNode>
+        void initialize(InitializationContext<RootNode> const& ctx) const
         {
             auto& state = ctx.state();
             if (has_group_dormancy()) {
@@ -573,6 +575,75 @@ namespace iv {
                         state.dormancy_sample_output_port_data[sample_output_begin + i] = const_cast<SharedPortData*>(&port_data[0]);
                     }
                 }
+            }
+        }
+
+        template<auto GraphValue, class RootNode, size_t... SccIndices>
+        static IV_FORCEINLINE void tick_static_sccs(
+            TickBlockContext<RootNode> const& ctx,
+            std::index_sequence<SccIndices...>)
+        {
+            auto& state = ctx.state();
+            (GraphSccWrapper::tick_static<GraphValue._scc_wrappers[SccIndices]>({
+                TickContext<GraphSccWrapper> {
+                    .inputs = {},
+                    .outputs = {},
+                    .event_inputs = {},
+                    .event_outputs = {},
+                    .sample_rate = ctx.sample_rate,
+                    .scc_feedback_latency = 0,
+                    .buffer = state.scc_states[SccIndices],
+                },
+                ctx.index,
+                ctx.block_size,
+            }), ...);
+        }
+
+        template<auto GraphValue, class RootNode>
+        static IV_FORCEINLINE void tick_static(
+            TickBlockContext<RootNode> const& ctx)
+        {
+            auto& state = ctx.state();
+            push_input_blocks_to_private_outputs(
+                state.ingress_outputs, ctx.inputs, ctx.block_size);
+            if (!state.ingress_event_outputs.empty()) {
+                push_input_events_to_private_outputs(
+                    state.ingress_event_outputs,
+                    ctx.event_inputs,
+                    ctx.index,
+                    ctx.block_size
+                );
+            }
+
+            if constexpr (GraphValue._dormancy_groups.size == 0) {
+                tick_static_sccs<GraphValue>(
+                    ctx,
+                    std::make_index_sequence<GraphValue._scc_wrappers.size> {});
+
+                push_private_inputs_to_output_blocks(
+                    ctx.outputs, state.egress_inputs, ctx.block_size);
+                if (!state.egress_event_inputs.empty()) {
+                    push_private_input_events_to_output_events(
+                        ctx.event_outputs,
+                        state.egress_event_inputs,
+                        ctx.index,
+                        ctx.block_size
+                    );
+                }
+            } else {
+                GraphValue.tick_block(TickBlockContext<Graph> {
+                    TickContext<Graph> {
+                        .inputs = ctx.inputs,
+                        .outputs = ctx.outputs,
+                        .event_inputs = ctx.event_inputs,
+                        .event_outputs = ctx.event_outputs,
+                        .sample_rate = ctx.sample_rate,
+                        .scc_feedback_latency = ctx.scc_feedback_latency,
+                        .buffer = ctx.buffer,
+                    },
+                    ctx.index,
+                    ctx.block_size,
+                });
             }
         }
 
@@ -790,6 +861,35 @@ namespace iv {
                     state.dormancy_group_silent_samples_accumulated[group_i] = 0;
                 }
             }
+        }
+    };
+
+    template<auto GraphValue>
+    struct StaticGraphRoot {
+        using State = Graph::State;
+
+        constexpr auto inputs() const { return GraphValue.inputs(); }
+        constexpr auto outputs() const { return GraphValue.outputs(); }
+        constexpr auto event_inputs() const { return GraphValue.event_inputs(); }
+        constexpr auto event_outputs() const { return GraphValue.event_outputs(); }
+        constexpr size_t internal_latency() const { return GraphValue.internal_latency(); }
+        constexpr size_t max_block_size() const { return GraphValue.max_block_size(); }
+
+        template<class RootNode>
+        void declare(DeclarationContext<RootNode> const& ctx) const
+        {
+            GraphValue.declare(ctx);
+        }
+
+        template<class RootNode>
+        void initialize(InitializationContext<RootNode> const& ctx) const
+        {
+            GraphValue.initialize(ctx);
+        }
+
+        void tick_block(TickBlockContext<StaticGraphRoot> const& ctx) const
+        {
+            Graph::tick_static<GraphValue>(ctx);
         }
     };
 }
