@@ -768,7 +768,7 @@ constexpr NodeRef NodeRef::ttl(size_t ttl_samples) const { if(!_graph_builder)de
 constexpr NodeRef NodeRef::no_ttl() const { return ttl(std::numeric_limits<size_t>::max()); }
 inline std::string NodeRef::to_string() const { return _graph_builder?"node bundle "+std::to_string(_index):"empty node"; }
 
-inline NodeRef& NodeRef::operator=(NodeRef const& rhs) {
+constexpr NodeRef& NodeRef::operator=(NodeRef const& rhs) {
   if(this==&rhs)return *this;
   if(_allows_single_assignment){if(!rhs._graph_builder)details::error("cannot initialize a virtual-empty NodeRef from an empty NodeRef");_graph_builder=rhs._graph_builder;_index=rhs._index;if(!_virtual_declaration_id.empty())_graph_builder->_annotations.attach_virtual_node(_graph_builder->_node_bundles,_graph_builder->_virtual_nodes,_index,_virtual_declaration_id);_allows_single_assignment=false;return *this;}
   if(_graph_builder||!_virtual_declaration_id.empty())details::error(
@@ -776,7 +776,7 @@ inline NodeRef& NodeRef::operator=(NodeRef const& rhs) {
     "' after it has already been initialized");
   _graph_builder=rhs._graph_builder;_index=rhs._index;_virtual_declaration_id=rhs._virtual_declaration_id;_allows_single_assignment=rhs._allows_single_assignment;return *this;
 }
-inline NodeRef& NodeRef::operator=(NodeRef&& rhs) {
+constexpr NodeRef& NodeRef::operator=(NodeRef&& rhs) {
   if(this==&rhs)return *this;
   if(_allows_single_assignment){if(!rhs._graph_builder)details::error("cannot initialize a virtual-empty NodeRef from an empty NodeRef");_graph_builder=rhs._graph_builder;_index=rhs._index;if(!_virtual_declaration_id.empty())_graph_builder->_annotations.attach_virtual_node(_graph_builder->_node_bundles,_graph_builder->_virtual_nodes,_index,_virtual_declaration_id);_allows_single_assignment=false;rhs._graph_builder=nullptr;rhs._index=0;rhs._virtual_declaration_id.clear();rhs._allows_single_assignment=false;return *this;}
   if(_graph_builder||!_virtual_declaration_id.empty())details::error(
