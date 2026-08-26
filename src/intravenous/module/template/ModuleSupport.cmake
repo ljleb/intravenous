@@ -93,7 +93,15 @@ function(iv_add_runtime_module target)
     if(TARGET iv_module_shared)
         target_link_libraries(${target} PRIVATE iv_module_shared)
     endif()
-    if(DEFINED IV_MODULE_PCH_HEADER AND NOT IV_MODULE_PCH_HEADER STREQUAL "")
-        target_precompile_headers(${target} PRIVATE ${IV_MODULE_PCH_HEADER})
+
+    # dsl.h owns the compile-time graph authoring surface and transitively pulls
+    # in the heavy builder implementation. Precompile it by default for runtime
+    # module builds; callers can explicitly set IV_MODULE_PCH_HEADER to an empty
+    # string to opt out.
+    if(NOT DEFINED IV_MODULE_PCH_HEADER)
+        set(IV_MODULE_PCH_HEADER "${IV_SOURCE_DIR}/module/template/module_pch.h")
+    endif()
+    if(NOT IV_MODULE_PCH_HEADER STREQUAL "")
+        target_precompile_headers(${target} PRIVATE "${IV_MODULE_PCH_HEADER}")
     endif()
 endfunction()
