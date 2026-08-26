@@ -24,6 +24,7 @@ class IvModuleInstancesExecution {
             // Destruction is reverse declaration order: prepared graph state
             // must be gone before its binary generations are released.
             std::vector<ModuleRef> module_refs {};
+            std::shared_ptr<GraphRuntimeBindings> runtime_bindings {};
             IvModuleInstance const* instance = nullptr;
             WeakTypeErasedNode root {};
             std::optional<size_t> default_silence_ttl_samples {};
@@ -34,6 +35,7 @@ class IvModuleInstancesExecution {
         WeakTypeErasedNode root {};
         std::optional<size_t> default_silence_ttl_samples {};
         std::vector<ModuleRef> module_refs {};
+        std::shared_ptr<GraphRuntimeBindings> runtime_bindings {};
         std::shared_ptr<BlockNodeExecutor> executor {};
         std::optional<PendingReload> pending_reload {};
         std::unique_ptr<InstanceTaskContext> active_context {};
@@ -46,6 +48,7 @@ class IvModuleInstancesExecution {
         // Destruction is reverse declaration order: graph state must be gone
         // before the binary generations containing its callbacks are released.
         std::vector<ModuleRef> module_refs {};
+        std::shared_ptr<GraphRuntimeBindings> runtime_bindings {};
         std::unique_ptr<InstanceTaskContext> active_context {};
         std::unique_ptr<InstanceTaskContext> pending_context {};
         std::shared_ptr<BlockNodeExecutor> executor {};
@@ -65,6 +68,7 @@ class IvModuleInstancesExecution {
     static void invoke_instance_task(void *);
     static std::shared_ptr<BlockNodeExecutor> make_executor(
         WeakTypeErasedNode root,
+        std::shared_ptr<GraphRuntimeBindings> const& runtime_bindings,
         size_t block_size,
         size_t sample_rate,
         std::optional<size_t> default_silence_ttl_samples);

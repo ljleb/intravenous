@@ -44,7 +44,7 @@ constexpr void simple_sine(iv::GraphBuilder& g)
     // auto const tt = g.node<FunNode>();
     auto const f = g.node<Constant, stereo>(220);
     auto const voice = g.node<SawOscillator, stereo>();
-    auto const p = g.tile<stereo>(f + 2.5, f - 2.5);
+    auto const p = g.tile<stereo>(f[stereo::left] + 2.5, f[stereo::right] - 2.5);
 
     voice(
         "frequency"_P = p);

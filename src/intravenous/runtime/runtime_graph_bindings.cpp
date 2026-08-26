@@ -2,11 +2,42 @@
 
 #include <intravenous/runtime/graph_input_lanes_events.h>
 #include <intravenous/runtime/timeline_execution_events.h>
+#include <intravenous/node/layout.h>
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace iv {
 namespace {
+
+template<typename Binding, typename Bindings, typename Initialize>
+void materialize_bindings(
+    NodeStorage& storage,
+    Bindings& bindings,
+    Initialize initialize)
+{
+    if (!storage.layout) return;
+    for (auto const& exported : storage.layout->exported_arrays) {
+        if (exported.element_type !=
+            NodeLayoutBuilder::array_type_token<Binding const*>())
+            continue;
+        auto const& semantic_key = exported.id;
+        auto& binding = bindings[semantic_key];
+        if (!binding) {
+            binding = std::make_shared<Binding>();
+            initialize(*binding);
+        }
+        auto slots = storage.resolve_exported_array_storage<Binding const*>(
+            semantic_key);
+        if (slots.empty()) continue;
+        if (slots.size() != 1) {
+            throw std::logic_error(
+                "runtime binding export must resolve to exactly one slot: "
+                + semantic_key);
+        }
+        slots.front() = binding.get();
+    }
+}
 
 void read_timeline_sample_block(
     LaneId timeline_lane,
@@ -94,6 +125,32 @@ void publish_event_block(
 }
 
 } // namespace
+
+void GraphRuntimeBindings::materialize(NodeStorage& storage)
+{
+    std::scoped_lock lock(mutex_);
+    materialize_bindings<RuntimeSampleInputBinding>(
+        storage,
+        sample_inputs_,
+        [&](auto& binding) {
+            binding.read_timeline_block =
+                callbacks_.read_timeline_sample_block;
+        });
+    materialize_bindings<RuntimeEventInputBinding>(
+        storage,
+        event_inputs_,
+        [&](auto& binding) {
+            binding.read_timeline_block =
+                callbacks_.read_timeline_event_block;
+        });
+    materialize_bindings<RuntimeOutputBinding>(
+        storage,
+        outputs_,
+        [&](auto& binding) {
+            binding.publish_sample_block = callbacks_.publish_sample_block;
+            binding.publish_event_block = callbacks_.publish_event_block;
+        });
+}
 
 std::shared_ptr<GraphRuntimeBindings> make_graph_runtime_bindings()
 {

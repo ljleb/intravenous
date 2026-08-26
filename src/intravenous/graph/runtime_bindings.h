@@ -16,6 +16,8 @@
 
 namespace iv {
 
+struct NodeStorage;
+
 enum class RuntimeSampleInputMode : std::uint8_t {
     none,
     scalar,
@@ -126,6 +128,10 @@ public:
         }
         return binding;
     }
+
+    // Connects exported executor slots to registry-owned binding objects.
+    // This registry must outlive the storage while it can be ticked.
+    void materialize(NodeStorage& storage);
 
 private:
     Callbacks callbacks_ {};

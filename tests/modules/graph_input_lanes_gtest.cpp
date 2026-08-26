@@ -1273,6 +1273,15 @@ TEST_F(GraphInputLanesTest, VirtualSampleOutputTimelineStateCreatesAggregationLa
         "dsp_graph.virtual",
         &upsert));
     ASSERT_NE(upsert, nullptr);
+    auto const runtime_binding = instance.runtime_bindings->output(
+        iv::runtime_virtual_port_key(
+            false,
+            iv::PortKind::sample,
+            "node-1",
+            std::nullopt,
+            0));
+    EXPECT_EQ(runtime_binding->target_lane, upsert->lane);
+    EXPECT_NE(runtime_binding->publish_sample_block, nullptr);
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance}},
@@ -1332,6 +1341,15 @@ TEST_F(GraphInputLanesTest, ConcreteSampleOutputTimelineStateCreatesDedicatedLan
         "dsp_graph.concrete",
         &upsert));
     ASSERT_NE(upsert, nullptr);
+    auto const runtime_binding = instance.runtime_bindings->output(
+        iv::runtime_virtual_port_key(
+            false,
+            iv::PortKind::sample,
+            authored_virtual_node_id,
+            0,
+            0));
+    EXPECT_EQ(runtime_binding->target_lane, upsert->lane);
+    EXPECT_NE(runtime_binding->publish_sample_block, nullptr);
 
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
         .updated = {iv::IvModuleInstanceBuilderRef{.instance = &instance}},

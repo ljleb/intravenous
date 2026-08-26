@@ -216,6 +216,16 @@ consteval bool functional_subgraph_compiles()
     return true;
 }
 
+consteval bool direct_public_sample_passthrough_compiles()
+{
+    GraphBuilder g;
+    auto input = g.input<"in">(0.0f);
+    g.outputs("out"_P = input);
+    auto const built = g.build_root_node();
+    return built.graph.inputs().size() == 1
+        && built.graph.outputs().size() == 1;
+}
+
 } // namespace
 
 TEST(GraphModules, ModuleFunctionUsesTheRootGraphBuilderSignature)
@@ -225,6 +235,12 @@ TEST(GraphModules, ModuleFunctionUsesTheRootGraphBuilderSignature)
     EXPECT_EQ(snapshot.child_sample_inputs, 1u);
     EXPECT_EQ(snapshot.child_sample_outputs, 1u);
     EXPECT_TRUE(snapshot.nested_output_named_main);
+}
+
+TEST(GraphModules, PublicInputCanFeedPublicOutputWithoutAnInternalNode)
+{
+    static_assert(direct_public_sample_passthrough_compiles());
+    EXPECT_TRUE(direct_public_sample_passthrough_compiles());
 }
 
 TEST(GraphModules, ModulesComposeRecursivelyThroughAuthoredGraphSplicing)

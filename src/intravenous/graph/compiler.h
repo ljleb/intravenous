@@ -1074,6 +1074,8 @@ namespace iv::details {
 
         constexpr size_t delay_input(ConcretePortId input, size_t extra_delay)
         {
+            if (input.node == GRAPH_ID)
+                return _input_port_global_latencies[input] += extra_delay;
             return _input_port_global_latencies.at(input) += extra_delay;
         }
     };

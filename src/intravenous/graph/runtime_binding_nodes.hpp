@@ -129,7 +129,7 @@ struct RuntimeSampleInputNode {
 
     struct State {
         std::span<Sample> samples {};
-        std::span<RuntimeSampleInputBinding> binding {};
+        std::span<RuntimeSampleInputBinding const*> binding {};
     };
 
     constexpr auto outputs() const
@@ -150,13 +150,13 @@ struct RuntimeSampleInputNode {
     {
         auto const channels = channel_count(output.channel_layout);
         auto samples = ctx.state().samples.first(channels * ctx.block_size);
-        auto const& binding = ctx.state().binding.front();
-        if (binding.mode == RuntimeSampleInputMode::timeline) {
+        auto const* binding = ctx.state().binding.front();
+        if (binding && binding->mode == RuntimeSampleInputMode::timeline) {
             std::fill(samples.begin(), samples.end(), Sample{0.0f});
-            if (binding.read_timeline_block) {
-                binding.read_timeline_block(
-                    binding.timeline_lane,
-                    binding.source_channel,
+            if (binding->read_timeline_block) {
+                binding->read_timeline_block(
+                    binding->timeline_lane,
+                    binding->source_channel,
                     0,
                     ctx.index,
                     ctx.block_size,
@@ -164,8 +164,9 @@ struct RuntimeSampleInputNode {
                     samples);
             }
         } else {
-            auto const value = binding.mode == RuntimeSampleInputMode::scalar
-                ? binding.value
+            auto const value = binding &&
+                    binding->mode == RuntimeSampleInputMode::scalar
+                ? binding->value
                 : default_value;
             std::fill(samples.begin(), samples.end(), value);
         }
@@ -182,7 +183,7 @@ struct RuntimeEventInputNode {
     StaticString binding_id {};
 
     struct State {
-        std::span<RuntimeEventInputBinding> binding {};
+        std::span<RuntimeEventInputBinding const*> binding {};
     };
 
     constexpr auto event_outputs() const
@@ -198,10 +199,12 @@ struct RuntimeEventInputNode {
 
     void tick_block(TickBlockContext<RuntimeEventInputNode> const& ctx) const
     {
-        auto const& binding = ctx.state().binding.front();
-        if (!binding.read_timeline_block || !binding.timeline_lane) return;
-        auto const view = binding.read_timeline_block(
-            binding.timeline_lane, ctx.index, ctx.block_size);
+        auto const* binding = ctx.state().binding.front();
+        if (!binding || !binding->read_timeline_block ||
+            !binding->timeline_lane)
+            return;
+        auto const view = binding->read_timeline_block(
+            binding->timeline_lane, ctx.index, ctx.block_size);
         for (size_t i = 0; i < view.size; ++i)
             ctx.event_outputs[0].push(view.data[i]);
     }
@@ -213,7 +216,7 @@ struct RuntimeSampleOutputNode {
 
     struct State {
         std::span<Sample> samples {};
-        std::span<RuntimeOutputBinding> binding {};
+        std::span<RuntimeOutputBinding const*> binding {};
     };
 
     constexpr auto inputs() const
@@ -232,16 +235,18 @@ struct RuntimeSampleOutputNode {
 
     void tick_block(TickBlockContext<RuntimeSampleOutputNode> const& ctx) const
     {
-        auto const& binding = ctx.state().binding.front();
-        if (!binding.publish_sample_block || !binding.target_lane) return;
+        auto const* binding = ctx.state().binding.front();
+        if (!binding || !binding->publish_sample_block ||
+            !binding->target_lane)
+            return;
         auto const channels = channel_count(input.channel_layout);
         auto samples = ctx.state().samples.first(channels * ctx.block_size);
         for (size_t channel = 0; channel < channels; ++channel)
             for (size_t frame = 0; frame < ctx.block_size; ++frame)
                 samples[channel * ctx.block_size + frame] =
                     ctx.inputs[0].get_frame(frame, channel);
-        binding.publish_sample_block(
-            binding.target_lane,
+        binding->publish_sample_block(
+            binding->target_lane,
             samples,
             ChannelLayout{
                 .channel_type = input.channel_layout.channel_type,
@@ -257,7 +262,7 @@ struct RuntimeEventOutputNode {
 
     struct State {
         std::span<TimedEvent> events {};
-        std::span<RuntimeOutputBinding> binding {};
+        std::span<RuntimeOutputBinding const*> binding {};
     };
 
     constexpr auto event_inputs() const
@@ -277,15 +282,17 @@ struct RuntimeEventOutputNode {
 
     void tick_block(TickBlockContext<RuntimeEventOutputNode> const& ctx) const
     {
-        auto const& binding = ctx.state().binding.front();
-        if (!binding.publish_event_block || !binding.target_lane) return;
+        auto const* binding = ctx.state().binding.front();
+        if (!binding || !binding->publish_event_block ||
+            !binding->target_lane)
+            return;
         auto const input =
             ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
         auto const count = std::min(input.size(), ctx.state().events.size());
         for (size_t i = 0; i < count; ++i)
             ctx.state().events[i] = input[i];
-        binding.publish_event_block(
-            binding.target_lane,
+        binding->publish_event_block(
+            binding->target_lane,
             ctx.state().events.first(count));
     }
 };
@@ -299,8 +306,8 @@ struct RuntimeSampleOutputFamilyNode {
     struct State {
         std::span<Sample> aggregate_samples {};
         std::span<Sample> member_samples {};
-        std::span<RuntimeOutputBinding> member_bindings {};
-        std::span<RuntimeOutputBinding> aggregate_binding {};
+        std::span<RuntimeOutputBinding const*> member_bindings {};
+        std::span<RuntimeOutputBinding const*> aggregate_binding {};
     };
 
     constexpr std::vector<InputConfig> inputs() const
@@ -324,9 +331,12 @@ struct RuntimeSampleOutputFamilyNode {
         ctx.local_array(
             ctx.state().member_bindings,
             member_binding_ids.size);
-        for (auto const id : member_binding_ids)
+        for (size_t member = 0; member < member_binding_ids.size; ++member)
             ctx.export_array(
-                std::string(id.view()), ctx.state().member_bindings);
+                std::string(member_binding_ids[member].view()),
+                ctx.state().member_bindings,
+                member,
+                1);
         ctx.local_array(ctx.state().aggregate_binding, 1);
         ctx.export_array(
             std::string(aggregate_binding_id.view()),
@@ -342,8 +352,10 @@ struct RuntimeSampleOutputFamilyNode {
         std::fill(aggregate.begin(), aggregate.end(), Sample{0.0f});
 
         for (size_t member = 0; member < input_configs.size; ++member) {
-            auto const& binding = ctx.state().member_bindings[member];
-            if (!binding.target_lane && !binding.include_in_aggregate) continue;
+            auto const* binding = ctx.state().member_bindings[member];
+            if (!binding ||
+                (!binding->target_lane && !binding->include_in_aggregate))
+                continue;
 
             auto samples = ctx.state().member_samples.subspan(
                 member * sample_count, sample_count);
@@ -352,12 +364,12 @@ struct RuntimeSampleOutputFamilyNode {
                     samples[channel * ctx.block_size + frame] =
                         ctx.inputs[member].get_frame(frame, channel);
 
-            if (binding.include_in_aggregate)
+            if (binding->include_in_aggregate)
                 for (size_t i = 0; i < sample_count; ++i)
                     aggregate[i] += samples[i];
-            if (binding.target_lane && binding.publish_sample_block)
-                binding.publish_sample_block(
-                    binding.target_lane,
+            if (binding->target_lane && binding->publish_sample_block)
+                binding->publish_sample_block(
+                    binding->target_lane,
                     samples,
                     ChannelLayout{
                         .channel_type = layout.channel_type,
@@ -366,11 +378,12 @@ struct RuntimeSampleOutputFamilyNode {
                     ctx.block_size);
         }
 
-        auto const& aggregate_binding = ctx.state().aggregate_binding.front();
-        if (aggregate_binding.target_lane
-            && aggregate_binding.publish_sample_block) {
-            aggregate_binding.publish_sample_block(
-                aggregate_binding.target_lane,
+        auto const* aggregate_binding =
+            ctx.state().aggregate_binding.front();
+        if (aggregate_binding && aggregate_binding->target_lane
+            && aggregate_binding->publish_sample_block) {
+            aggregate_binding->publish_sample_block(
+                aggregate_binding->target_lane,
                 aggregate,
                 ChannelLayout{
                     .channel_type = layout.channel_type,
@@ -391,8 +404,8 @@ struct RuntimeEventOutputFamilyNode {
         std::span<TimedEvent> aggregate_events {};
         std::span<TimedEvent> member_events {};
         std::span<size_t> aggregate_cursors {};
-        std::span<RuntimeOutputBinding> member_bindings {};
-        std::span<RuntimeOutputBinding> aggregate_binding {};
+        std::span<RuntimeOutputBinding const*> member_bindings {};
+        std::span<RuntimeOutputBinding const*> aggregate_binding {};
     };
 
     constexpr std::vector<EventInputConfig> event_inputs() const
@@ -411,9 +424,12 @@ struct RuntimeEventOutputFamilyNode {
         ctx.local_array(ctx.state().member_events, capacity * member_count);
         ctx.local_array(ctx.state().aggregate_cursors, member_count);
         ctx.local_array(ctx.state().member_bindings, member_count);
-        for (auto const id : member_binding_ids)
+        for (size_t member = 0; member < member_binding_ids.size; ++member)
             ctx.export_array(
-                std::string(id.view()), ctx.state().member_bindings);
+                std::string(member_binding_ids[member].view()),
+                ctx.state().member_bindings,
+                member,
+                1);
         ctx.local_array(ctx.state().aggregate_binding, 1);
         ctx.export_array(
             std::string(aggregate_binding_id.view()),
@@ -424,8 +440,10 @@ struct RuntimeEventOutputFamilyNode {
         TickBlockContext<RuntimeEventOutputFamilyNode> const& ctx) const
     {
         for (size_t member = 0; member < member_count; ++member) {
-            auto const& binding = ctx.state().member_bindings[member];
-            if (!binding.target_lane && !binding.include_in_aggregate) continue;
+            auto const* binding = ctx.state().member_bindings[member];
+            if (!binding ||
+                (!binding->target_lane && !binding->include_in_aggregate))
+                continue;
 
             auto const input =
                 ctx.event_inputs[member].get_block(ctx.index, ctx.block_size);
@@ -435,15 +453,16 @@ struct RuntimeEventOutputFamilyNode {
             auto const count = std::min(input.size(), member_events.size());
             for (size_t i = 0; i < count; ++i)
                 member_events[i] = input[i];
-            if (binding.target_lane && binding.publish_event_block)
-                binding.publish_event_block(
-                    binding.target_lane,
+            if (binding->target_lane && binding->publish_event_block)
+                binding->publish_event_block(
+                    binding->target_lane,
                     member_events.first(count));
         }
 
-        auto const& aggregate_binding = ctx.state().aggregate_binding.front();
-        if (!aggregate_binding.target_lane
-            || !aggregate_binding.publish_event_block) return;
+        auto const* aggregate_binding =
+            ctx.state().aggregate_binding.front();
+        if (!aggregate_binding || !aggregate_binding->target_lane
+            || !aggregate_binding->publish_event_block) return;
 
         std::fill(
             ctx.state().aggregate_cursors.begin(),
@@ -453,8 +472,8 @@ struct RuntimeEventOutputFamilyNode {
             size_t selected_member = member_count;
             TimedEvent selected_event {};
             for (size_t member = 0; member < member_count; ++member) {
-                auto const& binding = ctx.state().member_bindings[member];
-                if (!binding.include_in_aggregate) continue;
+                auto const* binding = ctx.state().member_bindings[member];
+                if (!binding || !binding->include_in_aggregate) continue;
                 auto const input = ctx.event_inputs[member].get_block(
                     ctx.index, ctx.block_size);
                 auto const cursor = ctx.state().aggregate_cursors[member];
@@ -470,8 +489,8 @@ struct RuntimeEventOutputFamilyNode {
             ctx.state().aggregate_events[aggregate_count++] = selected_event;
             ++ctx.state().aggregate_cursors[selected_member];
         }
-        aggregate_binding.publish_event_block(
-            aggregate_binding.target_lane,
+        aggregate_binding->publish_event_block(
+            aggregate_binding->target_lane,
             ctx.state().aggregate_events.first(aggregate_count));
     }
 };
