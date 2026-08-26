@@ -461,13 +461,16 @@ tree analyze_statement_node(tree* node, int* walk_subtrees, void* data)
         *walk_subtrees = 0;
         return nullptr;
     }
+    if (TREE_CODE(*node) == LAMBDA_EXPR) {
+        *walk_subtrees = 0;
+        return nullptr;
+    }
 
     auto& analysis = *static_cast<StatementAnalysis*>(data);
     if (TREE_CODE(*node) == DECL_EXPR) {
         tree const declaration = DECL_EXPR_DECL(*node);
         auto const kind = annotatable_ref_kind(TREE_TYPE(declaration));
         if (kind == AnnotatableRefKind::node
-            && record_type_name(TREE_TYPE(declaration)) == "NodeRef"
             && TREE_CODE(TREE_TYPE(declaration)) != REFERENCE_TYPE
             && !DECL_ARTIFICIAL(declaration)
             && !declaration_has_source_initializer(declaration)) {
@@ -533,6 +536,44 @@ tree analyze_statement_node(tree* node, int* walk_subtrees, void* data)
 
     if (TREE_CODE(*node) == CALL_EXPR) {
         tree const function = called_function(*node);
+        if (function_is_named(function, "operator=")
+            && call_expr_nargs(*node) > 0) {
+            tree const destination = CALL_EXPR_ARG(*node, 0);
+            tree const declaration = referenced_declaration(destination);
+            if (declaration && !DECL_ARTIFICIAL(declaration)
+                && annotatable_ref_kind(TREE_TYPE(declaration))
+                    == AnnotatableRefKind::node
+                && TREE_CODE(TREE_TYPE(declaration)) != REFERENCE_TYPE
+                && !declaration_has_source_initializer(declaration)) {
+                auto const identity = declaration_identity(declaration);
+                auto const declaration_source_span = declaration_span(declaration);
+                auto initialization_source_span = named_expression_span(
+                    destination, declaration);
+                if (!initialization_source_span)
+                    initialization_source_span = expression_span(*node);
+                bool const value_is_pointer = TREE_CODE(TREE_TYPE(destination))
+                    == POINTER_TYPE;
+                if (!identity.empty() && declaration_source_span) {
+                    append_ref_annotation(analysis, {
+                        .value = destination,
+                        .declaration = declaration,
+                        .value_is_pointer = value_is_pointer,
+                        .declaration_identity = identity,
+                        .span = *declaration_source_span,
+                    });
+                }
+                if (!identity.empty() && initialization_source_span) {
+                    append_ref_annotation(analysis, {
+                        .value = destination,
+                        .declaration = declaration,
+                        .value_is_pointer = value_is_pointer,
+                        .declaration_identity = identity,
+                        .span = *initialization_source_span,
+                    });
+                }
+            }
+        }
+
         bool const sample_outputs = function_is_named(function, "outputs");
         bool const event_outputs = function_is_named(function, "event_outputs");
         if ((sample_outputs || event_outputs)
