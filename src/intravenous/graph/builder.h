@@ -770,35 +770,24 @@ inline std::string NodeRef::to_string() const { return _graph_builder?"node bund
 
 constexpr NodeRef& NodeRef::operator=(NodeRef const& rhs) {
   if(this==&rhs)return *this;
-  if(_allows_single_assignment){if(!rhs._graph_builder)details::error("cannot initialize a virtual-empty NodeRef from an empty NodeRef");_graph_builder=rhs._graph_builder;_index=rhs._index;if(!_virtual_declaration_id.empty())_graph_builder->_annotations.attach_virtual_node(_graph_builder->_node_bundles,_graph_builder->_virtual_nodes,_index,_virtual_declaration_id);_allows_single_assignment=false;return *this;}
   if(_graph_builder||!_virtual_declaration_id.empty())details::error(
     "cannot assign to NodeRef '" + _virtual_declaration_id +
     "' after it has already been initialized");
-  _graph_builder=rhs._graph_builder;_index=rhs._index;_virtual_declaration_id=rhs._virtual_declaration_id;_allows_single_assignment=rhs._allows_single_assignment;return *this;
+  if(!rhs._graph_builder)details::error("cannot initialize NodeRef from an empty NodeRef");
+  _graph_builder=rhs._graph_builder;_index=rhs._index;_virtual_declaration_id=rhs._virtual_declaration_id;return *this;
 }
 constexpr NodeRef& NodeRef::operator=(NodeRef&& rhs) {
   if(this==&rhs)return *this;
-  if(_allows_single_assignment){if(!rhs._graph_builder)details::error("cannot initialize a virtual-empty NodeRef from an empty NodeRef");_graph_builder=rhs._graph_builder;_index=rhs._index;if(!_virtual_declaration_id.empty())_graph_builder->_annotations.attach_virtual_node(_graph_builder->_node_bundles,_graph_builder->_virtual_nodes,_index,_virtual_declaration_id);_allows_single_assignment=false;rhs._graph_builder=nullptr;rhs._index=0;rhs._virtual_declaration_id.clear();rhs._allows_single_assignment=false;return *this;}
   if(_graph_builder||!_virtual_declaration_id.empty())details::error(
     "cannot assign to NodeRef '" + _virtual_declaration_id +
     "' after it has already been initialized");
-  _graph_builder=rhs._graph_builder;_index=rhs._index;_virtual_declaration_id=std::move(rhs._virtual_declaration_id);_allows_single_assignment=rhs._allows_single_assignment;rhs._graph_builder=nullptr;rhs._index=0;rhs._virtual_declaration_id.clear();rhs._allows_single_assignment=false;return *this;
+  if(!rhs._graph_builder)details::error("cannot initialize NodeRef from an empty NodeRef");
+  _graph_builder=rhs._graph_builder;_index=rhs._index;_virtual_declaration_id=std::move(rhs._virtual_declaration_id);rhs._graph_builder=nullptr;rhs._index=0;rhs._virtual_declaration_id.clear();return *this;
 }
 constexpr void NodeRef::_annotate_source_info(std::string_view declaration_identity,std::string_view file_path,uint32_t begin,uint32_t end) const {
   if(!declaration_identity.empty())_virtual_declaration_id=declaration_identity;
   if(!_graph_builder)return;
   _graph_builder->_annotations.annotate_node_source_info(_graph_builder->_node_bundles,_graph_builder->_virtual_nodes,_graph_builder->_identity,_index,declaration_identity,file_path,begin,end);
-}
-constexpr void NodeRef::_prepare_virtual_empty(
-    std::string_view declaration_identity)
-{
-    if (_graph_builder || !_virtual_declaration_id.empty()
-        || _allows_single_assignment) {
-        details::error(
-            "cannot prepare a non-empty NodeRef as a virtual declaration");
-    }
-    _virtual_declaration_id = declaration_identity;
-    _allows_single_assignment = true;
 }
 
 template<class Node,class PortProjection> constexpr SamplePortRef TypedNodeRef<Node,PortProjection>::operator[](size_t i) const { return NodeRef::operator[](i); }

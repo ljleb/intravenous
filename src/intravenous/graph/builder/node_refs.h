@@ -28,12 +28,6 @@ namespace iv {
     template<class Node, class ChannelType>
     using TiledNodeRef = TypedNodeRef<Node, TiledPortProjection<ChannelType>>;
 
-    struct VirtualEmptyTag {
-        explicit constexpr VirtualEmptyTag() = default;
-    };
-
-    inline constexpr VirtualEmptyTag virtual_empty_tag {};
-
     // The untyped handle is the public base for every node-bundle case.
     // It deliberately addresses a NodeBundle, never an assumed concrete node.
     class NodeRef {
@@ -41,7 +35,6 @@ namespace iv {
         GraphBuilder* _graph_builder{};
         size_t _index{};
         mutable std::string _virtual_declaration_id {};
-        bool _allows_single_assignment = false;
 
         friend class GraphBuilder;
         friend class GraphBuilderAnnotations;
@@ -50,10 +43,6 @@ namespace iv {
         constexpr NodeRef() = default;
         NodeRef(NodeRef const&) = delete;
         NodeRef(NodeRef&&) noexcept = default;
-        explicit NodeRef(VirtualEmptyTag, std::string_view declaration_identity) :
-            _virtual_declaration_id(declaration_identity),
-            _allows_single_assignment(true)
-        {}
         constexpr explicit NodeRef(GraphBuilder& graph_builder, size_t index) :
             _graph_builder(&graph_builder),
             _index(index)
@@ -109,8 +98,6 @@ namespace iv {
             uint32_t begin,
             uint32_t end
         ) const;
-        constexpr void _prepare_virtual_empty(
-            std::string_view declaration_identity);
     };
 
     // Internal only: it supplies covariant fluent returns for the two typed
