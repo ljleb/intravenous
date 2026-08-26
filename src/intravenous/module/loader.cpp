@@ -1,6 +1,7 @@
 #define IV_INTERNAL_TRANSLATION_UNIT
 
 #include <intravenous/module/loader.h>
+#include <intravenous/module/module.h>
 #include <intravenous/compat.h>
 
 #include <nlohmann/json.hpp>
@@ -615,6 +616,9 @@ class ModuleLoader::Impl {
         std::ostringstream export_tu;
         export_tu << "#include <intravenous/module/module.h>\n"
                   << "#include <" << root_include << ">\n"
+                  << "extern \"C\" IV_MODULE_EXPORT std::uint32_t iv_module_abi_version() {\n"
+                  << "  return iv::IV_MODULE_ABI_VERSION;\n"
+                  << "}\n"
                   << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode iv_module_graph() {\n"
                   << "  return iv::details::generated_module_graph<&"
                   << root.manifest.main
@@ -649,7 +653,7 @@ class ModuleLoader::Impl {
             std::string(IV_CONFIGURED_CMAKE_GENERATOR));
 
         std::ostringstream signature;
-        signature << "module-constexpr-products-abi=1\n"
+        signature << "iv-module-abi=" << IV_MODULE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
                   << "cmake=" << cmake_program().generic_string() << '\n'
                   << "cc=" << cc.generic_string() << '\n'
@@ -814,6 +818,21 @@ public:
         auto artifact = build(root, closure, project_root);
 
         auto library = std::make_shared<DynamicLibrary>(artifact);
+        auto abi_version = reinterpret_cast<iv_module_abi_version_fn>(
+            library->symbol("iv_module_abi_version"));
+        if (!abi_version) {
+            throw std::runtime_error(
+                "module '" + artifact.string() +
+                "' does not export iv_module_abi_version");
+        }
+        auto const loaded_abi_version = abi_version();
+        if (loaded_abi_version != IV_MODULE_ABI_VERSION) {
+            throw std::runtime_error(
+                "module '" + artifact.string() +
+                "' has incompatible ABI version " +
+                std::to_string(loaded_abi_version) + " (expected " +
+                std::to_string(IV_MODULE_ABI_VERSION) + ")");
+        }
         auto graph = reinterpret_cast<iv_module_graph_fn>(
             library->symbol("iv_module_graph"));
         if (!graph) {

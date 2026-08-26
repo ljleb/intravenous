@@ -120,7 +120,7 @@ public:
         std::span<Sample> gathered {};
         std::span<Sample> converted {};
         std::span<Sample> runtime_contribution {};
-        std::span<RuntimeSampleInputBinding> runtime_binding {};
+        std::span<RuntimeSampleInputBinding const*> runtime_binding {};
     };
 
     [[nodiscard]] constexpr std::vector<InputConfig> inputs() const
@@ -154,10 +154,15 @@ public:
                 state.runtime_contribution,
                 output_channel_count * ctx.max_block_size());
             ctx.local_array(state.runtime_binding, 1);
-            ctx.export_array(
-                std::string(runtime_binding_id.view()),
-                state.runtime_binding);
         }
+    }
+
+    void initialize(InitializationContext<ConnectionNode> const& ctx) const
+    {
+        if (!runtime_binding_id.empty())
+            ctx.state().runtime_binding.front() =
+                ctx.resources.runtime_bindings.sample_input(
+                    runtime_binding_id.view());
     }
 
     void tick_block(TickBlockContext<ConnectionNode> const& ctx) const
@@ -165,7 +170,7 @@ public:
         auto& state = ctx.state();
         auto const* runtime_binding = state.runtime_binding.empty()
             ? nullptr
-            : &state.runtime_binding.front();
+            : state.runtime_binding.front();
         auto const runtime_mode = runtime_binding
             ? runtime_binding->mode
             : RuntimeSampleInputMode::none;

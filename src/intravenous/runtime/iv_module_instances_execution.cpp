@@ -1,6 +1,17 @@
 #include <intravenous/runtime/iv_module_instances_execution.h>
 
 namespace iv {
+namespace {
+ResourceContext resources_for(
+    std::shared_ptr<GraphRuntimeBindings> const& runtime_bindings)
+{
+    ResourceContext resources;
+    if (runtime_bindings)
+        resources.runtime_bindings = runtime_bindings->resources();
+    return resources;
+}
+} // namespace
+
 std::shared_ptr<BlockNodeExecutor> IvModuleInstancesExecution::make_executor(
     WeakTypeErasedNode root,
     std::shared_ptr<GraphRuntimeBindings> const& runtime_bindings,
@@ -8,17 +19,14 @@ std::shared_ptr<BlockNodeExecutor> IvModuleInstancesExecution::make_executor(
     size_t sample_rate,
     std::optional<size_t> default_silence_ttl_samples)
 {
-    auto executor = std::make_shared<BlockNodeExecutor>(
+    return std::make_shared<BlockNodeExecutor>(
         BlockNodeExecutor::create(
             TypeErasedNode(root),
             block_size,
-            {},
+            resources_for(runtime_bindings),
             default_silence_ttl_samples,
             DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
             sample_rate));
-    if (runtime_bindings)
-        runtime_bindings->materialize(executor->storage());
-    return executor;
 }
 
 void IvModuleInstancesExecution::invoke_instance_task(void *raw_context)
@@ -102,17 +110,18 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
         std::shared_ptr<BlockNodeExecutor> replacement;
         if (active_executor) {
             prepared.emplace(active_executor->prepare_reload(
-                std::move(root), changed.default_silence_ttl_samples));
+                std::move(root),
+                changed.default_silence_ttl_samples,
+                resources_for(changed.instance->runtime_bindings)));
         } else {
             replacement = std::make_shared<BlockNodeExecutor>(
                 BlockNodeExecutor::create(
-                    std::move(root), block_size_, {},
+                    std::move(root),
+                    block_size_,
+                    resources_for(changed.instance->runtime_bindings),
                     changed.default_silence_ttl_samples,
                     DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
                     sample_rate_));
-            if (changed.instance->runtime_bindings)
-                changed.instance->runtime_bindings->materialize(
-                    replacement->storage());
         }
 
         auto pending_context = std::make_unique<InstanceTaskContext>();
@@ -221,9 +230,6 @@ void IvModuleInstancesExecution::commit_prepared_reloads(
             state.pending_reload.reset();
             auto retired_graph = state.executor->commit_reload(
                 std::move(pending.prepared));
-            if (pending.runtime_bindings)
-                pending.runtime_bindings->materialize(
-                    state.executor->storage());
             retired_graphs_.push_back(RetiredGraph{
                 .retired_from_revision = graph_revision,
                 .module_refs = std::move(state.module_refs),

@@ -396,7 +396,7 @@ TEST(IvModuleInstancesExecution, MaterializesLiveEventBindingsIntoExecutorStorag
     EXPECT_EQ(witness.event_publications.back().front().time, 11u);
 }
 
-TEST(IvModuleInstancesExecution, FamilyMemberBindingExportsResolveDistinctSlots)
+TEST(IvModuleInstancesExecution, FamilyBindingsResolveDistinctAbiResources)
 {
     static constexpr auto mono_planar = iv::ChannelLayout{
         .channel_type = iv::ChannelTypeId::mono,
@@ -443,37 +443,59 @@ TEST(IvModuleInstancesExecution, FamilyMemberBindingExportsResolveDistinctSlots)
             builder, event_family);
         event_family.declare(context);
     }
-    auto layout = std::move(builder).build();
-    iv::ResourceContext resources;
-    auto storage = layout.create_storage(resources);
-    storage.initialize();
-
     iv::GraphRuntimeBindings bindings;
     auto sample_zero = bindings.output("sample-member-0");
     auto sample_one = bindings.output("sample-member-1");
+    auto sample_aggregate = bindings.output("sample-aggregate");
     auto event_zero = bindings.output("event-member-0");
     auto event_one = bindings.output("event-member-1");
-    bindings.materialize(storage);
+    auto event_aggregate = bindings.output("event-aggregate");
 
-    auto sample_zero_slot = storage.resolve_exported_array_storage<
-        iv::RuntimeOutputBinding const*>("sample-member-0");
-    auto sample_one_slot = storage.resolve_exported_array_storage<
-        iv::RuntimeOutputBinding const*>("sample-member-1");
-    auto event_zero_slot = storage.resolve_exported_array_storage<
-        iv::RuntimeOutputBinding const*>("event-member-0");
-    auto event_one_slot = storage.resolve_exported_array_storage<
-        iv::RuntimeOutputBinding const*>("event-member-1");
+    auto layout = std::move(builder).build();
+    iv::ResourceContext resources;
+    resources.runtime_bindings = bindings.resources();
+    auto storage = layout.create_storage(resources);
+    storage.initialize();
 
-    ASSERT_EQ(sample_zero_slot.size(), 1u);
-    ASSERT_EQ(sample_one_slot.size(), 1u);
-    ASSERT_EQ(event_zero_slot.size(), 1u);
-    ASSERT_EQ(event_one_slot.size(), 1u);
-    EXPECT_EQ(sample_zero_slot.front(), sample_zero.get());
-    EXPECT_EQ(sample_one_slot.front(), sample_one.get());
-    EXPECT_EQ(event_zero_slot.front(), event_zero.get());
-    EXPECT_EQ(event_one_slot.front(), event_one.get());
-    EXPECT_NE(sample_zero_slot.data(), sample_one_slot.data());
-    EXPECT_NE(event_zero_slot.data(), event_one_slot.data());
+    auto const& sample_state = *static_cast<
+        iv::RuntimeSampleOutputFamilyNode::State const*>(storage.state_ptr(0));
+    auto const& event_state = *static_cast<
+        iv::RuntimeEventOutputFamilyNode::State const*>(storage.state_ptr(1));
+    ASSERT_EQ(sample_state.member_bindings.size(), 2u);
+    ASSERT_EQ(event_state.member_bindings.size(), 2u);
+    EXPECT_EQ(sample_state.member_bindings[0], sample_zero.get());
+    EXPECT_EQ(sample_state.member_bindings[1], sample_one.get());
+    EXPECT_EQ(sample_state.aggregate_binding.front(), sample_aggregate.get());
+    EXPECT_EQ(event_state.member_bindings[0], event_zero.get());
+    EXPECT_EQ(event_state.member_bindings[1], event_one.get());
+    EXPECT_EQ(event_state.aggregate_binding.front(), event_aggregate.get());
+}
+
+TEST(IvModuleInstancesExecution, ConnectionNodeResolvesItsRuntimeInputThroughAbi)
+{
+    static constexpr iv::ConnectionNode connection{
+        .runtime_binding_id = {
+            .data = "connection-runtime-input",
+            .size = 24,
+        },
+        .output_channel_count = 1,
+    };
+    iv::GraphRuntimeBindings bindings;
+    auto expected = bindings.sample_input("connection-runtime-input");
+
+    iv::NodeLayoutBuilder builder(8);
+    iv::DeclarationContext<iv::ConnectionNode> context(builder, connection);
+    connection.declare(context);
+    auto layout = std::move(builder).build();
+    iv::ResourceContext resources;
+    resources.runtime_bindings = bindings.resources();
+    auto storage = layout.create_storage(resources);
+    storage.initialize();
+
+    auto const& state = *static_cast<iv::ConnectionNode::State const*>(
+        storage.state_ptr(0));
+    ASSERT_EQ(state.runtime_binding.size(), 1u);
+    EXPECT_EQ(state.runtime_binding.front(), expected.get());
 }
 
 TEST(IvModuleInstancesExecution, PropagatesConfiguredSampleRateToTickContext)

@@ -143,7 +143,12 @@ struct RuntimeSampleInputNode {
             ctx.state().samples,
             channel_count(output.channel_layout) * ctx.max_block_size());
         ctx.local_array(ctx.state().binding, 1);
-        ctx.export_array(std::string(binding_id.view()), ctx.state().binding);
+    }
+
+    void initialize(InitializationContext<RuntimeSampleInputNode> const& ctx) const
+    {
+        ctx.state().binding.front() =
+            ctx.resources.runtime_bindings.sample_input(binding_id.view());
     }
 
     void tick_block(TickBlockContext<RuntimeSampleInputNode> const& ctx) const
@@ -194,7 +199,12 @@ struct RuntimeEventInputNode {
     void declare(DeclarationContext<RuntimeEventInputNode> const& ctx) const
     {
         ctx.local_array(ctx.state().binding, 1);
-        ctx.export_array(std::string(binding_id.view()), ctx.state().binding);
+    }
+
+    void initialize(InitializationContext<RuntimeEventInputNode> const& ctx) const
+    {
+        ctx.state().binding.front() =
+            ctx.resources.runtime_bindings.event_input(binding_id.view());
     }
 
     void tick_block(TickBlockContext<RuntimeEventInputNode> const& ctx) const
@@ -230,7 +240,12 @@ struct RuntimeSampleOutputNode {
             ctx.state().samples,
             channel_count(input.channel_layout) * ctx.max_block_size());
         ctx.local_array(ctx.state().binding, 1);
-        ctx.export_array(std::string(binding_id.view()), ctx.state().binding);
+    }
+
+    void initialize(InitializationContext<RuntimeSampleOutputNode> const& ctx) const
+    {
+        ctx.state().binding.front() =
+            ctx.resources.runtime_bindings.output(binding_id.view());
     }
 
     void tick_block(TickBlockContext<RuntimeSampleOutputNode> const& ctx) const
@@ -277,7 +292,12 @@ struct RuntimeEventOutputNode {
             calculate_event_port_buffer_capacity(
                 ctx.event_port_buffer_base_multiplier(), type));
         ctx.local_array(ctx.state().binding, 1);
-        ctx.export_array(std::string(binding_id.view()), ctx.state().binding);
+    }
+
+    void initialize(InitializationContext<RuntimeEventOutputNode> const& ctx) const
+    {
+        ctx.state().binding.front() =
+            ctx.resources.runtime_bindings.output(binding_id.view());
     }
 
     void tick_block(TickBlockContext<RuntimeEventOutputNode> const& ctx) const
@@ -331,16 +351,19 @@ struct RuntimeSampleOutputFamilyNode {
         ctx.local_array(
             ctx.state().member_bindings,
             member_binding_ids.size);
-        for (size_t member = 0; member < member_binding_ids.size; ++member)
-            ctx.export_array(
-                std::string(member_binding_ids[member].view()),
-                ctx.state().member_bindings,
-                member,
-                1);
         ctx.local_array(ctx.state().aggregate_binding, 1);
-        ctx.export_array(
-            std::string(aggregate_binding_id.view()),
-            ctx.state().aggregate_binding);
+    }
+
+    void initialize(
+        InitializationContext<RuntimeSampleOutputFamilyNode> const& ctx) const
+    {
+        for (size_t member = 0; member < member_binding_ids.size; ++member)
+            ctx.state().member_bindings[member] =
+                ctx.resources.runtime_bindings.output(
+                    member_binding_ids[member].view());
+        ctx.state().aggregate_binding.front() =
+            ctx.resources.runtime_bindings.output(
+                aggregate_binding_id.view());
     }
 
     void tick_block(
@@ -424,16 +447,19 @@ struct RuntimeEventOutputFamilyNode {
         ctx.local_array(ctx.state().member_events, capacity * member_count);
         ctx.local_array(ctx.state().aggregate_cursors, member_count);
         ctx.local_array(ctx.state().member_bindings, member_count);
-        for (size_t member = 0; member < member_binding_ids.size; ++member)
-            ctx.export_array(
-                std::string(member_binding_ids[member].view()),
-                ctx.state().member_bindings,
-                member,
-                1);
         ctx.local_array(ctx.state().aggregate_binding, 1);
-        ctx.export_array(
-            std::string(aggregate_binding_id.view()),
-            ctx.state().aggregate_binding);
+    }
+
+    void initialize(
+        InitializationContext<RuntimeEventOutputFamilyNode> const& ctx) const
+    {
+        for (size_t member = 0; member < member_binding_ids.size; ++member)
+            ctx.state().member_bindings[member] =
+                ctx.resources.runtime_bindings.output(
+                    member_binding_ids[member].view());
+        ctx.state().aggregate_binding.front() =
+            ctx.resources.runtime_bindings.output(
+                aggregate_binding_id.view());
     }
 
     void tick_block(

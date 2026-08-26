@@ -41,7 +41,7 @@ struct FunNode
 constexpr void simple_sine(iv::GraphBuilder& g)
 {
     // auto const phase = g.node<PhaseIntegrator>();
-    // auto const tt = g.node<FunNode>();
+    auto const tt = g.node<FunNode>();
     auto const f = g.node<Constant, stereo>(220);
     auto const voice = g.node<SawOscillator, stereo>();
     auto const p = g.tile<stereo>(f[stereo::left] + 2.5, f[stereo::right] - 2.5);
@@ -52,6 +52,6 @@ constexpr void simple_sine(iv::GraphBuilder& g)
 
     // auto const res = voice * g.node<Constant, stereo>(0.1);// * tt;
     g.outputs(
-        "main"_P[stereo::left] = voice[stereo::left] * 0.1,
-        "main"_P[stereo::right] = voice[stereo::right] * 0.1);
+        "main"_P[stereo::left] = voice[stereo::left] * 0.1 * tt,
+        "main"_P[stereo::right] = voice[stereo::right] * 0.1 * tt);
 }

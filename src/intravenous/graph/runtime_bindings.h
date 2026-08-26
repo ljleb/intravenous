@@ -2,6 +2,7 @@
 
 #include <intravenous/channel_layout.h>
 #include <intravenous/lane_id.h>
+#include <intravenous/node/resources.h>
 #include <intravenous/ports.h>
 
 #include <cstdint>
@@ -15,8 +16,6 @@
 #include <unordered_map>
 
 namespace iv {
-
-struct NodeStorage;
 
 enum class RuntimeSampleInputMode : std::uint8_t {
     none,
@@ -129,9 +128,7 @@ public:
         return binding;
     }
 
-    // Connects exported executor slots to registry-owned binding objects.
-    // This registry must outlive the storage while it can be ticked.
-    void materialize(NodeStorage& storage);
+    RuntimeBindingResources resources();
 
 private:
     Callbacks callbacks_ {};

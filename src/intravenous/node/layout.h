@@ -143,27 +143,8 @@ namespace iv {
             ptrdiff_t state_field_offset = 0;
             void const* element_type = nullptr;
             size_t element_size = 0;
-            size_t view_offset = 0;
-            size_t view_count = std::numeric_limits<size_t>::max();
             void (*assign_span_fn)(void* state_base, ptrdiff_t field_offset, void* data, size_t count) = nullptr;
             void (*read_span_fn)(void const* state_base, ptrdiff_t field_offset, void*& data, size_t& count) = nullptr;
-
-            void read(void const* state_base, void*& data, size_t& count) const
-            {
-                data = nullptr;
-                count = 0;
-                if (!read_span_fn) return;
-                read_span_fn(state_base, state_field_offset, data, count);
-                if (view_offset > count) {
-                    data = nullptr;
-                    count = 0;
-                    return;
-                }
-                if (data && view_offset != 0)
-                    data = static_cast<std::byte*>(data)
-                        + view_offset * element_size;
-                count = std::min(count - view_offset, view_count);
-            }
         };
 
         struct NodeRecord {
@@ -211,14 +192,6 @@ namespace iv {
 
         template<typename A>
         void export_array(size_t node_index, std::string id, std::span<A> const*);
-
-        template<typename A>
-        void export_array(
-            size_t node_index,
-            std::string id,
-            std::span<A> const*,
-            size_t view_offset,
-            size_t view_count);
 
         template<typename A>
         void import_array(size_t node_index, std::string id, std::span<A> const*);
@@ -328,9 +301,6 @@ namespace iv {
         void* state_ptr(size_t node_index) const;
         template<typename A>
         std::span<A const> resolve_exported_array_storage(std::string const& id) const;
-
-        template<typename A>
-        std::span<A> resolve_exported_array_storage(std::string const& id);
         bool can_move_from(NodeStorage const& previous, size_t node_index, size_t previous_node_index) const;
         PreparedMigration prepare_migration_from(NodeStorage& previous);
         void initialize(NodeStorage const* previous = nullptr);
@@ -397,13 +367,6 @@ namespace iv {
 
         template<typename A>
         void export_array(std::string id, std::span<A> const& span) const;
-
-        template<typename A>
-        void export_array(
-            std::string id,
-            std::span<A> const& span,
-            size_t view_offset,
-            size_t view_count) const;
 
         template<typename A>
         void import_array(std::string id, std::span<A> const& span) const;
@@ -626,22 +589,6 @@ namespace iv {
 
     template<typename Node>
     template<typename A>
-    inline void DeclarationContext<Node>::export_array(
-        std::string id,
-        std::span<A> const& span,
-        size_t view_offset,
-        size_t view_count) const
-    {
-        _builder->export_array(
-            _node_index,
-            std::move(id),
-            &span,
-            view_offset,
-            view_count);
-    }
-
-    template<typename Node>
-    template<typename A>
     inline void DeclarationContext<Node>::import_array(std::string id, std::span<A> const& span) const
     {
         _builder->import_array(_node_index, std::move(id), &span);
@@ -846,22 +793,6 @@ namespace iv {
     template<typename A>
     void NodeLayoutBuilder::export_array(size_t node_index, std::string id, std::span<A> const* span)
     {
-        export_array(
-            node_index,
-            std::move(id),
-            span,
-            0,
-            std::numeric_limits<size_t>::max());
-    }
-
-    template<typename A>
-    void NodeLayoutBuilder::export_array(
-        size_t node_index,
-        std::string id,
-        std::span<A> const* span,
-        size_t view_offset,
-        size_t view_count)
-    {
         constexpr uintptr_t fictitious_base = 0x10000;
         (void)node_index;
         auto const state_base = fictitious_base;
@@ -874,8 +805,6 @@ namespace iv {
             .state_field_offset = field_offset,
             .element_type = type_token<A>(),
             .element_size = sizeof(A),
-            .view_offset = view_offset,
-            .view_count = view_count,
             .assign_span_fn = nullptr,
             .read_span_fn = [](void const* state_base_ptr, ptrdiff_t offset, void*& data, size_t& count_value) {
                 auto const& span_ref = *reinterpret_cast<std::span<A> const*>(static_cast<std::byte const*>(state_base_ptr) + offset);
@@ -1304,33 +1233,8 @@ namespace iv {
         void* data = nullptr;
         size_t count = 0;
         void* export_state = state_ptr(export_it->owner_node);
-        export_it->read(export_state, data, count);
+        export_it->read_span_fn(export_state, export_it->state_field_offset, data, count);
         return { static_cast<A const*>(data), count };
-    }
-
-    template<typename A>
-    inline std::span<A> NodeStorage::resolve_exported_array_storage(
-        std::string const& id)
-    {
-        if (!layout) return {};
-
-        auto export_it = std::find_if(
-            layout->exported_arrays.begin(),
-            layout->exported_arrays.end(),
-            [&](auto const& export_endpoint) {
-                return export_endpoint.id == id &&
-                    export_endpoint.element_type ==
-                        NodeLayoutBuilder::array_type_token<A>();
-            });
-        if (export_it == layout->exported_arrays.end() ||
-            !export_it->read_span_fn)
-            return {};
-
-        void* data = nullptr;
-        size_t count = 0;
-        void* export_state = state_ptr(export_it->owner_node);
-        export_it->read(export_state, data, count);
-        return { static_cast<A*>(data), count };
     }
 
     inline bool NodeStorage::can_move_from(NodeStorage const& previous, size_t node_index, size_t previous_node_index) const
@@ -1464,7 +1368,8 @@ namespace iv {
             if (export_it != storage.layout->exported_arrays.end() &&
                 export_it->read_span_fn) {
                 void* export_state = storage.state_ptr(export_it->owner_node);
-                export_it->read(export_state, data, count);
+                export_it->read_span_fn(
+                    export_state, export_it->state_field_offset, data, count);
             }
             if (import_endpoint.assign_span_fn) {
                 void* import_state = storage.state_ptr(import_endpoint.owner_node);
@@ -1777,7 +1682,7 @@ namespace iv {
             size_t count = 0;
             if (export_it != layout->exported_arrays.end() && export_it->read_span_fn) {
                 void* export_state = state_ptr(export_it->owner_node);
-                export_it->read(export_state, data, count);
+                export_it->read_span_fn(export_state, export_it->state_field_offset, data, count);
             }
 
             if (import_endpoint.assign_span_fn) {

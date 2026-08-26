@@ -5,13 +5,19 @@
 #include <intravenous/graph/static_metadata.hpp>
 
 #include <concepts>
+#include <cstdint>
 #include <type_traits>
+
+namespace iv {
+inline constexpr std::uint32_t IV_MODULE_ABI_VERSION = 2;
+}
 
 extern "C" {
     // Module generations expose immutable compile-time products only. The
     // concrete compiled graph remains an implementation detail of the DSO.
     using iv_module_graph_fn = iv::WeakTypeErasedNode (*)();
     using iv_module_metadata_fn = iv::StaticGraphIntrospectionMetadata (*)();
+    using iv_module_abi_version_fn = std::uint32_t (*)();
 }
 
 #if defined(_WIN32)
