@@ -90,6 +90,27 @@ namespace {
     }
 
     static constexpr auto detached_graph = build_detached_graph();
+    static constexpr iv::StaticGraphRoot<detached_graph> static_detached_graph {};
+
+    consteval auto build_static_dormancy_graph()
+    {
+        iv::GraphBuilder graph;
+        auto const source = graph.node<iv::Constant>(iv::Sample{0.0f});
+        auto const nested = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+            auto const input = boundary.input<"in">(0.0f);
+            auto const pass = graph.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>();
+            pass(input);
+            boundary.outputs("out"_P = pass);
+        }).ttl(1);
+        nested("in"_P = source);
+        graph.outputs("out"_P = nested);
+        return graph.build_execution_root_node().graph;
+    }
+
+    static constexpr auto static_dormancy_graph = build_static_dormancy_graph();
+    static_assert(static_dormancy_graph._dormancy_groups.size != 0);
+    static constexpr iv::StaticGraphRoot<static_dormancy_graph>
+        static_dormancy_root {};
 
     void tick_executor_direct(
         iv::BlockNodeExecutor& executor,
@@ -119,7 +140,7 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     runtime_output = output;
 
     iv::BlockNodeExecutor executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(detached_graph),
+        iv::TypeErasedNode(static_detached_graph),
         output.size());
     tick_executor_direct(executor, 0, output.size());
     runtime_output = {};
@@ -136,6 +157,15 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     }
 
     EXPECT_TRUE(saw_non_zero);
+}
+
+TEST(DetachRegression, StaticGraphRootExecutesDormancyGroups)
+{
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(static_dormancy_root), 8);
+
+    executor.tick_block(0);
+    executor.tick_block(8);
 }
 
 // A graph cycle without detach() is now rejected while evaluating the consteval

@@ -161,6 +161,10 @@ namespace {
         make_runtime_sample_binding_graph();
     static constexpr auto runtime_event_binding_graph =
         make_runtime_event_binding_graph();
+    static constexpr iv::StaticGraphRoot<runtime_sample_binding_graph>
+        runtime_sample_binding_root {};
+    static constexpr iv::StaticGraphRoot<runtime_event_binding_graph>
+        runtime_event_binding_root {};
 
     iv::IvModuleInstance make_instance(std::string instance_id)
     {
@@ -325,7 +329,7 @@ TEST(IvModuleInstancesExecution, MaterializesLiveSampleBindingsIntoExecutorStora
         iv::IvModuleInstanceBuildersChanged{
             .created = {iv::IvModuleInstanceBuilderRef{
                 .instance = &instance,
-                .root = iv::WeakTypeErasedNode(runtime_sample_binding_graph),
+                .root = iv::WeakTypeErasedNode(runtime_sample_binding_root),
             }},
         });
     auto const callback = update.update.to_create.front().callback;
@@ -372,7 +376,7 @@ TEST(IvModuleInstancesExecution, MaterializesLiveEventBindingsIntoExecutorStorag
         iv::IvModuleInstanceBuildersChanged{
             .created = {iv::IvModuleInstanceBuilderRef{
                 .instance = &instance,
-                .root = iv::WeakTypeErasedNode(runtime_event_binding_graph),
+                .root = iv::WeakTypeErasedNode(runtime_event_binding_root),
             }},
         });
     auto const callback = update.update.to_create.front().callback;

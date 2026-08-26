@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/graph/build_types.h>
 #include <intravenous/graph/node.h>
 #include <intravenous/graph/builder/connections.hpp>

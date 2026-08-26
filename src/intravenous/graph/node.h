@@ -599,6 +599,304 @@ namespace iv {
             }), ...);
         }
 
+        template<typename A>
+        static bool block_is_constant(BlockView<A> block, Sample value)
+        {
+            if (block.empty()) {
+                return true;
+            }
+            if (block[block.size() - 1] != value) {
+                return false;
+            }
+            for (Sample sample : block) {
+                if (sample != value) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        template<auto GraphValue, size_t GroupIndex, size_t... FrontierIndices>
+        static IV_FORCEINLINE bool static_sample_inputs_unchanged(
+            State& state,
+            size_t block_size,
+            bool& inputs_constant,
+            std::index_sequence<FrontierIndices...>)
+        {
+            constexpr auto group = GraphValue._dormancy_groups[GroupIndex];
+            constexpr size_t begin = GraphValue._group_sample_input_offsets[GroupIndex];
+            bool unchanged = true;
+            inputs_constant = true;
+            ([&] {
+                constexpr size_t flat_i = begin + FrontierIndices;
+                InputPort input(
+                    *state.dormancy_sample_input_port_data[flat_i],
+                    group.sample_input_frontier[FrontierIndices].history);
+                auto block = input.get_block(block_size);
+                if (block.empty()) {
+                    state.dormancy_remembered_constant_valid[flat_i] = 0;
+                    unchanged = false;
+                    inputs_constant = false;
+                    return;
+                }
+
+                Sample const first = block[0];
+                bool const matches_previous =
+                    state.dormancy_remembered_constant_valid[flat_i] != 0
+                    && state.dormancy_remembered_constant_inputs[flat_i] == first;
+                bool const constant = block_is_constant(block, first);
+
+                state.dormancy_remembered_constant_valid[flat_i] = constant ? 1 : 0;
+                if (constant) {
+                    state.dormancy_remembered_constant_inputs[flat_i] = first;
+                }
+
+                unchanged = unchanged && matches_previous && constant;
+                inputs_constant = inputs_constant && constant;
+            }(), ...);
+            return unchanged;
+        }
+
+        template<auto GraphValue, size_t GroupIndex, size_t... FrontierIndices>
+        static IV_FORCEINLINE bool static_event_inputs_unchanged(
+            State& state,
+            size_t block_index,
+            size_t block_size,
+            std::index_sequence<FrontierIndices...>)
+        {
+            constexpr size_t begin = GraphValue._group_event_input_offsets[GroupIndex];
+            bool unchanged = true;
+            ([&] {
+                constexpr size_t flat_i = begin + FrontierIndices;
+                EventInputPort input(*state.dormancy_event_input_port_data[flat_i]);
+                unchanged = unchanged
+                    && input.get_block(block_index, block_size).empty();
+            }(), ...);
+            return unchanged;
+        }
+
+        template<auto GraphValue, size_t GroupIndex, size_t... FrontierIndices>
+        static IV_FORCEINLINE bool static_sample_outputs_silent(
+            State& state,
+            size_t block_size,
+            std::index_sequence<FrontierIndices...>)
+        {
+            constexpr auto group = GraphValue._dormancy_groups[GroupIndex];
+            constexpr size_t begin = GraphValue._group_sample_output_offsets[GroupIndex];
+            if constexpr (group.sample_output_frontier.size == 0) {
+                return false;
+            }
+
+            bool silent = true;
+            ([&] {
+                constexpr size_t flat_i = begin + FrontierIndices;
+                InputPort output(
+                    *state.dormancy_sample_output_port_data[flat_i],
+                    group.sample_output_frontier[FrontierIndices].history);
+                silent = silent
+                    && block_is_constant(output.get_block(block_size), 0.0f);
+            }(), ...);
+            return silent;
+        }
+
+        template<auto GraphValue, size_t GroupIndex, size_t... MemberIndices>
+        static IV_FORCEINLINE void static_apply_group_member_transition(
+            State& state,
+            std::int32_t delta,
+            std::index_sequence<MemberIndices...>)
+        {
+            constexpr auto group = GraphValue._dormancy_groups[GroupIndex];
+            ([&] {
+                constexpr size_t node_i = group.member_nodes[MemberIndices];
+                auto& depth = state.dormancy_node_skip_depth[node_i];
+                depth = static_cast<std::uint32_t>(
+                    static_cast<std::int64_t>(depth) + delta);
+            }(), ...);
+        }
+
+        template<auto GraphValue, size_t GroupIndex, size_t... DescendantIndices>
+        static IV_FORCEINLINE void static_apply_group_descendant_transition(
+            State& state,
+            std::int32_t delta,
+            std::index_sequence<DescendantIndices...>)
+        {
+            ([&] {
+                constexpr size_t group_i = GroupIndex + 1 + DescendantIndices;
+                auto& blocked = state.dormancy_group_blocked_by_ancestors[group_i];
+                blocked = static_cast<std::uint32_t>(
+                    static_cast<std::int64_t>(blocked) + delta);
+            }(), ...);
+        }
+
+        template<auto GraphValue, size_t GroupIndex>
+        static IV_FORCEINLINE void static_apply_group_transition(
+            State& state,
+            std::int32_t delta)
+        {
+            constexpr auto group = GraphValue._dormancy_groups[GroupIndex];
+            static_apply_group_member_transition<GraphValue, GroupIndex>(
+                state,
+                delta,
+                std::make_index_sequence<group.member_nodes.size> {});
+            static_apply_group_descendant_transition<GraphValue, GroupIndex>(
+                state,
+                delta,
+                std::make_index_sequence<
+                    group.subtree_end_exclusive - GroupIndex - 1> {});
+        }
+
+        template<auto GraphValue, size_t GroupIndex>
+        static IV_FORCEINLINE void static_wake_group_if_needed(
+            State& state,
+            size_t block_index,
+            size_t block_size)
+        {
+            constexpr auto group = GraphValue._dormancy_groups[GroupIndex];
+            if (
+                state.dormancy_group_dormant[GroupIndex] == 0
+                || state.dormancy_group_blocked_by_ancestors[GroupIndex] != 0
+            ) {
+                return;
+            }
+
+            bool inputs_constant = false;
+            bool const unchanged =
+                static_sample_inputs_unchanged<GraphValue, GroupIndex>(
+                    state,
+                    block_size,
+                    inputs_constant,
+                    std::make_index_sequence<group.sample_input_frontier.size> {})
+                && static_event_inputs_unchanged<GraphValue, GroupIndex>(
+                    state,
+                    block_index,
+                    block_size,
+                    std::make_index_sequence<group.event_input_frontier.size> {});
+            if (!unchanged) {
+                state.dormancy_group_dormant[GroupIndex] = 0;
+                state.dormancy_group_silent_samples_accumulated[GroupIndex] = 0;
+                static_apply_group_transition<GraphValue, GroupIndex>(state, -1);
+            }
+        }
+
+        template<auto GraphValue, size_t SccIndex, size_t... WakeIndices>
+        static IV_FORCEINLINE void static_wake_scc_groups(
+            State& state,
+            size_t block_index,
+            size_t block_size,
+            std::index_sequence<WakeIndices...>)
+        {
+            constexpr size_t begin = GraphValue._wake_check_group_offsets[SccIndex];
+            (static_wake_group_if_needed<
+                GraphValue,
+                GraphValue._wake_check_groups[begin + WakeIndices]>(
+                    state,
+                    block_index,
+                    block_size), ...);
+        }
+
+        template<auto GraphValue, class RootNode, size_t SccIndex>
+        static IV_FORCEINLINE void tick_static_scc_with_dormancy(
+            TickBlockContext<RootNode> const& ctx)
+        {
+            constexpr size_t wake_begin =
+                GraphValue._wake_check_group_offsets[SccIndex];
+            constexpr size_t wake_end =
+                GraphValue._wake_check_group_offsets[SccIndex + 1];
+            auto& state = ctx.state();
+            static_wake_scc_groups<GraphValue, SccIndex>(
+                state,
+                ctx.index,
+                ctx.block_size,
+                std::make_index_sequence<wake_end - wake_begin> {});
+            GraphSccWrapper::tick_static<GraphValue._scc_wrappers[SccIndex]>({
+                TickContext<GraphSccWrapper> {
+                    .inputs = {},
+                    .outputs = {},
+                    .event_inputs = {},
+                    .event_outputs = {},
+                    .sample_rate = ctx.sample_rate,
+                    .scc_feedback_latency = 0,
+                    .buffer = state.scc_states[SccIndex],
+                },
+                ctx.index,
+                ctx.block_size,
+            });
+        }
+
+        template<auto GraphValue, class RootNode, size_t... SccIndices>
+        static IV_FORCEINLINE void tick_static_sccs_with_dormancy(
+            TickBlockContext<RootNode> const& ctx,
+            std::index_sequence<SccIndices...>)
+        {
+            (tick_static_scc_with_dormancy<GraphValue, RootNode, SccIndices>(ctx), ...);
+        }
+
+        template<auto GraphValue, size_t GroupIndex>
+        static IV_FORCEINLINE void static_update_group_dormancy(
+            State& state,
+            size_t block_index,
+            size_t block_size)
+        {
+            constexpr auto group = GraphValue._dormancy_groups[GroupIndex];
+            if (
+                state.dormancy_group_dormant[GroupIndex] != 0
+                || state.dormancy_group_blocked_by_ancestors[GroupIndex] != 0
+            ) {
+                return;
+            }
+
+            bool inputs_constant = false;
+            bool const unchanged =
+                static_sample_inputs_unchanged<GraphValue, GroupIndex>(
+                    state,
+                    block_size,
+                    inputs_constant,
+                    std::make_index_sequence<group.sample_input_frontier.size> {})
+                && static_event_inputs_unchanged<GraphValue, GroupIndex>(
+                    state,
+                    block_index,
+                    block_size,
+                    std::make_index_sequence<group.event_input_frontier.size> {});
+            bool const silent = static_sample_outputs_silent<GraphValue, GroupIndex>(
+                state,
+                block_size,
+                std::make_index_sequence<group.sample_output_frontier.size> {});
+            size_t const ttl_samples =
+                state.dormancy_group_effective_ttl_samples[GroupIndex];
+
+            if (ttl_samples == std::numeric_limits<size_t>::max()) {
+                state.dormancy_group_silent_samples_accumulated[GroupIndex] = 0;
+                return;
+            }
+
+            if (inputs_constant && unchanged && silent) {
+                size_t const accumulated =
+                    state.dormancy_group_silent_samples_accumulated[GroupIndex]
+                    + block_size;
+                state.dormancy_group_silent_samples_accumulated[GroupIndex] =
+                    accumulated;
+                if (accumulated >= ttl_samples) {
+                    state.dormancy_group_dormant[GroupIndex] = 1;
+                    static_apply_group_transition<GraphValue, GroupIndex>(state, +1);
+                }
+            } else {
+                state.dormancy_group_silent_samples_accumulated[GroupIndex] = 0;
+            }
+        }
+
+        template<auto GraphValue, size_t... GroupIndices>
+        static IV_FORCEINLINE void static_update_group_dormancy_states(
+            State& state,
+            size_t block_index,
+            size_t block_size,
+            std::index_sequence<GroupIndices...>)
+        {
+            (static_update_group_dormancy<GraphValue, GroupIndices>(
+                state,
+                block_index,
+                block_size), ...);
+        }
+
         template<auto GraphValue, class RootNode>
         static IV_FORCEINLINE void tick_static(
             TickBlockContext<RootNode> const& ctx)
@@ -619,208 +917,19 @@ namespace iv {
                 tick_static_sccs<GraphValue>(
                     ctx,
                     std::make_index_sequence<GraphValue._scc_wrappers.size> {});
-
-                push_private_inputs_to_output_blocks(
-                    ctx.outputs, state.egress_inputs, ctx.block_size);
-                if (!state.egress_event_inputs.empty()) {
-                    push_private_input_events_to_output_events(
-                        ctx.event_outputs,
-                        state.egress_event_inputs,
-                        ctx.index,
-                        ctx.block_size
-                    );
-                }
             } else {
-                GraphValue.tick_block(TickBlockContext<Graph> {
-                    TickContext<Graph> {
-                        .inputs = ctx.inputs,
-                        .outputs = ctx.outputs,
-                        .event_inputs = ctx.event_inputs,
-                        .event_outputs = ctx.event_outputs,
-                        .sample_rate = ctx.sample_rate,
-                        .scc_feedback_latency = ctx.scc_feedback_latency,
-                        .buffer = ctx.buffer,
-                    },
+                tick_static_sccs_with_dormancy<GraphValue>(
+                    ctx,
+                    std::make_index_sequence<GraphValue._scc_wrappers.size> {});
+                static_update_group_dormancy_states<GraphValue>(
+                    state,
                     ctx.index,
                     ctx.block_size,
-                });
-            }
-        }
-
-        void tick_block(TickBlockContext<Graph> const& ctx) const
-        {
-            auto& state = ctx.state();
-            push_input_blocks_to_private_outputs(state.ingress_outputs, ctx.inputs, ctx.block_size);
-            if (!state.ingress_event_outputs.empty()) {
-                push_input_events_to_private_outputs(
-                    state.ingress_event_outputs,
-                    ctx.event_inputs,
-                    ctx.index,
-                    ctx.block_size
-                );
+                    std::make_index_sequence<GraphValue._dormancy_groups.size> {});
             }
 
-            if (!has_group_dormancy()) {
-                for (size_t scc_index = 0; scc_index < _scc_wrappers.size; ++scc_index) {
-                    do_tick_block(_scc_wrappers[scc_index], {
-                        TickContext<GraphSccWrapper> {
-                            .inputs = {},
-                            .outputs = {},
-                            .event_inputs = {},
-                            .event_outputs = {},
-                            .sample_rate = ctx.sample_rate,
-                            .scc_feedback_latency = 0,
-                            .buffer = state.scc_states[scc_index]
-                        },
-                        ctx.index,
-                        ctx.block_size,
-                    });
-                }
-
-                push_private_inputs_to_output_blocks(ctx.outputs, state.egress_inputs, ctx.block_size);
-                if (!state.egress_event_inputs.empty()) {
-                    push_private_input_events_to_output_events(
-                        ctx.event_outputs,
-                        state.egress_event_inputs,
-                        ctx.index,
-                        ctx.block_size
-                    );
-                }
-                return;
-            }
-
-            auto block_is_constant = [](BlockView<Sample> block, Sample value) {
-                if (block.empty()) {
-                    return true;
-                }
-                if (block[block.size() - 1] != value) {
-                    return false;
-                }
-                for (Sample sample : block) {
-                    if (sample != value) {
-                        return false;
-                    }
-                }
-                return true;
-            };
-
-            auto sample_inputs_unchanged = [&](size_t group_i, bool& inputs_constant) {
-                bool unchanged = true;
-                inputs_constant = true;
-                size_t const begin = _group_sample_input_offsets[group_i];
-                size_t const end = _group_sample_input_offsets[group_i + 1];
-                for (size_t flat_i = begin; flat_i < end; ++flat_i) {
-                    size_t const local_i = flat_i - begin;
-                    InputPort input(
-                        *state.dormancy_sample_input_port_data[flat_i],
-                        _dormancy_groups[group_i].sample_input_frontier[local_i].history
-                    );
-                    auto block = input.get_block(ctx.block_size);
-                    if (block.empty()) {
-                        state.dormancy_remembered_constant_valid[flat_i] = 0;
-                        unchanged = false;
-                        inputs_constant = false;
-                        continue;
-                    }
-
-                    Sample const first = block[0];
-                    bool const matches_previous =
-                        state.dormancy_remembered_constant_valid[flat_i] != 0
-                        && state.dormancy_remembered_constant_inputs[flat_i] == first;
-                    bool const constant = block_is_constant(block, first);
-
-                    state.dormancy_remembered_constant_valid[flat_i] = constant ? 1 : 0;
-                    if (constant) {
-                        state.dormancy_remembered_constant_inputs[flat_i] = first;
-                    }
-
-                    unchanged = unchanged && matches_previous && constant;
-                    inputs_constant = inputs_constant && constant;
-                }
-                return unchanged;
-            };
-
-            auto event_inputs_unchanged = [&](size_t group_i) {
-                size_t const begin = _group_event_input_offsets[group_i];
-                size_t const end = _group_event_input_offsets[group_i + 1];
-                for (size_t flat_i = begin; flat_i < end; ++flat_i) {
-                    EventInputPort input(*state.dormancy_event_input_port_data[flat_i]);
-                    if (input.get_block(ctx.index, ctx.block_size).size() != 0) {
-                        return false;
-                    }
-                }
-                return true;
-            };
-
-            auto sample_outputs_silent = [&](size_t group_i) {
-                size_t const begin = _group_sample_output_offsets[group_i];
-                size_t const end = _group_sample_output_offsets[group_i + 1];
-                if (begin == end) {
-                    return false;
-                }
-                for (size_t flat_i = begin; flat_i < end; ++flat_i) {
-                    size_t const local_i = flat_i - begin;
-                    InputPort output(
-                        *state.dormancy_sample_output_port_data[flat_i],
-                        _dormancy_groups[group_i].sample_output_frontier[local_i].history
-                    );
-                    if (!block_is_constant(output.get_block(ctx.block_size), 0.0f)) {
-                        return false;
-                    }
-                }
-                return true;
-            };
-
-            auto apply_group_transition = [&](size_t group_i, std::int32_t delta) {
-                for (size_t node_i : _dormancy_groups[group_i].member_nodes) {
-                    auto& depth = state.dormancy_node_skip_depth[node_i];
-                    depth = static_cast<std::uint32_t>(static_cast<std::int64_t>(depth) + delta);
-                }
-                for (size_t child_i = group_i + 1; child_i < _dormancy_groups[group_i].subtree_end_exclusive; ++child_i) {
-                    auto& blocked = state.dormancy_group_blocked_by_ancestors[child_i];
-                    blocked = static_cast<std::uint32_t>(static_cast<std::int64_t>(blocked) + delta);
-                }
-            };
-
-            for (size_t scc_index = 0; scc_index < _scc_wrappers.size; ++scc_index) {
-                size_t const wake_begin = _wake_check_group_offsets[scc_index];
-                size_t const wake_end = _wake_check_group_offsets[scc_index + 1];
-                for (size_t flat_i = wake_begin; flat_i < wake_end; ++flat_i) {
-                    size_t const group_i = _wake_check_groups[flat_i];
-                    if (
-                        state.dormancy_group_dormant[group_i] == 0
-                        || state.dormancy_group_blocked_by_ancestors[group_i] != 0
-                    ) {
-                        continue;
-                    }
-
-                    bool inputs_constant = false;
-                    bool const unchanged =
-                        sample_inputs_unchanged(group_i, inputs_constant)
-                        && event_inputs_unchanged(group_i);
-                    if (!unchanged) {
-                        state.dormancy_group_dormant[group_i] = 0;
-                        state.dormancy_group_silent_samples_accumulated[group_i] = 0;
-                        apply_group_transition(group_i, -1);
-                    }
-                }
-
-                do_tick_block(_scc_wrappers[scc_index], {
-                    TickContext<GraphSccWrapper> {
-                        .inputs = {},
-                        .outputs = {},
-                        .event_inputs = {},
-                        .event_outputs = {},
-                        .sample_rate = ctx.sample_rate,
-                        .scc_feedback_latency = 0,
-                        .buffer = state.scc_states[scc_index]
-                    },
-                    ctx.index,
-                    ctx.block_size,
-                });
-            }
-
-            push_private_inputs_to_output_blocks(ctx.outputs, state.egress_inputs, ctx.block_size);
+            push_private_inputs_to_output_blocks(
+                ctx.outputs, state.egress_inputs, ctx.block_size);
             if (!state.egress_event_inputs.empty()) {
                 push_private_input_events_to_output_events(
                     ctx.event_outputs,
@@ -829,39 +938,8 @@ namespace iv {
                     ctx.block_size
                 );
             }
-
-            for (size_t group_i = 0; group_i < _dormancy_groups.size; ++group_i) {
-                if (
-                    state.dormancy_group_dormant[group_i] != 0
-                    || state.dormancy_group_blocked_by_ancestors[group_i] != 0
-                ) {
-                    continue;
-                }
-
-                bool inputs_constant = false;
-                bool const unchanged =
-                    sample_inputs_unchanged(group_i, inputs_constant)
-                    && event_inputs_unchanged(group_i);
-                bool const silent = sample_outputs_silent(group_i);
-                size_t const ttl_samples = state.dormancy_group_effective_ttl_samples[group_i];
-
-                if (ttl_samples == std::numeric_limits<size_t>::max()) {
-                    state.dormancy_group_silent_samples_accumulated[group_i] = 0;
-                    continue;
-                }
-
-                if (inputs_constant && unchanged && silent) {
-                    size_t const accumulated = state.dormancy_group_silent_samples_accumulated[group_i] + ctx.block_size;
-                    state.dormancy_group_silent_samples_accumulated[group_i] = accumulated;
-                    if (accumulated >= ttl_samples) {
-                        state.dormancy_group_dormant[group_i] = 1;
-                        apply_group_transition(group_i, +1);
-                    }
-                } else {
-                    state.dormancy_group_silent_samples_accumulated[group_i] = 0;
-                }
-            }
         }
+
     };
 
     template<auto GraphValue>

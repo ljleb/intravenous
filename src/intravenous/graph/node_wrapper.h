@@ -3,7 +3,6 @@
 #include <intravenous/graph/event_port_data_node.h>
 #include <intravenous/graph/port_data_node.h>
 #include <intravenous/graph/reflected_node.hpp>
-#include <intravenous/graph/runtime.h>
 #include <intravenous/graph/static_storage.hpp>
 #include <intravenous/graph/types.h>
 #include <intravenous/graph/wiring.h>
@@ -381,42 +380,6 @@ namespace iv {
         {
             auto& state = ctx.state();
             Node._operations.skip_block(
-                ReflectedNodeTickContext {
-                    .inputs = state.inputs,
-                    .outputs = state.outputs,
-                    .event_inputs = state.event_inputs,
-                    .event_outputs = state.event_outputs,
-                    .sample_rate = ctx.sample_rate,
-                    .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .state = state.nested_node_states.back(),
-                },
-                ctx.index,
-                ctx.block_size
-            );
-        }
-
-        void tick_block(TickBlockContext<GraphNodeWrapper> const& ctx) const
-        {
-            auto& state = ctx.state();
-            _operations.tick_block(
-                ReflectedNodeTickContext {
-                    .inputs = state.inputs,
-                    .outputs = state.outputs,
-                    .event_inputs = state.event_inputs,
-                    .event_outputs = state.event_outputs,
-                    .sample_rate = ctx.sample_rate,
-                    .scc_feedback_latency = ctx.scc_feedback_latency,
-                    .state = state.nested_node_states.back(),
-                },
-                ctx.index,
-                ctx.block_size
-            );
-        }
-
-        void skip_block(SkipBlockContext<GraphNodeWrapper> const& ctx) const
-        {
-            auto& state = ctx.state();
-            _operations.skip_block(
                 ReflectedNodeTickContext {
                     .inputs = state.inputs,
                     .outputs = state.outputs,

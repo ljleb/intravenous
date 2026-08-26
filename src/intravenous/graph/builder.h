@@ -1,6 +1,7 @@
 #pragma once
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/basic_nodes/routing.h>
+#include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/channel_ports.h>
 #include <intravenous/graph/builder/annotations.hpp>
 #include <intravenous/graph/builder/connections.hpp>
