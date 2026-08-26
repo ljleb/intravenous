@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/runtime/graph_input_lanes.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace iv::graph_input_lanes_details {
 constexpr std::string_view metadata_dsp_graph = "dsp_graph";

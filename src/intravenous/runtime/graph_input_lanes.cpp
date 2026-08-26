@@ -1,7 +1,6 @@
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes/port_catalog.h>
 
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_lane_nodes/controls.h>
 #include <intravenous/runtime/runtime_project_events.h>

@@ -4,7 +4,6 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph/node.h>
 #include <intravenous/graph/node_wrapper.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 #include <array>
 #include <cstdint>
