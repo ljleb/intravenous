@@ -38,37 +38,20 @@ struct FunNode
     }
 };
 
-namespace
+constexpr void simple_sine(iv::GraphBuilder& g)
 {
-constexpr simple_sine(iv::GraphBuilder& g)
-{
-    auto const phase = g.node<PhaseIntegrator>();
-    auto const tt = g.node<FunNode>();
+    // auto const phase = g.node<PhaseIntegrator>();
+    // auto const tt = g.node<FunNode>();
+    auto const f = g.node<Constant, stereo>(220);
+    auto const voice = g.node<SawOscillator, stereo>();
+    auto const p = g.tile<stereo>(f + 2.5, f - 2.5);
 
-    auto make_channel = [&]<auto c>()
-    {
-        auto f = g.node<Constant>(220);
-        auto const voice = g.node<SawOscillator>();
+    voice(
+        "frequency"_P = p);
+        // "phase_offset"_P = phase);
 
-        NodeRef p;
-        if constexpr (c == stereo::left)
-        {
-            p = f + 2.5;
-        }
-        else
-        {
-            p = f - 2.5;
-        }
-
-        voice(
-            "frequency"_P = p,
-            "phase_offset"_P = phase);
-
-        auto const res = voice * 0.1 * tt;
-        auto const res_k = "main1"_P;
-        g.outputs(res_k[c] = res, res_k[swap_side(c)] = res);
-    };
-    make_channel.template operator()<stereo::left>();
-    make_channel.template operator()<stereo::right>();
-}
+    // auto const res = voice * g.node<Constant, stereo>(0.1);// * tt;
+    g.outputs(
+        "main"_P[stereo::left] = voice[stereo::left] * 0.1,
+        "main"_P[stereo::right] = voice[stereo::right] * 0.1);
 }
