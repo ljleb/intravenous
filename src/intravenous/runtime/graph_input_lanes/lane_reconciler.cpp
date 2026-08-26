@@ -254,13 +254,20 @@ void GraphInputLanes::reconcile_public_ports_locked(TimelineLaneBatchUpdate *bat
         LaneId lane {};
         if (auto const it = public_lanes_by_key.find(key); it != public_lanes_by_key.end()) {
             lane = it->second.lane;
-            ++reused_count;
             auto const existing_channel_type = it->second.metadata.int_value(metadata_channel_type);
             auto const desired_channel_type = port.sample_channel_type.has_value()
                 ? std::optional<int>(static_cast<int>(*port.sample_channel_type))
                 : std::nullopt;
-            if (batch != nullptr && existing_channel_type != desired_channel_type) {
-                batch->upserts.push_back(make_upsert(lane, it->second.external_id));
+            if (existing_channel_type != desired_channel_type) {
+                ++removed_count;
+                ++created_count;
+                if (batch != nullptr) {
+                    batch->removals.push_back(lane);
+                    batch->upserts.push_back(
+                        make_upsert(lane, it->second.external_id));
+                }
+            } else {
+                ++reused_count;
             }
         } else {
             lane = stable_lane_id_for_key(key);

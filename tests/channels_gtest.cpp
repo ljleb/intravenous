@@ -665,14 +665,31 @@ consteval ChannelTopologySnapshot stereo_scalar_product_snapshot()
     iv::GraphBuilder g;
     auto source = g.node<NamedStereoSource>(
         iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto modulation = g.node<MonoPass, iv::stereo>();
     auto stream = source[iv::PortName<"main">{}];
-    auto scaled = stream * 0.1f;
+    auto scaled = stream * 0.1f * modulation;
     g.outputs(scaled);
+    auto const public_outputs = g.public_sample_output_families();
     auto const built = g.build_root_node();
+    if (public_outputs.families.size() != 1) {
+        return {.ok = false, .connection_nodes = 1};
+    }
+    if (public_outputs.families.front().channel_type
+        != iv::ChannelTypeId::stereo) {
+        return {.ok = false, .connection_nodes = 2};
+    }
+    if (public_outputs.families.front().channels.size() != 2) {
+        return {.ok = false, .connection_nodes = 3};
+    }
+    if (built.graph.outputs().size() != 1) {
+        return {.ok = false, .connection_nodes = 4};
+    }
+    if (built.graph.outputs().front().channel_layout.channel_type
+        != iv::ChannelTypeId::stereo) {
+        return {.ok = false, .connection_nodes = 5};
+    }
     return {
-        .ok = built.graph.outputs().size() == 1
-            && built.graph.outputs().front().channel_layout.channel_type
-                == iv::ChannelTypeId::stereo,
+        .ok = true,
     };
 }
 
@@ -1084,6 +1101,7 @@ TEST(Channels, TypedStreamOperatorsPromoteMonoAndRemainLayoutAgnostic)
 
     constexpr auto product_snapshot = stereo_scalar_product_snapshot();
     EXPECT_TRUE(product_snapshot.ok);
+    EXPECT_EQ(product_snapshot.connection_nodes, 0u);
 }
 
 TEST(Channels, ReconstructedNativeChannelSequenceLowersAsWholePort)

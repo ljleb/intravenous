@@ -1063,7 +1063,7 @@ TEST_F(GraphInputLanesTest, UpdatingInstanceDoesNotRemoveExistingPublicSampleOut
     }
 }
 
-TEST_F(GraphInputLanesTest, UpdatingPublicSampleOutputFromMonoToStereoPreservesItsLane)
+TEST_F(GraphInputLanesTest, UpdatingPublicSampleOutputFromMonoToStereoRecreatesItsLane)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_ports();
@@ -1093,19 +1093,20 @@ TEST_F(GraphInputLanesTest, UpdatingPublicSampleOutputFromMonoToStereoPreservesI
     });
     lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
-    bool saw_preserved_stereo_lane = false;
+    bool removed_old_lane = false;
+    bool recreated_stereo_lane = false;
     for (auto const &batch : witness.timeline_batches) {
-        EXPECT_EQ(
-            std::find(batch.removals.begin(), batch.removals.end(), *public_output_lane),
-            batch.removals.end());
+        removed_old_lane = removed_old_lane
+            || std::ranges::contains(batch.removals, *public_output_lane);
         for (auto const &upsert : batch.upserts) {
             if (upsert.lane == *public_output_lane
                 && upsert.sample_channel_type == iv::ChannelTypeId::stereo) {
-                saw_preserved_stereo_lane = true;
+                recreated_stereo_lane = true;
             }
         }
     }
-    EXPECT_TRUE(saw_preserved_stereo_lane);
+    EXPECT_TRUE(removed_old_lane);
+    EXPECT_TRUE(recreated_stereo_lane);
 }
 
 TEST_F(GraphInputLanesTest, RenamingPublicSampleOutputCreatesANewLane)

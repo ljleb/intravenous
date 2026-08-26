@@ -533,43 +533,48 @@ constexpr std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
       bundle_mappings, node_bundles, connections, inputs);
 }
 
+constexpr std::vector<IntrospectionPortInfo> project_virtual_event_ports(
+    std::vector<VirtualEventPortMapping> const& mappings,
+    GraphBuilderNodeBundles const&,
+    GraphBuilderConnections const& connections, bool inputs) {
+  std::vector<IntrospectionPortInfo> result;
+  result.reserve(mappings.size());
+  for (auto const& mapping : mappings) {
+    if (mapping.node_bundle_ports.empty()) continue;
+    bool connected = false;
+    for (auto const port : mapping.node_bundle_ports) {
+      connected = connected || (inputs
+          ? connections.event_input_is_connected(
+                EventInputPortId{port.node_bundle_handle, port.port_ordinal})
+          : connections.event_output_is_connected(
+                EventOutputPortId{port.node_bundle_handle, port.port_ordinal}));
+    }
+    result.push_back(IntrospectionPortInfo{
+        .name = mapping.name,
+        .type = event_type_name(mapping.type),
+        .connectivity = connected ? VirtualPortConnectivity::connected
+                                  : VirtualPortConnectivity::disconnected,
+        .ordinal = mapping.ordinal});
+  }
+  return result;
+}
+
 constexpr std::vector<IntrospectionPortInfo> project_bundle_event_ports(
+    std::vector<VirtualEventPortMapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
     GraphBuilderConnections const& connections,
     NodeBundleHandle bundle_handle, bool inputs) {
-  auto const& bundle = node_bundles.bundle(bundle_handle);
-  auto project = [&](size_t count) {
-    std::vector<IntrospectionPortInfo> result;
-    result.reserve(count);
-    for (size_t ordinal = 0; ordinal < count; ++ordinal) {
-      std::string name;
-      EventTypeId type = EventTypeId::empty;
-      bool connected = false;
-      if (inputs) {
-        auto const config = node_bundles.resolve_event_input(
-            {bundle_handle, PortKind::event, ordinal}).config;
-        name = config.name;
-        type = config.type;
-        connected = connections.event_input_is_connected(
-            EventInputPortId{bundle_handle, ordinal});
-      } else {
-        auto const config = node_bundles.resolve_event_output(
-            {bundle_handle, PortKind::event, ordinal}).config;
-        name = config.name;
-        type = config.type;
-        connected = connections.event_output_is_connected(
-            EventOutputPortId{bundle_handle, ordinal});
-      }
-
-      result.push_back(IntrospectionPortInfo{
-          .name = std::move(name), .type = event_type_name(type),
-          .connectivity = connected ? VirtualPortConnectivity::connected
-                                    : VirtualPortConnectivity::disconnected,
-          .ordinal = ordinal});
-    }
-    return result;
-  };
-  return project(inputs ? bundle.event_input_count() : bundle.event_output_count());
+  auto projected = mappings;
+  for (auto& mapping : projected) {
+    std::erase_if(mapping.node_bundle_ports, [&](auto const port) {
+      return port.node_bundle_handle != bundle_handle;
+    });
+  }
+  std::erase_if(projected, [](auto const& mapping) {
+    return mapping.node_bundle_ports.empty();
+  });
+  return project_virtual_event_ports(
+      projected, node_bundles, connections, inputs);
 }
 
 constexpr std::pair<std::string, std::string> bundle_display_type(
@@ -607,6 +612,10 @@ constexpr void apply_virtual_port_metadata(
         record.sample_inputs, node_bundles, connections, true);
     it->sample_outputs = project_virtual_sample_ports(
         record.sample_outputs, node_bundles, connections, false);
+    it->event_inputs = project_virtual_event_ports(
+        record.event_inputs, node_bundles, connections, true);
+    it->event_outputs = project_virtual_event_ports(
+        record.event_outputs, node_bundles, connections, false);
 
     it->members.clear();
     it->backing_node_ids.clear();
@@ -630,9 +639,9 @@ constexpr void apply_virtual_port_metadata(
           .sample_outputs = project_bundle_sample_ports(
               record.sample_outputs, node_bundles, connections, handle, false),
           .event_inputs = project_bundle_event_ports(
-              node_bundles, connections, handle, true),
+              record.event_inputs, node_bundles, connections, handle, true),
           .event_outputs = project_bundle_event_ports(
-              node_bundles, connections, handle, false),
+              record.event_outputs, node_bundles, connections, handle, false),
       });
     }
   }

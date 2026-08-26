@@ -39,7 +39,7 @@ namespace iv::details {
         return std::bit_floor(value);
     }
 
-    [[noreturn]] inline void error(std::string msg)
+    [[noreturn]] constexpr void error(std::string msg)
     {
         throw std::logic_error(msg);
     }

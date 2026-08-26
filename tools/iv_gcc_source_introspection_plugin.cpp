@@ -197,6 +197,8 @@ std::string record_type_name(tree type)
 enum class AnnotatableRefKind {
     none,
     node,
+    sample_port,
+    event_port,
     public_sample_input,
     public_event_input,
 };
@@ -206,6 +208,14 @@ AnnotatableRefKind annotatable_ref_kind(tree type)
     auto const name = record_type_name(type);
     if (name == "NodeRef" || name == "TypedNodeRef")
         return AnnotatableRefKind::node;
+    if (name == "SamplePortRef"
+        || name == "TypedSamplePortRef"
+        || name == "TypedSamplePortChannelRef"
+        || name == "TypedSamplePortTileRef"
+        || name == "TypedSamplePortTileChannelRef")
+        return AnnotatableRefKind::sample_port;
+    if (name == "EventPortRef")
+        return AnnotatableRefKind::event_port;
     if (name == "PublicSampleInputRef")
         return AnnotatableRefKind::public_sample_input;
     if (name == "PublicEventInputRef")
@@ -480,6 +490,8 @@ tree analyze_statement_node(tree* node, int* walk_subtrees, void* data)
             auto const kind = annotatable_ref_kind(TREE_TYPE(declaration));
             if (kind != AnnotatableRefKind::none) {
                 auto span = kind == AnnotatableRefKind::node
+                        || kind == AnnotatableRefKind::sample_port
+                        || kind == AnnotatableRefKind::event_port
                     ? declaration_span(declaration)
                     : expression_span(TREE_OPERAND(*node, 1));
                 auto const declaration_source_span =
@@ -522,11 +534,20 @@ tree analyze_statement_node(tree* node, int* walk_subtrees, void* data)
         }
     }
 
-    if (TREE_CODE(*node) == CALL_EXPR) {
+    if (TREE_CODE(*node) == CALL_EXPR
+        || TREE_CODE(*node) == AGGR_INIT_EXPR) {
+        auto const argument_count = TREE_CODE(*node) == CALL_EXPR
+            ? static_cast<std::size_t>(call_expr_nargs(*node))
+            : static_cast<std::size_t>(aggr_init_expr_nargs(*node));
+        auto argument = [&](std::size_t index) {
+            return TREE_CODE(*node) == CALL_EXPR
+                ? CALL_EXPR_ARG(*node, index)
+                : AGGR_INIT_EXPR_ARG(*node, index);
+        };
         tree const function = called_function(*node);
         if (function_is_named(function, "operator=")
-            && call_expr_nargs(*node) > 0) {
-            tree const destination = CALL_EXPR_ARG(*node, 0);
+            && argument_count > 0) {
+            tree const destination = argument(0);
             tree const declaration = referenced_declaration(destination);
             if (declaration && !DECL_ARTIFICIAL(declaration)
                 && annotatable_ref_kind(TREE_TYPE(declaration))
@@ -564,18 +585,37 @@ tree analyze_statement_node(tree* node, int* walk_subtrees, void* data)
             }
         }
 
+        if (function_is_named(function, "operator()")
+            && argument_count > 0) {
+            tree const object = argument(0);
+            tree const declaration = referenced_declaration(object);
+            if (declaration
+                && annotatable_ref_kind(TREE_TYPE(declaration))
+                    == AnnotatableRefKind::node) {
+                auto const span = named_expression_span(*node, declaration);
+                auto const identity = declaration_identity(declaration);
+                if (span && !identity.empty()) {
+                    append_ref_annotation(analysis, {
+                        .value = object,
+                        .declaration = declaration,
+                        .value_is_pointer = true,
+                        .declaration_identity = identity,
+                        .span = *span,
+                    });
+                }
+            }
+        }
+
         bool const sample_outputs = function_is_named(function, "outputs");
         bool const event_outputs = function_is_named(function, "event_outputs");
         if ((sample_outputs || event_outputs)
             && record_type_name(DECL_CONTEXT(function)) == "GraphBuilder"
-            && call_expr_nargs(*node) > 1
+            && argument_count > 1
             && is_user_source_location(EXPR_LOCATION(*node))) {
-            tree const builder_pointer = CALL_EXPR_ARG(*node, 0);
-            auto const argument_count = static_cast<std::size_t>(
-                call_expr_nargs(*node));
+            tree const builder_pointer = argument(0);
             for (std::size_t i = 1; i < argument_count; ++i) {
                 if (auto const span = expression_span(
-                        CALL_EXPR_ARG(*node, i))) {
+                        argument(i))) {
                     analysis.public_outputs.push_back({
                         .builder_pointer = builder_pointer,
                         .event = event_outputs,

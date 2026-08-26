@@ -738,6 +738,9 @@ class ModuleLoader::Impl {
                          .time_since_epoch().count() << '\n'
                   << "generator=" << generator << '\n'
                   << "generated-export=" << export_tu.str() << '\n'
+                  << "core-source-stamp="
+                  << directory_stamp(repo_root_ / "src/intravenous")
+                         .time_since_epoch().count() << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/abi.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/authoring.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/graph/static_metadata.hpp") << '\n'

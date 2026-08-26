@@ -99,6 +99,10 @@ public:
       std::string_view, std::string_view, uint32_t, uint32_t);
   constexpr void annotate_public_event_input_source_info(PublicEventInputRef const&,
       std::string_view, std::string_view, uint32_t, uint32_t);
+  constexpr void annotate_sample_port_source_info(SamplePortRef const&,
+      std::string_view, std::string_view, uint32_t, uint32_t);
+  constexpr void annotate_event_port_source_info(EventPortRef const&,
+      std::string_view, std::string_view, uint32_t, uint32_t);
   constexpr void annotate_public_sample_output_source_info(std::span<SourceInfo const> infos);
   constexpr void annotate_public_event_output_source_info(std::span<SourceInfo const> infos);
   constexpr void annotate_public_sample_output_source_info(

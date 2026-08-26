@@ -44,6 +44,14 @@ inline std::string SamplePortRef::to_string() const {
       graph_builder->_identity.value;
 }
 
+constexpr void SamplePortRef::_annotate_source_info(
+    std::string_view id, std::string_view file,
+    uint32_t begin, uint32_t end) const {
+  if (graph_builder)
+    graph_builder->annotate_sample_port_source_info(
+        *this, id, file, begin, end);
+}
+
 constexpr EventPortRef::EventPortRef(
     GraphBuilder& builder, NodeBundlePortId port)
     : graph_builder(&builder) {
@@ -76,6 +84,14 @@ inline std::string EventPortRef::to_string() const {
   return "structural event expression with " +
       std::to_string(sources.size()) + " source(s) in builder " +
       graph_builder->_identity.value;
+}
+
+constexpr void EventPortRef::_annotate_source_info(
+    std::string_view id, std::string_view file,
+    uint32_t begin, uint32_t end) const {
+  if (graph_builder)
+    graph_builder->annotate_event_port_source_info(
+        *this, id, file, begin, end);
 }
 
 constexpr GraphBuilder GraphBuilder::derive_nested_builder() {
@@ -170,6 +186,28 @@ constexpr void PublicEventInputRef::_annotate_source_info(
   if (port.graph_builder)
     port.graph_builder->annotate_public_event_input_source_info(
         *this, id, file, begin, end);
+}
+
+constexpr void GraphBuilder::annotate_sample_port_source_info(
+    SamplePortRef const& ref, std::string_view id,
+    std::string_view file, uint32_t begin, uint32_t end) {
+  if (id.empty() || ref.graph_builder != this) return;
+  SourceInfo info{
+      .declaration_identity = std::string(id),
+      .span = {.file_path = std::string(file), .begin = begin, .end = end}};
+  _virtual_nodes.attach_sample_output(
+      _node_bundles, ref.channel_type, ref.channels, id, info);
+}
+
+constexpr void GraphBuilder::annotate_event_port_source_info(
+    EventPortRef const& ref, std::string_view id,
+    std::string_view file, uint32_t begin, uint32_t end) {
+  if (id.empty() || ref.graph_builder != this) return;
+  SourceInfo info{
+      .declaration_identity = std::string(id),
+      .span = {.file_path = std::string(file), .begin = begin, .end = end}};
+  _virtual_nodes.attach_event_output(
+      _node_bundles, ref.type, ref.sources, id, info);
 }
 
 constexpr void GraphBuilder::annotate_public_sample_output_source_info(

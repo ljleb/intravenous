@@ -135,7 +135,14 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs_from_args(
     } else {
       if constexpr (require_names) details::error("builder " + identity.value + ": outputs(...) requires names when exposing more than one sample output");
       auto source = lift_sample(std::forward<decltype(ref)>(ref));
-      out.push_back({.ref = source, .config = public_config(source, {})});
+      out.push_back({
+          .ref = source,
+          .config = public_config(source, {}),
+          .public_member = {
+              .channel_type = source.channel_type,
+              .whole_stream = true,
+          },
+      });
     }
   };
   (append(std::forward<Refs>(refs)), ...);
@@ -156,7 +163,15 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
                           : OutputConfig{.channel_layout = {.channel_type = source.channel_type,
                                                            .sample_layout = SampleStreamLayout::planar}};
     config.name = std::string(ref.name); config.channel_layout.sample_layout = SampleStreamLayout::planar;
-    out.push_back({.ref = source, .config = std::move(config)});
+    out.push_back({
+        .ref = source,
+        .config = std::move(config),
+        .public_member = {
+            .family_name = std::string(ref.name),
+            .channel_type = source.channel_type,
+            .whole_stream = true,
+        },
+    });
   }
   define_sample_outputs(builder, bundles, identity, out);
 }

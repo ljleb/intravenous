@@ -45,6 +45,8 @@ struct SamplePortRef {
   constexpr SamplePortRef _clone_handle() const;
   constexpr SamplePortRef select_channel(size_t channel) const;
   constexpr SamplePortRef detach(size_t loop_extra_latency = 1) const;
+  constexpr void _annotate_source_info(
+      std::string_view, std::string_view, uint32_t, uint32_t) const;
   std::string to_string() const;
 };
 
@@ -61,6 +63,11 @@ public:
 
   constexpr operator SamplePortRef() const { return _port; }
   constexpr SamplePortRef const& erased() const { return _port; }
+  constexpr void _annotate_source_info(
+      std::string_view id, std::string_view file,
+      uint32_t begin, uint32_t end) const {
+    _port._annotate_source_info(id, file, begin, end);
+  }
 
   template<class Channel>
   constexpr auto operator[](Channel) const
@@ -83,6 +90,11 @@ public:
   constexpr operator SamplePortRef() const { return _port; }
   constexpr SamplePortRef const& erased() const { return _port; }
   constexpr SamplePortRef const& port() const { return _port; }
+  constexpr void _annotate_source_info(
+      std::string_view id, std::string_view file,
+      uint32_t begin, uint32_t end) const {
+    _port._annotate_source_info(id, file, begin, end);
+  }
 };
 
 // Both a native tiled-node output and g.tile(...) have the same erased form:
@@ -129,6 +141,11 @@ public:
 
   constexpr operator SamplePortRef() const { return _port; }
   constexpr SamplePortRef const& erased() const { return _port; }
+  constexpr void _annotate_source_info(
+      std::string_view id, std::string_view file,
+      uint32_t begin, uint32_t end) const {
+    _port._annotate_source_info(id, file, begin, end);
+  }
 
   template<class Member>
   constexpr auto operator[](Member) const
@@ -149,6 +166,11 @@ public:
 
   constexpr operator SamplePortRef() const { return _port; }
   constexpr SamplePortRef const& erased() const { return _port; }
+  constexpr void _annotate_source_info(
+      std::string_view id, std::string_view file,
+      uint32_t begin, uint32_t end) const {
+    _port._annotate_source_info(id, file, begin, end);
+  }
 };
 
 template<class ChannelType>
@@ -196,6 +218,8 @@ struct EventPortRef {
   constexpr explicit EventPortRef(GraphBuilder&, NodeBundlePortId bundle_port);
   constexpr explicit EventPortRef(GraphBuilder&, EventTypeId,
                                    std::vector<EventOutputPortId>);
+  constexpr void _annotate_source_info(
+      std::string_view, std::string_view, uint32_t, uint32_t) const;
   std::string to_string() const;
 };
 

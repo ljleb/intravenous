@@ -68,9 +68,6 @@ namespace iv {
     template<class Ref>
     concept SourceInfoAnnotatableRef =
         requires(std::remove_cvref_t<Ref>& ref, std::string_view declaration_identity) {
-            ref.node_ref();
-        } &&
-        requires(std::remove_cvref_t<Ref>& ref, std::string_view declaration_identity) {
         ref._annotate_source_info(declaration_identity, std::string_view {}, 0u, 0u);
     };
 

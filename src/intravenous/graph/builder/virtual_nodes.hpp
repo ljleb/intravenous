@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <flat_map>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -80,6 +81,14 @@ public:
       GraphBuilderNodeBundles&, NodeBundleHandle,
       std::string_view virtual_node_id,
       SourceInfo const* source_info = nullptr);
+  constexpr void attach_sample_output(
+      GraphBuilderNodeBundles&, ChannelTypeId,
+      std::span<SampleOutputChannelId const>,
+      std::string_view virtual_node_id, SourceInfo const&);
+  constexpr void attach_event_output(
+      GraphBuilderNodeBundles&, EventTypeId,
+      std::span<EventOutputPortId const>,
+      std::string_view virtual_node_id, SourceInfo const&);
   constexpr void import_child(
       GraphBuilderNodeBundles&, GraphBuilderVirtualNodes const&,
       size_t node_bundle_offset);
@@ -219,6 +228,62 @@ constexpr void GraphBuilderVirtualNodes::attach_bundle_member(
       bundle_handle,
       source_info
   );
+}
+
+constexpr void GraphBuilderVirtualNodes::attach_sample_output(
+    GraphBuilderNodeBundles& bundles, ChannelTypeId channel_type,
+    std::span<SampleOutputChannelId const> channels,
+    std::string_view source_identity, SourceInfo const& source_info) {
+  if (source_identity.empty() || channels.empty()) return;
+  auto const handle = get_or_create(source_identity, "sample-port");
+  auto& record = _records[handle];
+  if (!std::ranges::contains(record.source_infos, source_info))
+    record.source_infos.push_back(source_info);
+  if (record.sample_outputs.empty()) {
+    record.sample_outputs.push_back({
+        .ordinal = 0,
+        .channel_layout = {
+            .channel_type = channel_type,
+            .sample_layout = SampleStreamLayout::planar,
+        },
+        .channels = {channels.begin(), channels.end()},
+    });
+  }
+  for (auto channel : channels) {
+    if (!std::ranges::contains(record.sample_outputs.front().channels, channel))
+      record.sample_outputs.front().channels.push_back(channel);
+    if (!std::ranges::contains(record.node_bundle_handles, channel.bundle))
+      record.node_bundle_handles.push_back(channel.bundle);
+    auto& inverse = bundles.bundle(channel.bundle).virtual_node_handles();
+    if (!std::ranges::contains(inverse, handle)) inverse.push_back(handle);
+  }
+}
+
+constexpr void GraphBuilderVirtualNodes::attach_event_output(
+    GraphBuilderNodeBundles& bundles, EventTypeId type,
+    std::span<EventOutputPortId const> sources,
+    std::string_view source_identity, SourceInfo const& source_info) {
+  if (source_identity.empty() || sources.empty()) return;
+  auto const handle = get_or_create(source_identity, "event-port");
+  auto& record = _records[handle];
+  if (!std::ranges::contains(record.source_infos, source_info))
+    record.source_infos.push_back(source_info);
+  if (record.event_outputs.empty()) {
+    record.event_outputs.push_back({
+        .ordinal = 0,
+        .type = type,
+    });
+  }
+  for (auto source : sources) {
+    NodeBundlePortId const port{source.bundle, PortKind::event, source.port};
+    if (!std::ranges::contains(
+            record.event_outputs.front().node_bundle_ports, port))
+      record.event_outputs.front().node_bundle_ports.push_back(port);
+    if (!std::ranges::contains(record.node_bundle_handles, source.bundle))
+      record.node_bundle_handles.push_back(source.bundle);
+    auto& inverse = bundles.bundle(source.bundle).virtual_node_handles();
+    if (!std::ranges::contains(inverse, handle)) inverse.push_back(handle);
+  }
 }
 
 constexpr void GraphBuilderVirtualNodes::import_child(
