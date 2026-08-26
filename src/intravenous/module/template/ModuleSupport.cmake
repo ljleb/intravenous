@@ -50,6 +50,7 @@ function(iv_add_runtime_module target)
     target_compile_features(${target}__compile_settings INTERFACE cxx_std_26)
     target_compile_options(${target}__compile_settings INTERFACE
         -freflection
+        -fconstexpr-ops-limit=134217728
         "-fplugin=${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"
         "-fplugin-arg-iv_gcc_source_introspection_plugin-core-source-dir=${IV_SOURCE_DIR}")
     target_include_directories(${target}__compile_settings INTERFACE

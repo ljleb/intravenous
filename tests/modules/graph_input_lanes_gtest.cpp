@@ -690,7 +690,7 @@ TEST_F(GraphInputLanesTest, VirtualSampleInputTimelineStatePublishesTimelineDepe
     }
     ASSERT_NE(created_lane, nullptr);
     auto const created_lane_id = created_lane->lane;
-    EXPECT_EQ(lane_output_name(created_lane->make_node()), "graph input");
+    EXPECT_EQ(lane_output_name(created_lane->make_node()), "frequency");
 
     iv::IvModuleInstanceBuildersAckBuilder ack;
     lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged {
@@ -820,7 +820,7 @@ TEST_F(GraphInputLanesTest, ConcreteSampleInputDefaultClearsExplicitTimelineStat
         0u);
 }
 
-TEST_F(GraphInputLanesTest, VacantEventInputsDefaultToVirtualFollowWithTimelineDependency)
+TEST_F(GraphInputLanesTest, VacantEventInputsDefaultToDisconnectedWithoutTimelineDependency)
 {
     iv::GraphInputLanes lanes;
     auto instance = make_instance_with_member_ports();
@@ -834,7 +834,7 @@ TEST_F(GraphInputLanesTest, VacantEventInputsDefaultToVirtualFollowWithTimelineD
         ack.prerequisite_lanes_for("instance:1")
             .value_or(std::vector<iv::LaneId>{})
             .size(),
-        1u);
+        0u);
 }
 
 TEST_F(GraphInputLanesTest, ConnectedEventInputsDefaultToDisconnectedWithoutTimelineDependency)
@@ -930,7 +930,7 @@ TEST_F(GraphInputLanesTest, ConcreteEventInputDefaultClearsExplicitTimelineState
         ack.prerequisite_lanes_for("instance:1")
             .value_or(std::vector<iv::LaneId>{})
             .size(),
-        1u);
+        0u);
 }
 
 TEST_F(GraphInputLanesTest, VirtualOutputsDoNotAutoCreateTimelineLanesWithoutExplicitState)

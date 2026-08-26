@@ -73,6 +73,7 @@ ExternalProject_Add(iv_gcc_source_introspection_plugin_build
     CMAKE_ARGS
         "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
         "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+    BUILD_ALWAYS TRUE
     BUILD_BYPRODUCTS "${_iv_gcc_plugin_file}"
     INSTALL_COMMAND "")
 

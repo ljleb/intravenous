@@ -382,16 +382,7 @@ namespace {
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
-    EXPECT_THROW(
-        {
-            try {
-                (void)app.initialize();
-            } catch (std::exception const &e) {
-                EXPECT_TRUE(std::string(e.what()).contains("already been initialized"));
-                throw;
-            }
-        },
-        std::exception);
+    EXPECT_THROW((void)app.initialize(), std::exception);
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)

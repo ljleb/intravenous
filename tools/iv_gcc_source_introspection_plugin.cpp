@@ -482,10 +482,15 @@ tree analyze_statement_node(tree* node, int* walk_subtrees, void* data)
                 auto span = kind == AnnotatableRefKind::node
                     ? declaration_span(declaration)
                     : expression_span(TREE_OPERAND(*node, 1));
+                auto const declaration_source_span =
+                    declaration_span(declaration);
                 auto const identity = declaration_identity(declaration);
                 if (span && !identity.empty()) {
-                    validate_unique_graph_local(
-                        declaration, identity, *span);
+                    if (declaration_source_span) {
+                        validate_unique_graph_local(
+                            declaration, identity,
+                            *declaration_source_span);
+                    }
                     append_ref_annotation(analysis, {
                         .value = destination,
                         .declaration = declaration,
