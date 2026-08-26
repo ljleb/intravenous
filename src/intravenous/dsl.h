@@ -2,12 +2,12 @@
 
 #include "intravenous/graph/builder/subgraphs.hpp"
 #ifdef IV_INTERNAL_TRANSLATION_UNIT
-#error "dsl.h is reserved for user-authored DSL code; include graph/builder.h or module/module.h from internal code."
+#error "dsl.h is reserved for user-authored DSL code; include graph/builder.h or module/abi.h from internal code."
 #endif
 
 #include <intravenous/basic_nodes/midi.h>
 #include <intravenous/channel_ports.h>
-#include <intravenous/module/module.h>
+#include <intravenous/module/authoring.h>
 
 namespace iv {
     struct PublicOutputSourceSpan {
@@ -229,16 +229,31 @@ namespace iv {
     template<class T>
     struct typed_sample_port_traits {};
 
-    template<class ChannelType, SampleStreamLayout Layout>
-    struct typed_sample_port_traits<TypedSamplePortRef<ChannelType, Layout>> {
+    template<class ChannelType>
+    struct typed_sample_port_traits<TypedSamplePortRef<ChannelType>> {
         using channel_type = ChannelType;
-        static constexpr auto sample_layout = Layout;
     };
 
-    template<class ChannelType, SampleStreamLayout Layout>
-    struct typed_sample_port_traits<TypedSamplePortTileRef<ChannelType, Layout>> {
+    template<class ChannelType>
+    struct typed_sample_port_traits<TypedSamplePortTileRef<ChannelType>> {
         using channel_type = ChannelType;
-        static constexpr auto sample_layout = Layout;
+    };
+
+    template<class Node>
+    requires (details::static_output_count_v<std::remove_cvref_t<Node>> == 1)
+    struct typed_sample_port_traits<
+        TypedNodeRef<Node, ConcretePortProjection>> {
+        static constexpr auto output_layout =
+            details::static_output_port_layout_at<std::remove_cvref_t<Node>, 0>();
+        using channel_type = typename RuntimeChannelTypeTraits<
+            output_layout.channel_type>::type;
+    };
+
+    template<class Node, class ChannelType>
+    requires (details::static_output_count_v<std::remove_cvref_t<Node>> == 1)
+    struct typed_sample_port_traits<
+        TypedNodeRef<Node, TiledPortProjection<ChannelType>>> {
+        using channel_type = ChannelType;
     };
 
     template<class T>
@@ -246,17 +261,39 @@ namespace iv {
         typename typed_sample_port_traits<std::remove_cvref_t<T>>::channel_type;
     };
 
-    template<class L, class R, bool HasLeft = TypedSamplePortLike<L>>
+    template<class L, class R,
+             bool HasLeft = TypedSamplePortLike<L>,
+             bool HasRight = TypedSamplePortLike<R>>
     struct binary_typed_channel;
 
     template<class L, class R>
-    struct binary_typed_channel<L, R, true> {
-        using type = typename typed_sample_port_traits<std::remove_cvref_t<L>>::channel_type;
+    struct binary_typed_channel<L, R, true, false> {
+        using type =
+            typename typed_sample_port_traits<std::remove_cvref_t<L>>::channel_type;
     };
 
     template<class L, class R>
-    struct binary_typed_channel<L, R, false> {
-        using type = typename typed_sample_port_traits<std::remove_cvref_t<R>>::channel_type;
+    struct binary_typed_channel<L, R, false, true> {
+        using type =
+            typename typed_sample_port_traits<std::remove_cvref_t<R>>::channel_type;
+    };
+
+    template<class L, class R>
+    struct binary_typed_channel<L, R, true, true> {
+        using left_type =
+            typename typed_sample_port_traits<std::remove_cvref_t<L>>::channel_type;
+        using right_type =
+            typename typed_sample_port_traits<std::remove_cvref_t<R>>::channel_type;
+        using type = std::conditional_t<
+            std::same_as<left_type, mono>,
+            right_type,
+            left_type>;
+
+        static_assert(
+            std::same_as<left_type, right_type> ||
+            std::same_as<left_type, mono> ||
+            std::same_as<right_type, mono>,
+            "typed sample ports must have matching channel types, except that mono broadcasts");
     };
 
     template<class T>
@@ -304,7 +341,7 @@ namespace iv {
         std::floating_point<std::remove_cvref_t<T>> ||
         std::is_same_v<std::remove_cvref_t<T>, Sample>;
 
-    template<class Node, class L, class R>
+    template<class Node, class ChannelType = void, class L, class R>
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     constexpr auto make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
     {
@@ -331,7 +368,12 @@ namespace iv {
         SamplePortRef lhs_sample_port = lift_sample_operand(*g, std::forward<L>(lhs));
         SamplePortRef rhs_sample_port = lift_sample_operand(*g, std::forward<R>(rhs));
 
-        return g->node<Node>()(lhs_sample_port, rhs_sample_port);
+        if constexpr (std::same_as<ChannelType, void> ||
+                      std::same_as<ChannelType, mono>) {
+            return g->node<Node>()(lhs_sample_port, rhs_sample_port);
+        } else {
+            return g->node<Node, ChannelType>()(lhs_sample_port, rhs_sample_port);
+        }
     }
 
     template<class L, class R>
@@ -350,36 +392,16 @@ namespace iv {
 
     template<class L, class R>
     requires (
-        (TypedSamplePortLike<L> || ScalarLike<L>) &&
-        (TypedSamplePortLike<R> || ScalarLike<R>) &&
+        (SamplePortLike<L> || ScalarLike<L>) &&
+        (SamplePortLike<R> || ScalarLike<R>) &&
         (TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     constexpr auto operator+(L&& lhs, R&& rhs)
     {
-        using Left = typed_sample_port_traits<std::remove_cvref_t<L>>;
-        using Right = typed_sample_port_traits<std::remove_cvref_t<R>>;
-
-        if constexpr (TypedSamplePortLike<L> && TypedSamplePortLike<R>) {
-            static_assert(
-                std::same_as<typename Left::channel_type, typename Right::channel_type>,
-                "operator+: typed sample ports must have the same channel type");
-        }
-
         using ChannelType = typename binary_typed_channel<L, R>::type;
-        constexpr auto layout = [] {
-            if constexpr (TypedSamplePortLike<L> && TypedSamplePortLike<R>) {
-                return Left::sample_layout == Right::sample_layout
-                    ? Left::sample_layout
-                    : SampleStreamLayout::planar;
-            } else if constexpr (TypedSamplePortLike<L>) {
-                return Left::sample_layout;
-            } else {
-                return Right::sample_layout;
-            }
-        }();
-
-        auto sum = make_binary_op<Sum<ChannelType, layout, 2>>(
+        auto sum = make_binary_op<
+            Sum<mono, SampleStreamLayout::planar, 2>, ChannelType>(
             std::forward<L>(lhs), std::forward<R>(rhs), "operator+");
-        return sum[PortName<"out", NamedPortKind::sample>{}];
+        return sum;
     }
 
     template<class L, class R>
@@ -394,7 +416,10 @@ namespace iv {
     }
 
     template<class L, class R>
-    requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
+    requires (
+        (SamplePortLike<L> || ScalarLike<L>) &&
+        (SamplePortLike<R> || ScalarLike<R>) &&
+        !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     constexpr NodeRef operator*(L&& lhs, R&& rhs)
     {
         return make_binary_op<Product<2>>(
@@ -402,6 +427,19 @@ namespace iv {
             std::forward<R>(rhs),
             "operator*"
         );
+    }
+
+    template<class L, class R>
+    requires (
+        (SamplePortLike<L> || ScalarLike<L>) &&
+        (SamplePortLike<R> || ScalarLike<R>) &&
+        (TypedSamplePortLike<L> || TypedSamplePortLike<R>))
+    constexpr auto operator*(L&& lhs, R&& rhs)
+    {
+        using ChannelType = typename binary_typed_channel<L, R>::type;
+        auto product = make_binary_op<Product<2>, ChannelType>(
+            std::forward<L>(lhs), std::forward<R>(rhs), "operator*");
+        return product;
     }
 
     template<class L, class R>
@@ -436,18 +474,18 @@ namespace iv {
         return static_cast<SamplePortRef>(std::forward<T>(value)).detach();
     }
 
-    template<class ChannelType, SampleStreamLayout Layout>
-    constexpr TypedSamplePortRef<ChannelType, Layout> operator~(
-        TypedSamplePortRef<ChannelType, Layout> const& value)
+    template<class ChannelType>
+    constexpr TypedSamplePortRef<ChannelType> operator~(
+        TypedSamplePortRef<ChannelType> const& value)
     {
-        return TypedSamplePortRef<ChannelType, Layout>{value.erased().detach()};
+        return TypedSamplePortRef<ChannelType>{value.erased().detach()};
     }
 
-    template<class ChannelType, SampleStreamLayout Layout>
-    constexpr TypedSamplePortRef<ChannelType, Layout> operator~(
-        TypedSamplePortTileRef<ChannelType, Layout> const& value)
+    template<class ChannelType>
+    constexpr TypedSamplePortRef<ChannelType> operator~(
+        TypedSamplePortTileRef<ChannelType> const& value)
     {
-        return TypedSamplePortRef<ChannelType, Layout>{
+        return TypedSamplePortRef<ChannelType>{
             static_cast<SamplePortRef>(value).detach()};
     }
 

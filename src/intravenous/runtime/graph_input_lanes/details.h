@@ -346,64 +346,6 @@ inline TypeErasedLaneNode make_sample_input_node(Sample default_value, std::stri
     });
 }
 
-inline GraphInputPortDescriptor sample_output_descriptor(
-    GraphBuilder::VirtualSampleOutputFamily const &output,
-    std::optional<size_t> member_ordinal)
-{
-    return GraphInputPortDescriptor{
-        .virtual_node_id = output.virtual_node_id,
-        .node_bundle_port_ordinal = member_ordinal,
-        .port_kind = PortKind::sample,
-        .port_ordinal = output.family_ordinal,
-        .port_name = output.family_name,
-        .port_type = "sample",
-        .sample_channel_type = output.channel_type,
-    };
-}
-
-inline GraphInputPortDescriptor event_output_descriptor(
-    GraphBuilder::VirtualEventOutput const &output,
-    std::optional<size_t> member_ordinal)
-{
-    return GraphInputPortDescriptor{
-        .virtual_node_id = output.virtual_node_id,
-        .node_bundle_port_ordinal = member_ordinal,
-        .port_kind = PortKind::event,
-        .port_ordinal = output.source.port_ordinal,
-        .port_name = output.config.name,
-        .port_type = details::event_type_name(output.config.type),
-    };
-}
-
-inline GraphInputPortDescriptor sample_port_descriptor(
-    GraphBuilder::VirtualSampleInputFamily const &input,
-    std::optional<size_t> member_ordinal)
-{
-    return GraphInputPortDescriptor{
-        .virtual_node_id = input.virtual_node_id,
-        .node_bundle_port_ordinal = member_ordinal,
-        .port_kind = PortKind::sample,
-        .port_ordinal = input.family_ordinal,
-        .port_name = input.family_name,
-        .port_type = "sample",
-        .sample_channel_type = input.channel_type,
-    };
-}
-
-inline GraphInputPortDescriptor event_port_descriptor(
-    GraphBuilder::VirtualEventInput const &input,
-    std::optional<size_t> member_ordinal)
-{
-    return GraphInputPortDescriptor{
-        .virtual_node_id = input.virtual_node_id,
-        .node_bundle_port_ordinal = member_ordinal,
-        .port_kind = PortKind::event,
-        .port_ordinal = input.target.port_ordinal,
-        .port_name = input.config.name,
-        .port_type = details::event_type_name(input.config.type),
-    };
-}
-
 inline GraphInputPortDescriptor with_runtime_virtual_node_id(
     GraphInputPortDescriptor descriptor,
     std::string_view instance_id)
@@ -412,19 +354,6 @@ inline GraphInputPortDescriptor with_runtime_virtual_node_id(
         instance_id,
         descriptor.virtual_node_id);
     return descriptor;
-}
-
-inline bool builder_has_graph_port_descriptions(GraphBuilder const &builder)
-{
-    auto const ports = builder.virtual_ports();
-    return !ports.sample_inputs.empty()
-        || !ports.event_inputs.empty()
-        || !ports.sample_outputs.empty()
-        || !ports.event_outputs.empty()
-        || !builder.public_sample_input_families().families.empty()
-        || !builder.public_event_inputs().empty()
-        || !builder.public_sample_output_families().families.empty()
-        || !builder.public_event_outputs().empty();
 }
 
 } // namespace iv::graph_input_lanes_details

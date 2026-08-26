@@ -205,7 +205,7 @@ namespace iv {
                 if (!this->_graph_builder) {
                     details::error("attempted to use a null NodeRef");
                 }
-                return TypedSamplePortRef<ChannelType, layout.sample_layout>{
+                return TypedSamplePortRef<ChannelType>{
                     this->operator[](output_index)};
             } else {
                 return event_port(Name.view());
@@ -237,7 +237,7 @@ namespace iv {
         {
             constexpr auto layout = details::static_output_port_layout_at<NodeType, I>();
             using ChannelType = typename RuntimeChannelTypeTraits<layout.channel_type>::type;
-            return TypedSamplePortRef<ChannelType, layout.sample_layout>{
+            return TypedSamplePortRef<ChannelType>{
                 this->operator[](I)};
         }
 
@@ -324,16 +324,12 @@ namespace iv {
             if (!this->_graph_builder) {
                 details::error("attempted to use a null tiled TypedNodeRef");
             }
-            constexpr auto layout =
-                details::static_output_port_layout_at<NodeType, I>();
-            return TypedSamplePortTileRef<ChannelType, layout.sample_layout>{
+            return TypedSamplePortTileRef<ChannelType>{
                 SamplePortRef{*this->_graph_builder,
                     NodeBundlePortId{this->_index, PortKind::sample, I}}};
         }
 
-        constexpr operator TypedSamplePortTileRef<
-            ChannelType,
-            details::static_output_port_layout_at<NodeType, 0>().sample_layout>() const
+        constexpr operator TypedSamplePortTileRef<ChannelType>() const
         requires (details::static_output_count_v<NodeType> == 1)
         {
             return static_output<0>();

@@ -2,6 +2,7 @@
 #include <intravenous/runtime/graph_input_lanes/details.h>
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace iv {
 using namespace graph_input_lanes_details;
@@ -13,7 +14,7 @@ std::string local_virtual_node_id(
 {
     auto const prefix = std::string(instance_id) + "\x1fvirtual:";
     if (!runtime_id.starts_with(prefix)) {
-        details::error("runtime virtual-node identity is not owned by its instance");
+        throw std::logic_error("runtime virtual-node identity is not owned by its instance");
     }
     return std::string(runtime_id.substr(prefix.size()));
 }

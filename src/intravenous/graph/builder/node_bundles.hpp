@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/graph/builder/names.hpp>
+#include <intravenous/graph/names.h>
 #include <intravenous/graph/builder/stored_node.hpp>
 
 #include <algorithm>

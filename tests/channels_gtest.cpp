@@ -632,28 +632,48 @@ consteval ChannelTopologySnapshot typed_operator_snapshot()
     auto same_layout_sum = planar + planar;
     auto mixed_layout_sum = planar + interleaved;
     auto scalar_sum = 1.0f + planar;
+    auto scaled = planar * 0.1f;
+    auto reverse_scaled = 0.1f * interleaved;
     auto detached = ~planar;
 
+    static_assert(iv::TypedSamplePortLike<decltype(same_layout_sum)>);
+    static_assert(iv::TypedSamplePortLike<decltype(mixed_layout_sum)>);
+    static_assert(iv::TypedSamplePortLike<decltype(scalar_sum)>);
+    static_assert(iv::TypedSamplePortLike<decltype(scaled)>);
+    static_assert(iv::TypedSamplePortLike<decltype(reverse_scaled)>);
     static_assert(std::same_as<
-        decltype(same_layout_sum),
-        iv::TypedSamplePortRef<iv::stereo, iv::SampleStreamLayout::planar>>);
-    static_assert(std::same_as<
-        decltype(mixed_layout_sum),
-        iv::TypedSamplePortRef<iv::stereo, iv::SampleStreamLayout::planar>>);
-    static_assert(std::same_as<
-        decltype(scalar_sum),
-        iv::TypedSamplePortRef<iv::stereo, iv::SampleStreamLayout::planar>>);
+        typename iv::typed_sample_port_traits<
+            decltype(scaled)>::channel_type,
+        iv::stereo>);
     static_assert(std::same_as<
         decltype(detached),
-        iv::TypedSamplePortRef<iv::stereo, iv::SampleStreamLayout::planar>>);
+        iv::TypedSamplePortRef<iv::stereo>>);
 
-    g.outputs(
-        iv::PortName<"same">{} = same_layout_sum,
-        iv::PortName<"mixed">{} = mixed_layout_sum,
-        iv::PortName<"scalar">{} = scalar_sum,
-        iv::PortName<"detached">{} = detached);
+    auto const scaled_erased = static_cast<iv::SamplePortRef>(scaled);
+    auto const reverse_scaled_erased =
+        static_cast<iv::SamplePortRef>(reverse_scaled);
+    return {
+        .ok = scaled_erased.channel_type == iv::ChannelTypeId::stereo
+            && scaled_erased.channels.size() == 2
+            && reverse_scaled_erased.channel_type == iv::ChannelTypeId::stereo
+            && reverse_scaled_erased.channels.size() == 2,
+    };
+}
+
+consteval ChannelTopologySnapshot stereo_scalar_product_snapshot()
+{
+    iv::GraphBuilder g;
+    auto source = g.node<NamedStereoSource>(
+        iv::Sample{0.25f}, iv::Sample{-0.5f});
+    auto stream = source[iv::PortName<"main">{}];
+    auto scaled = stream * 0.1f;
+    g.outputs(scaled);
     auto const built = g.build_root_node();
-    return {.ok = built.graph.outputs().size() == 4};
+    return {
+        .ok = built.graph.outputs().size() == 1
+            && built.graph.outputs().front().channel_layout.channel_type
+                == iv::ChannelTypeId::stereo,
+    };
 }
 
 consteval ChannelTopologySnapshot reconstructed_sequence_snapshot(bool reverse)
@@ -1057,10 +1077,13 @@ TEST(Channels, IntrospectionKeepsPromotedLayoutOfAnnotatedTiledBundle)
     EXPECT_TRUE(snapshot.ok);
 }
 
-TEST(Channels, TypedStreamOperatorsPreserveChannelTypeAndPlanarizeMixedLayouts)
+TEST(Channels, TypedStreamOperatorsPromoteMonoAndRemainLayoutAgnostic)
 {
     constexpr auto snapshot = typed_operator_snapshot();
     EXPECT_TRUE(snapshot.ok);
+
+    constexpr auto product_snapshot = stereo_scalar_product_snapshot();
+    EXPECT_TRUE(product_snapshot.ok);
 }
 
 TEST(Channels, ReconstructedNativeChannelSequenceLowersAsWholePort)

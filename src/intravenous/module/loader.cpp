@@ -1,7 +1,5 @@
-#define IV_INTERNAL_TRANSLATION_UNIT
-
 #include <intravenous/module/loader.h>
-#include <intravenous/module/module.h>
+#include <intravenous/module/abi.h>
 #include <intravenous/compat.h>
 
 #include <nlohmann/json.hpp>
@@ -27,6 +25,9 @@
 #include <Windows.h>
 #else
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 #endif
 
 namespace iv {
@@ -97,6 +98,59 @@ struct LoadedBinary {
     std::string id;
     std::filesystem::path artifact_path;
     std::shared_ptr<DynamicLibrary> library;
+};
+
+class ScopedModuleBuildLock {
+#if defined(_WIN32)
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+    OVERLAPPED overlapped_ {};
+#else
+    int fd_ = -1;
+#endif
+
+public:
+    explicit ScopedModuleBuildLock(std::filesystem::path const& path)
+    {
+#if defined(_WIN32)
+        handle_ = CreateFileW(
+            path.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle_ == INVALID_HANDLE_VALUE ||
+            !LockFileEx(
+                handle_, LOCKFILE_EXCLUSIVE_LOCK, 0,
+                MAXDWORD, MAXDWORD, &overlapped_)) {
+            if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+            throw std::runtime_error(
+                "failed to lock module build workspace '" + path.string() + "'");
+        }
+#else
+        fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0666);
+        if (fd_ < 0 || ::flock(fd_, LOCK_EX) != 0) {
+            if (fd_ >= 0) ::close(fd_);
+            throw std::runtime_error(
+                "failed to lock module build workspace '" + path.string() + "'");
+        }
+#endif
+    }
+
+    ~ScopedModuleBuildLock()
+    {
+#if defined(_WIN32)
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            UnlockFileEx(handle_, 0, MAXDWORD, MAXDWORD, &overlapped_);
+            CloseHandle(handle_);
+        }
+#else
+        if (fd_ >= 0) {
+            ::flock(fd_, LOCK_UN);
+            ::close(fd_);
+        }
+#endif
+    }
+
+    ScopedModuleBuildLock(ScopedModuleBuildLock const&) = delete;
+    ScopedModuleBuildLock& operator=(ScopedModuleBuildLock const&) = delete;
 };
 
 std::filesystem::path normalize(std::filesystem::path const &path)
@@ -590,6 +644,8 @@ class ModuleLoader::Impl {
             ? root.module_dir
             : default_source_dir;
 
+        std::filesystem::create_directories(workspace);
+        ScopedModuleBuildLock const build_lock(workspace / "build.lock");
         std::filesystem::create_directories(output_dir);
         std::filesystem::create_directories(generated_dir);
         std::filesystem::create_directories(project_import_root / "iv/modules");
@@ -614,7 +670,24 @@ class ModuleLoader::Impl {
             ? std::string("iv/modules-global/") + root.manifest.id
             : std::string("iv/modules/") + root.manifest.id;
         std::ostringstream export_tu;
-        export_tu << "#include <intravenous/module/module.h>\n"
+        export_tu << "#include <intravenous/module/authoring.h>\n"
+                  << "namespace iv::details::source_introspection_plugin_bridge {\n"
+                  << "template<class Ref> constexpr void "
+                     "_annotate_source_info_after_statement(\n"
+                  << "    Ref* ref, char const* declaration_identity, "
+                     "char const* file_path,\n"
+                  << "    std::uint32_t begin, std::uint32_t end) {\n"
+                  << "  iv::_annotate_source_info_after_statement(\n"
+                  << "      ref, declaration_identity, file_path, begin, end);\n"
+                  << "}\n"
+                  << "constexpr void _annotate_public_output_after_statement(\n"
+                  << "    iv::GraphBuilder* builder, bool event, std::size_t ordinal,\n"
+                  << "    char const* file_path, std::uint32_t begin, "
+                     "std::uint32_t end) {\n"
+                  << "  iv::_annotate_public_output_after_statement(\n"
+                  << "      builder, event, ordinal, file_path, begin, end);\n"
+                  << "}\n"
+                  << "}\n"
                   << "#include <" << root_include << ">\n"
                   << "extern \"C\" IV_MODULE_EXPORT std::uint32_t iv_module_abi_version() {\n"
                   << "  return iv::IV_MODULE_ABI_VERSION;\n"
@@ -664,7 +737,9 @@ class ModuleLoader::Impl {
                   << std::filesystem::last_write_time(source_introspection_plugin)
                          .time_since_epoch().count() << '\n'
                   << "generator=" << generator << '\n'
-                  << read_text(repo_root_ / "src/intravenous/module/module.h") << '\n'
+                  << "generated-export=" << export_tu.str() << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/abi.h") << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/authoring.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/graph/static_metadata.hpp") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n';
         for (auto const &module : closure.modules) {

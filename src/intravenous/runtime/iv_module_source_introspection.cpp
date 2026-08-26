@@ -1,6 +1,6 @@
 #include <intravenous/runtime/iv_module_source_introspection.h>
 
-#include <intravenous/graph/builder/names.hpp>
+#include <intravenous/graph/names.h>
 
 #include <intravenous/compat.h>
 #include <intravenous/filesystem_paths.h>

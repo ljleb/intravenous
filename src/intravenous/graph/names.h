@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/graph/compiler.h>
+#include <intravenous/ports.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -48,8 +48,8 @@ constexpr std::string event_type_name(EventTypeId type)
 constexpr std::string stable_identity_suffix(std::string_view value)
 {
     std::uint64_t hash = 14695981039346656037ull;
-    for (unsigned char c : value) {
-        hash ^= c;
+    for (unsigned char character : value) {
+        hash ^= character;
         hash *= 1099511628211ull;
     }
 

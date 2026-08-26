@@ -2,7 +2,7 @@
 
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
-#include <intravenous/module/module.h>
+#include <intravenous/module/authoring.h>
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/iv_module_definitions.h>

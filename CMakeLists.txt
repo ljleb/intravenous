@@ -43,12 +43,6 @@ endif()
 
 add_subdirectory(src/intravenous)
 
-# Graph authoring is intentionally header-only so it can run in constant
-# evaluation. Parse that implementation once for the large runtime compilation
-# domain instead of once per translation unit.
-target_precompile_headers(intravenous_tooling_runtime_objects PRIVATE
-    <intravenous/graph/builder.h>)
-
 add_subdirectory(tests)
 add_subdirectory(benchmark)
 

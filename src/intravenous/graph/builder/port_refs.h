@@ -16,14 +16,13 @@
 namespace iv {
 class GraphBuilder;
 
-template<class ChannelType, SampleStreamLayout Layout>
+template<class ChannelType>
 class TypedSamplePortRef;
-template<class ChannelType, SampleStreamLayout Layout, class Member>
+template<class ChannelType, class Member>
 class TypedSamplePortChannelRef;
-template<class ChannelType, SampleStreamLayout Layout = SampleStreamLayout::planar>
+template<class ChannelType>
 class TypedSamplePortTileRef;
-template<class ChannelType, class Member,
-         SampleStreamLayout Layout = SampleStreamLayout::planar>
+template<class ChannelType, class Member>
 class TypedSamplePortTileChannelRef;
 
 // A sample expression is exactly the ordered semantic source channels that
@@ -49,13 +48,12 @@ struct SamplePortRef {
   std::string to_string() const;
 };
 
-template<class ChannelType, SampleStreamLayout Layout>
+template<class ChannelType>
 class TypedSamplePortRef {
   SamplePortRef _port;
 
 public:
   using channel_type = ChannelType;
-  static constexpr auto sample_layout = Layout;
 
   constexpr TypedSamplePortRef() = default;
   constexpr explicit TypedSamplePortRef(SamplePortRef port)
@@ -70,7 +68,7 @@ public:
                         ChannelType>;
 };
 
-template<class ChannelType, SampleStreamLayout Layout, class Member>
+template<class ChannelType, class Member>
 class TypedSamplePortChannelRef {
   static_assert(std::same_as<typename Member::channel_type, ChannelType>);
   SamplePortRef _port;
@@ -78,10 +76,8 @@ class TypedSamplePortChannelRef {
 public:
   using channel_type = ChannelType;
   using member_type = Member;
-  static constexpr auto sample_layout = Layout;
-
   constexpr explicit TypedSamplePortChannelRef(
-      TypedSamplePortRef<ChannelType, Layout> port)
+      TypedSamplePortRef<ChannelType> port)
       : _port(port.erased().select_channel(Member::channel_ordinal)) {}
 
   constexpr operator SamplePortRef() const { return _port; }
@@ -92,7 +88,7 @@ public:
 // Both a native tiled-node output and g.tile(...) have the same erased form:
 // one semantic SamplePortRef. Channel selection is therefore just selection
 // from that expression; there is no second structural/member representation.
-template<class ChannelType, SampleStreamLayout Layout>
+template<class ChannelType>
 class TypedSamplePortTileRef {
   SamplePortRef _port{};
 
@@ -118,7 +114,6 @@ class TypedSamplePortTileRef {
 
 public:
   using channel_type = ChannelType;
-  static constexpr auto sample_layout = Layout;
 
   constexpr TypedSamplePortTileRef() = default;
   constexpr explicit TypedSamplePortTileRef(
@@ -141,7 +136,7 @@ public:
                         ChannelType>;
 };
 
-template<class ChannelType, class Member, SampleStreamLayout Layout>
+template<class ChannelType, class Member>
 class TypedSamplePortTileChannelRef {
   static_assert(std::same_as<typename Member::channel_type, ChannelType>);
   SamplePortRef _port{};
@@ -149,8 +144,6 @@ class TypedSamplePortTileChannelRef {
 public:
   using channel_type = ChannelType;
   using member_type = Member;
-  static constexpr auto sample_layout = Layout;
-
   constexpr explicit TypedSamplePortTileChannelRef(SamplePortRef port)
       : _port(std::move(port)) {}
 
@@ -158,23 +151,23 @@ public:
   constexpr SamplePortRef const& erased() const { return _port; }
 };
 
-template<class ChannelType, SampleStreamLayout Layout>
+template<class ChannelType>
 template<class Member>
-constexpr auto TypedSamplePortTileRef<ChannelType, Layout>::operator[](Member) const
+constexpr auto TypedSamplePortTileRef<ChannelType>::operator[](Member) const
 requires std::same_as<typename std::remove_cvref_t<Member>::channel_type,
                       ChannelType> {
   using MemberType = std::remove_cvref_t<Member>;
-  return TypedSamplePortTileChannelRef<ChannelType, MemberType, Layout>{
+  return TypedSamplePortTileChannelRef<ChannelType, MemberType>{
       _port.select_channel(MemberType::channel_ordinal)};
 }
 
-template<class ChannelType, SampleStreamLayout Layout>
+template<class ChannelType>
 template<class Channel>
-constexpr auto TypedSamplePortRef<ChannelType, Layout>::operator[](Channel) const
+constexpr auto TypedSamplePortRef<ChannelType>::operator[](Channel) const
 requires std::same_as<typename std::remove_cvref_t<Channel>::channel_type,
                       ChannelType> {
   using Member = std::remove_cvref_t<Channel>;
-  return TypedSamplePortChannelRef<ChannelType, Layout, Member>{*this};
+  return TypedSamplePortChannelRef<ChannelType, Member>{*this};
 }
 
 struct PublicSampleInputRef {

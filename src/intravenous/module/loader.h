@@ -2,8 +2,8 @@
 
 #include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/graph/build_types.h>
+#include <intravenous/module/abi.h>
 #include <intravenous/module/dependency.h>
-#include <intravenous/module/module.h>
 
 #include <filesystem>
 #include <functional>

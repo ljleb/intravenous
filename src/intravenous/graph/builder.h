@@ -191,12 +191,12 @@ private:
   constexpr SamplePortRef lift_to_sample_port(T&& sample_port) {
     return lift_to_sample_port(static_cast<SamplePortRef>(std::forward<T>(sample_port)));
   }
-  template<class ChannelType, SampleStreamLayout Layout>
-  constexpr SamplePortRef lift_to_sample_port(TypedSamplePortRef<ChannelType, Layout> const& sample_port);
-  template<class ChannelType, SampleStreamLayout Layout, class Member>
-  constexpr SamplePortRef lift_to_sample_port(TypedSamplePortChannelRef<ChannelType, Layout, Member> const& sample_port);
-  template<class ChannelType, SampleStreamLayout Layout>
-  constexpr SamplePortRef lift_to_sample_port(TypedSamplePortTileRef<ChannelType, Layout> const& sample_port);
+  template<class ChannelType>
+  constexpr SamplePortRef lift_to_sample_port(TypedSamplePortRef<ChannelType> const& sample_port);
+  template<class ChannelType, class Member>
+  constexpr SamplePortRef lift_to_sample_port(TypedSamplePortChannelRef<ChannelType, Member> const& sample_port);
+  template<class ChannelType>
+  constexpr SamplePortRef lift_to_sample_port(TypedSamplePortTileRef<ChannelType> const& sample_port);
   template<class T>
     requires std::is_arithmetic_v<std::remove_cvref_t<T>> ||
              std::is_same_v<std::remove_cvref_t<T>, Sample>
@@ -343,12 +343,12 @@ constexpr void GraphBuilderPublicPorts::define_event_outputs(
   }
 }
 
-template<class ChannelType, SampleStreamLayout Layout>
-constexpr SamplePortRef GraphBuilder::lift_to_sample_port(TypedSamplePortRef<ChannelType, Layout> const& p) { return lift_to_sample_port(static_cast<SamplePortRef>(p)); }
-template<class ChannelType, SampleStreamLayout Layout, class Member>
-constexpr SamplePortRef GraphBuilder::lift_to_sample_port(TypedSamplePortChannelRef<ChannelType, Layout, Member> const& p) { return lift_to_sample_port(p.erased()); }
-template<class ChannelType, SampleStreamLayout Layout>
-constexpr SamplePortRef GraphBuilder::lift_to_sample_port(TypedSamplePortTileRef<ChannelType, Layout> const& p) { return lift_to_sample_port(p.erased()); }
+template<class ChannelType>
+constexpr SamplePortRef GraphBuilder::lift_to_sample_port(TypedSamplePortRef<ChannelType> const& p) { return lift_to_sample_port(static_cast<SamplePortRef>(p)); }
+template<class ChannelType, class Member>
+constexpr SamplePortRef GraphBuilder::lift_to_sample_port(TypedSamplePortChannelRef<ChannelType, Member> const& p) { return lift_to_sample_port(p.erased()); }
+template<class ChannelType>
+constexpr SamplePortRef GraphBuilder::lift_to_sample_port(TypedSamplePortTileRef<ChannelType> const& p) { return lift_to_sample_port(p.erased()); }
 
 constexpr GraphBuilder::GraphBuilder(GraphBuilderIdentity identity)
     : _identity(std::move(identity))

@@ -4,8 +4,6 @@
 
 #if IV_ENABLE_JUCE_VST
 
-#include <intravenous/juce/vst_wrapper.h>
-
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
