@@ -619,6 +619,24 @@ constexpr void apply_virtual_port_metadata(
 
     it->members.clear();
     it->backing_node_ids.clear();
+    if (record.type_identity == "sample-port"
+        || record.type_identity == "event-port") {
+      it->kind = record.type_identity == "sample-port"
+          ? "Sample port" : "Event port";
+      auto const backing_id = record.type_identity + ":" + record.id;
+      it->backing_node_ids.push_back(backing_id);
+      it->members.push_back(IntrospectionVirtualNode::Member{
+          .ordinal = 0,
+          .backing_node_id = backing_id,
+          .kind = it->kind,
+          .type_identity = record.type_identity,
+          .sample_inputs = it->sample_inputs,
+          .sample_outputs = it->sample_outputs,
+          .event_inputs = it->event_inputs,
+          .event_outputs = it->event_outputs,
+      });
+      continue;
+    }
     for (size_t bundle_ordinal = 0;
          bundle_ordinal < record.node_bundle_handles.size(); ++bundle_ordinal) {
       auto const handle = record.node_bundle_handles[bundle_ordinal];

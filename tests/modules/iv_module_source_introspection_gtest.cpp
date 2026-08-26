@@ -313,6 +313,7 @@ namespace {
         g.outputs("main"_P = sink);
     }
 }
+
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -328,6 +329,86 @@ namespace {
     ASSERT_NE(it, result.nodes.end());
     EXPECT_FALSE(it->id.empty());
     EXPECT_FALSE(it->source_spans.empty());
+}
+
+TEST(IvModuleSourceIntrospection, AnnotatesTiledSampleValueAndAggregateNodeCall)
+{
+    auto const workspace = make_inline_module_workspace(
+        "iv_module_source_introspection_tiled_value_and_node_call",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    struct TriggerSource
+    {
+        static constexpr auto event_outputs()
+        {
+            return std::array<iv::EventOutputConfig, 1>{{{
+                .name = "trigger", .type = iv::EventTypeId::trigger}}};
+        }
+        void tick(iv::TickSampleContext<TriggerSource> const&) const {}
+    };
+
+    constexpr void tiled_value_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const left = g.node<Constant>(0.25f);
+        auto const right = g.node<Constant>(-0.25f);
+        auto const p = g.tile<stereo>(left, right);
+        auto const trigger = g.node<TriggerSource>().event_port();
+        auto const sink = g.node<Sum<stereo, SampleStreamLayout::planar, 1>>();
+        sink(p);
+        g.outputs(sink);
+        g.event_outputs(trigger);
+    }
+}
+)");
+
+    SeededIvModuleSourceIntrospectionApp app(
+        workspace, iv::test::repo_root(), {});
+    app.initialize();
+
+    auto const module_cpp =
+        std::filesystem::weakly_canonical(workspace / "module.cpp");
+    auto const tiled_value = app.query_by_spans(
+        module_cpp,
+        {{.start = {.line = 19, .column = 1},
+          .end = {.line = 19, .column = 80}}});
+    auto const port = std::find_if(
+        tiled_value.nodes.begin(), tiled_value.nodes.end(),
+        [](auto const& node) { return node.type_identity == "sample-port"; });
+    ASSERT_NE(port, tiled_value.nodes.end());
+    ASSERT_EQ(port->sample_outputs.size(), 1u);
+    EXPECT_EQ(
+        port->sample_outputs.front().sample_channel_type,
+        iv::ChannelTypeId::stereo);
+    ASSERT_EQ(port->members.size(), 1u);
+    for (auto const& member : port->members)
+        EXPECT_EQ(member.sample_outputs.size(), 1u);
+
+    auto const event_value = app.query_by_spans(
+        module_cpp,
+        {{.start = {.line = 20, .column = 1},
+          .end = {.line = 20, .column = 80}}});
+    auto const event_port = std::find_if(
+        event_value.nodes.begin(), event_value.nodes.end(),
+        [](auto const& node) { return node.type_identity == "event-port"; });
+    ASSERT_NE(event_port, event_value.nodes.end());
+    ASSERT_EQ(event_port->event_outputs.size(), 1u);
+    ASSERT_EQ(event_port->members.size(), 1u);
+    EXPECT_EQ(event_port->members.front().event_outputs.size(), 1u);
+
+    auto const node_call = app.query_by_spans(
+        module_cpp,
+        {{.start = {.line = 22, .column = 1},
+          .end = {.line = 22, .column = 40}}});
+    auto const sink = std::find_if(
+        node_call.nodes.begin(), node_call.nodes.end(),
+        [](auto const& node) {
+            return node.kind.contains("Sum")
+                && node.type_identity != "sample-port";
+        });
+    ASSERT_NE(sink, node_call.nodes.end());
+    EXPECT_FALSE(sink->source_spans.empty());
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)

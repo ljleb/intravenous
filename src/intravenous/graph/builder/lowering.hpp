@@ -686,12 +686,24 @@ class Lowerer {
     }
   }
 
-  constexpr TopologyPortId materialize_sample_output_port(NodeBundlePortId logical, OutputConfig output_config) {
-    auto const semantic_channels = bundles.sample_output_channels(logical);
-    if (semantic_channels.size() != channel_count(output_config.channel_layout.channel_type)) details::error("virtual sample output member channel count changed");
-    auto const& endpoints = out.bundle_projections.at(logical.node_bundle_handle).sample_outputs.at(logical.port_ordinal);
-    auto const resolved_config = bundles.resolve_sample_output(logical).config;
-    if (endpoints.size() == 1 && effective_channel_layout(resolved_config) == effective_channel_layout(output_config)) return endpoints.front();
+  constexpr TopologyPortId materialize_sample_output_channels(
+      ChannelTypeId semantic_type,
+      std::span<SampleOutputChannelId const> semantic_channels,
+      OutputConfig output_config) {
+    if (semantic_channels.size() != channel_count(semantic_type))
+      details::error("virtual sample output member channel count changed");
+    if (semantic_type != output_config.channel_layout.channel_type)
+      details::error("virtual sample output member channel type changed");
+    if (auto logical = bundles.sample_output_port_for_channels(
+            semantic_type, semantic_channels)) {
+      auto const& endpoints = out.bundle_projections.at(
+          logical->node_bundle_handle).sample_outputs.at(logical->port_ordinal);
+      auto const resolved_config = bundles.resolve_sample_output(*logical).config;
+      if (endpoints.size() == 1
+          && effective_channel_layout(resolved_config)
+              == effective_channel_layout(output_config))
+        return endpoints.front();
+    }
     std::vector<TopologyPortId> input_sources;
     std::vector<ConnectionNodeInputConfig> input_configs;
     ConnectionNodeEphemeralPortConfig ephemeral{
@@ -717,17 +729,27 @@ class Lowerer {
     return {node, 0};
   }
 
+  constexpr TopologyPortId materialize_sample_output_port(
+      NodeBundlePortId logical, OutputConfig output_config) {
+    auto const semantic_channels = bundles.sample_output_channels(logical);
+    return materialize_sample_output_channels(
+        bundles.resolve_sample_output(logical).config.channel_layout.channel_type,
+        semantic_channels, std::move(output_config));
+  }
+
   constexpr void lower_runtime_output_observers() {
     auto const virtual_ports = virtuals.ports(bundles);
     for (auto const& output : virtual_ports.sample_outputs) {
       std::vector<TopologyPortId> sources;
       std::vector<InputConfig> inputs;
       std::vector<std::string> member_binding_ids;
-      sources.reserve(output.node_bundle_ports.size());
-      inputs.reserve(output.node_bundle_ports.size());
-      member_binding_ids.reserve(output.node_bundle_ports.size());
-      for (size_t member = 0; member < output.node_bundle_ports.size(); ++member) {
-        sources.push_back(materialize_sample_output_port(output.node_bundle_ports[member], output.config));
+      sources.reserve(output.member_channels.size());
+      inputs.reserve(output.member_channels.size());
+      member_binding_ids.reserve(output.member_channels.size());
+      for (size_t member = 0; member < output.member_channels.size(); ++member) {
+        sources.push_back(materialize_sample_output_channels(
+            output.config.channel_layout.channel_type,
+            output.member_channels[member], output.config));
         inputs.push_back(InputConfig{.name = output.config.name, .channel_layout = output.config.channel_layout});
         member_binding_ids.push_back(runtime_virtual_port_key(false, PortKind::sample, output.id.virtual_node_id, member, output.id.port_ordinal));
       }

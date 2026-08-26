@@ -806,8 +806,7 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
         return capture_state->captures.load(std::memory_order_relaxed) >= 2;
     }));
 
-    auto const captures_before_disconnect =
-        capture_state->captures.load(std::memory_order_relaxed);
+    std::atomic<size_t> captures_when_disconnect_applied {0};
     std::atomic<bool> disconnect_applied {false};
     IntegrationPassFinishedAction pass_finished_action;
     g_integration_pass_finished_action = &pass_finished_action;
@@ -822,16 +821,20 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
                     iv::TimelineLaneBatchUpdate{
                     .connections_to_remove = {connection},
                 });
-                disconnect_applied.store(true, std::memory_order_relaxed);
+                captures_when_disconnect_applied.store(
+                    capture_state->captures.load(std::memory_order_acquire),
+                    std::memory_order_release);
+                disconnect_applied.store(true, std::memory_order_release);
             };
     }
 
     ASSERT_TRUE(wait_until([&] {
-        return disconnect_applied.load(std::memory_order_relaxed);
+        return disconnect_applied.load(std::memory_order_acquire);
     })) << "expected disconnect to be applied on a pass boundary";
 
     ASSERT_TRUE(wait_until([&] {
-        return capture_state->captures.load(std::memory_order_relaxed) > captures_before_disconnect;
+        return capture_state->captures.load(std::memory_order_acquire)
+            > captures_when_disconnect_applied.load(std::memory_order_acquire);
     })) << "expected sink to receive a block after disconnect";
 
     auto const latest = capture_state->snapshot();

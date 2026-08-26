@@ -21,6 +21,7 @@ struct VirtualSamplePortMapping {
   size_t ordinal = 0;
   ChannelLayout channel_layout{};
   std::vector<ChannelId> channels{};
+  std::vector<std::vector<ChannelId>> member_channels{};
   bool operator==(VirtualSamplePortMapping const&) const = default;
 };
 using VirtualSampleInputPortMapping = VirtualSamplePortMapping<SampleInputChannelId>;
@@ -56,6 +57,7 @@ struct GraphBuilderVirtualSampleOutputPort {
   VirtualPortId id{};
   OutputConfig config{};
   std::vector<SampleOutputChannelId> channels{};
+  std::vector<std::vector<SampleOutputChannelId>> member_channels{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
 };
 struct GraphBuilderVirtualEventInputPort {
@@ -139,7 +141,8 @@ constexpr void append_virtual_sample_port_mapping(
   if (mapping.channels.empty()) {
     mapping = {.name = config.name, .ordinal = ordinal,
                .channel_layout = layout,
-               .channels = {channels.begin(), channels.end()}};
+               .channels = {channels.begin(), channels.end()},
+               .member_channels = {{channels.begin(), channels.end()}}};
     return;
   }
   if (mapping.name != config.name || mapping.channel_layout != layout)
@@ -147,6 +150,7 @@ constexpr void append_virtual_sample_port_mapping(
   for (auto const channel : channels)
     if (!std::ranges::contains(mapping.channels, channel))
       mapping.channels.push_back(channel);
+  mapping.member_channels.emplace_back(channels.begin(), channels.end());
 }
 
 constexpr void append_bundle_mappings(
@@ -235,6 +239,7 @@ constexpr void GraphBuilderVirtualNodes::attach_sample_output(
     std::span<SampleOutputChannelId const> channels,
     std::string_view source_identity, SourceInfo const& source_info) {
   if (source_identity.empty() || channels.empty()) return;
+  (void)bundles;
   auto const handle = get_or_create(source_identity, "sample-port");
   auto& record = _records[handle];
   if (!std::ranges::contains(record.source_infos, source_info))
@@ -247,6 +252,7 @@ constexpr void GraphBuilderVirtualNodes::attach_sample_output(
             .sample_layout = SampleStreamLayout::planar,
         },
         .channels = {channels.begin(), channels.end()},
+        .member_channels = {{channels.begin(), channels.end()}},
     });
   }
   for (auto channel : channels) {
@@ -254,8 +260,6 @@ constexpr void GraphBuilderVirtualNodes::attach_sample_output(
       record.sample_outputs.front().channels.push_back(channel);
     if (!std::ranges::contains(record.node_bundle_handles, channel.bundle))
       record.node_bundle_handles.push_back(channel.bundle);
-    auto& inverse = bundles.bundle(channel.bundle).virtual_node_handles();
-    if (!std::ranges::contains(inverse, handle)) inverse.push_back(handle);
   }
 }
 
@@ -264,6 +268,7 @@ constexpr void GraphBuilderVirtualNodes::attach_event_output(
     std::span<EventOutputPortId const> sources,
     std::string_view source_identity, SourceInfo const& source_info) {
   if (source_identity.empty() || sources.empty()) return;
+  (void)bundles;
   auto const handle = get_or_create(source_identity, "event-port");
   auto& record = _records[handle];
   if (!std::ranges::contains(record.source_infos, source_info))
@@ -281,8 +286,6 @@ constexpr void GraphBuilderVirtualNodes::attach_event_output(
       record.event_outputs.front().node_bundle_ports.push_back(port);
     if (!std::ranges::contains(record.node_bundle_handles, source.bundle))
       record.node_bundle_handles.push_back(source.bundle);
-    auto& inverse = bundles.bundle(source.bundle).virtual_node_handles();
-    if (!std::ranges::contains(inverse, handle)) inverse.push_back(handle);
   }
 }
 
@@ -343,6 +346,7 @@ constexpr GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
       result.sample_outputs.push_back({
           .id = {node.id, PortKind::sample, mapping.ordinal},
           .config = std::move(config), .channels = mapping.channels,
+          .member_channels = mapping.member_channels,
           .node_bundle_ports = sample_bundle_ports(mapping.channels)});
     }
     for (auto const& mapping : node.event_inputs) {
