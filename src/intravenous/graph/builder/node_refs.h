@@ -59,8 +59,8 @@ namespace iv {
             _index(index)
         {}
 
-        NodeRef& operator=(NodeRef const& rhs);
-        NodeRef& operator=(NodeRef&& rhs);
+        constexpr NodeRef& operator=(NodeRef const& rhs);
+        constexpr NodeRef& operator=(NodeRef&& rhs);
 
         constexpr NodeRef node_ref() const;
         constexpr size_t node_bundle_handle() const
@@ -125,13 +125,13 @@ namespace iv {
     public:
         using Base::Base;
 
-        Derived& operator=(Derived const& rhs)
+        constexpr Derived& operator=(Derived const& rhs)
         {
             Base::operator=(static_cast<NodeRef const&>(rhs));
             return derived();
         }
 
-        Derived& operator=(Derived&& rhs)
+        constexpr Derived& operator=(Derived&& rhs)
         {
             Base::operator=(static_cast<NodeRef&&>(rhs));
             return derived();
@@ -198,7 +198,7 @@ namespace iv {
         TypedNodeRef(TypedNodeRef const&) = delete;
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
         TypedNodeRef& operator=(TypedNodeRef const&) = delete;
-        TypedNodeRef& operator=(TypedNodeRef&& rhs)
+        constexpr TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
             return *this;
@@ -290,7 +290,7 @@ namespace iv {
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
 
         TypedNodeRef& operator=(TypedNodeRef const&) = delete;
-        TypedNodeRef& operator=(TypedNodeRef&& rhs)
+        constexpr TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
             return *this;
