@@ -170,14 +170,12 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_merged_virtual",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     template<int I>
     constexpr iv::NodeRef make_value(iv::GraphBuilder& g)
     {
-        static iv::Sample value{static_cast<float>(I)};
-        return g.node<iv::ValueSource>(&value).node_ref();
+        return g.node<iv::Constant>(static_cast<float>(I)).node_ref();
     }
 
     constexpr void merged_virtual_module(iv::GraphBuilder& g)
@@ -198,14 +196,14 @@ namespace {
         std::filesystem::weakly_canonical(workspace / "module.cpp"),
         {{.start = {.line = 1, .column = 1}, .end = {.line = 22, .column = 1}}});
 
-    size_t value_source_count = 0;
+    size_t constant_count = 0;
     for (auto const &node : result.nodes) {
-        if (!node.kind.contains("ValueSource")) continue;
-        ++value_source_count;
+        if (!node.kind.contains("Constant")) continue;
+        ++constant_count;
         EXPECT_EQ(node.member_count, 1u);
         EXPECT_FALSE(node.source_spans.empty());
     }
-    EXPECT_EQ(value_source_count, 2u);
+    EXPECT_EQ(constant_count, 2u);
 }
 
 TEST(IvModuleSourceIntrospection, GenericChannelOutputArgumentsArePublicOutputSourceSpans)
@@ -252,15 +250,13 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableA
     auto const workspace = make_inline_module_workspace(
         "iv_module_source_introspection_stable_annotated_id",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     constexpr void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value{};
         auto const a = _annotate_node_source_info(
-            g.node<ValueSource>(&value).node_ref(),
+            g.node<Constant>(0.0f).node_ref(),
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
@@ -278,7 +274,7 @@ namespace {
         {{.start = {.line = 1, .column = 1}, .end = {.line = 24, .column = 1}}});
 
     auto const initial_it = std::find_if(initial.nodes.begin(), initial.nodes.end(), [](auto const &node) {
-        return node.kind.contains("ValueSource");
+        return node.kind.contains("Constant");
     });
     ASSERT_NE(initial_it, initial.nodes.end());
     auto const initial_id = initial_it->id;
@@ -293,7 +289,7 @@ namespace {
     iv::test::write_text(module_cpp, original_text);
 
     auto const reloaded_it = std::find_if(reloaded.nodes.begin(), reloaded.nodes.end(), [](auto const &node) {
-        return node.kind.contains("ValueSource");
+        return node.kind.contains("Constant");
     });
     ASSERT_NE(reloaded_it, reloaded.nodes.end());
     EXPECT_EQ(reloaded_it->id, initial_id);
@@ -304,15 +300,13 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedVirtualNode)
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_annotated_symbol",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     constexpr void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value{};
         auto const a = _annotate_node_source_info(
-            g.node<ValueSource>(&value).node_ref(),
+            g.node<Constant>(0.0f).node_ref(),
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
@@ -329,7 +323,7 @@ namespace {
         {{.start = {.line = 1, .column = 1}, .end = {.line = 24, .column = 1}}});
 
     auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const &node) {
-        return node.kind.contains("ValueSource");
+        return node.kind.contains("Constant");
     });
     ASSERT_NE(it, result.nodes.end());
     EXPECT_FALSE(it->id.empty());
@@ -341,15 +335,13 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBa
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_single_assigned_ref",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     constexpr void assigned_ref_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value{};
         NodeRef x;
-        x = g.node<ValueSource>(&value).node_ref();
+        x = g.node<Constant>(0.0f).node_ref();
         auto const& sink = x;
         g.outputs("main"_P = sink);
     }
@@ -364,7 +356,7 @@ namespace {
         {{.start = {.line = 1, .column = 1}, .end = {.line = 24, .column = 1}}});
 
     auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const &node) {
-        return node.kind.contains("ValueSource");
+        return node.kind.contains("Constant");
     });
     ASSERT_NE(it, result.nodes.end());
     EXPECT_FALSE(it->source_spans.empty());
@@ -375,16 +367,14 @@ TEST(IvModuleSourceIntrospection, InitializationFailsWhenDeclarationBackedRefIsA
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_double_assignment_fails",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     constexpr void assigned_twice_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value{};
         NodeRef x;
-        x = g.node<ValueSource>(&value).node_ref();
-        x = g.node<ValueSource>(&value).node_ref();
+        x = g.node<Constant>(0.0f).node_ref();
+        x = g.node<Constant>(1.0f).node_ref();
         auto const& sink = x;
         g.outputs("main"_P = sink);
     }
@@ -524,7 +514,6 @@ TEST(IvModuleSourceIntrospection, QueryBySpansAggregatesMixedConnectivity)
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_mixed_connectivity",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/arithmetic.h>
 
 namespace {
@@ -538,8 +527,7 @@ namespace {
     constexpr void mixed_connectivity_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value_storage{};
-        auto const value = g.node<iv::ValueSource>(&value_storage).node_ref();
+        auto const value = g.node<iv::Constant>(0.0f).node_ref();
         auto const a = make_sum<0>(g);
         auto const b = make_sum<1>(g);
         a(value);
