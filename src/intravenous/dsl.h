@@ -177,6 +177,16 @@ namespace iv {
         }
     }
 
+    constexpr void _prepare_virtual_empty_after_statement(
+        NodeRef* ref,
+        char const* declaration_identity,
+        char const*,
+        uint32_t,
+        uint32_t)
+    {
+        ref->_prepare_virtual_empty(declaration_identity);
+    }
+
     constexpr void _annotate_public_output_after_statement(
         GraphBuilder* builder,
         bool event,

@@ -28,6 +28,12 @@ namespace iv {
     template<class Node, class ChannelType>
     using TiledNodeRef = TypedNodeRef<Node, TiledPortProjection<ChannelType>>;
 
+    struct VirtualEmptyTag {
+        explicit constexpr VirtualEmptyTag() = default;
+    };
+
+    inline constexpr VirtualEmptyTag virtual_empty_tag {};
+
     // The untyped handle is the public base for every node-bundle case.
     // It deliberately addresses a NodeBundle, never an assumed concrete node.
     class NodeRef {
@@ -35,6 +41,7 @@ namespace iv {
         GraphBuilder* _graph_builder{};
         size_t _index{};
         mutable std::string _virtual_declaration_id {};
+        bool _allows_single_assignment = false;
 
         friend class GraphBuilder;
         friend class GraphBuilderAnnotations;
@@ -43,13 +50,17 @@ namespace iv {
         constexpr NodeRef() = default;
         NodeRef(NodeRef const&) = delete;
         NodeRef(NodeRef&&) noexcept = default;
+        explicit NodeRef(VirtualEmptyTag, std::string_view declaration_identity) :
+            _virtual_declaration_id(declaration_identity),
+            _allows_single_assignment(true)
+        {}
         constexpr explicit NodeRef(GraphBuilder& graph_builder, size_t index) :
             _graph_builder(&graph_builder),
             _index(index)
         {}
 
-        constexpr NodeRef& operator=(NodeRef const& rhs);
-        constexpr NodeRef& operator=(NodeRef&& rhs);
+        NodeRef& operator=(NodeRef const& rhs);
+        NodeRef& operator=(NodeRef&& rhs);
 
         constexpr NodeRef node_ref() const;
         constexpr size_t node_bundle_handle() const
@@ -98,6 +109,8 @@ namespace iv {
             uint32_t begin,
             uint32_t end
         ) const;
+        constexpr void _prepare_virtual_empty(
+            std::string_view declaration_identity);
     };
 
     // Internal only: it supplies covariant fluent returns for the two typed
@@ -112,13 +125,13 @@ namespace iv {
     public:
         using Base::Base;
 
-        constexpr Derived& operator=(Derived const& rhs)
+        Derived& operator=(Derived const& rhs)
         {
             Base::operator=(static_cast<NodeRef const&>(rhs));
             return derived();
         }
 
-        constexpr Derived& operator=(Derived&& rhs)
+        Derived& operator=(Derived&& rhs)
         {
             Base::operator=(static_cast<NodeRef&&>(rhs));
             return derived();
@@ -185,7 +198,7 @@ namespace iv {
         TypedNodeRef(TypedNodeRef const&) = delete;
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
         TypedNodeRef& operator=(TypedNodeRef const&) = delete;
-        constexpr TypedNodeRef& operator=(TypedNodeRef&& rhs)
+        TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
             return *this;
@@ -277,7 +290,7 @@ namespace iv {
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
 
         TypedNodeRef& operator=(TypedNodeRef const&) = delete;
-        constexpr TypedNodeRef& operator=(TypedNodeRef&& rhs)
+        TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
             return *this;

@@ -52,6 +52,12 @@ struct RefAnnotation {
     SourceSpan span;
 };
 
+struct EmptyNodeDeclaration {
+    tree declaration = nullptr;
+    std::string declaration_identity;
+    SourceSpan span;
+};
+
 struct PublicOutputAnnotation {
     tree builder_pointer = nullptr;
     bool event = false;
@@ -61,6 +67,7 @@ struct PublicOutputAnnotation {
 
 struct StatementAnalysis {
     std::vector<RefAnnotation> refs;
+    std::vector<EmptyNodeDeclaration> empty_nodes;
     std::vector<PublicOutputAnnotation> public_outputs;
 };
 
@@ -71,6 +78,7 @@ std::unordered_map<std::string, SourceSpan> graph_local_declarations;
 std::unordered_set<tree> transformed_bodies;
 
 tree source_annotation_template;
+tree prepare_virtual_empty_function;
 tree public_output_annotation_function;
 
 std::filesystem::path normalized_path(std::filesystem::path path)
@@ -453,29 +461,29 @@ tree analyze_statement_node(tree* node, int* walk_subtrees, void* data)
         *walk_subtrees = 0;
         return nullptr;
     }
-    if (TREE_CODE(*node) == LAMBDA_EXPR) {
-        *walk_subtrees = 0;
-        return nullptr;
-    }
 
     auto& analysis = *static_cast<StatementAnalysis*>(data);
     if (TREE_CODE(*node) == DECL_EXPR) {
         tree const declaration = DECL_EXPR_DECL(*node);
-        if (!DECL_ARTIFICIAL(declaration)) {
-            auto const kind = annotatable_ref_kind(TREE_TYPE(declaration));
-            if (kind != AnnotatableRefKind::none) {
-                auto const span = declaration_span(declaration);
-                auto const identity = declaration_identity(declaration);
-                if (span && !identity.empty())
-                    validate_unique_graph_local(declaration, identity, *span);
-                if (kind == AnnotatableRefKind::node
-                    && TREE_CODE(TREE_TYPE(declaration)) != REFERENCE_TYPE
-                    && !declaration_has_source_initializer(declaration)) {
-                    *walk_subtrees = 0;
-                    return nullptr;
-                }
+        auto const kind = annotatable_ref_kind(TREE_TYPE(declaration));
+        if (kind == AnnotatableRefKind::node
+            && record_type_name(TREE_TYPE(declaration)) == "NodeRef"
+            && TREE_CODE(TREE_TYPE(declaration)) != REFERENCE_TYPE
+            && !DECL_ARTIFICIAL(declaration)
+            && !declaration_has_source_initializer(declaration)) {
+            auto const span = declaration_span(declaration);
+            auto const identity = declaration_identity(declaration);
+            if (span && !identity.empty()) {
+                validate_unique_graph_local(
+                    declaration, identity, *span);
+                analysis.empty_nodes.push_back({
+                    .declaration = declaration,
+                    .declaration_identity = identity,
+                    .span = *span,
+                });
             }
         }
+        return nullptr;
     }
 
     if (TREE_CODE(*node) == INIT_EXPR) {
@@ -506,70 +514,25 @@ tree analyze_statement_node(tree* node, int* walk_subtrees, void* data)
 
     if (TREE_CODE(*node) == ADDR_EXPR) {
         tree const declaration = referenced_declaration(*node);
-        if (declaration) {
-            auto const kind = annotatable_ref_kind(TREE_TYPE(declaration));
-            if (kind != AnnotatableRefKind::none) {
-                if (kind == AnnotatableRefKind::node
-                    && !declaration_has_source_initializer(declaration)) {
-                    return nullptr;
-                }
-                auto const span = named_expression_span(*node, declaration);
-                auto const identity = declaration_identity(declaration);
-                if (span && !identity.empty()) {
-                    append_ref_annotation(analysis, {
-                        .value = *node,
-                        .declaration = declaration,
-                        .value_is_pointer = true,
-                        .declaration_identity = identity,
-                        .span = *span,
-                    });
-                }
+        if (declaration
+            && annotatable_ref_kind(TREE_TYPE(declaration))
+                != AnnotatableRefKind::none) {
+            auto const span = named_expression_span(*node, declaration);
+            auto const identity = declaration_identity(declaration);
+            if (span && !identity.empty()) {
+                append_ref_annotation(analysis, {
+                    .value = *node,
+                    .declaration = declaration,
+                    .value_is_pointer = true,
+                    .declaration_identity = identity,
+                    .span = *span,
+                });
             }
         }
     }
 
     if (TREE_CODE(*node) == CALL_EXPR) {
         tree const function = called_function(*node);
-        if (function_is_named(function, "operator=")
-            && call_expr_nargs(*node) > 0) {
-            tree const destination = CALL_EXPR_ARG(*node, 0);
-            tree const declaration = referenced_declaration(destination);
-            if (declaration && !DECL_ARTIFICIAL(declaration)
-                && annotatable_ref_kind(TREE_TYPE(declaration))
-                    == AnnotatableRefKind::node
-                && TREE_CODE(TREE_TYPE(declaration)) != REFERENCE_TYPE
-                && !declaration_has_source_initializer(declaration)) {
-                auto const identity = declaration_identity(declaration);
-                auto const declaration_source_span = declaration_span(declaration);
-                auto initialization_source_span = expression_span(*node);
-                if (!initialization_source_span)
-                    initialization_source_span = named_expression_span(
-                        destination, declaration);
-                if (!identity.empty() && declaration_source_span) {
-                    validate_unique_graph_local(
-                        declaration, identity, *declaration_source_span);
-                    append_ref_annotation(analysis, {
-                        .value = destination,
-                        .declaration = declaration,
-                        .value_is_pointer = TREE_CODE(TREE_TYPE(destination))
-                            == POINTER_TYPE,
-                        .declaration_identity = identity,
-                        .span = *declaration_source_span,
-                    });
-                }
-                if (!identity.empty() && initialization_source_span) {
-                    append_ref_annotation(analysis, {
-                        .value = destination,
-                        .declaration = declaration,
-                        .value_is_pointer = TREE_CODE(TREE_TYPE(destination))
-                            == POINTER_TYPE,
-                        .declaration_identity = identity,
-                        .span = *initialization_source_span,
-                    });
-                }
-            }
-        }
-
         bool const sample_outputs = function_is_named(function, "outputs");
         bool const event_outputs = function_is_named(function, "event_outputs");
         if ((sample_outputs || event_outputs)
@@ -644,6 +607,30 @@ tree build_ref_annotation(RefAnnotation const& annotation)
         DECL_SOURCE_LOCATION(annotation.declaration), call);
 }
 
+tree build_empty_node_preparation(EmptyNodeDeclaration const& empty)
+{
+    tree const pointer = cp_build_addr_expr(
+        empty.declaration, tf_warning_or_error);
+    if (pointer == error_mark_node)
+        return nullptr;
+    tree arguments[] = {
+        pointer,
+        string_pointer(empty.declaration_identity),
+        string_pointer(empty.span.file_path),
+        build_int_cst(unsigned_type_node, empty.span.begin),
+        build_int_cst(unsigned_type_node, empty.span.end),
+    };
+    tree const call = build_cxx_call(
+        prepare_virtual_empty_function,
+        5,
+        arguments,
+        tf_warning_or_error);
+    if (call == error_mark_node)
+        return nullptr;
+    return expression_statement(
+        DECL_SOURCE_LOCATION(empty.declaration), call);
+}
+
 tree build_public_output_annotation(
     PublicOutputAnnotation const& output)
 {
@@ -682,8 +669,13 @@ tree annotate_statement_lists(tree* node, int* walk_subtrees, void*)
 
         std::vector<tree> annotations;
         annotations.reserve(
-            analysis.refs.size()
+            analysis.empty_nodes.size()
+            + analysis.refs.size()
             + analysis.public_outputs.size());
+        for (auto const& empty : analysis.empty_nodes) {
+            if (tree const annotation = build_empty_node_preparation(empty))
+                annotations.push_back(annotation);
+        }
         for (auto const& ref : analysis.refs) {
             if (tree const annotation = build_ref_annotation(ref))
                 annotations.push_back(annotation);
@@ -722,12 +714,16 @@ void finish_parse_function(void* gcc_data, void*)
             ? DECL_TI_TEMPLATE(function)
             : function;
     } else if (function_is_named(
+                   function, "_prepare_virtual_empty_after_statement")) {
+        prepare_virtual_empty_function = function;
+    } else if (function_is_named(
                    function, "_annotate_public_output_after_statement")) {
         public_output_annotation_function = function;
     }
 
     if (!DECL_SAVED_TREE(function)
         || !source_annotation_template
+        || !prepare_virtual_empty_function
         || !public_output_annotation_function
         || !is_user_source_location(DECL_SOURCE_LOCATION(function)))
         return;
