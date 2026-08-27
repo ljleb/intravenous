@@ -7,9 +7,12 @@
     # GCC 16 is intentionally sourced independently from the rest of the
     # development environment for C++26 reflection and the GCC plugin API.
     gcc-reflection-nixpkgs.url = "github:NixOS/nixpkgs/2c423e03bbafcff28bfadc6781a4a8257f205cb5";
+
+    # Reflection-capable clang/clangd fork
+    clang-reflection-nixpkgs.url = "github:cadkin/nixpkgs/p2996";
   };
 
-  outputs = { nixpkgs, gcc-reflection-nixpkgs, ... }:
+outputs = { nixpkgs, gcc-reflection-nixpkgs, clang-reflection-nixpkgs, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -22,11 +25,18 @@
               builtins.elem (pkg.pname or "") [ "claude-code" ];
           };
           reflectionPkgs = import gcc-reflection-nixpkgs { inherit system; };
+          clangReflectionPkgs = import clang-reflection-nixpkgs { inherit system; };
+          clangd-p2996 = pkgs.writeShellScriptBin "clangd-p2996" ''
+            export CPLUS_INCLUDE_PATH="${clangReflectionPkgs.llvmPackages_p2996.libcxx.dev}/include/c++/v1..."
+            exec ${clangReflectionPkgs.llvmPackages_p2996.clang-tools}/bin/clangd \
+              --query-driver=${reflectionPkgs.gcc16}/bin/g++ \
+              "$@"
+          '';
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
-              llvmPackages_22.clang
-              llvmPackages_22.clang-tools
+              clangd-p2996
+
               cmake
               ninja
               pkg-config
@@ -42,26 +52,19 @@
               fontconfig
               freetype
               libGL
-              xorg.libX11.dev
-              xorg.libXrandr.dev
-              xorg.libXinerama.dev
-              xorg.libXext.dev
-              xorg.libXcursor.dev
-            ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              libx11.dev
+              libxrandr.dev
+              libxinerama.dev
+              libxext.dev
+              libxcursor.dev
               reflectionPkgs.gcc16
               reflectionPkgs.gmp.dev
               reflectionPkgs.mpfr.dev
             ];
 
             shellHook = ''
-              ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-                export CC=${reflectionPkgs.gcc16}/bin/gcc
-                export CXX=${reflectionPkgs.gcc16}/bin/g++
-              ''}
-              ${pkgs.lib.optionalString (!pkgs.stdenv.isLinux) ''
-                export CC=clang
-                export CXX=clang++
-              ''}
+              export CC=${reflectionPkgs.gcc16}/bin/gcc
+              export CXX=${reflectionPkgs.gcc16}/bin/g++
               export JUCE_DIR=${pkgs.juce}
               export IV_VST3_PATH="$HOME/vst"
 

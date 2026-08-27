@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "clang-reflection-nixpkgs": {
+      "locked": {
+        "lastModified": 1739048750,
+        "narHash": "sha256-p0Z08zm7ZQGkjiVIDLrFtW7N6hh+pbbmdBiGaU620yY=",
+        "owner": "cadkin",
+        "repo": "nixpkgs",
+        "rev": "3d53e564f1c0323c31ec2e269866b82ce3c03ee1",
+        "type": "github"
+      },
+      "original": {
+        "owner": "cadkin",
+        "ref": "p2996",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "gcc-reflection-nixpkgs": {
       "locked": {
         "lastModified": 1787360063,
@@ -30,6 +46,7 @@
     },
     "root": {
       "inputs": {
+        "clang-reflection-nixpkgs": "clang-reflection-nixpkgs",
         "gcc-reflection-nixpkgs": "gcc-reflection-nixpkgs",
         "nixpkgs": "nixpkgs"
       }

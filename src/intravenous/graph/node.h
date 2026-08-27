@@ -664,6 +664,9 @@ namespace iv {
             size_t block_size,
             std::index_sequence<FrontierIndices...>)
         {
+            (void)block_index;
+            (void)block_size;
+
             constexpr size_t begin = GraphValue._group_event_input_offsets[GroupIndex];
             bool unchanged = true;
             ([&] {
@@ -720,6 +723,8 @@ namespace iv {
             std::int32_t delta,
             std::index_sequence<DescendantIndices...>)
         {
+            (void)delta;
+
             ([&] {
                 constexpr size_t group_i = GroupIndex + 1 + DescendantIndices;
                 auto& blocked = state.dormancy_group_blocked_by_ancestors[group_i];
@@ -785,6 +790,9 @@ namespace iv {
             size_t block_size,
             std::index_sequence<WakeIndices...>)
         {
+            (void)block_index;
+            (void)block_size;
+
             constexpr size_t begin = GraphValue._wake_check_group_offsets[SccIndex];
             (static_wake_group_if_needed<
                 GraphValue,
