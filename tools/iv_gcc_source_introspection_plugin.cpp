@@ -489,11 +489,10 @@ tree analyze_statement_node(tree* node, int* walk_subtrees, void* data)
             && TREE_CODE(TREE_TYPE(declaration)) != REFERENCE_TYPE) {
             auto const kind = annotatable_ref_kind(TREE_TYPE(declaration));
             if (kind != AnnotatableRefKind::none) {
-                auto span = kind == AnnotatableRefKind::node
-                        || kind == AnnotatableRefKind::sample_port
-                        || kind == AnnotatableRefKind::event_port
-                    ? declaration_span(declaration)
-                    : expression_span(TREE_OPERAND(*node, 1));
+                // Public inputs are handles returned by g.input(...). Their
+                // initialization annotation belongs to the receiving
+                // id-expression, not to that factory call.
+                auto const span = declaration_span(declaration);
                 auto const declaration_source_span =
                     declaration_span(declaration);
                 auto const identity = declaration_identity(declaration);

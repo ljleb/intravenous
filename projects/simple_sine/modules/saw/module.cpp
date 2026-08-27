@@ -44,8 +44,8 @@ consteval void module_main(iv::GraphBuilder& g)
     auto const tt = g.node<FunNode, stereo>();
     auto const f = g.input<"freq">(220, 0, 1000);
     auto const voice = g.node<SawOscillator, stereo>();
-    auto const c = g.input<"detune">(2.5, -100, 100);
-    auto const p = f + g.tile<stereo>(+c, -c);
+    auto const detune = g.input<"detune">(2.5, -100, 100);
+    auto const p = f + g.tile<stereo>(+detune, -detune);
 
     voice(
         "frequency"_P = p);
