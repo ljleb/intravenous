@@ -1,7 +1,7 @@
 CompileFlags:
   Add:
     - "-DR123_USE_AES_NI=1"
-    - "-std=c++23"
+    - "-std=c++26"
     - "-Isrc"
 Diagnostics:
   Suppress:
