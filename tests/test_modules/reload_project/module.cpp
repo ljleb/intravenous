@@ -2,13 +2,13 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <iv/modules/iv.test.reload_voice>
 
-constexpr void reload_project(iv::GraphBuilder& g)
+consteval void reload_project(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto const left_phase = g.node<PhaseIntegrator>();
     auto const right_phase = g.node<PhaseIntegrator>();
-    auto const left_voice = g.module<&reload_voice>();
-    auto const right_voice = g.module<&reload_voice>();
+    auto const left_voice = g.module<reload_voice>();
+    auto const right_voice = g.module<reload_voice>();
     left_phase(0.0);
     right_phase(0.0);
     g.outputs(

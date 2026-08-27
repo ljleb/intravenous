@@ -79,11 +79,11 @@ namespace iv {
         constexpr bool input_is_connected(size_t input_port) const;
         constexpr bool event_input_is_connected(size_t input_port) const;
         template<class T>
-        constexpr NodeRef connect_input(size_t input_port, T&& value) const;
+        consteval NodeRef connect_input(size_t input_port, T&& value) const;
         template<class T>
-        constexpr NodeRef connect_input(std::string_view input_name, T&& value) const;
+        consteval NodeRef connect_input(std::string_view input_name, T&& value) const;
         template<class... Args>
-        constexpr NodeRef operator()(Args&&... args) const;
+        consteval NodeRef operator()(Args&&... args) const;
         constexpr NodeRef connect_event_input(size_t input_port, EventPortRef value) const;
         constexpr NodeRef connect_event_input(std::string_view input_name, EventPortRef value) const;
         constexpr EventPortRef event_port(size_t output_port) const;
@@ -139,14 +139,14 @@ namespace iv {
         }
 
         template<class T>
-        constexpr Derived connect_input(size_t input_port, T&& value) const
+        consteval Derived connect_input(size_t input_port, T&& value) const
         {
             Base::connect_input(input_port, std::forward<T>(value));
             return _clone_handle();
         }
 
         template<class T>
-        constexpr Derived connect_input(std::string_view input_name, T&& value) const
+        consteval Derived connect_input(std::string_view input_name, T&& value) const
         {
             Base::connect_input(input_name, std::forward<T>(value));
             return _clone_handle();
@@ -217,20 +217,20 @@ namespace iv {
         constexpr operator SamplePortRef() const;
         template<class... Args>
         requires(details::node_call_enabled<NodeType, Args...>)
-        constexpr TypedNodeRef operator()(Args&&... args) const;
+        consteval TypedNodeRef operator()(Args&&... args) const;
 
         template<class... Args>
         requires(!details::node_call_enabled<NodeType, Args...>)
         TypedNodeRef operator()(Args&&... args) const = delete;
 
         template<class T>
-        constexpr TypedNodeRef connect_input(size_t input_port, T&& value) const;
+        consteval TypedNodeRef connect_input(size_t input_port, T&& value) const;
         template<class T>
-        constexpr TypedNodeRef connect_input(std::string_view input_name, T&& value) const;
+        consteval TypedNodeRef connect_input(std::string_view input_name, T&& value) const;
         constexpr TypedNodeRef connect_event_input(size_t input_port, EventPortRef value) const;
         constexpr TypedNodeRef connect_event_input(std::string_view input_name, EventPortRef value) const;
 
-        constexpr SamplePortRef detach(size_t loop_extra_latency = 1) const;
+        consteval SamplePortRef detach(size_t loop_extra_latency = 1) const;
 
         template<size_t I>
         constexpr auto static_output() const

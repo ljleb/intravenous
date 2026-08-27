@@ -689,17 +689,32 @@ class ModuleLoader::Impl {
                   << "}\n"
                   << "}\n"
                   << "#include <" << root_include << ">\n"
+                  << "namespace {\n"
+                  << "consteval iv::Graph iv_generated_module_graph_value() {\n"
+                  << "  iv::GraphBuilder builder;\n"
+                  << "  " << root.manifest.main << "(builder);\n"
+                  << "  return builder.build_execution_root_node().graph;\n"
+                  << "}\n"
+                  << "consteval iv::StaticGraphIntrospectionMetadata "
+                     "iv_generated_module_metadata_value() {\n"
+                  << "  iv::GraphBuilder builder;\n"
+                  << "  " << root.manifest.main << "(builder);\n"
+                  << "  return iv::details::define_static_metadata(builder.build_metadata());\n"
+                  << "}\n"
+                  << "}\n"
                   << "extern \"C\" IV_MODULE_EXPORT std::uint32_t iv_module_abi_version() {\n"
                   << "  return iv::IV_MODULE_ABI_VERSION;\n"
                   << "}\n"
                   << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode iv_module_graph() {\n"
-                  << "  return iv::details::generated_module_graph<&"
-                  << root.manifest.main
-                  << ">();\n}\n"
+                  << "  static constexpr iv::StaticGraphRoot<"
+                     "iv_generated_module_graph_value()> graph {};\n"
+                  << "  return iv::WeakTypeErasedNode(graph);\n"
+                  << "}\n"
                   << "extern \"C\" IV_MODULE_EXPORT iv::StaticGraphIntrospectionMetadata iv_module_metadata() {\n"
-                  << "  return iv::details::generated_module_metadata<&"
-                  << root.manifest.main
-                  << ">();\n}\n";
+                  << "  static constexpr auto metadata = "
+                     "iv_generated_module_metadata_value();\n"
+                  << "  return metadata;\n"
+                  << "}\n";
         write_text_if_different(export_file, export_tu.str());
 
         if (!std::filesystem::exists(custom_cmake)) {

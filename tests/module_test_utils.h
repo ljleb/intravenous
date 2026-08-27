@@ -25,6 +25,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -290,13 +291,39 @@ namespace iv::test {
         return workspace;
     }
 
+    inline std::string fixture_source_fingerprint(
+        std::filesystem::path const& source)
+    {
+        std::vector<std::string> entries;
+        for (auto const& entry :
+             std::filesystem::recursive_directory_iterator(source)) {
+            if (!entry.is_regular_file()) continue;
+            auto const relative = std::filesystem::relative(entry.path(), source);
+            auto const stamp = std::filesystem::last_write_time(entry.path())
+                .time_since_epoch().count();
+            entries.push_back(relative.generic_string() + ":" +
+                              std::to_string(stamp));
+        }
+        std::ranges::sort(entries);
+        std::ostringstream fingerprint;
+        for (auto const& entry : entries) fingerprint << entry << '\n';
+        return fingerprint.str();
+    }
+
     inline std::filesystem::path shared_fixture_workspace(std::string const& fixture_name)
     {
+        auto const source = test_modules_root() / fixture_name;
         auto const workspace = shared_test_fixtures_root() / sanitize_test_token(fixture_name);
         auto const lock = ScopedFileLock(
             shared_test_fixtures_root() / (sanitize_test_token(fixture_name) + ".lock"));
-        if (!std::filesystem::exists(workspace)) {
-            copy_directory(test_modules_root() / fixture_name, workspace);
+        auto const marker = workspace / ".iv_fixture_source_fingerprint";
+        auto const fingerprint = fixture_source_fingerprint(source);
+        if (!std::filesystem::exists(workspace) ||
+            !std::filesystem::exists(marker) ||
+            read_text(marker) != fingerprint) {
+            std::filesystem::remove_all(workspace);
+            copy_directory(source, workspace);
+            write_text(marker, fingerprint);
         }
         return workspace;
     }

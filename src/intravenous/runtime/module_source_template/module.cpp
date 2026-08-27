@@ -1,6 +1,6 @@
 #include <intravenous/dsl.h>
 
-constexpr void module_main(iv::GraphBuilder& g)
+consteval void module_main(iv::GraphBuilder& g)
 {
     using namespace iv;
     

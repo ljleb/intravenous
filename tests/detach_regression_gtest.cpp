@@ -53,7 +53,7 @@ namespace {
         }
     };
 
-    constexpr void detached_voice(
+    consteval void detached_voice(
         iv::GraphBuilder& g,
         iv::SubgraphBuilder& boundary,
         iv::SamplePortRef dt,

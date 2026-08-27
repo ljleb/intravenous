@@ -8,7 +8,7 @@ and explain it before editing.
 ## Destination
 
 Saving a module compiles its addressable
-`constexpr void(GraphBuilder&)` entry with GCC C++26 reflection. The existing
+`consteval void(GraphBuilder&)` entry with GCC C++26 reflection. The existing
 GraphBuilder, lowering, and whole-graph compiler execute during constant
 evaluation. Their final `CompiledGraph` is frozen into fixed static storage and
 its internal execution is expanded at compile-time-known indices so the C++
@@ -43,8 +43,9 @@ constexpr auto GraphBuilder::node(Args&&... args)
 ```
 
 The `if consteval` supplies the immediate context required by
-`reflect_constant` without making the module entry `consteval`. Do not replace
-this with a byte representation, erased object pointer, node-type registry, or
+`reflect_constant` throughout graph authoring. Module entries are `consteval`,
+so authored graph construction is never runtime-callable. Do not replace this
+with a byte representation, erased object pointer, node-type registry, or
 deferred reflection pass.
 
 The exact node value is the NTTP of ordinary wrapper functions for all required

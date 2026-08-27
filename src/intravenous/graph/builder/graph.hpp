@@ -258,7 +258,7 @@ constexpr void GraphBuilder::event_outputs(
       *this, _node_bundles, _identity, refs);
 }
 
-constexpr void GraphBuilder::outputs(
+consteval void GraphBuilder::outputs(
     std::span<OutputRefConfig const> refs) {
   _public_ports.define_sample_outputs(
       *this, _node_bundles, _identity, refs);

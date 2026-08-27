@@ -38,7 +38,7 @@ struct FunNode
     }
 };
 
-constexpr void simple_sine(iv::GraphBuilder& g)
+consteval void simple_sine(iv::GraphBuilder& g)
 {
     // auto const phase = g.node<PhaseIntegrator>();
     auto const tt = g.node<FunNode, stereo>();

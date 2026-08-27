@@ -11,7 +11,7 @@
 namespace iv {
 namespace {
 
-constexpr void pass_module(GraphBuilder& g)
+consteval void pass_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
     auto pass = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
@@ -19,15 +19,15 @@ constexpr void pass_module(GraphBuilder& g)
     g.outputs("out"_P = pass);
 }
 
-constexpr void nested_module(GraphBuilder& g)
+consteval void nested_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
-    auto child = g.module<&pass_module>();
+    auto child = g.module<pass_module>();
     child("in"_P = input);
     g.outputs("out"_P = child);
 }
 
-constexpr void tiled_module(GraphBuilder& g)
+consteval void tiled_module(GraphBuilder& g)
 {
     auto input = g.input<"in">(0.0f);
     auto tiled = g.node<Sum<mono, SampleStreamLayout::planar, 1>, stereo>();
@@ -35,7 +35,7 @@ constexpr void tiled_module(GraphBuilder& g)
     g.outputs("out"_P = tiled);
 }
 
-constexpr void event_module(GraphBuilder& g)
+consteval void event_module(GraphBuilder& g)
 {
     auto input = g.event_input<"event">(EventTypeId::empty);
     auto relay = g.node<EventConcatenation>(1, EventTypeId::empty);
@@ -67,7 +67,7 @@ consteval RootSignatureSnapshot root_signature_snapshot()
     }
     {
         GraphBuilder parent;
-        auto child = parent.module<&pass_module>();
+        auto child = parent.module<pass_module>();
         result.child_sample_inputs = child.sample_input_count();
         result.child_sample_outputs = child.sample_output_count();
         child("in"_P = 0.25f);
@@ -89,7 +89,7 @@ struct RecursiveModuleSnapshot {
 consteval RecursiveModuleSnapshot recursive_module_snapshot()
 {
     GraphBuilder g;
-    auto child = g.module<&nested_module>();
+    auto child = g.module<nested_module>();
     child("in"_P = 0.5f);
     g.outputs("main"_P = child["out"]);
 
@@ -118,7 +118,7 @@ consteval AnnotatedModuleSnapshot annotated_module_snapshot()
 {
     GraphBuilder g;
     auto child = _annotate_node_source_info(
-        g.module<&pass_module>(),
+        g.module<pass_module>(),
         "module-call");
     child("in"_P = 0.5f);
     g.outputs("main"_P = child["out"]);
@@ -152,7 +152,7 @@ struct TiledModuleSnapshot {
 consteval TiledModuleSnapshot tiled_module_snapshot()
 {
     GraphBuilder g;
-    auto child = g.module<&tiled_module>();
+    auto child = g.module<tiled_module>();
     TiledModuleSnapshot result;
     result.child_sample_inputs = child.sample_input_count();
     result.child_sample_outputs = child.sample_output_count();
@@ -187,7 +187,7 @@ consteval TiledModuleSnapshot tiled_module_snapshot()
 consteval bool event_interfaces_compile()
 {
     GraphBuilder g;
-    auto child = g.module<&event_module>();
+    auto child = g.module<event_module>();
     if (child.event_input_count() != 1 || child.event_output_count() != 1)
         return false;
 

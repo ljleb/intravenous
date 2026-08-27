@@ -264,7 +264,7 @@ void apply_timeline_batch_to_execution_and_runner(
         }));
 }
 
-constexpr void focused_stereo_saw_module(iv::GraphBuilder& graph)
+consteval void focused_stereo_saw_module(iv::GraphBuilder& graph)
 {
     using namespace iv;
     auto const frequencies = graph.node<Constant, stereo>(220.0f);
@@ -278,15 +278,30 @@ constexpr void focused_stereo_saw_module(iv::GraphBuilder& graph)
         "main"_P[stereo::right] = voice[stereo::right] * 0.1f);
 }
 
+consteval iv::Graph focused_stereo_saw_graph_value()
+{
+    iv::GraphBuilder builder;
+    focused_stereo_saw_module(builder);
+    return builder.build_execution_root_node().graph;
+}
+
+consteval iv::StaticGraphIntrospectionMetadata focused_stereo_saw_metadata_value()
+{
+    iv::GraphBuilder builder;
+    focused_stereo_saw_module(builder);
+    return iv::details::define_static_metadata(builder.build_metadata());
+}
+
 iv::WeakTypeErasedNode focused_stereo_saw_root()
 {
-    return iv::details::generated_module_graph<&focused_stereo_saw_module>();
+    static constexpr iv::StaticGraphRoot<focused_stereo_saw_graph_value()> graph {};
+    return iv::WeakTypeErasedNode(graph);
 }
 
 iv::GraphIntrospectionMetadata focused_stereo_saw_metadata()
 {
-    return iv::details::generated_module_metadata<
-        &focused_stereo_saw_module>().metadata();
+    static constexpr auto metadata = focused_stereo_saw_metadata_value();
+    return metadata.metadata();
 }
 }
 
@@ -321,7 +336,7 @@ TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutd
 #include <intravenous/basic_nodes/shaping.h>
 
 namespace {
-    constexpr void graph_input_module(iv::GraphBuilder& g)
+    consteval void graph_input_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const voice = g.node<SawOscillator>();
@@ -467,7 +482,7 @@ TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-constexpr void polyphonic_module(iv::GraphBuilder& g)
+consteval void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 

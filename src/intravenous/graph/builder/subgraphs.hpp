@@ -58,10 +58,10 @@ public:
   constexpr void event_outputs(std::span<EventOutputRefConfig const> refs);
 
   template<class... Refs>
-  constexpr void outputs(Refs&&... refs);
-  constexpr void outputs(std::initializer_list<NamedRef> refs);
-  constexpr void outputs(std::span<OutputRefConfig const> refs);
-  constexpr void outputs(std::span<NamedRef const> refs);
+  consteval void outputs(Refs&&... refs);
+  consteval void outputs(std::initializer_list<NamedRef> refs);
+  consteval void outputs(std::span<OutputRefConfig const> refs);
+  consteval void outputs(std::span<NamedRef const> refs);
 };
 
 } // namespace iv
