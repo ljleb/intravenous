@@ -269,13 +269,17 @@ namespace details {
         static_assert(
             std::copy_constructible<Node>,
             "authored node values must be copy constructible");
-        auto const reflected_node = std::meta::reflect_constant(node);
-        auto const description_specialization = std::meta::substitute(
-            ^^describe_reflected_node,
-            {reflected_node});
-        auto const describe = std::meta::extract<
-            ReflectedNodeDescription (*)()>(description_specialization);
-        return describe();
+        if constexpr (std::is_empty_v<Node> && std::default_initializable<Node>) {
+            return describe_reflected_node<Node {}>();
+        } else {
+            auto const reflected_node = std::meta::reflect_constant(node);
+            auto const description_specialization = std::meta::substitute(
+                ^^describe_reflected_node,
+                {reflected_node});
+            auto const describe = std::meta::extract<
+                ReflectedNodeDescription (*)()>(description_specialization);
+            return describe();
+        }
     }
 } // namespace details
 } // namespace iv

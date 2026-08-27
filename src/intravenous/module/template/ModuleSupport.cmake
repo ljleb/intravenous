@@ -5,6 +5,8 @@ include(${IV_SOURCE_DIR}/module/template/ModuleProjectInit.cmake)
 
 option(IV_MODULE_GCC_TIME_REPORT
     "Emit GCC compile-phase timing reports for IV module builds" OFF)
+option(IV_MODULE_SOURCE_INTROSPECTION
+    "Annotate authored IV module source declarations" ON)
 
 function(iv_configure_iv_module_shared_import)
     set(IV_MODULE_SHARED_LIBRARY "${IV_MODULE_SHARED_LIBRARY}" CACHE FILEPATH "Path to the built iv_module_shared library")
@@ -39,9 +41,10 @@ function(iv_add_runtime_module target)
             "IV modules require GCC 16 or newer for C++26 reflection; configured compiler is "
             "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER})")
     endif()
-    if(NOT DEFINED IV_GCC_SOURCE_INTROSPECTION_PLUGIN
-       OR IV_GCC_SOURCE_INTROSPECTION_PLUGIN STREQUAL ""
-       OR NOT EXISTS "${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}")
+    if(IV_MODULE_SOURCE_INTROSPECTION
+       AND (NOT DEFINED IV_GCC_SOURCE_INTROSPECTION_PLUGIN
+            OR IV_GCC_SOURCE_INTROSPECTION_PLUGIN STREQUAL ""
+            OR NOT EXISTS "${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"))
         message(FATAL_ERROR
             "iv_add_runtime_module(${target}) requires a built "
             "IV_GCC_SOURCE_INTROSPECTION_PLUGIN")
@@ -56,9 +59,12 @@ function(iv_add_runtime_module target)
         # Module graphs are lowered entirely during constant evaluation. The
         # default 128M-operation limit is too small for ordinary polyphonic
         # graphs, but larger values trigger a GCC 16 reflection issue.
-        -fconstexpr-ops-limit=17179869184
-        "-fplugin=${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"
-        "-fplugin-arg-iv_gcc_source_introspection_plugin-core-source-dir=${IV_SOURCE_DIR}")
+        -fconstexpr-ops-limit=17179869184)
+    if(IV_MODULE_SOURCE_INTROSPECTION)
+        target_compile_options(${target}__compile_settings INTERFACE
+            "-fplugin=${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"
+            "-fplugin-arg-iv_gcc_source_introspection_plugin-core-source-dir=${IV_SOURCE_DIR}")
+    endif()
     target_include_directories(${target}__compile_settings INTERFACE
         ${IV_INCLUDE_DIR}
         ${IV_MODULE_SOURCE_DIR}

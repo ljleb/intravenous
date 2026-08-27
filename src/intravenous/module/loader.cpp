@@ -335,6 +335,18 @@ char const *config_name()
 #endif
 }
 
+std::string_view compile_stage_name(ModuleCompileStage stage)
+{
+    switch (stage) {
+    case ModuleCompileStage::full: return "full";
+    case ModuleCompileStage::parse: return "parse";
+    case ModuleCompileStage::authoring: return "authoring";
+    case ModuleCompileStage::metadata: return "metadata";
+    case ModuleCompileStage::execution: return "execution";
+    }
+    throw std::logic_error("invalid module compile stage");
+}
+
 std::string quote(std::filesystem::path const &path)
 {
     std::string value = path.generic_string();
@@ -433,6 +445,12 @@ class ModuleLoader::Impl {
     struct Closure {
         std::vector<ResolvedModule> modules;
         std::unordered_map<std::string, std::vector<std::string>> dependency_keys;
+    };
+
+    struct CompiledRoot {
+        ResolvedModule root;
+        Closure closure;
+        std::filesystem::path artifact;
     };
 
     static std::string key(ResolvedModule const &module)
@@ -675,7 +693,7 @@ class ModuleLoader::Impl {
             ? std::string("iv/modules-global/") + root.manifest.id
             : std::string("iv/modules/") + root.manifest.id;
         std::ostringstream export_tu;
-        export_tu << "#include <intravenous/module/authoring.h>\n"
+        export_tu << "#include <intravenous/dsl.h>\n"
                   << "namespace iv::details::source_introspection_plugin_bridge {\n"
                   << "template<class Ref> constexpr void "
                      "_annotate_source_info_after_statement(\n"
@@ -693,36 +711,107 @@ class ModuleLoader::Impl {
                   << "      builder, event, ordinal, file_path, begin, end);\n"
                   << "}\n"
                   << "}\n"
-                  << "#include <" << root_include << ">\n"
-                  << "namespace {\n"
-                  << "struct IvGeneratedModule {\n"
-                  << "  iv::Graph graph;\n"
-                  << "  iv::StaticGraphIntrospectionMetadata metadata;\n"
-                  << "};\n"
-                  << "consteval IvGeneratedModule iv_generated_module_value() {\n"
-                  << "  iv::GraphBuilder builder;\n"
-                  << "  " << root.manifest.main << "(builder);\n"
-                  << "  auto const result = "
-                     "builder.build_execution_root_node_with_metadata();\n"
-                  << "  return {\n"
-                  << "      .graph = result.root.graph,\n"
-                  << "      .metadata = iv::details::define_static_metadata(result.introspection),\n"
-                  << "  };\n"
-                  << "}\n"
-                  << "inline constexpr auto iv_generated_module = "
-                     "iv_generated_module_value();\n"
-                  << "}\n"
-                  << "extern \"C\" IV_MODULE_EXPORT std::uint32_t iv_module_abi_version() {\n"
-                  << "  return iv::IV_MODULE_ABI_VERSION;\n"
-                  << "}\n"
-                  << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode iv_module_graph() {\n"
-                  << "  static constexpr iv::StaticGraphRoot<"
-                     "iv_generated_module.graph> graph {};\n"
-                  << "  return iv::WeakTypeErasedNode(graph);\n"
-                  << "}\n"
-                  << "extern \"C\" IV_MODULE_EXPORT iv::StaticGraphIntrospectionMetadata iv_module_metadata() {\n"
-                  << "  return iv_generated_module.metadata;\n"
-                  << "}\n";
+                  << "#include <" << root_include << ">\n";
+        switch (toolchain_.compile_stage) {
+        case ModuleCompileStage::parse:
+            export_tu
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return 0;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::authoring:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t iv_authoring_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return builder.public_sample_input_families().families.size()\n"
+                << "      + builder.public_event_inputs().size()\n"
+                << "      + builder.public_sample_output_families().families.size()\n"
+                << "      + builder.public_event_outputs().size();\n"
+                << "}\n"
+                << "inline constexpr auto iv_authoring_stage = "
+                   "iv_authoring_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_authoring_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::metadata:
+            export_tu
+                << "namespace {\n"
+                << "consteval iv::StaticGraphIntrospectionMetadata "
+                   "iv_metadata_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::define_static_metadata("
+                   "builder.build_metadata());\n"
+                << "}\n"
+                << "inline constexpr auto iv_metadata_stage = "
+                   "iv_metadata_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT "
+                   "iv::StaticGraphIntrospectionMetadata iv_module_metadata() {\n"
+                << "  return iv_metadata_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution:
+            export_tu
+                << "namespace {\n"
+                << "consteval iv::Graph iv_execution_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return builder.build_execution_root_node().graph;\n"
+                << "}\n"
+                << "inline constexpr auto iv_execution_stage = "
+                   "iv_execution_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode "
+                   "iv_module_graph() {\n"
+                << "  static constexpr iv::StaticGraphRoot<iv_execution_stage> "
+                   "graph {};\n"
+                << "  return iv::WeakTypeErasedNode(graph);\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::full:
+            export_tu
+                << "namespace {\n"
+                << "struct IvGeneratedModule {\n"
+                << "  iv::Graph graph;\n"
+                << "  iv::StaticGraphIntrospectionMetadata metadata;\n"
+                << "};\n"
+                << "consteval IvGeneratedModule iv_generated_module_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  auto const result = "
+                   "builder.build_execution_root_node_with_metadata();\n"
+                << "  return {\n"
+                << "      .graph = result.root.graph,\n"
+                << "      .metadata = iv::details::define_static_metadata("
+                   "result.introspection),\n"
+                << "  };\n"
+                << "}\n"
+                << "inline constexpr auto iv_generated_module = "
+                   "iv_generated_module_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
+                   "iv_module_abi_version() {\n"
+                << "  return iv::IV_MODULE_ABI_VERSION;\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode "
+                   "iv_module_graph() {\n"
+                << "  static constexpr iv::StaticGraphRoot<"
+                   "iv_generated_module.graph> graph {};\n"
+                << "  return iv::WeakTypeErasedNode(graph);\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT "
+                   "iv::StaticGraphIntrospectionMetadata iv_module_metadata() {\n"
+                << "  return iv_generated_module.metadata;\n"
+                << "}\n";
+            break;
+        }
         write_text_if_different(export_file, export_tu.str());
 
         if (!std::filesystem::exists(custom_cmake)) {
@@ -739,8 +828,9 @@ class ModuleLoader::Impl {
         auto const [cc, cxx] = compilers();
         auto const source_introspection_plugin =
             std::filesystem::path(IV_CONFIGURED_GCC_SOURCE_INTROSPECTION_PLUGIN);
-        if (source_introspection_plugin.empty()
-            || !std::filesystem::exists(source_introspection_plugin)) {
+        if (toolchain_.source_introspection
+            && (source_introspection_plugin.empty()
+                || !std::filesystem::exists(source_introspection_plugin))) {
             throw std::runtime_error(
                 "configured GCC source-introspection plugin does not exist: '" +
                 source_introspection_plugin.string() + "'");
@@ -754,13 +844,14 @@ class ModuleLoader::Impl {
                   << "cmake=" << cmake_program().generic_string() << '\n'
                   << "cc=" << cc.generic_string() << '\n'
                   << "cxx=" << cxx.generic_string() << '\n'
-                  << "source-introspection-plugin="
-                  << source_introspection_plugin.generic_string() << '\n'
-                  << "source-introspection-plugin-stamp="
-                  << std::filesystem::last_write_time(source_introspection_plugin)
-                         .time_since_epoch().count() << '\n'
                   << "generator=" << generator << '\n'
                   << "gcc-time-report=" << toolchain_.gcc_time_report << '\n'
+                  << "compile-stage="
+                  << compile_stage_name(toolchain_.compile_stage) << '\n'
+                  << "source-introspection="
+                  << toolchain_.source_introspection << '\n'
+                  << "precompiled-header="
+                  << toolchain_.precompiled_header << '\n'
                   << "generated-export=" << export_tu.str() << '\n'
                   << "core-source-stamp="
                   << directory_stamp(repo_root_ / "src/intravenous")
@@ -769,6 +860,14 @@ class ModuleLoader::Impl {
                   << read_text(repo_root_ / "src/intravenous/module/authoring.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/graph/static_metadata.hpp") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n';
+        if (toolchain_.source_introspection) {
+            signature
+                << "source-introspection-plugin="
+                << source_introspection_plugin.generic_string() << '\n'
+                << "source-introspection-plugin-stamp="
+                << std::filesystem::last_write_time(source_introspection_plugin)
+                       .time_since_epoch().count() << '\n';
+        }
         for (auto const &module : closure.modules) {
             signature << key(module) << '\n'
                       << read_text(module.manifest_file) << '\n'
@@ -821,6 +920,12 @@ class ModuleLoader::Impl {
                   << quote(source_introspection_plugin);
         if (toolchain_.gcc_time_report) {
             configure << " -DIV_MODULE_GCC_TIME_REPORT=ON";
+        }
+        if (!toolchain_.source_introspection) {
+            configure << " -DIV_MODULE_SOURCE_INTROSPECTION=OFF";
+        }
+        if (!toolchain_.precompiled_header) {
+            configure << " -DIV_MODULE_PCH_HEADER=";
         }
         if (std::string_view(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY).size()) {
             configure << " -DIV_MODULE_SHARED_LIBRARY=" << quote(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY);
@@ -910,9 +1015,9 @@ public:
         }
     }
 
-    LoadedDefinition load_root_definition(std::filesystem::path const &path) const
+    CompiledRoot compile_root_definition_unlocked(
+        std::filesystem::path const& path) const
     {
-        std::lock_guard lock(mutex_);
         auto module_path = normalize(path);
         if (std::filesystem::is_regular_file(module_path)) {
             if (module_path.filename() == "iv_module.json") {
@@ -925,7 +1030,7 @@ public:
 
         bool const global_root = std::ranges::any_of(
             extra_search_roots,
-            [&](auto const &root) { return is_within(module_path, root); });
+            [&](auto const& root) { return is_within(module_path, root); });
         auto root = resolve_dir(module_path, global_root);
         auto const project_root = root.global
             ? global_cache_root_
@@ -933,6 +1038,31 @@ public:
         auto registry = registry_for(root, project_root);
         auto closure = reachable_modules(root, registry);
         auto artifact = build(root, closure, project_root);
+        return {
+            .root = std::move(root),
+            .closure = std::move(closure),
+            .artifact = std::move(artifact),
+        };
+    }
+
+    std::filesystem::path compile_root_definition(
+        std::filesystem::path const& path) const
+    {
+        std::lock_guard lock(mutex_);
+        return compile_root_definition_unlocked(path).artifact;
+    }
+
+    LoadedDefinition load_root_definition(std::filesystem::path const &path) const
+    {
+        std::lock_guard lock(mutex_);
+        if (toolchain_.compile_stage != ModuleCompileStage::full) {
+            throw std::logic_error(
+                "only the full module compile stage can be loaded");
+        }
+        auto compiled = compile_root_definition_unlocked(path);
+        auto& root = compiled.root;
+        auto& closure = compiled.closure;
+        auto& artifact = compiled.artifact;
 
         auto library = std::make_shared<DynamicLibrary>(artifact);
         auto abi_version = reinterpret_cast<iv_module_abi_version_fn>(
@@ -1039,6 +1169,12 @@ ModuleLoader::LoadedDefinition ModuleLoader::load_root_definition(
     std::filesystem::path const &path) const
 {
     return _impl->load_root_definition(path);
+}
+
+std::filesystem::path ModuleLoader::compile_root_definition(
+    std::filesystem::path const& path) const
+{
+    return _impl->compile_root_definition(path);
 }
 
 std::vector<std::filesystem::path> const &ModuleLoader::extra_search_roots() const

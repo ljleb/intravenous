@@ -84,6 +84,9 @@ add_iv_gtest(
     ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION)
 add_iv_gtest(intravenous_shared_buffer_context_tests shared_buffer_context_gtest.cpp)
 add_iv_gtest(intravenous_channels_tests channels_gtest.cpp)
+add_iv_gtest(
+    intravenous_graph_compiler_consteval_tests
+    graph_compiler_consteval_gtest.cpp)
 add_iv_gtest(intravenous_graph_modules_tests graph_modules_gtest.cpp)
 add_iv_gtest(intravenous_predictors_tests predictors_gtest.cpp)
 add_iv_gtest(intravenous_detach_regression_tests detach_regression_gtest.cpp)

@@ -2,6 +2,7 @@
 
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/graph/build_types.h>
+#include <intravenous/graph/error.h>
 #include <intravenous/graph/reflected_node.hpp>
 #include <intravenous/graph/types.h>
 #include <intravenous/graph/wiring.h>
@@ -39,9 +40,10 @@ namespace iv::details {
         return std::bit_floor(value);
     }
 
-    [[noreturn]] constexpr void error(std::string msg)
+    template<class ChannelType, SampleStreamLayout Layout, size_t Arity>
+    consteval ReflectedNodeDescription describe_broadcast_node()
     {
-        throw std::logic_error(msg);
+        return reflect_node(Broadcast<Arity, ChannelType, Layout>{});
     }
 
     template<class ChannelType, SampleStreamLayout Layout>
@@ -51,17 +53,19 @@ namespace iv::details {
             if (arity == 0 || arity > 64) {
                 error("broadcast node arity must be between 1 and 64");
             }
-
-            std::optional<ReflectedNodeDescription> result;
-            [&]<size_t... I>(std::index_sequence<I...>) {
-                ((arity == (I + 1)
-                    ? (void)(result.emplace(reflect_node(
-                          Broadcast<I + 1, ChannelType, Layout>{})))
-                    : (void)0), ...);
-            }(std::make_index_sequence<64>{});
-
-            IV_ASSERT(result.has_value(), "broadcast node instantiation must succeed for supported arities");
-            return std::move(*result);
+            // Select the one required value specialization through reflection.
+            // Expanding all supported arities in a parameter pack eagerly
+            // reflects every Broadcast value while this header is compiled.
+            auto const specialization = std::meta::substitute(
+                ^^describe_broadcast_node,
+                {
+                    ^^ChannelType,
+                    std::meta::reflect_constant(Layout),
+                    std::meta::reflect_constant(arity),
+                });
+            auto const describe = std::meta::extract<
+                ReflectedNodeDescription (*)()>(specialization);
+            return describe();
         } else {
             runtime_graph_builder_node_call_is_forbidden();
             return {};

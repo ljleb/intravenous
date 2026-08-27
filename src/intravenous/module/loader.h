@@ -15,6 +15,14 @@
 namespace iv {
     using ModuleRef = std::shared_ptr<void>;
 
+    enum class ModuleCompileStage {
+        full,
+        parse,
+        authoring,
+        metadata,
+        execution,
+    };
+
     struct ModuleLoaderToolchainConfig {
         std::optional<std::filesystem::path> c_compiler {};
         std::optional<std::filesystem::path> cxx_compiler {};
@@ -23,6 +31,9 @@ namespace iv {
         std::optional<std::filesystem::path> make_program {};
         std::optional<std::filesystem::path> juce_dir {};
         bool gcc_time_report = false;
+        ModuleCompileStage compile_stage = ModuleCompileStage::full;
+        bool source_introspection = true;
+        bool precompiled_header = true;
     };
 
     class ModuleLoader {
@@ -67,6 +78,12 @@ namespace iv {
         // render configuration. Sample rate and other device/runtime values are
         // supplied only when DSP nodes execute through TickContext.
         LoadedDefinition load_root_definition(
+            std::filesystem::path const& module_path
+        ) const;
+
+        // Builds the generated module artifact without loading it. This is
+        // primarily useful for compile-time profiling stages.
+        std::filesystem::path compile_root_definition(
             std::filesystem::path const& module_path
         ) const;
 

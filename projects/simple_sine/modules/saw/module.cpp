@@ -28,6 +28,7 @@ consteval void module_main(iv::GraphBuilder& g)
 
     for (size_t i = 0; i < iters; ++i)
     {
+        auto const t = static_cast<float>(i)*2 / (iters - 1);
         auto const osc = g.node<SineOscillator>();
         osc("frequency"_P = f + i*detune_pair - detune);
         auto const result = pan(g, detune_osc * osc, t);

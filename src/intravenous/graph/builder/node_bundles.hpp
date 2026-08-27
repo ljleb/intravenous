@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/graph/error.h>
 #include <intravenous/graph/names.h>
 #include <intravenous/graph/builder/stored_node.hpp>
 
