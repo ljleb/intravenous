@@ -134,6 +134,10 @@ public:
   using VacantSampleInput = GraphBuilderVacantSampleInput;
   using VacantEventInput = GraphBuilderVacantEventInput;
   using RootNodeBuildResult = GraphBuilderRootNodeBuildResult;
+  struct ExecutionRootAndMetadata {
+    RootNodeBuildResult root;
+    GraphIntrospectionMetadata introspection;
+  };
   using VacantInputs = GraphBuilderVacantInputs;
   using VirtualSampleInput = GraphBuilderVirtualSampleInput;
   using VirtualEventInput = GraphBuilderVirtualEventInput;
@@ -177,6 +181,8 @@ public:
   consteval RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
   consteval RootNodeBuildResult build_execution_root_node(
       size_t detach_id_offset = 0) const;
+  consteval ExecutionRootAndMetadata build_execution_root_node_with_metadata(
+      size_t detach_id_offset = 0) const;
 
 private:
   consteval SamplePortRef detach_sample_port(
@@ -202,6 +208,8 @@ private:
   constexpr SamplePortRef lift_to_sample_port(TypedSamplePortChannelRef<ChannelType, Member> const& sample_port);
   template<class ChannelType>
   constexpr SamplePortRef lift_to_sample_port(TypedSamplePortTileRef<ChannelType> const& sample_port);
+  consteval void populate_public_introspection_metadata(
+      GraphIntrospectionMetadata& metadata) const;
   template<class T>
     requires std::is_arithmetic_v<std::remove_cvref_t<T>> ||
              std::is_same_v<std::remove_cvref_t<T>, Sample>
@@ -412,14 +420,9 @@ GraphBuilder::public_event_outputs() const {
   return _public_ports.collected_event_outputs(_node_bundles);
 }
 
-consteval GraphIntrospectionMetadata GraphBuilder::build_metadata(
-    size_t detach_offset) const
+consteval void GraphBuilder::populate_public_introspection_metadata(
+    GraphIntrospectionMetadata& metadata) const
 {
-  auto lowered = GraphBuilderLowering::lower(
-      _node_bundles, _connections, _public_ports, _virtual_nodes, _detach);
-  auto metadata = GraphBuilderFinalizer::build_metadata(
-      _identity, lowered, _node_bundles, _virtual_nodes, _connections,
-      detach_offset);
   auto sample_inputs = public_sample_input_families();
   for (auto& family : sample_inputs.families) {
     family.authored_connected = std::ranges::any_of(
@@ -436,6 +439,17 @@ consteval GraphIntrospectionMetadata GraphBuilder::build_metadata(
     input.graph_connected = public_event_input_is_connected(input.port_ordinal);
   metadata.public_sample_outputs = public_sample_output_families().families;
   metadata.public_event_outputs = public_event_outputs();
+}
+
+consteval GraphIntrospectionMetadata GraphBuilder::build_metadata(
+    size_t detach_offset) const
+{
+  auto lowered = GraphBuilderLowering::lower(
+      _node_bundles, _connections, _public_ports, _virtual_nodes, _detach);
+  auto metadata = GraphBuilderFinalizer::build_metadata(
+      _identity, lowered, _node_bundles, _virtual_nodes, _connections,
+      detach_offset);
+  populate_public_introspection_metadata(metadata);
   return metadata;
 }
 
@@ -458,6 +472,28 @@ consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_execution_root_n
   return GraphBuilderFinalizer::build_root_node(
       _identity,lowered,_node_bundles,_virtual_nodes,_public_ports,
       detach_offset,true);
+}
+
+consteval GraphBuilder::ExecutionRootAndMetadata
+GraphBuilder::build_execution_root_node_with_metadata(size_t detach_offset) const
+{
+  auto lowered = GraphBuilderLowering::lower_shared_base(
+      _node_bundles, _connections, _public_ports, _virtual_nodes, _detach);
+  auto introspection = GraphBuilderFinalizer::build_metadata(
+      _identity, lowered, _node_bundles, _virtual_nodes, _connections,
+      detach_offset);
+  populate_public_introspection_metadata(introspection);
+
+  GraphBuilderLowering::lower_execution_root_ports(
+      lowered, _node_bundles, _connections, _public_ports, _virtual_nodes,
+      _detach);
+  auto root = GraphBuilderFinalizer::build_root_node(
+      _identity, lowered, _node_bundles, _virtual_nodes, _public_ports,
+      detach_offset, true);
+  return {
+      .root = std::move(root),
+      .introspection = std::move(introspection),
+  };
 }
 
 constexpr SamplePortRef::SamplePortRef(

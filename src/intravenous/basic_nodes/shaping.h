@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 
 namespace iv {
     struct Warper {
@@ -125,6 +126,43 @@ namespace iv {
             }
 
             out.push(y0_aa);
+            state.phase = warp_pm1(state.phase + phase_advance, 1);
+        }
+    };
+
+    struct SineOscillator {
+        struct State {
+            Sample phase = 0.0f;
+        };
+
+        static constexpr auto inputs()
+        {
+            return std::array {
+                InputConfig { .name = "phase_offset", .history = 1 },
+                InputConfig { .name = "frequency", .history = 1, .min = 0 },
+            };
+        }
+
+        static constexpr auto outputs()
+        {
+            return std::array {
+                OutputConfig { .name = "out", .latency = 1 },
+            };
+        }
+
+        void tick(TickSampleContext<SineOscillator> const& ctx) const
+        {
+            auto& state = ctx.state();
+            auto const phi = ctx.inputs[0].get();
+            auto const f = ctx.inputs[1].get();
+            auto const dt = ctx.sample_period();
+            auto& out = ctx.outputs[0];
+
+            auto const phase_advance = f * 2 * dt;
+            auto const x0 = state.phase + phase_advance + phi;
+            auto const y0 = static_cast<Sample>(std::sin(x0*2*std::numbers::pi));
+
+            out.push(y0);
             state.phase = warp_pm1(state.phase + phase_advance, 1);
         }
     };

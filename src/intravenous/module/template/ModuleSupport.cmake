@@ -3,6 +3,9 @@ include_guard(GLOBAL)
 include(${IV_SOURCE_DIR}/module/template/JuceSupport.cmake)
 include(${IV_SOURCE_DIR}/module/template/ModuleProjectInit.cmake)
 
+option(IV_MODULE_GCC_TIME_REPORT
+    "Emit GCC compile-phase timing reports for IV module builds" OFF)
+
 function(iv_configure_iv_module_shared_import)
     set(IV_MODULE_SHARED_LIBRARY "${IV_MODULE_SHARED_LIBRARY}" CACHE FILEPATH "Path to the built iv_module_shared library")
     if(NOT IV_MODULE_SHARED_LIBRARY OR NOT EXISTS "${IV_MODULE_SHARED_LIBRARY}")
@@ -50,7 +53,10 @@ function(iv_add_runtime_module target)
     target_compile_features(${target}__compile_settings INTERFACE cxx_std_26)
     target_compile_options(${target}__compile_settings INTERFACE
         -freflection
-        -fconstexpr-ops-limit=134217728
+        # Module graphs are lowered entirely during constant evaluation. The
+        # default 128M-operation limit is too small for ordinary polyphonic
+        # graphs, but larger values trigger a GCC 16 reflection issue.
+        -fconstexpr-ops-limit=17179869184
         "-fplugin=${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"
         "-fplugin-arg-iv_gcc_source_introspection_plugin-core-source-dir=${IV_SOURCE_DIR}")
     target_include_directories(${target}__compile_settings INTERFACE
@@ -67,6 +73,11 @@ function(iv_add_runtime_module target)
     target_include_directories(${target}__compile_settings SYSTEM INTERFACE ${IV_THIRD_PARTY_INCLUDE_DIR})
 
     target_compile_options(${target}__compile_settings INTERFACE -Wall -Wextra -Wpedantic)
+    if(IV_MODULE_GCC_TIME_REPORT AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${target}__compile_settings INTERFACE
+            -ftime-report
+            -ftime-report-details)
+    endif()
 
     if(IVM_ENABLE_JUCE AND DEFINED IV_CORE_ENABLE_JUCE_VST AND IV_CORE_ENABLE_JUCE_VST)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=1 JUCE_PLUGINHOST_VST3=1)

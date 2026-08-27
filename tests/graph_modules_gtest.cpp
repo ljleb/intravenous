@@ -226,6 +226,65 @@ consteval bool direct_public_sample_passthrough_compiles()
         && built.graph.outputs().size() == 1;
 }
 
+struct IntrospectionRegressionSnapshot {
+    bool virtual_node_is_preserved = false;
+    bool sample_ports_are_preserved = false;
+    bool event_ports_are_preserved = false;
+    bool shared_lowering_matches_canonical_metadata = false;
+};
+
+consteval IntrospectionRegressionSnapshot introspection_regression_snapshot()
+{
+    GraphBuilder g;
+    auto input = g.input<"in">(0.25f);
+    auto event = g.event_input<"event">(EventTypeId::empty);
+    auto sum = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
+    auto annotated = _annotate_node_source_info(sum.node_ref(), "sum");
+    sum(input);
+    g.outputs("out"_P = sum);
+
+    auto const metadata = g.build_metadata();
+    auto const shared = g.build_execution_root_node_with_metadata();
+    auto const& execution = shared.introspection;
+    IntrospectionRegressionSnapshot result;
+
+    result.virtual_node_is_preserved = metadata.virtual_nodes.size() == 1
+        && metadata.virtual_nodes.front().source_identity == "sum"
+        && metadata.virtual_nodes.front().sample_inputs.size() == 1
+        && metadata.virtual_nodes.front().sample_outputs.size() == 1;
+
+    result.sample_ports_are_preserved = metadata.public_sample_inputs.size() == 1
+        && metadata.public_sample_outputs.size() == 1
+        && metadata.public_sample_inputs.front().family_name == "in"
+        && metadata.public_sample_inputs.front().authored_connected
+        && metadata.public_sample_outputs.front().family_name == "out";
+
+    result.event_ports_are_preserved = metadata.public_event_inputs.size() == 1
+        && metadata.public_event_inputs.front().port_ordinal == 0
+        && !metadata.public_event_inputs.front().graph_connected
+        && metadata.public_event_outputs.empty();
+    result.shared_lowering_matches_canonical_metadata = metadata.virtual_nodes.size()
+            == execution.virtual_nodes.size()
+        && metadata.public_sample_inputs.size()
+            == execution.public_sample_inputs.size()
+        && metadata.public_event_inputs.size()
+            == execution.public_event_inputs.size()
+        && metadata.public_sample_outputs.size()
+            == execution.public_sample_outputs.size()
+        && metadata.public_event_outputs.size()
+            == execution.public_event_outputs.size()
+        && metadata.virtual_nodes.front().id == execution.virtual_nodes.front().id
+        && metadata.virtual_nodes.front().source_identity
+            == execution.virtual_nodes.front().source_identity
+        && metadata.public_sample_inputs.front().authored_connected
+            == execution.public_sample_inputs.front().authored_connected
+        && metadata.public_event_inputs.front().graph_connected
+            == execution.public_event_inputs.front().graph_connected;
+    (void)annotated;
+    (void)event;
+    return result;
+}
+
 } // namespace
 
 TEST(GraphModules, ModuleFunctionUsesTheRootGraphBuilderSignature)
@@ -241,6 +300,15 @@ TEST(GraphModules, PublicInputCanFeedPublicOutputWithoutAnInternalNode)
 {
     static_assert(direct_public_sample_passthrough_compiles());
     EXPECT_TRUE(direct_public_sample_passthrough_compiles());
+}
+
+TEST(GraphModules, ConstevalIntrospectionPreservesVirtualAndPublicPorts)
+{
+    constexpr auto snapshot = introspection_regression_snapshot();
+    EXPECT_TRUE(snapshot.virtual_node_is_preserved);
+    EXPECT_TRUE(snapshot.sample_ports_are_preserved);
+    EXPECT_TRUE(snapshot.event_ports_are_preserved);
+    EXPECT_TRUE(snapshot.shared_lowering_matches_canonical_metadata);
 }
 
 TEST(GraphModules, ModulesComposeRecursivelyThroughAuthoredGraphSplicing)

@@ -137,8 +137,9 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs_from_args(
       auto source = lift_sample(std::forward<decltype(ref)>(ref));
       out.push_back({
           .ref = source,
-          .config = public_config(source, {}),
+          .config = public_config(source, "main"),
           .public_member = {
+              .family_name = "main",
               .channel_type = source.channel_type,
               .whole_stream = true,
           },

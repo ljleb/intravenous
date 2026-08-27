@@ -7,50 +7,30 @@
 
 using namespace iv;
 
-struct FunNode
+consteval auto pan(auto&& g, auto&& v, double t)
 {
-    static constexpr auto outputs()
-    {
-        return std::array<OutputConfig, 1>
-        {
-            OutputConfig { .name = "out" },
-        };
-    }
+    auto const theta = (t + 1) * 0.25 * std::numbers::pi;
+    auto const l_gain = std::cos(theta);
+    auto const r_gain = std::sin(theta);
 
-    struct State
-    {
-        Sample s;
-    };
-
-    void initialize(InitializationContext<FunNode> const& ctx) const
-    {
-        ctx.state().s = 1.0f;
-    }
-
-    void tick_block(TickBlockContext<FunNode> const& ctx) const
-    {
-        auto& s = ctx.state().s;
-        for (size_t i = 0; i < ctx.block_size; ++i)
-        {
-            ctx.outputs[0].push(s);
-            s = s * 0.99999;
-        }
-    }
-};
+    return g.template tile<stereo>(v * l_gain, v * r_gain);
+}
 
 consteval void module_main(iv::GraphBuilder& g)
 {
-    // auto const phase = g.node<PhaseIntegrator>();
-    auto const tt = g.node<FunNode, stereo>();
+    auto const iters = 16;
     auto const f = g.input<"freq">(220, 0, 1000);
-    auto const voice = g.node<SawOscillator, stereo>();
-    auto const detune = g.input<"detune">(2.5, -100, 100);
-    auto const p = f + g.tile<stereo>(detune, -detune);
+    auto const detune = g.input<"detune">(2.5, 0, 100);
+    auto const detune_pair = detune * 2 / (iters - 1);
+    auto const detune_osc = g.node<SineOscillator>();
 
-    voice(
-        "frequency"_P = p);
-        // "phase_offset"_P = phase);
+    detune_osc("frequency"_P = 0.5 * detune_pair);
 
-    // auto const res = voice * g.node<Constant, stereo>(0.1);// * tt;
-    g.outputs(voice * 0.1);
+    for (size_t i = 0; i < iters; ++i)
+    {
+        auto const osc = g.node<SineOscillator>();
+        osc("frequency"_P = f + i*detune_pair - detune);
+        auto const result = pan(g, detune_osc * osc, t);
+        g.outputs(result * 0.1);
+    }
 }

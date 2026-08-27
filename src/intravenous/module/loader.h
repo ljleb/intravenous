@@ -22,6 +22,7 @@ namespace iv {
         std::optional<std::string> cmake_generator {};
         std::optional<std::filesystem::path> make_program {};
         std::optional<std::filesystem::path> juce_dir {};
+        bool gcc_time_report = false;
     };
 
     class ModuleLoader {

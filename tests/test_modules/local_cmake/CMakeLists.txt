@@ -19,7 +19,3 @@ endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(iv_runtime_module PRIVATE stdc++exp)
 endif()
-
-if(DEFINED IV_MODULE_PCH_HEADER AND NOT IV_MODULE_PCH_HEADER STREQUAL "")
-    target_precompile_headers(iv_runtime_module PRIVATE ${IV_MODULE_PCH_HEADER})
-endif()

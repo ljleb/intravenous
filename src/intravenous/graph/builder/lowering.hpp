@@ -61,6 +61,14 @@ public:
       GraphBuilderPublicPorts const&, GraphBuilderVirtualNodes const&,
       GraphBuilderDetach const&,
       bool execution_root = false);
+  static constexpr LoweredBuilderGraph lower_shared_base(
+      GraphBuilderNodeBundles const&, GraphBuilderConnections const&,
+      GraphBuilderPublicPorts const&, GraphBuilderVirtualNodes const&,
+      GraphBuilderDetach const&);
+  static constexpr void lower_execution_root_ports(
+      LoweredBuilderGraph&, GraphBuilderNodeBundles const&,
+      GraphBuilderConnections const&, GraphBuilderPublicPorts const&,
+      GraphBuilderVirtualNodes const&, GraphBuilderDetach const&);
 };
 
 namespace {
@@ -71,7 +79,7 @@ class Lowerer {
   GraphBuilderVirtualNodes const& virtuals;
   GraphBuilderDetach const& detach;
   bool execution_root = false;
-  LoweredBuilderGraph out;
+  LoweredBuilderGraph& out;
   std::flat_map<NodeBundleHandle, size_t> subgraph_by_boundary;
   std::vector<std::pair<NodeBundlePortId, TopologyPortId>>
       materialized_event_output_ports;
@@ -826,18 +834,24 @@ class Lowerer {
 public:
   constexpr Lowerer(GraphBuilderNodeBundles const& b, GraphBuilderConnections const& c,
           GraphBuilderPublicPorts const& p, GraphBuilderVirtualNodes const& v,
-          GraphBuilderDetach const& d, bool is_execution_root)
-      : bundles(b),connections(c),public_ports(p),virtuals(v),detach(d),execution_root(is_execution_root) {}
+          GraphBuilderDetach const& d, LoweredBuilderGraph& lowered,
+          bool is_execution_root)
+      : bundles(b),connections(c),public_ports(p),virtuals(v),detach(d),
+        execution_root(is_execution_root), out(lowered) {}
 
-  constexpr LoweredBuilderGraph run() {
+  constexpr void append_execution_root_ports() {
+    lower_execution_root_ports();
+    out.topology.normalize_edges();
+  }
+
+  constexpr void run(bool normalize = true) {
     project_bundles();
     lower_samples();
     lower_events();
     lower_detach();
     lower_runtime_output_observers();
     lower_execution_root_ports();
-    out.topology.normalize_edges();
-    return std::move(out);
+    if (normalize) out.topology.normalize_edges();
   }
 };
 } // namespace
@@ -846,6 +860,30 @@ constexpr LoweredBuilderGraph GraphBuilderLowering::lower(
     GraphBuilderNodeBundles const& bundles, GraphBuilderConnections const& connections,
     GraphBuilderPublicPorts const& ports, GraphBuilderVirtualNodes const& virtuals,
     GraphBuilderDetach const& detach, bool execution_root) {
-  return Lowerer(bundles,connections,ports,virtuals,detach,execution_root).run();
+  LoweredBuilderGraph lowered;
+  Lowerer(bundles, connections, ports, virtuals, detach, lowered, execution_root).run();
+  return lowered;
+}
+
+constexpr LoweredBuilderGraph GraphBuilderLowering::lower_shared_base(
+    GraphBuilderNodeBundles const& bundles,
+    GraphBuilderConnections const& connections,
+    GraphBuilderPublicPorts const& ports,
+    GraphBuilderVirtualNodes const& virtuals,
+    GraphBuilderDetach const& detach) {
+  LoweredBuilderGraph lowered;
+  Lowerer(bundles, connections, ports, virtuals, detach, lowered, false)
+      .run(false);
+  return lowered;
+}
+
+constexpr void GraphBuilderLowering::lower_execution_root_ports(
+    LoweredBuilderGraph& lowered, GraphBuilderNodeBundles const& bundles,
+    GraphBuilderConnections const& connections,
+    GraphBuilderPublicPorts const& ports,
+    GraphBuilderVirtualNodes const& virtuals,
+    GraphBuilderDetach const& detach) {
+  Lowerer(bundles, connections, ports, virtuals, detach, lowered, true)
+      .append_execution_root_ports();
 }
 } // namespace iv

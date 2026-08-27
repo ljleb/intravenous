@@ -247,6 +247,30 @@ consteval PublicOutputSnapshot repeated_named_output_snapshot()
     };
 }
 
+consteval PublicOutputSnapshot repeated_unnamed_output_snapshot()
+{
+    GraphBuilder g;
+    g.outputs(0.25f);
+    g.outputs(0.5f);
+    auto const built = g.build_root_node();
+    auto const families = g.public_sample_output_families();
+    return {
+        .graph_output_count = built.graph.outputs().size(),
+        .name_main = built.graph.outputs().size() == 1
+            && built.graph.outputs().front().name == "main",
+        .channel_type = built.graph.outputs().size() == 1
+            ? built.graph.outputs().front().channel_layout.channel_type
+            : ChannelTypeId::stereo,
+        .family_count = families.families.size(),
+        .family_channels = families.families.empty()
+            ? 0 : families.families.front().channels.size(),
+        .left_maps_to_zero = !families.families.empty()
+            && !families.families.front().channels.empty()
+            && families.families.front().channels[0].port_ordinals.size() == 1
+            && families.families.front().channels[0].port_ordinals[0] == 0,
+    };
+}
+
 consteval PublicOutputSnapshot whole_and_channel_output_snapshot()
 {
     GraphBuilder g;
@@ -415,6 +439,16 @@ TEST(GraphVirtualOutputsTest, NamedChannelOutputsKeepNameAndChannelAsSeparateIde
 TEST(GraphVirtualOutputsTest, RepeatedNamedPublicOutputsShareOneSummedGraphPort)
 {
     constexpr auto s = repeated_named_output_snapshot();
+    EXPECT_EQ(s.graph_output_count, 1u);
+    EXPECT_TRUE(s.name_main);
+    EXPECT_EQ(s.channel_type, ChannelTypeId::mono);
+    EXPECT_EQ(s.family_count, 1u);
+    EXPECT_TRUE(s.left_maps_to_zero);
+}
+
+TEST(GraphVirtualOutputsTest, RepeatedUnnamedPublicOutputsShareTheMainGraphPort)
+{
+    constexpr auto s = repeated_unnamed_output_snapshot();
     EXPECT_EQ(s.graph_output_count, 1u);
     EXPECT_TRUE(s.name_main);
     EXPECT_EQ(s.channel_type, ChannelTypeId::mono);

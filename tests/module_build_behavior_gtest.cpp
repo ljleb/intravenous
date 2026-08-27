@@ -86,6 +86,22 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         iv::test::read_text(local_cache).find("IV_TEST_CUSTOM_CMAKE_MARKER:BOOL=ON"),
         std::string::npos);
 
+    auto const local_compile_database =
+        iv::test::read_text(local_workspace / "cmake-build" / "compile_commands.json");
+    EXPECT_NE(local_compile_database.find("-include "), std::string::npos);
+    EXPECT_NE(local_compile_database.find("cmake_pch.hxx"), std::string::npos);
+
+    bool has_precompiled_header = false;
+    for (std::filesystem::recursive_directory_iterator it(local_workspace / "cmake-build"), end;
+         it != end;
+         ++it) {
+        if (it->is_regular_file() && it->path().filename() == "cmake_pch.hxx.gch") {
+            has_precompiled_header = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(has_precompiled_header);
+
     auto const expected_generator = iv::test::configured_build_generator();
     if (expected_generator == "Ninja") {
         EXPECT_TRUE(std::filesystem::exists(project_workspace / "cmake-build" / "build.ninja"));

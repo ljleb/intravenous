@@ -401,10 +401,15 @@ std::filesystem::path global_cache_root()
 void run(
     std::string const &command,
     ModuleLoader::LogSink const &sink,
-    std::string_view phase)
+    std::string_view phase,
+    std::filesystem::path const* output_log = nullptr)
 {
     if (sink) sink("[" + std::string(phase) + "] " + command);
-    int rc = std::system(command.c_str());
+    auto invocation = command;
+    if (output_log) {
+        invocation += " >> " + quote(*output_log) + " 2>&1";
+    }
+    int rc = std::system(invocation.c_str());
     if (rc != 0) {
         throw std::runtime_error(
             "command failed with exit code " + std::to_string(rc) + ": " + command);
@@ -690,30 +695,33 @@ class ModuleLoader::Impl {
                   << "}\n"
                   << "#include <" << root_include << ">\n"
                   << "namespace {\n"
-                  << "consteval iv::Graph iv_generated_module_graph_value() {\n"
+                  << "struct IvGeneratedModule {\n"
+                  << "  iv::Graph graph;\n"
+                  << "  iv::StaticGraphIntrospectionMetadata metadata;\n"
+                  << "};\n"
+                  << "consteval IvGeneratedModule iv_generated_module_value() {\n"
                   << "  iv::GraphBuilder builder;\n"
                   << "  " << root.manifest.main << "(builder);\n"
-                  << "  return builder.build_execution_root_node().graph;\n"
+                  << "  auto const result = "
+                     "builder.build_execution_root_node_with_metadata();\n"
+                  << "  return {\n"
+                  << "      .graph = result.root.graph,\n"
+                  << "      .metadata = iv::details::define_static_metadata(result.introspection),\n"
+                  << "  };\n"
                   << "}\n"
-                  << "consteval iv::StaticGraphIntrospectionMetadata "
-                     "iv_generated_module_metadata_value() {\n"
-                  << "  iv::GraphBuilder builder;\n"
-                  << "  " << root.manifest.main << "(builder);\n"
-                  << "  return iv::details::define_static_metadata(builder.build_metadata());\n"
-                  << "}\n"
+                  << "inline constexpr auto iv_generated_module = "
+                     "iv_generated_module_value();\n"
                   << "}\n"
                   << "extern \"C\" IV_MODULE_EXPORT std::uint32_t iv_module_abi_version() {\n"
                   << "  return iv::IV_MODULE_ABI_VERSION;\n"
                   << "}\n"
                   << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode iv_module_graph() {\n"
                   << "  static constexpr iv::StaticGraphRoot<"
-                     "iv_generated_module_graph_value()> graph {};\n"
+                     "iv_generated_module.graph> graph {};\n"
                   << "  return iv::WeakTypeErasedNode(graph);\n"
                   << "}\n"
                   << "extern \"C\" IV_MODULE_EXPORT iv::StaticGraphIntrospectionMetadata iv_module_metadata() {\n"
-                  << "  static constexpr auto metadata = "
-                     "iv_generated_module_metadata_value();\n"
-                  << "  return metadata;\n"
+                  << "  return iv_generated_module.metadata;\n"
                   << "}\n";
         write_text_if_different(export_file, export_tu.str());
 
@@ -752,6 +760,7 @@ class ModuleLoader::Impl {
                   << std::filesystem::last_write_time(source_introspection_plugin)
                          .time_since_epoch().count() << '\n'
                   << "generator=" << generator << '\n'
+                  << "gcc-time-report=" << toolchain_.gcc_time_report << '\n'
                   << "generated-export=" << export_tu.str() << '\n'
                   << "core-source-stamp="
                   << directory_stamp(repo_root_ / "src/intravenous")
@@ -810,16 +819,31 @@ class ModuleLoader::Impl {
                   << " -DIV_MODULE_OUTPUT_NAME=iv_module_" << sanitize(root.manifest.id)
                   << " -DIV_GCC_SOURCE_INTROSPECTION_PLUGIN="
                   << quote(source_introspection_plugin);
+        if (toolchain_.gcc_time_report) {
+            configure << " -DIV_MODULE_GCC_TIME_REPORT=ON";
+        }
         if (std::string_view(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY).size()) {
             configure << " -DIV_MODULE_SHARED_LIBRARY=" << quote(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY);
         }
         if (needs_build || !std::filesystem::exists(build_dir / "CMakeCache.txt")) {
-            run(configure.str(), log_sink_, "configure");
+            auto const compiler_report = workspace / "compiler.time.log";
+            if (toolchain_.gcc_time_report) {
+                std::ofstream clear_report(compiler_report, std::ios::trunc);
+                if (!clear_report) {
+                    throw std::runtime_error(
+                        "failed to create compiler time report '" +
+                        compiler_report.string() + "'");
+                }
+            }
+            auto const* report_log = toolchain_.gcc_time_report
+                ? &compiler_report
+                : nullptr;
+            run(configure.str(), log_sink_, "configure", report_log);
             run(
                 quote(cmake_program()) + " --build " + quote(build_dir) +
                     " --config " + config_name() + " --parallel 16",
                 log_sink_,
-                "build");
+                "build", report_log);
             write_text_if_different(signature_file, signature.str());
         }
 
