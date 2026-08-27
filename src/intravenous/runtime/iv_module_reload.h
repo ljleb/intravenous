@@ -1,7 +1,7 @@
 #pragma once
 
+#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/graph/build_types.h>
-#include <intravenous/graph/builder.h>
 #include <intravenous/module/dependency.h>
 #include <intravenous/module/loader.h>
 #include <intravenous/module/watcher.h>
@@ -23,7 +23,7 @@ struct IvModuleReloadedDefinition {
     GraphIntrospectionMetadata introspection{};
     std::vector<ModuleDependency> dependencies{};
     std::vector<ModuleRef> module_refs{};
-    GraphBuilder canonical_builder{};
+    WeakTypeErasedNode root{};
 };
 
 struct IvModuleReloadFailure {

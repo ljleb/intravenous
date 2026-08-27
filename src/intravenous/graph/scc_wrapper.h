@@ -9,19 +9,20 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace iv {
     struct GraphSccWrapper {
-        std::vector<GraphNodeWrapper> _nodes;
-        std::vector<size_t> _global_node_indices;
-        std::vector<size_t> _input_constant_offsets;
+        StaticSpan<GraphNodeWrapper> _nodes {};
+        StaticSpan<size_t> _global_node_indices {};
+        StaticSpan<size_t> _input_constant_offsets {};
         size_t _block_size;
         size_t _internal_latency;
         size_t _scc_feedback_latency;
-        std::string _node_skip_import_id;
+        StaticString _node_skip_import_id {};
 
-        GraphSccWrapper(
+        consteval GraphSccWrapper(
             std::vector<GraphNodeWrapper> nodes,
             std::vector<size_t> global_node_indices,
             size_t block_size,
@@ -29,18 +30,29 @@ namespace iv {
             size_t scc_feedback_latency,
             std::string node_skip_import_id
         ) :
-            _nodes(std::move(nodes)),
-            _global_node_indices(std::move(global_node_indices)),
-            _input_constant_offsets(_nodes.size() + 1, 0),
+            _nodes(details::define_static_span(nodes)),
+            _global_node_indices(details::define_static_span(
+                global_node_indices)),
+            _input_constant_offsets(make_input_constant_offsets(nodes)),
             _block_size(block_size),
             _internal_latency(internal_latency),
             _scc_feedback_latency(scc_feedback_latency),
-            _node_skip_import_id(std::move(node_skip_import_id))
+            _node_skip_import_id(details::define_static_string(
+                node_skip_import_id))
         {
-            IV_ASSERT(_nodes.size() == _global_node_indices.size(), "SCC wrapper must have one global node index per wrapped node");
-            for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
-                _input_constant_offsets[node_i + 1] = _input_constant_offsets[node_i] + _nodes[node_i].inputs().size();
+            IV_ASSERT(_nodes.size == _global_node_indices.size,
+                "SCC wrapper must have one global node index per wrapped node");
+        }
+
+        static consteval StaticSpan<size_t> make_input_constant_offsets(
+            std::span<GraphNodeWrapper const> nodes)
+        {
+            std::vector<size_t> offsets(nodes.size() + 1, 0);
+            for (size_t node_i = 0; node_i < nodes.size(); ++node_i) {
+                offsets[node_i + 1] =
+                    offsets[node_i] + nodes[node_i]._inputs.size;
             }
+            return details::define_static_span(offsets);
         }
 
         struct DormancyState {
@@ -60,7 +72,7 @@ namespace iv {
 
         size_t num_nodes() const
         {
-            return _nodes.size();
+            return _nodes.size;
         }
 
         size_t max_block_size() const
@@ -78,12 +90,14 @@ namespace iv {
             auto const& state = ctx.state();
             ctx.nested_node_states(state.nested_node_states);
             if (!_node_skip_import_id.empty()) {
-                ctx.import_array(_node_skip_import_id, state.global_node_skip_depth);
+                ctx.import_array(
+                    std::string(_node_skip_import_id.view()),
+                    state.global_node_skip_depth);
             }
-            ctx.local_array(state.dormancy.dormant, _nodes.size());
-            ctx.local_array(state.dormancy.unchanged_inputs, _nodes.size());
-            ctx.local_array(state.dormancy.silent_samples_accumulated, _nodes.size());
-            ctx.local_array(state.dormancy.effective_ttl_samples, _nodes.size());
+            ctx.local_array(state.dormancy.dormant, _nodes.size);
+            ctx.local_array(state.dormancy.unchanged_inputs, _nodes.size);
+            ctx.local_array(state.dormancy.silent_samples_accumulated, _nodes.size);
+            ctx.local_array(state.dormancy.effective_ttl_samples, _nodes.size);
             ctx.local_array(state.dormancy.remembered_constant_inputs, _input_constant_offsets.back());
             ctx.local_array(state.dormancy.remembered_constant_valid, _input_constant_offsets.back());
             for (auto const& node : _nodes) {
@@ -97,7 +111,7 @@ namespace iv {
             std::fill(state.dormancy.dormant.begin(), state.dormancy.dormant.end(), 0);
             std::fill(state.dormancy.unchanged_inputs.begin(), state.dormancy.unchanged_inputs.end(), 0);
             std::fill(state.dormancy.silent_samples_accumulated.begin(), state.dormancy.silent_samples_accumulated.end(), 0);
-            for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
+            for (size_t node_i = 0; node_i < _nodes.size; ++node_i) {
                 state.dormancy.effective_ttl_samples[node_i] = _nodes[node_i].can_skip_block()
                     ? _nodes[node_i].resolve_default_ttl_samples(ctx.default_silence_ttl_samples())
                     : std::numeric_limits<size_t>::max();
@@ -219,83 +233,113 @@ namespace iv {
             return true;
         }
 
-        void tick_block(TickBlockContext<GraphSccWrapper> const& ctx) const
+        template<auto Scc, size_t NodeIndex>
+        static IV_FORCEINLINE void tick_static_node(
+            State& state,
+            TickBlockContext<GraphSccWrapper> const& ctx,
+            size_t block_index,
+            size_t block_size)
         {
-            auto& state = ctx.state();
-            size_t const scc_block_size = std::min(ctx.block_size, _block_size);
+            constexpr auto node = Scc._nodes[NodeIndex];
+            auto node_ctx = TickContext<GraphNodeWrapper> {
+                .inputs = {},
+                .outputs = {},
+                .event_inputs = {},
+                .event_outputs = {},
+                .sample_rate = ctx.sample_rate,
+                .scc_feedback_latency = Scc._scc_feedback_latency,
+                .buffer = state.nested_node_states[NodeIndex],
+            };
+            auto& runtime_state = node_state(state.nested_node_states[NodeIndex]);
+            bool inputs_constant = false;
+            bool const unchanged =
+                Scc.sample_inputs_unchanged(state, runtime_state, NodeIndex, block_size, inputs_constant)
+                && event_inputs_unchanged(runtime_state, block_index, block_size);
+            state.dormancy.unchanged_inputs[NodeIndex] = unchanged ? 1 : 0;
 
-            for (size_t offset = 0; offset < ctx.block_size; offset += scc_block_size) {
-                for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
-                    auto node_ctx = TickContext<GraphNodeWrapper> {
-                        .inputs = {},
-                        .outputs = {},
-                        .event_inputs = {},
-                        .event_outputs = {},
-                        .sample_rate = ctx.sample_rate,
-                        .scc_feedback_latency = _scc_feedback_latency,
-                        .buffer = state.nested_node_states[node_i],
-                    };
-                    auto& runtime_state = node_state(state.nested_node_states[node_i]);
-                    size_t const block_index = ctx.index + offset;
-                    bool inputs_constant = false;
-                    bool const unchanged =
-                        sample_inputs_unchanged(state, runtime_state, node_i, scc_block_size, inputs_constant)
-                        && event_inputs_unchanged(runtime_state, block_index, scc_block_size);
-                    state.dormancy.unchanged_inputs[node_i] = unchanged ? 1 : 0;
+            if (
+                !state.global_node_skip_depth.empty()
+                && state.global_node_skip_depth[Scc._global_node_indices[NodeIndex]] != 0
+            ) {
+                GraphNodeWrapper::skip_static<node>({
+                    node_ctx,
+                    block_index,
+                    block_size
+                });
+                return;
+            }
 
-                    if (
-                        !state.global_node_skip_depth.empty()
-                        && state.global_node_skip_depth[_global_node_indices[node_i]] != 0
-                    ) {
-                        do_skip_block(_nodes[node_i], {
-                            node_ctx,
-                            block_index,
-                            scc_block_size
-                        });
-                        continue;
-                    }
-
-                    if (state.dormancy.dormant[node_i] != 0) {
-                        if (unchanged) {
-                            do_skip_block(_nodes[node_i], {
-                                node_ctx,
-                                block_index,
-                                scc_block_size
-                            });
-                            continue;
-                        }
-
-                        state.dormancy.dormant[node_i] = 0;
-                        state.dormancy.silent_samples_accumulated[node_i] = 0;
-                    }
-
-                    do_tick_block(_nodes[node_i], {
+            if (state.dormancy.dormant[NodeIndex] != 0) {
+                if (unchanged) {
+                    GraphNodeWrapper::skip_static<node>({
                         node_ctx,
                         block_index,
-                        scc_block_size
+                        block_size
                     });
-
-                    size_t const ttl_samples = state.dormancy.effective_ttl_samples[node_i];
-                    if (ttl_samples == std::numeric_limits<size_t>::max()) {
-                        state.dormancy.silent_samples_accumulated[node_i] = 0;
-                        continue;
-                    }
-
-                    bool const silent =
-                        has_sample_outputs(runtime_state)
-                        && sample_outputs_silent(runtime_state, scc_block_size)
-                        && event_outputs_empty(runtime_state, block_index, scc_block_size);
-
-                    if (inputs_constant && silent) {
-                        size_t const accumulated = state.dormancy.silent_samples_accumulated[node_i] + scc_block_size;
-                        state.dormancy.silent_samples_accumulated[node_i] = accumulated;
-                        if (accumulated >= ttl_samples) {
-                            state.dormancy.dormant[node_i] = 1;
-                        }
-                    } else {
-                        state.dormancy.silent_samples_accumulated[node_i] = 0;
-                    }
+                    return;
                 }
+
+                state.dormancy.dormant[NodeIndex] = 0;
+                state.dormancy.silent_samples_accumulated[NodeIndex] = 0;
+            }
+
+            GraphNodeWrapper::tick_static<node>({
+                node_ctx,
+                block_index,
+                block_size
+            });
+
+            size_t const ttl_samples = state.dormancy.effective_ttl_samples[NodeIndex];
+            if (ttl_samples == std::numeric_limits<size_t>::max()) {
+                state.dormancy.silent_samples_accumulated[NodeIndex] = 0;
+                return;
+            }
+
+            bool const silent =
+                has_sample_outputs(runtime_state)
+                && sample_outputs_silent(runtime_state, block_size)
+                && event_outputs_empty(runtime_state, block_index, block_size);
+
+            if (inputs_constant && silent) {
+                size_t const accumulated = state.dormancy.silent_samples_accumulated[NodeIndex] + block_size;
+                state.dormancy.silent_samples_accumulated[NodeIndex] = accumulated;
+                if (accumulated >= ttl_samples) {
+                    state.dormancy.dormant[NodeIndex] = 1;
+                }
+            } else {
+                state.dormancy.silent_samples_accumulated[NodeIndex] = 0;
+            }
+        }
+
+        template<auto Scc, size_t... NodeIndices>
+        static IV_FORCEINLINE void tick_static_nodes(
+            State& state,
+            TickBlockContext<GraphSccWrapper> const& ctx,
+            size_t block_index,
+            size_t block_size,
+            std::index_sequence<NodeIndices...>)
+        {
+            (tick_static_node<Scc, NodeIndices>(
+                state,
+                ctx,
+                block_index,
+                block_size), ...);
+        }
+
+        template<auto Scc>
+        static IV_FORCEINLINE void tick_static(
+            TickBlockContext<GraphSccWrapper> const& ctx)
+        {
+            auto& state = ctx.state();
+            size_t const scc_block_size = std::min(ctx.block_size, Scc._block_size);
+
+            for (size_t offset = 0; offset < ctx.block_size; offset += scc_block_size) {
+                tick_static_nodes<Scc>(
+                    state,
+                    ctx,
+                    ctx.index + offset,
+                    scc_block_size,
+                    std::make_index_sequence<Scc._nodes.size> {});
             }
         }
 

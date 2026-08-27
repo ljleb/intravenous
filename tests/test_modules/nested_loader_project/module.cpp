@@ -2,11 +2,11 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <iv/modules/iv.test.nested_loader_voice>
 
-inline void nested_loader_project(iv::GraphBuilder& g)
+consteval void nested_loader_project(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto const phase = g.node<PhaseIntegrator>();
-    auto const voice = g.module<&nested_loader_voice>();
+    auto const voice = g.module<nested_loader_voice>();
     phase(0.0);
     auto const tone = voice(
         "amplitude"_P = 0.25,

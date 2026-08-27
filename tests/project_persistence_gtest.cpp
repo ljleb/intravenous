@@ -1415,13 +1415,8 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
     });
     auto graph_instance = make_instance_with_member_ports();
     auto const graph_runtime_node_id = runtime_node_id(graph_instance.instance_id, "node-1");
-    iv::GraphBuilder graph_builder;
-    auto graph_node = iv::_annotate_node_source_info(
-        graph_builder.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref(),
-        "node-1");
-    (void)graph_node;
     graph_input_lanes.handle_iv_module_instance_builders_changed(iv::IvModuleInstanceBuildersChanged{
-        .created = {iv::IvModuleInstanceBuilderRef{.instance = &graph_instance, .builder = &graph_builder}},
+        .created = {iv::IvModuleInstanceBuilderRef{.instance = &graph_instance}},
     });
     graph_input_lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 0});
     graph_input_lanes.set_sample_input_value(iv::ProjectSetSampleInputValueRequest{

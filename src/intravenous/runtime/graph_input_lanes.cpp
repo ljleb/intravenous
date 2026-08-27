@@ -1,7 +1,6 @@
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes/port_catalog.h>
 
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_lane_nodes/controls.h>
 #include <intravenous/runtime/runtime_project_events.h>
@@ -418,6 +417,7 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
     IvModuleInstanceBuildersAckBuilder *ack_builder)
 {
     TimelineLaneBatchUpdate batch;
+    std::vector<TimelineLaneBatchUpdate> timeline_batches;
     {
         std::scoped_lock lock(mutex);
         for (auto const &created : diff.created) {
@@ -486,9 +486,14 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
             }
         }
         queue_timeline_batch_locked(batch);
+        timeline_batches = take_pending_timeline_batches_locked();
         if (ack_builder != nullptr) {
             ack_builder->set_version_index(current_update_version_index_);
         }
+    }
+
+    for (auto const &pending : timeline_batches) {
+        apply_timeline_batch(pending);
     }
 
     if (!diff.created.empty() || !diff.updated.empty() || !diff.deleted_instance_ids.empty()) {

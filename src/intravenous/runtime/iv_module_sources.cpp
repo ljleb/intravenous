@@ -50,10 +50,10 @@ std::string module_identifier(std::string const& name)
 std::string source_template()
 {
     return "#include <intravenous/dsl.h>\n\n"
-        "inline void module_main(iv::GraphBuilder& g)\n"
+        "consteval void module_main(iv::GraphBuilder& g)\n"
         "{\n"
         "    using namespace iv;\n"
-        "    g.outputs();\n"
+        "    \n"
         "}\n";
 }
 

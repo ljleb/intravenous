@@ -44,11 +44,15 @@ namespace iv::details {
     template<class... Args>
     consteval bool named_args_follow_positionals_only()
     {
-        bool seen_named = false;
-        bool valid = true;
-        ((valid = valid && (!seen_named || is_named_arg_v<Args>),
-          seen_named = seen_named || is_named_arg_v<Args>), ...);
-        return valid;
+        if constexpr (sizeof...(Args) == 0) {
+            return true;
+        } else {
+            bool seen_named = false;
+            bool valid = true;
+            ((valid = valid && (!seen_named || is_named_arg_v<Args>),
+              seen_named = seen_named || is_named_arg_v<Args>), ...);
+            return valid;
+        }
     }
 
     template<class... Args>

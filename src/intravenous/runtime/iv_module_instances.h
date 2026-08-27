@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/graph/build_types.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/iv_module_definitions.h>
@@ -49,8 +50,8 @@ struct IvModuleInstancesChanged {
 
 struct IvModuleInstanceBuilderRef {
     IvModuleInstance const *instance = nullptr;
-    GraphBuilder *builder = nullptr;
-    // Keeps the binary generation that owns the builder's type-erased code live
+    WeakTypeErasedNode root{};
+    // Keeps the binary generation owning the root graph and callbacks live
     // until consumers have replaced and released their previous execution graph.
     std::vector<ModuleRef> module_refs {};
     std::vector<LaneId> prerequisite_lanes {};
@@ -86,7 +87,7 @@ private:
     std::unordered_map<std::string, IvModuleRequiredDefinition> required_definitions_by_id;
     std::unordered_map<std::string, IvModuleInstance> realized_instances_by_id;
     std::unordered_map<std::string, std::vector<ModuleRef>> realized_module_refs_by_id;
-    std::unordered_map<std::string, GraphBuilder> realized_builders_by_id;
+    std::unordered_map<std::string, WeakTypeErasedNode> realized_roots_by_id;
 
 public:
     IvModuleInstances() = default;

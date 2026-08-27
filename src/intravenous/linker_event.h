@@ -24,10 +24,14 @@
     inline event_type event_name##_subscriber() { return event_name; }
 
 #define IV_DEFINE_SINGLETON_EVENT(event_type, event_name, default_value) \
-    extern "C" IV_LINKER_EVENT_WEAK event_type event_name = (default_value)
+    extern "C" { \
+    IV_LINKER_EVENT_WEAK event_type event_name = (default_value); \
+    }
 
 #define IV_SUBSCRIBE_SINGLETON_EVENT(event_type, event_name, value) \
-    extern "C" event_type event_name = (value)
+    extern "C" { \
+    event_type event_name = (value); \
+    }
 
 #define IV_DEFINE_LINKER_EVENT(event_type, event_name) \
     extern "C" { \

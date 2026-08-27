@@ -34,11 +34,17 @@ int main()
         std::filesystem::exists(project_cache),
         "root module should configure in the project-local build/iv tree");
 
-    auto const rewrite_root = runtime_root / "build" / "iv" / "rewrite" / "iv" / "modules";
-    auto const project_rewrite = rewrite_root / "iv.test.behavior_project";
-    auto const voice_rewrite = rewrite_root / "iv.test.behavior_voice";
-    iv::test::require(std::filesystem::exists(project_rewrite), "root rewrite should exist");
-    iv::test::require(std::filesystem::exists(voice_rewrite), "dependency rewrite should exist");
+    auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "modules";
+    auto const project_import = import_root / "iv.test.behavior_project";
+    auto const voice_import = import_root / "iv.test.behavior_voice";
+    iv::test::require(std::filesystem::exists(project_import), "root import should exist");
+    iv::test::require(std::filesystem::exists(voice_import), "dependency import should exist");
+    iv::test::require(
+        iv::test::read_text(project_import).contains(project_dst.generic_string()),
+        "root import should forward to its authored entry");
+    iv::test::require(
+        iv::test::read_text(voice_import).contains(voice_dst.generic_string()),
+        "dependency import should forward to its authored entry");
 
     auto project_source = iv::test::read_text(project_dst / "module.cpp");
     auto const project_needle = std::string("    using namespace iv;");
@@ -52,9 +58,6 @@ int main()
     iv::test::write_text_advancing_timestamp(project_dst / "module.cpp", project_source);
 
     (void)loader.load_root_definition(project_dst);
-    iv::test::require(
-        iv::test::read_text(project_rewrite).contains("behavior source marker"),
-        "root source edit should regenerate its rewritten definition");
 
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto const voice_needle =
@@ -69,9 +72,6 @@ int main()
     iv::test::write_text_advancing_timestamp(voice_dst / "module.cpp", voice_source);
 
     (void)loader.load_root_definition(project_dst);
-    iv::test::require(
-        iv::test::read_text(voice_rewrite).contains("behavior dependency marker"),
-        "dependency source edit should regenerate its rewritten definition");
 
     (void)loader.load_root_definition(local_dst);
     auto local_cmake = iv::test::read_text(local_dst / "CMakeLists.txt");

@@ -95,6 +95,36 @@ void publish_event_block(
 
 } // namespace
 
+RuntimeBindingResources GraphRuntimeBindings::resources()
+{
+    return RuntimeBindingResources{
+        .abi_version = RUNTIME_BINDING_RESOURCE_ABI_VERSION,
+        .struct_size = sizeof(RuntimeBindingResources),
+        .owner = this,
+        .resolve_sample_input = +[](
+            void* owner,
+            char const* key,
+            size_t size) -> RuntimeSampleInputBinding const* {
+            return static_cast<GraphRuntimeBindings*>(owner)
+                ->sample_input(std::string(key, size)).get();
+        },
+        .resolve_event_input = +[](
+            void* owner,
+            char const* key,
+            size_t size) -> RuntimeEventInputBinding const* {
+            return static_cast<GraphRuntimeBindings*>(owner)
+                ->event_input(std::string(key, size)).get();
+        },
+        .resolve_output = +[](
+            void* owner,
+            char const* key,
+            size_t size) -> RuntimeOutputBinding const* {
+            return static_cast<GraphRuntimeBindings*>(owner)
+                ->output(std::string(key, size)).get();
+        },
+    };
+}
+
 std::shared_ptr<GraphRuntimeBindings> make_graph_runtime_bindings()
 {
     return std::make_shared<GraphRuntimeBindings>(GraphRuntimeBindings::Callbacks{

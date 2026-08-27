@@ -85,7 +85,7 @@ namespace iv {
         {
             return std::array {
                 InputConfig { .name = "phase_offset", .history = 1 },
-                InputConfig { .name = "frequency", .history = 1 },
+                InputConfig { .name = "frequency", .history = 1, .min = 0 },
             };
         }
 

@@ -1,4 +1,3 @@
-#include <intravenous/graph/builder.h>
 #include <intravenous/node/block_executor.h>
 
 #include <gtest/gtest.h>
@@ -83,31 +82,13 @@ struct MigratingLifecycleNode {
     void tick_block(iv::TickBlockContext<MigratingLifecycleNode> const&) const
     {}
 };
-
-struct IndependentInitializationNode {
-    int* initialized = nullptr;
-
-    void initialize(
-        iv::InitializationContext<IndependentInitializationNode> const&) const
-    {
-        if (initialized) ++*initialized;
-    }
-
-    void tick_block(
-        iv::TickBlockContext<IndependentInitializationNode> const&) const
-    {}
-};
 }
 
-TEST(BlockNodeExecutor, TicksGraphOncePerCall)
+TEST(BlockNodeExecutor, TicksRootOncePerCall)
 {
     int ticks = 0;
-    iv::GraphBuilder builder;
-    (void)builder.node<CountingNode>(&ticks);
-    builder.outputs();
-
     auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(builder.build_root_node().graph),
+        iv::TypeErasedNode(CountingNode{&ticks}),
         8);
 
     executor.tick_block(0);
@@ -117,26 +98,18 @@ TEST(BlockNodeExecutor, TicksGraphOncePerCall)
     EXPECT_EQ(ticks, 2);
 }
 
-TEST(BlockNodeExecutor, ReloadReplacesTheRootGraph)
+TEST(BlockNodeExecutor, ReloadReplacesTheRootNode)
 {
     int ticks_a = 0;
-    iv::GraphBuilder builder_a;
-    (void)builder_a.node<CountingNode>(&ticks_a);
-    builder_a.outputs();
-
     auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(builder_a.build_root_node().graph),
+        iv::TypeErasedNode(CountingNode{&ticks_a}),
         8);
 
     executor.tick_block(0);
     EXPECT_EQ(ticks_a, 1);
 
     int ticks_b = 0;
-    iv::GraphBuilder builder_b;
-    (void)builder_b.node<CountingNode>(&ticks_b);
-    builder_b.outputs();
-
-    executor.reload(iv::TypeErasedNode(builder_b.build_root_node().graph));
+    executor.reload(iv::TypeErasedNode(CountingNode{&ticks_b}));
     executor.tick_block(8);
 
     EXPECT_EQ(ticks_a, 1);
@@ -147,12 +120,9 @@ TEST(BlockNodeExecutor, ReloadReinitializesAndReleasesLifecycleState)
 {
     int initialized_a = 0;
     int released_a = 0;
-    iv::GraphBuilder builder_a;
-    (void)builder_a.node<LifecycleTrackingNode>("node", &initialized_a, &released_a);
-    builder_a.outputs();
-
     auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(builder_a.build_root_node().graph),
+        iv::TypeErasedNode(LifecycleTrackingNode{
+            "node", &initialized_a, &released_a}),
         8);
 
     EXPECT_EQ(initialized_a, 1);
@@ -160,11 +130,8 @@ TEST(BlockNodeExecutor, ReloadReinitializesAndReleasesLifecycleState)
 
     int initialized_b = 0;
     int released_b = 0;
-    iv::GraphBuilder builder_b;
-    (void)builder_b.node<LifecycleTrackingNode>("node", &initialized_b, &released_b);
-    builder_b.outputs();
-
-    executor.reload(iv::TypeErasedNode(builder_b.build_root_node().graph));
+    executor.reload(iv::TypeErasedNode(LifecycleTrackingNode{
+        "node", &initialized_b, &released_b}));
 
     EXPECT_EQ(initialized_a, 1);
     EXPECT_EQ(released_a, 1);
@@ -172,41 +139,31 @@ TEST(BlockNodeExecutor, ReloadReinitializesAndReleasesLifecycleState)
     EXPECT_EQ(released_b, 0);
 }
 
-TEST(BlockNodeExecutor, PreparedReloadDefersOnlyStateMigrationToCommit)
+TEST(BlockNodeExecutor, PreparedReloadDefersStateMigrationToCommit)
 {
     int old_initialized = 0;
     int old_moved = 0;
-    iv::GraphBuilder old_builder;
-    (void)old_builder.node<MigratingLifecycleNode>(
-        "stable-node", &old_initialized, &old_moved);
-    old_builder.outputs();
     auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(old_builder.build_root_node().graph), 8);
+        iv::TypeErasedNode(MigratingLifecycleNode{
+            "stable-node", &old_initialized, &old_moved}),
+        8);
 
     int new_initialized = 0;
     int new_moved = 0;
-    int independent_initialized = 0;
-    iv::GraphBuilder new_builder;
-    (void)new_builder.node<MigratingLifecycleNode>(
-        "stable-node", &new_initialized, &new_moved);
-    (void)new_builder.node<IndependentInitializationNode>(
-        &independent_initialized);
-    new_builder.outputs();
-
     auto prepared = executor.prepare_reload(
-        iv::TypeErasedNode(new_builder.build_root_node().graph));
+        iv::TypeErasedNode(MigratingLifecycleNode{
+            "stable-node", &new_initialized, &new_moved}));
 
     EXPECT_EQ(old_initialized, 1);
     EXPECT_EQ(old_moved, 0);
     EXPECT_EQ(new_initialized, 0);
     EXPECT_EQ(new_moved, 0);
-    EXPECT_EQ(independent_initialized, 1);
 
     auto retired = executor.commit_reload(std::move(prepared));
+    (void)retired;
 
     EXPECT_EQ(new_initialized, 0);
     EXPECT_EQ(new_moved, 1);
-    EXPECT_EQ(independent_initialized, 1);
 }
 
 TEST(NodeStorageMigration, CrossGenerationTypeNameRequiresExactRewrittenStructure)

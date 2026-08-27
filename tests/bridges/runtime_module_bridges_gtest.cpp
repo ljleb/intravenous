@@ -52,7 +52,7 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenB
         .introspection = loaded.introspection,
         .dependencies = loaded.dependencies,
         .module_refs = std::move(loaded.module_refs),
-        .canonical_builder = std::move(loaded.canonical_builder),
+        .root = loaded.root,
     });
     auto const result = introspection.query_active_regions(
         std::filesystem::weakly_canonical(workspace / "module.cpp"));

@@ -1,6 +1,5 @@
 #include <intravenous/runtime/iv_module_definitions.h>
 
-#include <intravenous/graph/builder.h>
 #include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_reload.h>
@@ -24,7 +23,6 @@ std::unique_ptr<IvModuleDefinitions::DefinitionState> make_definition_state(
 {
     auto state = std::make_unique<IvModuleDefinitions::DefinitionState>();
     state->module_refs = loaded.module_refs;
-    state->canonical_builder = loaded.canonical_builder;
     state->snapshot = IvModuleDefinition{
         .definition_id = loaded.definition_id,
         .module_root = normalize_path(loaded.module_root),
@@ -32,7 +30,7 @@ std::unique_ptr<IvModuleDefinitions::DefinitionState> make_definition_state(
         .introspection = loaded.introspection,
         .dependencies = loaded.dependencies,
         .module_refs = state->module_refs,
-        .canonical_builder = &state->canonical_builder,
+        .root = loaded.root,
     };
     return state;
 }
@@ -241,16 +239,5 @@ std::vector<IvModuleDefinition> IvModuleDefinitions::loaded_definitions() const
         definitions.push_back(entry.second->snapshot);
     }
     return definitions;
-}
-
-GraphBuilder const *IvModuleDefinitions::builder_for_definition(
-    std::string const &definition_id) const
-{
-    std::scoped_lock lock(mutex);
-    auto const it = loaded_definitions_by_id.find(definition_id);
-    if (it == loaded_definitions_by_id.end()) {
-        return nullptr;
-    }
-    return &it->second->canonical_builder;
 }
 } // namespace iv

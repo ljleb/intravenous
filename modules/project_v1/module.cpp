@@ -10,7 +10,7 @@
 #include <iostream>
 #include <string>
 
-inline void project_v1(iv::GraphBuilder& g)
+consteval void project_v1(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto make_channel = [&]<auto Channel>() {

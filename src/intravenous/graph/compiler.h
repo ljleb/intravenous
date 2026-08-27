@@ -1,8 +1,8 @@
 #pragma once
 
 #include <intravenous/basic_nodes/routing.h>
-#include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/graph/build_types.h>
+#include <intravenous/graph/reflected_node.hpp>
 #include <intravenous/graph/types.h>
 #include <intravenous/graph/wiring.h>
 
@@ -14,13 +14,24 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
+#include <flat_map>
+#include <flat_set>
 #include <utility>
 #include <vector>
 
 namespace iv::details {
-    inline size_t floor_power_of_2(size_t value)
+    template<class Node>
+    constexpr ReflectedNodeDescription reflect_compiler_node(Node node)
+    {
+        if consteval {
+            return reflect_node(node);
+        } else {
+            runtime_graph_builder_node_call_is_forbidden();
+            return {};
+        }
+    }
+
+    constexpr size_t floor_power_of_2(size_t value)
     {
         if (value == 0) {
             return 0;
@@ -28,30 +39,37 @@ namespace iv::details {
         return std::bit_floor(value);
     }
 
-    [[noreturn]] inline void error(std::string msg)
+    [[noreturn]] constexpr void error(std::string msg)
     {
         throw std::logic_error(msg);
     }
 
     template<class ChannelType, SampleStreamLayout Layout>
-    inline TypeErasedNode make_broadcast_node(size_t arity)
+    constexpr ReflectedNodeDescription make_broadcast_node(size_t arity)
     {
-        if (arity == 0 || arity > 64) {
-            error("broadcast node arity must be between 1 and 64; got " + std::to_string(arity));
+        if consteval {
+            if (arity == 0 || arity > 64) {
+                error("broadcast node arity must be between 1 and 64");
+            }
+
+            std::optional<ReflectedNodeDescription> result;
+            [&]<size_t... I>(std::index_sequence<I...>) {
+                ((arity == (I + 1)
+                    ? (void)(result.emplace(reflect_node(
+                          Broadcast<I + 1, ChannelType, Layout>{})))
+                    : (void)0), ...);
+            }(std::make_index_sequence<64>{});
+
+            IV_ASSERT(result.has_value(), "broadcast node instantiation must succeed for supported arities");
+            return std::move(*result);
+        } else {
+            runtime_graph_builder_node_call_is_forbidden();
+            return {};
         }
-
-        std::optional<TypeErasedNode> result;
-        [&]<size_t... I>(std::index_sequence<I...>) {
-            ((arity == (I + 1)
-                ? (void)(result.emplace(Broadcast<I + 1, ChannelType, Layout>{}))
-                : (void)0), ...);
-        }(std::make_index_sequence<64>{});
-
-        IV_ASSERT(result.has_value(), "broadcast node instantiation must succeed for supported arities");
-        return std::move(*result);
     }
 
-    inline TypeErasedNode make_broadcast_node(size_t arity, ChannelLayout layout)
+    constexpr ReflectedNodeDescription make_broadcast_node(
+        size_t arity, ChannelLayout layout)
     {
         switch (layout.channel_type) {
         case ChannelTypeId::mono:
@@ -69,7 +87,7 @@ namespace iv::details {
     }
 
     struct PreparedGraph {
-        std::vector<TypeErasedNode> nodes;
+        std::vector<ReflectedNodeDescription> nodes;
         std::vector<std::optional<size_t>> explicit_ttl_samples;
         std::vector<std::string> node_ids;
         std::vector<std::vector<std::string>> node_virtual_ids;
@@ -77,36 +95,42 @@ namespace iv::details {
         std::vector<size_t> node_construction_order;
         std::vector<std::string> node_kinds;
         std::vector<std::string> node_type_identities;
-        std::unordered_set<GraphEdge> edges;
-        std::unordered_set<GraphEventEdge> event_edges;
-        std::unordered_map<ConcretePortId, DetachedInfo> detached_info_by_source;
-        std::unordered_set<ConcretePortId> detached_reader_outputs;
+        std::flat_set<GraphEdge> edges;
+        std::flat_set<GraphEventEdge> event_edges;
+        std::flat_map<ConcretePortId, DetachedInfo> detached_info_by_source;
+        std::flat_set<ConcretePortId> detached_reader_outputs;
     };
 
-    inline std::string generated_node_id(std::string_view builder_id, size_t generated_index)
+    constexpr std::string generated_node_id(std::string_view builder_id, size_t generated_index)
     {
         std::string id(builder_id);
         if (!id.empty()) {
             id += ".";
         }
         id += "generated.";
-        id += std::to_string(generated_index);
+        char digits[std::numeric_limits<size_t>::digits10 + 2] {};
+        size_t begin = sizeof(digits);
+        do {
+            digits[--begin] = static_cast<char>('0' + generated_index % 10);
+            generated_index /= 10;
+        } while (generated_index != 0);
+        id.append(digits + begin, digits + sizeof(digits));
         return id;
     }
 
-    inline size_t next_construction_order(PreparedGraph const& g)
+    constexpr size_t next_construction_order(PreparedGraph const& g)
     {
         return g.node_construction_order.empty()
             ? 0
             : (*std::ranges::max_element(g.node_construction_order) + 1);
     }
 
-    inline auto make_source_target_edge_maps(PreparedGraph const& g)
+    constexpr auto make_source_target_edge_maps(PreparedGraph const& g)
     {
-        std::unordered_map<ConcretePortId, ConcretePortId> source_of;
-        std::unordered_map<ConcretePortId, ConcretePortId> target_of;
-        std::unordered_map<ConcretePortId, GraphEventEdge> event_source_of;
-        std::unordered_map<ConcretePortId, GraphEventEdge> event_target_of;
+        std::flat_map<ConcretePortId, ConcretePortId> source_of;
+        std::flat_map<ConcretePortId, ConcretePortId> target_of;
+        std::flat_map<ConcretePortId, GraphEventEdge> event_source_of;
+        std::flat_map<ConcretePortId, GraphEventEdge> event_target_of;
 
         for (GraphEdge const& edge : g.edges)
         {
@@ -127,7 +151,7 @@ namespace iv::details {
         );
     }
 
-    inline std::vector<DormancyGroup> compile_dormancy_groups(
+    constexpr std::vector<DormancyGroup> compile_dormancy_groups(
         PreparedGraph const& g,
         std::span<LoweredSubgraph const> lowered_subgraphs,
         std::string_view graph_id,
@@ -141,7 +165,7 @@ namespace iv::details {
 
         std::vector<DormancyGroup> groups;
         groups.reserve(lowered_subgraphs.size());
-        std::vector<std::unordered_set<size_t>> member_sets;
+        std::vector<std::flat_set<size_t>> member_sets;
         member_sets.reserve(lowered_subgraphs.size());
 
         for (auto const& lowered_subgraph : lowered_subgraphs) {
@@ -150,7 +174,7 @@ namespace iv::details {
             group.ttl_samples = lowered_subgraph.ttl_samples;
             group.member_nodes = lowered_subgraph.member_nodes;
 
-            std::unordered_set<size_t> member_set(
+            std::flat_set<size_t> member_set(
                 group.member_nodes.begin(),
                 group.member_nodes.end()
             );
@@ -160,9 +184,9 @@ namespace iv::details {
 
         for (size_t group_i = 0; group_i < groups.size(); ++group_i) {
             auto const& member_set = member_sets[group_i];
-            std::unordered_set<std::string> seen_sample_inputs;
-            std::unordered_set<std::string> seen_event_inputs;
-            std::unordered_set<std::string> seen_sample_outputs;
+            std::flat_set<std::string> seen_sample_inputs;
+            std::flat_set<std::string> seen_event_inputs;
+            std::flat_set<std::string> seen_sample_outputs;
 
             for (GraphEdge const& edge : g.edges) {
                 bool const target_inside = edge.target.node != GRAPH_ID && member_set.contains(edge.target.node);
@@ -242,7 +266,7 @@ namespace iv::details {
             }
         }
 
-        std::unordered_map<size_t, size_t> remapped_group_indices;
+        std::flat_map<size_t, size_t> remapped_group_indices;
         for (size_t new_i = 0; new_i < kept_old_indices.size(); ++new_i) {
             remapped_group_indices.emplace(kept_old_indices[new_i], new_i);
         }
@@ -262,12 +286,12 @@ namespace iv::details {
         return filtered;
     }
 
-    inline std::vector<LoweredSubgraph> compile_lowered_subgraphs(
+    constexpr std::vector<LoweredSubgraph> compile_lowered_subgraphs(
         PreparedGraph const& g,
         std::span<LoweredSubgraphSpec const> scopes
     )
     {
-        std::unordered_map<std::string, size_t> runtime_index_by_node_id;
+        std::flat_map<std::string, size_t> runtime_index_by_node_id;
         for (size_t i = 0; i < g.node_ids.size(); ++i) {
             runtime_index_by_node_id.emplace(g.node_ids[i], i);
         }
@@ -347,16 +371,16 @@ namespace iv::details {
         return lowered_subgraphs;
     }
 
-    inline void expand_hyperedge_ports(
+    constexpr void expand_hyperedge_ports(
         PreparedGraph& g,
         std::string_view builder_id)
     {
-        std::unordered_map<ConcretePortId, std::vector<GraphEdge>> reverse_edges_map;
+        std::flat_map<ConcretePortId, std::vector<GraphEdge>> reverse_edges_map;
         for (GraphEdge const& edge : g.edges)
         {
             reverse_edges_map[edge.target].push_back(edge);
         }
-        std::unordered_map<ConcretePortId, std::vector<GraphEventEdge>> reverse_event_edges_map;
+        std::flat_map<ConcretePortId, std::vector<GraphEventEdge>> reverse_event_edges_map;
         for (GraphEventEdge const& edge : g.event_edges)
         {
             reverse_event_edges_map[edge.target].push_back(edge);
@@ -381,7 +405,8 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 EventTypeId const concat_type = get_event_inputs(g.nodes[node])[in_port].type;
-                g.nodes.emplace_back(EventConcatenation(port_arity, concat_type));
+                g.nodes.push_back(reflect_compiler_node(
+                    EventConcatenation(port_arity, concat_type)));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_virtual_ids.emplace_back();
@@ -403,12 +428,12 @@ namespace iv::details {
             }
         }
 
-        std::unordered_map<ConcretePortId, std::vector<GraphEdge>> edges_map;
+        std::flat_map<ConcretePortId, std::vector<GraphEdge>> edges_map;
         for (GraphEdge const& edge : g.edges)
         {
             edges_map[edge.source].push_back(edge);
         }
-        std::unordered_map<ConcretePortId, std::vector<GraphEventEdge>> event_edges_map;
+        std::flat_map<ConcretePortId, std::vector<GraphEventEdge>> event_edges_map;
         for (GraphEventEdge const& edge : g.event_edges)
         {
             event_edges_map[edge.source].push_back(edge);
@@ -461,7 +486,8 @@ namespace iv::details {
                 if (port_arity <= 1) continue;
 
                 EventTypeId const broadcast_type = get_event_outputs(g.nodes[node])[out_port].type;
-                g.nodes.emplace_back(BroadcastEvent(port_arity, broadcast_type));
+                g.nodes.push_back(reflect_compiler_node(
+                    BroadcastEvent(port_arity, broadcast_type)));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                 g.node_virtual_ids.emplace_back();
@@ -484,7 +510,7 @@ namespace iv::details {
         }
     }
 
-    inline void stub_dangling_ports(PreparedGraph& g, size_t num_public_inputs, std::string_view builder_id)
+    constexpr void stub_dangling_ports(PreparedGraph& g, size_t num_public_inputs, std::string_view builder_id)
     {
         auto [source_of, target_of, event_source_of, event_target_of] = make_source_target_edge_maps(g);
 
@@ -500,7 +526,7 @@ namespace iv::details {
                 ConcretePortId const this_port{ node, output_port };
                 if (auto it = target_of.find(this_port); it == target_of.end())
                 {
-                    g.nodes.emplace_back(DummySink());
+                    g.nodes.push_back(reflect_compiler_node(DummySink()));
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     g.node_virtual_ids.emplace_back();
@@ -516,7 +542,7 @@ namespace iv::details {
                 ConcretePortId const this_port{ node, output_port };
                 if (auto it = event_target_of.find(this_port); it == event_target_of.end())
                 {
-                    g.nodes.emplace_back(DummyEventSink());
+                    g.nodes.push_back(reflect_compiler_node(DummyEventSink()));
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(generated_node_id(builder_id, g.node_ids.size()));
                     g.node_virtual_ids.emplace_back();
@@ -534,7 +560,7 @@ namespace iv::details {
         }
     }
 
-    inline void validate_graph(PreparedGraph const& g, size_t num_public_inputs, size_t num_public_outputs)
+    constexpr void validate_graph(PreparedGraph const& g, size_t num_public_inputs, size_t num_public_outputs)
     {
         for (auto const& edge : g.edges)
         {
@@ -555,10 +581,10 @@ namespace iv::details {
         }
     }
 
-    inline auto make_node_adjacency(PreparedGraph const& g)
+    constexpr auto make_node_adjacency(PreparedGraph const& g)
     {
         size_t const num_nodes = g.nodes.size();
-        std::vector<std::unordered_set<size_t>> outgoing(num_nodes);
+        std::vector<std::flat_set<size_t>> outgoing(num_nodes);
         std::vector<size_t> indegree(num_nodes, 0);
 
         for (GraphEdge const& edge : g.edges)
@@ -590,11 +616,11 @@ namespace iv::details {
         return std::make_pair(std::move(outgoing), std::move(indegree));
     }
 
-    inline void apply_node_permutation(PreparedGraph& g, std::vector<size_t> const& sorted)
+    constexpr void apply_node_permutation(PreparedGraph& g, std::vector<size_t> const& sorted)
     {
         size_t const num_nodes = g.nodes.size();
 
-        std::vector<TypeErasedNode> sorted_nodes;
+        std::vector<ReflectedNodeDescription> sorted_nodes;
         std::vector<std::optional<size_t>> sorted_explicit_ttls;
         std::vector<std::string> sorted_node_ids;
         std::vector<std::vector<std::string>> sorted_node_virtual_ids;
@@ -627,8 +653,7 @@ namespace iv::details {
             reverse_sorted[sorted[new_i]] = new_i;
         }
 
-        std::unordered_set<GraphEdge> sorted_edges;
-        sorted_edges.reserve(g.edges.size());
+        std::flat_set<GraphEdge> sorted_edges;
         for (GraphEdge edge : g.edges)
         {
             if (edge.source.node != GRAPH_ID)
@@ -639,8 +664,7 @@ namespace iv::details {
         }
         g.edges.swap(sorted_edges);
 
-        std::unordered_set<GraphEventEdge> sorted_event_edges;
-        sorted_event_edges.reserve(g.event_edges.size());
+        std::flat_set<GraphEventEdge> sorted_event_edges;
         for (GraphEventEdge edge : g.event_edges)
         {
             if (edge.source.node != GRAPH_ID)
@@ -651,7 +675,7 @@ namespace iv::details {
         }
         g.event_edges.swap(sorted_event_edges);
 
-        for (auto& [_, info] : g.detached_info_by_source)
+        for (auto&& [_, info] : g.detached_info_by_source)
         {
             if (info.original_source.node != GRAPH_ID) {
                 info.original_source.node = reverse_sorted[info.original_source.node];
@@ -665,11 +689,11 @@ namespace iv::details {
         }
     }
 
-    inline void sort_nodes_or_error(PreparedGraph& g, std::string_view builder_id)
+    constexpr void sort_nodes_or_error(PreparedGraph& g, std::string_view builder_id)
     {
         auto [outgoing, indegree] = make_node_adjacency(g);
 
-        std::deque<size_t> ready;
+        std::vector<size_t> ready;
         for (size_t node = 0; node < indegree.size(); ++node) {
             if (indegree[node] == 0) {
                 ready.push_back(node);
@@ -679,10 +703,10 @@ namespace iv::details {
         std::vector<size_t> sorted;
         sorted.reserve(g.nodes.size());
 
-        while (!ready.empty())
+        size_t ready_index = 0;
+        while (ready_index < ready.size())
         {
-            size_t const node = ready.front();
-            ready.pop_front();
+            size_t const node = ready[ready_index++];
             sorted.push_back(node);
 
             for (size_t target : outgoing[node])
@@ -702,8 +726,8 @@ namespace iv::details {
         apply_node_permutation(g, sorted);
     }
 
-    inline bool has_path(
-        std::vector<std::unordered_set<size_t>> const& outgoing,
+    constexpr bool has_path(
+        std::vector<std::flat_set<size_t>> const& outgoing,
         size_t start,
         size_t goal)
     {
@@ -712,14 +736,14 @@ namespace iv::details {
         }
 
         std::vector<bool> seen(outgoing.size(), false);
-        std::deque<size_t> q;
+        std::vector<size_t> q;
         q.push_back(start);
         seen[start] = true;
 
-        while (!q.empty())
+        size_t q_index = 0;
+        while (q_index < q.size())
         {
-            size_t u = q.front();
-            q.pop_front();
+            size_t u = q[q_index++];
 
             for (size_t v : outgoing[u])
             {
@@ -733,12 +757,12 @@ namespace iv::details {
         return false;
     }
 
-    inline void validate_detached_edges(PreparedGraph const& g, std::string_view builder_id)
+    constexpr void validate_detached_edges(PreparedGraph const& g, std::string_view builder_id)
     {
         size_t const num_nodes = g.nodes.size();
 
-        std::vector<std::unordered_set<size_t>> explicit_outgoing(num_nodes);
-        std::unordered_map<ConcretePortId, std::vector<ConcretePortId>> consumers_of_output;
+        std::vector<std::flat_set<size_t>> explicit_outgoing(num_nodes);
+        std::flat_map<ConcretePortId, std::vector<ConcretePortId>> consumers_of_output;
 
         for (GraphEdge const& edge : g.edges)
         {
@@ -782,10 +806,10 @@ namespace iv::details {
         }
     }
 
-    inline GraphExecutionPlan build_execution_plan(
-        std::vector<TypeErasedNode> const& nodes,
-        std::unordered_set<GraphEdge> const& edges,
-        std::unordered_set<GraphEventEdge> const& event_edges,
+    constexpr GraphExecutionPlan build_execution_plan(
+        std::vector<ReflectedNodeDescription> const& nodes,
+        std::flat_set<GraphEdge> const& edges,
+        std::flat_set<GraphEventEdge> const& event_edges,
         std::vector<DetachedInfo> const& detached
     )
     {
@@ -797,7 +821,7 @@ namespace iv::details {
         }
 
         std::vector<std::vector<size_t>> outgoing(num_nodes);
-        std::unordered_map<ConcretePortId, std::vector<ConcretePortId>> consumers;
+        std::flat_map<ConcretePortId, std::vector<ConcretePortId>> consumers;
         for (auto const& edge : edges) {
             consumers[edge.source].push_back(edge.target);
             if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
@@ -901,10 +925,10 @@ namespace iv::details {
         }
 
         for (GraphRegion& region : plan.regions) {
-            std::unordered_set<size_t> region_nodes(region.nodes.begin(), region.nodes.end());
-            std::unordered_map<size_t, std::unordered_set<size_t>> local_outgoing_sets;
-            std::unordered_map<size_t, std::vector<size_t>> local_outgoing;
-            std::unordered_map<size_t, size_t> local_indegree;
+            std::flat_set<size_t> region_nodes(region.nodes.begin(), region.nodes.end());
+            std::flat_map<size_t, std::flat_set<size_t>> local_outgoing_sets;
+            std::flat_map<size_t, std::vector<size_t>> local_outgoing;
+            std::flat_map<size_t, size_t> local_indegree;
 
             for (size_t node : region.nodes) {
                 local_outgoing_sets[node] = {};
@@ -972,7 +996,7 @@ namespace iv::details {
             }
         }
 
-        std::vector<std::unordered_set<size_t>> region_outgoing(plan.regions.size());
+        std::vector<std::flat_set<size_t>> region_outgoing(plan.regions.size());
         std::vector<size_t> indegree(plan.regions.size(), 0);
         for (auto const& edge : edges) {
             if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
@@ -996,16 +1020,16 @@ namespace iv::details {
             }
         }
 
-        std::deque<size_t> ready;
+        std::vector<size_t> ready;
         for (size_t region = 0; region < indegree.size(); ++region) {
             if (indegree[region] == 0) {
                 ready.push_back(region);
             }
         }
 
-        while (!ready.empty()) {
-            size_t region = ready.front();
-            ready.pop_front();
+        size_t ready_index = 0;
+        while (ready_index < ready.size()) {
+            size_t region = ready[ready_index++];
             plan.region_order.push_back(region);
             for (size_t target : region_outgoing[region]) {
                 if (--indegree[target] == 0) {
@@ -1018,11 +1042,11 @@ namespace iv::details {
     }
 
     class LatencyAccumulator {
-        std::unordered_map<ConcretePortId, size_t> _input_port_global_latencies;
+        std::flat_map<ConcretePortId, size_t> _input_port_global_latencies;
 
     public:
         template<typename NodeLike, typename TargetMap>
-        void align_latencies(
+        constexpr void align_latencies(
             NodeLike const& node,
             size_t node_i,
             std::span<InputConfig const> input_configs,
@@ -1048,13 +1072,15 @@ namespace iv::details {
             }
         }
 
-        size_t delay_input(ConcretePortId input, size_t extra_delay)
+        constexpr size_t delay_input(ConcretePortId input, size_t extra_delay)
         {
+            if (input.node == GRAPH_ID)
+                return _input_port_global_latencies[input] += extra_delay;
             return _input_port_global_latencies.at(input) += extra_delay;
         }
     };
 
-    inline auto make_node_configs(
+    constexpr auto make_node_configs(
         auto const& node,
         size_t node_i,
         std::span<InputConfig const> graph_private_inputs
@@ -1075,7 +1101,7 @@ namespace iv::details {
         return std::make_pair(std::move(input_configs), std::move(output_configs));
     }
 
-    inline size_t connection_block_size(
+    constexpr size_t connection_block_size(
         ConcretePortId source,
         ConcretePortId target,
         size_t host_block_size,
@@ -1091,14 +1117,14 @@ namespace iv::details {
         return std::max(region_block(source.node), region_block(target.node));
     }
 
-    inline size_t region_internal_latency(
+    constexpr size_t region_internal_latency(
         GraphRegion const& region,
-        std::vector<TypeErasedNode> const& nodes,
-        std::unordered_set<GraphEdge> const& edges
+        std::vector<ReflectedNodeDescription> const& nodes,
+        std::flat_set<GraphEdge> const& edges
     )
     {
-        std::unordered_set<size_t> region_nodes(region.nodes.begin(), region.nodes.end());
-        std::unordered_map<ConcretePortId, ConcretePortId> target_of;
+        std::flat_set<size_t> region_nodes(region.nodes.begin(), region.nodes.end());
+        std::flat_map<ConcretePortId, ConcretePortId> target_of;
         for (GraphEdge const& edge : edges) {
             if (
                 edge.source.node == GRAPH_ID
@@ -1111,7 +1137,7 @@ namespace iv::details {
             target_of[edge.source] = edge.target;
         }
 
-        std::unordered_map<ConcretePortId, size_t> input_latencies;
+        std::flat_map<ConcretePortId, size_t> input_latencies;
         size_t max_latency = 0;
         for (size_t const node_i : region.execution_order) {
             size_t node_latency = 0;
@@ -1135,13 +1161,13 @@ namespace iv::details {
         return max_latency;
     }
 
-    inline GraphBuildArtifact build_graph_artifact(
+    consteval GraphBuildArtifact build_graph_artifact(
         std::string graph_id,
-        std::vector<TypeErasedNode> nodes,
+        std::vector<ReflectedNodeDescription> nodes,
         std::vector<std::optional<size_t>> explicit_ttl_samples,
         std::vector<std::string> node_ids,
-        std::unordered_set<GraphEdge> edges,
-        std::unordered_set<GraphEventEdge> event_edges,
+        std::flat_set<GraphEdge> edges,
+        std::flat_set<GraphEventEdge> event_edges,
         std::vector<DetachedInfo> detached,
         GraphExecutionPlan execution_plan,
         std::vector<InputConfig> public_inputs,
@@ -1151,11 +1177,7 @@ namespace iv::details {
         std::vector<DormancyGroup> dormancy_groups
     )
     {
-        // Lowering and hyperedge expansion can introduce replacement edges.
-        // Resolve conversion metadata here, after topology is final, rather
-        // than relying on every topology transform to preserve it.
-        std::unordered_set<GraphEdge> resolved_edges;
-        resolved_edges.reserve(edges.size());
+        std::flat_set<GraphEdge> resolved_edges;
         auto output_layout_for = [&](ConcretePortId port) {
             return port.node == GRAPH_ID
                 ? effective_channel_layout(public_inputs[port.port])
@@ -1176,8 +1198,8 @@ namespace iv::details {
         edges = std::move(resolved_edges);
 
         auto [source_of, target_of] = [&] {
-            std::unordered_map<ConcretePortId, ConcretePortId> source_of_;
-            std::unordered_map<ConcretePortId, ConcretePortId> target_of_;
+            std::flat_map<ConcretePortId, ConcretePortId> source_of_;
+            std::flat_map<ConcretePortId, ConcretePortId> target_of_;
             for (GraphEdge const& edge : edges) {
                 source_of_[edge.target] = edge.source;
                 target_of_[edge.source] = edge.target;
@@ -1280,15 +1302,16 @@ namespace iv::details {
             .node_ids = std::move(node_ids),
         };
         {
-            std::unordered_map<ConcretePortId, ConcretePortId> artifact_target_of;
+            std::flat_map<ConcretePortId, ConcretePortId> artifact_target_of;
             for (GraphEdge const& edge : artifact.edges) {
                 artifact_target_of[edge.source] = edge.target;
             }
 
-            std::unordered_map<ConcretePortId, size_t> input_global_latencies;
+            std::flat_map<ConcretePortId, size_t> input_global_latencies;
             size_t max_latency = 0;
 
-            auto process_node = [&](TypeErasedNode const& node, size_t node_i) {
+            auto process_node = [&](
+                ReflectedNodeDescription const& node, size_t node_i) {
                 size_t node_global_latency = 0;
                 auto node_inputs = node.inputs();
                 for (size_t input_port = 0; input_port < node_inputs.size(); ++input_port) {

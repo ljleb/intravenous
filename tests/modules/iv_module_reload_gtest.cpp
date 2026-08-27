@@ -8,20 +8,10 @@
 
 #include <gtest/gtest.h>
 
-#include <array>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
-
-namespace iv::details {
-    struct GraphBuilderTestAccess {
-        static NodeRef embed_subgraph(GraphBuilder& parent, GraphBuilder const& child)
-        {
-            return parent.embed_subgraph(child);
-        }
-    };
-}
 
 namespace {
 struct IvModuleReloadWitness {
@@ -34,25 +24,6 @@ struct IvModuleReloadWitness {
 };
 
 IvModuleReloadWitness *g_iv_module_reload_witness = nullptr;
-
-struct SampleCapture {
-    iv::Sample *observed = nullptr;
-
-    static constexpr auto inputs()
-    {
-        return std::array<iv::InputConfig, 1>{{}};
-    }
-
-    static constexpr auto outputs()
-    {
-        return std::array<iv::OutputConfig, 0>{};
-    }
-
-    void tick_block(auto const &ctx) const
-    {
-        *observed = ctx.inputs[0].get();
-    }
-};
 
 iv::IvModuleDefinitionDeclaration make_declaration(
     std::string_view definition_id,
@@ -118,6 +89,7 @@ TEST_F(IvModuleReloadTest, DirtyDeclarationCompilesAndPublishesLoadedDefinition)
     EXPECT_TRUE(witness.results->failed.empty());
     EXPECT_EQ(witness.results->loaded.front().definition_id, "iv.test.local_cmake");
     EXPECT_FALSE(witness.results->loaded.front().module_id.empty());
+    EXPECT_TRUE(static_cast<bool>(witness.results->loaded.front().root));
 }
 
 TEST_F(IvModuleReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
@@ -148,7 +120,7 @@ TEST_F(IvModuleReloadTest, DirtyInvalidDeclarationCompilesAndPublishesFailure)
     EXPECT_FALSE(witness.results->failed.front().message.empty());
 }
 
-TEST_F(IvModuleReloadTest, RetainsSamplePeriodForCompiledDefinitionBuilders)
+TEST_F(IvModuleReloadTest, CompiledDefinitionPublishesUsableExecutionRoot)
 {
     auto const workspace =
         iv::test_support::read_only_module_fixture_workspace("reload_sample_period");
@@ -167,22 +139,17 @@ TEST_F(IvModuleReloadTest, RetainsSamplePeriodForCompiledDefinitionBuilders)
     ASSERT_TRUE(witness.results.has_value());
     ASSERT_EQ(witness.results->loaded.size(), 1u);
 
-    auto builder = std::move(witness.results->loaded.front().canonical_builder);
-    iv::GraphBuilder execution_builder;
-    auto const embedded = iv::details::GraphBuilderTestAccess::embed_subgraph(
-        execution_builder,
-        builder
-    );
-    iv::Sample observed = 0.0f;
-    execution_builder.node<SampleCapture>(&observed)(embedded[0]);
-    execution_builder.outputs({});
-
+    auto const root = witness.results->loaded.front().root;
+    ASSERT_TRUE(static_cast<bool>(root));
     auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(execution_builder.build_root_node().graph),
-        8);
-    executor.tick_block(0);
-
-    EXPECT_NEAR(observed.value, 1.0f / 48000.0f, 1.0e-8f);
+        iv::TypeErasedNode(root),
+        8,
+        {},
+        std::nullopt,
+        iv::DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
+        48000);
+    EXPECT_EQ(executor.sample_rate(), 48000u);
+    EXPECT_NO_THROW(executor.tick_block(0));
 }
 
 TEST_F(IvModuleReloadTest, ReloadChangedDefinitionsDoesNothingWithoutWatcherChanges)

@@ -2,26 +2,28 @@
 
 namespace iv {
 namespace {
-GraphBuilder::RootNodeBuildResult build_execution_root(
-    GraphBuilder &builder,
-    IvModuleInstance const& instance)
+ResourceContext resources_for(
+    std::shared_ptr<GraphRuntimeBindings> const& runtime_bindings)
 {
-    return builder.build_execution_root_node(instance.runtime_bindings);
+    ResourceContext resources;
+    if (runtime_bindings)
+        resources.runtime_bindings = runtime_bindings->resources();
+    return resources;
 }
-}
+} // namespace
 
 std::shared_ptr<BlockNodeExecutor> IvModuleInstancesExecution::make_executor(
-    GraphBuilder &builder,
-    IvModuleInstance const& instance,
+    WeakTypeErasedNode root,
+    std::shared_ptr<GraphRuntimeBindings> const& runtime_bindings,
     size_t block_size,
     size_t sample_rate,
     std::optional<size_t> default_silence_ttl_samples)
 {
     return std::make_shared<BlockNodeExecutor>(
         BlockNodeExecutor::create(
-            TypeErasedNode(build_execution_root(builder, instance).graph),
+            TypeErasedNode(root),
             block_size,
-            {},
+            resources_for(runtime_bindings),
             default_silence_ttl_samples,
             DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
             sample_rate));
@@ -50,12 +52,12 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
     }
 
     for (auto const &created : diff.created) {
-        if (!created.instance || !created.builder) {
+        if (!created.instance || !created.root) {
             continue;
         }
         auto executor = make_executor(
-            *created.builder,
-            *created.instance,
+            created.root,
+            created.instance->runtime_bindings,
             block_size_,
             sample_rate_,
             created.default_silence_ttl_samples);
@@ -64,10 +66,11 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             std::scoped_lock lock(mutex_);
             auto &state = instances_by_id_[created.instance->instance_id];
             state.instance = created.instance;
-            state.builder = created.builder;
+            state.root = created.root;
             state.default_silence_ttl_samples =
                 created.default_silence_ttl_samples;
             state.module_refs = created.module_refs;
+            state.runtime_bindings = created.instance->runtime_bindings;
             state.executor = std::move(executor);
             state.pending_delete = false;
             state.active_context = std::make_unique<InstanceTaskContext>();
@@ -92,7 +95,7 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
     }
 
     for (auto const &changed : diff.updated) {
-        if (!changed.instance || !changed.builder) {
+        if (!changed.instance || !changed.root) {
             continue;
         }
         std::shared_ptr<BlockNodeExecutor> active_executor;
@@ -102,17 +105,20 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             if (it != instances_by_id_.end()) active_executor = it->second.executor;
         }
 
-        auto root = TypeErasedNode(build_execution_root(
-            *changed.builder, *changed.instance).graph);
+        auto root = TypeErasedNode(changed.root);
         std::optional<BlockNodeExecutor::PreparedReload> prepared;
         std::shared_ptr<BlockNodeExecutor> replacement;
         if (active_executor) {
             prepared.emplace(active_executor->prepare_reload(
-                std::move(root), changed.default_silence_ttl_samples));
+                std::move(root),
+                changed.default_silence_ttl_samples,
+                resources_for(changed.instance->runtime_bindings)));
         } else {
             replacement = std::make_shared<BlockNodeExecutor>(
                 BlockNodeExecutor::create(
-                    std::move(root), block_size_, {},
+                    std::move(root),
+                    block_size_,
+                    resources_for(changed.instance->runtime_bindings),
                     changed.default_silence_ttl_samples,
                     DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER,
                     sample_rate_));
@@ -132,8 +138,9 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             if (prepared) {
                 state.pending_reload.emplace(InstanceTaskState::PendingReload{
                     .module_refs = changed.module_refs,
+                    .runtime_bindings = changed.instance->runtime_bindings,
                     .instance = changed.instance,
-                    .builder = changed.builder,
+                    .root = changed.root,
                     .default_silence_ttl_samples =
                         changed.default_silence_ttl_samples,
                     .prepared = std::move(*prepared),
@@ -141,10 +148,11 @@ VersionedTaskGraphUpdate IvModuleInstancesExecution::handle_instance_builders_ch
             } else {
                 state.executor = std::move(replacement);
                 state.instance = changed.instance;
-                state.builder = changed.builder;
+                state.root = changed.root;
                 state.default_silence_ttl_samples =
                     changed.default_silence_ttl_samples;
                 state.module_refs = changed.module_refs;
+                state.runtime_bindings = changed.instance->runtime_bindings;
                 state.active_context = std::move(pending_context);
             }
             state.pending_delete = false;
@@ -209,6 +217,7 @@ void IvModuleInstancesExecution::commit_prepared_reloads(
             retired_graphs_.push_back(RetiredGraph{
                 .retired_from_revision = graph_revision,
                 .module_refs = std::move(state.module_refs),
+                .runtime_bindings = std::move(state.runtime_bindings),
                 .active_context = std::move(state.active_context),
                 .pending_context = std::move(state.pending_context),
                 .executor = std::move(state.executor),
@@ -219,16 +228,19 @@ void IvModuleInstancesExecution::commit_prepared_reloads(
         if (state.pending_reload && state.executor) {
             auto pending = std::move(*state.pending_reload);
             state.pending_reload.reset();
+            auto retired_graph = state.executor->commit_reload(
+                std::move(pending.prepared));
             retired_graphs_.push_back(RetiredGraph{
                 .retired_from_revision = graph_revision,
                 .module_refs = std::move(state.module_refs),
+                .runtime_bindings = std::move(state.runtime_bindings),
                 .active_context = std::move(state.active_context),
-                .graph = state.executor->commit_reload(
-                    std::move(pending.prepared)),
+                .graph = std::move(retired_graph),
             });
             state.module_refs = std::move(pending.module_refs);
+            state.runtime_bindings = std::move(pending.runtime_bindings);
             state.instance = pending.instance;
-            state.builder = pending.builder;
+            state.root = pending.root;
             state.default_silence_ttl_samples =
                 pending.default_silence_ttl_samples;
             state.active_context = std::move(state.pending_context);

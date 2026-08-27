@@ -1,50 +1,59 @@
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
-#include <intravenous/graph/node.h>
 #include <intravenous/node/block_executor.h>
-#include "module_test_utils.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cmath>
+#include <span>
 #include <vector>
 
 namespace {
     using namespace iv;
 
-    void tick_executor_direct(iv::BlockNodeExecutor& executor, size_t index, size_t block_size)
-    {
-        iv::validate_block_size(block_size, "test block size must be a power of 2");
-        if (block_size != executor.block_size()) {
-            throw std::logic_error("test block size must match block executor block size");
+    enum class RuntimeValueSlot : size_t {
+        dt,
+        noise_a,
+        noise_b,
+    };
+
+    std::array<iv::Sample, 3> runtime_values {};
+    std::span<iv::Sample> runtime_output {};
+
+    struct RuntimeValueSource {
+        RuntimeValueSlot slot {};
+
+        static constexpr auto outputs()
+        {
+            return std::array { iv::OutputConfig { .name = "value" } };
         }
-        executor.tick_block(index);
-    }
 
-    struct BufferSink {
-        iv::Sample* destination;
-        size_t size;
+        void tick(iv::TickSampleContext<RuntimeValueSource> const& ctx) const
+        {
+            ctx.outputs[0].push(runtime_values[static_cast<size_t>(slot)]);
+        }
+    };
 
+    struct RuntimeBufferSink {
         static constexpr auto inputs()
         {
             return std::array<iv::InputConfig, 1>{};
         }
 
-        void tick_block(iv::TickBlockContext<BufferSink> const& ctx) const
+        void tick_block(iv::TickBlockContext<RuntimeBufferSink> const& ctx) const
         {
-            auto block = ctx.inputs[0].get_block(ctx.block_size);
+            auto const block = ctx.inputs[0].get_block(ctx.block_size);
             for (size_t i = 0; i < ctx.block_size; ++i) {
-                size_t const index = ctx.index + i;
-                if (index < size) {
-                    destination[index] = block[i];
+                auto const index = ctx.index + i;
+                if (index < runtime_output.size()) {
+                    runtime_output[index] = block[i];
                 }
             }
         }
     };
 
-    void detached_voice(
+    consteval void detached_voice(
         iv::GraphBuilder& g,
         iv::SubgraphBuilder& boundary,
         iv::SamplePortRef dt,
@@ -60,34 +69,81 @@ namespace {
         warper(integrator + noise);
         boundary.outputs("out"_P = (warper["anti_aliased"] * amplitude));
     }
+
+    consteval auto build_detached_graph()
+    {
+        iv::GraphBuilder graph;
+        auto const dt = graph.node<RuntimeValueSource>(RuntimeValueSlot::dt);
+        auto const src_a = graph.node<RuntimeValueSource>(RuntimeValueSlot::noise_a);
+        auto const src_b = graph.node<RuntimeValueSource>(RuntimeValueSlot::noise_b);
+        auto const voice_a = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+            detached_voice(graph, boundary, dt, src_a, 0.5f);
+        });
+        auto const voice_b = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+            detached_voice(graph, boundary, dt, src_b, 0.25f);
+        });
+        auto const sink = graph.node<RuntimeBufferSink>();
+
+        sink(voice_a + voice_b);
+        graph.outputs();
+        return graph.build_root_node().graph;
+    }
+
+    static constexpr auto detached_graph = build_detached_graph();
+    static constexpr iv::StaticGraphRoot<detached_graph> static_detached_graph {};
+
+    consteval auto build_static_dormancy_graph()
+    {
+        iv::GraphBuilder graph;
+        auto const source = graph.node<iv::Constant>(iv::Sample{0.0f});
+        auto const nested = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+            auto const input = boundary.input<"in">(0.0f);
+            auto const pass = graph.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>();
+            pass(input);
+            boundary.outputs("out"_P = pass);
+        }).ttl(1);
+        nested("in"_P = source);
+        graph.outputs("out"_P = nested);
+        return graph.build_execution_root_node().graph;
+    }
+
+    static constexpr auto static_dormancy_graph = build_static_dormancy_graph();
+    static_assert(static_dormancy_graph._dormancy_groups.size != 0);
+    static constexpr iv::StaticGraphRoot<static_dormancy_graph>
+        static_dormancy_root {};
+
+    void tick_executor_direct(
+        iv::BlockNodeExecutor& executor,
+        size_t index,
+        size_t block_size)
+    {
+        iv::validate_block_size(
+            block_size, "test block size must be a power of 2");
+        if (block_size != executor.block_size()) {
+            throw std::logic_error(
+                "test block size must match block executor block size");
+        }
+        executor.tick_block(index);
+    }
 }
 
 TEST(DetachRegression, ProducesFiniteNonZeroOutput)
 {
-    iv::Sample dt_value = 1.0f / 48000.0f;
-    iv::Sample noise_a = 0.125f;
-    iv::Sample noise_b = -0.25f;
+    runtime_values[static_cast<size_t>(RuntimeValueSlot::dt)] =
+        iv::Sample{1.0f / 48000.0f};
+    runtime_values[static_cast<size_t>(RuntimeValueSlot::noise_a)] =
+        iv::Sample{0.125f};
+    runtime_values[static_cast<size_t>(RuntimeValueSlot::noise_b)] =
+        iv::Sample{-0.25f};
+
     std::vector<iv::Sample> output(32, 0.0f);
-
-    iv::GraphBuilder graph;
-    auto const dt = graph.node<iv::ValueSource>(&dt_value);
-    auto const src_a = graph.node<iv::ValueSource>(&noise_a);
-    auto const src_b = graph.node<iv::ValueSource>(&noise_b);
-    auto const voice_a = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        detached_voice(graph, boundary, dt, src_a, 0.5f);
-    });
-    auto const voice_b = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        detached_voice(graph, boundary, dt, src_b, 0.25f);
-    });
-    auto const sink = graph.node<BufferSink>(output.data(), output.size());
-
-    sink(voice_a + voice_b);
-    graph.outputs();
+    runtime_output = output;
 
     iv::BlockNodeExecutor executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(graph.build_root_node().graph),
+        iv::TypeErasedNode(static_detached_graph),
         output.size());
     tick_executor_direct(executor, 0, output.size());
+    runtime_output = {};
 
     bool saw_non_zero = false;
     for (size_t i = 0; i < output.size(); ++i) {
@@ -103,26 +159,15 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     EXPECT_TRUE(saw_non_zero);
 }
 
-TEST(DetachRegression, NestedFeedbackWithoutDetachStillFailsAfterFlattening)
+TEST(DetachRegression, StaticGraphRootExecutesDormancyGroups)
 {
-    iv::GraphBuilder graph;
-    auto const recursive = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto const integrator = graph.node<iv::PhaseIntegrator>();
-        integrator(integrator);
-        boundary.outputs("phase"_P = integrator);
-    });
-    (void)recursive;
-    graph.outputs();
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(static_dormancy_root), 8);
 
-    try {
-        graph.build_root_node();
-    } catch (std::logic_error const& e) {
-        EXPECT_NE(
-            std::string_view(e.what()).find("graph contains a cycle"),
-            std::string_view::npos
-        );
-        return;
-    }
-
-    FAIL() << "expected nested cycle without detach() to fail";
+    executor.tick_block(0);
+    executor.tick_block(8);
 }
+
+// A graph cycle without detach() is now rejected while evaluating the consteval
+// graph build. That diagnostic belongs in compile-fail coverage; it cannot be
+// represented as a runtime EXPECT_THROW around GraphBuilder::build_root_node().

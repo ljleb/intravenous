@@ -2,6 +2,7 @@
 #include <intravenous/runtime/graph_input_lanes/details.h>
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace iv {
 using namespace graph_input_lanes_details;
@@ -13,7 +14,7 @@ std::string local_virtual_node_id(
 {
     auto const prefix = std::string(instance_id) + "\x1fvirtual:";
     if (!runtime_id.starts_with(prefix)) {
-        details::error("runtime virtual-node identity is not owned by its instance");
+        throw std::logic_error("runtime virtual-node identity is not owned by its instance");
     }
     return std::string(runtime_id.substr(prefix.size()));
 }
@@ -163,9 +164,16 @@ void GraphInputLanes::sync_runtime_bindings_locked(
             } else if (state == NodeBundleEventInputState::virtual_follow) {
                 auto virtual_port = port;
                 virtual_port.port.node_bundle_port_ordinal = std::nullopt;
-                set_event_source(
-                    *binding,
-                    stable_lane_id_for_key(virtual_event_input_key(virtual_port)));
+                auto const virtual_state = node_bundle_event_input_states_by_key.find(
+                    graph_input_port_key(virtual_port.port));
+                if (virtual_state != node_bundle_event_input_states_by_key.end()
+                    && virtual_state->second == NodeBundleEventInputState::timeline_lane) {
+                    set_event_source(
+                        *binding,
+                        stable_lane_id_for_key(virtual_event_input_key(virtual_port)));
+                } else {
+                    set_event_source(*binding, LaneId{});
+                }
             } else {
                 set_event_source(*binding, LaneId{});
             }
@@ -367,7 +375,12 @@ std::vector<LaneId> GraphInputLanes::prerequisite_lanes_for_instance_locked(
                 } else if (state == NodeBundleEventInputState::virtual_follow) {
                     auto virtual_port = port;
                     virtual_port.port.node_bundle_port_ordinal = std::nullopt;
-                    append(stable_lane_id_for_key(virtual_event_input_key(virtual_port)));
+                    auto const virtual_it = node_bundle_event_input_states_by_key.find(
+                        graph_input_port_key(virtual_port.port));
+                    if (virtual_it != node_bundle_event_input_states_by_key.end()
+                        && virtual_it->second == NodeBundleEventInputState::timeline_lane) {
+                        append(stable_lane_id_for_key(virtual_event_input_key(virtual_port)));
+                    }
                 }
             }
         }

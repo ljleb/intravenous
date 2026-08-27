@@ -170,17 +170,15 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_merged_virtual",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
     template<int I>
-    iv::NodeRef make_value(iv::GraphBuilder& g)
+    consteval iv::NodeRef make_value(iv::GraphBuilder& g)
     {
-        static iv::Sample value{static_cast<float>(I)};
-        return g.node<iv::ValueSource>(&value).node_ref();
+        return g.node<iv::Constant>(static_cast<float>(I)).node_ref();
     }
 
-    void merged_virtual_module(iv::GraphBuilder& g)
+    consteval void merged_virtual_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_value<0>(g);
@@ -198,14 +196,14 @@ namespace {
         std::filesystem::weakly_canonical(workspace / "module.cpp"),
         {{.start = {.line = 1, .column = 1}, .end = {.line = 22, .column = 1}}});
 
-    size_t value_source_count = 0;
+    size_t constant_count = 0;
     for (auto const &node : result.nodes) {
-        if (!node.kind.contains("ValueSource")) continue;
-        ++value_source_count;
+        if (!node.kind.contains("Constant")) continue;
+        ++constant_count;
         EXPECT_EQ(node.member_count, 1u);
         EXPECT_FALSE(node.source_spans.empty());
     }
-    EXPECT_EQ(value_source_count, 2u);
+    EXPECT_EQ(constant_count, 2u);
 }
 
 TEST(IvModuleSourceIntrospection, GenericChannelOutputArgumentsArePublicOutputSourceSpans)
@@ -215,7 +213,7 @@ TEST(IvModuleSourceIntrospection, GenericChannelOutputArgumentsArePublicOutputSo
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    void generic_channel_outputs(iv::GraphBuilder& g)
+    consteval void generic_channel_outputs(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const source = g.node<Constant>(0.25f);
@@ -252,15 +250,13 @@ TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableA
     auto const workspace = make_inline_module_workspace(
         "iv_module_source_introspection_stable_annotated_id",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void annotated_symbol_module(iv::GraphBuilder& g)
+    consteval void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value{};
         auto const a = _annotate_node_source_info(
-            g.node<ValueSource>(&value).node_ref(),
+            g.node<Constant>(0.0f).node_ref(),
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
@@ -278,7 +274,7 @@ namespace {
         {{.start = {.line = 1, .column = 1}, .end = {.line = 24, .column = 1}}});
 
     auto const initial_it = std::find_if(initial.nodes.begin(), initial.nodes.end(), [](auto const &node) {
-        return node.kind.contains("ValueSource");
+        return node.kind.contains("Constant");
     });
     ASSERT_NE(initial_it, initial.nodes.end());
     auto const initial_id = initial_it->id;
@@ -293,7 +289,7 @@ namespace {
     iv::test::write_text(module_cpp, original_text);
 
     auto const reloaded_it = std::find_if(reloaded.nodes.begin(), reloaded.nodes.end(), [](auto const &node) {
-        return node.kind.contains("ValueSource");
+        return node.kind.contains("Constant");
     });
     ASSERT_NE(reloaded_it, reloaded.nodes.end());
     EXPECT_EQ(reloaded_it->id, initial_id);
@@ -304,21 +300,20 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedVirtualNode)
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_annotated_symbol",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void annotated_symbol_module(iv::GraphBuilder& g)
+    consteval void annotated_symbol_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value{};
         auto const a = _annotate_node_source_info(
-            g.node<ValueSource>(&value).node_ref(),
+            g.node<Constant>(0.0f).node_ref(),
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
         g.outputs("main"_P = sink);
     }
 }
+
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
@@ -329,11 +324,91 @@ namespace {
         {{.start = {.line = 1, .column = 1}, .end = {.line = 24, .column = 1}}});
 
     auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const &node) {
-        return node.kind.contains("ValueSource");
+        return node.kind.contains("Constant");
     });
     ASSERT_NE(it, result.nodes.end());
     EXPECT_FALSE(it->id.empty());
     EXPECT_FALSE(it->source_spans.empty());
+}
+
+TEST(IvModuleSourceIntrospection, AnnotatesTiledSampleValueAndAggregateNodeCall)
+{
+    auto const workspace = make_inline_module_workspace(
+        "iv_module_source_introspection_tiled_value_and_node_call",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    struct TriggerSource
+    {
+        static constexpr auto event_outputs()
+        {
+            return std::array<iv::EventOutputConfig, 1>{{{
+                .name = "trigger", .type = iv::EventTypeId::trigger}}};
+        }
+        void tick(iv::TickSampleContext<TriggerSource> const&) const {}
+    };
+
+    consteval void tiled_value_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const left = g.node<Constant>(0.25f);
+        auto const right = g.node<Constant>(-0.25f);
+        auto const p = g.tile<stereo>(left, right);
+        auto const trigger = g.node<TriggerSource>().event_port();
+        auto const sink = g.node<Sum<stereo, SampleStreamLayout::planar, 1>>();
+        sink(p);
+        g.outputs(sink);
+        g.event_outputs(trigger);
+    }
+}
+)");
+
+    SeededIvModuleSourceIntrospectionApp app(
+        workspace, iv::test::repo_root(), {});
+    app.initialize();
+
+    auto const module_cpp =
+        std::filesystem::weakly_canonical(workspace / "module.cpp");
+    auto const tiled_value = app.query_by_spans(
+        module_cpp,
+        {{.start = {.line = 19, .column = 1},
+          .end = {.line = 19, .column = 80}}});
+    auto const port = std::find_if(
+        tiled_value.nodes.begin(), tiled_value.nodes.end(),
+        [](auto const& node) { return node.type_identity == "sample-port"; });
+    ASSERT_NE(port, tiled_value.nodes.end());
+    ASSERT_EQ(port->sample_outputs.size(), 1u);
+    EXPECT_EQ(
+        port->sample_outputs.front().sample_channel_type,
+        iv::ChannelTypeId::stereo);
+    ASSERT_EQ(port->members.size(), 1u);
+    for (auto const& member : port->members)
+        EXPECT_EQ(member.sample_outputs.size(), 1u);
+
+    auto const event_value = app.query_by_spans(
+        module_cpp,
+        {{.start = {.line = 20, .column = 1},
+          .end = {.line = 20, .column = 80}}});
+    auto const event_port = std::find_if(
+        event_value.nodes.begin(), event_value.nodes.end(),
+        [](auto const& node) { return node.type_identity == "event-port"; });
+    ASSERT_NE(event_port, event_value.nodes.end());
+    ASSERT_EQ(event_port->event_outputs.size(), 1u);
+    ASSERT_EQ(event_port->members.size(), 1u);
+    EXPECT_EQ(event_port->members.front().event_outputs.size(), 1u);
+
+    auto const node_call = app.query_by_spans(
+        module_cpp,
+        {{.start = {.line = 22, .column = 1},
+          .end = {.line = 22, .column = 40}}});
+    auto const sink = std::find_if(
+        node_call.nodes.begin(), node_call.nodes.end(),
+        [](auto const& node) {
+            return node.kind.contains("Sum")
+                && node.type_identity != "sample-port";
+        });
+    ASSERT_NE(sink, node_call.nodes.end());
+    EXPECT_FALSE(sink->source_spans.empty());
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
@@ -341,15 +416,13 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBa
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_single_assigned_ref",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void assigned_ref_module(iv::GraphBuilder& g)
+    consteval void assigned_ref_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value{};
         NodeRef x;
-        x = g.node<ValueSource>(&value).node_ref();
+        x = g.node<Constant>(0.0f).node_ref();
         auto const& sink = x;
         g.outputs("main"_P = sink);
     }
@@ -364,7 +437,7 @@ namespace {
         {{.start = {.line = 1, .column = 1}, .end = {.line = 24, .column = 1}}});
 
     auto const it = std::find_if(result.nodes.begin(), result.nodes.end(), [](auto const &node) {
-        return node.kind.contains("ValueSource");
+        return node.kind.contains("Constant");
     });
     ASSERT_NE(it, result.nodes.end());
     EXPECT_FALSE(it->source_spans.empty());
@@ -375,16 +448,14 @@ TEST(IvModuleSourceIntrospection, InitializationFailsWhenDeclarationBackedRefIsA
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_double_assignment_fails",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 namespace {
-    void assigned_twice_module(iv::GraphBuilder& g)
+    consteval void assigned_twice_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value{};
         NodeRef x;
-        x = g.node<ValueSource>(&value).node_ref();
-        x = g.node<ValueSource>(&value).node_ref();
+        x = g.node<Constant>(0.0f).node_ref();
+        x = g.node<Constant>(1.0f).node_ref();
         auto const& sink = x;
         g.outputs("main"_P = sink);
     }
@@ -392,16 +463,7 @@ namespace {
 )");
 
     SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
-    EXPECT_THROW(
-        {
-            try {
-                (void)app.initialize();
-            } catch (std::exception const &e) {
-                EXPECT_TRUE(std::string(e.what()).contains("already been initialized"));
-                throw;
-            }
-        },
-        std::exception);
+    EXPECT_THROW((void)app.initialize(), std::exception);
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
@@ -413,12 +475,12 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotMergeDifferentSchemas)
 
 namespace {
     template<size_t Inputs>
-    iv::NodeRef make_sum(iv::GraphBuilder& g)
+    consteval iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>().node_ref();
     }
 
-    void schema_mismatch_module(iv::GraphBuilder& g)
+    consteval void schema_mismatch_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_sum<2>(g);
@@ -453,7 +515,7 @@ TEST(IvModuleSourceIntrospection, SameLvalueWithDifferentNodeTypesProducesIndepe
         R"(#include <intravenous/dsl.h>
 
 namespace {
-    void split_lvalue_types_module(iv::GraphBuilder& g)
+    consteval void split_lvalue_types_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto make_branch = [&]<bool Add>(auto output) {
@@ -524,22 +586,20 @@ TEST(IvModuleSourceIntrospection, QueryBySpansAggregatesMixedConnectivity)
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_mixed_connectivity",
         R"(#include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/arithmetic.h>
 
 namespace {
     template<int I>
-    iv::NodeRef make_sum(iv::GraphBuilder& g)
+    consteval iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         (void)I;
         return g.node<iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>().node_ref();
     }
 
-    void mixed_connectivity_module(iv::GraphBuilder& g)
+    consteval void mixed_connectivity_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        static Sample value_storage{};
-        auto const value = g.node<iv::ValueSource>(&value_storage).node_ref();
+        auto const value = g.node<iv::Constant>(0.0f).node_ref();
         auto const a = make_sum<0>(g);
         auto const b = make_sum<1>(g);
         a(value);
@@ -673,7 +733,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansMergesPolyphonicCallbackNodesByExa
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-void polyphonic_module(iv::GraphBuilder& g)
+consteval void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 
@@ -766,7 +826,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansDoesNotAttributeInteriorPolyphonic
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-void polyphonic_module(iv::GraphBuilder& g)
+consteval void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 

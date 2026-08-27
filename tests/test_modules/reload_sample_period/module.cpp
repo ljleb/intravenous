@@ -16,7 +16,7 @@ struct SamplePeriodSource {
 };
 }
 
-void reload_sample_period(iv::GraphBuilder& g)
+consteval void reload_sample_period(iv::GraphBuilder& g)
 {
     g.outputs(g.node<SamplePeriodSource>());
 }

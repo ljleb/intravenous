@@ -1,8 +1,6 @@
-#define IV_INTERNAL_TRANSLATION_UNIT
-
 #include <intravenous/module/loader.h>
+#include <intravenous/module/abi.h>
 #include <intravenous/compat.h>
-#include <intravenous/graph/builder.h>
 
 #include <nlohmann/json.hpp>
 
@@ -27,6 +25,9 @@
 #include <Windows.h>
 #else
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 #endif
 
 namespace iv {
@@ -97,7 +98,59 @@ struct LoadedBinary {
     std::string id;
     std::filesystem::path artifact_path;
     std::shared_ptr<DynamicLibrary> library;
-    iv_module_descriptor_v2 const *descriptor = nullptr;
+};
+
+class ScopedModuleBuildLock {
+#if defined(_WIN32)
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+    OVERLAPPED overlapped_ {};
+#else
+    int fd_ = -1;
+#endif
+
+public:
+    explicit ScopedModuleBuildLock(std::filesystem::path const& path)
+    {
+#if defined(_WIN32)
+        handle_ = CreateFileW(
+            path.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle_ == INVALID_HANDLE_VALUE ||
+            !LockFileEx(
+                handle_, LOCKFILE_EXCLUSIVE_LOCK, 0,
+                MAXDWORD, MAXDWORD, &overlapped_)) {
+            if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+            throw std::runtime_error(
+                "failed to lock module build workspace '" + path.string() + "'");
+        }
+#else
+        fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0666);
+        if (fd_ < 0 || ::flock(fd_, LOCK_EX) != 0) {
+            if (fd_ >= 0) ::close(fd_);
+            throw std::runtime_error(
+                "failed to lock module build workspace '" + path.string() + "'");
+        }
+#endif
+    }
+
+    ~ScopedModuleBuildLock()
+    {
+#if defined(_WIN32)
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            UnlockFileEx(handle_, 0, MAXDWORD, MAXDWORD, &overlapped_);
+            CloseHandle(handle_);
+        }
+#else
+        if (fd_ >= 0) {
+            ::flock(fd_, LOCK_UN);
+            ::close(fd_);
+        }
+#endif
+    }
+
+    ScopedModuleBuildLock(ScopedModuleBuildLock const&) = delete;
+    ScopedModuleBuildLock& operator=(ScopedModuleBuildLock const&) = delete;
 };
 
 std::filesystem::path normalize(std::filesystem::path const &path)
@@ -559,12 +612,12 @@ class ModuleLoader::Impl {
             module.manifest.id;
     }
 
-    static std::filesystem::path output_for(
+    static std::filesystem::path import_for(
         ResolvedModule const &module,
-        std::filesystem::path const &project_rewrite_root,
-        std::filesystem::path const &global_rewrite_root)
+        std::filesystem::path const &project_import_root,
+        std::filesystem::path const &global_import_root)
     {
-        auto const &root = module.global ? global_rewrite_root : project_rewrite_root;
+        auto const &root = module.global ? global_import_root : project_import_root;
         return root / generated_import_path(module);
     }
 
@@ -573,18 +626,17 @@ class ModuleLoader::Impl {
         Closure const &closure,
         std::filesystem::path const &project_root) const
     {
-        auto const global_rewrite_root = global_cache_root_ / "rewrite";
+        auto const global_import_root = global_cache_root_ / "imports";
         auto const project_iv_root = project_root / "build/iv";
-        auto const project_rewrite_root = root.global
-            ? global_rewrite_root
-            : project_iv_root / "rewrite";
+        auto const project_import_root = root.global
+            ? global_import_root
+            : project_iv_root / "imports";
         auto const owner_root = root.global ? global_cache_root_ : project_iv_root;
         auto const build_key = sanitize(root.manifest.id) + "_" + stable_hash(root.module_dir);
         auto const workspace = owner_root / "build" / build_key / config_name();
         auto const build_dir = workspace / "cmake-build";
         auto const output_dir = workspace / "out";
         auto const generated_dir = workspace / "generated";
-        auto const generated_cmake = generated_dir / "module_definitions.cmake";
         auto const export_file = generated_dir / "root_export.cpp";
         auto const default_source_dir = generated_dir / "default-project";
         auto const custom_cmake = root.module_dir / "CMakeLists.txt";
@@ -592,62 +644,77 @@ class ModuleLoader::Impl {
             ? root.module_dir
             : default_source_dir;
 
+        std::filesystem::create_directories(workspace);
+        ScopedModuleBuildLock const build_lock(workspace / "build.lock");
         std::filesystem::create_directories(output_dir);
         std::filesystem::create_directories(generated_dir);
-        std::filesystem::create_directories(project_rewrite_root / "iv/modules");
-        std::filesystem::create_directories(global_rewrite_root / "iv/modules");
-        std::filesystem::create_directories(global_rewrite_root / "iv/modules-global");
+        std::filesystem::create_directories(project_import_root / "iv/modules");
+        std::filesystem::create_directories(global_import_root / "iv/modules");
+        std::filesystem::create_directories(global_import_root / "iv/modules-global");
 
-        std::unordered_map<std::string, ResolvedModule> modules_by_key;
         for (auto const &module : closure.modules) {
-            modules_by_key.emplace(key(module), module);
+            auto const generated_import = import_for(
+                module, project_import_root, global_import_root);
+            write_text_if_different(
+                generated_import,
+                "#pragma once\n#include " + quote(module.entry_file) + "\n");
             if (module.global) {
-                auto const forwarder = global_rewrite_root / "iv/modules" / module.manifest.id;
+                auto const forwarder = global_import_root / "iv/modules" / module.manifest.id;
                 write_text_if_different(
                     forwarder,
                     "#pragma once\n#include <iv/modules-global/" + module.manifest.id + ">\n");
             }
         }
 
-        std::ostringstream definitions;
-        definitions << "set(_iv_definition_outputs)\n";
-        for (auto const &module : closure.modules) {
-            auto const module_key = key(module);
-            auto const output = output_for(module, project_rewrite_root, global_rewrite_root);
-            definitions << "iv_rewrite_module_entry(TARGET iv_definition_"
-                        << (module.global ? "global_" : "project_")
-                        << sanitize(module.manifest.id)
-                        << " SOURCE " << quote(module.entry_file)
-                        << " OUTPUT " << quote(output)
-                        << " COMPILE_SETTINGS_TARGET ${IV_MODULE_DEFINITION_COMPILE_SETTINGS_TARGET}";
-            if (module.global) definitions << " GLOBAL_MODULE";
-            auto found_deps = closure.dependency_keys.find(module_key);
-            if (found_deps != closure.dependency_keys.end() && !found_deps->second.empty()) {
-                definitions << " DEPENDS";
-                for (auto const &dep_key : found_deps->second) {
-                    definitions << " " << quote(output_for(
-                        modules_by_key.at(dep_key),
-                        project_rewrite_root,
-                        global_rewrite_root));
-                }
-            }
-            definitions << ")\nlist(APPEND _iv_definition_outputs " << quote(output) << ")\n";
-        }
-        definitions << "add_custom_target(iv_module_definitions DEPENDS ${_iv_definition_outputs})\n";
-        write_text_if_different(generated_cmake, definitions.str());
-
         auto const root_include = root.global
             ? std::string("iv/modules-global/") + root.manifest.id
             : std::string("iv/modules/") + root.manifest.id;
         std::ostringstream export_tu;
-        export_tu << "#include <intravenous/module/module.h>\n"
+        export_tu << "#include <intravenous/module/authoring.h>\n"
+                  << "namespace iv::details::source_introspection_plugin_bridge {\n"
+                  << "template<class Ref> constexpr void "
+                     "_annotate_source_info_after_statement(\n"
+                  << "    Ref* ref, char const* declaration_identity, "
+                     "char const* file_path,\n"
+                  << "    std::uint32_t begin, std::uint32_t end) {\n"
+                  << "  iv::_annotate_source_info_after_statement(\n"
+                  << "      ref, declaration_identity, file_path, begin, end);\n"
+                  << "}\n"
+                  << "constexpr void _annotate_public_output_after_statement(\n"
+                  << "    iv::GraphBuilder* builder, bool event, std::size_t ordinal,\n"
+                  << "    char const* file_path, std::uint32_t begin, "
+                     "std::uint32_t end) {\n"
+                  << "  iv::_annotate_public_output_after_statement(\n"
+                  << "      builder, event, ordinal, file_path, begin, end);\n"
+                  << "}\n"
+                  << "}\n"
                   << "#include <" << root_include << ">\n"
-                  << "extern \"C\" IV_MODULE_EXPORT iv_module_descriptor_v2 const* iv_get_module_descriptor_v2() {\n"
-                  << "  static iv_module_descriptor_v2 const descriptor{IV_MODULE_ABI_VERSION_V2, \""
-                  << root.manifest.id
-                  << "\", &iv::details::generated_module_build_v2<&"
-                  << root.manifest.main
-                  << ">};\n  return &descriptor;\n}\n";
+                  << "namespace {\n"
+                  << "consteval iv::Graph iv_generated_module_graph_value() {\n"
+                  << "  iv::GraphBuilder builder;\n"
+                  << "  " << root.manifest.main << "(builder);\n"
+                  << "  return builder.build_execution_root_node().graph;\n"
+                  << "}\n"
+                  << "consteval iv::StaticGraphIntrospectionMetadata "
+                     "iv_generated_module_metadata_value() {\n"
+                  << "  iv::GraphBuilder builder;\n"
+                  << "  " << root.manifest.main << "(builder);\n"
+                  << "  return iv::details::define_static_metadata(builder.build_metadata());\n"
+                  << "}\n"
+                  << "}\n"
+                  << "extern \"C\" IV_MODULE_EXPORT std::uint32_t iv_module_abi_version() {\n"
+                  << "  return iv::IV_MODULE_ABI_VERSION;\n"
+                  << "}\n"
+                  << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode iv_module_graph() {\n"
+                  << "  static constexpr iv::StaticGraphRoot<"
+                     "iv_generated_module_graph_value()> graph {};\n"
+                  << "  return iv::WeakTypeErasedNode(graph);\n"
+                  << "}\n"
+                  << "extern \"C\" IV_MODULE_EXPORT iv::StaticGraphIntrospectionMetadata iv_module_metadata() {\n"
+                  << "  static constexpr auto metadata = "
+                     "iv_generated_module_metadata_value();\n"
+                  << "  return metadata;\n"
+                  << "}\n";
         write_text_if_different(export_file, export_tu.str());
 
         if (!std::filesystem::exists(custom_cmake)) {
@@ -662,19 +729,37 @@ class ModuleLoader::Impl {
         }
 
         auto const [cc, cxx] = compilers();
+        auto const source_introspection_plugin =
+            std::filesystem::path(IV_CONFIGURED_GCC_SOURCE_INTROSPECTION_PLUGIN);
+        if (source_introspection_plugin.empty()
+            || !std::filesystem::exists(source_introspection_plugin)) {
+            throw std::runtime_error(
+                "configured GCC source-introspection plugin does not exist: '" +
+                source_introspection_plugin.string() + "'");
+        }
         std::string generator = toolchain_.cmake_generator.value_or(
             std::string(IV_CONFIGURED_CMAKE_GENERATOR));
 
         std::ostringstream signature;
-        signature << "module-descriptor-abi=2\n"
+        signature << "iv-module-abi=" << IV_MODULE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
                   << "cmake=" << cmake_program().generic_string() << '\n'
                   << "cc=" << cc.generic_string() << '\n'
                   << "cxx=" << cxx.generic_string() << '\n'
+                  << "source-introspection-plugin="
+                  << source_introspection_plugin.generic_string() << '\n'
+                  << "source-introspection-plugin-stamp="
+                  << std::filesystem::last_write_time(source_introspection_plugin)
+                         .time_since_epoch().count() << '\n'
                   << "generator=" << generator << '\n'
-                  << read_text(repo_root_ / "src/intravenous/module/module.h") << '\n'
-                  << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n'
-                  << read_text(repo_root_ / "src/intravenous/module/template/SourceSpanRewrite.cmake") << '\n';
+                  << "generated-export=" << export_tu.str() << '\n'
+                  << "core-source-stamp="
+                  << directory_stamp(repo_root_ / "src/intravenous")
+                         .time_since_epoch().count() << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/abi.h") << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/authoring.h") << '\n'
+                  << read_text(repo_root_ / "src/intravenous/graph/static_metadata.hpp") << '\n'
+                  << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n';
         for (auto const &module : closure.modules) {
             signature << key(module) << '\n'
                       << read_text(module.manifest_file) << '\n'
@@ -718,24 +803,21 @@ class ModuleLoader::Impl {
                   << " -DIV_MODULE_SOURCE_DIR=" << quote(root.module_dir)
                   << " -DIV_MODULE_ENTRY_FILE=" << quote(root.entry_file)
                   << " -DIV_MODULE_EXPORT_FILE=" << quote(export_file)
-                  << " -DIV_MODULE_GENERATED_CMAKE=" << quote(generated_cmake)
-                  << " -DIV_MODULE_GENERATED_INCLUDE_DIR=" << quote(project_rewrite_root)
-                  << " -DIV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR=" << quote(global_rewrite_root)
+                  << " -DIV_MODULE_GENERATED_INCLUDE_DIR=" << quote(project_import_root)
+                  << " -DIV_GLOBAL_MODULE_GENERATED_INCLUDE_DIR=" << quote(global_import_root)
                   << " -DIV_MODULE_INCLUDE_DIRS=\"" << include_list.str() << "\""
                   << " -DIV_MODULE_OUTPUT_DIR=" << quote(output_dir)
-                  << " -DIV_MODULE_OUTPUT_NAME=iv_module_" << sanitize(root.manifest.id);
+                  << " -DIV_MODULE_OUTPUT_NAME=iv_module_" << sanitize(root.manifest.id)
+                  << " -DIV_GCC_SOURCE_INTROSPECTION_PLUGIN="
+                  << quote(source_introspection_plugin);
         if (std::string_view(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY).size()) {
             configure << " -DIV_MODULE_SHARED_LIBRARY=" << quote(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY);
         }
-        if (std::string_view(IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER).size()) {
-            configure << " -DIV_SOURCE_SPAN_REWRITER=" << quote(IV_CONFIGURED_CLANG_SOURCE_SPAN_REWRITER);
-        }
-
         if (needs_build || !std::filesystem::exists(build_dir / "CMakeCache.txt")) {
             run(configure.str(), log_sink_, "configure");
             run(
                 quote(cmake_program()) + " --build " + quote(build_dir) +
-                    " --config " + config_name(),
+                    " --config " + config_name() + " --parallel 16",
                 log_sink_,
                 "build");
             write_text_if_different(signature_file, signature.str());
@@ -829,35 +911,45 @@ public:
         auto artifact = build(root, closure, project_root);
 
         auto library = std::make_shared<DynamicLibrary>(artifact);
-        auto getter = reinterpret_cast<iv_get_module_descriptor_fn_v2>(
-            library->symbol("iv_get_module_descriptor_v2"));
-        if (!getter) {
+        auto abi_version = reinterpret_cast<iv_module_abi_version_fn>(
+            library->symbol("iv_module_abi_version"));
+        if (!abi_version) {
             throw std::runtime_error(
-                "module '" + artifact.string() + "' does not export iv_get_module_descriptor_v2");
+                "module '" + artifact.string() +
+                "' does not export iv_module_abi_version");
         }
-        auto descriptor = getter();
-        if (!descriptor || descriptor->abi_version != IV_MODULE_ABI_VERSION_V2 ||
-            !descriptor->build) {
+        auto const loaded_abi_version = abi_version();
+        if (loaded_abi_version != IV_MODULE_ABI_VERSION) {
             throw std::runtime_error(
-                "module '" + artifact.string() + "' has invalid descriptor v2");
+                "module '" + artifact.string() +
+                "' has incompatible ABI version " +
+                std::to_string(loaded_abi_version) + " (expected " +
+                std::to_string(IV_MODULE_ABI_VERSION) + ")");
         }
-        if (!descriptor->id || root.manifest.id != descriptor->id) {
+        auto graph = reinterpret_cast<iv_module_graph_fn>(
+            library->symbol("iv_module_graph"));
+        if (!graph) {
             throw std::runtime_error(
-                "module '" + artifact.string() + "' exported unexpected id");
+                "module '" + artifact.string() + "' does not export iv_module_graph");
         }
+        auto metadata = reinterpret_cast<iv_module_metadata_fn>(
+            library->symbol("iv_module_metadata"));
+        if (!metadata) {
+            throw std::runtime_error(
+                "module '" + artifact.string() + "' does not export iv_module_metadata");
+        }
+        auto root_node = graph();
+        if (!root_node) {
+            throw std::runtime_error(
+                "module '" + artifact.string() + "' exported an invalid graph root");
+        }
+        auto introspection = metadata().metadata();
 
         auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
             root.manifest.id,
             artifact,
             library,
-            descriptor,
         });
-        GraphBuilder builder;
-        if (char const *error = descriptor->build(builder)) {
-            throw std::runtime_error(
-                "failed to build root module definition '" + root.manifest.id + "': " + error);
-        }
-        auto introspection = builder.build_metadata();
 
         std::vector<ModuleDependency> dependencies;
         dependencies.reserve(closure.modules.size());
@@ -880,7 +972,7 @@ public:
         std::vector<ModuleRef> refs{binary};
         return LoadedDefinition(
             std::move(refs),
-            std::make_unique<GraphBuilder>(std::move(builder)),
+            root_node,
             std::move(introspection),
             root.module_dir,
             root.manifest.id,
@@ -888,34 +980,15 @@ public:
     }
 };
 
-ModuleLoader::LoadedGraph::LoadedGraph(
-    TypeErasedNode root_,
-    std::vector<ModuleRef> refs,
-    std::unique_ptr<GraphBuilder> builder,
-    GraphIntrospectionMetadata introspection_,
-    GraphBuildMetadata build_metadata,
-    std::filesystem::path path,
-    std::string id,
-    std::vector<ModuleDependency> deps)
-    : module_refs(std::move(refs)),
-      root(std::move(root_)),
-      canonical_builder(std::move(builder)),
-      introspection(std::move(introspection_)),
-      graph_build_metadata(std::move(build_metadata)),
-      module_path(std::move(path)),
-      module_id(std::move(id)),
-      dependencies(std::move(deps))
-{}
-
 ModuleLoader::LoadedDefinition::LoadedDefinition(
     std::vector<ModuleRef> refs,
-    std::unique_ptr<GraphBuilder> builder,
+    WeakTypeErasedNode root_,
     GraphIntrospectionMetadata introspection_,
     std::filesystem::path path,
     std::string id,
     std::vector<ModuleDependency> deps)
     : module_refs(std::move(refs)),
-      canonical_builder(std::move(builder)),
+      root(root_),
       introspection(std::move(introspection_)),
       module_path(std::move(path)),
       module_id(std::move(id)),

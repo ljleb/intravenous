@@ -62,7 +62,7 @@ public:
     outputs(...);
     event_outputs(...);
     subgraph(...);
-    module<&M>();
+    module<M>();
     vacant_inputs() const;
     build_metadata(...) const;
     build_root_node(...) const;

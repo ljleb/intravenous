@@ -359,11 +359,12 @@ public:
 
     PreparedReload prepare_reload(
         TypeErasedNode root,
-        std::optional<size_t> default_silence_ttl_samples = std::nullopt)
+        std::optional<size_t> default_silence_ttl_samples = std::nullopt,
+        std::optional<ResourceContext> replacement_resources = std::nullopt)
     {
         auto prepared = prepare_state(
             std::move(root),
-            resources_,
+            replacement_resources.value_or(resources_),
             block_size_,
             "reload",
             false,

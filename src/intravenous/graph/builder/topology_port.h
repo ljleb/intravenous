@@ -1,5 +1,6 @@
 #pragma once
 
+#include <compare>
 #include <cstddef>
 #include <functional>
 
@@ -14,7 +15,7 @@ struct TopologyPortId {
   constexpr TopologyPortId(size_t node_, size_t port_)
       : node(node_), port(port_) {}
 
-  bool operator==(TopologyPortId const &) const = default;
+  auto operator<=>(TopologyPortId const &) const = default;
 };
 } // namespace iv
 

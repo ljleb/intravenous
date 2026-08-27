@@ -3,7 +3,7 @@
 
 using namespace iv;
 
-void local_cmake_module(iv::GraphBuilder& g)
+consteval void local_cmake_module(iv::GraphBuilder& g)
 {
     auto const tone = g.node<iv::SawOscillator>();
     tone(

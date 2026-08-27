@@ -183,21 +183,7 @@ function(iv_add_host_runtime_objects target)
 endfunction()
 
 add_library(intravenous_graph_builder OBJECT
-    graph/builder/stored_node.cpp
-    graph/builder/topology.cpp
-    graph/builder/lowering.cpp
-    graph/builder/node_bundles.cpp
-    graph/builder/public_ports.cpp
-    graph/builder/subgraphs.cpp
-    graph/builder/connections.cpp
-    graph/builder/detach.cpp
-    graph/builder/annotations.cpp
-    graph/builder/virtual_nodes.cpp
-    graph/builder/embedder.cpp
-    graph/builder/graph.cpp
-    graph/builder/finalize.cpp
-    graph/builder/names.cpp
-    graph/builder/metadata.cpp
+    graph/builder/link.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 

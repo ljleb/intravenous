@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <concepts>
+#include <compare>
 #include <cstdint>
 #include <array>
 #include <functional>
@@ -123,7 +124,7 @@ namespace iv {
             return steps[index];
         }
 
-        bool operator==(EventConversionPlan const&) const = default;
+        auto operator<=>(EventConversionPlan const&) const = default;
     };
 
     class EventConversionRegistry {
@@ -276,10 +277,9 @@ namespace iv {
         }
 
     public:
-        static EventConversionRegistry const& instance()
+        static constexpr EventConversionRegistry instance()
         {
-            static EventConversionRegistry registry;
-            return registry;
+            return {};
         }
 
         static constexpr EventConversionPlan plan(EventTypeId source, EventTypeId target)

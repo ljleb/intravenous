@@ -1,7 +1,6 @@
 #include "intravenous/channel_ports.h"
 #include "intravenous/channel_layout.h"
 #include <intravenous/dsl.h>
-#include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/ports.h>
@@ -39,37 +38,19 @@ struct FunNode
     }
 };
 
-namespace
+consteval void module_main(iv::GraphBuilder& g)
 {
-void simple_sine(iv::GraphBuilder& g)
-{
-    auto const phase = g.node<PhaseIntegrator>();
-    auto const tt = g.node<FunNode>();
+    // auto const phase = g.node<PhaseIntegrator>();
+    auto const tt = g.node<FunNode, stereo>();
+    auto const f = g.input<"freq">(220, 0, 1000);
+    auto const voice = g.node<SawOscillator, stereo>();
+    auto const detune = g.input<"detune">(2.5, -100, 100);
+    auto const p = f + g.tile<stereo>(+detune, -detune);
 
-    auto make_channel = [&]<auto c>()
-    {
-        auto f = g.node<Constant>(220);
-        auto const voice = g.node<SawOscillator>();
+    voice(
+        "frequency"_P = p);
+        // "phase_offset"_P = phase);
 
-        NodeRef p;
-        if constexpr (c == stereo::left)
-        {
-            p = f + 2.5;
-        }
-        else
-        {
-            p = f - 2.5;
-        }
-
-        voice(
-            "frequency"_P = p,
-            "phase_offset"_P = phase);
-
-        auto const res = voice * 0.1 * tt;
-        auto const res_k = "main1"_P;
-        g.outputs(res_k[c] = res, res_k[swap_side(c)] = res);
-    };
-    make_channel.template operator()<stereo::left>();
-    make_channel.template operator()<stereo::right>();
-}
+    // auto const res = voice * g.node<Constant, stereo>(0.1);// * tt;
+    g.outputs(voice * 0.1);
 }

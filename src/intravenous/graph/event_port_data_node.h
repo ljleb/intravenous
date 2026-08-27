@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/graph/static_storage.hpp>
 #include <intravenous/node/lifecycle.h>
 
 #include <span>
@@ -8,15 +9,15 @@
 
 namespace iv {
     struct GraphEventPortDataNode {
-        std::string _port_data_id;
-        EventInputConfig _input;
+        StaticString _port_data_id;
+        StaticEventInputConfig _input;
 
-        explicit GraphEventPortDataNode(
+        consteval explicit GraphEventPortDataNode(
             std::string port_data_id,
             EventInputConfig input
         ) :
-            _port_data_id(std::move(port_data_id)),
-            _input(std::move(input))
+            _port_data_id(details::define_static_string(port_data_id)),
+            _input(details::define_static_config(input))
         {}
 
         struct State {
@@ -32,7 +33,8 @@ namespace iv {
                 state.events,
                 calculate_event_port_buffer_capacity(ctx.event_port_buffer_base_multiplier(), _input.type)
             );
-            ctx.export_array(_port_data_id, state.port_data);
+            ctx.export_array(
+                std::string(_port_data_id.view()), state.port_data);
         }
 
         void initialize(InitializationContext<GraphEventPortDataNode> const& ctx) const

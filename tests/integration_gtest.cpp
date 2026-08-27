@@ -1,5 +1,8 @@
 #include "runtime_test_harness.h"
 
+#include <intravenous/basic_nodes/shaping.h>
+#include <intravenous/dsl.h>
+#include <intravenous/module/authoring.h>
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/iv_module_definitions.h>
@@ -7,6 +10,7 @@
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
@@ -259,6 +263,46 @@ void apply_timeline_batch_to_execution_and_runner(
             .changed_lanes = std::move(changed_lanes),
         }));
 }
+
+consteval void focused_stereo_saw_module(iv::GraphBuilder& graph)
+{
+    using namespace iv;
+    auto const frequencies = graph.node<Constant, stereo>(220.0f);
+    auto const voice = graph.node<SawOscillator, stereo>();
+    auto const detuned = graph.tile<stereo>(
+        frequencies[stereo::left] + 2.5f,
+        frequencies[stereo::right] - 2.5f);
+    voice("frequency"_P = detuned);
+    graph.outputs(
+        "main"_P[stereo::left] = voice[stereo::left] * 0.1f,
+        "main"_P[stereo::right] = voice[stereo::right] * 0.1f);
+}
+
+consteval iv::Graph focused_stereo_saw_graph_value()
+{
+    iv::GraphBuilder builder;
+    focused_stereo_saw_module(builder);
+    return builder.build_execution_root_node().graph;
+}
+
+consteval iv::StaticGraphIntrospectionMetadata focused_stereo_saw_metadata_value()
+{
+    iv::GraphBuilder builder;
+    focused_stereo_saw_module(builder);
+    return iv::details::define_static_metadata(builder.build_metadata());
+}
+
+iv::WeakTypeErasedNode focused_stereo_saw_root()
+{
+    static constexpr iv::StaticGraphRoot<focused_stereo_saw_graph_value()> graph {};
+    return iv::WeakTypeErasedNode(graph);
+}
+
+iv::GraphIntrospectionMetadata focused_stereo_saw_metadata()
+{
+    static constexpr auto metadata = focused_stereo_saw_metadata_value();
+    return metadata.metadata();
+}
 }
 
 TEST(Integration, StartupConfigDefinitionsAndIvModuleSourceIntrospectionInitializeAndShutdown)
@@ -292,7 +336,7 @@ TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutd
 #include <intravenous/basic_nodes/shaping.h>
 
 namespace {
-    void graph_input_module(iv::GraphBuilder& g)
+    consteval void graph_input_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const voice = g.node<SawOscillator>();
@@ -438,7 +482,7 @@ TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
         R"(#include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-void polyphonic_module(iv::GraphBuilder& g)
+consteval void polyphonic_module(iv::GraphBuilder& g)
 {
     using namespace iv;
 
@@ -489,6 +533,184 @@ void polyphonic_module(iv::GraphBuilder& g)
     EXPECT_FALSE(cleared_override.members[1].sample_inputs[1].has_concrete_override);
     EXPECT_FLOAT_EQ(
         static_cast<float>(cleared_override.members[1].sample_inputs[1].current_value), 0.25f);
+}
+
+namespace {
+void expect_stereo_saw_reaches_automatic_timeline_lane(
+    iv::WeakTypeErasedNode root,
+    iv::GraphIntrospectionMetadata introspection,
+    std::vector<iv::ModuleRef> module_refs,
+    std::string instance_id,
+    std::string module_id)
+{
+    constexpr size_t block_size = 64;
+    iv::Timeline timeline;
+    iv::GraphInputLanes graph_input_lanes;
+    iv::IvModuleInstancesExecution module_execution(block_size);
+
+    iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
+
+    struct BridgeScope {
+        iv::GraphInputLanes& graph_input_lanes;
+        iv::Timeline& timeline;
+
+        ~BridgeScope()
+        {
+            iv::unbind_graph_input_lanes_timeline_bridge(
+                graph_input_lanes, timeline);
+        }
+    } bridge_scope{graph_input_lanes, timeline};
+
+    iv::IvModuleInstance instance{
+        .instance_id = std::move(instance_id),
+        .definition_id = "definition:stereo-saw",
+        .display_name = "Focused stereo saw",
+        .module_id = std::move(module_id),
+        .introspection = std::move(introspection),
+    };
+    iv::IvModuleInstanceBuildersChanged builders_changed{
+        .created = {iv::IvModuleInstanceBuilderRef{
+            .instance = &instance,
+            .root = root,
+            .module_refs = std::move(module_refs),
+        }},
+    };
+
+    iv::IvModuleInstanceBuildersAckBuilder ack;
+    graph_input_lanes.handle_iv_module_instance_builders_changed(
+        builders_changed, &ack);
+    builders_changed.version_index = ack.version_index().value_or(0);
+    builders_changed.created.front().prerequisite_lanes =
+        ack.prerequisite_lanes_for(instance.instance_id)
+            .value_or(std::vector<iv::LaneId>{});
+    auto module_tasks =
+        module_execution.handle_instance_builders_changed(builders_changed);
+    ASSERT_EQ(module_tasks.update.to_create.size(), 1u);
+
+    graph_input_lanes.handle_task_runner_after_pass(
+        iv::TasksRunnerAfterPass{.graph_revision = 0});
+
+    std::vector<iv::LaneId> automatic_outputs;
+    ASSERT_TRUE(wait_until([&] {
+        automatic_outputs.clear();
+        for (auto const lane : timeline.persistent_lane_ids()) {
+            auto const metadata = timeline.lane_metadata(lane);
+            if (metadata.has_unit("dsp_graph.public_output")
+                && metadata.has_unit("dsp_graph.sample")) {
+                automatic_outputs.push_back(lane);
+            }
+        }
+        return !automatic_outputs.empty();
+    })) << "expected GraphInputLanes to create the module's public output lane";
+
+    ASSERT_EQ(automatic_outputs.size(), 1u)
+        << "the stereo public family must aggregate into one timeline lane";
+    auto const output_lane = automatic_outputs.front();
+    timeline.with_graph([&](iv::LaneGraph const& graph) {
+        auto const& lane = graph.lane(output_lane);
+        EXPECT_EQ(lane.sample_channel_type, iv::ChannelTypeId::stereo);
+        EXPECT_EQ(
+            std::visit([](auto const& output) { return output.name; }, lane.output),
+            "main");
+    });
+
+    auto const output_binding = instance.runtime_bindings->output(
+        iv::runtime_public_port_key(false, iv::PortKind::sample, 0));
+    EXPECT_EQ(output_binding->target_lane, output_lane);
+    ASSERT_NE(output_binding->publish_sample_block, nullptr);
+
+    auto capture = std::make_shared<AudioBufferCaptureState>();
+    iv::LaneIdAllocator capture_lane_ids;
+    auto capture_lane = capture_lane_ids.next();
+    while (timeline.contains_lane(capture_lane))
+        capture_lane = capture_lane_ids.next();
+    timeline.apply_lane_batch(iv::TimelineLaneBatchUpdate{
+        .upserts = {iv::TimelineLaneUpsert{
+            .lane = capture_lane,
+            .lifetime = iv::TimelineLaneLifetime::ephemeral,
+            .make_node = [capture] {
+                return iv::TypeErasedLaneNode(
+                    TestAudioBufferSinkLaneNode{.capture = capture});
+            },
+        }},
+        .connections_to_add = {iv::LaneGraphConnection{
+            .source = output_lane,
+            .target = capture_lane,
+            .input = iv::realtime_sample_input(0),
+        }},
+    });
+
+    iv::TimelineExecution timeline_execution(block_size);
+    auto timeline_tasks = timeline.with_graph([&](iv::LaneGraph const& graph) {
+        return timeline_execution.synchronize_from_graph(graph);
+    });
+    auto const find_timeline_task = [&](iv::LaneId lane)
+        -> iv::TaskRecord const& {
+        auto const id = iv::timeline_lane_task_id(lane);
+        auto const task = std::ranges::find(
+            timeline_tasks.update.to_create, id, &iv::TaskRecord::id);
+        if (task == timeline_tasks.update.to_create.end())
+            throw std::logic_error("missing timeline task " + id);
+        return *task;
+    };
+    auto const& output_task = find_timeline_task(output_lane);
+    auto const& capture_task = find_timeline_task(capture_lane);
+    EXPECT_TRUE(std::ranges::contains(
+        output_task.depends_on,
+        iv::iv_module_instance_dsp_task_id(instance.instance_id)));
+    EXPECT_TRUE(std::ranges::contains(
+        capture_task.depends_on,
+        iv::timeline_lane_task_id(output_lane)));
+
+    auto const module_callback = module_tasks.update.to_create.front().callback;
+    module_callback.invoke(module_callback.context);
+    output_task.callback.invoke(output_task.callback.context);
+    capture_task.callback.invoke(capture_task.callback.context);
+
+    auto const captured = capture->snapshot();
+    ASSERT_EQ(captured.size(), block_size);
+    EXPECT_TRUE(std::ranges::any_of(captured, [](auto sample) {
+        return std::abs(sample) > 0.000001f;
+    })) << "expected nonzero saw samples to travel through the automatic lane";
+
+    auto const published = graph_input_lanes.handle_sample_block_requested(
+        output_lane);
+    ASSERT_FALSE(published.empty());
+    EXPECT_EQ(published.frame_count, block_size);
+    EXPECT_EQ(
+        published.channel_layout.channel_type,
+        iv::ChannelTypeId::stereo);
+    EXPECT_TRUE(std::ranges::any_of(published.samples, [](iv::Sample sample) {
+        return std::abs(static_cast<float>(sample)) > 0.000001f;
+    }));
+}
+} // namespace
+
+TEST(Integration, StereoSawModulePublishesIntoItsAutomaticTimelineLane)
+{
+    expect_stereo_saw_reaches_automatic_timeline_lane(
+        focused_stereo_saw_root(),
+        focused_stereo_saw_metadata(),
+        {},
+        "instance:focused-stereo-saw",
+        "iv.test.focused_stereo_saw");
+}
+
+TEST(Integration, LoadedModuleDsoPublishesIntoItsAutomaticTimelineLane)
+{
+    auto const workspace = read_only_module_fixture_workspace("local_cmake");
+    iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
+    auto const startup = startup_config.initialize();
+    auto loaded = iv::test_support::load_runtime_iv_module_definition(
+        startup,
+        std::filesystem::weakly_canonical(workspace));
+
+    expect_stereo_saw_reaches_automatic_timeline_lane(
+        loaded.root,
+        std::move(loaded.introspection),
+        std::move(loaded.module_refs),
+        "instance:loaded-stereo-saw",
+        loaded.module_id);
 }
 
 TEST(Integration, TimelineRealtimeSinewaveReachesAudioBuffer)
@@ -599,8 +821,7 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
         return capture_state->captures.load(std::memory_order_relaxed) >= 2;
     }));
 
-    auto const captures_before_disconnect =
-        capture_state->captures.load(std::memory_order_relaxed);
+    std::atomic<size_t> captures_when_disconnect_applied {0};
     std::atomic<bool> disconnect_applied {false};
     IntegrationPassFinishedAction pass_finished_action;
     g_integration_pass_finished_action = &pass_finished_action;
@@ -615,16 +836,20 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
                     iv::TimelineLaneBatchUpdate{
                     .connections_to_remove = {connection},
                 });
-                disconnect_applied.store(true, std::memory_order_relaxed);
+                captures_when_disconnect_applied.store(
+                    capture_state->captures.load(std::memory_order_acquire),
+                    std::memory_order_release);
+                disconnect_applied.store(true, std::memory_order_release);
             };
     }
 
     ASSERT_TRUE(wait_until([&] {
-        return disconnect_applied.load(std::memory_order_relaxed);
+        return disconnect_applied.load(std::memory_order_acquire);
     })) << "expected disconnect to be applied on a pass boundary";
 
     ASSERT_TRUE(wait_until([&] {
-        return capture_state->captures.load(std::memory_order_relaxed) > captures_before_disconnect;
+        return capture_state->captures.load(std::memory_order_acquire)
+            > captures_when_disconnect_applied.load(std::memory_order_acquire);
     })) << "expected sink to receive a block after disconnect";
 
     auto const latest = capture_state->snapshot();

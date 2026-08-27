@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "id": "iv.project.simple_sine",
+  "id": "iv.project.saw",
   "entry": "module.cpp",
-  "main": "simple_sine"
+  "main": "module_main"
 }

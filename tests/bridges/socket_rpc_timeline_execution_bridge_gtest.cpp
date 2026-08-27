@@ -334,17 +334,15 @@ TEST(SocketRpcTimelineExecutionBridge, PlaybackResumeRealignsIvModuleExecutionIn
     instance.definition_id = "definition:1";
     instance.module_id = "module.test";
 
-    iv::GraphBuilder builder;
     std::vector<size_t> indices;
-    (void)builder.node<IndexRecordingNode>(&indices);
-    builder.outputs();
+    IndexRecordingNode root{&indices};
 
     auto update = execution.handle_instance_builders_changed(
         iv::IvModuleInstanceBuildersChanged{
             .created = {
                 iv::IvModuleInstanceBuilderRef{
                     .instance = &instance,
-                    .builder = &builder,
+                    .root = iv::WeakTypeErasedNode(root),
                 },
             },
         });

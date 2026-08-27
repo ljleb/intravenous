@@ -285,6 +285,7 @@ export class WorkspaceSession {
             }
 
             if (params.code === "rebuildStarted") {
+                this.resetCapturedServerLogs();
                 this.logServerState("Intravenous rebuild started", params);
                 this.showRebuildStatus(params);
                 return;
@@ -298,6 +299,7 @@ export class WorkspaceSession {
 
             if (params.code === "rebuildFailed") {
                 this.logServerState("Intravenous rebuild failed", params);
+                this.logCapturedServerFailureContext();
                 this.showRebuildFailure(params);
                 return;
             }

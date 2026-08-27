@@ -4,7 +4,6 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph/node.h>
 #include <intravenous/graph/node_wrapper.h>
-#include <intravenous/basic_nodes/buffers.h>
 
 #include <array>
 #include <cstdint>
@@ -562,11 +561,11 @@ int main()
     }
 
     {
-        iv::GraphNodeWrapper wrapper(
-            iv::TypeErasedNode(StatefulTickingNode {}),
-            {},
+        static constexpr iv::GraphNodeWrapper wrapper(
+            iv::details::reflect_node(StatefulTickingNode {}),
+            std::vector<iv::PortBufferPlan>{},
             "standalone",
-            {}
+            std::vector<iv::SampleOutputBinding>{}
         );
 
         iv::NodeLayoutBuilder builder(8);

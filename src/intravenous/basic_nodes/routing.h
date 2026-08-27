@@ -70,7 +70,7 @@ namespace iv {
     struct DetachArrayId {
         size_t id;
 
-        DetachArrayId(size_t id): id(id) {}
+        constexpr DetachArrayId(size_t id): id(id) {}
 
         operator std::string() const {
             return "detach:" + std::to_string(id);
@@ -120,29 +120,28 @@ namespace iv {
         }
     };
 
-    class BroadcastEvent {
+    struct BroadcastEvent {
         size_t _num_outputs;
         EventTypeId _type;
 
-    public:
-        explicit BroadcastEvent(size_t num_outputs, EventTypeId type) :
+        constexpr explicit BroadcastEvent(size_t num_outputs, EventTypeId type) :
             _num_outputs(num_outputs),
             _type(type)
         {}
 
-        auto event_inputs() const
+        constexpr auto event_inputs() const
         {
             return std::array<EventInputConfig, 1> {{
                 { .type = _type }
             }};
         }
 
-        auto event_outputs() const
+        constexpr auto event_outputs() const
         {
             return std::vector<EventOutputConfig>(_num_outputs, EventOutputConfig{ .type = _type });
         }
 
-        auto num_event_outputs() const
+        constexpr auto num_event_outputs() const
         {
             return _num_outputs;
         }
@@ -156,33 +155,32 @@ namespace iv {
         }
     };
 
-    class EventConcatenation {
+    struct EventConcatenation {
         size_t _num_inputs;
         EventTypeId _type;
 
-    public:
         struct State {
             std::span<size_t> cursors;
         };
 
-        explicit EventConcatenation(size_t num_inputs, EventTypeId type) :
+        constexpr explicit EventConcatenation(size_t num_inputs, EventTypeId type) :
             _num_inputs(num_inputs),
             _type(type)
         {}
 
-        auto event_inputs() const
+        constexpr auto event_inputs() const
         {
             return std::vector<EventInputConfig>(_num_inputs, EventInputConfig{ .type = _type });
         }
 
-        auto event_outputs() const
+        constexpr auto event_outputs() const
         {
             return std::array<EventOutputConfig, 1> {{
                 { .type = _type }
             }};
         }
 
-        auto num_event_inputs() const
+        constexpr auto num_event_inputs() const
         {
             return _num_inputs;
         }
@@ -306,7 +304,7 @@ namespace iv {
     };
 
     struct DummyEventSink {
-        auto event_inputs() const
+        constexpr auto event_inputs() const
         {
             return std::array<EventInputConfig, 1> {{
                 { .type = EventTypeId::empty }

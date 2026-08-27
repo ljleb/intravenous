@@ -1,7 +1,6 @@
 include_guard(GLOBAL)
 
 include(${IV_SOURCE_DIR}/module/template/JuceSupport.cmake)
-include(${IV_SOURCE_DIR}/module/template/SourceSpanRewrite.cmake)
 include(${IV_SOURCE_DIR}/module/template/ModuleProjectInit.cmake)
 
 function(iv_configure_iv_module_shared_import)
@@ -32,10 +31,28 @@ function(iv_add_runtime_module target)
         message(FATAL_ERROR "iv_add_runtime_module(${target}) requires IV_MODULE_EXPORT_FILE")
     endif()
 
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+        message(FATAL_ERROR
+            "IV modules require GCC 16 or newer for C++26 reflection; configured compiler is "
+            "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER})")
+    endif()
+    if(NOT DEFINED IV_GCC_SOURCE_INTROSPECTION_PLUGIN
+       OR IV_GCC_SOURCE_INTROSPECTION_PLUGIN STREQUAL ""
+       OR NOT EXISTS "${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}")
+        message(FATAL_ERROR
+            "iv_add_runtime_module(${target}) requires a built "
+            "IV_GCC_SOURCE_INTROSPECTION_PLUGIN")
+    endif()
+
     iv_configure_iv_module_shared_import()
 
     add_library(${target}__compile_settings INTERFACE)
-    target_compile_features(${target}__compile_settings INTERFACE cxx_std_23)
+    target_compile_features(${target}__compile_settings INTERFACE cxx_std_26)
+    target_compile_options(${target}__compile_settings INTERFACE
+        -freflection
+        -fconstexpr-ops-limit=134217728
+        "-fplugin=${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"
+        "-fplugin-arg-iv_gcc_source_introspection_plugin-core-source-dir=${IV_SOURCE_DIR}")
     target_include_directories(${target}__compile_settings INTERFACE
         ${IV_INCLUDE_DIR}
         ${IV_MODULE_SOURCE_DIR}
@@ -49,19 +66,7 @@ function(iv_add_runtime_module target)
     endif()
     target_include_directories(${target}__compile_settings SYSTEM INTERFACE ${IV_THIRD_PARTY_INCLUDE_DIR})
 
-    if(MSVC)
-        target_compile_options(${target}__compile_settings INTERFACE /W4 /permissive-)
-    else()
-        target_compile_options(${target}__compile_settings INTERFACE -Wall -Wextra -Wpedantic)
-        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            target_compile_options(${target}__compile_settings INTERFACE
-                -Wno-unused-comparison
-                -Wno-c2y-extensions
-                # IV entry sources are definition-bearing includes consumed by
-                # generated code, not standalone translation units.
-                -Wno-unused-function)
-        endif()
-    endif()
+    target_compile_options(${target}__compile_settings INTERFACE -Wall -Wextra -Wpedantic)
 
     if(IVM_ENABLE_JUCE AND DEFINED IV_CORE_ENABLE_JUCE_VST AND IV_CORE_ENABLE_JUCE_VST)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=1 JUCE_PLUGINHOST_VST3=1)
@@ -72,22 +77,9 @@ function(iv_add_runtime_module target)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=0)
     endif()
 
-    # The loader generates only IV-specific build glue. A custom CMakeLists.txt
-    # remains authoritative for ordinary sources/libraries/settings. Rewriter
-    # compile-database targets link the same interface settings target, so
-    # settings added by custom CMake are visible to both rewriting and final
-    # compilation.
-    if(DEFINED IV_MODULE_GENERATED_CMAKE AND NOT IV_MODULE_GENERATED_CMAKE STREQUAL "")
-        if(NOT EXISTS "${IV_MODULE_GENERATED_CMAKE}")
-            message(FATAL_ERROR "IV_MODULE_GENERATED_CMAKE does not exist: ${IV_MODULE_GENERATED_CMAKE}")
-        endif()
-        set(IV_MODULE_DEFINITION_COMPILE_SETTINGS_TARGET ${target}__compile_settings)
-        include("${IV_MODULE_GENERATED_CMAKE}")
-    endif()
-
     add_library(${target} SHARED ${IV_MODULE_EXPORT_FILE} ${IVM_SOURCES})
     set_target_properties(${target} PROPERTIES
-        CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+        CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES
         OUTPUT_NAME ${IV_MODULE_OUTPUT_NAME}
         RUNTIME_OUTPUT_DIRECTORY ${IV_MODULE_OUTPUT_DIR}
@@ -101,10 +93,15 @@ function(iv_add_runtime_module target)
     if(TARGET iv_module_shared)
         target_link_libraries(${target} PRIVATE iv_module_shared)
     endif()
-    if(TARGET iv_module_definitions)
-        add_dependencies(${target} iv_module_definitions)
+
+    # dsl.h owns the compile-time graph authoring surface and transitively pulls
+    # in the heavy builder implementation. Precompile it by default for runtime
+    # module builds; callers can explicitly set IV_MODULE_PCH_HEADER to an empty
+    # string to opt out.
+    if(NOT DEFINED IV_MODULE_PCH_HEADER)
+        set(IV_MODULE_PCH_HEADER "${IV_SOURCE_DIR}/module/template/module_pch.h")
     endif()
-    if(DEFINED IV_MODULE_PCH_HEADER AND NOT IV_MODULE_PCH_HEADER STREQUAL "")
-        target_precompile_headers(${target} PRIVATE ${IV_MODULE_PCH_HEADER})
+    if(NOT IV_MODULE_PCH_HEADER STREQUAL "")
+        target_precompile_headers(${target} PRIVATE "${IV_MODULE_PCH_HEADER}")
     endif()
 endfunction()

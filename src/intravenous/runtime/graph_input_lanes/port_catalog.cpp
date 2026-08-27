@@ -1,5 +1,7 @@
 #include <intravenous/runtime/graph_input_lanes/port_catalog.h>
 
+#include <intravenous/graph/names.h>
+
 #include <ranges>
 #include <charconv>
 
