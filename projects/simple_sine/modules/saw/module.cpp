@@ -42,14 +42,15 @@ consteval void simple_sine(iv::GraphBuilder& g)
 {
     // auto const phase = g.node<PhaseIntegrator>();
     auto const tt = g.node<FunNode, stereo>();
-    auto const f = g.node<Constant, stereo>(220);
+    auto const f = g.input(220, 0, 1000);
     auto const voice = g.node<SawOscillator, stereo>();
-    auto const p = g.tile<stereo>(f[stereo::left] + 2.5, f[stereo::right] - 2.5);
+    auto const c = g.input(2.5, 0, 100);
+    auto const p = f + g.tile<stereo>(+c, -c);
 
     voice(
         "frequency"_P = p);
         // "phase_offset"_P = phase);
 
     // auto const res = voice * g.node<Constant, stereo>(0.1);// * tt;
-    g.outputs(voice * 0.1 * tt);
+    g.outputs(voice * 0.1);
 }
