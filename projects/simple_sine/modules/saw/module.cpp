@@ -38,13 +38,13 @@ struct FunNode
     }
 };
 
-consteval void simple_sine(iv::GraphBuilder& g)
+consteval void module_main(iv::GraphBuilder& g)
 {
     // auto const phase = g.node<PhaseIntegrator>();
     auto const tt = g.node<FunNode, stereo>();
-    auto const f = g.input(220, 0, 1000);
+    auto const f = g.input<"freq">(220, 0, 1000);
     auto const voice = g.node<SawOscillator, stereo>();
-    auto const c = g.input(2.5, 0, 100);
+    auto const c = g.input<"detune">(2.5, -100, 100);
     auto const p = f + g.tile<stereo>(+c, -c);
 
     voice(

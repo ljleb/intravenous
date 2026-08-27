@@ -373,6 +373,20 @@ namespace iv {
         }
     }
 
+    template<class N>
+    requires (SamplePortLike<N>)
+    consteval auto operator+(N&& n)
+    {
+        return std::forward<N>(n);
+    }
+
+    template<class N>
+    requires (SamplePortLike<N>)
+    consteval auto operator-(N&& n)
+    {
+        return 0 - std::forward<N>(n);
+    }
+
     template<class L, class R>
     requires (
         (SamplePortLike<L> || ScalarLike<L>) &&
