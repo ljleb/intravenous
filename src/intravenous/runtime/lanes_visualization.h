@@ -74,6 +74,7 @@ public:
 
     void handle_lane_views_updated(LaneViewResult const &update);
     void handle_lane_view_closed(InternedString view_id);
+    void handle_lane_view_closed(std::string const &view_id);
     void handle_task_runner_after_pass(TasksRunnerAfterPass const &finished);
     void publish_now();
 };

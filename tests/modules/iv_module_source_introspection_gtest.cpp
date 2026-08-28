@@ -39,6 +39,19 @@ struct SeededIvModuleSourceIntrospectionApp {
     iv::LaneFilters lane_filters;
     iv::IvModuleSourceIntrospection introspection;
     iv::StartupConfig startup_config;
+    iv::timeline_lane_filters_bridge::scope timeline_lane_filters_scope;
+    iv::iv_module_definitions_iv_module_instances_bridge::scope
+        iv_module_definitions_iv_module_instances_scope;
+    iv::iv_module_instances_iv_module_definitions_bridge::scope
+        iv_module_instances_iv_module_definitions_scope;
+    iv::iv_module_definitions_iv_module_source_introspection_bridge::scope
+        iv_module_definitions_iv_module_source_introspection_scope;
+    iv::iv_module_instances_iv_module_source_introspection_bridge::scope
+        iv_module_instances_iv_module_source_introspection_scope;
+    iv::iv_module_instances_graph_input_lanes_bridge::scope
+        iv_module_instances_graph_input_lanes_scope;
+    iv::iv_module_source_introspection_graph_input_lanes_bridge::scope
+        iv_module_source_introspection_graph_input_lanes_scope;
 
     SeededIvModuleSourceIntrospectionApp(
         std::filesystem::path workspace_root,
@@ -47,27 +60,28 @@ struct SeededIvModuleSourceIntrospectionApp {
         : startup_config(
               std::move(workspace_root),
               std::move(discovery_start),
-              std::move(extra_search_roots))
+              std::move(extra_search_roots)),
+          timeline_lane_filters_scope(timeline, lane_filters),
+          iv_module_definitions_iv_module_instances_scope(definitions, instances),
+          iv_module_instances_iv_module_definitions_scope(instances, definitions),
+          iv_module_definitions_iv_module_source_introspection_scope(
+              definitions,
+              introspection),
+          iv_module_instances_iv_module_source_introspection_scope(
+              instances,
+              introspection),
+          iv_module_instances_graph_input_lanes_scope(
+              instances,
+              graph_input_lanes),
+          iv_module_source_introspection_graph_input_lanes_scope(
+              introspection,
+              graph_input_lanes)
     {
         iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
-        iv::bind_iv_module_instances_iv_module_definitions_bridge(definitions);
-        iv::bind_iv_module_definitions_iv_module_instances_bridge(instances);
-        iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-        iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
-        iv::bind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
-        iv::bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
-        iv::bind_timeline_lane_filters_bridge(lane_filters);
     }
 
     ~SeededIvModuleSourceIntrospectionApp()
     {
-        iv::unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
-        iv::unbind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
-        iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
-        iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-        iv::unbind_iv_module_definitions_iv_module_instances_bridge(instances);
-        iv::unbind_iv_module_instances_iv_module_definitions_bridge(definitions);
-        iv::unbind_timeline_lane_filters_bridge(lane_filters);
         iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
     }
 

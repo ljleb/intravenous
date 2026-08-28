@@ -32,8 +32,22 @@ struct BoundIvModuleSourceIntrospection {
     iv::GraphInputLanes graph_input_lanes;
     iv::LaneFilters lane_filters;
     iv::LaneViews lane_views;
-    iv::IvModuleSourceIntrospection introspection;
     iv::StartupConfig startup_config;
+    iv::IvModuleSourceIntrospection introspection;
+    iv::lane_filters_lane_views_bridge::scope lane_filters_lane_views_scope;
+    iv::timeline_lane_filters_bridge::scope timeline_lane_filters_scope;
+    iv::iv_module_definitions_iv_module_instances_bridge::scope
+        iv_module_definitions_iv_module_instances_scope;
+    iv::iv_module_instances_iv_module_definitions_bridge::scope
+        iv_module_instances_iv_module_definitions_scope;
+    iv::iv_module_definitions_iv_module_source_introspection_bridge::scope
+        iv_module_definitions_iv_module_source_introspection_scope;
+    iv::iv_module_instances_iv_module_source_introspection_bridge::scope
+        iv_module_instances_iv_module_source_introspection_scope;
+    iv::iv_module_instances_graph_input_lanes_bridge::scope
+        iv_module_instances_graph_input_lanes_scope;
+    iv::iv_module_source_introspection_graph_input_lanes_bridge::scope
+        iv_module_source_introspection_graph_input_lanes_scope;
 
     static iv::IvModuleReloadedDefinition load_definition(
         iv::StartupConfigState const &config,
@@ -51,29 +65,35 @@ struct BoundIvModuleSourceIntrospection {
         : startup_config(
               std::move(workspace_root),
               std::move(discovery_start),
-              std::vector<std::filesystem::path>(std::move(extra_search_roots)))
+              std::vector<std::filesystem::path>(std::move(extra_search_roots))),
+          lane_filters_lane_views_scope(
+              &lane_filters,
+              &lane_views),
+          timeline_lane_filters_scope(timeline, lane_filters),
+          iv_module_definitions_iv_module_instances_scope(
+                iv_module_definitions,
+                iv_module_instances),
+          iv_module_instances_iv_module_definitions_scope(
+              iv_module_instances,
+              iv_module_definitions),
+          iv_module_definitions_iv_module_source_introspection_scope(
+              iv_module_definitions,
+              introspection),
+          iv_module_instances_iv_module_source_introspection_scope(
+              iv_module_instances,
+              introspection),
+          iv_module_instances_graph_input_lanes_scope(
+              iv_module_instances,
+              graph_input_lanes),
+          iv_module_source_introspection_graph_input_lanes_scope(
+              introspection,
+              graph_input_lanes)
     {
         iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
-        iv::bind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
-        iv::bind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
-        iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
-        iv::bind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
-        iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-        iv::bind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
-        iv::bind_timeline_lane_filters_bridge(lane_filters);
-        iv::bind_lane_filters_lane_views_bridge(lane_filters, lane_views);
     }
 
     ~BoundIvModuleSourceIntrospection()
     {
-        iv::unbind_lane_filters_lane_views_bridge(lane_filters, lane_views);
-        iv::unbind_timeline_lane_filters_bridge(lane_filters);
-        iv::unbind_iv_module_source_introspection_graph_input_lanes_bridge(graph_input_lanes);
-        iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-        iv::unbind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
-        iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
-        iv::unbind_iv_module_definitions_iv_module_instances_bridge(iv_module_instances);
-        iv::unbind_iv_module_instances_iv_module_definitions_bridge(iv_module_definitions);
         iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
     }
 

@@ -6,6 +6,10 @@
 #include <optional>
 
 namespace iv {
+class SocketRpcAckResponseBuilder;
+struct DisableProjectAutosaveRequest;
+struct EnableProjectAutosaveRequest;
+
     class ProjectAutosave {
     public:
         using Clock = std::chrono::steady_clock;
@@ -27,6 +31,12 @@ namespace iv {
         void project_loaded(TimePoint now = Clock::now());
         void project_state_changed(TimePoint now = Clock::now());
         void set_enabled(bool enabled, TimePoint now = Clock::now());
+        void handle_socket_rpc_enable_project_autosave(
+            EnableProjectAutosaveRequest const &request,
+            SocketRpcAckResponseBuilder &builder);
+        void handle_socket_rpc_disable_project_autosave(
+            DisableProjectAutosaveRequest const &request,
+            SocketRpcAckResponseBuilder &builder);
         [[nodiscard]] bool enabled() const;
         [[nodiscard]] bool take_due_save(TimePoint now = Clock::now());
         // Claim an outstanding save without waiting for the debounce timer.

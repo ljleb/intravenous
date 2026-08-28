@@ -6,63 +6,17 @@
 #include <intravenous/runtime/timeline_execution_events.h>
 
 namespace iv {
-namespace {
-TimelineExecution *bound_execution = nullptr;
-AudioDeviceLanes *bound_audio_device_lanes = nullptr;
-
-void handle_set_realtime_start_index(size_t start_index)
-{
-    if (bound_execution == nullptr) {
-        return;
-    }
-    bound_execution->set_realtime_start_index(start_index);
-}
-
-void handle_seek(SeekRequest const &request)
-{
-    if (bound_audio_device_lanes != nullptr) {
-        bound_audio_device_lanes->seek_realtime_start_index(request.sample_index);
-    }
-}
-
-void handle_timeline_resumed(TimelineExecutionResumed const &resumed)
-{
-    if (bound_audio_device_lanes != nullptr) {
-        bound_audio_device_lanes->seek_realtime_start_index(resumed.start_index);
-    }
-}
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    TimelineExecutionResumedEvent,
+IV_DEFINE_BRIDGE(audio_device_lanes_timeline_execution_bridge)
+IV_SUBSCRIBE_BRIDGE(
+    audio_device_lanes_timeline_execution_bridge,
     iv_runtime_timeline_execution_resumed_event,
-    handle_timeline_resumed);
-IV_SUBSCRIBE_LINKER_EVENT(
-    SeekEvent,
+    &AudioDeviceLanes::handle_timeline_execution_resumed);
+IV_SUBSCRIBE_BRIDGE(
+    audio_device_lanes_timeline_execution_bridge,
     iv_runtime_seek_event,
-    handle_seek);
-IV_SUBSCRIBE_LINKER_EVENT(
-    AudioDeviceLanesSetRealtimeStartIndexEvent,
+    &AudioDeviceLanes::handle_seek);
+IV_SUBSCRIBE_BRIDGE(
+    audio_device_lanes_timeline_execution_bridge,
     iv_runtime_audio_device_lanes_set_realtime_start_index_event,
-    handle_set_realtime_start_index);
-} // namespace
-
-void bind_audio_device_lanes_timeline_execution_bridge(
-    AudioDeviceLanes &audio_device_lanes,
-    TimelineExecution &execution)
-{
-    bound_audio_device_lanes = &audio_device_lanes;
-    bound_execution = &execution;
-}
-
-void unbind_audio_device_lanes_timeline_execution_bridge(
-    AudioDeviceLanes const &audio_device_lanes,
-    TimelineExecution const &execution)
-{
-    if (bound_execution == &execution) {
-        bound_execution = nullptr;
-    }
-    if (bound_audio_device_lanes == &audio_device_lanes) {
-        bound_audio_device_lanes = nullptr;
-    }
-}
+    &TimelineExecution::set_realtime_start_index);
 } // namespace iv

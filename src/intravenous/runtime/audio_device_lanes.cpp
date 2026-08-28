@@ -1,5 +1,7 @@
 #include <intravenous/runtime/audio_device_lanes.h>
 
+#include <intravenous/runtime/timeline_execution_events.h>
+
 #include <intravenous/runtime/audio_device_lane_nodes.h>
 #include <intravenous/runtime/audio_device_lanes_events.h>
 #include <intravenous/runtime/timeline_execution_events.h>
@@ -489,6 +491,17 @@ void AudioDeviceLanes::seek_realtime_start_index(size_t sample_index)
     output_reservoir_.clear();
     output_reservoir_read_offset_ = 0;
     pending_output_request_.reset();
+}
+
+void AudioDeviceLanes::handle_seek(SeekRequest const &request)
+{
+    seek_realtime_start_index(request.sample_index);
+}
+
+void AudioDeviceLanes::handle_timeline_execution_resumed(
+    TimelineExecutionResumed const &resumed)
+{
+    seek_realtime_start_index(resumed.start_index);
 }
 
 void AudioDeviceLanes::replace_output_device(

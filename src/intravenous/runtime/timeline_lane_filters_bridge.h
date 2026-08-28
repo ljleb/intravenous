@@ -1,8 +1,10 @@
 #pragma once
 
+#include <intravenous/bridge.h>
+
 namespace iv {
 class LaneFilters;
+class Timeline;
 
-void bind_timeline_lane_filters_bridge(LaneFilters &lane_filters);
-void unbind_timeline_lane_filters_bridge(LaneFilters const &lane_filters);
+IV_DECLARE_BRIDGE(timeline_lane_filters_bridge, Timeline, LaneFilters);
 } // namespace iv

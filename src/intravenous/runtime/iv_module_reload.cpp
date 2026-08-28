@@ -1,5 +1,7 @@
 #include <intravenous/runtime/iv_module_reload.h>
 
+#include <intravenous/runtime/task_runner_events.h>
+
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
 
@@ -283,5 +285,12 @@ void IvModuleReload::apply_pending_results()
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_iv_module_reload_results_event,
         results);
+}
+
+void IvModuleReload::handle_task_runner_before_pass(TasksRunnerBeforePass const &)
+{
+    if (has_pending_results()) {
+        apply_pending_results();
+    }
 }
 } // namespace iv

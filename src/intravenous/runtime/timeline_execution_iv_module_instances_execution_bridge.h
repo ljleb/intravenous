@@ -3,11 +3,11 @@
 #include <intravenous/bridge.h>
 
 namespace iv {
-class IvModuleInstances;
+class TimelineExecution;
 class IvModuleInstancesExecution;
 
 IV_DECLARE_BRIDGE(
-    iv_module_instances_iv_module_instances_execution_bridge,
-    IvModuleInstances,
+    timeline_execution_iv_module_instances_execution_bridge,
+    TimelineExecution,
     IvModuleInstancesExecution);
-}
+} // namespace iv

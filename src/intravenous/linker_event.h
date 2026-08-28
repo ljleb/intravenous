@@ -1,7 +1,6 @@
 #pragma once
 
 #include <span>
-#include <utility>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define IV_LINKER_EVENT_USED __attribute__((used))
@@ -17,9 +16,11 @@
 #define IV_LINKER_EVENT_CONCAT(a, b) IV_LINKER_EVENT_CONCAT_INNER(a, b)
 
 #define IV_DECLARE_LINKER_EVENT(event_type, event_name) \
+    using event_name##_subscriber_type = event_type; \
     std::span<event_type const> event_name##_subscribers()
 
 #define IV_DECLARE_SINGLETON_EVENT(event_type, event_name) \
+    using event_name##_subscriber_type = event_type; \
     extern "C" event_type event_name; \
     inline event_type event_name##_subscriber() { return event_name; }
 
@@ -49,6 +50,8 @@
         return {begin, end}; \
     }
 
+// Legacy multicast subscribe. Migrate all call sites to IV_SUBSCRIBE_BRIDGE
+// before this macro is removed.
 #define IV_SUBSCRIBE_LINKER_EVENT(event_type, event_name, ...) \
     namespace { \
         alignas(event_type) IV_LINKER_EVENT_USED \

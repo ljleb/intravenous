@@ -314,7 +314,10 @@ TEST(Integration, StartupConfigDefinitionsAndIvModuleSourceIntrospectionInitiali
     auto const startup = startup_config.initialize();
     iv::IvModuleDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
-    iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
+    auto iv_module_definitions_iv_module_source_introspection_scope =
+        iv::iv_module_definitions_iv_module_source_introspection_bridge::bind(
+            definitions,
+            introspection);
 
     auto const loaded = iv::test_support::BoundIvModuleSourceIntrospection::load_definition(
         startup,
@@ -325,7 +328,6 @@ TEST(Integration, StartupConfigDefinitionsAndIvModuleSourceIntrospectionInitiali
 
     ASSERT_FALSE(result.source_spans.empty());
 
-    iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
 }
 
 TEST(Integration, InstancesDefinitionsReloadAndGraphInputLanesInitializeAndShutdown)
@@ -363,13 +365,22 @@ namespace {
     iv::LaneViews lane_views;
 
     iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
-    iv::bind_timeline_lane_filters_bridge(lane_filters);
-    iv::bind_lane_filters_lane_views_bridge(lane_filters, lane_views);
-    iv::bind_iv_module_instances_iv_module_definitions_bridge(definitions);
-    iv::bind_iv_module_definitions_iv_module_instances_bridge(instances);
-    iv::bind_iv_module_definitions_iv_module_reload_bridge(reload);
-    iv::bind_iv_module_reload_iv_module_definitions_bridge(definitions);
-    iv::bind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
+    auto timeline_lane_filters_scope =
+        iv::timeline_lane_filters_bridge::bind(timeline, lane_filters);
+    auto lane_filters_lane_views_scope =
+        iv::lane_filters_lane_views_bridge::bind(&lane_filters, &lane_views);
+    auto iv_module_instances_iv_module_definitions_scope =
+        iv::iv_module_instances_iv_module_definitions_bridge::bind(instances, definitions);
+    auto iv_module_definitions_iv_module_instances_scope =
+        iv::iv_module_definitions_iv_module_instances_bridge::bind(definitions, instances);
+    auto iv_module_definitions_iv_module_reload_scope =
+        iv::iv_module_definitions_iv_module_reload_bridge::bind(definitions, reload);
+    auto iv_module_reload_iv_module_definitions_scope =
+        iv::iv_module_reload_iv_module_definitions_bridge::bind(reload, definitions);
+    auto iv_module_instances_graph_input_lanes_scope =
+        iv::iv_module_instances_graph_input_lanes_bridge::bind(
+            instances,
+            graph_input_lanes);
 
     IntegrationReloadWitness reload_witness;
     g_integration_reload_witness = &reload_witness;
@@ -465,13 +476,6 @@ namespace {
     EXPECT_TRUE(lane_names.contains("frequency"));
     g_integration_lane_view_updates = nullptr;
 
-    iv::unbind_iv_module_instances_graph_input_lanes_bridge(graph_input_lanes);
-    iv::unbind_iv_module_reload_iv_module_definitions_bridge(definitions);
-    iv::unbind_iv_module_definitions_iv_module_reload_bridge(reload);
-    iv::unbind_iv_module_definitions_iv_module_instances_bridge(instances);
-    iv::unbind_iv_module_instances_iv_module_definitions_bridge(definitions);
-    iv::unbind_lane_filters_lane_views_bridge(lane_filters, lane_views);
-    iv::unbind_timeline_lane_filters_bridge(lane_filters);
     iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
 }
 

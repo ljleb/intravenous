@@ -26,6 +26,14 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
+    template <class Request>
+    void iv_bridge_invoke_disconnected(
+        Request const &,
+        SocketRpcAckResponseBuilder &builder)
+    {
+        builder.fail("runtime project event was not handled");
+    }
+
     class SocketRpcGraphQueryResultBuilder {
         int error_code = -32000;
         std::string error_message;
@@ -182,6 +190,22 @@ namespace iv {
 
         [[nodiscard]] std::string build(int request_id) const;
     };
+
+    template <class Request>
+    void iv_bridge_invoke_disconnected(
+        Request const &,
+        SocketRpcLaneQuerySchemaResultBuilder &builder)
+    {
+        builder.fail("lane query schema service is unavailable");
+    }
+
+    template <class Request>
+    void iv_bridge_invoke_disconnected(
+        Request const &,
+        SocketRpcLaneQueryCompletionResultBuilder &builder)
+    {
+        builder.fail("lane query schema service is unavailable");
+    }
 
     class SocketRpcLaneTypesResultBuilder {
         int error_code = -32000;

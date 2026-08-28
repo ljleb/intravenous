@@ -17,6 +17,8 @@
 #include <vector>
 
 namespace iv {
+struct SeekRequest;
+struct TimelineExecutionResumed;
 
 struct AudioDeviceLanesBackend {
     std::function<std::vector<AudioDeviceDescriptor>()> list_output_devices {};
@@ -122,6 +124,8 @@ public:
     [[nodiscard]] InternedString output_lane_external_id() const;
     [[nodiscard]] InternedString input_lane_external_id() const;
     void seek_realtime_start_index(size_t sample_index);
+    void handle_seek(SeekRequest const &request);
+    void handle_timeline_execution_resumed(TimelineExecutionResumed const &resumed);
 
     void handle_task_runner_before_pass(TasksRunnerBeforePass const &pass);
     void handle_task_runner_after_pass(TasksRunnerAfterPass const &pass);

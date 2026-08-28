@@ -278,8 +278,16 @@ public:
     void handle_iv_module_instance_builders_changed(
         IvModuleInstanceBuildersChanged const &diff,
         IvModuleInstanceBuildersAckBuilder *ack_builder = nullptr);
+    void handle_iv_module_instance_builders_changed(
+        IvModuleInstanceBuildersChanged const &diff,
+        IvModuleInstanceBuildersAckBuilder &ack_builder);
     std::vector<IvModuleSourceIntrospectionLiveInputSnapshot> collect_live_input_snapshots(
         std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &requests);
+    void handle_iv_module_source_introspection_live_input_snapshots_requested(
+        std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &requests,
+        IvModuleSourceIntrospectionLiveInputSnapshotsBuilder &builder);
+    void handle_iv_module_source_introspection_authored_state_snapshot_requested(
+        IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder &builder);
     void set_sample_input_value(
         ProjectSetSampleInputValueRequest const &request);
     void set_sample_input_state(

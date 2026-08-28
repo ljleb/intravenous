@@ -1,5 +1,7 @@
 #include <intravenous/runtime/project_autosave.h>
 
+#include <intravenous/runtime/socket_rpc_server.h>
+
 namespace iv {
 void ProjectAutosave::project_loaded(TimePoint)
 {
@@ -33,6 +35,20 @@ void ProjectAutosave::set_enabled(bool enabled, TimePoint now)
     } else if (project_loaded_ && revision_ != saving_revision_ && !save_in_flight_) {
         due_at_ = now;
     }
+}
+
+void ProjectAutosave::handle_socket_rpc_enable_project_autosave(
+    EnableProjectAutosaveRequest const &,
+    SocketRpcAckResponseBuilder &)
+{
+    set_enabled(true);
+}
+
+void ProjectAutosave::handle_socket_rpc_disable_project_autosave(
+    DisableProjectAutosaveRequest const &,
+    SocketRpcAckResponseBuilder &)
+{
+    set_enabled(false);
 }
 
 bool ProjectAutosave::enabled() const

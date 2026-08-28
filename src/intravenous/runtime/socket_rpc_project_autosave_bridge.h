@@ -3,11 +3,11 @@
 #include <intravenous/bridge.h>
 
 namespace iv {
-class LaneQuerySchemaService;
+class ProjectAutosave;
 class SocketRpcServer;
 
 IV_DECLARE_BRIDGE(
-    socket_rpc_lane_query_completion_bridge,
+    socket_rpc_project_autosave_bridge,
     SocketRpcServer,
-    LaneQuerySchemaService);
+    ProjectAutosave);
 } // namespace iv

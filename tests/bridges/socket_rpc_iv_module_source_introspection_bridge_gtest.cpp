@@ -76,6 +76,14 @@ struct SeededIvModuleSourceIntrospectionOwner {
     GraphInputLanes graph_input_lanes;
     IvModuleSourceIntrospection introspection;
     StartupConfig startup_config;
+    iv_module_definitions_iv_module_instances_bridge::scope
+        iv_module_definitions_iv_module_instances_scope;
+    iv_module_instances_iv_module_definitions_bridge::scope
+        iv_module_instances_iv_module_definitions_scope;
+    iv_module_definitions_iv_module_source_introspection_bridge::scope
+        iv_module_definitions_iv_module_source_introspection_scope;
+    iv_module_instances_iv_module_source_introspection_bridge::scope
+        iv_module_instances_iv_module_source_introspection_scope;
 
     SeededIvModuleSourceIntrospectionOwner(
         std::filesystem::path workspace_root,
@@ -84,7 +92,15 @@ struct SeededIvModuleSourceIntrospectionOwner {
         : startup_config(
               std::move(workspace_root),
               std::move(discovery_start),
-              std::move(extra_search_roots))
+              std::move(extra_search_roots)),
+          iv_module_definitions_iv_module_instances_scope(definitions, instances),
+          iv_module_instances_iv_module_definitions_scope(instances, definitions),
+          iv_module_definitions_iv_module_source_introspection_scope(
+              definitions,
+              introspection),
+          iv_module_instances_iv_module_source_introspection_scope(
+              instances,
+              introspection)
     {
     }
 
@@ -92,10 +108,6 @@ struct SeededIvModuleSourceIntrospectionOwner {
 
     void initialize()
     {
-        bind_iv_module_instances_iv_module_definitions_bridge(definitions);
-        bind_iv_module_definitions_iv_module_instances_bridge(instances);
-        bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
-        bind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
         auto const startup = startup_config.initialize();
         auto const module_root =
             std::filesystem::weakly_canonical(startup.workspace_root);
@@ -109,10 +121,6 @@ struct SeededIvModuleSourceIntrospectionOwner {
 
     void shutdown()
     {
-        unbind_iv_module_instances_iv_module_source_introspection_bridge(introspection);
-        unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
-        unbind_iv_module_definitions_iv_module_instances_bridge(instances);
-        unbind_iv_module_instances_iv_module_definitions_bridge(definitions);
     }
 };
 } // namespace

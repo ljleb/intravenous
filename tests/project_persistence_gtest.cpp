@@ -17,6 +17,7 @@
 #include <intravenous/runtime/runtime_project_lane_views_bridge.h>
 #include <intravenous/runtime/runtime_project_timeline_execution_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
 
@@ -346,7 +347,6 @@ TEST_F(ProjectPersistenceTest, OverrideParsingAppliesTypedOverridesAcrossOwnersA
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
     iv::bind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
     iv::bind_runtime_project_iv_module_reload_bridge(reload);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
 
@@ -366,7 +366,6 @@ TEST_F(ProjectPersistenceTest, OverrideParsingAppliesTypedOverridesAcrossOwnersA
     EXPECT_EQ(witness.messages.front().level, "warning");
     EXPECT_TRUE(witness.messages.front().message.contains("unknown_key"));
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_iv_module_reload_bridge(reload);
     iv::unbind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
@@ -394,7 +393,6 @@ TEST_F(ProjectPersistenceTest, OverrideParsingDefaultAndUnknownOnlyDoNotMutateSt
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
     iv::bind_runtime_project_iv_module_reload_bridge(reload);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
 
@@ -403,7 +401,6 @@ TEST_F(ProjectPersistenceTest, OverrideParsingDefaultAndUnknownOnlyDoNotMutateSt
     ASSERT_EQ(witness.messages.size(), 1u);
     EXPECT_EQ(witness.messages.front().level, "warning");
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_iv_module_reload_bridge(reload);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
 }
@@ -431,7 +428,6 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLa
     iv::ProjectPersistence persistence(workspace, startup);
 
     iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
 
@@ -442,7 +438,6 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidRecognizedKeyLogsErrorAndLa
     EXPECT_EQ(witness.messages.front().level, "error");
     EXPECT_TRUE(witness.messages.front().message.contains("compiled_sample_cache_chunk_size_multiplier"));
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
 
@@ -532,7 +527,6 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogError
         witness.messages.clear();
 
         iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
-        iv::bind_project_persistence_bridge(persistence);
 
         persistence.load();
 
@@ -543,7 +537,6 @@ TEST_F(ProjectPersistenceTest, OverrideParsingInvalidSupportedFieldTypesLogError
         EXPECT_TRUE(witness.messages.front().message.contains(cases[i].expected_message_fragment))
             << cases[i].name;
 
-        iv::unbind_project_persistence_bridge(persistence);
         iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
     }
 }
@@ -717,7 +710,6 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRe
 
     iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
 
@@ -726,7 +718,6 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMissingInstanceMutationAndRe
     EXPECT_EQ(witness.messages.front().level, "error");
     EXPECT_TRUE(witness.messages.front().message.contains("missing"));
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
     iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
@@ -776,7 +767,6 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
 
     iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
 
@@ -786,7 +776,6 @@ TEST_F(ProjectPersistenceTest, ReplayKeepsGoingAfterMiddleCommandFailure)
     EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
     EXPECT_TRUE(witness.messages.front().message.contains("missing"));
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
     iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
@@ -817,7 +806,6 @@ TEST_F(ProjectPersistenceTest, UnknownOverrideKeysWarnAndDoNotBlockLaterCommands
     iv::ProjectPersistence persistence(workspace, startup);
 
     iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
 
@@ -826,7 +814,6 @@ TEST_F(ProjectPersistenceTest, UnknownOverrideKeysWarnAndDoNotBlockLaterCommands
     EXPECT_EQ(count_messages_with_level(witness.messages, "warning"), 2u);
     EXPECT_EQ(count_messages_with_level(witness.messages, "error"), 0u);
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
 
@@ -905,7 +892,6 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     iv::bind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
     iv::bind_runtime_project_iv_module_reload_bridge(reload);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.save();
     auto const original = read_text(workspace / "iv_project.jsonl");
@@ -920,7 +906,6 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
             && command["args"]["lane_id"] == transient_lane_id.str();
     }));
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_iv_module_reload_bridge(reload);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
     iv::unbind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
@@ -942,7 +927,6 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
     iv::bind_runtime_project_audio_device_lanes_bridge(fresh_audio_device_lanes);
     iv::bind_runtime_project_lane_views_bridge(fresh_lane_views);
     iv::bind_runtime_project_iv_module_reload_bridge(fresh_reload);
-    iv::bind_project_persistence_bridge(fresh_persistence);
 
     fresh_persistence.load();
     fresh_persistence.save();
@@ -962,7 +946,6 @@ TEST_F(ProjectPersistenceTest, SaveLoadSaveRoundTripIsStableForCoreState)
         fresh_timeline.lane_sample_channel_type(*fresh_timeline.resolve_public_lane_id(intern("lane-b"))),
         std::optional<iv::ChannelTypeId>(iv::ChannelTypeId::stereo));
 
-    iv::unbind_project_persistence_bridge(fresh_persistence);
     iv::unbind_runtime_project_iv_module_reload_bridge(fresh_reload);
     iv::unbind_runtime_project_lane_views_bridge(fresh_lane_views);
     iv::unbind_runtime_project_audio_device_lanes_bridge(fresh_audio_device_lanes);
@@ -1199,7 +1182,6 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersConnectionUntilLa
     iv::ProjectPersistence persistence(workspace, startup);
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
 
@@ -1220,7 +1202,6 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersConnectionUntilLa
     EXPECT_EQ(timeline.lane_public_id(connections.front().target).str(), "lane-b");
     EXPECT_TRUE(timeline.pending_public_connections().empty());
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
 }
 
@@ -1238,7 +1219,6 @@ TEST_F(ProjectPersistenceTest, SavingKeepsPendingTimelineConnections)
     ASSERT_EQ(timeline.pending_public_connections().size(), 1u);
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
-    iv::bind_project_persistence_bridge(persistence);
     persistence.save();
 
     auto const commands = parse_project_file(workspace / "iv_project.jsonl");
@@ -1248,7 +1228,6 @@ TEST_F(ProjectPersistenceTest, SavingKeepsPendingTimelineConnections)
             && command["args"]["target_lane_id"] == "future-target";
     }));
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
 }
 
@@ -1288,7 +1267,6 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersUntilTargetExists
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
 
@@ -1303,7 +1281,6 @@ TEST_F(ProjectPersistenceTest, TimelineConnectivityReplayDefersUntilTargetExists
     ASSERT_EQ(timeline.lane_connections().size(), 1u);
     EXPECT_TRUE(timeline.pending_public_connections().empty());
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
 }
@@ -1342,7 +1319,6 @@ TEST_F(ProjectPersistenceTest, TimelineLaneSampleChannelTypeFailureDoesNotStopLa
 
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
 
@@ -1350,7 +1326,6 @@ TEST_F(ProjectPersistenceTest, TimelineLaneSampleChannelTypeFailureDoesNotStopLa
     ASSERT_EQ(count_messages_with_level(witness.messages, "error"), 1u);
     EXPECT_TRUE(witness.messages.front().message.contains("does not produce samples"));
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);
 }
@@ -1372,7 +1347,9 @@ TEST_F(ProjectPersistenceTest, ProjectSaveWithNoContributorsWritesEmptyFile)
     auto const workspace = mutable_module_fixture_workspace("project_save_empty", "local_cmake");
     auto const startup = make_startup(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
-    iv::bind_project_persistence_bridge(persistence);
+    iv::SocketRpcServer server(workspace, -1);
+    auto bridge_scope =
+        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 
     iv::SocketRpcAckResponseBuilder builder;
     IV_INVOKE_LINKER_EVENT(
@@ -1384,7 +1361,6 @@ TEST_F(ProjectPersistenceTest, ProjectSaveWithNoContributorsWritesEmptyFile)
     EXPECT_EQ(response["result"]["ok"], true);
     EXPECT_EQ(read_text(workspace / "iv_project.jsonl"), "");
 
-    iv::unbind_project_persistence_bridge(persistence);
 }
 
 TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
@@ -1432,13 +1408,9 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
     iv::bind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
     iv::bind_runtime_project_graph_input_lanes_bridge(graph_input_lanes);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
-    iv::bind_project_persistence_bridge(persistence);
 
     iv::SocketRpcAckResponseBuilder builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_save_project_event,
-        iv::SaveProjectRequest{},
-        builder);
+    persistence.handle_socket_rpc_save_project({}, builder);
 
     auto const response = parse_json_line(builder.build(1));
     EXPECT_EQ(response["result"]["ok"], true);
@@ -1460,7 +1432,6 @@ TEST_F(ProjectPersistenceTest, ProjectSavePersistsCurrentMutatedRuntimeState)
             && command["args"]["node_id"] == graph_runtime_node_id;
     }));
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
     iv::unbind_runtime_project_graph_input_lanes_bridge(graph_input_lanes);
     iv::unbind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
@@ -1473,19 +1444,14 @@ TEST_F(ProjectPersistenceTest, ProjectSaveContributorExceptionReturnsError)
     auto const workspace = mutable_module_fixture_workspace("project_save_contributor_failure", "local_cmake");
     auto const startup = make_startup(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
-    iv::bind_project_persistence_bridge(persistence);
     g_throw_on_collect_state = true;
 
     iv::SocketRpcAckResponseBuilder builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_save_project_event,
-        iv::SaveProjectRequest{},
-        builder);
+    persistence.handle_socket_rpc_save_project({}, builder);
 
     auto const response = parse_json_line(builder.build(1));
     EXPECT_EQ(response["error"]["message"], "test contributor failure");
 
-    iv::unbind_project_persistence_bridge(persistence);
 }
 
 TEST_F(ProjectPersistenceTest, ProjectSaveWriteFailureReturnsError)
@@ -1495,19 +1461,14 @@ TEST_F(ProjectPersistenceTest, ProjectSaveWriteFailureReturnsError)
     std::filesystem::create_directory(workspace / "iv_project.jsonl");
     auto const startup = make_startup(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
-    iv::bind_project_persistence_bridge(persistence);
 
     iv::SocketRpcAckResponseBuilder builder;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_save_project_event,
-        iv::SaveProjectRequest{},
-        builder);
+    persistence.handle_socket_rpc_save_project({}, builder);
 
     auto const response = parse_json_line(builder.build(1));
     EXPECT_TRUE(
         response["error"]["message"].get<std::string>().contains("failed to replace"));
 
-    iv::unbind_project_persistence_bridge(persistence);
 }
 
 TEST_F(ProjectPersistenceTest, RepeatedProjectSaveIsIdempotent)
@@ -1520,23 +1481,15 @@ TEST_F(ProjectPersistenceTest, RepeatedProjectSaveIsIdempotent)
     iv::ProjectPersistence persistence(workspace, startup);
 
     iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
-    iv::bind_project_persistence_bridge(persistence);
 
     iv::SocketRpcAckResponseBuilder builder1;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_save_project_event,
-        iv::SaveProjectRequest{},
-        builder1);
+    persistence.handle_socket_rpc_save_project({}, builder1);
     auto const first = read_text(workspace / "iv_project.jsonl");
 
     iv::SocketRpcAckResponseBuilder builder2;
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_socket_rpc_save_project_event,
-        iv::SaveProjectRequest{},
-        builder2);
+    persistence.handle_socket_rpc_save_project({}, builder2);
     EXPECT_EQ(read_text(workspace / "iv_project.jsonl"), first);
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
 }
 
@@ -1596,7 +1549,6 @@ TEST_F(ProjectPersistenceTest, SavedIdsAreReusedAcrossLoadAndResave)
     iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
     iv::bind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
     iv::bind_runtime_project_lane_views_bridge(lane_views);
-    iv::bind_project_persistence_bridge(persistence);
 
     persistence.load();
     persistence.save();
@@ -1617,7 +1569,6 @@ TEST_F(ProjectPersistenceTest, SavedIdsAreReusedAcrossLoadAndResave)
     EXPECT_EQ(audio_device_lanes.input_lane_external_id().str(), "audio-in-fixed");
     EXPECT_TRUE(lane_views.active_view_requests().empty());
 
-    iv::unbind_project_persistence_bridge(persistence);
     iv::unbind_runtime_project_lane_views_bridge(lane_views);
     iv::unbind_runtime_project_audio_device_lanes_bridge(audio_device_lanes);
     iv::unbind_runtime_project_timeline_execution_bridge(execution);

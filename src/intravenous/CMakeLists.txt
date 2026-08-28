@@ -299,6 +299,7 @@ target_link_libraries(intravenous_runtime_runtime_project_events PRIVATE
 add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/authored_lanes.cpp
     runtime/audio_device_lanes.cpp
+    runtime/audio_device_lanes_iv_module_instances_execution_bridge.cpp
     runtime/audio_device_lanes_timeline_bridge.cpp
     runtime/audio_device_lanes_timeline_execution_bridge.cpp
     runtime/audio_input_synchronizer.cpp
@@ -310,6 +311,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/graph_input_lanes/lane_reconciler.cpp
     runtime/graph_input_lanes/port_catalog.cpp
     runtime/graph_input_lanes_events.cpp
+    runtime/graph_input_lanes_iv_module_instances_execution_bridge.cpp
     runtime/graph_input_lanes_timeline_bridge.cpp
     runtime/iv_module_definitions.cpp
     runtime/iv_module_definitions_builder_bridge.cpp
@@ -372,6 +374,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/task_runner_graph_input_lanes_bridge.cpp
     runtime/task_runner_iv_module_reload_bridge.cpp
     runtime/timeline_execution.cpp
+    runtime/timeline_execution_iv_module_instances_execution_bridge.cpp
     runtime/timeline_execution_lanes_visualization_bridge.cpp
     runtime/timeline_execution_task_runner_bridge.cpp
     runtime/timeline_lane_filters_bridge.cpp

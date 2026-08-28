@@ -16,6 +16,7 @@
 #include <vector>
 
 namespace iv {
+struct TasksRunnerBeforePass;
 struct IvModuleReloadedDefinition {
     std::string definition_id{};
     std::filesystem::path module_root{};
@@ -71,5 +72,6 @@ public:
     void reload_changed_definitions();
     [[nodiscard]] bool has_pending_results() const;
     void apply_pending_results();
+    void handle_task_runner_before_pass(TasksRunnerBeforePass const &pass);
 };
 } // namespace iv

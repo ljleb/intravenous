@@ -1,8 +1,10 @@
 #pragma once
 
+#include <intravenous/bridge.h>
+
 namespace iv {
+class LaneViews;
 class LanesVisualization;
 
-void bind_lane_views_lanes_visualization_bridge(LanesVisualization &visualization);
-void unbind_lane_views_lanes_visualization_bridge(LanesVisualization const &visualization);
+IV_DECLARE_BRIDGE(lane_views_lanes_visualization_bridge, LaneViews, LanesVisualization);
 } // namespace iv

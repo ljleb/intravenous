@@ -1,8 +1,13 @@
 #pragma once
 
+#include <intravenous/bridge.h>
+
 namespace iv {
+class LanesVisualization;
 class TimelineExecution;
 
-void bind_timeline_execution_lanes_visualization_bridge(TimelineExecution &execution);
-void unbind_timeline_execution_lanes_visualization_bridge(TimelineExecution const &execution);
+IV_DECLARE_BRIDGE(
+    timeline_execution_lanes_visualization_bridge,
+    TimelineExecution,
+    LanesVisualization);
 } // namespace iv

@@ -5,37 +5,10 @@
 #include <intravenous/runtime/timeline_execution_events.h>
 
 namespace iv {
-namespace {
-TimelineExecution *bound_execution = nullptr;
-TasksRunner *bound_runner = nullptr;
-
-void handle_timeline_execution_tasks_changed(VersionedTaskGraphUpdate const &update)
-{
-    if (!bound_execution || !bound_runner) {
-        return;
-    }
-    bound_runner->update_tasks(update);
-}
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    TimelineExecutionTasksChangedEvent,
+IV_DEFINE_BRIDGE(timeline_execution_task_runner_bridge)
+IV_SUBSCRIBE_BRIDGE(
+    timeline_execution_task_runner_bridge,
     iv_runtime_timeline_execution_tasks_changed_event,
-    handle_timeline_execution_tasks_changed);
-}
-
-void bind_timeline_execution_task_runner_bridge(TimelineExecution &execution, TasksRunner &runner)
-{
-    bound_execution = &execution;
-    bound_runner = &runner;
-}
-
-void unbind_timeline_execution_task_runner_bridge(TimelineExecution const &execution, TasksRunner const &runner)
-{
-    if (bound_execution == &execution) {
-        bound_execution = nullptr;
-    }
-    if (bound_runner == &runner) {
-        bound_runner = nullptr;
-    }
-}
-}
+    (static_cast<void (TasksRunner::*)(VersionedTaskGraphUpdate const &)>(
+        &TasksRunner::update_tasks)));
+} // namespace iv

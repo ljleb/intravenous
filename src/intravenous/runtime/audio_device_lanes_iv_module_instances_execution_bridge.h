@@ -3,11 +3,11 @@
 #include <intravenous/bridge.h>
 
 namespace iv {
-class IvModuleInstances;
+class AudioDeviceLanes;
 class IvModuleInstancesExecution;
 
 IV_DECLARE_BRIDGE(
-    iv_module_instances_iv_module_instances_execution_bridge,
-    IvModuleInstances,
+    audio_device_lanes_iv_module_instances_execution_bridge,
+    AudioDeviceLanes,
     IvModuleInstancesExecution);
-}
+} // namespace iv

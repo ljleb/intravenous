@@ -1,5 +1,9 @@
 #include <intravenous/runtime/iv_module_instances_execution.h>
 
+#include <intravenous/runtime/iv_module_instances_execution_events.h>
+#include <intravenous/runtime/task_runner_events.h>
+#include <intravenous/runtime/timeline_execution_events.h>
+
 namespace iv {
 namespace {
 ResourceContext resources_for(
@@ -295,6 +299,59 @@ IvModuleInstancesExecution::handle_runtime_dependencies_changed(
         .version_index = changed.version_index,
         .update = std::move(update),
     };
+}
+
+namespace {
+void publish_tasks_changed(VersionedTaskGraphUpdate const &update)
+{
+    if (update.update.to_create.empty()
+        && update.update.to_update.empty()
+        && update.update.to_delete.empty()) {
+        return;
+    }
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_instances_execution_tasks_changed_event,
+        update);
+}
+} // namespace
+
+void IvModuleInstancesExecution::handle_iv_module_instance_builders_completed(
+    IvModuleInstanceBuildersChanged const &changed)
+{
+    publish_tasks_changed(handle_instance_builders_changed(changed));
+}
+
+void IvModuleInstancesExecution::handle_graph_input_lanes_runtime_dependencies_changed(
+    GraphInputLanesRuntimeDependenciesChanged const &changed)
+{
+    publish_tasks_changed(handle_runtime_dependencies_changed(changed));
+}
+
+void IvModuleInstancesExecution::handle_pause(PauseRequest const &)
+{
+    set_follows_transport_playhead(false);
+}
+
+void IvModuleInstancesExecution::handle_resume(ResumeRequest const &)
+{
+    set_follows_transport_playhead(true);
+}
+
+void IvModuleInstancesExecution::handle_timeline_execution_resumed(
+    TimelineExecutionResumed const &resumed)
+{
+    resume(resumed.start_index);
+}
+
+void IvModuleInstancesExecution::handle_task_runner_after_pass(
+    TasksRunnerAfterPass const &pass)
+{
+    observe_completed_graph_revision(pass.graph_revision);
+    if (!pass.runner) return;
+    (void)pass.runner->activate_deferred_graph_after(
+        [this, graph_revision = pass.graph_revision] {
+            commit_prepared_reloads(graph_revision);
+        });
 }
 
 void IvModuleInstancesExecution::resume(size_t start_index)

@@ -529,6 +529,7 @@ void TasksRunner::coordinator_loop()
                     iv_runtime_task_runner_after_pass_event,
                     TasksRunnerAfterPass{
                         .graph_revision = current_revision,
+                        .runner = this,
                     });
                 lock.lock();
                 if (workers_should_exit_) {
@@ -591,7 +592,8 @@ void TasksRunner::coordinator_loop()
             iv_runtime_task_runner_after_pass_event,
             TasksRunnerAfterPass{
                 .graph_revision = current_revision,
-                });
+                .runner = this,
+            });
         lock.lock();
     }
 }

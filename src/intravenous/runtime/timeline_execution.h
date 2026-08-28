@@ -14,6 +14,10 @@
 #include <vector>
 
 namespace iv {
+class LanesVisualizationPlaybackPositionBuilder;
+class LanesVisualizationCompiledSampleWindowBuilder;
+class LanesVisualizationCompiledEventWindowBuilder;
+
 struct CompiledSupportChunkRange {
     size_t start_chunk_index = 0;
     size_t end_chunk_index = 0;
@@ -49,6 +53,19 @@ public:
     CompiledSampleWindow compiled_sample_window(
         LaneId lane, size_t first, size_t last, size_t point_count);
     std::vector<TimedEvent> compiled_events_in_range(LaneId lane, size_t first, size_t last);
+    void handle_lanes_visualization_playback_position_query(
+        LanesVisualizationPlaybackPositionBuilder &builder) const;
+    void handle_lanes_visualization_compiled_sample_window_requested(
+        LaneId lane,
+        size_t first,
+        size_t last,
+        size_t point_count,
+        LanesVisualizationCompiledSampleWindowBuilder &builder);
+    void handle_lanes_visualization_compiled_event_window_requested(
+        LaneId lane,
+        size_t first,
+        size_t last,
+        LanesVisualizationCompiledEventWindowBuilder &builder);
 
 private:
     struct TrackedLane {

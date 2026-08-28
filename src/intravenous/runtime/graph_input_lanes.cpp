@@ -508,6 +508,13 @@ void GraphInputLanes::handle_iv_module_instance_builders_changed(
 
 }
 
+void GraphInputLanes::handle_iv_module_instance_builders_changed(
+    IvModuleInstanceBuildersChanged const &diff,
+    IvModuleInstanceBuildersAckBuilder &ack_builder)
+{
+    handle_iv_module_instance_builders_changed(diff, &ack_builder);
+}
+
 std::vector<IvModuleSourceIntrospectionLiveInputSnapshot>
 GraphInputLanes::collect_live_input_snapshots(
     std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &requests)
@@ -540,6 +547,26 @@ GraphInputLanes::collect_live_input_snapshots(
         });
     }
     return snapshots;
+}
+
+void GraphInputLanes::handle_iv_module_source_introspection_live_input_snapshots_requested(
+    std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &requests,
+    IvModuleSourceIntrospectionLiveInputSnapshotsBuilder &builder)
+{
+    builder.succeed(collect_live_input_snapshots(requests));
+}
+
+void GraphInputLanes::handle_iv_module_source_introspection_authored_state_snapshot_requested(
+    IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder &builder)
+{
+    auto const snapshot = authored_state();
+    builder.succeed(IvModuleSourceIntrospectionAuthoredStateSnapshot{
+        .sample_input_values = snapshot.sample_input_values,
+        .sample_input_states = snapshot.sample_input_states,
+        .event_input_states = snapshot.event_input_states,
+        .sample_output_states = snapshot.sample_output_states,
+        .event_output_states = snapshot.event_output_states,
+    });
 }
 
 GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(

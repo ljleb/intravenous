@@ -5,12 +5,15 @@
 #include <cstdint>
 
 namespace iv {
+class TasksRunner;
+
 struct TasksRunnerBeforePass {
     std::uint64_t graph_revision = 0;
 };
 
 struct TasksRunnerAfterPass {
     std::uint64_t graph_revision = 0;
+    TasksRunner *runner = nullptr;
 };
 
 using TasksRunnerBeforePassEvent =

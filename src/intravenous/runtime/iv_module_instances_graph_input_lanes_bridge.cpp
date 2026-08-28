@@ -4,45 +4,12 @@
 #include <intravenous/runtime/iv_module_instances_events.h>
 
 namespace iv {
-namespace {
-GraphInputLanes *bound_lanes = nullptr;
-
-void handle_instances_changed(IvModuleInstancesChanged const &diff)
-{
-    (void)diff;
-}
-
-void handle_instance_builders_changed(
-    IvModuleInstanceBuildersChanged const &diff,
-    IvModuleInstanceBuildersAckBuilder &builder)
-{
-    if (bound_lanes == nullptr) {
-        return;
-    }
-    bound_lanes->handle_iv_module_instance_builders_changed(diff, &builder);
-}
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    IvModuleInstancesChangedEvent,
-    iv_runtime_iv_module_instances_changed_event,
-    handle_instances_changed);
-IV_SUBSCRIBE_LINKER_EVENT(
-    IvModuleInstanceBuildersChangedEvent,
+IV_DEFINE_BRIDGE(iv_module_instances_graph_input_lanes_bridge)
+IV_SUBSCRIBE_BRIDGE(
+    iv_module_instances_graph_input_lanes_bridge,
     iv_runtime_iv_module_instance_builders_changed_event,
-    handle_instance_builders_changed);
-} // namespace
-
-void bind_iv_module_instances_graph_input_lanes_bridge(
-    GraphInputLanes &lanes)
-{
-    bound_lanes = &lanes;
-}
-
-void unbind_iv_module_instances_graph_input_lanes_bridge(
-    GraphInputLanes const &lanes)
-{
-    if (bound_lanes == &lanes) {
-        bound_lanes = nullptr;
-    }
-}
+    static_cast<void (GraphInputLanes::*)(
+        IvModuleInstanceBuildersChanged const &,
+        IvModuleInstanceBuildersAckBuilder &)>(
+        &GraphInputLanes::handle_iv_module_instance_builders_changed));
 } // namespace iv

@@ -1,10 +1,13 @@
 #pragma once
 
+#include <intravenous/bridge.h>
+
 namespace iv {
+class IvModuleDefinitions;
 class IvModuleSourceIntrospection;
 
-void bind_iv_module_definitions_iv_module_source_introspection_bridge(
-    IvModuleSourceIntrospection &introspection);
-void unbind_iv_module_definitions_iv_module_source_introspection_bridge(
-    IvModuleSourceIntrospection const &introspection);
+IV_DECLARE_BRIDGE(
+    iv_module_definitions_iv_module_source_introspection_bridge,
+    IvModuleDefinitions,
+    IvModuleSourceIntrospection);
 } // namespace iv

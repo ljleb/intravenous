@@ -13,6 +13,11 @@
 #include <unordered_map>
 
 namespace iv {
+struct PauseRequest;
+struct ResumeRequest;
+struct TasksRunnerAfterPass;
+struct TimelineExecutionResumed;
+
 class IvModuleInstancesExecution {
     struct InstanceTaskContext {
         std::shared_ptr<BlockNodeExecutor> executor {};
@@ -87,6 +92,14 @@ public:
         IvModuleInstanceBuildersChanged const &diff);
     VersionedTaskGraphUpdate handle_runtime_dependencies_changed(
         GraphInputLanesRuntimeDependenciesChanged const &changed);
+    void handle_iv_module_instance_builders_completed(
+        IvModuleInstanceBuildersChanged const &changed);
+    void handle_graph_input_lanes_runtime_dependencies_changed(
+        GraphInputLanesRuntimeDependenciesChanged const &changed);
+    void handle_pause(PauseRequest const &request);
+    void handle_resume(ResumeRequest const &request);
+    void handle_timeline_execution_resumed(TimelineExecutionResumed const &resumed);
+    void handle_task_runner_after_pass(TasksRunnerAfterPass const &pass);
     void observe_completed_graph_revision(std::uint64_t graph_revision);
     void commit_prepared_reloads(std::uint64_t graph_revision = 0);
     void resume(size_t start_index);

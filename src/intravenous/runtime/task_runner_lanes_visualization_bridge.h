@@ -1,8 +1,13 @@
 #pragma once
 
+#include <intravenous/bridge.h>
+
 namespace iv {
 class LanesVisualization;
+class TasksRunner;
 
-void bind_task_runner_lanes_visualization_bridge(LanesVisualization &visualization);
-void unbind_task_runner_lanes_visualization_bridge(LanesVisualization const &visualization);
+IV_DECLARE_BRIDGE(
+    task_runner_lanes_visualization_bridge,
+    TasksRunner,
+    LanesVisualization);
 } // namespace iv

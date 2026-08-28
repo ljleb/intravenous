@@ -596,7 +596,10 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
     auto const module_root = std::filesystem::absolute("reload-generation-test");
     auto const definition_id = std::string("iv.test.reload_generation");
     (void)instances.create_instance(definition_id, module_root, "instance:1");
-    iv::bind_iv_module_instances_iv_module_instances_execution_bridge(execution);
+    auto instances_execution_scope =
+        iv::iv_module_instances_iv_module_instances_execution_bridge::bind(
+            instances,
+            execution);
 
     bool old_module_is_live = true;
     bool old_release_saw_live_module = false;
@@ -650,8 +653,6 @@ TEST(IvModuleInstancesExecution, ReloadKeepsOldModuleGenerationAliveThroughExecu
     // control-thread call, not in the after-pass callback.
     execution.commit_prepared_reloads(2);
     (void)execution.handle_instance_builders_changed({});
-
-    iv::unbind_iv_module_instances_iv_module_instances_execution_bridge(execution);
 
     EXPECT_TRUE(old_release_saw_live_module);
     EXPECT_FALSE(old_module_is_live);

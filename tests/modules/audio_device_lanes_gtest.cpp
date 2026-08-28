@@ -285,7 +285,8 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
         std::nullopt);
 
     iv::bind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
-    iv::bind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, execution);
+    auto audio_device_lanes_timeline_execution_scope =
+        iv::audio_device_lanes_timeline_execution_bridge::bind(audio_device_lanes, execution);
 
     audio_device_lanes.bind();
 
@@ -325,7 +326,8 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
             && std::ranges::find(active_tasks, output_task_id) != active_tasks.end();
     })) << "expected the timeline task graph to become active before requesting audio";
 
-    iv::bind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
+    auto task_runner_audio_device_lanes_scope =
+        iv::task_runner_audio_device_lanes_bridge::bind(*runner, audio_device_lanes);
     output_state->begin_requested_block(0, kBlockSize);
     ASSERT_TRUE(output_state->wait_until_block_ready_for(2s));
 
@@ -344,9 +346,7 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
     }
 
     audio_device_lanes.request_shutdown();
-    iv::unbind_task_runner_audio_device_lanes_bridge(audio_device_lanes);
     iv::unbind_timeline_timeline_execution_bridge(timeline, execution);
-    iv::unbind_audio_device_lanes_timeline_execution_bridge(audio_device_lanes, execution);
     iv::unbind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
     runner.reset();
 }

@@ -1,6 +1,7 @@
 #include <intravenous/runtime/project_persistence.h>
 
 #include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/task_runner_events.h>
 
 #include <fstream>
@@ -181,8 +182,6 @@ ProjectEventOutputState parse_project_event_output_state(std::string const &stat
     }
     throw std::runtime_error("unknown project event output state: " + state);
 }
-
-ProjectPersistence *bound_project_persistence = nullptr;
 
 bool is_recognized_project_override_key(std::string const &key)
 {
@@ -644,31 +643,14 @@ void ProjectPersistence::report_autosave_failure(std::string message) const
     emit_message("error", "project autosave failed: " + std::move(message));
 }
 
-void bind_project_persistence_bridge(ProjectPersistence &project_persistence)
+void ProjectPersistence::handle_socket_rpc_save_project(
+    SaveProjectRequest const &,
+    SocketRpcAckResponseBuilder &builder) const
 {
-    bound_project_persistence = &project_persistence;
-}
-
-void unbind_project_persistence_bridge(ProjectPersistence const &project_persistence)
-{
-    if (bound_project_persistence == &project_persistence) {
-        bound_project_persistence = nullptr;
+    try {
+        save();
+    } catch (std::exception const &exception) {
+        builder.fail(exception.what());
     }
-}
-
-namespace {
-void handle_project_persistence_save_requested(ProjectAckBuilder &builder)
-{
-    if (bound_project_persistence == nullptr) {
-        return;
-    }
-    bound_project_persistence->save();
-    builder.succeed();
-}
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    ProjectPersistenceSaveRequestedEvent,
-    iv_runtime_project_persistence_save_requested_event,
-    handle_project_persistence_save_requested);
 }
 } // namespace iv

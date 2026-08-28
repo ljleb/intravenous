@@ -328,6 +328,11 @@ void LanesVisualization::handle_lane_view_closed(InternedString view_id)
     active_views_.erase(view_id);
 }
 
+void LanesVisualization::handle_lane_view_closed(std::string const &view_id)
+{
+    handle_lane_view_closed(InternedString::from_string(view_id));
+}
+
 void LanesVisualization::handle_task_runner_after_pass(
     TasksRunnerAfterPass const &)
 {

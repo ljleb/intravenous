@@ -4,14 +4,44 @@
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
+#include <intravenous/runtime/iv_module_instances_execution.h>
+#include <intravenous/runtime/iv_module_instances_execution_events.h>
+#include <intravenous/runtime/iv_module_instances_execution_task_runner_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/task_runner.h>
 #include <gtest/gtest.h>
+
+#include <chrono>
+#include <functional>
+#include <thread>
+
+namespace iv {
+void publish_iv_module_instances_execution_tasks_for_test(
+    VersionedTaskGraphUpdate const &update)
+{
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_instances_execution_tasks_changed_event,
+        update);
+}
+} // namespace iv
 
 namespace {
 using iv::test_support::fresh_module_fixture_workspace;
 using iv::test_support::make_loaded_definition;
 using iv::test_support::read_only_module_fixture_workspace;
+
+bool wait_until(std::function<bool()> const &predicate)
+{
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return predicate();
+}
+
+void noop_task(void *) {}
 }
 
 TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionRequiresBinding)
@@ -39,7 +69,10 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenB
         read_only_module_fixture_workspace("local_cmake");
     iv::IvModuleDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
-    iv::bind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
+    auto bridge_scope =
+        iv::iv_module_definitions_iv_module_source_introspection_bridge::bind(
+            definitions,
+            introspection);
 
     auto const startup = iv::StartupConfig(workspace, iv::test::repo_root(), {}).initialize();
     auto loaded = iv::test::load_runtime_iv_module_definition(
@@ -59,7 +92,6 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenB
 
     EXPECT_FALSE(result.source_spans.empty());
 
-    iv::unbind_iv_module_definitions_iv_module_source_introspection_bridge(introspection);
 }
 
 TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)
@@ -75,4 +107,26 @@ TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)
         std::filesystem::weakly_canonical(workspace));
 
     EXPECT_TRUE(definitions.loaded_definitions().empty());
+}
+
+TEST(ExecutionTaskRunnerBridge, ReleasesDeferredGraphsOnTheRunnersOwnAfterPass)
+{
+    iv::IvModuleInstancesExecution execution;
+    iv::TasksRunner runner(1);
+    auto bridge_scope =
+        iv::iv_module_instances_execution_task_runner_bridge::bind(execution, runner);
+
+    iv::publish_iv_module_instances_execution_tasks_for_test(
+        iv::VersionedTaskGraphUpdate{
+            .version_index = 1,
+            .update = iv::TaskGraphUpdate{
+                .to_create = {iv::TaskRecord{
+                    .id = "test",
+                    .callback = {.invoke = &noop_task},
+                }},
+            },
+            .activation_deferred = true,
+        });
+
+    EXPECT_TRUE(wait_until([&] { return runner.active_graph_revision() == 1; }));
 }

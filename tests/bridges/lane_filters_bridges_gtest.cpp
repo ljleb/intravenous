@@ -1,3 +1,4 @@
+#include <intravenous/bridge.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/query/lane_query_dataset.h>
 #include <intravenous/query/lane_query_schema.h>
@@ -7,6 +8,7 @@
 #include <intravenous/runtime/lane_views.h>
 #include <intravenous/runtime/lane_views_events.h>
 #include <intravenous/runtime/timeline_events.h>
+#include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_lane_filters_bridge.h>
 
 #include <gtest/gtest.h>
@@ -20,6 +22,11 @@
 #include <vector>
 
 namespace {
+struct BridgeScopeLeft {};
+struct BridgeScopeRight {};
+IV_DECLARE_BRIDGE(bridge_scope_test_bridge, BridgeScopeLeft, BridgeScopeRight);
+IV_DEFINE_BRIDGE(bridge_scope_test_bridge);
+
 iv::InternedString intern(std::string_view value)
 {
     return iv::InternedString::from_view(value);
@@ -107,23 +114,53 @@ class LaneFilterBridgesTest : public ::testing::Test {
 protected:
     iv::LaneFilters filters;
     iv::LaneViews views;
+    iv::Timeline timeline;
+    iv::lane_filters_lane_views_bridge::scope lane_filters_lane_views_scope {
+        &filters, &views
+    };
+    iv::timeline_lane_filters_bridge::scope timeline_lane_filters_scope {
+        &timeline, &filters
+    };
     BridgeWitness witness {};
 
     void SetUp() override
     {
         g_bridge_witness = &witness;
-        iv::bind_timeline_lane_filters_bridge(filters);
-        iv::bind_lane_filters_lane_views_bridge(filters, views);
     }
 
     void TearDown() override
     {
-        iv::unbind_lane_filters_lane_views_bridge(filters, views);
-        iv::unbind_timeline_lane_filters_bridge(filters);
         g_bridge_witness = nullptr;
     }
 };
 } // namespace
+
+TEST(LinkerBridgeScopeTest, RejectsSecondBindingAndTransfersOwnershipOnMove)
+{
+    BridgeScopeLeft left;
+    BridgeScopeRight right;
+    auto first_scope = bridge_scope_test_bridge::bind(left, right);
+
+    EXPECT_THROW(
+        (void)bridge_scope_test_bridge::bind(left, right),
+        std::logic_error);
+
+    auto second_scope = std::move(first_scope);
+    EXPECT_EQ(
+        bridge_scope_test_bridge::get<BridgeScopeLeft>(),
+        &left);
+    EXPECT_EQ(
+        bridge_scope_test_bridge::get<BridgeScopeRight>(),
+        &right);
+
+    first_scope = std::move(second_scope);
+    EXPECT_EQ(
+        bridge_scope_test_bridge::get<BridgeScopeLeft>(),
+        &left);
+    EXPECT_EQ(
+        bridge_scope_test_bridge::get<BridgeScopeRight>(),
+        &right);
+}
 
 TEST_F(LaneFilterBridgesTest, TimelineLaneFiltersBridgeForwardsTimelineChanges)
 {

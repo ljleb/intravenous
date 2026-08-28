@@ -1,5 +1,7 @@
 #include <intravenous/runtime/timeline_execution.h>
 
+#include <intravenous/runtime/lanes_visualization_events.h>
+
 #include <algorithm>
 #include <cmath>
 #include <queue>
@@ -522,6 +524,31 @@ std::vector<TimedEvent> TimelineExecution::compiled_events_in_range(
         block_start += block_size_;
     }
     return result;
+}
+
+void TimelineExecution::handle_lanes_visualization_playback_position_query(
+    LanesVisualizationPlaybackPositionBuilder &builder) const
+{
+    builder.succeed(realtime_start_index());
+}
+
+void TimelineExecution::handle_lanes_visualization_compiled_sample_window_requested(
+    LaneId lane,
+    size_t first,
+    size_t last,
+    size_t point_count,
+    LanesVisualizationCompiledSampleWindowBuilder &builder)
+{
+    builder.succeed(compiled_sample_window(lane, first, last, point_count));
+}
+
+void TimelineExecution::handle_lanes_visualization_compiled_event_window_requested(
+    LaneId lane,
+    size_t first,
+    size_t last,
+    LanesVisualizationCompiledEventWindowBuilder &builder)
+{
+    builder.succeed(compiled_events_in_range(lane, first, last));
 }
 
 void TimelineExecution::execute_lane_task(LaneId lane)

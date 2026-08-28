@@ -17,6 +17,9 @@
 #include <vector>
 
 namespace iv {
+class SocketRpcAckResponseBuilder;
+struct SaveProjectRequest;
+
 class ProjectPersistence {
     std::filesystem::path workspace_root_;
     StartupConfigState startup_;
@@ -34,9 +37,9 @@ public:
 
     void load();
     void save() const;
+    void handle_socket_rpc_save_project(
+        SaveProjectRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
     void report_autosave_failure(std::string message) const;
 };
-
-void bind_project_persistence_bridge(ProjectPersistence &project_persistence);
-void unbind_project_persistence_bridge(ProjectPersistence const &project_persistence);
 } // namespace iv
