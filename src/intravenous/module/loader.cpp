@@ -342,6 +342,8 @@ std::string_view compile_stage_name(ModuleCompileStage stage)
     case ModuleCompileStage::parse: return "parse";
     case ModuleCompileStage::authoring: return "authoring";
     case ModuleCompileStage::metadata: return "metadata";
+    case ModuleCompileStage::execution_reflection: return "execution-reflection";
+    case ModuleCompileStage::execution_graph: return "execution-graph";
     case ModuleCompileStage::execution: return "execution";
     }
     throw std::logic_error("invalid module compile stage");
@@ -757,6 +759,42 @@ class ModuleLoader::Impl {
                 << "  return iv_metadata_stage;\n"
                 << "}\n";
             break;
+        case ModuleCompileStage::execution_reflection:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t iv_execution_reflection_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_reflected_node_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto iv_execution_reflection_stage = "
+                   "iv_execution_reflection_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_reflection_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_graph:
+            export_tu
+                << "namespace {\n"
+                << "consteval iv::Graph iv_execution_graph_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return builder.build_execution_root_node().graph;\n"
+                << "}\n"
+                << "inline constexpr auto iv_execution_graph_stage = "
+                   "iv_execution_graph_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_graph_stage.num_inputs()\n"
+                << "      + iv_execution_graph_stage.num_outputs()\n"
+                << "      + iv_execution_graph_stage.num_event_inputs()\n"
+                << "      + iv_execution_graph_stage.num_event_outputs();\n"
+                << "}\n";
+            break;
         case ModuleCompileStage::execution:
             export_tu
                 << "namespace {\n"
@@ -852,6 +890,8 @@ class ModuleLoader::Impl {
                   << toolchain_.source_introspection << '\n'
                   << "precompiled-header="
                   << toolchain_.precompiled_header << '\n'
+                  << "constexpr-cache-depth="
+                  << toolchain_.constexpr_cache_depth.value_or(0) << '\n'
                   << "generated-export=" << export_tu.str() << '\n'
                   << "core-source-stamp="
                   << directory_stamp(repo_root_ / "src/intravenous")
@@ -926,6 +966,10 @@ class ModuleLoader::Impl {
         }
         if (!toolchain_.precompiled_header) {
             configure << " -DIV_MODULE_PCH_HEADER=";
+        }
+        if (toolchain_.constexpr_cache_depth) {
+            configure << " -DIV_MODULE_CONSTEXPR_CACHE_DEPTH="
+                      << *toolchain_.constexpr_cache_depth;
         }
         if (std::string_view(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY).size()) {
             configure << " -DIV_MODULE_SHARED_LIBRARY=" << quote(IV_CONFIGURED_IV_MODULE_SHARED_LIBRARY);

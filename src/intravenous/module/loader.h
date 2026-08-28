@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -20,6 +21,11 @@ namespace iv {
         parse,
         authoring,
         metadata,
+        execution_reflection,
+        // Finalize and freeze the Graph value, but do not instantiate
+        // StaticGraphRoot<Graph>. This separates builder constant evaluation
+        // from the deliberately static execution-code generation.
+        execution_graph,
         execution,
     };
 
@@ -34,6 +40,8 @@ namespace iv {
         ModuleCompileStage compile_stage = ModuleCompileStage::full;
         bool source_introspection = true;
         bool precompiled_header = true;
+        // Empty keeps GCC's default constexpr evaluator cache depth.
+        std::optional<size_t> constexpr_cache_depth {};
     };
 
     class ModuleLoader {

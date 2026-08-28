@@ -29,6 +29,19 @@ module shape fixed. The generated project is independent of the example and
 working projects, so edits to those projects cannot perturb the source being
 measured.
 
+To benchmark an existing project module without touching its source tree or
+build cache, pass its directory (or `iv_module.json`) with `--module`:
+
+```text
+build-release/benchmark/iv_module_build_benchmark \
+  --module projects/simple_sine/modules/saw --gcc-time-report --keep
+```
+
+The benchmark snapshots the module's enclosing project into its managed
+temporary workspace, omitting `build`, `out`, and `.git`. Its hot-reload marker
+is written only to that copy. Existing-module snapshots currently require the
+usual `module.cpp` entry point.
+
 ## Separating compile-time stages
 
 Use `--stage` to compile progressively more of the generated translation unit:
@@ -37,6 +50,8 @@ Use `--stage` to compile progressively more of the generated translation unit:
 --stage parse       # include and semantically compile the authored source
 --stage authoring   # also execute module_main against GraphBuilder
 --stage metadata    # build and freeze introspection metadata only
+--stage execution-reflection # lower and reflect execution nodes only
+--stage execution-graph # finalize and freeze Graph, without static tick code
 --stage execution   # finalize and instantiate the static execution graph only
 --stage full        # production execution graph plus metadata (the default)
 ```
@@ -44,7 +59,14 @@ Use `--stage` to compile progressively more of the generated translation unit:
 The stages are diagnostic artifacts; only `full` has the normal loadable module
 ABI. They preserve the configured optimization level. In particular,
 `execution` and `full` still instantiate the same statically expanded graph at
-the build's existing `-O3` optimization level.
+the build's existing `-O3` optimization level. `execution-graph` performs the
+same graph finalization but deliberately stops before
+`StaticGraphRoot<GraphValue>` is instantiated; its delta to `execution` is the
+cost of emitting and optimizing the static tick path.
+
+`execution-reflection` stops before edge lowering and final graph algorithms.
+Its delta from `authoring` identifies how much of the execution-root build is
+spent turning generated nodes into value-specialized reflected operations.
 
 `--source-shape empty|input|nodes|connected|full` progressively changes the
 body of the generated `module_main`. This provides a second axis for isolating
@@ -57,6 +79,21 @@ Two additional A/B controls isolate build infrastructure:
 --no-source-introspection # omit the GCC source annotation plugin
 --no-pch                  # compile the same TU without the module PCH
 ```
+
+GCC's constexpr memoization policy can be swept without changing the generated
+module or its optimization level:
+
+```text
+--constexpr-cache-depth 4
+--constexpr-cache-depth 8
+--constexpr-cache-depth 16
+--constexpr-cache-depth 32
+```
+
+This maps directly to GCC's `-fconstexpr-cache-depth` option. Leaving it
+unset uses GCC's default. Compare full-stage hot runs on the same snapshot and
+record both wall time and GGC memory; larger caches can trade memory for less
+constant-evaluation time.
 
 Both are diagnostics only; source introspection and the PCH remain enabled by
 default. The no-PCH path is also useful as a header self-containment check: the

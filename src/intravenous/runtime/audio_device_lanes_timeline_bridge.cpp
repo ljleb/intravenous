@@ -10,8 +10,6 @@
 namespace iv {
 namespace {
 Timeline *bound_timeline = nullptr;
-query::LaneQuerySchema last_schema;
-std::uint64_t schema_revision = 0;
 
 class TimelineLaneQueryDatasetView final : public query::LaneQueryDataset {
     Timeline *timeline_ = nullptr;
@@ -90,18 +88,10 @@ void emit_lane_change(
         return;
     }
 
-    auto candidate_schema = bound_timeline->lane_query_schema(schema_revision + 1);
-    auto diff = query::diff_lane_query_schemas(last_schema, candidate_schema);
-    if (!diff.changed) {
-        candidate_schema = bound_timeline->lane_query_schema(schema_revision);
-        diff = query::diff_lane_query_schemas(last_schema, candidate_schema);
-    } else {
-        schema_revision += 1;
-    }
+    auto [candidate_schema, schema_change] =
+        bound_timeline->reconcile_lane_query_schema();
 
     auto const schema = candidate_schema;
-    auto const schema_change = diff;
-    last_schema = schema;
     auto dataset = std::make_shared<TimelineLaneQueryDatasetView>(
         *bound_timeline,
         schema,
@@ -171,8 +161,7 @@ void bind_audio_device_lanes_timeline_bridge(AudioDeviceLanes &audio_device_lane
 {
     (void)audio_device_lanes;
     bound_timeline = &timeline;
-    schema_revision = 0;
-    last_schema = timeline.lane_query_schema(schema_revision);
+    timeline.reset_lane_query_schema();
 }
 
 void unbind_audio_device_lanes_timeline_bridge(

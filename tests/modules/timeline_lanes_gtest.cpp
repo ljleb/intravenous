@@ -1060,6 +1060,49 @@ TEST(TimelineLaneBatchBridge, RemovalMutatesTimelineAndPublishesFreshLaneSet)
     g_timeline_batch_witness = nullptr;
 }
 
+// Regression: the lane-query schema revision is owned by Timeline (the shared
+// owner of the lane-set snapshot), not by each bridge. Reconcile must be
+// idempotent for a stable lane set: repeated calls must not drift or double-bump
+// the canonical revision, and the schema served to a bridge must match the
+// canonical one. A per-bridge duplicate of last_schema/schema_revision used to
+// live in the bridges and could diverge; it is now centralized here.
+TEST(TimelineLaneBatchBridge, CanonicalSchemaRevisionIsOwnedAndIdempotent)
+{
+    iv::Timeline timeline;
+    iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
+    auto const public_id = iv::InternedString::from_string("authored-lane");
+    auto const create_batch = authored.create("iv.timeline.beat-trigger", public_id);
+    ASSERT_EQ(create_batch.upserts.size(), 1u);
+
+    TimelineBatchWitness witness;
+    g_timeline_batch_witness = &witness;
+    iv::bind_timeline_lane_batch_bridge(timeline);
+
+    // A lane set whose schema properties do not change must keep the same
+    // canonical revision, and reconcile must be idempotent (no drift).
+    auto const baseline = timeline.lane_query_schema().revision();
+    IV_INVOKE_LINKER_EVENT(iv::iv_runtime_timeline_lane_batch_requested_event, create_batch);
+    ASSERT_FALSE(witness.changes.empty());
+    auto const first = witness.changes.front().schema_change.new_revision;
+    // Creating a beat-trigger lane adds no new schema property, so the schema
+    // is unchanged and the canonical revision must not move.
+    EXPECT_EQ(first, baseline);
+
+    auto const stable_a = timeline.reconcile_lane_query_schema().first;
+    auto const stable_b = timeline.reconcile_lane_query_schema().first;
+    EXPECT_EQ(stable_a.revision(), stable_b.revision());
+    EXPECT_EQ(stable_a.revision(), baseline);
+
+    // Binding a second bridge against the same Timeline must reset to the
+    // current lane set without changing the canonical revision to zero.
+    timeline.reset_lane_query_schema();
+    auto const after_reset = timeline.reconcile_lane_query_schema().first;
+    EXPECT_EQ(after_reset.revision(), stable_a.revision());
+
+    iv::unbind_timeline_lane_batch_bridge(timeline);
+    g_timeline_batch_witness = nullptr;
+}
+
 TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndForwardsTimelineRemovalBatch)
 {
     iv::Timeline timeline;

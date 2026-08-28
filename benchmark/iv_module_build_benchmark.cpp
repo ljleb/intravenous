@@ -56,7 +56,9 @@ struct Options {
     iv::ModuleCompileStage compile_stage = iv::ModuleCompileStage::full;
     bool source_introspection = true;
     bool precompiled_header = true;
+    std::optional<size_t> constexpr_cache_depth;
     SourceShape source_shape = SourceShape::full;
+    std::optional<std::filesystem::path> source_module;
 };
 
 std::string_view source_shape_name(SourceShape shape)
@@ -88,6 +90,8 @@ std::string_view compile_stage_name(iv::ModuleCompileStage stage)
     case iv::ModuleCompileStage::parse: return "parse";
     case iv::ModuleCompileStage::authoring: return "authoring";
     case iv::ModuleCompileStage::metadata: return "metadata";
+    case iv::ModuleCompileStage::execution_reflection: return "execution-reflection";
+    case iv::ModuleCompileStage::execution_graph: return "execution-graph";
     case iv::ModuleCompileStage::execution: return "execution";
     }
     throw std::logic_error("invalid module compile stage");
@@ -99,6 +103,8 @@ iv::ModuleCompileStage parse_compile_stage(std::string_view value)
     if (value == "parse") return iv::ModuleCompileStage::parse;
     if (value == "authoring") return iv::ModuleCompileStage::authoring;
     if (value == "metadata") return iv::ModuleCompileStage::metadata;
+    if (value == "execution-reflection") return iv::ModuleCompileStage::execution_reflection;
+    if (value == "execution-graph") return iv::ModuleCompileStage::execution_graph;
     if (value == "execution") return iv::ModuleCompileStage::execution;
     throw std::runtime_error("invalid compile stage '" + std::string(value) + "'");
 }
@@ -192,14 +198,24 @@ Options parse_options(int argc, char** argv)
             options.source_introspection = false;
         } else if (arg == "--no-pch") {
             options.precompiled_header = false;
+        } else if (arg == "--constexpr-cache-depth") {
+            auto const value = std::stoull(std::string(require_value(arg)));
+            if (value == 0) {
+                throw std::runtime_error("constexpr cache depth must be positive");
+            }
+            options.constexpr_cache_depth = value;
         } else if (arg == "--source-shape") {
             options.source_shape = parse_source_shape(require_value(arg));
+        } else if (arg == "--module") {
+            options.source_module = require_value(arg);
         } else if (arg == "--help") {
             std::cout
                 << "Usage: iv_module_build_benchmark [--voices N] [--workspace PATH]"
-                << " [--stage full|parse|authoring|metadata|execution]"
+                << " [--stage full|parse|authoring|metadata|execution-reflection|execution-graph|execution]"
                 << " [--source-shape empty|input|nodes|connected|full]"
+                << " [--module PATH]"
                 << " [--no-source-introspection] [--no-pch]"
+                << " [--constexpr-cache-depth N]"
                 << " [--keep] [--gcc-time-report]\n";
             std::exit(0);
         } else {
@@ -207,6 +223,70 @@ Options parse_options(int argc, char** argv)
         }
     }
     return options;
+}
+
+std::filesystem::path module_directory(std::filesystem::path path)
+{
+    path = std::filesystem::absolute(path).lexically_normal();
+    if (std::filesystem::is_regular_file(path)) {
+        if (path.filename() != "iv_module.json") {
+            throw std::runtime_error(
+                "module path must be a directory or iv_module.json: '" +
+                path.string() + "'");
+        }
+        path = path.parent_path();
+    }
+    if (!std::filesystem::is_directory(path)
+        || !std::filesystem::exists(path / "iv_module.json")) {
+        throw std::runtime_error(
+            "module path is missing iv_module.json: '" + path.string() + "'");
+    }
+    return path;
+}
+
+std::filesystem::path project_directory(std::filesystem::path module)
+{
+    for (;;) {
+        if (std::filesystem::exists(module / "iv_project.jsonl")) return module;
+        auto const parent = module.parent_path();
+        if (parent == module) break;
+        module = parent;
+    }
+    throw std::runtime_error(
+        "module is not contained in an IV project (iv_project.jsonl not found)");
+}
+
+bool excluded_project_directory(std::filesystem::path const& path)
+{
+    auto const name = path.filename();
+    return name == "build" || name == "out" || name == ".git";
+}
+
+void copy_project_source(
+    std::filesystem::path const& source,
+    std::filesystem::path const& destination)
+{
+    std::filesystem::create_directories(destination);
+    for (std::filesystem::recursive_directory_iterator it(source), end;
+         it != end;
+         ++it) {
+        auto const& entry = *it;
+        auto const relative = entry.path().lexically_relative(source);
+        auto const target = destination / relative;
+        if (entry.is_directory()) {
+            if (excluded_project_directory(entry.path())) {
+                it.disable_recursion_pending();
+            } else {
+                std::filesystem::create_directories(target);
+            }
+        } else if (entry.is_symlink()) {
+            std::filesystem::copy_symlink(entry.path(), target);
+        } else if (entry.is_regular_file()) {
+            std::filesystem::create_directories(target.parent_path());
+            std::filesystem::copy_file(
+                entry.path(), target, std::filesystem::copy_options::overwrite_existing);
+        }
+    }
 }
 
 std::filesystem::path find_ninja_log(std::filesystem::path const& workspace)
@@ -319,18 +399,23 @@ void print_compiler_summary(std::filesystem::path const& path)
 
 void print(
     std::string_view phase,
+    std::string_view workload,
     iv::ModuleCompileStage stage,
     SourceShape shape,
     bool source_introspection,
     bool precompiled_header,
+    std::optional<size_t> constexpr_cache_depth,
     PhaseResult const& result)
 {
     std::cout << "iv-module-build-benchmark"
               << " phase=" << phase
+              << " workload=" << workload
               << " stage=" << compile_stage_name(stage)
               << " source_shape=" << source_shape_name(shape)
               << " source_introspection=" << source_introspection
               << " pch=" << precompiled_header
+              << " constexpr_cache_depth="
+              << constexpr_cache_depth.value_or(0)
               << " pipeline_ms=" << result.pipeline_ms
               << " pch_ms=" << result.pch_ms
               << " export_ms=" << result.export_ms
@@ -340,7 +425,6 @@ void print(
 
 void run(Options const& options)
 {
-    auto const module = options.workspace / "modules" / "compile_benchmark";
     auto const marker = options.workspace / ".iv-module-build-benchmark";
     if (std::filesystem::exists(options.workspace)) {
         if (!std::filesystem::exists(marker)) {
@@ -351,10 +435,31 @@ void run(Options const& options)
         std::filesystem::remove_all(options.workspace);
     }
     write(marker, "managed by iv_module_build_benchmark\n");
-    write(options.workspace / "iv_project.jsonl", "");
-    write(module / "iv_module.json", R"({"schema":1,"id":"iv.benchmark.compile","entry":"module.cpp","main":"module_main"})");
-    auto source = benchmark_source(options.voices, options.source_shape);
-    write(module / "module.cpp", source);
+
+    std::filesystem::path module;
+    std::filesystem::path hot_source;
+    std::string workload = "synthetic";
+    if (options.source_module) {
+        auto const source_module = module_directory(*options.source_module);
+        auto const source_project = project_directory(source_module);
+        auto const copied_project = options.workspace / "project";
+        copy_project_source(source_project, copied_project);
+        module = copied_project / source_module.lexically_relative(source_project);
+        hot_source = module / "module.cpp";
+        if (!std::filesystem::exists(hot_source)) {
+            throw std::runtime_error(
+                "benchmark snapshots currently require module.cpp as the entry file: '" +
+                module.string() + "'");
+        }
+        workload = "project-module";
+    } else {
+        module = options.workspace / "modules" / "compile_benchmark";
+        hot_source = module / "module.cpp";
+        write(options.workspace / "iv_project.jsonl", "");
+        write(module / "iv_module.json", R"({"schema":1,"id":"iv.benchmark.compile","entry":"module.cpp","main":"module_main"})");
+        write(hot_source, benchmark_source(options.voices, options.source_shape));
+    }
+    auto source = read(hot_source);
 
     std::optional<std::filesystem::path> compiler_report;
     {
@@ -365,6 +470,7 @@ void run(Options const& options)
                 .compile_stage = options.compile_stage,
                 .source_introspection = options.source_introspection,
                 .precompiled_header = options.precompiled_header,
+                .constexpr_cache_depth = options.constexpr_cache_depth,
             });
 
         auto const cold_start = Clock::now();
@@ -373,19 +479,21 @@ void run(Options const& options)
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
         print(
-            "cold", options.compile_stage, options.source_shape,
+            "cold", workload, options.compile_stage, options.source_shape,
             options.source_introspection, options.precompiled_header,
+            options.constexpr_cache_depth,
             summarize(cold_elapsed, ninja_edges(cold_log)));
 
         source += "// Hot-reload marker.\n";
-        write(module / "module.cpp", source);
+        write(hot_source, source);
         auto const hot_start = Clock::now();
         (void)loader.compile_root_definition(module);
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
         print(
-            "hot", options.compile_stage, options.source_shape,
+            "hot", workload, options.compile_stage, options.source_shape,
             options.source_introspection, options.precompiled_header,
+            options.constexpr_cache_depth,
             summarize(hot_elapsed, appended_ninja_edges(cold_log, hot_log)));
 
         if (options.gcc_time_report) {

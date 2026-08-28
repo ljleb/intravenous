@@ -45,8 +45,8 @@ constexpr bool same(
             == rhs.operations.runtime.tick_block
         && lhs.operations.runtime.skip_block
             == rhs.operations.runtime.skip_block
-        && lhs.operations.apply_detach_id_offset
-            == rhs.operations.apply_detach_id_offset
+        && lhs.operations.apply_detach_id_offset_impl
+            == rhs.operations.apply_detach_id_offset_impl
         && lhs.type_name == rhs.type_name
         && lhs.internal_latency_samples == rhs.internal_latency_samples
         && lhs.maximum_block_size == rhs.maximum_block_size
@@ -77,12 +77,45 @@ static_assert(lazy_broadcast_reflection_matches_direct_reflection<
 static_assert(lazy_broadcast_reflection_matches_direct_reflection<
     64, stereo, SampleStreamLayout::interleaved>());
 
+consteval bool detach_offset_keeps_exact_value_specialization()
+{
+    auto const writer = details::reflect_node(DetachWriterNode{
+        .id = DetachArrayId{7},
+        .loop_extra_latency = 3,
+    });
+    auto const adjusted = writer.operations.apply_detach_id_offset(11);
+    auto const expected = details::reflect_node(DetachWriterNode{
+        .id = DetachArrayId{18},
+        .loop_extra_latency = 3,
+    });
+    return same(
+        ReflectedNodeDescription{.operations = adjusted},
+        ReflectedNodeDescription{.operations = expected.operations});
+}
+
+consteval bool ordinary_nodes_skip_detach_rewrite_callback()
+{
+    auto const node = details::reflect_node(Broadcast<2>{});
+    return node.operations.apply_detach_id_offset_impl == nullptr
+        && node.operations.apply_detach_id_offset(42).runtime.tick_block
+            == node.operations.runtime.tick_block;
+}
+
+static_assert(detach_offset_keeps_exact_value_specialization());
+static_assert(ordinary_nodes_skip_detach_rewrite_callback());
+
 TEST(GraphCompilerConsteval, LazyBroadcastKeepsExactValueSpecializedOperations)
 {
     EXPECT_TRUE((lazy_broadcast_reflection_matches_direct_reflection<
         1, mono, SampleStreamLayout::planar>()));
     EXPECT_TRUE((lazy_broadcast_reflection_matches_direct_reflection<
         64, stereo, SampleStreamLayout::interleaved>()));
+}
+
+TEST(GraphCompilerConsteval, DetachRewritesOnlyDetachOperations)
+{
+    EXPECT_TRUE(detach_offset_keeps_exact_value_specialization());
+    EXPECT_TRUE(ordinary_nodes_skip_detach_rewrite_callback());
 }
 
 } // namespace

@@ -19,9 +19,9 @@ namespace iv {
         size_t scc_feedback_latency = 0;
         std::span<std::byte> buffer;
 
-        constexpr Sample sample_period() const noexcept
+        constexpr double sample_period() const noexcept
         {
-            return Sample{1.0f / static_cast<float>(sample_rate)};
+            return 1.0 / static_cast<double>(sample_rate);
         }
 
         using State = typename NodeState<Node>::Type;

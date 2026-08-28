@@ -416,10 +416,29 @@ namespace iv {
     }
 
     template<class L, class R>
-    requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
+    requires (
+        (SamplePortLike<L> || ScalarLike<L>) &&
+        (SamplePortLike<R> || ScalarLike<R>) &&
+        !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     consteval NodeRef operator-(L&& lhs, R&& rhs)
     {
         return make_binary_op<Subtract>(
+            std::forward<L>(lhs),
+            std::forward<R>(rhs),
+            "operator-"
+        );
+    }
+
+    template<class L, class R>
+    requires (
+        (SamplePortLike<L> || ScalarLike<L>) &&
+        (SamplePortLike<R> || ScalarLike<R>) &&
+        (TypedSamplePortLike<L> || TypedSamplePortLike<R>))
+    consteval auto operator-(L&& lhs, R&& rhs)
+    {
+        using ChannelType = typename binary_typed_channel<L, R>::type;
+
+        return make_binary_op<Subtract, ChannelType>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator-"

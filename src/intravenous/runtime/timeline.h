@@ -37,6 +37,11 @@ namespace iv {
         std::unordered_map<InternedString, LaneId> _lanes_by_external_id;
         std::unordered_map<LaneId, TimelineLaneLifetime, LaneIdHash> _lane_lifetimes;
         std::vector<PendingPublicConnection> _pending_public_connections;
+        // Canonical lane-query schema snapshot + revision for the lane set.
+        // Timeline is the single owner of the lane-set snapshot; components
+        // reconcile against this instead of tracking their own copies.
+        query::LaneQuerySchema _lane_query_schema {};
+        std::uint64_t _lane_query_schema_revision = 0;
 
         InternedString ensure_external_id_locked(LaneId lane)
         {
@@ -77,6 +82,29 @@ namespace iv {
                     _pending_public_connections.push_back(connection);
                 }
             }
+        }
+
+        // Assumes _graph_mutex is held. Builds the lane-query schema for the
+        // current lane set at the given revision, without re-entering with_graph.
+        query::LaneQuerySchema compute_lane_query_schema_locked(
+            std::uint64_t revision) const
+        {
+            std::vector<std::pair<std::string, query::LaneQueryValueType>> entries;
+            std::unordered_map<std::string, query::LaneQueryValueType> type_by_key;
+            _graph.for_each_lane([&](LaneRecord const& lane) {
+                for (auto const &[key, type] : lane.metadata.schema_entries()) {
+                    auto const [it, inserted] = type_by_key.emplace(key, type);
+                    if (!inserted && it->second != type) {
+                        throw std::runtime_error(
+                            "lane metadata schema type conflict for key: " + key);
+                    }
+                }
+            });
+            entries.reserve(type_by_key.size());
+            for (auto const &[key, type] : type_by_key) {
+                entries.emplace_back(key, type);
+            }
+            return query::LaneQuerySchema::from_entries(std::move(entries), revision);
         }
 
     public:
@@ -205,22 +233,41 @@ namespace iv {
         query::LaneQuerySchema lane_query_schema(std::uint64_t revision = 0)
         {
             return with_graph([&](LaneGraph& graph) {
-                std::vector<std::pair<std::string, query::LaneQueryValueType>> entries;
-                std::unordered_map<std::string, query::LaneQueryValueType> type_by_key;
-                graph.for_each_lane([&](LaneRecord const& lane) {
-                    for (auto const &[key, type] : lane.metadata.schema_entries()) {
-                        auto const [it, inserted] = type_by_key.emplace(key, type);
-                        if (!inserted && it->second != type) {
-                            throw std::runtime_error("lane metadata schema type conflict for key: " + key);
-                        }
-                    }
-                });
-                entries.reserve(type_by_key.size());
-                for (auto const &[key, type] : type_by_key) {
-                    entries.emplace_back(key, type);
-                }
-                return query::LaneQuerySchema::from_entries(std::move(entries), revision);
+                (void)graph;
+                return compute_lane_query_schema_locked(revision);
             });
+        }
+
+        // Reconcile the canonical lane-query schema against the current lane
+        // set. Advances the shared revision and returns the resulting schema
+        // plus the computed change, mirroring what the timeline bridges used to
+        // track themselves. Idempotent: unchanged lanes keep the same revision.
+        std::pair<query::LaneQuerySchema, query::LaneQuerySchemaChange>
+        reconcile_lane_query_schema()
+        {
+            std::scoped_lock lock(_graph_mutex);
+            auto candidate =
+                compute_lane_query_schema_locked(_lane_query_schema_revision + 1);
+            auto change =
+                query::diff_lane_query_schemas(_lane_query_schema, candidate);
+            if (!change.changed) {
+                candidate =
+                    compute_lane_query_schema_locked(_lane_query_schema_revision);
+                change =
+                    query::diff_lane_query_schemas(_lane_query_schema, candidate);
+            } else {
+                _lane_query_schema_revision += 1;
+            }
+            _lane_query_schema = candidate;
+            return {std::move(candidate), std::move(change)};
+        }
+
+        // Reset the canonical schema baseline to the current lane set (rev 0).
+        void reset_lane_query_schema()
+        {
+            std::scoped_lock lock(_graph_mutex);
+            _lane_query_schema = compute_lane_query_schema_locked(0);
+            _lane_query_schema_revision = 0;
         }
 
         bool lane_has_unit_metadata(LaneId lane, std::string_view key)

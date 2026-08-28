@@ -7,6 +7,8 @@ option(IV_MODULE_GCC_TIME_REPORT
     "Emit GCC compile-phase timing reports for IV module builds" OFF)
 option(IV_MODULE_SOURCE_INTROSPECTION
     "Annotate authored IV module source declarations" ON)
+set(IV_MODULE_CONSTEXPR_CACHE_DEPTH "" CACHE STRING
+    "GCC constexpr evaluator cache depth for IV module builds (empty uses GCC default)")
 
 function(iv_configure_iv_module_shared_import)
     set(IV_MODULE_SHARED_LIBRARY "${IV_MODULE_SHARED_LIBRARY}" CACHE FILEPATH "Path to the built iv_module_shared library")
@@ -60,6 +62,14 @@ function(iv_add_runtime_module target)
         # default 128M-operation limit is too small for ordinary polyphonic
         # graphs, but larger values trigger a GCC 16 reflection issue.
         -fconstexpr-ops-limit=17179869184)
+    if(NOT IV_MODULE_CONSTEXPR_CACHE_DEPTH STREQUAL "")
+        if(NOT IV_MODULE_CONSTEXPR_CACHE_DEPTH MATCHES "^[1-9][0-9]*$")
+            message(FATAL_ERROR
+                "IV_MODULE_CONSTEXPR_CACHE_DEPTH must be a positive integer or empty")
+        endif()
+        target_compile_options(${target}__compile_settings INTERFACE
+            "-fconstexpr-cache-depth=${IV_MODULE_CONSTEXPR_CACHE_DEPTH}")
+    endif()
     if(IV_MODULE_SOURCE_INTROSPECTION)
         target_compile_options(${target}__compile_settings INTERFACE
             "-fplugin=${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"

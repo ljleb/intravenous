@@ -11,8 +11,6 @@ namespace iv {
 namespace {
 LanesVisualization *bound_visualization = nullptr;
 Timeline *bound_timeline = nullptr;
-query::LaneQuerySchema last_schema;
-std::uint64_t schema_revision = 0;
 
 std::vector<TimelineLaneOutputs> outputs_for_lanes(
     Timeline &timeline,
@@ -37,22 +35,15 @@ void emit_lane_change(
     if (bound_timeline == nullptr) {
         return;
     }
-    auto candidate_schema = bound_timeline->lane_query_schema(schema_revision + 1);
-    auto diff = query::diff_lane_query_schemas(last_schema, candidate_schema);
-    if (!diff.changed) {
-        candidate_schema = bound_timeline->lane_query_schema(schema_revision);
-        diff = query::diff_lane_query_schemas(last_schema, candidate_schema);
-    } else {
-        schema_revision += 1;
-    }
-    last_schema = candidate_schema;
+    auto [candidate_schema, schema_change] =
+        bound_timeline->reconcile_lane_query_schema();
     auto dataset = std::make_shared<query::LaneQuerySchema>(candidate_schema);
     (void)dataset; // dataset is built by the timeline bridge; we reuse emit_lane_change pattern
 
     TimelineLanesChanged notification{
         .lane_set_changed = lane_set_changed,
         .dataset = nullptr,
-        .schema_change = diff,
+        .schema_change = schema_change,
         .metadata_for_lane = [timeline = bound_timeline](LaneId lane) {
             return timeline->lane_metadata(lane);
         },
@@ -159,8 +150,7 @@ void bind_lanes_visualization_timeline_bridge(
 {
     bound_visualization = &visualization;
     bound_timeline = &timeline;
-    schema_revision = 0;
-    last_schema = timeline.lane_query_schema(schema_revision);
+    timeline.reset_lane_query_schema();
 }
 
 void unbind_lanes_visualization_timeline_bridge(

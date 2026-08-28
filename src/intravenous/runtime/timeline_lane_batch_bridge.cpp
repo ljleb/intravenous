@@ -9,8 +9,6 @@
 namespace iv {
 namespace {
 Timeline *bound_timeline = nullptr;
-query::LaneQuerySchema last_schema;
-std::uint64_t schema_revision = 0;
 
 class TimelineLaneQueryDatasetView final : public query::LaneQueryDataset {
     Timeline *timeline_;
@@ -53,14 +51,8 @@ void handle_timeline_lane_batch(TimelineLaneBatchUpdate const &batch)
                 + " removals=" + std::to_string(batch.removals.size()),
         }));
     bound_timeline->apply_lane_batch(batch);
-    auto candidate_schema = bound_timeline->lane_query_schema(schema_revision + 1);
-    auto schema_change = query::diff_lane_query_schemas(last_schema, candidate_schema);
-    if (schema_change.changed) ++schema_revision;
-    else {
-        candidate_schema = bound_timeline->lane_query_schema(schema_revision);
-        schema_change = query::diff_lane_query_schemas(last_schema, candidate_schema);
-    }
-    last_schema = candidate_schema;
+    auto [candidate_schema, schema_change] =
+        bound_timeline->reconcile_lane_query_schema();
     std::vector<LaneId> created;
     created.reserve(batch.upserts.size());
     for (auto const &upsert : batch.upserts) created.push_back(upsert.lane);
@@ -103,8 +95,7 @@ IV_SUBSCRIBE_LINKER_EVENT(TimelineLaneBatchRequestedEvent, iv_runtime_timeline_l
 void bind_timeline_lane_batch_bridge(Timeline &timeline)
 {
     bound_timeline = &timeline;
-    schema_revision = 0;
-    last_schema = timeline.lane_query_schema(schema_revision);
+    timeline.reset_lane_query_schema();
 }
 
 void unbind_timeline_lane_batch_bridge(Timeline const &timeline)

@@ -41,6 +41,12 @@ public:
       GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
       GraphBuilderPublicPorts const&, size_t detach_id_offset = 0,
       bool execution_root = false);
+  // Diagnostic only: execute the value-reflection part of execution-root
+  // preparation without lowering edges or building the static Graph object.
+  static consteval size_t count_execution_reflected_nodes(
+      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
+      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
+      size_t detach_id_offset = 0);
 };
 
 namespace {
@@ -562,6 +568,15 @@ constexpr GraphIntrospectionMetadata GraphBuilderFinalizer::build_metadata(
   metadata.virtual_nodes = std::move(virtual_nodes);
   details::apply_virtual_port_metadata(metadata, bundles, virtuals, connections);
   return metadata;
+}
+
+consteval size_t GraphBuilderFinalizer::count_execution_reflected_nodes(
+    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
+    GraphBuilderNodeBundles const& bundles,
+    GraphBuilderVirtualNodes const& virtuals, size_t detach_offset) {
+  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
+  prepared.append_reflected_nodes(detach_offset);
+  return prepared.graph.nodes.size();
 }
 
 consteval GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(

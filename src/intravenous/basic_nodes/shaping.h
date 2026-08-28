@@ -131,10 +131,6 @@ namespace iv {
     };
 
     struct SineOscillator {
-        struct State {
-            Sample phase = 0.0f;
-        };
-
         static constexpr auto inputs()
         {
             return std::array {
@@ -150,20 +146,100 @@ namespace iv {
             };
         }
 
+        struct State {
+            double anchor_phase = 0.0;
+            size_t anchor_index = 0;
+            double frequency = 0.0;
+            bool initialized = false;
+        };
+
+        static constexpr size_t table_size = 4096;
+        static constexpr std::array<Sample, table_size + 1> table = [] {
+            std::array<Sample, table_size + 1> table{};
+
+            for (size_t i = 0; i < table_size; ++i) {
+                double const phase =
+                    -1.0 + 2.0 * static_cast<double>(i) / static_cast<double>(table_size);
+
+                table[i] = static_cast<Sample>(
+                    std::sin(phase * std::numbers::pi)
+                );
+            }
+
+            // Exact periodic endpoint, rather than evaluating sin(pi) separately.
+            table[table_size] = table[0];
+
+            return table;
+        }();
+
+        static Sample sine(double phase)
+        {
+            phase = wrap(phase);
+
+            constexpr double scale =
+                static_cast<double>(table_size) * 0.5;
+
+            double const position = (phase + 1.0) * scale;
+
+            size_t const index =
+                static_cast<size_t>(position);
+
+            double const alpha =
+                position - static_cast<double>(index);
+
+            double const a = table[index];
+            double const b = table[index + 1];
+
+            return static_cast<Sample>(
+                a + alpha * (b - a)
+            );
+        }
+
+        static double wrap(double x)
+        {
+            return x - std::floor((x + 1.0) / 2.0) * 2.0;
+        }
+
         void tick(TickSampleContext<SineOscillator> const& ctx) const
         {
             auto& state = ctx.state();
-            auto const phi = ctx.inputs[0].get();
+
             auto const f = ctx.inputs[1].get();
+            auto const phi = ctx.inputs[0].get();
             auto const dt = ctx.sample_period();
-            auto& out = ctx.outputs[0];
 
-            auto const phase_advance = f * 2 * dt;
-            auto const x0 = state.phase + phase_advance + phi;
-            auto const y0 = static_cast<Sample>(std::sin(x0*2*std::numbers::pi));
+            if (!state.initialized) {
+                state.frequency = f;
+                state.anchor_index = ctx.index;
+                state.anchor_phase = 0.0;
+                state.initialized = true;
+            }
 
-            out.push(y0);
-            state.phase = warp_pm1(state.phase + phase_advance, 1);
+            // Re-anchor if frequency changed.
+            if (f != state.frequency) {
+                double const elapsed =
+                    static_cast<double>(ctx.index - state.anchor_index);
+
+                state.anchor_phase = wrap(
+                    state.anchor_phase +
+                    state.frequency * 2.0 * elapsed * dt
+                );
+
+                state.anchor_index = ctx.index;
+                state.frequency = f;
+            }
+
+            auto const elapsed =
+                static_cast<double>(ctx.index - state.anchor_index);
+
+            auto const phase =
+                state.anchor_phase +
+                state.frequency * 2.0 * (elapsed + 1.0) * dt;
+
+            auto const y =
+                sine((phase + phi) * std::numbers::pi);
+
+            ctx.outputs[0].push(y);
         }
     };
 

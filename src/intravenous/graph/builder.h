@@ -47,6 +47,7 @@ class GraphRuntimeBindings;
 class GraphBuilder;
 namespace details {
     struct GraphBuilderTestAccess;
+    struct GraphBuilderCompileProfiler;
 }
 
 class GraphBuilder {
@@ -63,6 +64,7 @@ class GraphBuilder {
   friend class GraphBuilderPublicPorts;
   friend class SubgraphBuilder;
   friend struct details::GraphBuilderTestAccess;
+  friend struct details::GraphBuilderCompileProfiler;
 
   GraphBuilderIdentity _identity;
   GraphBuilderNodeBundles _node_bundles;
@@ -495,6 +497,20 @@ GraphBuilder::build_execution_root_node_with_metadata(size_t detach_offset) cons
       .introspection = std::move(introspection),
   };
 }
+
+namespace details {
+struct GraphBuilderCompileProfiler {
+  static consteval size_t execution_reflected_node_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_reflected_nodes(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes);
+  }
+};
+} // namespace details
 
 constexpr SamplePortRef::SamplePortRef(
     GraphBuilder& builder,

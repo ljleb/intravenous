@@ -15,8 +15,6 @@ namespace iv {
 namespace {
 GraphInputLanes *bound_graph_input_lanes = nullptr;
 Timeline *bound_timeline = nullptr;
-query::LaneQuerySchema last_schema;
-std::uint64_t schema_revision = 0;
 
 void emit_debug_message(std::string message)
 {
@@ -172,17 +170,9 @@ void emit_lane_change(
         return;
     }
     normalize_lane_delta(created_lanes, removed_lanes, changed_lanes);
-    auto candidate_schema = bound_timeline->lane_query_schema(schema_revision + 1);
-    auto diff = query::diff_lane_query_schemas(last_schema, candidate_schema);
-    if (!diff.changed) {
-        candidate_schema = bound_timeline->lane_query_schema(schema_revision);
-        diff = query::diff_lane_query_schemas(last_schema, candidate_schema);
-    } else {
-        schema_revision += 1;
-    }
+    auto [candidate_schema, schema_change] =
+        bound_timeline->reconcile_lane_query_schema();
     auto const schema = candidate_schema;
-    auto const schema_change = diff;
-    last_schema = schema;
     auto dataset = std::make_shared<TimelineLaneQueryDatasetView>(
         *bound_timeline,
         schema,
@@ -349,8 +339,7 @@ void bind_graph_input_lanes_timeline_bridge(GraphInputLanes &graph_input_lanes, 
 {
     bound_graph_input_lanes = &graph_input_lanes;
     bound_timeline = &timeline;
-    schema_revision = 0;
-    last_schema = timeline.lane_query_schema(schema_revision);
+    timeline.reset_lane_query_schema();
 }
 
 void unbind_graph_input_lanes_timeline_bridge(
