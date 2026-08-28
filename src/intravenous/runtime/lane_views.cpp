@@ -1,8 +1,10 @@
 #include <intravenous/runtime/lane_views.h>
 
 #include <intravenous/runtime/lane_views_events.h>
+#include <intravenous/runtime/socket_rpc_response_builders.h>
 
 #include <algorithm>
+#include <exception>
 #include <unordered_set>
 #include <variant>
 
@@ -230,6 +232,40 @@ namespace iv {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_lane_view_closed_event,
             view_id);
+    }
+
+    void LaneViews::handle_socket_rpc_open_lane_view(
+        LaneViewRequest const &request,
+        SocketRpcLaneViewResultBuilder &builder)
+    {
+        try {
+            builder.succeed(open_view(request));
+        } catch (std::exception const &error) {
+            builder.fail(error.what());
+        }
+    }
+
+    void LaneViews::handle_socket_rpc_update_lane_view(
+        LaneViewRequest const &request,
+        SocketRpcLaneViewResultBuilder &builder)
+    {
+        try {
+            builder.succeed(update_view(request));
+        } catch (std::exception const &error) {
+            builder.fail(error.what());
+        }
+    }
+
+    void LaneViews::handle_socket_rpc_close_lane_view(
+        std::string const &view_id,
+        SocketRpcAckResponseBuilder &builder)
+    {
+        try {
+            close_view(view_id);
+            builder.succeed();
+        } catch (std::exception const &error) {
+            builder.fail(error.what());
+        }
     }
 
     std::vector<LaneViewRequest> LaneViews::active_view_requests() const

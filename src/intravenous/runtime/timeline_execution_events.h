@@ -28,6 +28,8 @@ using ResumeEvent =
 using SeekEvent = void (*)(SeekRequest const &);
 using TimelineExecutionResumedEvent =
     void (*)(TimelineExecutionResumed const &);
+using TimelineExecutionInvalidateCompiledCacheEvent =
+    void (*)(LaneId);
 
 class TimelineExecutionRealtimeSampleBlockBuilder {
     BorrowedSampleBlock block_ {};
@@ -79,6 +81,9 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     TimelineExecutionResumedEvent,
     iv_runtime_timeline_execution_resumed_event);
+IV_DECLARE_LINKER_EVENT(
+    TimelineExecutionInvalidateCompiledCacheEvent,
+    iv_runtime_timeline_execution_invalidate_compiled_cache_event);
 IV_DECLARE_SINGLETON_EVENT(
     TimelineExecutionRealtimeSampleBlockRequestedEvent,
     iv_runtime_timeline_execution_realtime_sample_block_requested_event);

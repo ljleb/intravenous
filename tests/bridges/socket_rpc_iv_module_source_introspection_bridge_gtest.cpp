@@ -9,6 +9,7 @@
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
+#include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/startup_config.h>
@@ -24,41 +25,6 @@
 namespace {
 using Json = nlohmann::ordered_json;
 using namespace iv;
-bool g_answer_live_input_snapshots = false;
-bool g_answer_authored_state_snapshot = false;
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    IvModuleSourceIntrospectionLiveInputSnapshotsRequestedEvent,
-    iv_runtime_iv_module_source_introspection_live_input_snapshots_requested_event,
-    +[](std::vector<IvModuleSourceIntrospectionLiveInputSnapshotRequest> const &requests,
-        IvModuleSourceIntrospectionLiveInputSnapshotsBuilder &builder) {
-        if (!g_answer_live_input_snapshots) {
-            return;
-        }
-
-        std::vector<IvModuleSourceIntrospectionLiveInputSnapshot> snapshots;
-        snapshots.reserve(requests.size());
-        for (auto const &request : requests) {
-            snapshots.push_back(IvModuleSourceIntrospectionLiveInputSnapshot{
-                .virtual_node_id = request.virtual_node_id,
-                .member_ordinal = request.member_ordinal,
-                .input_ordinal = request.input_ordinal,
-                .current_value = request.fallback,
-                .has_concrete_override = false,
-            });
-        }
-        builder.succeed(std::move(snapshots));
-    });
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    IvModuleSourceIntrospectionAuthoredStateSnapshotRequestedEvent,
-    iv_runtime_iv_module_source_introspection_authored_state_snapshot_requested_event,
-    +[](IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder &builder) {
-        if (!g_answer_authored_state_snapshot) {
-            return;
-        }
-        builder.succeed(IvModuleSourceIntrospectionAuthoredStateSnapshot{});
-    });
 
 std::filesystem::path make_project_workspace()
 {
@@ -84,6 +50,8 @@ struct SeededIvModuleSourceIntrospectionOwner {
         iv_module_definitions_iv_module_source_introspection_scope;
     iv_module_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
+    iv_module_source_introspection_graph_input_lanes_bridge::scope
+        iv_module_source_introspection_graph_input_lanes_scope;
 
     SeededIvModuleSourceIntrospectionOwner(
         std::filesystem::path workspace_root,
@@ -100,7 +68,10 @@ struct SeededIvModuleSourceIntrospectionOwner {
               introspection),
           iv_module_instances_iv_module_source_introspection_scope(
               instances,
-              introspection)
+              introspection),
+          iv_module_source_introspection_graph_input_lanes_scope(
+              introspection,
+              graph_input_lanes)
     {
     }
 
@@ -151,13 +122,11 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, UnboundQueryEventLeavesBuilderU
 TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilderFromOwners)
 {
     auto const workspace = make_project_workspace();
-    g_answer_live_input_snapshots = true;
-    g_answer_authored_state_snapshot = true;
     SeededIvModuleSourceIntrospectionOwner owner(workspace, iv::test::repo_root(), {});
     owner.initialize();
-    bind_socket_rpc_iv_module_source_introspection_bridge(
-        owner.introspection,
-        owner.graph_input_lanes);
+    SocketRpcServer server(workspace, -1);
+    auto socket_introspection_scope =
+        socket_rpc_iv_module_source_introspection_bridge::bind(server, owner.introspection);
 
     SocketRpcGraphQueryResultBuilder builder;
     IV_INVOKE_LINKER_EVENT(
@@ -177,12 +146,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilder
 
     auto const response = parse_json_line(builder.build(2));
 
-    unbind_socket_rpc_iv_module_source_introspection_bridge(
-        owner.introspection,
-        owner.graph_input_lanes);
     owner.shutdown();
-    g_answer_live_input_snapshots = false;
-    g_answer_authored_state_snapshot = false;
 
     EXPECT_EQ(response["id"], 2);
     ASSERT_TRUE(response["result"].contains("nodes"));

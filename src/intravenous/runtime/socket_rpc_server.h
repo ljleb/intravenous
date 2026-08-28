@@ -23,6 +23,8 @@
 #include <vector>
 
 namespace iv {
+    struct LaneQuerySchemaChanged;
+
     using SocketRpcGraphQueryResult = ProjectQueryResult;
     using SocketRpcRegionQueryResult = ProjectRegionQueryResult;
     using SocketRpcServerMessage = ProjectMessageNotification;
@@ -102,8 +104,6 @@ namespace iv {
         void (*)(EnableProjectAutosaveRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcDisableProjectAutosaveEvent =
         void (*)(DisableProjectAutosaveRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcServerShutdownEvent =
-        void (*)(ServerShutdownRequest const &, SocketRpcAckResponseBuilder &);
 
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryBySpansEvent, iv_socket_rpc_graph_query_by_spans_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryActiveRegionsEvent, iv_socket_rpc_graph_query_active_regions_event);
@@ -142,7 +142,6 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDisableProjectAutosaveEvent, iv_socket_rpc_disable_project_autosave_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcServerShutdownEvent, iv_socket_rpc_server_shutdown_event);
 
     class SocketRpcServer {
         std::filesystem::path workspace_root;
@@ -191,6 +190,17 @@ namespace iv {
         void send_iv_module_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
         void send_virtual_nodes_updated(
+            ProjectVirtualNodesNotification const &notification);
+        void handle_project_notification(ProjectNotification const &notification);
+        void handle_iv_module_definitions_notification(
+            IvModuleDefinitionsNotification const &notification);
+        void handle_lane_views_updated(LaneViewResult const &lane_view);
+        void handle_lane_view_content_updated(LaneViewContentUpdate const &update);
+        void handle_lane_query_schema_changed(
+            LaneQuerySchemaChanged const &notification);
+        void handle_iv_module_instances_list_changed(
+            std::vector<IvModuleInstanceInfo> const &instances);
+        void handle_iv_module_source_introspection_nodes_updated(
             ProjectVirtualNodesNotification const &notification);
     };
 } // namespace iv

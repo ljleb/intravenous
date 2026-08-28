@@ -1,4 +1,5 @@
 #include <intravenous/runtime/graph_input_lanes.h>
+#include <intravenous/bridge.h>
 #include <intravenous/graph/build_types.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/graph_input_lanes_events.h>
@@ -280,34 +281,32 @@ void add_public_event_output(
 struct GraphInputLanesWitness {
     std::vector<iv::TimelineLaneBatchUpdate> timeline_batches {};
     std::vector<std::vector<std::string>> rebuild_requests {};
+    void handle_timeline_batch_requested(
+        iv::TimelineLaneBatchUpdate const &batch,
+        iv::GraphInputLanesAckBuilder &builder)
+    {
+        timeline_batches.push_back(batch);
+        builder.succeed();
+    }
 };
 
-GraphInputLanesWitness *g_graph_input_lanes_witness = nullptr;
+using namespace iv;
+IV_DECLARE_BRIDGE(
+    graph_input_lanes_witness_bridge,
+    iv::GraphInputLanes,
+    GraphInputLanesWitness);
+IV_DEFINE_BRIDGE(graph_input_lanes_witness_bridge)
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::GraphInputLanesTimelineBatchRequestedEvent,
+    graph_input_lanes_witness_bridge,
     iv_runtime_graph_input_lanes_timeline_batch_requested_event,
-    +[](iv::TimelineLaneBatchUpdate const &batch,
-        iv::GraphInputLanesAckBuilder &builder) {
-        if (g_graph_input_lanes_witness != nullptr) {
-            g_graph_input_lanes_witness->timeline_batches.push_back(batch);
-        }
-        builder.succeed();
-    });
+    &GraphInputLanesWitness::handle_timeline_batch_requested)
 
 class GraphInputLanesTest : public ::testing::Test {
 protected:
+    iv::GraphInputLanes bridge_source {};
     GraphInputLanesWitness witness {};
-
-    void SetUp() override
-    {
-        g_graph_input_lanes_witness = &witness;
-    }
-
-    void TearDown() override
-    {
-        g_graph_input_lanes_witness = nullptr;
-    }
+    graph_input_lanes_witness_bridge::scope witness_scope {bridge_source, witness};
 };
 
 bool batch_has_output_lane(

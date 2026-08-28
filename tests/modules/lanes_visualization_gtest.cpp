@@ -1,3 +1,4 @@
+#include <intravenous/bridge.h>
 #include <intravenous/runtime/lanes_visualization.h>
 
 #include <intravenous/runtime/lanes_visualization_events.h>
@@ -23,37 +24,24 @@ struct VisualizationTestState {
     std::unordered_map<std::uint64_t, std::vector<iv::TimedEvent>> compiled_events {};
     std::vector<iv::LaneViewContentUpdate> updates {};
     iv::TimelineLaneBatchUpdate last_batch {};
-};
-
-VisualizationTestState *g_state = nullptr;
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LanesVisualizationLaneOutputQueryEvent,
-    iv_runtime_lanes_visualization_lane_output_query_event,
-    +[](iv::LaneId lane, iv::LanesVisualizationLaneOutputQueryBuilder &builder) {
-        if (g_state == nullptr) {
-            return;
+    void handle_lane_output_query(
+        iv::LaneId lane,
+        iv::LanesVisualizationLaneOutputQueryBuilder &builder) const
+    {
+        if (auto const it = output_descriptors.find(lane.value);
+            it != output_descriptors.end()) {
+            builder.succeed(it->second);
         }
-        auto const it = g_state->output_descriptors.find(lane.value);
-        if (it == g_state->output_descriptors.end()) {
-            return;
-        }
-        builder.succeed(it->second);
-    });
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LanesVisualizationCompiledSampleWindowRequestedEvent,
-    iv_runtime_lanes_visualization_compiled_sample_window_requested_event,
-    +[](iv::LaneId lane,
-        size_t /*first*/,
-        size_t /*last*/,
+    }
+    void handle_compiled_sample_window(
+        iv::LaneId lane,
+        size_t,
+        size_t,
         size_t point_count,
-        iv::LanesVisualizationCompiledSampleWindowBuilder &builder) {
-        if (g_state == nullptr) {
-            return;
-        }
-        auto const it = g_state->compiled_samples.find(lane.value);
-        if (it == g_state->compiled_samples.end()) {
+        iv::LanesVisualizationCompiledSampleWindowBuilder &builder) const
+    {
+        auto const it = compiled_samples.find(lane.value);
+        if (it == compiled_samples.end()) {
             return;
         }
         iv::CompiledSampleWindow window;
@@ -61,44 +49,68 @@ IV_SUBSCRIBE_LINKER_EVENT(
             window.primary.push_back(it->second.samples[i % it->second.samples.size()].value);
         }
         builder.succeed(std::move(window));
-    });
+    }
+    void handle_compiled_event_window(
+        iv::LaneId lane,
+        size_t,
+        size_t,
+        iv::LanesVisualizationCompiledEventWindowBuilder &builder) const
+    {
+        if (auto const it = compiled_events.find(lane.value);
+            it != compiled_events.end()) {
+            builder.succeed(it->second);
+        }
+    }
+    void handle_timeline_batch(iv::TimelineLaneBatchUpdate const &batch)
+    {
+        last_batch = batch;
+    }
+    void handle_lane_view_content_updated(iv::LaneViewContentUpdate const &update)
+    {
+        updates.push_back(update);
+    }
+};
+
+using namespace iv;
+IV_DECLARE_BRIDGE(
+    visualization_test_state_bridge,
+    iv::LanesVisualization,
+    VisualizationTestState);
+IV_DEFINE_BRIDGE(visualization_test_state_bridge)
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LanesVisualizationCompiledEventWindowRequestedEvent,
+    visualization_test_state_bridge,
+    iv_runtime_lanes_visualization_lane_output_query_event,
+    &VisualizationTestState::handle_lane_output_query)
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    visualization_test_state_bridge,
+    iv_runtime_lanes_visualization_compiled_sample_window_requested_event,
+    &VisualizationTestState::handle_compiled_sample_window)
+
+IV_SUBSCRIBE_LINKER_EVENT(
+    visualization_test_state_bridge,
     iv_runtime_lanes_visualization_compiled_event_window_requested_event,
-    +[](iv::LaneId lane,
-        size_t /*first*/,
-        size_t /*last*/,
-        iv::LanesVisualizationCompiledEventWindowBuilder &builder) {
-        if (g_state == nullptr) {
-            return;
-        }
-        auto const it = g_state->compiled_events.find(lane.value);
-        if (it == g_state->compiled_events.end()) {
-            return;
-        }
-        builder.succeed(it->second);
-    });
+    &VisualizationTestState::handle_compiled_event_window)
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LanesVisualizationTimelineBatchRequestedEvent,
+    visualization_test_state_bridge,
     iv_runtime_lanes_visualization_timeline_batch_requested_event,
-    +[](iv::TimelineLaneBatchUpdate const &batch) {
-        if (g_state == nullptr) {
-            return;
-        }
-        g_state->last_batch = batch;
-    });
+    &VisualizationTestState::handle_timeline_batch)
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LaneViewContentUpdatedEvent,
+    visualization_test_state_bridge,
     iv_runtime_lane_view_content_updated_event,
-    +[](iv::LaneViewContentUpdate const &update) {
-        if (g_state == nullptr) {
-            return;
-        }
-        g_state->updates.push_back(update);
-    });
+    &VisualizationTestState::handle_lane_view_content_updated)
+
+struct VisualizationTestBindings {
+    iv::LanesVisualization source {std::nullopt, 512};
+    visualization_test_state_bridge::scope scope;
+
+    explicit VisualizationTestBindings(VisualizationTestState &state)
+        : scope(source, state)
+    {}
+};
 } // namespace
 
 namespace iv {
@@ -106,7 +118,7 @@ namespace iv {
 TEST(LanesVisualizationTest, PublishesExactCompiledSampleWindowForVisibleLane)
 {
     VisualizationTestState state;
-    g_state = &state;
+    VisualizationTestBindings bindings(state);
 
     state.output_descriptors[42] = LaneVisualizationOutputDescriptor{
         .config = CompiledSampleLaneOutputConfig{ .name = "test", .sample_layout = SampleStreamLayout::interleaved },
@@ -150,13 +162,12 @@ TEST(LanesVisualizationTest, PublishesExactCompiledSampleWindowForVisibleLane)
     EXPECT_EQ(state.updates.front().lanes.front().compiled_window_first_sample_index, 0u);
     EXPECT_EQ(state.updates.front().lanes.front().compiled_window_last_sample_index, 100u);
 
-    g_state = nullptr;
 }
 
 TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
 {
     VisualizationTestState state;
-    g_state = &state;
+    VisualizationTestBindings bindings(state);
 
     state.output_descriptors[7] = LaneVisualizationOutputDescriptor{
         .config = CompiledEventLaneOutputConfig{ .name = "test" },
@@ -189,13 +200,12 @@ TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
     EXPECT_EQ(state.updates.front().lanes.front().adapter_type, "events");
     EXPECT_EQ(state.updates.front().lanes.front().events.size(), 2u);
 
-    g_state = nullptr;
 }
 
 TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
 {
     VisualizationTestState state;
-    g_state = &state;
+    VisualizationTestBindings bindings(state);
 
     state.output_descriptors[42] = LaneVisualizationOutputDescriptor{
         .config = CompiledSampleLaneOutputConfig{ .name = "test" },
@@ -232,13 +242,12 @@ TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
     visualization.publish_now();
     EXPECT_TRUE(state.updates.empty());
 
-    g_state = nullptr;
 }
 
 TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished)
 {
     VisualizationTestState state;
-    g_state = &state;
+    VisualizationTestBindings bindings(state);
 
     state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
         .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
@@ -263,13 +272,12 @@ TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished
     ASSERT_EQ(state.last_batch.connections_to_add.size(), 1u);
     EXPECT_EQ(state.last_batch.connections_to_add.front().source.value, 10u);
 
-    g_state = nullptr;
 }
 
 TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPass)
 {
     VisualizationTestState state;
-    g_state = &state;
+    VisualizationTestBindings bindings(state);
 
     state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
         .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
@@ -298,13 +306,12 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
     ASSERT_EQ(state.last_batch.removals.size(), 1u);
     EXPECT_EQ(state.last_batch.removals.front(), vis_lane);
 
-    g_state = nullptr;
 }
 
 TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateTimelineUpserts)
 {
     VisualizationTestState state;
-    g_state = &state;
+    VisualizationTestBindings bindings(state);
 
     state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
         .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
@@ -331,13 +338,12 @@ TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateT
     EXPECT_TRUE(state.last_batch.upserts.empty());
     EXPECT_TRUE(state.last_batch.connections_to_add.empty());
 
-    g_state = nullptr;
 }
 
 TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
 {
     VisualizationTestState state;
-    g_state = &state;
+    VisualizationTestBindings bindings(state);
 
     state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
         .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
@@ -372,7 +378,6 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
     ASSERT_EQ(state.last_batch.upserts.size(), 1u);
     EXPECT_EQ(state.last_batch.connections_to_add.front().input.kind, PortKind::event);
 
-    g_state = nullptr;
 }
 
 } // namespace iv

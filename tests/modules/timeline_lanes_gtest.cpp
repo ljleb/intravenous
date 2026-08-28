@@ -2,15 +2,17 @@
 #include <intravenous/basic_lane_nodes/beat_trigger.h>
 #include <intravenous/runtime/graph_input_lane_controller.h>
 #include <intravenous/runtime/authored_lanes.h>
+#include <intravenous/runtime/authored_lanes_timeline_bridge.h>
 #include <intravenous/basic_lane_nodes/type_erased.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/lane_node/graph.h>
 #include <intravenous/runtime/lane_graph.h>
 #include <intravenous/runtime/runtime_project_events.h>
-#include <intravenous/runtime/runtime_project_timeline_execution_bridge.h>
+#include <intravenous/runtime/project_persistence.h>
+#include <intravenous/runtime/project_persistence_authored_lanes_bridge.h>
+#include <intravenous/runtime/timeline_timeline_execution_bridge.h>
 #include <intravenous/runtime/timeline.h>
 #include <intravenous/runtime/timeline_execution.h>
-#include <intravenous/runtime/timeline_lane_batch_bridge.h>
 
 #include <gtest/gtest.h>
 
@@ -25,30 +27,24 @@
 #include <variant>
 
 namespace {
+    using namespace iv;
     struct TimelineBatchWitness {
         std::vector<iv::TimelineLanesChanged> changes {};
-        std::vector<iv::TimelineLaneBatchUpdate> batches {};
+        void handle_timeline_lanes_changed(iv::TimelineLanesChanged const &change)
+        {
+            changes.push_back(change);
+        }
     };
 
-    TimelineBatchWitness *g_timeline_batch_witness = nullptr;
-
+    IV_DECLARE_BRIDGE(
+        timeline_batch_witness_bridge,
+        iv::Timeline,
+        TimelineBatchWitness);
+    IV_DEFINE_BRIDGE(timeline_batch_witness_bridge)
     IV_SUBSCRIBE_LINKER_EVENT(
-        iv::TimelineLanesChangedEvent,
+        timeline_batch_witness_bridge,
         iv_runtime_timeline_lanes_changed_event,
-        +[](iv::TimelineLanesChanged const &change) {
-            if (g_timeline_batch_witness != nullptr) {
-                g_timeline_batch_witness->changes.push_back(change);
-            }
-        });
-
-    IV_SUBSCRIBE_LINKER_EVENT(
-        iv::TimelineLaneBatchRequestedEvent,
-        iv_runtime_timeline_lane_batch_requested_event,
-        +[](iv::TimelineLaneBatchUpdate const &batch) {
-            if (g_timeline_batch_witness != nullptr) {
-                g_timeline_batch_witness->batches.push_back(batch);
-            }
-        });
+        &TimelineBatchWitness::handle_timeline_lanes_changed)
 
     struct TestCompiledEventLaneNode {
         std::array<iv::CompiledEventLaneInputConfig, 1> compiled_event_inputs() const
@@ -1027,7 +1023,7 @@ TEST(Lanes, AuthoredLanesEraseRemovesTheRecordAndItsConnections)
     EXPECT_FALSE(lanes.erase(lane_id).has_value());
 }
 
-TEST(TimelineLaneBatchBridge, RemovalMutatesTimelineAndPublishesFreshLaneSet)
+TEST(Timeline, ApplyingLaneBatchMutatesAndPublishesFreshLaneSet)
 {
     iv::Timeline timeline;
     iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
@@ -1037,15 +1033,14 @@ TEST(TimelineLaneBatchBridge, RemovalMutatesTimelineAndPublishesFreshLaneSet)
     auto const runtime_lane = create_batch.upserts.front().lane;
 
     TimelineBatchWitness witness;
-    g_timeline_batch_witness = &witness;
-    iv::bind_timeline_lane_batch_bridge(timeline);
-    IV_INVOKE_LINKER_EVENT(iv::iv_runtime_timeline_lane_batch_requested_event, create_batch);
+    auto timeline_batch_witness_scope =
+        timeline_batch_witness_bridge::bind(timeline, witness);
+    timeline.apply_lane_batch_and_publish_change(create_batch);
     ASSERT_TRUE(timeline.contains_lane(runtime_lane));
     ASSERT_FALSE(witness.changes.empty());
 
     witness.changes.clear();
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_timeline_lane_batch_requested_event,
+    timeline.apply_lane_batch_and_publish_change(
         iv::TimelineLaneBatchUpdate{.removals = {runtime_lane}});
 
     EXPECT_FALSE(timeline.contains_lane(runtime_lane));
@@ -1056,8 +1051,6 @@ TEST(TimelineLaneBatchBridge, RemovalMutatesTimelineAndPublishesFreshLaneSet)
     ASSERT_NE(change.dataset, nullptr);
     EXPECT_EQ(change.dataset->lane_count(), 0u);
 
-    iv::unbind_timeline_lane_batch_bridge(timeline);
-    g_timeline_batch_witness = nullptr;
 }
 
 // Regression: the lane-query schema revision is owned by Timeline (the shared
@@ -1066,7 +1059,7 @@ TEST(TimelineLaneBatchBridge, RemovalMutatesTimelineAndPublishesFreshLaneSet)
 // the canonical revision, and the schema served to a bridge must match the
 // canonical one. A per-bridge duplicate of last_schema/schema_revision used to
 // live in the bridges and could diverge; it is now centralized here.
-TEST(TimelineLaneBatchBridge, CanonicalSchemaRevisionIsOwnedAndIdempotent)
+TEST(Timeline, CanonicalSchemaRevisionIsOwnedAndIdempotent)
 {
     iv::Timeline timeline;
     iv::AuthoredLanes authored(iv::LaneCreationContext{.sample_rate = 48000});
@@ -1075,13 +1068,13 @@ TEST(TimelineLaneBatchBridge, CanonicalSchemaRevisionIsOwnedAndIdempotent)
     ASSERT_EQ(create_batch.upserts.size(), 1u);
 
     TimelineBatchWitness witness;
-    g_timeline_batch_witness = &witness;
-    iv::bind_timeline_lane_batch_bridge(timeline);
+    auto timeline_batch_witness_scope =
+        timeline_batch_witness_bridge::bind(timeline, witness);
 
     // A lane set whose schema properties do not change must keep the same
     // canonical revision, and reconcile must be idempotent (no drift).
     auto const baseline = timeline.lane_query_schema().revision();
-    IV_INVOKE_LINKER_EVENT(iv::iv_runtime_timeline_lane_batch_requested_event, create_batch);
+    timeline.apply_lane_batch_and_publish_change(create_batch);
     ASSERT_FALSE(witness.changes.empty());
     auto const first = witness.changes.front().schema_change.new_revision;
     // Creating a beat-trigger lane adds no new schema property, so the schema
@@ -1093,17 +1086,15 @@ TEST(TimelineLaneBatchBridge, CanonicalSchemaRevisionIsOwnedAndIdempotent)
     EXPECT_EQ(stable_a.revision(), stable_b.revision());
     EXPECT_EQ(stable_a.revision(), baseline);
 
-    // Binding a second bridge against the same Timeline must reset to the
-    // current lane set without changing the canonical revision to zero.
+    // Resetting the canonical schema must preserve the current lane set and
+    // must not change the canonical revision to zero.
     timeline.reset_lane_query_schema();
     auto const after_reset = timeline.reconcile_lane_query_schema().first;
     EXPECT_EQ(after_reset.revision(), stable_a.revision());
 
-    iv::unbind_timeline_lane_batch_bridge(timeline);
-    g_timeline_batch_witness = nullptr;
 }
 
-TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndForwardsTimelineRemovalBatch)
+TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndPublishesTimelineRemoval)
 {
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
@@ -1119,9 +1110,15 @@ TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndForwardsTimelineRemoval
     });
 
     TimelineBatchWitness witness;
-    g_timeline_batch_witness = &witness;
-    iv::bind_runtime_project_timeline_execution_bridge(
-        timeline, execution, authored, std::filesystem::path{});
+    auto timeline_batch_witness_scope =
+        timeline_batch_witness_bridge::bind(timeline, witness);
+    iv::ProjectPersistence persistence(std::filesystem::current_path(), {});
+    auto timeline_execution_scope =
+        iv::timeline_timeline_execution_bridge::bind(timeline, execution);
+    auto authored_timeline_scope =
+        iv::authored_lanes_timeline_bridge::bind(authored, timeline);
+    auto project_authored_scope =
+        iv::project_persistence_authored_lanes_bridge::bind(persistence, authored);
     iv::ProjectAckBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_project_delete_timeline_lane_requested_event,
@@ -1131,12 +1128,12 @@ TEST(ProjectTimelineLaneDeletion, RemovesAuthoredStateAndForwardsTimelineRemoval
 
     EXPECT_FALSE(authored.contains(public_id));
     EXPECT_TRUE(authored.connections().empty());
-    ASSERT_EQ(witness.batches.size(), 1u);
-    EXPECT_EQ(witness.batches.front().removals, std::vector<iv::LaneId>{runtime_lane});
-    EXPECT_TRUE(witness.batches.front().upserts.empty());
+    ASSERT_EQ(witness.changes.size(), 1u);
+    EXPECT_EQ(
+        witness.changes.front().removed_lanes,
+        std::vector<iv::LaneId>{runtime_lane});
+    EXPECT_TRUE(witness.changes.front().created_lanes.empty());
 
-    iv::unbind_runtime_project_timeline_execution_bridge(execution);
-    g_timeline_batch_witness = nullptr;
 }
 
 TEST(ProjectTimelineLaneDuplication, ClonesCanonicalAuthoredStateIntoOneNewTimelineLane)
@@ -1150,9 +1147,15 @@ TEST(ProjectTimelineLaneDuplication, ClonesCanonicalAuthoredStateIntoOneNewTimel
     auto const source_state = authored.records().front().serialized_state;
 
     TimelineBatchWitness witness;
-    g_timeline_batch_witness = &witness;
-    iv::bind_runtime_project_timeline_execution_bridge(
-        timeline, execution, authored, std::filesystem::path{});
+    auto timeline_batch_witness_scope =
+        timeline_batch_witness_bridge::bind(timeline, witness);
+    iv::ProjectPersistence persistence(std::filesystem::current_path(), {});
+    auto timeline_execution_scope =
+        iv::timeline_timeline_execution_bridge::bind(timeline, execution);
+    auto authored_timeline_scope =
+        iv::authored_lanes_timeline_bridge::bind(authored, timeline);
+    auto project_authored_scope =
+        iv::project_persistence_authored_lanes_bridge::bind(persistence, authored);
     iv::ProjectAckBuilder builder;
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_project_duplicate_timeline_lane_requested_event,
@@ -1168,10 +1171,10 @@ TEST(ProjectTimelineLaneDuplication, ClonesCanonicalAuthoredStateIntoOneNewTimel
     ASSERT_NE(duplicate, records.end());
     EXPECT_EQ(duplicate->type_id, "iv.timeline.beat-trigger");
     EXPECT_EQ(duplicate->serialized_state, source_state);
-    ASSERT_EQ(witness.batches.size(), 1u);
-    ASSERT_EQ(witness.batches.front().upserts.size(), 1u);
-    EXPECT_NE(witness.batches.front().upserts.front().external_id, source_id);
+    ASSERT_EQ(witness.changes.size(), 1u);
+    ASSERT_EQ(witness.changes.front().created_lanes.size(), 1u);
+    EXPECT_NE(
+        timeline.lane_public_id(witness.changes.front().created_lanes.front()),
+        source_id);
 
-    iv::unbind_runtime_project_timeline_execution_bridge(execution);
-    g_timeline_batch_witness = nullptr;
 }

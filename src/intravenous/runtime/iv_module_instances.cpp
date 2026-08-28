@@ -4,6 +4,10 @@
 #include <intravenous/runtime/iv_module_definitions_events.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_sources.h>
+#include <intravenous/runtime/iv_module_sources_events.h>
+#include <intravenous/runtime/iv_module_source_introspection_events.h>
+#include <intravenous/runtime/project_persistence_events.h>
+#include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/uuid.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
@@ -322,6 +326,82 @@ void IvModuleInstances::refresh_source_roots(IvModuleSources const &sources)
     }
 }
 
+void IvModuleInstances::handle_project_create_iv_module_instance(
+    ProjectCreateIvModuleInstanceRequest const &request,
+    ProjectStringBuilder &builder)
+{
+    IvModuleSourceLookupBuilder source_builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_source_lookup_event,
+        request.module_id,
+        source_builder);
+    if (!source_builder.has_response()) {
+        throw std::runtime_error("iv module source service is unavailable");
+    }
+    auto const source = source_builder.source();
+    if (!source.has_value()) {
+        throw std::runtime_error("unknown iv module source: " + request.module_id);
+    }
+    builder.succeed(create_instance(
+        source->module_id,
+        source->module_root,
+        request.instance_id,
+        request.display_name));
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void IvModuleInstances::handle_project_delete_iv_module_instance(
+    ProjectDeleteIvModuleInstanceRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    remove_instance(request.instance_id);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void IvModuleInstances::handle_project_update_iv_module_instances(
+    ProjectUpdateIvModuleInstancesRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    std::vector<Update> updates;
+    updates.reserve(request.updates.size());
+    for (auto const &update : request.updates) {
+        updates.push_back(Update{
+            .instance_id = update.instance_id,
+            .display_name = update.display_name,
+            .default_silence_ttl_samples = update.default_silence_ttl_samples,
+        });
+    }
+    update_instances(std::move(updates));
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void IvModuleInstances::handle_project_persistence_collect_state(
+    ProjectPersistenceBuilder &builder) const
+{
+    builder.add_iv_module_instances(list_instances());
+}
+
+void IvModuleInstances::handle_socket_rpc_get_iv_module_instances(
+    GetIvModuleInstancesRequest const &request,
+    SocketRpcIvModuleInstancesResultBuilder &builder) const
+{
+    auto instances = list_instances();
+    if (request.source_file_path.has_value()) {
+        IvModuleInstancesSourceFileFilterBuilder filter_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_instances_source_file_filter_event,
+            *request.source_file_path,
+            instances,
+            filter_builder);
+        if (filter_builder.has_response()) {
+            instances = filter_builder.build();
+        }
+    }
+    builder.succeed(std::move(instances));
+}
+
 std::vector<IvModuleInstanceInfo> IvModuleInstances::list_instances() const
 {
     std::vector<IvModuleInstanceInfo> instances;
@@ -335,6 +415,7 @@ std::vector<IvModuleInstanceInfo> IvModuleInstances::list_instances() const
             .display_name = entry.second.display_name,
             .module_root = entry.second.module_root,
             .default_silence_ttl_samples = entry.second.default_silence_ttl_samples,
+            .module_id = entry.second.definition_id,
         };
         if (auto realized = realized_instances_by_id.find(entry.second.instance_id);
             realized != realized_instances_by_id.end()) {

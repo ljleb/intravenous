@@ -7,10 +7,6 @@
 #include <stdexcept>
 #include <utility>
 
-template <class... Parameters>
-void iv_bridge_invoke_disconnected(Parameters&&...)
-{}
-
 // Declare a bridge's two concrete participants and its move-only binding
 // scope. Define it exactly once with IV_DEFINE_BRIDGE in the matching .cpp.
 #define IV_DECLARE_BRIDGE(bridge_type, left_participant, right_participant) \
@@ -129,8 +125,6 @@ struct iv_bridge_subscriber<Bridge, Member> {
             "bridge subscriber owner must be one of the bridge's participants");
         if (auto* instance = Bridge::template get<C>()) {
             std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
-        } else {
-            iv_bridge_invoke_disconnected(parameters...);
         }
     }
 };
@@ -146,13 +140,11 @@ struct iv_bridge_subscriber<Bridge, Member> {
             "bridge subscriber owner must be one of the bridge's participants");
         if (auto* instance = Bridge::template get<C>()) {
             std::invoke(Member, *instance, std::forward<Parameters>(parameters)...);
-        } else {
-            iv_bridge_invoke_disconnected(parameters...);
         }
     }
 };
 
-#define IV_SUBSCRIBE_BRIDGE(bridge_type, event_name, member)                \
+#define IV_SUBSCRIBE_LINKER_EVENT(bridge_type, event_name, member)                \
     namespace {                                                              \
         IV_LINKER_EVENT_USED                                                 \
         IV_LINKER_EVENT_SECTION(event_name)                                  \

@@ -1,3 +1,4 @@
+#include <intravenous/bridge.h>
 #include <intravenous/runtime/task_runner.h>
 #include <intravenous/runtime/task_runner_events.h>
 
@@ -145,6 +146,11 @@ namespace {
             std::scoped_lock lock(mutex);
             return revisions;
         }
+
+        void handle_after_pass(iv::TasksRunnerAfterPass const &finished)
+        {
+            push(finished.graph_revision);
+        }
     };
 
     struct PassStartedWitness {
@@ -162,28 +168,28 @@ namespace {
             std::scoped_lock lock(mutex);
             return revisions;
         }
+
+        void handle_before_pass(iv::TasksRunnerBeforePass const &started)
+        {
+            push(started.graph_revision);
+        }
     };
 
-    PassStartedWitness *g_pass_started_witness = nullptr;
-    PassFinishedWitness *g_pass_finished_witness = nullptr;
+    using namespace iv;
+    IV_DECLARE_BRIDGE(pass_started_witness_bridge, iv::TasksRunner, PassStartedWitness);
+    IV_DECLARE_BRIDGE(pass_finished_witness_bridge, iv::TasksRunner, PassFinishedWitness);
+    IV_DEFINE_BRIDGE(pass_started_witness_bridge)
+    IV_DEFINE_BRIDGE(pass_finished_witness_bridge)
 
     IV_SUBSCRIBE_LINKER_EVENT(
-        iv::TasksRunnerBeforePassEvent,
+        pass_started_witness_bridge,
         iv_runtime_task_runner_before_pass_event,
-        +[](iv::TasksRunnerBeforePass const &started) {
-            if (g_pass_started_witness != nullptr) {
-                g_pass_started_witness->push(started.graph_revision);
-            }
-        });
+        &PassStartedWitness::handle_before_pass)
 
     IV_SUBSCRIBE_LINKER_EVENT(
-        iv::TasksRunnerAfterPassEvent,
+        pass_finished_witness_bridge,
         iv_runtime_task_runner_after_pass_event,
-        +[](iv::TasksRunnerAfterPass const &finished) {
-            if (g_pass_finished_witness != nullptr) {
-                g_pass_finished_witness->push(finished.graph_revision);
-            }
-        });
+        &PassFinishedWitness::handle_after_pass)
 
     class TasksRunnerTest : public ::testing::Test {
     protected:
@@ -681,19 +687,17 @@ namespace {
     {
         PassStartedWitness started;
         PassFinishedWitness finished;
-        g_pass_started_witness = &started;
-        g_pass_finished_witness = &finished;
 
         {
             iv::TasksRunner runner(1);
+            auto started_scope = pass_started_witness_bridge::bind(runner, started);
+            auto finished_scope = pass_finished_witness_bridge::bind(runner, finished);
             ASSERT_TRUE(wait_until([&] { return !started.snapshot().empty(); }));
             ASSERT_TRUE(wait_until([&] { return !finished.snapshot().empty(); }));
             EXPECT_EQ(started.snapshot().front(), 0u);
             EXPECT_EQ(finished.snapshot().front(), 0u);
         }
 
-        g_pass_started_witness = nullptr;
-        g_pass_finished_witness = nullptr;
     }
 
     TEST_F(TasksRunnerTest, MergesStrictLinearChainIntoSingleExecutionGroup)
@@ -848,10 +852,10 @@ namespace {
         LogState log;
         RecordingContext ctx{ .name = "a", .log = &log };
         PassFinishedWitness witness;
-        g_pass_finished_witness = &witness;
 
         {
             iv::TasksRunner runner(1);
+            auto finished_scope = pass_finished_witness_bridge::bind(runner, witness);
             runner.update_tasks(iv::TaskGraphUpdate{
                 .to_create = { task("a", {}, &record_callback, &ctx) },
             });
@@ -863,7 +867,6 @@ namespace {
             }));
         }
 
-        g_pass_finished_witness = nullptr;
     }
 
 } // namespace

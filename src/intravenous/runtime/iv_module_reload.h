@@ -38,12 +38,8 @@ struct IvModuleReloadResults {
     std::vector<IvModuleReloadFailure> failed{};
 };
 
-struct IvModuleReloadStatus {
-    std::string level = "info";
-    std::string code{};
-    std::string message{};
-    std::filesystem::path module_root{};
-};
+struct ProjectOverrideSettingsRequest;
+class ProjectPersistenceBuilder;
 
 class IvModuleReload {
     StartupConfigState startup_config;
@@ -57,12 +53,19 @@ class IvModuleReload {
     [[nodiscard]] IvModuleReloadResults reload_declarations(
         std::vector<IvModuleDefinitionDeclaration> const &declarations);
     void refresh_watched_dependencies_locked();
+    void emit_status(
+        std::string level,
+        std::string code,
+        std::string message,
+        std::filesystem::path module_root = {});
 
 public:
     explicit IvModuleReload(StartupConfigState startup_config_);
 
     void set_toolchain_config(ModuleLoaderToolchainConfig toolchain);
     [[nodiscard]] ModuleLoaderToolchainConfig toolchain_config() const;
+    void handle_project_override_settings(ProjectOverrideSettingsRequest const &request);
+    void handle_project_persistence_collect_state(ProjectPersistenceBuilder &builder) const;
     void handle_definition_declarations_changed(
         IvModuleDefinitionDeclarationsChanged const &diff);
 

@@ -8,12 +8,12 @@
 namespace iv {
 IV_DEFINE_BRIDGE(iv_module_instances_execution_task_runner_bridge)
 
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_instances_execution_task_runner_bridge,
     iv_runtime_iv_module_instances_execution_tasks_changed_event,
     static_cast<void (TasksRunner::*)(VersionedTaskGraphUpdate const &)>(
         &TasksRunner::update_tasks));
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_instances_execution_task_runner_bridge,
     iv_runtime_task_runner_after_pass_event,
     &IvModuleInstancesExecution::handle_task_runner_after_pass);

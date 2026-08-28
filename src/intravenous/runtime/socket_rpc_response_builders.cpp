@@ -74,12 +74,18 @@ Json audio_devices_snapshot_json(AudioDevicesSnapshot const &snapshot)
 }
 } // namespace
 
+void SocketRpcAckResponseBuilder::succeed() noexcept {
+    has_response_ = true;
+}
+
 void SocketRpcAckResponseBuilder::fail(std::string message) {
+    has_response_ = true;
     error_code = -32000;
     error_message = std::move(message);
 }
 
 void SocketRpcAckResponseBuilder::fail(int code, std::string message) {
+    has_response_ = true;
     error_code = code;
     error_message = std::move(message);
 }

@@ -18,21 +18,17 @@ namespace iv {
     class SocketRpcAckResponseBuilder {
         int error_code = -32000;
         std::string error_message;
+        bool has_response_ = false;
 
     public:
+        void succeed() noexcept;
         void fail(std::string message);
         void fail(int code, std::string message);
 
+        [[nodiscard]] bool has_response() const noexcept { return has_response_; }
+
         [[nodiscard]] std::string build(int request_id) const;
     };
-
-    template <class Request>
-    void iv_bridge_invoke_disconnected(
-        Request const &,
-        SocketRpcAckResponseBuilder &builder)
-    {
-        builder.fail("runtime project event was not handled");
-    }
 
     class SocketRpcGraphQueryResultBuilder {
         int error_code = -32000;
@@ -43,6 +39,11 @@ namespace iv {
         void succeed(ProjectQueryResult value);
         void fail(std::string message);
         void fail(int code, std::string message);
+
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
 
         [[nodiscard]] std::string build(int request_id) const;
     };
@@ -57,6 +58,11 @@ namespace iv {
         void fail(std::string message);
         void fail(int code, std::string message);
 
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+
         [[nodiscard]] std::string build(int request_id) const;
     };
 
@@ -69,6 +75,11 @@ namespace iv {
         void succeed(VirtualNodeInfo value);
         void fail(std::string message);
         void fail(int code, std::string message);
+
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
 
         [[nodiscard]] std::string build(int request_id) const;
     };
@@ -83,6 +94,11 @@ namespace iv {
         void fail(std::string message);
         void fail(int code, std::string message);
 
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+
         [[nodiscard]] std::string build(int request_id) const;
     };
 
@@ -95,6 +111,11 @@ namespace iv {
         void succeed(std::string created_instance_id);
         void fail(std::string message);
         void fail(int code, std::string message);
+
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return instance_id.has_value() || !error_message.empty();
+        }
 
         [[nodiscard]] std::string build(int request_id) const;
     };
@@ -109,6 +130,11 @@ namespace iv {
         void fail(std::string message);
         void fail(int code, std::string message);
 
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+
         [[nodiscard]] std::string build(int request_id) const;
     };
 
@@ -121,6 +147,11 @@ namespace iv {
         void succeed(IvModuleSourceInfo value);
         void fail(std::string message);
         void fail(int code, std::string message);
+
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
 
         [[nodiscard]] std::string build(int request_id) const;
     };
@@ -135,6 +166,11 @@ namespace iv {
         void fail(std::string message);
         void fail(int code, std::string message);
 
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+
         [[nodiscard]] std::string build(int request_id) const;
     };
 
@@ -147,6 +183,11 @@ namespace iv {
         void succeed(AudioDevicesSnapshot value);
         void fail(std::string message);
         void fail(int code, std::string message);
+
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
 
         [[nodiscard]] std::string build(int request_id) const;
     };
@@ -161,6 +202,11 @@ namespace iv {
         void fail(std::string message);
         void fail(int code, std::string message);
 
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+
         [[nodiscard]] std::string build(int request_id) const;
     };
 
@@ -173,6 +219,11 @@ namespace iv {
         void succeed(query::LaneQuerySchema value);
         void fail(std::string message);
         void fail(int code, std::string message);
+
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
 
         [[nodiscard]] std::string build(int request_id) const;
     };
@@ -188,24 +239,13 @@ namespace iv {
         void fail(std::string message);
         void fail(int code, std::string message);
 
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+
         [[nodiscard]] std::string build(int request_id) const;
     };
-
-    template <class Request>
-    void iv_bridge_invoke_disconnected(
-        Request const &,
-        SocketRpcLaneQuerySchemaResultBuilder &builder)
-    {
-        builder.fail("lane query schema service is unavailable");
-    }
-
-    template <class Request>
-    void iv_bridge_invoke_disconnected(
-        Request const &,
-        SocketRpcLaneQueryCompletionResultBuilder &builder)
-    {
-        builder.fail("lane query schema service is unavailable");
-    }
 
     class SocketRpcLaneTypesResultBuilder {
         int error_code = -32000;
@@ -214,6 +254,10 @@ namespace iv {
     public:
         void succeed(std::vector<CreatableLaneDescriptor> value) { result = std::move(value); }
         void fail(std::string message) { error_code = -32000; error_message = std::move(message); }
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
         [[nodiscard]] std::string build(int request_id) const;
     };
 } // namespace iv

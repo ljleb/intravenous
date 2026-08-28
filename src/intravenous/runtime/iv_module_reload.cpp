@@ -4,6 +4,8 @@
 
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
+#include <intravenous/runtime/project_persistence_builder.h>
+#include <intravenous/runtime/runtime_project_events.h>
 
 #include <exception>
 #include <iterator>
@@ -82,6 +84,66 @@ ModuleLoaderToolchainConfig IvModuleReload::toolchain_config() const
 {
     std::scoped_lock lock(mutex);
     return startup_config.toolchain;
+}
+
+void IvModuleReload::handle_project_override_settings(
+    ProjectOverrideSettingsRequest const &request)
+{
+    bool touched = false;
+    auto toolchain = toolchain_config();
+    auto const assign_path = [&](std::optional<std::filesystem::path> const &value,
+                                 std::optional<std::filesystem::path>
+                                     ModuleLoaderToolchainConfig::*field) {
+        if (!value.has_value() || value == toolchain.*field) {
+            return;
+        }
+        toolchain.*field = value;
+        touched = true;
+    };
+    auto const assign_string = [&](std::optional<std::string> const &value,
+                                   std::optional<std::string>
+                                       ModuleLoaderToolchainConfig::*field) {
+        if (!value.has_value() || value == toolchain.*field) {
+            return;
+        }
+        toolchain.*field = value;
+        touched = true;
+    };
+
+    assign_path(request.c_compiler, &ModuleLoaderToolchainConfig::c_compiler);
+    assign_path(request.cxx_compiler, &ModuleLoaderToolchainConfig::cxx_compiler);
+    assign_path(request.cmake_program, &ModuleLoaderToolchainConfig::cmake_program);
+    assign_string(request.cmake_generator, &ModuleLoaderToolchainConfig::cmake_generator);
+    assign_path(request.make_program, &ModuleLoaderToolchainConfig::make_program);
+    assign_path(request.juce_dir, &ModuleLoaderToolchainConfig::juce_dir);
+    if (!touched) {
+        return;
+    }
+
+    set_toolchain_config(std::move(toolchain));
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void IvModuleReload::handle_project_persistence_collect_state(
+    ProjectPersistenceBuilder &builder) const
+{
+    builder.add_project_toolchain_config(toolchain_config());
+}
+
+void IvModuleReload::emit_status(
+    std::string level,
+    std::string code,
+    std::string message,
+    std::filesystem::path module_root)
+{
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_notification_event,
+        ProjectNotification(ProjectStatusNotification{
+            .level = std::move(level),
+            .code = std::move(code),
+            .message = std::move(message),
+            .module_root = std::move(module_root),
+        }));
 }
 
 void IvModuleReload::refresh_watched_dependencies_locked()
@@ -190,15 +252,13 @@ void IvModuleReload::compile_dirty_definitions()
         return;
     }
 
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_reload_status_event,
-        IvModuleReloadStatus{
-            .code = "rebuildStarted",
-            .message = declarations.size() == 1
-                ? "Building module definition"
-                : "Building " + std::to_string(declarations.size()) + " module definitions",
-            .module_root = declarations.size() == 1 ? declarations.front().module_root : std::filesystem::path{},
-        });
+    emit_status(
+        "info",
+        "rebuildStarted",
+        declarations.size() == 1
+            ? "Building module definition"
+            : "Building " + std::to_string(declarations.size()) + " module definitions",
+        declarations.size() == 1 ? declarations.front().module_root : std::filesystem::path{});
 
     auto results = reload_declarations(declarations);
     if (results.loaded.empty() && results.failed.empty()) {
@@ -207,24 +267,19 @@ void IvModuleReload::compile_dirty_definitions()
 
     if (!results.failed.empty()) {
         auto const &failure = results.failed.front();
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_reload_status_event,
-            IvModuleReloadStatus{
-                .level = "error",
-                .code = "rebuildFailed",
-                .message = failure.message,
-                .module_root = failure.module_root,
-            });
+        emit_status(
+            "error",
+            "rebuildFailed",
+            failure.message,
+            failure.module_root);
     } else {
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_iv_module_reload_status_event,
-            IvModuleReloadStatus{
-                .code = "rebuildFinished",
-                .message = "Module build ready to apply",
-                .module_root = results.loaded.size() == 1
-                    ? results.loaded.front().module_root
-                    : std::filesystem::path{},
-            });
+        emit_status(
+            "info",
+            "rebuildFinished",
+            "Module build ready to apply",
+            results.loaded.size() == 1
+                ? results.loaded.front().module_root
+                : std::filesystem::path{});
     }
 
     {

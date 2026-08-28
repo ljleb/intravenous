@@ -1,6 +1,7 @@
 #include <intravenous/runtime/project_autosave.h>
 
 #include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/runtime/runtime_project_events.h>
 
 namespace iv {
 void ProjectAutosave::project_loaded(TimePoint)
@@ -39,16 +40,36 @@ void ProjectAutosave::set_enabled(bool enabled, TimePoint now)
 
 void ProjectAutosave::handle_socket_rpc_enable_project_autosave(
     EnableProjectAutosaveRequest const &,
-    SocketRpcAckResponseBuilder &)
+    SocketRpcAckResponseBuilder &builder)
 {
     set_enabled(true);
+    builder.succeed();
 }
 
 void ProjectAutosave::handle_socket_rpc_disable_project_autosave(
     DisableProjectAutosaveRequest const &,
-    SocketRpcAckResponseBuilder &)
+    SocketRpcAckResponseBuilder &builder)
 {
     set_enabled(false);
+    builder.succeed();
+}
+
+void ProjectAutosave::handle_project_state_changed()
+{
+    project_state_changed();
+}
+
+void ProjectAutosave::handle_project_loaded()
+{
+    project_loaded();
+}
+
+void ProjectAutosave::handle_project_set_autosave_enabled(
+    ProjectSetAutosaveEnabledRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    set_enabled(request.enabled);
+    builder.succeed();
 }
 
 bool ProjectAutosave::enabled() const

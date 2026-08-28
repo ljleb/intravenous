@@ -18,6 +18,14 @@
 
 namespace iv {
 class IvModuleSources;
+class ProjectAckBuilder;
+class ProjectPersistenceBuilder;
+class ProjectStringBuilder;
+class SocketRpcIvModuleInstancesResultBuilder;
+struct ProjectCreateIvModuleInstanceRequest;
+struct ProjectDeleteIvModuleInstanceRequest;
+struct ProjectUpdateIvModuleInstancesRequest;
+struct GetIvModuleInstancesRequest;
 
 struct IvModuleRequiredDefinition {
     std::string definition_id{};
@@ -107,5 +115,19 @@ public:
 
     void handle_iv_module_definitions_changed(
         IvModuleDefinitionsChanged const &diff);
+    void handle_project_create_iv_module_instance(
+        ProjectCreateIvModuleInstanceRequest const &request,
+        ProjectStringBuilder &builder);
+    void handle_project_delete_iv_module_instance(
+        ProjectDeleteIvModuleInstanceRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_update_iv_module_instances(
+        ProjectUpdateIvModuleInstancesRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_persistence_collect_state(
+        ProjectPersistenceBuilder &builder) const;
+    void handle_socket_rpc_get_iv_module_instances(
+        GetIvModuleInstancesRequest const &request,
+        SocketRpcIvModuleInstancesResultBuilder &builder) const;
 };
 } // namespace iv

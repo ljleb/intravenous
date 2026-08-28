@@ -1,10 +1,16 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/basic_lane_nodes/controls.h>
+#include <intravenous/runtime/authored_lanes.h>
+#include <intravenous/runtime/authored_lanes_timeline_bridge.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/project_persistence.h>
+#include <intravenous/runtime/project_persistence_authored_lanes_bridge.h>
+#include <intravenous/runtime/project_persistence_timeline_bridge.h>
+#include <intravenous/runtime/project_persistence_timeline_execution_bridge.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
-#include <intravenous/runtime/runtime_project_timeline_execution_bridge.h>
+#include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/socket_rpc_timeline_execution_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/timeline.h>
@@ -19,6 +25,7 @@
 #include <string_view>
 
 namespace {
+using namespace iv;
 using Json = nlohmann::ordered_json;
 using iv::test_support::mutable_module_fixture_workspace;
 using iv::test_support::read_text;
@@ -26,22 +33,24 @@ using iv::test_support::write_text;
 
 struct ProjectNotificationWitness {
     std::vector<iv::ProjectMessageNotification> messages {};
-};
-
-ProjectNotificationWitness *g_project_notification_witness = nullptr;
-
-IV_SUBSCRIBE_LINKER_EVENT(
-    iv::ProjectNotificationEvent,
-    iv_runtime_project_notification_event,
-    +[](iv::ProjectNotification const &notification) {
-        if (g_project_notification_witness == nullptr) {
-            return;
-        }
+    void handle_project_notification(iv::ProjectNotification const &notification)
+    {
         if (auto const *message =
                 std::get_if<iv::ProjectMessageNotification>(&notification)) {
-            g_project_notification_witness->messages.push_back(*message);
+            messages.push_back(*message);
         }
-    });
+    }
+};
+
+IV_DECLARE_BRIDGE(
+    project_notification_witness_bridge,
+    iv::ProjectPersistence,
+    ProjectNotificationWitness);
+IV_DEFINE_BRIDGE(project_notification_witness_bridge)
+IV_SUBSCRIBE_LINKER_EVENT(
+    project_notification_witness_bridge,
+    iv_runtime_project_notification_event,
+    &ProjectNotificationWitness::handle_project_notification)
 
 Json parse_json_line(std::string_view line)
 {
@@ -57,6 +66,28 @@ std::string settings_line(size_t multiplier)
         }},
     }.dump() + "\n";
 }
+
+struct TimelineProjectBindings {
+    iv::timeline_timeline_execution_bridge::scope timeline_execution;
+    iv::authored_lanes_timeline_bridge::scope authored_timeline;
+    iv::project_persistence_timeline_execution_bridge::scope project_execution;
+    iv::project_persistence_timeline_bridge::scope project_timeline;
+    iv::project_persistence_authored_lanes_bridge::scope project_authored;
+
+    TimelineProjectBindings(
+        iv::ProjectPersistence &persistence,
+        iv::Timeline &timeline,
+        iv::TimelineExecution &execution,
+        iv::AuthoredLanes &authored_lanes)
+        : timeline_execution(iv::timeline_timeline_execution_bridge::bind(timeline, execution))
+        , authored_timeline(iv::authored_lanes_timeline_bridge::bind(authored_lanes, timeline))
+        , project_execution(
+            iv::project_persistence_timeline_execution_bridge::bind(persistence, execution))
+        , project_timeline(iv::project_persistence_timeline_bridge::bind(persistence, timeline))
+        , project_authored(
+            iv::project_persistence_authored_lanes_bridge::bind(persistence, authored_lanes))
+    {}
+};
 } // namespace
 
 TEST(SocketRpcTimelineExecutionBridge, UnboundSetChunkSizeReturnsError)
@@ -70,10 +101,7 @@ TEST(SocketRpcTimelineExecutionBridge, UnboundSetChunkSizeReturnsError)
         },
         builder);
 
-    auto const response = parse_json_line(builder.build(1));
-    EXPECT_EQ(
-        response["error"]["message"].get<std::string>(),
-        "runtime project event was not handled");
+    EXPECT_FALSE(builder.has_response());
 }
 
 TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeUpdatesTimelineExecution)
@@ -111,8 +139,12 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeUpdatesTimelineExecution
                 .compiled_sample_cache_chunk_size_multiplier = 16,
             },
         });
-    iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
-    iv::bind_socket_rpc_timeline_execution_bridge(timeline, execution, workspace);
+    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    TimelineProjectBindings project_bindings(
+        persistence, timeline, execution, authored_lanes);
+    iv::SocketRpcServer server(workspace, -1);
+    auto socket_project_scope =
+        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 
     iv::SocketRpcAckResponseBuilder builder;
     IV_INVOKE_LINKER_EVENT(
@@ -135,8 +167,6 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeUpdatesTimelineExecution
     EXPECT_TRUE(read_text(workspace / "iv_project.jsonl").contains(
         "\"compiled_sample_cache_chunk_size_multiplier\":8"));
 
-    iv::unbind_runtime_project_timeline_execution_bridge(execution);
-    iv::unbind_socket_rpc_timeline_execution_bridge(execution);
 }
 
 TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeRejectsZeroMultiplier)
@@ -148,8 +178,15 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeRejectsZeroMultiplier)
         "local_cmake");
     write_text(workspace / "iv_project.jsonl", settings_line(16));
 
-    iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
-    iv::bind_socket_rpc_timeline_execution_bridge(timeline, execution, workspace);
+    iv::ProjectPersistence persistence(
+        workspace,
+        iv::StartupConfigState{.workspace_root = workspace});
+    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    TimelineProjectBindings project_bindings(
+        persistence, timeline, execution, authored_lanes);
+    iv::SocketRpcServer server(workspace, -1);
+    auto socket_project_scope =
+        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 
     iv::SocketRpcAckResponseBuilder builder;
     IV_INVOKE_LINKER_EVENT(
@@ -167,8 +204,6 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetChunkSizeRejectsZeroMultiplier)
     EXPECT_TRUE(read_text(workspace / "iv_project.jsonl").contains(
         "\"compiled_sample_cache_chunk_size_multiplier\":16"));
 
-    iv::unbind_runtime_project_timeline_execution_bridge(execution);
-    iv::unbind_socket_rpc_timeline_execution_bridge(execution);
 }
 
 TEST(SocketRpcTimelineExecutionBridge, BoundSetLaneSampleChannelTypeUpdatesTimeline)
@@ -184,8 +219,15 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetLaneSampleChannelTypeUpdatesTimel
         "local_cmake");
     write_text(workspace / "iv_project.jsonl", settings_line(16));
 
-    iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
-    iv::bind_socket_rpc_timeline_execution_bridge(timeline, execution, workspace);
+    iv::ProjectPersistence persistence(
+        workspace,
+        iv::StartupConfigState{.workspace_root = workspace});
+    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    TimelineProjectBindings project_bindings(
+        persistence, timeline, execution, authored_lanes);
+    iv::SocketRpcServer server(workspace, -1);
+    auto socket_project_scope =
+        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 
     iv::SocketRpcAckResponseBuilder builder;
     IV_INVOKE_LINKER_EVENT(
@@ -200,8 +242,6 @@ TEST(SocketRpcTimelineExecutionBridge, BoundSetLaneSampleChannelTypeUpdatesTimel
     EXPECT_EQ(response["result"]["ok"], true);
     EXPECT_EQ(timeline.lane_sample_channel_type(lane), iv::ChannelTypeId::mono);
 
-    iv::unbind_runtime_project_timeline_execution_bridge(execution);
-    iv::unbind_socket_rpc_timeline_execution_bridge(execution);
 }
 
 TEST(SocketRpcTimelineExecutionBridge, DirectOverrideSettingsEventUpdatesTimelineExecution)
@@ -212,7 +252,12 @@ TEST(SocketRpcTimelineExecutionBridge, DirectOverrideSettingsEventUpdatesTimelin
         "socket_rpc_timeline_execution_bridge_direct_override",
         "local_cmake");
 
-    iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
+    iv::ProjectPersistence persistence(
+        workspace,
+        iv::StartupConfigState{.workspace_root = workspace});
+    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    TimelineProjectBindings project_bindings(
+        persistence, timeline, execution, authored_lanes);
 
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_project_override_settings_requested_event,
@@ -222,7 +267,6 @@ TEST(SocketRpcTimelineExecutionBridge, DirectOverrideSettingsEventUpdatesTimelin
 
     EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 8u);
 
-    iv::unbind_runtime_project_timeline_execution_bridge(execution);
 }
 
 TEST(SocketRpcTimelineExecutionBridge, LoadAppliesRecognizedOverrideSettingsAndLogsUnknownOnes)
@@ -253,9 +297,12 @@ TEST(SocketRpcTimelineExecutionBridge, LoadAppliesRecognizedOverrideSettingsAndL
             },
         });
     ProjectNotificationWitness witness;
-    g_project_notification_witness = &witness;
+    auto notification_scope =
+        project_notification_witness_bridge::bind(persistence, witness);
 
-    iv::bind_runtime_project_timeline_execution_bridge(timeline, execution, workspace);
+    iv::AuthoredLanes authored_lanes({.sample_rate = 48000});
+    TimelineProjectBindings project_bindings(
+        persistence, timeline, execution, authored_lanes);
     persistence.load();
 
     EXPECT_EQ(execution.compiled_sample_cache_chunk_size_multiplier(), 8u);
@@ -263,19 +310,17 @@ TEST(SocketRpcTimelineExecutionBridge, LoadAppliesRecognizedOverrideSettingsAndL
     EXPECT_EQ(witness.messages.front().level, "warning");
     EXPECT_TRUE(witness.messages.front().message.contains("unknown_setting"));
 
-    iv::unbind_runtime_project_timeline_execution_bridge(execution);
-    g_project_notification_witness = nullptr;
 }
 
 TEST(SocketRpcTimelineExecutionBridge, PlaybackPauseAndResumeDriveExecutionState)
 {
     iv::Timeline timeline;
     iv::TimelineExecution execution(8, 16);
-    iv::bind_timeline_timeline_execution_bridge(timeline, execution);
-    iv::bind_socket_rpc_timeline_execution_bridge(
-        timeline,
-        execution,
-        std::filesystem::current_path());
+    auto timeline_timeline_execution_scope =
+        iv::timeline_timeline_execution_bridge::bind(timeline, execution);
+    iv::SocketRpcServer server(std::filesystem::current_path(), -1);
+    auto socket_timeline_execution_scope =
+        iv::socket_rpc_timeline_execution_bridge::bind(server, execution);
 
     iv::SocketRpcAckResponseBuilder pause_builder;
     IV_INVOKE_LINKER_EVENT(
@@ -296,8 +341,6 @@ TEST(SocketRpcTimelineExecutionBridge, PlaybackPauseAndResumeDriveExecutionState
     EXPECT_FALSE(execution.is_paused());
     EXPECT_EQ(execution.realtime_start_index(), 96u);
 
-    iv::unbind_socket_rpc_timeline_execution_bridge(execution);
-    iv::unbind_timeline_timeline_execution_bridge(timeline, execution);
 }
 
 TEST(SocketRpcTimelineExecutionBridge, PlaybackResumeRealignsIvModuleExecutionIndices)
@@ -305,15 +348,15 @@ TEST(SocketRpcTimelineExecutionBridge, PlaybackResumeRealignsIvModuleExecutionIn
     iv::Timeline timeline;
     iv::TimelineExecution timeline_execution(8, 16);
     iv::IvModuleInstancesExecution execution(8);
-    iv::bind_timeline_timeline_execution_bridge(timeline, timeline_execution);
+    auto timeline_timeline_execution_scope =
+        iv::timeline_timeline_execution_bridge::bind(timeline, timeline_execution);
     auto timeline_execution_iv_module_instances_execution_scope =
         iv::timeline_execution_iv_module_instances_execution_bridge::bind(
             timeline_execution,
             execution);
-    iv::bind_socket_rpc_timeline_execution_bridge(
-        timeline,
-        timeline_execution,
-        std::filesystem::current_path());
+    iv::SocketRpcServer server(std::filesystem::current_path(), -1);
+    auto socket_timeline_execution_scope =
+        iv::socket_rpc_timeline_execution_bridge::bind(server, timeline_execution);
 
     struct IndexRecordingNode {
         std::vector<size_t> *indices = nullptr;
@@ -360,6 +403,4 @@ TEST(SocketRpcTimelineExecutionBridge, PlaybackResumeRealignsIvModuleExecutionIn
     callback.invoke(callback.context);
     EXPECT_EQ(indices, (std::vector<size_t>{0u, 8u, 128u}));
 
-    iv::unbind_socket_rpc_timeline_execution_bridge(timeline_execution);
-    iv::unbind_timeline_timeline_execution_bridge(timeline, timeline_execution);
 }

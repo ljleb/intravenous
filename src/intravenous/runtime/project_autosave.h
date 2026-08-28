@@ -7,8 +7,10 @@
 
 namespace iv {
 class SocketRpcAckResponseBuilder;
+class ProjectAckBuilder;
 struct DisableProjectAutosaveRequest;
 struct EnableProjectAutosaveRequest;
+struct ProjectSetAutosaveEnabledRequest;
 
     class ProjectAutosave {
     public:
@@ -37,6 +39,11 @@ struct EnableProjectAutosaveRequest;
         void handle_socket_rpc_disable_project_autosave(
             DisableProjectAutosaveRequest const &request,
             SocketRpcAckResponseBuilder &builder);
+        void handle_project_state_changed();
+        void handle_project_loaded();
+        void handle_project_set_autosave_enabled(
+            ProjectSetAutosaveEnabledRequest const &request,
+            ProjectAckBuilder &builder);
         [[nodiscard]] bool enabled() const;
         [[nodiscard]] bool take_due_save(TimePoint now = Clock::now());
         // Claim an outstanding save without waiting for the debounce timer.

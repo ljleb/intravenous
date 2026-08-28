@@ -1,8 +1,10 @@
 #pragma once
 
+#include <intravenous/bridge.h>
+
 namespace iv {
 class LaneViews;
+class SocketRpcServer;
 
-void bind_socket_rpc_lane_views_bridge(LaneViews &lane_views);
-void unbind_socket_rpc_lane_views_bridge(LaneViews const &lane_views);
+IV_DECLARE_BRIDGE(socket_rpc_lane_views_bridge, SocketRpcServer, LaneViews);
 } // namespace iv

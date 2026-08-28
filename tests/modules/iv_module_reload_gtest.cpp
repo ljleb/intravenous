@@ -1,6 +1,6 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/linker_event.h>
+#include <intravenous/bridge.h>
 #include <intravenous/node/block_executor.h>
 #include <intravenous/runtime/iv_module_reload.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
@@ -21,9 +21,15 @@ struct IvModuleReloadWitness {
     {
         results.reset();
     }
+    void handle_results(iv::IvModuleReloadResults const &value)
+    {
+        results = value;
+    }
 };
 
-IvModuleReloadWitness *g_iv_module_reload_witness = nullptr;
+using namespace iv;
+IV_DECLARE_BRIDGE(iv_module_reload_witness_bridge, iv::IvModuleReload, IvModuleReloadWitness);
+IV_DEFINE_BRIDGE(iv_module_reload_witness_bridge)
 
 iv::IvModuleDefinitionDeclaration make_declaration(
     std::string_view definition_id,
@@ -37,27 +43,15 @@ iv::IvModuleDefinitionDeclaration make_declaration(
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::IvModuleReloadResultsEvent,
+    iv_module_reload_witness_bridge,
     iv_runtime_iv_module_reload_results_event,
-    +[](iv::IvModuleReloadResults const &results) {
-        if (g_iv_module_reload_witness != nullptr) {
-            g_iv_module_reload_witness->results = results;
-        }
-    });
+    &IvModuleReloadWitness::handle_results)
 
 class IvModuleReloadTest : public ::testing::Test {
 protected:
+    iv::IvModuleReload bridge_source {iv::StartupConfigState{}};
     IvModuleReloadWitness witness {};
-
-    void SetUp() override
-    {
-        g_iv_module_reload_witness = &witness;
-    }
-
-    void TearDown() override
-    {
-        g_iv_module_reload_witness = nullptr;
-    }
+    iv_module_reload_witness_bridge::scope witness_scope {bridge_source, witness};
 };
 } // namespace
 

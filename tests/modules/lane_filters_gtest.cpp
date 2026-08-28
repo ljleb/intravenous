@@ -1,4 +1,4 @@
-#include <intravenous/linker_event.h>
+#include <intravenous/bridge.h>
 #include <intravenous/query/lane_query_dataset.h>
 #include <intravenous/query/lane_query_schema.h>
 #include <intravenous/runtime/lane_filters.h>
@@ -85,9 +85,15 @@ public:
 
 struct LaneFiltersWitness {
     std::vector<iv::LaneFiltersChanged> changes {};
+    void handle_lane_filters_changed(iv::LaneFiltersChanged const &change)
+    {
+        changes.push_back(change);
+    }
 };
 
-LaneFiltersWitness *g_lane_filters_witness = nullptr;
+using namespace iv;
+IV_DECLARE_BRIDGE(lane_filters_witness_bridge, iv::LaneFilters, LaneFiltersWitness);
+IV_DEFINE_BRIDGE(lane_filters_witness_bridge)
 
 iv::LaneMetadata metadata_for_lane(iv::LaneId lane_id)
 {
@@ -123,28 +129,15 @@ iv::TimelineLanesChanged make_change(
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LaneFiltersChangedEvent,
+    lane_filters_witness_bridge,
     iv_runtime_lane_filters_changed_event,
-    +[](iv::LaneFiltersChanged const &change) {
-        if (g_lane_filters_witness != nullptr) {
-            g_lane_filters_witness->changes.push_back(change);
-        }
-    });
+    &LaneFiltersWitness::handle_lane_filters_changed)
 
 class LaneFiltersTest : public ::testing::Test {
 protected:
     iv::LaneFilters filters;
     LaneFiltersWitness witness {};
-
-    void SetUp() override
-    {
-        g_lane_filters_witness = &witness;
-    }
-
-    void TearDown() override
-    {
-        g_lane_filters_witness = nullptr;
-    }
+    lane_filters_witness_bridge::scope witness_scope {filters, witness};
 };
 } // namespace
 

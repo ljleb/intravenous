@@ -17,7 +17,7 @@ IV_DECLARE_BRIDGE(example_a_example_b_bridge, ExampleA, ExampleB);
 
 // example_a_example_b_bridge.cpp
 IV_DEFINE_BRIDGE(example_a_example_b_bridge);
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     example_a_example_b_bridge,
     iv_runtime_example_a_changed_event,
     &ExampleB::handle_example_a_changed);
@@ -72,9 +72,8 @@ direct call. Do not invent a nominal participant just to fit the bridge API.
    declarative.
 5. Convert singleton-event bridge subscriptions using the corresponding typed
    facility, or first turn those singleton events into linker-set events.
-6. Audit that every bridge is declarative. Remove the legacy subscribe macro,
-   then rename the typed bridge subscription macro to
-   `IV_SUBSCRIBE_LINKER_EVENT`.
+6. Audit that every bridge is declarative. The only multicast subscription
+   interface is the typed `IV_SUBSCRIBE_LINKER_EVENT` bridge macro.
 7. Move modules and declarative bridges out of the flat `runtime/` directory
    in a separate, move-only change. Co-locate module implementation and event
    declarations; group bridges in a dedicated bridge area.

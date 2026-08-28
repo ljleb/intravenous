@@ -5,7 +5,9 @@
 #include <intravenous/compat.h>
 #include <intravenous/filesystem_paths.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
+#include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/socket_rpc_server.h>
 
 #include <algorithm>
 #include <fstream>
@@ -27,6 +29,71 @@ template<class Port>
 std::string public_output_node_id(Port const& output)
 {
     return iv::public_output_node_id(output.instance_id, output.source_identity);
+}
+
+void refresh_public_ports(IvModuleSourceIntrospection &introspection)
+{
+    IvModuleSourceIntrospectionPublicPortsSnapshotBuilder builder;
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_iv_module_source_introspection_public_ports_snapshot_requested_event,
+        builder);
+    auto snapshot = builder.build();
+    introspection.set_public_sample_inputs(std::move(snapshot.sample_inputs));
+    introspection.set_public_event_inputs(std::move(snapshot.event_inputs));
+    introspection.set_public_sample_outputs(std::move(snapshot.sample_outputs));
+    introspection.set_public_event_outputs(std::move(snapshot.event_outputs));
+}
+
+void notify_updated_node_ids(
+    IvModuleSourceIntrospection const &introspection,
+    std::vector<std::string> node_ids)
+{
+    if (node_ids.empty()) {
+        return;
+    }
+    try {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_source_introspection_nodes_updated_event,
+            ProjectVirtualNodesNotification{
+                .nodes = introspection.get_virtual_nodes(std::move(node_ids)),
+            });
+    } catch (...) {
+    }
+}
+
+ProjectSampleInputState parse_project_sample_input_state(std::string const &state)
+{
+    if (state == "default") return ProjectSampleInputState::default_;
+    if (state == "overridden") return ProjectSampleInputState::overridden;
+    if (state == "virtualFollow") return ProjectSampleInputState::virtual_follow;
+    if (state == "timelineLane") return ProjectSampleInputState::timeline_lane;
+    if (state == "disconnected") return ProjectSampleInputState::disconnected;
+    throw std::runtime_error("unknown sample input state: " + state);
+}
+
+ProjectEventInputState parse_project_event_input_state(std::string const &state)
+{
+    if (state == "default") return ProjectEventInputState::default_;
+    if (state == "virtualFollow") return ProjectEventInputState::virtual_follow;
+    if (state == "timelineLane") return ProjectEventInputState::timeline_lane;
+    if (state == "disconnected") return ProjectEventInputState::disconnected;
+    throw std::runtime_error("unknown event input state: " + state);
+}
+
+ProjectSampleOutputState parse_project_sample_output_state(std::string const &state)
+{
+    if (state == "disconnected") return ProjectSampleOutputState::disconnected;
+    if (state == "virtual") return ProjectSampleOutputState::virtual_port;
+    if (state == "timelineLane") return ProjectSampleOutputState::timeline_lane;
+    throw std::runtime_error("unknown sample output state: " + state);
+}
+
+ProjectEventOutputState parse_project_event_output_state(std::string const &state)
+{
+    if (state == "disconnected") return ProjectEventOutputState::disconnected;
+    if (state == "virtual") return ProjectEventOutputState::virtual_port;
+    if (state == "timelineLane") return ProjectEventOutputState::timeline_lane;
+    throw std::runtime_error("unknown event output state: " + state);
 }
 }
 SourceTextLineMap SourceTextLineMap::from_file(std::filesystem::path const &path)
@@ -812,6 +879,59 @@ void IvModuleSourceIntrospection::handle_iv_module_instances_list_changed(
     }
 }
 
+void IvModuleSourceIntrospection::handle_iv_module_instance_builders_completed(
+    IvModuleInstanceBuildersChanged const &diff)
+{
+    std::vector<std::string> replace_instance_ids;
+    std::vector<IvModuleInstanceInfo> instances;
+
+    auto append_instance = [&](IvModuleInstanceBuilderRef const &ref) {
+        auto const *instance = ref.instance;
+        if (instance == nullptr
+            || std::ranges::find(replace_instance_ids, instance->instance_id)
+                != replace_instance_ids.end()) {
+            return;
+        }
+        replace_instance_ids.push_back(instance->instance_id);
+        instances.push_back(IvModuleInstanceInfo{
+            .instance_id = instance->instance_id,
+            .definition_id = instance->definition_id,
+            .module_root = instance->module_root,
+            .default_silence_ttl_samples = instance->default_silence_ttl_samples,
+            .realized = true,
+            .module_id = instance->module_id,
+        });
+    };
+
+    for (auto const &created : diff.created) {
+        append_instance(created);
+    }
+    for (auto const &updated : diff.updated) {
+        append_instance(updated);
+    }
+    for (auto const &deleted_instance_id : diff.deleted_instance_ids) {
+        if (std::ranges::find(replace_instance_ids, deleted_instance_id)
+            == replace_instance_ids.end()) {
+            replace_instance_ids.push_back(deleted_instance_id);
+        }
+    }
+    if (replace_instance_ids.empty()) {
+        return;
+    }
+
+    try {
+        replace_public_input_instances(replace_instance_ids);
+        refresh_public_ports(*this);
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_iv_module_source_introspection_nodes_updated_event,
+            ProjectVirtualNodesNotification{
+                .nodes = get_virtual_nodes_for_instances(instances),
+                .replace_instance_ids = std::move(replace_instance_ids),
+            });
+    } catch (...) {
+    }
+}
+
 ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
     std::filesystem::path const &file_path,
     std::vector<SourceRange> const &ranges,
@@ -1308,5 +1428,189 @@ GraphInputPortDescriptor IvModuleSourceIntrospection::sample_graph_input_port_fo
     auto descriptor = sample_graph_input_port_for(node, concrete_member_ordinal, input_ordinal);
     descriptor.virtual_node_id = node_id;
     return descriptor;
+}
+
+void IvModuleSourceIntrospection::handle_iv_module_instances_source_file_filter(
+    std::filesystem::path const &source_file_path,
+    std::vector<IvModuleInstanceInfo> const &instances,
+    IvModuleInstancesSourceFileFilterBuilder &builder) const
+{
+    auto matching_instances = instances;
+    std::erase_if(matching_instances, [&](IvModuleInstanceInfo const &instance) {
+        return !definition_uses_source_file(
+            instance.definition_id,
+            source_file_path);
+    });
+    builder.succeed(std::move(matching_instances));
+}
+
+void IvModuleSourceIntrospection::handle_socket_rpc_graph_query_by_spans(
+    GraphQueryBySpansRequest const &request,
+    SocketRpcGraphQueryResultBuilder &builder) const
+{
+    builder.succeed(query_by_spans(
+        request.file_path,
+        request.ranges,
+        request.match_mode,
+        request.instance_id));
+}
+
+void IvModuleSourceIntrospection::handle_socket_rpc_graph_query_active_regions(
+    GraphQueryActiveRegionsRequest const &request,
+    SocketRpcRegionQueryResultBuilder &builder) const
+{
+    builder.succeed(query_active_regions(request.file_path));
+}
+
+void IvModuleSourceIntrospection::handle_socket_rpc_get_virtual_node(
+    GetVirtualNodeRequest const &request,
+    SocketRpcVirtualNodeResultBuilder &builder) const
+{
+    builder.succeed(get_virtual_node(request.node_id));
+}
+
+void IvModuleSourceIntrospection::handle_socket_rpc_get_virtual_nodes(
+    GetVirtualNodesRequest const &request,
+    SocketRpcVirtualNodesResultBuilder &builder) const
+{
+    builder.succeed(get_virtual_nodes(request.node_ids));
+}
+
+void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_value(
+    SetSampleInputValueRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
+            ProjectAckBuilder project_builder;
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_set_public_sample_input_value_requested_event,
+                public_input->first,
+                public_input->second,
+                request.value,
+                project_builder);
+            project_builder.build();
+        } else {
+            ProjectAckBuilder project_builder;
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_set_sample_input_value_requested_event,
+                ProjectSetSampleInputValueRequest{
+                    .node_id = request.node_id,
+                    .member_ordinal = request.member_ordinal,
+                    .input_ordinal = request.input_ordinal,
+                    .value = request.value,
+                },
+                project_builder);
+            project_builder.build();
+        }
+        refresh_public_ports(*this);
+        notify_updated_node_ids(*this, {request.node_id});
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_input_state(
+    SetSampleInputStateRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_set_public_sample_input_state_requested_event,
+                ProjectSetPublicSampleInputStateRequest{
+                    .instance_id = public_input->first,
+                    .source_identity = public_input->second,
+                    .member_ordinal = request.member_ordinal,
+                    .state = parse_project_sample_input_state(request.state),
+                },
+                project_builder);
+        } else {
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_set_sample_input_state_requested_event,
+                ProjectSetSampleInputStateRequest{
+                    .node_id = request.node_id,
+                    .member_ordinal = request.member_ordinal,
+                    .input_ordinal = request.input_ordinal,
+                    .state = parse_project_sample_input_state(request.state),
+                },
+                project_builder);
+        }
+        project_builder.build();
+        refresh_public_ports(*this);
+        notify_updated_node_ids(*this, {request.node_id});
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void IvModuleSourceIntrospection::handle_socket_rpc_set_event_input_state(
+    SetEventInputStateRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_event_input_state_requested_event,
+            ProjectSetEventInputStateRequest{
+                .node_id = request.node_id,
+                .member_ordinal = request.member_ordinal,
+                .input_ordinal = request.input_ordinal,
+                .state = parse_project_event_input_state(request.state),
+            },
+            project_builder);
+        project_builder.build();
+        refresh_public_ports(*this);
+        notify_updated_node_ids(*this, {request.node_id});
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void IvModuleSourceIntrospection::handle_socket_rpc_set_sample_output_state(
+    SetSampleOutputStateRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_sample_output_state_requested_event,
+            ProjectSetSampleOutputStateRequest{
+                .node_id = request.node_id,
+                .member_ordinal = request.member_ordinal,
+                .output_ordinal = request.output_ordinal,
+                .state = parse_project_sample_output_state(request.state),
+            },
+            project_builder);
+        project_builder.build();
+        refresh_public_ports(*this);
+        notify_updated_node_ids(*this, {request.node_id});
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void IvModuleSourceIntrospection::handle_socket_rpc_set_event_output_state(
+    SetEventOutputStateRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_event_output_state_requested_event,
+            ProjectSetEventOutputStateRequest{
+                .node_id = request.node_id,
+                .member_ordinal = request.member_ordinal,
+                .output_ordinal = request.output_ordinal,
+                .state = parse_project_event_output_state(request.state),
+            },
+            project_builder);
+        project_builder.build();
+        refresh_public_ports(*this);
+        notify_updated_node_ids(*this, {request.node_id});
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
 }
 } // namespace iv

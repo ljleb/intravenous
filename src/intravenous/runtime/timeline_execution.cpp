@@ -1,6 +1,12 @@
 #include <intravenous/runtime/timeline_execution.h>
 
+#include <intravenous/runtime/socket_rpc_response_builders.h>
+
+#include <intravenous/runtime/project_persistence_builder.h>
+#include <intravenous/runtime/runtime_project_events.h>
+
 #include <intravenous/runtime/lanes_visualization_events.h>
+#include <intravenous/runtime/timeline_execution_events.h>
 
 #include <algorithm>
 #include <cmath>
@@ -321,6 +327,123 @@ VersionedTaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(Timeli
         .version_index = change.version_index,
         .update = std::move(update),
     };
+}
+
+void TimelineExecution::publish_task_graph_update(
+    VersionedTaskGraphUpdate const &update) const
+{
+    if (update.update.to_create.empty()
+        && update.update.to_update.empty()
+        && update.update.to_delete.empty()) {
+        return;
+    }
+    IV_INVOKE_LINKER_EVENT(iv_runtime_timeline_execution_tasks_changed_event, update);
+}
+
+void TimelineExecution::handle_timeline_lanes_changed_event(
+    TimelineLanesChanged const &change)
+{
+    publish_task_graph_update(handle_timeline_lanes_changed(change));
+}
+
+void TimelineExecution::handle_timeline_execution_realtime_sample_block_requested(
+    LaneId lane,
+    TimelineExecutionRealtimeSampleBlockBuilder &builder) const
+{
+    builder.succeed(realtime_sample_block(lane));
+}
+
+void TimelineExecution::handle_timeline_execution_realtime_event_block_requested(
+    LaneId lane,
+    TimelineExecutionRealtimeEventBlockBuilder &builder) const
+{
+    builder.succeed(realtime_event_block(lane));
+}
+
+void TimelineExecution::handle_pause(PauseRequest const &)
+{
+    pause();
+    seek(last_scrubbed_index());
+}
+
+void TimelineExecution::handle_resume(ResumeRequest const &request)
+{
+    resume(request.start_index);
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_timeline_execution_resumed_event,
+        TimelineExecutionResumed{.start_index = request.start_index});
+}
+
+void TimelineExecution::handle_seek(SeekRequest const &request)
+{
+    bool const was_paused = is_paused();
+    seek(request.sample_index);
+    if (!was_paused) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_timeline_execution_resumed_event,
+            TimelineExecutionResumed{.start_index = request.sample_index});
+    }
+}
+
+void TimelineExecution::handle_socket_rpc_pause(
+    PauseRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_pause_event, request);
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void TimelineExecution::handle_socket_rpc_resume(
+    ResumeRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_resume_event, request);
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void TimelineExecution::handle_socket_rpc_seek(
+    SeekRequest const &request,
+    SocketRpcAckResponseBuilder &builder)
+{
+    try {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_seek_event, request);
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void TimelineExecution::handle_project_set_timeline_compiled_sample_cache_chunk_size_multiplier(
+    ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    set_compiled_sample_cache_chunk_size_multiplier(
+        request.compiled_sample_cache_chunk_size_multiplier);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void TimelineExecution::handle_project_override_settings(
+    ProjectOverrideSettingsRequest const &request)
+{
+    if (!request.compiled_sample_cache_chunk_size_multiplier.has_value()) {
+        return;
+    }
+    set_compiled_sample_cache_chunk_size_multiplier(
+        *request.compiled_sample_cache_chunk_size_multiplier);
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void TimelineExecution::handle_project_persistence_collect_state(
+    ProjectPersistenceBuilder &builder) const
+{
+    builder.add_project_compiled_sample_cache_chunk_size_multiplier(
+        compiled_sample_cache_chunk_size_multiplier());
 }
 
 std::vector<LaneId> TimelineExecution::realtime_sample_output_lanes() const

@@ -50,15 +50,6 @@
         return {begin, end}; \
     }
 
-// Legacy multicast subscribe. Migrate all call sites to IV_SUBSCRIBE_BRIDGE
-// before this macro is removed.
-#define IV_SUBSCRIBE_LINKER_EVENT(event_type, event_name, ...) \
-    namespace { \
-        alignas(event_type) IV_LINKER_EVENT_USED \
-        IV_LINKER_EVENT_SECTION(event_name) event_type const \
-        IV_LINKER_EVENT_CONCAT(iv_linker_event_subscriber_, __COUNTER__){__VA_ARGS__}; \
-    }
-
 #define IV_INVOKE_LINKER_EVENT(event_name, ...) \
     do { \
         auto iv_linker_event_invoke = [&](auto&&... iv_linker_event_args) { \

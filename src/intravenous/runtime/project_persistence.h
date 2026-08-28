@@ -18,7 +18,21 @@
 
 namespace iv {
 class SocketRpcAckResponseBuilder;
+class SocketRpcCreateIvModuleInstanceResultBuilder;
+class SocketRpcLaneTypesResultBuilder;
 struct SaveProjectRequest;
+struct CreateIvModuleInstanceRequest;
+struct DeleteIvModuleInstanceRequest;
+struct UpdateIvModuleInstancesRequest;
+struct SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest;
+struct SetTimelineLaneSampleChannelTypeRequest;
+struct SetTimelineLaneUiStateRequest;
+struct ConnectTimelineLanesRequest;
+struct DisconnectTimelineLanesRequest;
+struct GetTimelineLaneTypesRequest;
+struct CreateTimelineLaneRequest;
+struct DeleteTimelineLaneRequest;
+struct DuplicateTimelineLaneRequest;
 
 class ProjectPersistence {
     std::filesystem::path workspace_root_;
@@ -39,6 +53,42 @@ public:
     void save() const;
     void handle_socket_rpc_save_project(
         SaveProjectRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_create_iv_module_instance(
+        CreateIvModuleInstanceRequest const &request,
+        SocketRpcCreateIvModuleInstanceResultBuilder &builder) const;
+    void handle_socket_rpc_delete_iv_module_instance(
+        DeleteIvModuleInstanceRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_update_iv_module_instances(
+        UpdateIvModuleInstancesRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier(
+        SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_set_timeline_lane_sample_channel_type(
+        SetTimelineLaneSampleChannelTypeRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_set_timeline_lane_ui_state(
+        SetTimelineLaneUiStateRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_connect_timeline_lanes(
+        ConnectTimelineLanesRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_disconnect_timeline_lanes(
+        DisconnectTimelineLanesRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_get_timeline_lane_types(
+        GetTimelineLaneTypesRequest const &request,
+        SocketRpcLaneTypesResultBuilder &builder) const;
+    void handle_socket_rpc_create_timeline_lane(
+        CreateTimelineLaneRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_delete_timeline_lane(
+        DeleteTimelineLaneRequest const &request,
+        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_duplicate_timeline_lane(
+        DuplicateTimelineLaneRequest const &request,
         SocketRpcAckResponseBuilder &builder) const;
     void report_autosave_failure(std::string message) const;
 };

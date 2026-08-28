@@ -52,6 +52,8 @@ struct SeededIvModuleSourceIntrospectionApp {
         iv_module_instances_graph_input_lanes_scope;
     iv::iv_module_source_introspection_graph_input_lanes_bridge::scope
         iv_module_source_introspection_graph_input_lanes_scope;
+    iv::graph_input_lanes_timeline_bridge::scope
+        graph_input_lanes_timeline_scope;
 
     SeededIvModuleSourceIntrospectionApp(
         std::filesystem::path workspace_root,
@@ -75,15 +77,9 @@ struct SeededIvModuleSourceIntrospectionApp {
               graph_input_lanes),
           iv_module_source_introspection_graph_input_lanes_scope(
               introspection,
-              graph_input_lanes)
-    {
-        iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
-    }
-
-    ~SeededIvModuleSourceIntrospectionApp()
-    {
-        iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
-    }
+              graph_input_lanes),
+          graph_input_lanes_timeline_scope(graph_input_lanes, timeline)
+    {}
 
     auto initialize()
     {

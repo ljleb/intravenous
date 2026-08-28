@@ -5,6 +5,7 @@
 #include <intravenous/runtime/task_ids.h>
 #include <intravenous/runtime/task_runner.h>
 #include <intravenous/runtime/timeline_events.h>
+#include <intravenous/runtime/timeline_execution_events.h>
 #include <intravenous/runtime/lanes_visualization_api_types.h>
 
 #include <memory>
@@ -17,6 +18,11 @@ namespace iv {
 class LanesVisualizationPlaybackPositionBuilder;
 class LanesVisualizationCompiledSampleWindowBuilder;
 class LanesVisualizationCompiledEventWindowBuilder;
+class SocketRpcAckResponseBuilder;
+class ProjectAckBuilder;
+class ProjectPersistenceBuilder;
+struct ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequest;
+struct ProjectOverrideSettingsRequest;
 
 struct CompiledSupportChunkRange {
     size_t start_chunk_index = 0;
@@ -32,6 +38,33 @@ public:
 
     VersionedTaskGraphUpdate synchronize_from_graph(LaneGraph const &graph);
     VersionedTaskGraphUpdate handle_timeline_lanes_changed(TimelineLanesChanged const &change);
+    void publish_task_graph_update(VersionedTaskGraphUpdate const &update) const;
+    void handle_timeline_lanes_changed_event(TimelineLanesChanged const &change);
+    void handle_timeline_execution_realtime_sample_block_requested(
+        LaneId lane,
+        TimelineExecutionRealtimeSampleBlockBuilder &builder) const;
+    void handle_timeline_execution_realtime_event_block_requested(
+        LaneId lane,
+        TimelineExecutionRealtimeEventBlockBuilder &builder) const;
+    void handle_pause(PauseRequest const &request);
+    void handle_resume(ResumeRequest const &request);
+    void handle_seek(SeekRequest const &request);
+    void handle_socket_rpc_pause(
+        PauseRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
+    void handle_socket_rpc_resume(
+        ResumeRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
+    void handle_socket_rpc_seek(
+        SeekRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
+    void handle_project_set_timeline_compiled_sample_cache_chunk_size_multiplier(
+        ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_override_settings(
+        ProjectOverrideSettingsRequest const &request);
+    void handle_project_persistence_collect_state(
+        ProjectPersistenceBuilder &builder) const;
 
     std::vector<LaneId> realtime_sample_output_lanes() const;
     void pause();

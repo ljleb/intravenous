@@ -5,7 +5,7 @@
       "name": "Debug integration gtest: module reload",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/build/tests/intravenous_module_loader_reload_tests",
+      "program": "${workspaceFolder}/build/tests/intravenous_project_persistence_tests",
       "args": [
         "--gtest_break_on_failure"
       ],

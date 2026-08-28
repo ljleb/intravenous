@@ -116,10 +116,7 @@ add_iv_gtest(intravenous_graph_input_lanes_tests modules/graph_input_lanes_gtest
 add_iv_gtest(intravenous_project_persistence_tests project_persistence_gtest.cpp)
 add_iv_gtest(
     intravenous_project_autosave_tests
-    modules/project_autosave_gtest.cpp
-    NO_HOST_RUNTIME_OBJECTS)
-target_sources(intravenous_project_autosave_tests PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/intravenous/runtime/project_autosave.cpp)
+    modules/project_autosave_gtest.cpp)
 add_iv_gtest(intravenous_graph_virtual_outputs_tests graph_virtual_outputs_gtest.cpp)
 add_iv_gtest(intravenous_task_runner_tests modules/task_runner_gtest.cpp)
 add_iv_gtest(intravenous_lane_filters_bridges_tests bridges/lane_filters_bridges_gtest.cpp)

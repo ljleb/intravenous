@@ -9,7 +9,11 @@
 #include <intravenous/runtime/iv_module_instances_execution_task_runner_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/runtime/lane_query_schema_service.h>
 #include <intravenous/runtime/task_runner.h>
+#include <intravenous/runtime/timeline.h>
+#include <intravenous/runtime/timeline_events.h>
+#include <intravenous/runtime/timeline_lane_query_schema_bridge.h>
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -129,4 +133,33 @@ TEST(ExecutionTaskRunnerBridge, ReleasesDeferredGraphsOnTheRunnersOwnAfterPass)
         });
 
     EXPECT_TRUE(wait_until([&] { return runner.active_graph_revision() == 1; }));
+}
+
+TEST(TimelineLaneQuerySchemaBridge, UsesTheSchemaSnapshotPublishedByTimeline)
+{
+    iv::Timeline timeline;
+    iv::LaneQuerySchemaService service;
+    service.initialize({});
+    auto bridge_scope =
+        iv::timeline_lane_query_schema_bridge::bind(timeline, service);
+
+    auto const schema = iv::query::LaneQuerySchema::from_entries(
+        {{"gain", iv::query::LaneQueryValueType::float_}}, 1);
+    IV_INVOKE_LINKER_EVENT(
+        iv::iv_runtime_timeline_lanes_changed_event,
+        iv::TimelineLanesChanged{
+            .schema_change = {
+                .changed = true,
+                .old_revision = 0,
+                .new_revision = 1,
+            },
+            .schema = schema,
+        });
+
+    auto const snapshot = service.snapshot();
+    EXPECT_EQ(snapshot.revision(), 1u);
+    ASSERT_TRUE(snapshot.find("gain").has_value());
+    EXPECT_EQ(
+        snapshot.type_of(*snapshot.find("gain")),
+        iv::query::LaneQueryValueType::float_);
 }

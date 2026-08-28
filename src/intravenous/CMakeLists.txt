@@ -148,6 +148,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_module_loader
         intravenous_module_watcher
         intravenous_runtime_iv_module_instances_events
+        intravenous_runtime_iv_module_sources_events
         intravenous_runtime_iv_module_definitions_events
         intravenous_runtime_iv_module_reload_events
         intravenous_runtime_iv_module_source_introspection_events
@@ -161,6 +162,7 @@ function(iv_add_host_runtime_objects target)
         intravenous_runtime_socket_rpc_events
         intravenous_runtime_task_runner_events
         intravenous_runtime_timeline_events
+        intravenous_runtime_authored_lanes_events
         intravenous_runtime_timeline_execution_events
         intravenous_runtime_iv_module_instances_execution_events
         intravenous_tooling_runtime_objects
@@ -230,6 +232,10 @@ iv_add_linker_event_object(
     runtime/iv_module_instances_events.cpp
 )
 iv_add_linker_event_object(
+    intravenous_runtime_iv_module_sources_events
+    runtime/iv_module_sources_events.cpp
+)
+iv_add_linker_event_object(
     intravenous_runtime_iv_module_definitions_events
     runtime/iv_module_definitions_events.cpp
 )
@@ -285,6 +291,10 @@ iv_add_linker_event_object(
     runtime/timeline_events.cpp
 )
 iv_add_linker_event_object(
+    intravenous_runtime_authored_lanes_events
+    runtime/authored_lanes_events.cpp
+)
+iv_add_linker_event_object(
     intravenous_runtime_timeline_execution_events
     runtime/timeline_execution_events.cpp
 )
@@ -298,6 +308,7 @@ target_link_libraries(intravenous_runtime_runtime_project_events PRIVATE
 
 add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/authored_lanes.cpp
+    runtime/authored_lanes_timeline_bridge.cpp
     runtime/audio_device_lanes.cpp
     runtime/audio_device_lanes_iv_module_instances_execution_bridge.cpp
     runtime/audio_device_lanes_timeline_bridge.cpp
@@ -346,23 +357,32 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/runtime_graph_bindings.cpp
     runtime/project_autosave.cpp
     runtime/runtime_project_events.cpp
-    runtime/runtime_project_audio_device_lanes_bridge.cpp
-    runtime/runtime_project_autosave_bridge.cpp
-    runtime/runtime_project_graph_input_lanes_bridge.cpp
-    runtime/runtime_project_iv_module_instances_bridge.cpp
-    runtime/runtime_project_iv_module_reload_bridge.cpp
-    runtime/runtime_project_lane_views_bridge.cpp
-    runtime/runtime_project_timeline_execution_bridge.cpp
+    runtime/project_persistence_audio_device_lanes_bridge.cpp
+    runtime/project_persistence_project_autosave_bridge.cpp
+    runtime/project_persistence_graph_input_lanes_bridge.cpp
+    runtime/iv_module_instances_iv_module_sources_bridge.cpp
+    runtime/project_persistence_iv_module_instances_bridge.cpp
+    runtime/project_persistence_iv_module_reload_bridge.cpp
+    runtime/project_persistence_authored_lanes_bridge.cpp
+    runtime/project_persistence_timeline_bridge.cpp
+    runtime/project_persistence_timeline_execution_bridge.cpp
     runtime/socket_rpc_lane_views_bridge.cpp
     runtime/socket_rpc_lane_query_schema_bridge.cpp
     runtime/socket_rpc_lane_query_completion_bridge.cpp
     runtime/socket_rpc_audio_device_lanes_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_iv_module_instances_bridge.cpp
+    runtime/socket_rpc_iv_module_sources_bridge.cpp
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
     runtime/socket_rpc_timeline_execution_bridge.cpp
-    runtime/socket_rpc_notification_bridge.cpp
+    runtime/project_persistence_socket_rpc_notification_bridge.cpp
+    runtime/iv_module_definitions_socket_rpc_notification_bridge.cpp
+    runtime/lane_views_socket_rpc_notification_bridge.cpp
+    runtime/lanes_visualization_socket_rpc_notification_bridge.cpp
+    runtime/lane_query_schema_service_socket_rpc_notification_bridge.cpp
+    runtime/iv_module_instances_socket_rpc_notification_bridge.cpp
+    runtime/iv_module_source_introspection_socket_rpc_notification_bridge.cpp
     runtime/socket_rpc_json_serialization.cpp
     runtime/socket_rpc_requests.cpp
     runtime/socket_rpc_response_builders.cpp
@@ -378,7 +398,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/timeline_execution_lanes_visualization_bridge.cpp
     runtime/timeline_execution_task_runner_bridge.cpp
     runtime/timeline_lane_filters_bridge.cpp
-    runtime/timeline_lane_batch_bridge.cpp
+    runtime/timeline.cpp
     runtime/timeline_lane_query_schema_bridge.cpp
     runtime/timeline_timeline_execution_bridge.cpp
     query/lane_query_engine.cpp

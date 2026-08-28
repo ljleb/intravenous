@@ -5,7 +5,7 @@
 
 namespace iv {
 IV_DEFINE_BRIDGE(iv_module_reload_iv_module_definitions_bridge)
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_reload_iv_module_definitions_bridge,
     iv_runtime_iv_module_reload_results_event,
     &IvModuleDefinitions::handle_reload_results);

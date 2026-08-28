@@ -1,5 +1,8 @@
 #include <intravenous/runtime/iv_module_sources.h>
 
+#include <intravenous/runtime/iv_module_sources_events.h>
+#include <intravenous/runtime/socket_rpc_server.h>
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -102,6 +105,31 @@ std::optional<IvModuleSourceInfo> IvModuleSources::find_source(std::string const
     auto const found = std::ranges::find(sources, module_id, &IvModuleSourceInfo::module_id);
     if (found == sources.end()) return std::nullopt;
     return *found;
+}
+
+void IvModuleSources::handle_iv_module_source_lookup(
+    std::string const &module_id,
+    IvModuleSourceLookupBuilder &builder) const
+{
+    builder.succeed(find_source(module_id));
+}
+
+void IvModuleSources::handle_socket_rpc_get_iv_module_sources(
+    GetIvModuleSourcesRequest const &,
+    SocketRpcIvModuleSourcesResultBuilder &builder) const
+{
+    builder.succeed(list_sources());
+}
+
+void IvModuleSources::handle_socket_rpc_create_iv_module_source(
+    CreateIvModuleSourceRequest const &request,
+    SocketRpcIvModuleSourceResultBuilder &builder) const
+{
+    try {
+        builder.succeed(create_project_source(request.name));
+    } catch (std::exception const &exception) {
+        builder.fail(exception.what());
+    }
 }
 
 IvModuleSourceInfo IvModuleSources::create_project_source(std::string const& name) const

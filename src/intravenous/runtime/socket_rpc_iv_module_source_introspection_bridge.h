@@ -1,16 +1,13 @@
 #pragma once
 
-#include <functional>
+#include <intravenous/bridge.h>
 
 namespace iv {
-class GraphInputLanes;
 class IvModuleSourceIntrospection;
+class SocketRpcServer;
 
-void bind_socket_rpc_iv_module_source_introspection_bridge(
-    IvModuleSourceIntrospection &introspection,
-    GraphInputLanes &graph_input_lanes,
-    std::function<void()> *shutdown_callback = nullptr);
-void unbind_socket_rpc_iv_module_source_introspection_bridge(
-    IvModuleSourceIntrospection const &introspection,
-    GraphInputLanes const &graph_input_lanes);
+IV_DECLARE_BRIDGE(
+    socket_rpc_iv_module_source_introspection_bridge,
+    SocketRpcServer,
+    IvModuleSourceIntrospection);
 } // namespace iv

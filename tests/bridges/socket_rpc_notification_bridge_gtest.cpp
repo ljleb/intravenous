@@ -2,10 +2,16 @@
 
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/iv_module_instances_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/lane_query_schema_events.h>
+#include <intravenous/runtime/lane_query_schema_service.h>
+#include <intravenous/runtime/lane_query_schema_service_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/lanes_visualization_events.h>
+#include <intravenous/runtime/lanes_visualization.h>
+#include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
+#include <intravenous/runtime/project_persistence.h>
+#include <intravenous/runtime/project_persistence_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/runtime_project_events.h>
-#include <intravenous/runtime/socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
@@ -166,7 +172,11 @@ TEST(SocketRpcNotificationBridge, UnboundServerDropsNotifications)
 TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
 {
     auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_notification_server"));
-    bind_socket_rpc_notification_bridge(harness.server);
+    ProjectPersistence persistence("/tmp", {});
+    auto notification_scope =
+        project_persistence_socket_rpc_notification_bridge::bind(
+            persistence,
+            harness.server);
 
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
@@ -213,14 +223,17 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
     EXPECT_EQ(lane_json["method"], "timeline.laneViewUpdated");
     EXPECT_EQ(lane_json["params"]["viewId"], "view-1");
 
-    unbind_socket_rpc_notification_bridge(harness.server);
 }
 
 TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneQuerySchemaChanges)
 {
     auto harness = NotificationServerHarness(
         iv::test::fresh_module_fixture_workspace("socket_rpc_lane_query_schema_notification_server"));
-    bind_socket_rpc_notification_bridge(harness.server);
+    LaneQuerySchemaService lane_query_schema;
+    auto notification_scope =
+        lane_query_schema_service_socket_rpc_notification_bridge::bind(
+            lane_query_schema,
+            harness.server);
 
     LaneQuerySchemaChanged notification{
         .change = query::LaneQuerySchemaChange{
@@ -251,13 +264,16 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneQuerySchemaChanges)
     EXPECT_EQ(json["params"]["added"][0]["key"], "gain");
     EXPECT_EQ(json["params"]["added"][0]["type"], "float");
 
-    unbind_socket_rpc_notification_bridge(harness.server);
 }
 
 TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
 {
     auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_instances_notification_server"));
-    bind_socket_rpc_notification_bridge(harness.server);
+    IvModuleInstances instances;
+    auto notification_scope =
+        iv_module_instances_socket_rpc_notification_bridge::bind(
+            instances,
+            harness.server);
 
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_iv_module_instances_list_changed_event,
@@ -286,13 +302,16 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
     EXPECT_EQ(json["params"]["instances"][0]["moduleId"], "module.a");
     EXPECT_EQ(json["params"]["instances"][1]["realized"], false);
 
-    unbind_socket_rpc_notification_bridge(harness.server);
 }
 
 TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
 {
     auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_lane_view_content_notification_server"));
-    bind_socket_rpc_notification_bridge(harness.server);
+    LanesVisualization lanes_visualization;
+    auto notification_scope =
+        lanes_visualization_socket_rpc_notification_bridge::bind(
+            lanes_visualization,
+            harness.server);
 
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_lane_view_content_updated_event,
@@ -320,13 +339,16 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
     EXPECT_EQ(json["params"]["lanes"][0]["peakLevel"], 4.0f);
     EXPECT_FALSE(json["params"]["lanes"][0].contains("samples"));
 
-    unbind_socket_rpc_notification_bridge(harness.server);
 }
 
 TEST(SocketRpcNotificationBridge, LaneViewContentSerializesCompiledSampleWindows)
 {
     auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_compiled_sample_window_notification_server"));
-    bind_socket_rpc_notification_bridge(harness.server);
+    LanesVisualization lanes_visualization;
+    auto notification_scope =
+        lanes_visualization_socket_rpc_notification_bridge::bind(
+            lanes_visualization,
+            harness.server);
 
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_lane_view_content_updated_event,
@@ -354,7 +376,6 @@ TEST(SocketRpcNotificationBridge, LaneViewContentSerializesCompiledSampleWindows
     EXPECT_EQ(lane["sampleWindowFirstIndex"], 100);
     EXPECT_EQ(lane["sampleWindowLastIndex"], 300);
 
-    unbind_socket_rpc_notification_bridge(harness.server);
 }
 
 } // namespace iv

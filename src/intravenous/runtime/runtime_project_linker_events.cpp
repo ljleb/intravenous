@@ -14,9 +14,6 @@ IV_DEFINE_LINKER_EVENT(
     ProjectSetAutosaveEnabledRequestedEvent,
     iv_runtime_project_set_autosave_enabled_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    ProjectSetIvModuleToolchainConfigRequestedEvent,
-    iv_runtime_project_set_iv_module_toolchain_config_requested_event)
-IV_DEFINE_LINKER_EVENT(
     ProjectOverrideSettingsRequestedEvent,
     iv_runtime_project_override_settings_requested_event)
 IV_DEFINE_LINKER_EVENT(
@@ -58,15 +55,6 @@ IV_DEFINE_LINKER_EVENT(
 IV_DEFINE_LINKER_EVENT(
     ProjectGraphInputLaneBindingsEnsuredEvent,
     iv_runtime_project_graph_input_lane_bindings_ensured_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectOpenLaneViewRequestedEvent,
-    iv_runtime_project_open_lane_view_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectUpdateLaneViewRequestedEvent,
-    iv_runtime_project_update_lane_view_requested_event)
-IV_DEFINE_LINKER_EVENT(
-    ProjectCloseLaneViewRequestedEvent,
-    iv_runtime_project_close_lane_view_requested_event)
 IV_DEFINE_LINKER_EVENT(
     ProjectConnectTimelineLanesRequestedEvent,
     iv_runtime_project_connect_timeline_lanes_requested_event)

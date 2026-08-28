@@ -1,14 +1,13 @@
 #pragma once
 
-#include <filesystem>
+#include <intravenous/bridge.h>
 
 namespace iv {
-class Timeline;
 class TimelineExecution;
+class SocketRpcServer;
 
-void bind_socket_rpc_timeline_execution_bridge(
-    Timeline &timeline,
-    TimelineExecution &timeline_execution,
-    std::filesystem::path workspace_root);
-void unbind_socket_rpc_timeline_execution_bridge(TimelineExecution const &timeline_execution);
+IV_DECLARE_BRIDGE(
+    socket_rpc_timeline_execution_bridge,
+    SocketRpcServer,
+    TimelineExecution);
 } // namespace iv

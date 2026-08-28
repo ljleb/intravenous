@@ -649,8 +649,238 @@ void ProjectPersistence::handle_socket_rpc_save_project(
 {
     try {
         save();
+        builder.succeed();
     } catch (std::exception const &exception) {
         builder.fail(exception.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_create_iv_module_instance(
+    CreateIvModuleInstanceRequest const &request,
+    SocketRpcCreateIvModuleInstanceResultBuilder &builder) const
+{
+    try {
+        ProjectStringBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_create_iv_module_instance_requested_event,
+            ProjectCreateIvModuleInstanceRequest{
+                .module_id = request.module_id,
+                .display_name = request.display_name,
+            },
+            project_builder);
+        builder.succeed(project_builder.build());
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_delete_iv_module_instance(
+    DeleteIvModuleInstanceRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_delete_iv_module_instance_requested_event,
+            ProjectDeleteIvModuleInstanceRequest{.instance_id = request.instance_id},
+            project_builder);
+        project_builder.build();
+        builder.succeed();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_update_iv_module_instances(
+    UpdateIvModuleInstancesRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        std::vector<ProjectUpdateIvModuleInstance> updates;
+        updates.reserve(request.updates.size());
+        for (auto const &update : request.updates) {
+            updates.push_back(ProjectUpdateIvModuleInstance{
+                .instance_id = update.instance_id,
+                .display_name = update.display_name,
+                .default_silence_ttl_samples = update.default_silence_ttl_samples,
+            });
+        }
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_update_iv_module_instances_requested_event,
+            ProjectUpdateIvModuleInstancesRequest{.updates = std::move(updates)},
+            project_builder);
+        project_builder.build();
+        builder.succeed();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier(
+    SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_timeline_compiled_sample_cache_chunk_size_multiplier_requested_event,
+            ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequest{
+                .compiled_sample_cache_chunk_size_multiplier =
+                    request.compiled_sample_cache_chunk_size_multiplier,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_set_timeline_lane_sample_channel_type(
+    SetTimelineLaneSampleChannelTypeRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_timeline_lane_sample_channel_type_requested_event,
+            ProjectSetTimelineLaneSampleChannelTypeRequest{
+                .lane_id = request.lane_id,
+                .sample_channel_type = request.sample_channel_type,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_set_timeline_lane_ui_state(
+    SetTimelineLaneUiStateRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_set_timeline_lane_ui_state_requested_event,
+            ProjectSetTimelineLaneUiStateRequest{
+                .lane_id = request.lane_id,
+                .expected_revision = request.expected_revision,
+                .serialized_state = request.serialized_state,
+                .name = request.name,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_connect_timeline_lanes(
+    ConnectTimelineLanesRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_connect_timeline_lanes_requested_event,
+            ProjectConnectTimelineLanesRequest{
+                .source_lane_id = request.source_lane_id,
+                .target_lane_id = request.target_lane_id,
+                .port_domain = request.port_domain,
+                .port_kind = request.port_kind,
+                .port_ordinal = request.port_ordinal,
+                .authored = true,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_disconnect_timeline_lanes(
+    DisconnectTimelineLanesRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_disconnect_timeline_lanes_requested_event,
+            ProjectDisconnectTimelineLanesRequest{
+                .source_lane_id = request.source_lane_id,
+                .target_lane_id = request.target_lane_id,
+                .port_domain = request.port_domain,
+                .port_kind = request.port_kind,
+                .port_ordinal = request.port_ordinal,
+            },
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_get_timeline_lane_types(
+    GetTimelineLaneTypesRequest const &,
+    SocketRpcLaneTypesResultBuilder &builder) const
+{
+    try {
+        ProjectLaneTypesBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_get_timeline_lane_types_requested_event,
+            project_builder);
+        builder.succeed(project_builder.build());
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_create_timeline_lane(
+    CreateTimelineLaneRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_create_timeline_lane_requested_event,
+            ProjectCreateTimelineLaneRequest{.type_id = request.type_id},
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_delete_timeline_lane(
+    DeleteTimelineLaneRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_delete_timeline_lane_requested_event,
+            ProjectDeleteTimelineLaneRequest{.lane_id = request.lane_id},
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_duplicate_timeline_lane(
+    DuplicateTimelineLaneRequest const &request,
+    SocketRpcAckResponseBuilder &builder) const
+{
+    try {
+        ProjectAckBuilder project_builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_duplicate_timeline_lane_requested_event,
+            ProjectDuplicateTimelineLaneRequest{.lane_id = request.lane_id},
+            project_builder);
+        project_builder.build();
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
     }
 }
 } // namespace iv

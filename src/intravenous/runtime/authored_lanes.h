@@ -19,6 +19,13 @@
 #include <unordered_map>
 
 namespace iv {
+class ProjectAckBuilder;
+class ProjectLaneTypesBuilder;
+class ProjectPersistenceBuilder;
+class TimelineAuthoredLaneConnectionsBuilder;
+struct ProjectCreateTimelineLaneRequest;
+struct ProjectDeleteTimelineLaneRequest;
+struct ProjectDuplicateTimelineLaneRequest;
 
 template<typename T>
 concept CreatableLane = requires(std::string_view state, LaneCreationContext const& context) {
@@ -68,5 +75,25 @@ public:
     void remove_connection(AuthoredLaneConnection const& connection);
     [[nodiscard]] bool contains_connection(AuthoredLaneConnection const& connection) const;
     [[nodiscard]] std::vector<AuthoredLaneConnection> connections() const;
+    void handle_project_get_timeline_lane_types(ProjectLaneTypesBuilder &builder) const;
+    void handle_project_create_timeline_lane(
+        ProjectCreateTimelineLaneRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_delete_timeline_lane(
+        ProjectDeleteTimelineLaneRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_duplicate_timeline_lane(
+        ProjectDuplicateTimelineLaneRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_persistence_collect_state(ProjectPersistenceBuilder &builder) const;
+    void handle_timeline_authored_lane_canonical_state_updated(
+        InternedString lane_id,
+        std::string const &serialized_state);
+    void handle_timeline_authored_lane_connection_recorded(
+        AuthoredLaneConnection const &connection);
+    void handle_timeline_authored_lane_connection_removed(
+        AuthoredLaneConnection const &connection);
+    void handle_timeline_authored_lane_connections_requested(
+        TimelineAuthoredLaneConnectionsBuilder &builder) const;
 };
 } // namespace iv

@@ -1,9 +1,10 @@
 #pragma once
 
+#include <intravenous/bridge.h>
+
 namespace iv {
 class Timeline;
 class TimelineExecution;
 
-void bind_timeline_timeline_execution_bridge(Timeline &timeline, TimelineExecution &execution);
-void unbind_timeline_timeline_execution_bridge(Timeline const &timeline, TimelineExecution const &execution);
+IV_DECLARE_BRIDGE(timeline_timeline_execution_bridge, Timeline, TimelineExecution);
 }

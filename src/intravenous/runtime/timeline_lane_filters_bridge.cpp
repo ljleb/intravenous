@@ -5,7 +5,7 @@
 
 namespace iv {
 IV_DEFINE_BRIDGE(timeline_lane_filters_bridge)
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     timeline_lane_filters_bridge,
     iv_runtime_timeline_lanes_changed_event,
     &LaneFilters::handle_timeline_lanes_changed);

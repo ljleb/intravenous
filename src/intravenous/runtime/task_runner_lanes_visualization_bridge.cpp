@@ -5,7 +5,7 @@
 
 namespace iv {
 IV_DEFINE_BRIDGE(task_runner_lanes_visualization_bridge)
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     task_runner_lanes_visualization_bridge,
     iv_runtime_task_runner_after_pass_event,
     &LanesVisualization::handle_task_runner_after_pass);

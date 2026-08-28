@@ -43,14 +43,6 @@ namespace iv {
         [[nodiscard]] AudioDevicesSnapshot build() const;
     };
 
-    class ProjectLaneViewBuilder {
-        std::optional<LaneViewResult> result;
-
-    public:
-        void succeed(LaneViewResult value);
-        [[nodiscard]] LaneViewResult build() const;
-    };
-
     class ProjectLaneTypesBuilder {
         std::optional<std::vector<CreatableLaneDescriptor>> result;
     public:
@@ -117,10 +109,6 @@ namespace iv {
     struct ProjectSetAudioDeviceLaneIdsRequest {
         InternedString output_lane_id {};
         InternedString input_lane_id {};
-    };
-
-    struct ProjectSetIvModuleToolchainConfigRequest {
-        ModuleLoaderToolchainConfig toolchain {};
     };
 
     struct ProjectOverrideSettingsRequest {
@@ -252,18 +240,6 @@ namespace iv {
         std::optional<InternedString> lane_id {};
     };
 
-    struct ProjectOpenLaneViewRequest {
-        LaneViewRequest request {};
-    };
-
-    struct ProjectUpdateLaneViewRequest {
-        LaneViewRequest request {};
-    };
-
-    struct ProjectCloseLaneViewRequest {
-        InternedString view_id {};
-    };
-
     struct ProjectConnectTimelineLanesRequest {
         InternedString source_lane_id {};
         InternedString target_lane_id {};
@@ -317,18 +293,10 @@ namespace iv {
         void (*)(ProjectSetAudioDevicesRequest const &, ProjectAudioDevicesBuilder &);
     using ProjectSetAudioDeviceLaneIdsRequestedEvent =
         void (*)(ProjectSetAudioDeviceLaneIdsRequest const &, ProjectAckBuilder &);
-    using ProjectSetIvModuleToolchainConfigRequestedEvent =
-        void (*)(ProjectSetIvModuleToolchainConfigRequest const &, ProjectAckBuilder &);
     using ProjectOverrideSettingsRequestedEvent =
         void (*)(ProjectOverrideSettingsRequest const &);
     using ProjectGraphInputLaneBindingsEnsuredEvent =
         void (*)(ProjectGraphInputLaneBindingsRequest const &, ProjectAckBuilder &);
-    using ProjectOpenLaneViewRequestedEvent =
-        void (*)(ProjectOpenLaneViewRequest const &, ProjectLaneViewBuilder &);
-    using ProjectUpdateLaneViewRequestedEvent =
-        void (*)(ProjectUpdateLaneViewRequest const &, ProjectLaneViewBuilder &);
-    using ProjectCloseLaneViewRequestedEvent =
-        void (*)(ProjectCloseLaneViewRequest const &, ProjectAckBuilder &);
     using ProjectConnectTimelineLanesRequestedEvent =
         void (*)(ProjectConnectTimelineLanesRequest const &, ProjectAckBuilder &);
     using ProjectDisconnectTimelineLanesRequestedEvent =
@@ -359,9 +327,6 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(
         ProjectSetAutosaveEnabledRequestedEvent,
         iv_runtime_project_set_autosave_enabled_requested_event);
-    IV_DECLARE_LINKER_EVENT(
-        ProjectSetIvModuleToolchainConfigRequestedEvent,
-        iv_runtime_project_set_iv_module_toolchain_config_requested_event);
     IV_DECLARE_LINKER_EVENT(
         ProjectOverrideSettingsRequestedEvent,
         iv_runtime_project_override_settings_requested_event);
@@ -404,15 +369,6 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(
         ProjectGraphInputLaneBindingsEnsuredEvent,
         iv_runtime_project_graph_input_lane_bindings_ensured_event);
-    IV_DECLARE_LINKER_EVENT(
-        ProjectOpenLaneViewRequestedEvent,
-        iv_runtime_project_open_lane_view_requested_event);
-    IV_DECLARE_LINKER_EVENT(
-        ProjectUpdateLaneViewRequestedEvent,
-        iv_runtime_project_update_lane_view_requested_event);
-    IV_DECLARE_LINKER_EVENT(
-        ProjectCloseLaneViewRequestedEvent,
-        iv_runtime_project_close_lane_view_requested_event);
     IV_DECLARE_LINKER_EVENT(
         ProjectConnectTimelineLanesRequestedEvent,
         iv_runtime_project_connect_timeline_lanes_requested_event);

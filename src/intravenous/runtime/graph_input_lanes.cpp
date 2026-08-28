@@ -3,6 +3,7 @@
 
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_lane_nodes/controls.h>
+#include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/task_ids.h>
 #include <intravenous/runtime/uuid.h>
@@ -24,6 +25,103 @@ GraphInputLanes::graph_input_port_descriptors_for(
     IvModuleInstance const &instance)
 {
     return GraphInputLanesPortCatalog::graph_inputs(instance);
+}
+
+void GraphInputLanes::handle_project_set_sample_input_value(
+    ProjectSetSampleInputValueRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
+        set_public_sample_input_value(
+            public_input->first,
+            public_input->second,
+            request.value);
+    } else {
+        set_sample_input_value(request);
+    }
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void GraphInputLanes::handle_project_set_sample_input_state(
+    ProjectSetSampleInputStateRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
+        set_public_sample_input_state(ProjectSetPublicSampleInputStateRequest{
+            .instance_id = public_input->first,
+            .source_identity = public_input->second,
+            .member_ordinal = request.member_ordinal,
+            .state = request.state,
+            .lane_id = request.lane_id,
+        });
+    } else {
+        set_sample_input_state(request);
+    }
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void GraphInputLanes::handle_project_set_public_sample_input_state(
+    ProjectSetPublicSampleInputStateRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    set_public_sample_input_state(request);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void GraphInputLanes::handle_project_set_public_sample_input_value(
+    std::string const &instance_id,
+    std::string const &source_identity,
+    Sample value,
+    ProjectAckBuilder &builder)
+{
+    set_public_sample_input_value(instance_id, source_identity, value);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void GraphInputLanes::handle_project_set_event_input_state(
+    ProjectSetEventInputStateRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    if (auto const public_input = parse_public_sample_input_node_id(request.node_id)) {
+        set_public_event_input_state(
+            public_input->first,
+            public_input->second,
+            request.member_ordinal,
+            request.state,
+            request.lane_id);
+    } else {
+        set_event_input_state(request);
+    }
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void GraphInputLanes::handle_project_set_sample_output_state(
+    ProjectSetSampleOutputStateRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    set_sample_output_state(request);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void GraphInputLanes::handle_project_set_event_output_state(
+    ProjectSetEventOutputStateRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    set_event_output_state(request);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void GraphInputLanes::handle_project_persistence_collect_state(
+    ProjectPersistenceBuilder &builder) const
+{
+    builder.add_graph_input_authored_state(authored_state());
 }
 
 std::vector<GraphInputLanes::DesiredGraphPort>
@@ -569,6 +667,17 @@ void GraphInputLanes::handle_iv_module_source_introspection_authored_state_snaps
     });
 }
 
+void GraphInputLanes::handle_iv_module_source_introspection_public_ports_snapshot_requested(
+    IvModuleSourceIntrospectionPublicPortsSnapshotBuilder &builder) const
+{
+    builder.succeed(IvModuleSourceIntrospectionPublicPortsSnapshot{
+        .sample_inputs = public_sample_inputs(),
+        .event_inputs = public_event_inputs(),
+        .sample_outputs = public_sample_outputs(),
+        .event_outputs = public_event_outputs(),
+    });
+}
+
 GraphInputLaneBindings GraphInputLanes::query_graph_input_lane_bindings(
     ProjectGraphInputLaneBindingsRequest const &request)
 {
@@ -761,5 +870,19 @@ BorrowedSampleBlock GraphInputLanes::handle_sample_block_requested(LaneId lane) 
 std::span<TimedEvent const> GraphInputLanes::handle_event_block_requested(LaneId lane) const
 {
     return event_output_block(lane);
+}
+
+void GraphInputLanes::handle_graph_input_lanes_sample_block_requested(
+    LaneId lane,
+    GraphInputLanesSampleBlockBuilder &builder) const
+{
+    builder.succeed(handle_sample_block_requested(lane));
+}
+
+void GraphInputLanes::handle_graph_input_lanes_event_block_requested(
+    LaneId lane,
+    GraphInputLanesEventBlockBuilder &builder) const
+{
+    builder.succeed(handle_event_block_requested(lane));
 }
 } // namespace iv

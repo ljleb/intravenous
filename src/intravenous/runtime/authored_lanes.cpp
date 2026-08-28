@@ -1,10 +1,26 @@
 #include <intravenous/runtime/authored_lanes.h>
 
+#include <intravenous/runtime/authored_lanes_events.h>
+#include <intravenous/runtime/project_persistence_builder.h>
+#include <intravenous/runtime/runtime_project_events.h>
+
 #include <algorithm>
 #include <stdexcept>
 #include <tuple>
 
 namespace iv {
+namespace {
+void emit_lane_topology_diagnostic(std::string message)
+{
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_notification_event,
+        ProjectNotification(ProjectMessageNotification{
+            .level = "debug",
+            .message = "lane topology diagnostic: " + std::move(message),
+        }));
+}
+} // namespace
+
 TypeErasedLaneNode BeatTriggerLaneNode::from_lane_ui_state(
     std::string_view serialized_state,
     LaneCreationContext const& context)
@@ -177,4 +193,102 @@ bool AuthoredLanes::contains_connection(AuthoredLaneConnection const& connection
 }
 
 std::vector<AuthoredLaneConnection> AuthoredLanes::connections() const { return connections_; }
+
+void AuthoredLanes::handle_project_get_timeline_lane_types(
+    ProjectLaneTypesBuilder &builder) const
+{
+    builder.succeed(creatable_lane_types());
+}
+
+void AuthoredLanes::handle_project_create_timeline_lane(
+    ProjectCreateTimelineLaneRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    auto batch = request.lane_id.has_value()
+        ? reload(AuthoredLaneRecord{
+            .lane_id = *request.lane_id,
+            .type_id = request.type_id,
+            .serialized_state = request.serialized_state.value_or("")})
+        : create(request.type_id);
+    if (batch.upserts.size() != 1) {
+        throw std::runtime_error("authored lane creation did not produce one lane");
+    }
+    IV_INVOKE_LINKER_EVENT(iv_runtime_authored_lanes_timeline_batch_requested_event, batch);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void AuthoredLanes::handle_project_delete_timeline_lane(
+    ProjectDeleteTimelineLaneRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    emit_lane_topology_diagnostic("delete request lane=" + request.lane_id.str());
+    auto const lane = erase(request.lane_id);
+    if (!lane.has_value()) {
+        throw std::runtime_error("authored timeline lane not found");
+    }
+    emit_lane_topology_diagnostic(
+        "delete authored state removed lane=" + request.lane_id.str()
+        + " runtimeLane=" + std::to_string(lane->value));
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_authored_lanes_timeline_batch_requested_event,
+        TimelineLaneBatchUpdate{.removals = {*lane}});
+    emit_lane_topology_diagnostic(
+        "delete timeline batch dispatched runtimeLane=" + std::to_string(lane->value));
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void AuthoredLanes::handle_project_duplicate_timeline_lane(
+    ProjectDuplicateTimelineLaneRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    auto const records = this->records();
+    auto const source = std::ranges::find(records, request.lane_id, &AuthoredLaneRecord::lane_id);
+    if (source == records.end()) {
+        throw std::runtime_error("authored timeline lane not found");
+    }
+    auto batch = reload(AuthoredLaneRecord{
+        .lane_id = generate_uuid_v4(),
+        .type_id = source->type_id,
+        .serialized_state = source->serialized_state,
+    });
+    IV_INVOKE_LINKER_EVENT(iv_runtime_authored_lanes_timeline_batch_requested_event, batch);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void AuthoredLanes::handle_project_persistence_collect_state(
+    ProjectPersistenceBuilder &builder) const
+{
+    builder.add_authored_lane_connections(connections());
+    builder.add_authored_lanes(records());
+}
+
+void AuthoredLanes::handle_timeline_authored_lane_canonical_state_updated(
+    InternedString lane_id,
+    std::string const &serialized_state)
+{
+    if (contains(lane_id)) {
+        update_canonical_state(std::move(lane_id), serialized_state);
+    }
+}
+
+void AuthoredLanes::handle_timeline_authored_lane_connection_recorded(
+    AuthoredLaneConnection const &connection)
+{
+    record_connection(connection);
+}
+
+void AuthoredLanes::handle_timeline_authored_lane_connection_removed(
+    AuthoredLaneConnection const &connection)
+{
+    remove_connection(connection);
+}
+
+void AuthoredLanes::handle_timeline_authored_lane_connections_requested(
+    TimelineAuthoredLaneConnectionsBuilder &builder) const
+{
+    builder.succeed(connections());
+}
 } // namespace iv

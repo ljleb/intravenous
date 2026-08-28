@@ -1,16 +1,13 @@
 #pragma once
 
+#include <intravenous/bridge.h>
+
 namespace iv {
 class IvModuleInstances;
-class IvModuleSourceIntrospection;
-class IvModuleSources;
+class SocketRpcServer;
 
-void bind_socket_rpc_iv_module_instances_bridge(
-    IvModuleInstances &iv_module_instances,
-    IvModuleSourceIntrospection &introspection,
-    IvModuleSources &sources);
-void unbind_socket_rpc_iv_module_instances_bridge(
-    IvModuleInstances const &iv_module_instances,
-    IvModuleSourceIntrospection const &introspection,
-    IvModuleSources const &sources);
+IV_DECLARE_BRIDGE(
+    socket_rpc_iv_module_instances_bridge,
+    SocketRpcServer,
+    IvModuleInstances);
 } // namespace iv

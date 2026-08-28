@@ -14,6 +14,23 @@
 #include <vector>
 
 namespace iv {
+class IvModuleInstancesSourceFileFilterBuilder;
+class SocketRpcAckResponseBuilder;
+class SocketRpcGraphQueryResultBuilder;
+class SocketRpcRegionQueryResultBuilder;
+class SocketRpcVirtualNodeResultBuilder;
+class SocketRpcVirtualNodesResultBuilder;
+struct IvModuleInstanceBuildersChanged;
+struct GraphQueryBySpansRequest;
+struct GraphQueryActiveRegionsRequest;
+struct GetVirtualNodeRequest;
+struct GetVirtualNodesRequest;
+struct SetSampleInputValueRequest;
+struct SetSampleInputStateRequest;
+struct SetEventInputStateRequest;
+struct SetSampleOutputStateRequest;
+struct SetEventOutputStateRequest;
+
 struct SourceTextLineMap {
     std::string text;
     std::vector<size_t> line_offsets;
@@ -63,6 +80,8 @@ public:
         IvModuleDefinitionsChanged const &diff);
     void handle_iv_module_instances_list_changed(
         std::vector<IvModuleInstanceInfo> const &instances);
+    void handle_iv_module_instance_builders_completed(
+        IvModuleInstanceBuildersChanged const &diff);
     void set_public_sample_inputs(std::vector<PublicSampleInputInfo> inputs);
     void set_public_event_inputs(std::vector<PublicEventInputInfo> inputs);
     void set_public_sample_outputs(std::vector<PublicSampleOutputInfo> outputs);
@@ -88,5 +107,36 @@ public:
         std::string const &node_id,
         std::optional<size_t> concrete_member_ordinal,
         size_t input_ordinal) const;
+    void handle_iv_module_instances_source_file_filter(
+        std::filesystem::path const &source_file_path,
+        std::vector<IvModuleInstanceInfo> const &instances,
+        IvModuleInstancesSourceFileFilterBuilder &builder) const;
+    void handle_socket_rpc_graph_query_by_spans(
+        GraphQueryBySpansRequest const &request,
+        SocketRpcGraphQueryResultBuilder &builder) const;
+    void handle_socket_rpc_graph_query_active_regions(
+        GraphQueryActiveRegionsRequest const &request,
+        SocketRpcRegionQueryResultBuilder &builder) const;
+    void handle_socket_rpc_get_virtual_node(
+        GetVirtualNodeRequest const &request,
+        SocketRpcVirtualNodeResultBuilder &builder) const;
+    void handle_socket_rpc_get_virtual_nodes(
+        GetVirtualNodesRequest const &request,
+        SocketRpcVirtualNodesResultBuilder &builder) const;
+    void handle_socket_rpc_set_sample_input_value(
+        SetSampleInputValueRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
+    void handle_socket_rpc_set_sample_input_state(
+        SetSampleInputStateRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
+    void handle_socket_rpc_set_event_input_state(
+        SetEventInputStateRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
+    void handle_socket_rpc_set_sample_output_state(
+        SetSampleOutputStateRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
+    void handle_socket_rpc_set_event_output_state(
+        SetEventOutputStateRequest const &request,
+        SocketRpcAckResponseBuilder &builder);
 };
 } // namespace iv

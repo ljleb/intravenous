@@ -3,8 +3,13 @@
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_sources.h>
-#include <intravenous/runtime/runtime_project_iv_module_instances_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_sources_bridge.h>
+#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/project_persistence.h>
+#include <intravenous/runtime/project_persistence_iv_module_instances_bridge.h>
+#include <intravenous/runtime/socket_rpc_iv_module_sources_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
+#include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
@@ -23,7 +28,7 @@ Json parse_json_line(std::string_view line)
 }
 } // namespace
 
-TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventReturnsError)
+TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventLeavesResponseUnbuilt)
 {
     iv::SocketRpcCreateIvModuleInstanceResultBuilder builder;
 
@@ -34,10 +39,7 @@ TEST(SocketRpcIvModuleInstancesBridge, UnboundCreateEventReturnsError)
         },
         builder);
 
-    auto const response = parse_json_line(builder.build(1));
-    EXPECT_EQ(
-        response["error"]["message"].get<std::string>(),
-        "runtime project string result was not provided");
+    EXPECT_THROW(static_cast<void>(builder.build(1)), std::runtime_error);
 }
 
 TEST(IvModuleSources, NewProjectSourcesReceiveTheSameTemplateCompileDatabase)
@@ -68,8 +70,24 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
     iv::IvModuleInstances instances;
     iv::IvModuleSourceIntrospection introspection;
     iv::IvModuleSources sources("/tmp", {iv::test::test_modules_root() / "local_cmake"});
-    iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
-    iv::bind_socket_rpc_iv_module_instances_bridge(instances, introspection, sources);
+    iv::ProjectPersistence persistence("/tmp", {});
+    iv::SocketRpcServer server("/tmp", -1);
+    auto iv_module_instances_iv_module_sources_scope =
+        iv::iv_module_instances_iv_module_sources_bridge::bind(instances, sources);
+    auto project_persistence_iv_module_instances_scope =
+        iv::project_persistence_iv_module_instances_bridge::bind(
+            persistence,
+            instances);
+    auto iv_module_instances_iv_module_source_introspection_scope =
+        iv::iv_module_instances_iv_module_source_introspection_bridge::bind(
+            instances,
+            introspection);
+    auto socket_rpc_iv_module_instances_scope =
+        iv::socket_rpc_iv_module_instances_bridge::bind(server, instances);
+    auto socket_rpc_iv_module_sources_scope =
+        iv::socket_rpc_iv_module_sources_bridge::bind(server, sources);
+    auto socket_rpc_project_persistence_scope =
+        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
     IV_INVOKE_LINKER_EVENT(
@@ -93,8 +111,6 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundEventsCreateAndDeleteInstances)
     auto const delete_response = parse_json_line(delete_builder.build(3));
     EXPECT_EQ(delete_response["result"]["ok"], true);
 
-    iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
-    iv::unbind_socket_rpc_iv_module_instances_bridge(instances, introspection, sources);
 }
 
 TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
@@ -102,8 +118,24 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
     iv::IvModuleInstances instances;
     iv::IvModuleSourceIntrospection introspection;
     iv::IvModuleSources sources("/tmp", {iv::test::test_modules_root() / "local_cmake"});
-    iv::bind_runtime_project_iv_module_instances_bridge(instances, sources);
-    iv::bind_socket_rpc_iv_module_instances_bridge(instances, introspection, sources);
+    iv::ProjectPersistence persistence("/tmp", {});
+    iv::SocketRpcServer server("/tmp", -1);
+    auto iv_module_instances_iv_module_sources_scope =
+        iv::iv_module_instances_iv_module_sources_bridge::bind(instances, sources);
+    auto project_persistence_iv_module_instances_scope =
+        iv::project_persistence_iv_module_instances_bridge::bind(
+            persistence,
+            instances);
+    auto iv_module_instances_iv_module_source_introspection_scope =
+        iv::iv_module_instances_iv_module_source_introspection_bridge::bind(
+            instances,
+            introspection);
+    auto socket_rpc_iv_module_instances_scope =
+        iv::socket_rpc_iv_module_instances_bridge::bind(server, instances);
+    auto socket_rpc_iv_module_sources_scope =
+        iv::socket_rpc_iv_module_sources_bridge::bind(server, sources);
+    auto socket_rpc_project_persistence_scope =
+        iv::socket_rpc_project_persistence_bridge::bind(server, persistence);
 
     iv::SocketRpcCreateIvModuleInstanceResultBuilder create_builder;
     IV_INVOKE_LINKER_EVENT(
@@ -134,6 +166,4 @@ TEST(SocketRpcIvModuleInstancesBridge, BoundSetDefaultSilenceTtlUpdatesInstance)
     ASSERT_TRUE(listed.front().default_silence_ttl_samples.has_value());
     EXPECT_EQ(*listed.front().default_silence_ttl_samples, 1234u);
 
-    iv::unbind_runtime_project_iv_module_instances_bridge(instances, sources);
-    iv::unbind_socket_rpc_iv_module_instances_bridge(instances, introspection, sources);
 }

@@ -1,6 +1,6 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/linker_event.h>
+#include <intravenous/bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_sources.h>
@@ -29,9 +29,32 @@ struct IvModuleInstancesWitness {
         builders_completed.reset();
         listed_instances.reset();
     }
+    void handle_required_definitions_changed(
+        iv::IvModuleRequiredDefinitionsChanged const &diff)
+    {
+        required_diff = diff;
+    }
+    void handle_instances_changed(iv::IvModuleInstancesChanged const &diff)
+    {
+        instances_diff = diff;
+    }
+    void handle_instances_list_changed(
+        std::vector<iv::IvModuleInstanceInfo> const &instances)
+    {
+        listed_instances = instances;
+    }
+    void handle_builders_completed(iv::IvModuleInstanceBuildersChanged const &changed)
+    {
+        builders_completed = changed;
+    }
 };
 
-IvModuleInstancesWitness *g_iv_module_instances_witness = nullptr;
+using namespace iv;
+IV_DECLARE_BRIDGE(
+    iv_module_instances_witness_bridge,
+    iv::IvModuleInstances,
+    IvModuleInstancesWitness);
+IV_DEFINE_BRIDGE(iv_module_instances_witness_bridge)
 
 iv::IvModuleDefinition make_definition(std::filesystem::path module_root)
 {
@@ -44,54 +67,27 @@ iv::IvModuleDefinition make_definition(std::filesystem::path module_root)
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::IvModuleRequiredDefinitionsChangedEvent,
+    iv_module_instances_witness_bridge,
     iv_runtime_iv_module_required_definitions_changed_event,
-    +[](iv::IvModuleRequiredDefinitionsChanged const &diff) {
-        if (g_iv_module_instances_witness != nullptr) {
-            g_iv_module_instances_witness->required_diff = diff;
-        }
-    });
-
+    &IvModuleInstancesWitness::handle_required_definitions_changed)
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::IvModuleInstancesChangedEvent,
+    iv_module_instances_witness_bridge,
     iv_runtime_iv_module_instances_changed_event,
-    +[](iv::IvModuleInstancesChanged const &diff) {
-        if (g_iv_module_instances_witness != nullptr) {
-            g_iv_module_instances_witness->instances_diff = diff;
-        }
-    });
-
+    &IvModuleInstancesWitness::handle_instances_changed)
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::IvModuleInstancesListChangedEvent,
+    iv_module_instances_witness_bridge,
     iv_runtime_iv_module_instances_list_changed_event,
-    +[](std::vector<iv::IvModuleInstanceInfo> const &instances) {
-        if (g_iv_module_instances_witness != nullptr) {
-            g_iv_module_instances_witness->listed_instances = instances;
-        }
-    });
-
+    &IvModuleInstancesWitness::handle_instances_list_changed)
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::IvModuleInstanceBuildersCompletedEvent,
+    iv_module_instances_witness_bridge,
     iv_runtime_iv_module_instance_builders_completed_event,
-    +[](iv::IvModuleInstanceBuildersChanged const &changed) {
-        if (g_iv_module_instances_witness != nullptr) {
-            g_iv_module_instances_witness->builders_completed = changed;
-        }
-    });
+    &IvModuleInstancesWitness::handle_builders_completed)
 
 class IvModuleInstancesTest : public ::testing::Test {
 protected:
+    iv::IvModuleInstances bridge_source {};
     IvModuleInstancesWitness witness {};
-
-    void SetUp() override
-    {
-        g_iv_module_instances_witness = &witness;
-    }
-
-    void TearDown() override
-    {
-        g_iv_module_instances_witness = nullptr;
-    }
+    iv_module_instances_witness_bridge::scope witness_scope {bridge_source, witness};
 };
 } // namespace
 

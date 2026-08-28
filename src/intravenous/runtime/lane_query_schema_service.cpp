@@ -2,7 +2,7 @@
 
 #include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
-#include <intravenous/runtime/timeline.h>
+#include <intravenous/runtime/timeline_events.h>
 
 #include <intravenous/query/lane_query_completion.h>
 
@@ -16,32 +16,25 @@ void LaneQuerySchemaService::initialize(query::LaneQuerySchema schema)
     schema_ = std::move(schema);
 }
 
-void LaneQuerySchemaService::handle_timeline_lanes_changed(Timeline &timeline)
+void LaneQuerySchemaService::handle_timeline_lanes_changed(
+    TimelineLanesChanged const &change)
 {
-    query::LaneQuerySchema previous;
-    {
-        std::scoped_lock lock(mutex);
-        previous = schema_;
-    }
-    auto candidate = timeline.lane_query_schema(previous.revision() + 1);
-    auto change = query::diff_lane_query_schemas(previous, candidate);
-    if (!change.changed) {
+    if (!change.schema_change.changed) {
         return;
     }
 
     std::optional<LaneQuerySchemaChanged> notification;
     {
         std::scoped_lock lock(mutex);
-        // A concurrent lane change has already published a newer complete
-        // snapshot. Its notification is sufficient; do not publish an
-        // out-of-order revision from this older observation.
-        if (schema_.revision() != previous.revision()) {
+        // A newer snapshot has already been published, or this notification
+        // was produced from a stale timeline revision.
+        if (schema_.revision() != change.schema_change.old_revision) {
             return;
         }
-        schema_ = candidate;
+        schema_ = change.schema;
         notification.emplace(LaneQuerySchemaChanged{
-            .schema = std::move(candidate),
-            .change = std::move(change),
+            .schema = change.schema,
+            .change = change.schema_change,
         });
     }
     IV_INVOKE_LINKER_EVENT(iv_runtime_lane_query_schema_changed_event, *notification);

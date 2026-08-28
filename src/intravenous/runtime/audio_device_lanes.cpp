@@ -4,6 +4,9 @@
 
 #include <intravenous/runtime/audio_device_lane_nodes.h>
 #include <intravenous/runtime/audio_device_lanes_events.h>
+#include <intravenous/runtime/project_persistence_builder.h>
+#include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/timeline_execution_events.h>
 #include <intravenous/runtime/uuid.h>
 
@@ -570,6 +573,74 @@ AudioDevicesSnapshot AudioDeviceLanes::set_selected_devices(
     replace_output_device(create_output_device(selected_output_device_id_));
     replace_input_device(create_input_device(selected_input_device_id_));
     return audio_devices_snapshot();
+}
+
+void AudioDeviceLanes::handle_socket_rpc_get_audio_devices(
+    GetAudioDevicesRequest const &,
+    SocketRpcAudioDevicesResultBuilder &builder) const
+{
+    builder.succeed(audio_devices_snapshot());
+}
+
+void AudioDeviceLanes::handle_socket_rpc_set_audio_devices(
+    SetAudioDevicesRequest const &request,
+    SocketRpcAudioDevicesResultBuilder &builder)
+{
+    try {
+        builder.succeed(set_selected_devices(
+            request.output_device_id,
+            request.input_device_id));
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+    } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void AudioDeviceLanes::handle_project_set_audio_devices(
+    ProjectSetAudioDevicesRequest const &request,
+    ProjectAudioDevicesBuilder &builder)
+{
+    builder.succeed(set_selected_devices(
+        request.output_device_id,
+        request.input_device_id));
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void AudioDeviceLanes::handle_project_set_audio_device_lane_ids(
+    ProjectSetAudioDeviceLaneIdsRequest const &request,
+    ProjectAckBuilder &builder)
+{
+    set_lane_external_ids(request.output_lane_id, request.input_lane_id);
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void AudioDeviceLanes::handle_project_override_settings(
+    ProjectOverrideSettingsRequest const &request)
+{
+    if (!request.output_device_id.has_value() && !request.input_device_id.has_value()) {
+        return;
+    }
+    (void)set_selected_devices(
+        request.output_device_id.has_value()
+            ? request.output_device_id
+            : audio_devices_snapshot().selected_output.device_id,
+        request.input_device_id.has_value()
+            ? request.input_device_id
+            : audio_devices_snapshot().selected_input.device_id);
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void AudioDeviceLanes::handle_project_persistence_collect_state(
+    ProjectPersistenceBuilder &builder) const
+{
+    auto const snapshot = audio_devices_snapshot();
+    builder.add_project_audio_device_selection(
+        snapshot.selected_output.device_id,
+        snapshot.selected_input.device_id);
+    builder.add_audio_device_lane_ids(
+        output_lane_external_id().str(),
+        input_lane_external_id().str());
 }
 
 void AudioDeviceLanes::handle_task_runner_before_pass(TasksRunnerBeforePass const &)

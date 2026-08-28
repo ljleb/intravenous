@@ -1,4 +1,4 @@
-#include <intravenous/linker_event.h>
+#include <intravenous/bridge.h>
 #include <intravenous/runtime/lane_filters_events.h>
 #include <intravenous/runtime/lane_views.h>
 #include <intravenous/runtime/lane_views_events.h>
@@ -20,50 +20,42 @@ struct LaneViewsWitness {
     std::vector<iv::LaneFilterStoredRequest> stored_filters {};
     std::vector<std::string> removed_filters {};
     std::vector<iv::LaneViewResult> updates {};
+    void handle_filter_stored(iv::LaneFilterStoredRequest const &request)
+    {
+        stored_filters.push_back(request);
+    }
+    void handle_filter_removed(std::string const &filter_name)
+    {
+        removed_filters.push_back(filter_name);
+    }
+    void handle_views_updated(iv::LaneViewResult const &update)
+    {
+        updates.push_back(update);
+    }
 };
 
-LaneViewsWitness *g_lane_views_witness = nullptr;
+using namespace iv;
+IV_DECLARE_BRIDGE(lane_views_witness_bridge, iv::LaneViews, LaneViewsWitness);
+IV_DEFINE_BRIDGE(lane_views_witness_bridge)
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LaneFilterStoredEvent,
+    lane_views_witness_bridge,
     iv_runtime_lane_filter_stored_event,
-    +[](iv::LaneFilterStoredRequest const &request) {
-        if (g_lane_views_witness != nullptr) {
-            g_lane_views_witness->stored_filters.push_back(request);
-        }
-    });
-
+    &LaneViewsWitness::handle_filter_stored)
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LaneFilterRemovedEvent,
+    lane_views_witness_bridge,
     iv_runtime_lane_filter_removed_event,
-    +[](std::string const &filter_name) {
-        if (g_lane_views_witness != nullptr) {
-            g_lane_views_witness->removed_filters.push_back(filter_name);
-        }
-    });
-
+    &LaneViewsWitness::handle_filter_removed)
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LaneViewsUpdatedEvent,
+    lane_views_witness_bridge,
     iv_runtime_lane_views_updated_event,
-    +[](iv::LaneViewResult const &update) {
-        if (g_lane_views_witness != nullptr) {
-            g_lane_views_witness->updates.push_back(update);
-        }
-    });
+    &LaneViewsWitness::handle_views_updated)
 
 class LaneViewsModuleTest : public ::testing::Test {
 protected:
+    iv::LaneViews bridge_source {};
     LaneViewsWitness witness {};
-
-    void SetUp() override
-    {
-        g_lane_views_witness = &witness;
-    }
-
-    void TearDown() override
-    {
-        g_lane_views_witness = nullptr;
-    }
+    lane_views_witness_bridge::scope witness_scope {bridge_source, witness};
 };
 } // namespace
 

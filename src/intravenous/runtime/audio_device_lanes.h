@@ -17,6 +17,16 @@
 #include <vector>
 
 namespace iv {
+class GetAudioDevicesRequest;
+class ProjectAckBuilder;
+class ProjectAudioDevicesBuilder;
+class ProjectPersistenceBuilder;
+struct ProjectOverrideSettingsRequest;
+struct ProjectSetAudioDeviceLaneIdsRequest;
+struct ProjectSetAudioDevicesRequest;
+class SetAudioDevicesRequest;
+class SocketRpcAudioDevicesResultBuilder;
+
 struct SeekRequest;
 struct TimelineExecutionResumed;
 
@@ -118,6 +128,22 @@ public:
     AudioDevicesSnapshot set_selected_devices(
         std::optional<std::string> output_device_id,
         std::optional<std::string> input_device_id);
+    void handle_socket_rpc_get_audio_devices(
+        GetAudioDevicesRequest const &request,
+        SocketRpcAudioDevicesResultBuilder &builder) const;
+    void handle_socket_rpc_set_audio_devices(
+        SetAudioDevicesRequest const &request,
+        SocketRpcAudioDevicesResultBuilder &builder);
+    void handle_project_set_audio_devices(
+        ProjectSetAudioDevicesRequest const &request,
+        ProjectAudioDevicesBuilder &builder);
+    void handle_project_set_audio_device_lane_ids(
+        ProjectSetAudioDeviceLaneIdsRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_override_settings(
+        ProjectOverrideSettingsRequest const &request);
+    void handle_project_persistence_collect_state(
+        ProjectPersistenceBuilder &builder) const;
     void set_lane_external_ids(
         InternedString output_lane_external_id,
         InternedString input_lane_external_id);

@@ -5,7 +5,7 @@
 
 namespace iv {
 IV_DEFINE_BRIDGE(iv_module_instances_iv_module_definitions_bridge)
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     iv_module_instances_iv_module_definitions_bridge,
     iv_runtime_iv_module_required_definitions_changed_event,
     &IvModuleDefinitions::handle_required_definitions_changed);

@@ -28,6 +28,9 @@ IV_DEFINE_LINKER_EVENT(
 IV_DEFINE_LINKER_EVENT(
     TimelineExecutionResumedEvent,
     iv_runtime_timeline_execution_resumed_event);
+IV_DEFINE_LINKER_EVENT(
+    TimelineExecutionInvalidateCompiledCacheEvent,
+    iv_runtime_timeline_execution_invalidate_compiled_cache_event);
 IV_DEFINE_SINGLETON_EVENT(
     TimelineExecutionRealtimeSampleBlockRequestedEvent,
     iv_runtime_timeline_execution_realtime_sample_block_requested_event,

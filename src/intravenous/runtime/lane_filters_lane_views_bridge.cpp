@@ -11,15 +11,15 @@ IV_DEFINE_BRIDGE(lane_filters_lane_views_bridge)
 //   LaneFiltersChanged -> LaneViews::handle_lane_filters_changed
 //   LaneFilterStored   -> LaneFilters::store_filter
 //   LaneFilterRemoved  -> LaneFilters::remove_filter
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     lane_filters_lane_views_bridge,
     iv_runtime_lane_filters_changed_event,
     &LaneViews::handle_lane_filters_changed);
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     lane_filters_lane_views_bridge,
     iv_runtime_lane_filter_stored_event,
     &LaneFilters::store_filter);
-IV_SUBSCRIBE_BRIDGE(
+IV_SUBSCRIBE_LINKER_EVENT(
     lane_filters_lane_views_bridge,
     iv_runtime_lane_filter_removed_event,
     &LaneFilters::remove_filter);

@@ -24,6 +24,16 @@
 #include <vector>
 
 namespace iv {
+    class GraphInputLanesAckBuilder;
+    class LanesVisualizationLaneOutputQueryBuilder;
+    class LanesVisualizationLaneUiStateBuilder;
+    class ProjectAckBuilder;
+    class ProjectPersistenceBuilder;
+    struct ProjectSetTimelineLaneSampleChannelTypeRequest;
+    struct ProjectSetTimelineLaneUiStateRequest;
+    struct ProjectConnectTimelineLanesRequest;
+    struct ProjectDisconnectTimelineLanesRequest;
+
     class Timeline {
         struct PendingPublicConnection {
             InternedString source_id {};
@@ -42,6 +52,7 @@ namespace iv {
         // reconcile against this instead of tracking their own copies.
         query::LaneQuerySchema _lane_query_schema {};
         std::uint64_t _lane_query_schema_revision = 0;
+        std::uint64_t _project_change_version_index = 1;
 
         InternedString ensure_external_id_locked(LaneId lane)
         {
@@ -106,6 +117,11 @@ namespace iv {
             }
             return query::LaneQuerySchema::from_entries(std::move(entries), revision);
         }
+
+        void publish_lane_batch_change(
+            TimelineLaneBatchUpdate const &batch,
+            std::vector<LaneId> changed_lanes);
+        void publish_project_lane_change(std::vector<LaneId> changed_lanes);
 
     public:
         template<typename Fn>
@@ -356,6 +372,41 @@ namespace iv {
                 resolve_pending_public_connections_locked();
             }();
         }
+
+        void apply_lane_batch_and_publish_change(TimelineLaneBatchUpdate const &batch);
+        void handle_audio_device_lanes_timeline_batch(
+            TimelineLaneBatchUpdate const &batch);
+        void handle_graph_input_lanes_timeline_batch(
+            TimelineLaneBatchUpdate const &batch,
+            GraphInputLanesAckBuilder &builder);
+        void handle_lanes_visualization_timeline_batch(
+            TimelineLaneBatchUpdate const &batch);
+        void handle_graph_input_lanes_knob_value_updated(
+            LaneId lane,
+            Sample value);
+        void handle_lanes_visualization_lane_output_query(
+            LaneId lane,
+            LanesVisualizationLaneOutputQueryBuilder &builder);
+        void handle_lanes_visualization_lane_ui_state_query(
+            LaneId lane,
+            bool changed_only,
+            LanesVisualizationLaneUiStateBuilder &builder);
+        void handle_authored_lanes_timeline_batch(
+            TimelineLaneBatchUpdate const &batch);
+        void handle_project_set_timeline_lane_sample_channel_type(
+            ProjectSetTimelineLaneSampleChannelTypeRequest const &request,
+            ProjectAckBuilder &builder);
+        void handle_project_set_timeline_lane_ui_state(
+            ProjectSetTimelineLaneUiStateRequest const &request,
+            ProjectAckBuilder &builder);
+        void handle_project_connect_timeline_lanes(
+            ProjectConnectTimelineLanesRequest const &request,
+            ProjectAckBuilder &builder);
+        void handle_project_disconnect_timeline_lanes(
+            ProjectDisconnectTimelineLanesRequest const &request,
+            ProjectAckBuilder &builder);
+        void handle_project_persistence_collect_state(
+            ProjectPersistenceBuilder &builder);
 
         void remove_lane(LaneId lane)
         {

@@ -70,9 +70,21 @@ public:
 struct BridgeWitness {
     std::vector<iv::LaneFiltersChanged> filter_changes {};
     std::vector<iv::LaneViewResult> view_updates {};
+    void handle_lane_filters_changed(iv::LaneFiltersChanged const &change)
+    {
+        filter_changes.push_back(change);
+    }
+    void handle_lane_views_updated(iv::LaneViewResult const &update)
+    {
+        view_updates.push_back(update);
+    }
 };
 
-BridgeWitness *g_bridge_witness = nullptr;
+using namespace iv;
+IV_DECLARE_BRIDGE(lane_filters_witness_bridge, iv::LaneFilters, BridgeWitness);
+IV_DECLARE_BRIDGE(lane_views_witness_bridge, iv::LaneViews, BridgeWitness);
+IV_DEFINE_BRIDGE(lane_filters_witness_bridge)
+IV_DEFINE_BRIDGE(lane_views_witness_bridge)
 
 iv::LaneMetadata metadata_for_lane(iv::LaneId)
 {
@@ -93,22 +105,13 @@ std::vector<iv::TimelineLaneOutputs> no_outputs(std::vector<iv::LaneId> const &l
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LaneFiltersChangedEvent,
+    lane_filters_witness_bridge,
     iv_runtime_lane_filters_changed_event,
-    +[](iv::LaneFiltersChanged const &change) {
-        if (g_bridge_witness != nullptr) {
-            g_bridge_witness->filter_changes.push_back(change);
-        }
-    });
-
+    &BridgeWitness::handle_lane_filters_changed)
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LaneViewsUpdatedEvent,
+    lane_views_witness_bridge,
     iv_runtime_lane_views_updated_event,
-    +[](iv::LaneViewResult const &update) {
-        if (g_bridge_witness != nullptr) {
-            g_bridge_witness->view_updates.push_back(update);
-        }
-    });
+    &BridgeWitness::handle_lane_views_updated)
 
 class LaneFilterBridgesTest : public ::testing::Test {
 protected:
@@ -122,16 +125,8 @@ protected:
         &timeline, &filters
     };
     BridgeWitness witness {};
-
-    void SetUp() override
-    {
-        g_bridge_witness = &witness;
-    }
-
-    void TearDown() override
-    {
-        g_bridge_witness = nullptr;
-    }
+    lane_filters_witness_bridge::scope lane_filters_witness_scope {filters, witness};
+    lane_views_witness_bridge::scope lane_views_witness_scope {views, witness};
 };
 } // namespace
 

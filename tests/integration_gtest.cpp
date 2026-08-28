@@ -1,5 +1,6 @@
 #include "runtime_test_harness.h"
 
+#include <intravenous/bridge.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
 #include <intravenous/module/authoring.h>
@@ -59,51 +60,66 @@ std::string runtime_node_id(std::string_view instance_id, std::string_view virtu
 
 struct IntegrationReloadWitness {
     std::optional<iv::IvModuleReloadResults> results {};
+    void handle_results(iv::IvModuleReloadResults const &value)
+    {
+        results = value;
+    }
 };
-
-IntegrationReloadWitness *g_integration_reload_witness = nullptr;
 struct IntegrationPassFinishedAction {
     std::mutex mutex;
     std::function<void(iv::TasksRunnerAfterPass const &)> fn {};
+    void handle_after_pass(iv::TasksRunnerAfterPass const &finished)
+    {
+        std::function<void(iv::TasksRunnerAfterPass const &)> callback;
+        {
+            std::scoped_lock lock(mutex);
+            callback = std::move(fn);
+        }
+        if (callback) {
+            callback(finished);
+        }
+    }
 };
 
-IntegrationPassFinishedAction *g_integration_pass_finished_action = nullptr;
-std::vector<iv::LaneViewResult> *g_integration_lane_view_updates = nullptr;
+struct IntegrationLaneViewUpdates {
+    std::vector<iv::LaneViewResult> updates {};
+    void handle_updated(iv::LaneViewResult const &update)
+    {
+        updates.push_back(update);
+    }
+};
+
+using namespace iv;
+IV_DECLARE_BRIDGE(
+    integration_reload_witness_bridge,
+    iv::IvModuleReload,
+    IntegrationReloadWitness);
+IV_DECLARE_BRIDGE(
+    integration_pass_finished_action_bridge,
+    iv::TasksRunner,
+    IntegrationPassFinishedAction);
+IV_DECLARE_BRIDGE(
+    integration_lane_view_updates_bridge,
+    iv::LaneViews,
+    IntegrationLaneViewUpdates);
+IV_DEFINE_BRIDGE(integration_reload_witness_bridge)
+IV_DEFINE_BRIDGE(integration_pass_finished_action_bridge)
+IV_DEFINE_BRIDGE(integration_lane_view_updates_bridge)
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::IvModuleReloadResultsEvent,
+    integration_reload_witness_bridge,
     iv_runtime_iv_module_reload_results_event,
-    +[](iv::IvModuleReloadResults const &results) {
-        if (g_integration_reload_witness != nullptr) {
-            g_integration_reload_witness->results = results;
-        }
-    });
+    &IntegrationReloadWitness::handle_results)
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::TasksRunnerAfterPassEvent,
+    integration_pass_finished_action_bridge,
     iv_runtime_task_runner_after_pass_event,
-    +[](iv::TasksRunnerAfterPass const &finished) {
-        if (g_integration_pass_finished_action == nullptr) {
-            return;
-        }
-        std::function<void(iv::TasksRunnerAfterPass const &)> fn;
-        {
-            std::scoped_lock lock(g_integration_pass_finished_action->mutex);
-            fn = std::move(g_integration_pass_finished_action->fn);
-        }
-        if (fn) {
-            fn(finished);
-        }
-    });
+    &IntegrationPassFinishedAction::handle_after_pass)
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    iv::LaneViewsUpdatedEvent,
+    integration_lane_view_updates_bridge,
     iv_runtime_lane_views_updated_event,
-    +[](iv::LaneViewResult const &update) {
-        if (g_integration_lane_view_updates != nullptr) {
-            g_integration_lane_view_updates->push_back(update);
-        }
-    });
+    &IntegrationLaneViewUpdates::handle_updated)
 
 bool wait_until(std::function<bool()> const &predicate, std::chrono::milliseconds timeout = 2s)
 {
@@ -364,7 +380,8 @@ namespace {
     iv::LaneFilters lane_filters;
     iv::LaneViews lane_views;
 
-    iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
+    auto graph_input_lanes_timeline_scope =
+        iv::graph_input_lanes_timeline_bridge::bind(graph_input_lanes, timeline);
     auto timeline_lane_filters_scope =
         iv::timeline_lane_filters_bridge::bind(timeline, lane_filters);
     auto lane_filters_lane_views_scope =
@@ -383,7 +400,8 @@ namespace {
             graph_input_lanes);
 
     IntegrationReloadWitness reload_witness;
-    g_integration_reload_witness = &reload_witness;
+    auto reload_witness_scope =
+        integration_reload_witness_bridge::bind(reload, reload_witness);
     auto const created = instances.create_instance(
         "iv.test.graph_input_module",
         std::filesystem::weakly_canonical(workspace));
@@ -392,7 +410,6 @@ namespace {
     reload.compile_dirty_definitions();
     EXPECT_TRUE(reload.has_pending_results());
     reload.apply_pending_results();
-    g_integration_reload_witness = nullptr;
 
     ASSERT_TRUE(reload_witness.results.has_value());
     ASSERT_TRUE(reload_witness.results->failed.empty())
@@ -427,15 +444,16 @@ namespace {
     // The real UI normally has its unfiltered lane view open before a user
     // chooses "Connect lane". Its update must be pushed when the new graph
     // input lane is realized, rather than requiring the user to reopen it.
-    std::vector<iv::LaneViewResult> lane_view_updates;
-    g_integration_lane_view_updates = &lane_view_updates;
+    IntegrationLaneViewUpdates lane_view_updates;
+    auto lane_view_updates_scope =
+        integration_lane_view_updates_bridge::bind(lane_views, lane_view_updates);
     auto const initially_open_view = lane_views.open_view(iv::LaneViewRequest{
         .view_id = intern("view"),
         .query = iv::LaneQuery{.filter = iv::LaneQueryFilter{}},
     });
     auto const initial_lane_count = initially_open_view.lanes.total_lane_count;
     EXPECT_EQ(initial_lane_count, 1u);
-    lane_view_updates.clear();
+    lane_view_updates.updates.clear();
 
     graph_input_lanes.set_sample_input_state(iv::ProjectSetSampleInputStateRequest{
         .node_id = runtime_node_id(created, virtual_node_it->id),
@@ -446,11 +464,11 @@ namespace {
     graph_input_lanes.handle_task_runner_after_pass(iv::TasksRunnerAfterPass{.graph_revision = 1});
 
     auto const visible_update = std::find_if(
-        lane_view_updates.rbegin(), lane_view_updates.rend(), [&](auto const &update) {
+        lane_view_updates.updates.rbegin(), lane_view_updates.updates.rend(), [&](auto const &update) {
             return update.view_id == intern("view")
                 && update.lanes.total_lane_count > initial_lane_count;
         });
-    ASSERT_NE(visible_update, lane_view_updates.rend());
+    ASSERT_NE(visible_update, lane_view_updates.updates.rend());
     // Each stereo channel receives two contributors across the two generic
     // instantiations, but all four contributions aggregate into one `main`
     // public-output lane. The newly exposed virtual input is a second lane.
@@ -474,9 +492,7 @@ namespace {
     });
     EXPECT_TRUE(lane_names.contains("main"));
     EXPECT_TRUE(lane_names.contains("frequency"));
-    g_integration_lane_view_updates = nullptr;
 
-    iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
 }
 
 TEST(Integration, SampleInputMutationsFlowThroughLiveSnapshots)
@@ -552,18 +568,8 @@ void expect_stereo_saw_reaches_automatic_timeline_lane(
     iv::GraphInputLanes graph_input_lanes;
     iv::IvModuleInstancesExecution module_execution(block_size);
 
-    iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
-
-    struct BridgeScope {
-        iv::GraphInputLanes& graph_input_lanes;
-        iv::Timeline& timeline;
-
-        ~BridgeScope()
-        {
-            iv::unbind_graph_input_lanes_timeline_bridge(
-                graph_input_lanes, timeline);
-        }
-    } bridge_scope{graph_input_lanes, timeline};
+    auto graph_input_lanes_timeline_scope =
+        iv::graph_input_lanes_timeline_bridge::bind(graph_input_lanes, timeline);
 
     iv::IvModuleInstance instance{
         .instance_id = std::move(instance_id),
@@ -828,7 +834,8 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
     std::atomic<size_t> captures_when_disconnect_applied {0};
     std::atomic<bool> disconnect_applied {false};
     IntegrationPassFinishedAction pass_finished_action;
-    g_integration_pass_finished_action = &pass_finished_action;
+    auto pass_finished_action_scope =
+        integration_pass_finished_action_bridge::bind(runner, pass_finished_action);
     {
         std::scoped_lock lock(pass_finished_action.mutex);
         pass_finished_action.fn =
@@ -862,5 +869,4 @@ TEST(Integration, DisconnectingTimelineSinewaveSilencesAudioBuffer)
         return std::abs(sample) < 0.000001f;
     }));
 
-    g_integration_pass_finished_action = nullptr;
 }

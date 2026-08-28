@@ -48,6 +48,8 @@ struct BoundIvModuleSourceIntrospection {
         iv_module_instances_graph_input_lanes_scope;
     iv::iv_module_source_introspection_graph_input_lanes_bridge::scope
         iv_module_source_introspection_graph_input_lanes_scope;
+    iv::graph_input_lanes_timeline_bridge::scope
+        graph_input_lanes_timeline_scope;
 
     static iv::IvModuleReloadedDefinition load_definition(
         iv::StartupConfigState const &config,
@@ -87,15 +89,9 @@ struct BoundIvModuleSourceIntrospection {
               graph_input_lanes),
           iv_module_source_introspection_graph_input_lanes_scope(
               introspection,
-              graph_input_lanes)
-    {
-        iv::bind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
-    }
-
-    ~BoundIvModuleSourceIntrospection()
-    {
-        iv::unbind_graph_input_lanes_timeline_bridge(graph_input_lanes, timeline);
-    }
+              graph_input_lanes),
+          graph_input_lanes_timeline_scope(graph_input_lanes, timeline)
+    {}
 
     auto initialize()
     {

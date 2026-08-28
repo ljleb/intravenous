@@ -22,6 +22,8 @@
 #include <vector>
 
 namespace iv {
+class ProjectPersistenceBuilder;
+
 class GraphInputLanes {
 public:
     enum class VirtualSampleKnobState {
@@ -288,6 +290,8 @@ public:
         IvModuleSourceIntrospectionLiveInputSnapshotsBuilder &builder);
     void handle_iv_module_source_introspection_authored_state_snapshot_requested(
         IvModuleSourceIntrospectionAuthoredStateSnapshotBuilder &builder);
+    void handle_iv_module_source_introspection_public_ports_snapshot_requested(
+        IvModuleSourceIntrospectionPublicPortsSnapshotBuilder &builder) const;
     void set_sample_input_value(
         ProjectSetSampleInputValueRequest const &request);
     void set_sample_input_state(
@@ -314,6 +318,31 @@ public:
         ProjectSetSampleOutputStateRequest const &request);
     void set_event_output_state(
         ProjectSetEventOutputStateRequest const &request);
+    void handle_project_set_sample_input_value(
+        ProjectSetSampleInputValueRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_set_sample_input_state(
+        ProjectSetSampleInputStateRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_set_public_sample_input_state(
+        ProjectSetPublicSampleInputStateRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_set_public_sample_input_value(
+        std::string const &instance_id,
+        std::string const &source_identity,
+        Sample value,
+        ProjectAckBuilder &builder);
+    void handle_project_set_event_input_state(
+        ProjectSetEventInputStateRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_set_sample_output_state(
+        ProjectSetSampleOutputStateRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_set_event_output_state(
+        ProjectSetEventOutputStateRequest const &request,
+        ProjectAckBuilder &builder);
+    void handle_project_persistence_collect_state(
+        ProjectPersistenceBuilder &builder) const;
     [[nodiscard]] GraphInputLaneBindings graph_input_lane_bindings(
         ProjectGraphInputLaneBindingsRequest const &request);
     [[nodiscard]] AuthoredStateSnapshot authored_state() const;
@@ -324,5 +353,11 @@ public:
     void prepare_event_output_block(LaneId lane);
     BorrowedSampleBlock handle_sample_block_requested(LaneId lane) const;
     std::span<TimedEvent const> handle_event_block_requested(LaneId lane) const;
+    void handle_graph_input_lanes_sample_block_requested(
+        LaneId lane,
+        GraphInputLanesSampleBlockBuilder &builder) const;
+    void handle_graph_input_lanes_event_block_requested(
+        LaneId lane,
+        GraphInputLanesEventBlockBuilder &builder) const;
 };
 } // namespace iv

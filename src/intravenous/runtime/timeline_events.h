@@ -65,6 +65,7 @@ namespace iv {
         bool lane_set_changed = false;
         query::LaneQueryDatasetPtr dataset {};
         query::LaneQuerySchemaChange schema_change {};
+        query::LaneQuerySchema schema {};
         std::function<LaneMetadata(LaneId)> metadata_for_lane {};
         std::function<std::optional<std::string>(LaneId)> model_type_id_for_lane {};
         std::function<InternedString(LaneId)> public_id_for_lane {};
@@ -75,18 +76,10 @@ namespace iv {
         std::vector<LaneId> changed_lanes {};
     };
 
-    // Lane owners submit structural changes to Timeline. Timeline is the
-    // single owner of graph mutation and of the resulting lane-set snapshot.
-    using TimelineLaneBatchRequestedEvent =
-        void (*)(TimelineLaneBatchUpdate const &);
-
     using TimelineLanesChangedEvent =
         void (*)(TimelineLanesChanged const &);
 
     IV_DECLARE_LINKER_EVENT(
         TimelineLanesChangedEvent,
         iv_runtime_timeline_lanes_changed_event);
-    IV_DECLARE_LINKER_EVENT(
-        TimelineLaneBatchRequestedEvent,
-        iv_runtime_timeline_lane_batch_requested_event);
 } // namespace iv

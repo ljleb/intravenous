@@ -284,7 +284,8 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
         std::optional<std::string>("default"),
         std::nullopt);
 
-    iv::bind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
+    auto audio_device_lanes_timeline_scope =
+        iv::audio_device_lanes_timeline_bridge::bind(audio_device_lanes, timeline);
     auto audio_device_lanes_timeline_execution_scope =
         iv::audio_device_lanes_timeline_execution_bridge::bind(audio_device_lanes, execution);
 
@@ -316,7 +317,8 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
         return execution.synchronize_from_graph(graph);
     });
     runner->update_tasks(update);
-    iv::bind_timeline_timeline_execution_bridge(timeline, execution);
+    auto timeline_timeline_execution_scope =
+        iv::timeline_timeline_execution_bridge::bind(timeline, execution);
 
     auto const source_task_id = iv::timeline_lane_task_id(iv::LaneId{1000});
     auto const output_task_id = iv::timeline_lane_task_id(*output_lane);
@@ -346,8 +348,6 @@ TEST(AudioDeviceLanes, RendersTimelineAudioIntoOutputDeviceRequests)
     }
 
     audio_device_lanes.request_shutdown();
-    iv::unbind_timeline_timeline_execution_bridge(timeline, execution);
-    iv::unbind_audio_device_lanes_timeline_bridge(audio_device_lanes, timeline);
     runner.reset();
 }
 
