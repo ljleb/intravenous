@@ -50,7 +50,21 @@ Use `--stage` to compile progressively more of the generated translation unit:
 --stage parse       # include and semantically compile the authored source
 --stage authoring   # also execute module_main against GraphBuilder
 --stage metadata    # build and freeze introspection metadata only
+--stage execution-lowering # lower authored graph connections only
+--stage execution-freeze # lower and freeze generated execution nodes only
+--stage execution-connection-validation # validate generated connections only
+--stage execution-connection-reflection # reflect generated connections only
 --stage execution-reflection # lower and reflect execution nodes only
+--stage execution-finalization-sorted # finalize through validation and sorting
+--stage execution-finalization-scopes # additionally construct lowered scopes
+--stage execution-finalization-subgraphs # additionally compile subgraphs
+--stage execution-finalization-virtual-metadata # additionally build metadata
+--stage execution-finalization-plan # additionally compile the SCC plan
+--stage execution-finalization-dormancy # additionally compile dormancy groups
+--stage execution-finalization-artifact-base # artifact preparation only
+--stage execution-finalization-node-wrapper-scaffolding # bare wrappers only
+--stage execution-finalization-node-wrappers # also construct node wrappers
+--stage execution-finalization-artifact # build artifact without Graph freezing
 --stage execution-graph # finalize and freeze Graph, without static tick code
 --stage execution   # finalize and instantiate the static execution graph only
 --stage full        # production execution graph plus metadata (the default)
@@ -67,6 +81,52 @@ cost of emitting and optimizing the static tick path.
 `execution-reflection` stops before edge lowering and final graph algorithms.
 Its delta from `authoring` identifies how much of the execution-root build is
 spent turning generated nodes into value-specialized reflected operations.
+`execution-lowering` stops immediately after generated-node and edge lowering.
+Its delta from `authoring` identifies the graph-rewrite cost before any
+connection validation, freezing, or reflection.
+`execution-freeze` stops just before reflection's
+`reflect_constant/substitute/extract` step, separating static-value freezing
+from the C++26 reflection/template work.
+`execution-connection-validation` stops before static-value construction. Its
+delta from `authoring` isolates validation of generated connection mappings.
+`execution-connection-reflection` isolates the generated `ConnectionNode`
+subset, which is normally the dominant generated-node category in arithmetic
+and routing-heavy graphs.
+`execution-finalization-sorted` continues the execution-root preparation
+through edge lowering, normalization, validation, and topological sorting, but
+stops before lowered-scope construction, execution-plan and dormancy
+compilation, and freezing the final `Graph` value. Its delta from
+`execution-reflection` separates graph normalization from the post-sort
+finalization pipeline.
+`execution-finalization-scopes` additionally builds the lowered-scope
+hierarchy. Its delta from `execution-finalization-sorted` isolates scope
+membership and hierarchy construction.
+`execution-finalization-subgraphs` additionally remaps lowered subgraph
+descriptions to runtime node indices. Its delta from
+`execution-finalization-scopes` isolates that nested-graph compilation pass.
+`execution-finalization-virtual-metadata` additionally constructs the
+execution-root virtual-node metadata. Its delta from
+`execution-finalization-subgraphs` isolates that metadata pass.
+`execution-finalization-plan` additionally builds the SCC execution plan. Its
+delta from the mapping-only preceding work isolates SCC discovery and ordering.
+`execution-finalization-dormancy` additionally builds dormant-subgraph groups.
+Its delta from `execution-finalization-plan` isolates that pass.
+`execution-finalization-artifact` additionally builds the graph artifact but
+does not construct `Graph`; its delta from
+`execution-finalization-dormancy` isolates artifact construction, while the
+remaining delta to `execution-graph` is static-storage freezing.
+`execution-finalization-artifact-base` stops before `GraphNodeWrapper` and
+`GraphSccWrapper` construction. Its delta from dormancy isolates artifact
+edge/buffer/latency preparation; the remaining delta to `artifact` isolates
+the wrapper values used by static graph execution.
+`execution-finalization-node-wrappers` additionally constructs each
+`GraphNodeWrapper` but discards SCC wrappers. Its delta from `artifact-base`
+isolates per-node static port and binding promotion; the remaining delta to
+`artifact` isolates SCC-level wrapper construction.
+`execution-finalization-node-wrapper-scaffolding` constructs the wrapper
+objects without static ports, bindings, or IDs. Its delta from `artifact-base`
+is wrapper bookkeeping; the remaining delta to `node-wrappers` is static data
+promotion.
 
 `--source-shape empty|input|nodes|connected|full` progressively changes the
 body of the generated `module_main`. This provides a second axis for isolating

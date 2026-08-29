@@ -139,9 +139,12 @@ constexpr std::vector<IntrospectionPortInfo> aggregate_ports(
   return virtual_ports;
 }
 
-using VirtualMetadataBuildResult = std::pair<
-    std::vector<IntrospectionVirtualNode>,
-    std::flat_map<std::string, std::vector<std::string>>>;
+using VirtualNodeIdsByBackingNodeId =
+    std::flat_map<std::string, std::vector<std::string>>;
+
+using VirtualMetadataBuildResult =
+    std::pair<std::vector<IntrospectionVirtualNode>,
+              VirtualNodeIdsByBackingNodeId>;
 
 constexpr VirtualMetadataBuildResult
 build_virtual_metadata(PreparedGraph const& g,
@@ -431,8 +434,7 @@ build_virtual_metadata(PreparedGraph const& g,
               return a.backing_node_ids < b.backing_node_ids;
             });
 
-  std::flat_map<std::string, std::vector<std::string>>
-      virtual_node_ids_by_backing_node_id;
+  VirtualNodeIdsByBackingNodeId virtual_node_ids_by_backing_node_id;
   for (auto const& virtual_node : virtual_nodes) {
     for (auto const& backing_node_id : virtual_node.backing_node_ids) {
       virtual_node_ids_by_backing_node_id[backing_node_id].push_back(
@@ -447,6 +449,39 @@ build_virtual_metadata(PreparedGraph const& g,
 
   return std::make_pair(std::move(virtual_nodes),
                         std::move(virtual_node_ids_by_backing_node_id));
+}
+
+// Execution-root construction needs only this reverse lookup, not the full
+// introspection nodes built by build_virtual_metadata(). Keep that path small:
+// it deliberately mirrors the virtual-ID and backing-node relationship used
+// above without constructing port metadata, source-span aggregates, or groups.
+constexpr VirtualNodeIdsByBackingNodeId
+build_virtual_node_ids_by_backing_node_id(
+    PreparedGraph const& g,
+    std::span<LoweredSubgraphSpec const> lowered_scopes) {
+  VirtualNodeIdsByBackingNodeId result;
+  for (size_t node_i = 0; node_i < g.nodes.size(); ++node_i) {
+    if (node_i >= g.node_virtual_ids.size()) continue;
+    for (auto const& virtual_node_id : g.node_virtual_ids[node_i]) {
+      result[g.node_ids[node_i]].push_back(virtual_node_id);
+    }
+  }
+
+  for (auto const& scope : lowered_scopes) {
+    auto const type_identity = "lowered-subgraph:" + scope.kind;
+    for (auto const& info : scope.source_infos) {
+      if (info.declaration_identity.empty()) continue;
+      result[scope.backing_node_id].push_back(typed_virtual_node_id(
+          info.declaration_identity, type_identity));
+    }
+  }
+
+  for (auto&& [_, virtual_ids] : result) {
+    std::sort(virtual_ids.begin(), virtual_ids.end());
+    virtual_ids.erase(std::unique(virtual_ids.begin(), virtual_ids.end()),
+                      virtual_ids.end());
+  }
+  return result;
 }
 
 namespace {

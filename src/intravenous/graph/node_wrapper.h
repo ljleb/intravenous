@@ -16,6 +16,11 @@
 #include <vector>
 
 namespace iv {
+    enum class GraphNodeWrapperBuildMode {
+        minimal,
+        full,
+    };
+
     struct StaticSampleOutputBinding {
         StaticString target {};
         ChannelConversionPlan conversion {};
@@ -28,9 +33,7 @@ namespace iv {
 
     struct GraphNodeWrapper {
         ReflectedNodeRuntimeOperations _operations {};
-        StaticSpan<StaticInputConfig> _inputs {};
         StaticSpan<StaticOutputConfig> _outputs {};
-        StaticSpan<StaticEventInputConfig> _event_inputs {};
         StaticSpan<StaticEventOutputConfig> _event_outputs {};
         size_t _internal_latency = 0;
         size_t _max_block_size = MAX_BLOCK_SIZE;
@@ -52,15 +55,21 @@ namespace iv {
             std::vector<EventInputConfig> input_event_configs,
             std::string node_id,
             std::vector<SampleOutputBinding> output_targets,
-            std::vector<EventOutputBinding> event_output_targets
+            std::vector<EventOutputBinding> event_output_targets,
+            // The minimal mode is used only by artifact profiling to isolate
+            // static port/binding promotion from wrapper scaffolding.
+            GraphNodeWrapperBuildMode build_mode =
+                GraphNodeWrapperBuildMode::full
         )
         : _operations(node.operations.runtime)
-        , _inputs(details::define_static_configs<StaticInputConfig>(node.inputs()))
-        , _outputs(details::define_static_configs<StaticOutputConfig>(node.outputs()))
-        , _event_inputs(details::define_static_configs<StaticEventInputConfig>(
-              node.event_inputs()))
-        , _event_outputs(details::define_static_configs<StaticEventOutputConfig>(
-              node.event_outputs()))
+        , _outputs(build_mode == GraphNodeWrapperBuildMode::full
+              ? details::define_static_configs<StaticOutputConfig>(
+                    node.outputs())
+              : StaticSpan<StaticOutputConfig>{})
+        , _event_outputs(build_mode == GraphNodeWrapperBuildMode::full
+              ? details::define_static_configs<StaticEventOutputConfig>(
+                    node.event_outputs())
+              : StaticSpan<StaticEventOutputConfig>{})
         , _internal_latency(node.internal_latency())
         , _max_block_size(node.max_block_size())
         , _ttl_samples(ttl_samples.value_or(0))
@@ -68,16 +77,24 @@ namespace iv {
         , _node_default_ttl_samples(node.ttl_samples().value_or(0))
         , _has_node_default_ttl_samples(node.ttl_samples().has_value())
         , _can_skip_block(node.can_skip_block())
-        , _node_id(details::define_static_string(node_id))
-        , _output_targets(freeze_output_targets(output_targets))
-        , _event_output_targets(freeze_event_output_targets(
-              event_output_targets))
-        , _input_port_data_nodes(details::define_static_span(
-              make_input_port_data_nodes(
-                  node_id, node.inputs(), input_buffer_plans)))
-        , _input_event_port_data_nodes(details::define_static_span(
-              make_input_event_port_data_nodes(
-                  node_id, input_event_configs)))
+        , _node_id(build_mode == GraphNodeWrapperBuildMode::full
+              ? details::define_static_string(node_id)
+              : StaticString{})
+        , _output_targets(build_mode == GraphNodeWrapperBuildMode::full
+              ? freeze_output_targets(output_targets)
+              : StaticSpan<StaticSampleOutputBinding>{})
+        , _event_output_targets(build_mode == GraphNodeWrapperBuildMode::full
+              ? freeze_event_output_targets(event_output_targets)
+              : StaticSpan<StaticEventOutputBinding>{})
+        , _input_port_data_nodes(build_mode == GraphNodeWrapperBuildMode::full
+              ? details::define_static_span(make_input_port_data_nodes(
+                    node_id, node.inputs(), input_buffer_plans))
+              : StaticSpan<GraphPortDataNode>{})
+        , _input_event_port_data_nodes(
+              build_mode == GraphNodeWrapperBuildMode::full
+                  ? details::define_static_span(make_input_event_port_data_nodes(
+                        node_id, input_event_configs))
+                  : StaticSpan<GraphEventPortDataNode>{})
         {}
 
         consteval explicit GraphNodeWrapper(
@@ -189,8 +206,10 @@ namespace iv {
         constexpr auto inputs() const
         {
             std::vector<InputConfig> result;
-            result.reserve(_inputs.size);
-            for (auto const& input : _inputs) result.push_back(input.config());
+            result.reserve(_input_port_data_nodes.size);
+            for (auto const& port_data : _input_port_data_nodes) {
+                result.push_back(port_data._input.config());
+            }
             return result;
         }
 
@@ -206,9 +225,10 @@ namespace iv {
         constexpr auto event_inputs() const
         {
             std::vector<EventInputConfig> result;
-            result.reserve(_event_inputs.size);
-            for (auto const& input : _event_inputs)
-                result.push_back(input.config());
+            result.reserve(_input_event_port_data_nodes.size);
+            for (auto const& port_data : _input_event_port_data_nodes) {
+                result.push_back(port_data._input.config());
+            }
             return result;
         }
 
@@ -239,9 +259,9 @@ namespace iv {
         void declare(DeclarationContext<GraphNodeWrapper> const& ctx) const
         {
             auto const& state = ctx.state();
-            auto const num_inputs = _inputs.size;
+            auto const num_inputs = _input_port_data_nodes.size;
             auto const num_outputs = _outputs.size;
-            auto const num_event_inputs = _event_inputs.size;
+            auto const num_event_inputs = _input_event_port_data_nodes.size;
             auto const num_event_outputs = _event_outputs.size;
 
             ctx.nested_node_states(state.nested_node_states);

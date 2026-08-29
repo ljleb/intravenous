@@ -342,7 +342,33 @@ std::string_view compile_stage_name(ModuleCompileStage stage)
     case ModuleCompileStage::parse: return "parse";
     case ModuleCompileStage::authoring: return "authoring";
     case ModuleCompileStage::metadata: return "metadata";
+    case ModuleCompileStage::execution_lowering: return "execution-lowering";
+    case ModuleCompileStage::execution_freeze: return "execution-freeze";
+    case ModuleCompileStage::execution_connection_validation:
+        return "execution-connection-validation";
+    case ModuleCompileStage::execution_connection_reflection:
+        return "execution-connection-reflection";
     case ModuleCompileStage::execution_reflection: return "execution-reflection";
+    case ModuleCompileStage::execution_finalization_sorted:
+        return "execution-finalization-sorted";
+    case ModuleCompileStage::execution_finalization_scopes:
+        return "execution-finalization-scopes";
+    case ModuleCompileStage::execution_finalization_subgraphs:
+        return "execution-finalization-subgraphs";
+    case ModuleCompileStage::execution_finalization_virtual_metadata:
+        return "execution-finalization-virtual-metadata";
+    case ModuleCompileStage::execution_finalization_plan:
+        return "execution-finalization-plan";
+    case ModuleCompileStage::execution_finalization_dormancy:
+        return "execution-finalization-dormancy";
+    case ModuleCompileStage::execution_finalization_artifact:
+        return "execution-finalization-artifact";
+    case ModuleCompileStage::execution_finalization_artifact_base:
+        return "execution-finalization-artifact-base";
+    case ModuleCompileStage::execution_finalization_node_wrappers:
+        return "execution-finalization-node-wrappers";
+    case ModuleCompileStage::execution_finalization_node_wrapper_scaffolding:
+        return "execution-finalization-node-wrapper-scaffolding";
     case ModuleCompileStage::execution_graph: return "execution-graph";
     case ModuleCompileStage::execution: return "execution";
     }
@@ -759,6 +785,78 @@ class ModuleLoader::Impl {
                 << "  return iv_metadata_stage;\n"
                 << "}\n";
             break;
+        case ModuleCompileStage::execution_freeze:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t iv_execution_freeze_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_frozen_generated_node_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto iv_execution_freeze_stage = "
+                   "iv_execution_freeze_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_freeze_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_lowering:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t iv_execution_lowering_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_lowered_node_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto iv_execution_lowering_stage = "
+                   "iv_execution_lowering_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_lowering_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_connection_reflection:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_connection_reflection_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_reflected_connection_node_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_connection_reflection_stage = "
+                   "iv_execution_connection_reflection_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_connection_reflection_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_connection_validation:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_connection_validation_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_validated_connection_node_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_connection_validation_stage = "
+                   "iv_execution_connection_validation_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_connection_validation_stage;\n"
+                << "}\n";
+            break;
         case ModuleCompileStage::execution_reflection:
             export_tu
                 << "namespace {\n"
@@ -774,6 +872,196 @@ class ModuleLoader::Impl {
                 << "extern \"C\" IV_MODULE_EXPORT std::size_t "
                    "iv_module_compile_stage_marker() {\n"
                 << "  return iv_execution_reflection_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_sorted:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_sorted_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_sorted_node_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_sorted_stage = "
+                   "iv_execution_finalization_sorted_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_sorted_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_scopes:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_scopes_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_lowered_scope_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_scopes_stage = "
+                   "iv_execution_finalization_scopes_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_scopes_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_subgraphs:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_subgraphs_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_lowered_subgraph_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_subgraphs_stage = "
+                   "iv_execution_finalization_subgraphs_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_subgraphs_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_virtual_metadata:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_virtual_metadata_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_virtual_metadata_node_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_virtual_metadata_stage = "
+                   "iv_execution_finalization_virtual_metadata_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_virtual_metadata_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_plan:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_plan_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_plan_region_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_plan_stage = "
+                   "iv_execution_finalization_plan_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_plan_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_dormancy:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_dormancy_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_dormancy_group_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_dormancy_stage = "
+                   "iv_execution_finalization_dormancy_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_dormancy_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_artifact:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_artifact_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_artifact_scc_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_artifact_stage = "
+                   "iv_execution_finalization_artifact_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_artifact_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_artifact_base:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_artifact_base_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_artifact_base_edge_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_artifact_base_stage = "
+                   "iv_execution_finalization_artifact_base_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_artifact_base_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_node_wrappers:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_node_wrappers_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_node_wrapper_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_node_wrappers_stage = "
+                   "iv_execution_finalization_node_wrappers_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_node_wrappers_stage;\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::execution_finalization_node_wrapper_scaffolding:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t "
+                   "iv_execution_finalization_node_wrapper_scaffolding_stage_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  return iv::details::GraphBuilderCompileProfiler::\n"
+                   "      execution_minimal_node_wrapper_count(builder);\n"
+                << "}\n"
+                << "inline constexpr auto "
+                   "iv_execution_finalization_node_wrapper_scaffolding_stage = "
+                   "iv_execution_finalization_node_wrapper_scaffolding_stage_value();\n"
+                << "}\n"
+                << "extern \"C\" IV_MODULE_EXPORT std::size_t "
+                   "iv_module_compile_stage_marker() {\n"
+                << "  return iv_execution_finalization_node_wrapper_scaffolding_stage;\n"
                 << "}\n";
             break;
         case ModuleCompileStage::execution_graph:

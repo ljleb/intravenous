@@ -80,6 +80,7 @@ class Lowerer {
   GraphBuilderDetach const& detach;
   bool execution_root = false;
   LoweredBuilderGraph& out;
+  GraphBuilderVirtualPorts virtual_ports;
   std::flat_map<NodeBundleHandle, size_t> subgraph_by_boundary;
   std::vector<std::pair<NodeBundlePortId, TopologyPortId>>
       materialized_event_output_ports;
@@ -342,7 +343,6 @@ class Lowerer {
   constexpr RuntimeSampleBindingRef runtime_sample_binding_for(
       NodeBundlePortId semantic_target,
       std::optional<TopologyPortId> concrete_target) const {
-    auto const virtual_ports = virtuals.ports(bundles);
     for (auto const& input : virtual_ports.sample_inputs) {
       for (size_t member = 0; member < input.node_bundle_ports.size(); ++member) {
         auto const target = input.node_bundle_ports[member];
@@ -370,7 +370,6 @@ class Lowerer {
   constexpr bool has_runtime_sample_capability(
       NodeBundlePortId semantic_target,
       std::optional<TopologyPortId> concrete_target) const {
-    auto const virtual_ports = virtuals.ports(bundles);
     for (auto const& input : virtual_ports.sample_inputs) {
       for (auto const target : input.node_bundle_ports) {
         if (target == semantic_target) return true;
@@ -631,7 +630,6 @@ class Lowerer {
   }
 
   constexpr void lower_runtime_event_inputs() {
-    auto const virtual_ports = virtuals.ports(bundles);
     for (auto const& input : virtual_ports.event_inputs) {
       for (size_t member = 0; member < input.node_bundle_ports.size(); ++member) {
         auto const target = input.node_bundle_ports[member];
@@ -746,7 +744,6 @@ class Lowerer {
   }
 
   constexpr void lower_runtime_output_observers() {
-    auto const virtual_ports = virtuals.ports(bundles);
     for (auto const& output : virtual_ports.sample_outputs) {
       std::vector<TopologyPortId> sources;
       std::vector<InputConfig> inputs;
@@ -837,7 +834,8 @@ public:
           GraphBuilderDetach const& d, LoweredBuilderGraph& lowered,
           bool is_execution_root)
       : bundles(b),connections(c),public_ports(p),virtuals(v),detach(d),
-        execution_root(is_execution_root), out(lowered) {}
+        execution_root(is_execution_root), out(lowered),
+        virtual_ports(virtuals.ports(bundles)) {}
 
   constexpr void append_execution_root_ports() {
     lower_execution_root_ports();

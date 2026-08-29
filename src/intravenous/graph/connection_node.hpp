@@ -364,7 +364,7 @@ private:
 };
 
 namespace details {
-consteval ConnectionNode freeze_connection_node(ConnectionNodeSpec const& spec)
+consteval void validate_connection_node_spec(ConnectionNodeSpec const& spec)
 {
     auto const output_channel_count =
         channel_count(spec.output_config.channel_layout);
@@ -414,7 +414,13 @@ consteval ConnectionNode freeze_connection_node(ConnectionNodeSpec const& spec)
                 "ConnectionNode ephemeral channel has no gathered source");
         }
     }
+}
 
+consteval ConnectionNode freeze_connection_node(ConnectionNodeSpec const& spec)
+{
+    validate_connection_node_spec(spec);
+    auto const output_channel_count =
+        channel_count(spec.output_config.channel_layout);
     std::vector<StaticConnectionNodeInputConfig> input_configs;
     input_configs.reserve(spec.input_configs.size());
     for (auto const& input : spec.input_configs) {

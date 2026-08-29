@@ -90,7 +90,33 @@ std::string_view compile_stage_name(iv::ModuleCompileStage stage)
     case iv::ModuleCompileStage::parse: return "parse";
     case iv::ModuleCompileStage::authoring: return "authoring";
     case iv::ModuleCompileStage::metadata: return "metadata";
+    case iv::ModuleCompileStage::execution_lowering: return "execution-lowering";
+    case iv::ModuleCompileStage::execution_freeze: return "execution-freeze";
+    case iv::ModuleCompileStage::execution_connection_validation:
+        return "execution-connection-validation";
+    case iv::ModuleCompileStage::execution_connection_reflection:
+        return "execution-connection-reflection";
     case iv::ModuleCompileStage::execution_reflection: return "execution-reflection";
+    case iv::ModuleCompileStage::execution_finalization_sorted:
+        return "execution-finalization-sorted";
+    case iv::ModuleCompileStage::execution_finalization_scopes:
+        return "execution-finalization-scopes";
+    case iv::ModuleCompileStage::execution_finalization_subgraphs:
+        return "execution-finalization-subgraphs";
+    case iv::ModuleCompileStage::execution_finalization_virtual_metadata:
+        return "execution-finalization-virtual-metadata";
+    case iv::ModuleCompileStage::execution_finalization_plan:
+        return "execution-finalization-plan";
+    case iv::ModuleCompileStage::execution_finalization_dormancy:
+        return "execution-finalization-dormancy";
+    case iv::ModuleCompileStage::execution_finalization_artifact:
+        return "execution-finalization-artifact";
+    case iv::ModuleCompileStage::execution_finalization_artifact_base:
+        return "execution-finalization-artifact-base";
+    case iv::ModuleCompileStage::execution_finalization_node_wrappers:
+        return "execution-finalization-node-wrappers";
+    case iv::ModuleCompileStage::execution_finalization_node_wrapper_scaffolding:
+        return "execution-finalization-node-wrapper-scaffolding";
     case iv::ModuleCompileStage::execution_graph: return "execution-graph";
     case iv::ModuleCompileStage::execution: return "execution";
     }
@@ -103,7 +129,34 @@ iv::ModuleCompileStage parse_compile_stage(std::string_view value)
     if (value == "parse") return iv::ModuleCompileStage::parse;
     if (value == "authoring") return iv::ModuleCompileStage::authoring;
     if (value == "metadata") return iv::ModuleCompileStage::metadata;
+    if (value == "execution-lowering")
+        return iv::ModuleCompileStage::execution_lowering;
+    if (value == "execution-freeze") return iv::ModuleCompileStage::execution_freeze;
+    if (value == "execution-connection-validation")
+        return iv::ModuleCompileStage::execution_connection_validation;
+    if (value == "execution-connection-reflection")
+        return iv::ModuleCompileStage::execution_connection_reflection;
     if (value == "execution-reflection") return iv::ModuleCompileStage::execution_reflection;
+    if (value == "execution-finalization-sorted")
+        return iv::ModuleCompileStage::execution_finalization_sorted;
+    if (value == "execution-finalization-scopes")
+        return iv::ModuleCompileStage::execution_finalization_scopes;
+    if (value == "execution-finalization-subgraphs")
+        return iv::ModuleCompileStage::execution_finalization_subgraphs;
+    if (value == "execution-finalization-virtual-metadata")
+        return iv::ModuleCompileStage::execution_finalization_virtual_metadata;
+    if (value == "execution-finalization-plan")
+        return iv::ModuleCompileStage::execution_finalization_plan;
+    if (value == "execution-finalization-dormancy")
+        return iv::ModuleCompileStage::execution_finalization_dormancy;
+    if (value == "execution-finalization-artifact")
+        return iv::ModuleCompileStage::execution_finalization_artifact;
+    if (value == "execution-finalization-artifact-base")
+        return iv::ModuleCompileStage::execution_finalization_artifact_base;
+    if (value == "execution-finalization-node-wrappers")
+        return iv::ModuleCompileStage::execution_finalization_node_wrappers;
+    if (value == "execution-finalization-node-wrapper-scaffolding")
+        return iv::ModuleCompileStage::execution_finalization_node_wrapper_scaffolding;
     if (value == "execution-graph") return iv::ModuleCompileStage::execution_graph;
     if (value == "execution") return iv::ModuleCompileStage::execution;
     throw std::runtime_error("invalid compile stage '" + std::string(value) + "'");
@@ -211,7 +264,7 @@ Options parse_options(int argc, char** argv)
         } else if (arg == "--help") {
             std::cout
                 << "Usage: iv_module_build_benchmark [--voices N] [--workspace PATH]"
-                << " [--stage full|parse|authoring|metadata|execution-reflection|execution-graph|execution]"
+                << " [--stage full|parse|authoring|metadata|execution-lowering|execution-freeze|execution-connection-validation|execution-connection-reflection|execution-reflection|execution-graph|execution]"
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"
                 << " [--no-source-introspection] [--no-pch]"

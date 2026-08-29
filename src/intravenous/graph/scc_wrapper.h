@@ -50,7 +50,7 @@ namespace iv {
             std::vector<size_t> offsets(nodes.size() + 1, 0);
             for (size_t node_i = 0; node_i < nodes.size(); ++node_i) {
                 offsets[node_i + 1] =
-                    offsets[node_i] + nodes[node_i]._inputs.size;
+                    offsets[node_i] + nodes[node_i]._input_port_data_nodes.size;
             }
             return details::define_static_span(offsets);
         }

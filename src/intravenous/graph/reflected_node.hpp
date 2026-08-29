@@ -78,23 +78,11 @@ struct ReflectedNodeRuntimeOperations {
 
 struct ReflectedNodeOperations {
     ReflectedNodeRuntimeOperations runtime {};
-    // Only detach nodes need an operation-value rewrite after a graph is
-    // imported. Keeping this null for ordinary nodes avoids creating and
-    // immediately invoking one NodeValue-specialized no-op callback per
-    // reflected node during finalization.
-    ReflectedNodeOperations (*apply_detach_id_offset_impl)(size_t) = nullptr;
+    ReflectedNodeOperations (*apply_detach_id_offset)(size_t) = nullptr;
 
     constexpr bool valid() const
     {
-        return runtime.valid();
-    }
-
-    constexpr ReflectedNodeOperations apply_detach_id_offset(
-        size_t offset) const
-    {
-        return apply_detach_id_offset_impl
-            ? apply_detach_id_offset_impl(offset)
-            : *this;
+        return runtime.valid() && apply_detach_id_offset != nullptr;
     }
 };
 
@@ -235,21 +223,15 @@ namespace details {
     template<auto NodeValue>
     constexpr ReflectedNodeOperations reflected_node_operations()
     {
-        ReflectedNodeOperations operations {
+        return {
             .runtime = {
                 .declare_node = &declare_reflected_node<NodeValue>,
                 .tick_block = &tick_reflected_node_block<NodeValue>,
                 .skip_block = &skip_reflected_node_block<NodeValue>,
             },
+            .apply_detach_id_offset =
+                &apply_reflected_detach_id_offset<NodeValue>,
         };
-        using Node = std::remove_cvref_t<decltype(NodeValue)>;
-        if constexpr (
-            std::same_as<Node, DetachWriterNode>
-            || std::same_as<Node, DetachReaderNode>) {
-            operations.apply_detach_id_offset_impl =
-                &apply_reflected_detach_id_offset<NodeValue>;
-        }
-        return operations;
     }
 
     template<auto NodeValue>

@@ -928,44 +928,41 @@ namespace iv::details {
             }
         }
 
-        for (GraphRegion& region : plan.regions) {
-            std::flat_set<size_t> region_nodes(region.nodes.begin(), region.nodes.end());
-            std::flat_map<size_t, std::flat_set<size_t>> local_outgoing_sets;
-            std::flat_map<size_t, std::vector<size_t>> local_outgoing;
-            std::flat_map<size_t, size_t> local_indegree;
+        // Construct the explicit in-region graph once. The previous form
+        // rescanned every edge for every SCC and rebuilt flat maps/sets for
+        // each one. Sorting each source's vector preserves the deterministic
+        // target order previously supplied by flat_set.
+        std::vector<std::vector<size_t>> internal_outgoing(num_nodes);
+        auto append_internal_edge = [&](ConcretePortId source,
+                                        ConcretePortId target) {
+            if (source.node == GRAPH_ID || target.node == GRAPH_ID) {
+                return;
+            }
+            if (plan.node_to_region[source.node]
+                != plan.node_to_region[target.node]) {
+                return;
+            }
+            internal_outgoing[source.node].push_back(target.node);
+        };
+        for (auto const& edge : edges) {
+            append_internal_edge(edge.source, edge.target);
+        }
+        for (auto const& edge : event_edges) {
+            append_internal_edge(edge.source, edge.target);
+        }
+        for (auto& targets : internal_outgoing) {
+            std::sort(targets.begin(), targets.end());
+            targets.erase(std::unique(targets.begin(), targets.end()),
+                          targets.end());
+        }
 
+        std::vector<size_t> local_indegree(num_nodes, 0);
+        for (GraphRegion& region : plan.regions) {
             for (size_t node : region.nodes) {
-                local_outgoing_sets[node] = {};
-                local_outgoing[node] = {};
                 local_indegree[node] = 0;
             }
-
-            for (auto const& edge : edges) {
-                if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
-                    continue;
-                }
-                if (!region_nodes.contains(edge.source.node) || !region_nodes.contains(edge.target.node)) {
-                    continue;
-                }
-                local_outgoing_sets[edge.source.node].insert(edge.target.node);
-            }
-
-            for (auto const& edge : event_edges) {
-                if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
-                    continue;
-                }
-                if (!region_nodes.contains(edge.source.node) || !region_nodes.contains(edge.target.node)) {
-                    continue;
-                }
-                local_outgoing_sets[edge.source.node].insert(edge.target.node);
-            }
-
             for (size_t node : region.nodes) {
-                auto& targets = local_outgoing[node];
-                auto const& unique_targets = local_outgoing_sets[node];
-                targets.assign(unique_targets.begin(), unique_targets.end());
-                std::sort(targets.begin(), targets.end());
-                for (size_t target : targets) {
+                for (size_t target : internal_outgoing[node]) {
                     ++local_indegree[target];
                 }
             }
@@ -985,7 +982,7 @@ namespace iv::details {
                 ready.erase(ready.begin());
                 region.execution_order.push_back(node);
 
-                for (size_t target : local_outgoing[node]) {
+                for (size_t target : internal_outgoing[node]) {
                     if (--local_indegree[target] == 0) {
                         ready.insert(
                             std::lower_bound(ready.begin(), ready.end(), target),
@@ -1000,27 +997,33 @@ namespace iv::details {
             }
         }
 
-        std::vector<std::flat_set<size_t>> region_outgoing(plan.regions.size());
+        // Likewise, materialize the SCC DAG once rather than maintaining a
+        // flat set for every region while scanning the same edge sets again.
+        std::vector<std::vector<size_t>> region_outgoing(plan.regions.size());
         std::vector<size_t> indegree(plan.regions.size(), 0);
+        auto append_region_edge = [&](ConcretePortId source,
+                                      ConcretePortId target) {
+            if (source.node == GRAPH_ID || target.node == GRAPH_ID) {
+                return;
+            }
+            size_t const source_region = plan.node_to_region[source.node];
+            size_t const target_region = plan.node_to_region[target.node];
+            if (source_region != target_region) {
+                region_outgoing[source_region].push_back(target_region);
+            }
+        };
         for (auto const& edge : edges) {
-            if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
-                continue;
-            }
-            size_t const u = plan.node_to_region[edge.source.node];
-            size_t const v = plan.node_to_region[edge.target.node];
-            if (u != v && region_outgoing[u].insert(v).second) {
-                ++indegree[v];
-            }
+            append_region_edge(edge.source, edge.target);
         }
-
         for (auto const& edge : event_edges) {
-            if (edge.source.node == GRAPH_ID || edge.target.node == GRAPH_ID) {
-                continue;
-            }
-            size_t const u = plan.node_to_region[edge.source.node];
-            size_t const v = plan.node_to_region[edge.target.node];
-            if (u != v && region_outgoing[u].insert(v).second) {
-                ++indegree[v];
+            append_region_edge(edge.source, edge.target);
+        }
+        for (auto& targets : region_outgoing) {
+            std::sort(targets.begin(), targets.end());
+            targets.erase(std::unique(targets.begin(), targets.end()),
+                          targets.end());
+            for (size_t target : targets) {
+                ++indegree[target];
             }
         }
 
@@ -1165,6 +1168,12 @@ namespace iv::details {
         return max_latency;
     }
 
+    enum class GraphArtifactWrapperBuildMode {
+        none,
+        nodes,
+        sccs,
+    };
+
     consteval GraphBuildArtifact build_graph_artifact(
         std::string graph_id,
         std::vector<ReflectedNodeDescription> nodes,
@@ -1178,7 +1187,13 @@ namespace iv::details {
         std::vector<OutputConfig> public_outputs,
         std::vector<EventInputConfig> public_event_inputs,
         std::vector<EventOutputConfig> public_event_outputs,
-        std::vector<DormancyGroup> dormancy_groups
+        std::vector<DormancyGroup> dormancy_groups,
+        // Diagnostic callers can isolate edge/buffer/latency preparation,
+        // node wrapper construction, and SCC wrapper construction.
+        GraphArtifactWrapperBuildMode wrapper_build_mode =
+            GraphArtifactWrapperBuildMode::sccs,
+        GraphNodeWrapperBuildMode node_wrapper_build_mode =
+            GraphNodeWrapperBuildMode::full
     )
     {
         std::flat_set<GraphEdge> resolved_edges;
@@ -1344,7 +1359,14 @@ namespace iv::details {
             artifact.internal_latency = std::max(max_latency, graph_global_latency);
         }
 
-        artifact.scc_wrappers.reserve(artifact.execution_plan.region_order.size());
+        if (wrapper_build_mode == GraphArtifactWrapperBuildMode::none) {
+            return artifact;
+        }
+
+        if (wrapper_build_mode == GraphArtifactWrapperBuildMode::sccs) {
+            artifact.scc_wrappers.reserve(
+                artifact.execution_plan.region_order.size());
+        }
         for (size_t ordered_scc_i = 0; ordered_scc_i < artifact.execution_plan.region_order.size(); ++ordered_scc_i) {
             size_t const region_i = artifact.execution_plan.region_order[ordered_scc_i];
             auto const& region = artifact.execution_plan.regions[region_i];
@@ -1426,21 +1448,26 @@ namespace iv::details {
                     std::vector<EventInputConfig>(event_inputs.begin(), event_inputs.end()),
                     artifact.node_ids[global_i],
                     std::move(output_targets),
-                    std::move(event_output_targets)
+                    std::move(event_output_targets),
+                    node_wrapper_build_mode
                 );
                 region_global_node_indices.push_back(global_i);
             }
 
             size_t const internal_latency = region_internal_latency(region, nodes, artifact.edges);
 
-            artifact.scc_wrappers.emplace_back(
-                std::move(region_nodes),
-                std::move(region_global_node_indices),
-                region.max_block_size,
-                internal_latency,
-                region.nodes.size() > 1 ? region.max_block_size : 0,
-                artifact.dormancy_groups.empty() ? std::string{} : graph_dormancy_node_skip_export_id(artifact.graph_id)
-            );
+            if (wrapper_build_mode == GraphArtifactWrapperBuildMode::sccs) {
+                artifact.scc_wrappers.emplace_back(
+                    std::move(region_nodes),
+                    std::move(region_global_node_indices),
+                    region.max_block_size,
+                    internal_latency,
+                    region.nodes.size() > 1 ? region.max_block_size : 0,
+                    artifact.dormancy_groups.empty()
+                        ? std::string{}
+                        : graph_dormancy_node_skip_export_id(
+                              artifact.graph_id));
+            }
         }
 
         return artifact;

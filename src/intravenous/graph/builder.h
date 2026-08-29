@@ -500,6 +500,24 @@ GraphBuilder::build_execution_root_node_with_metadata(size_t detach_offset) cons
 
 namespace details {
 struct GraphBuilderCompileProfiler {
+  static consteval size_t execution_lowered_node_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return lowered.topology.node_count();
+  }
+
+  static consteval size_t execution_frozen_generated_node_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_frozen_generated_nodes(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes);
+  }
+
   static consteval size_t execution_reflected_node_count(
       GraphBuilder const& builder) {
     auto lowered = GraphBuilderLowering::lower(
@@ -508,6 +526,134 @@ struct GraphBuilderCompileProfiler {
     return GraphBuilderFinalizer::count_execution_reflected_nodes(
         builder._identity, lowered, builder._node_bundles,
         builder._virtual_nodes);
+  }
+
+  static consteval size_t execution_reflected_connection_node_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_reflected_connection_nodes(
+        lowered);
+  }
+
+  static consteval size_t execution_validated_connection_node_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_validated_connection_nodes(
+        lowered);
+  }
+
+  static consteval size_t execution_sorted_node_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_sorted_nodes(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval size_t execution_lowered_scope_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_lowered_scope_count(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval size_t execution_lowered_subgraph_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_lowered_subgraph_count(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval size_t execution_virtual_metadata_node_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_virtual_metadata_node_count(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval bool execution_virtual_metadata_mapping_matches(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::execution_virtual_metadata_mapping_matches(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval size_t execution_plan_region_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_plan_region_count(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval size_t execution_dormancy_group_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_dormancy_group_count(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval size_t execution_artifact_scc_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_artifact_scc_count(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval size_t execution_artifact_base_edge_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_artifact_base_edge_count(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval size_t execution_node_wrapper_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_node_wrapper_count(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
+  }
+
+  static consteval size_t execution_minimal_node_wrapper_count(
+      GraphBuilder const& builder) {
+    auto lowered = GraphBuilderLowering::lower(
+        builder._node_bundles, builder._connections, builder._public_ports,
+        builder._virtual_nodes, builder._detach, true);
+    return GraphBuilderFinalizer::count_execution_minimal_node_wrapper_count(
+        builder._identity, lowered, builder._node_bundles,
+        builder._virtual_nodes, builder._public_ports);
   }
 };
 } // namespace details
