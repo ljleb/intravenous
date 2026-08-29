@@ -3,6 +3,7 @@
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
+#include <intravenous/runtime/iv_module_source_introspection_events.h>
 namespace iv {
 IV_DEFINE_BRIDGE(socket_rpc_iv_module_source_introspection_bridge)
 
@@ -42,4 +43,8 @@ IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_iv_module_source_introspection_bridge,
     iv_socket_rpc_set_event_output_state_event,
     &IvModuleSourceIntrospection::handle_socket_rpc_set_event_output_state)
+IV_SUBSCRIBE_LINKER_EVENT(
+    socket_rpc_iv_module_source_introspection_bridge,
+    iv_runtime_iv_module_source_introspection_nodes_updated_event,
+    &SocketRpcServer::handle_iv_module_source_introspection_nodes_updated)
 } // namespace iv

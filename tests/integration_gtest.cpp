@@ -12,11 +12,11 @@
 #include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
 #include <intravenous/runtime/iv_module_reload_events.h>
-#include <intravenous/runtime/iv_module_reload_iv_module_definitions_bridge.h>
+#include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/lane_filters_lane_views_bridge.h>
 #include <intravenous/runtime/lane_views.h>
@@ -386,14 +386,10 @@ namespace {
         iv::timeline_lane_filters_bridge::bind(timeline, lane_filters);
     auto lane_filters_lane_views_scope =
         iv::lane_filters_lane_views_bridge::bind(&lane_filters, &lane_views);
-    auto iv_module_instances_iv_module_definitions_scope =
-        iv::iv_module_instances_iv_module_definitions_bridge::bind(instances, definitions);
     auto iv_module_definitions_iv_module_instances_scope =
         iv::iv_module_definitions_iv_module_instances_bridge::bind(definitions, instances);
     auto iv_module_definitions_iv_module_reload_scope =
         iv::iv_module_definitions_iv_module_reload_bridge::bind(definitions, reload);
-    auto iv_module_reload_iv_module_definitions_scope =
-        iv::iv_module_reload_iv_module_definitions_bridge::bind(reload, definitions);
     auto iv_module_instances_graph_input_lanes_scope =
         iv::iv_module_instances_graph_input_lanes_bridge::bind(
             instances,

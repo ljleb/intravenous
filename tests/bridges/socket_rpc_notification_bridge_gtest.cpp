@@ -2,15 +2,15 @@
 
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/iv_module_instances_socket_rpc_notification_bridge.h>
+#include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/lane_query_schema_service.h>
-#include <intravenous/runtime/lane_query_schema_service_socket_rpc_notification_bridge.h>
+#include <intravenous/runtime/socket_rpc_lane_query_schema_bridge.h>
 #include <intravenous/runtime/lanes_visualization_events.h>
 #include <intravenous/runtime/lanes_visualization.h>
 #include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
-#include <intravenous/runtime/project_persistence_socket_rpc_notification_bridge.h>
+#include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -174,9 +174,9 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
     auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_notification_server"));
     ProjectPersistence persistence("/tmp", {});
     auto notification_scope =
-        project_persistence_socket_rpc_notification_bridge::bind(
-            persistence,
-            harness.server);
+        socket_rpc_project_persistence_bridge::bind(
+            harness.server,
+            persistence);
 
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
@@ -231,9 +231,9 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneQuerySchemaChanges)
         iv::test::fresh_module_fixture_workspace("socket_rpc_lane_query_schema_notification_server"));
     LaneQuerySchemaService lane_query_schema;
     auto notification_scope =
-        lane_query_schema_service_socket_rpc_notification_bridge::bind(
-            lane_query_schema,
-            harness.server);
+        socket_rpc_lane_query_schema_bridge::bind(
+            harness.server,
+            lane_query_schema);
 
     LaneQuerySchemaChanged notification{
         .change = query::LaneQuerySchemaChange{
@@ -271,9 +271,9 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
     auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_instances_notification_server"));
     IvModuleInstances instances;
     auto notification_scope =
-        iv_module_instances_socket_rpc_notification_bridge::bind(
-            instances,
-            harness.server);
+        socket_rpc_iv_module_instances_bridge::bind(
+            harness.server,
+            instances);
 
     IV_INVOKE_LINKER_EVENT(
         iv::iv_runtime_iv_module_instances_list_changed_event,

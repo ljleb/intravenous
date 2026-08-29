@@ -1,7 +1,0 @@
-#include <intravenous/runtime/lane_query_schema_service_socket_rpc_notification_bridge.h>
-#include <intravenous/runtime/lane_query_schema_events.h>
-#include <intravenous/runtime/socket_rpc_server.h>
-namespace iv {
-IV_DEFINE_BRIDGE(lane_query_schema_service_socket_rpc_notification_bridge)
-IV_SUBSCRIBE_LINKER_EVENT(lane_query_schema_service_socket_rpc_notification_bridge, iv_runtime_lane_query_schema_changed_event, &SocketRpcServer::handle_lane_query_schema_changed)
-} // namespace iv

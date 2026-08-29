@@ -325,19 +325,16 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/graph_input_lanes_iv_module_instances_execution_bridge.cpp
     runtime/graph_input_lanes_timeline_bridge.cpp
     runtime/iv_module_definitions.cpp
-    runtime/iv_module_definitions_builder_bridge.cpp
     runtime/iv_module_definitions_iv_module_instances_bridge.cpp
     runtime/iv_module_definitions_iv_module_reload_bridge.cpp
     runtime/iv_module_definitions_iv_module_source_introspection_bridge.cpp
     runtime/iv_module_instances.cpp
     runtime/iv_module_instances_execution.cpp
     runtime/iv_module_instances_execution_task_runner_bridge.cpp
-    runtime/iv_module_instances_iv_module_definitions_bridge.cpp
     runtime/iv_module_instances_iv_module_instances_execution_bridge.cpp
     runtime/iv_module_instances_graph_input_lanes_bridge.cpp
     runtime/iv_module_instances_iv_module_source_introspection_bridge.cpp
     runtime/iv_module_reload.cpp
-    runtime/iv_module_reload_iv_module_definitions_bridge.cpp
     runtime/lane_filters.cpp
     runtime/lane_filters_lane_views_bridge.cpp
     runtime/lane_views_lanes_visualization_bridge.cpp
@@ -376,13 +373,8 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
     runtime/socket_rpc_timeline_execution_bridge.cpp
-    runtime/project_persistence_socket_rpc_notification_bridge.cpp
     runtime/iv_module_definitions_socket_rpc_notification_bridge.cpp
-    runtime/lane_views_socket_rpc_notification_bridge.cpp
     runtime/lanes_visualization_socket_rpc_notification_bridge.cpp
-    runtime/lane_query_schema_service_socket_rpc_notification_bridge.cpp
-    runtime/iv_module_instances_socket_rpc_notification_bridge.cpp
-    runtime/iv_module_source_introspection_socket_rpc_notification_bridge.cpp
     runtime/socket_rpc_json_serialization.cpp
     runtime/socket_rpc_requests.cpp
     runtime/socket_rpc_response_builders.cpp

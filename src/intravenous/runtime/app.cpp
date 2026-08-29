@@ -14,19 +14,16 @@
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_builder_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_reload_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_instances.h>
 #include <intravenous/runtime/iv_module_instances_execution.h>
 #include <intravenous/runtime/iv_module_instances_execution_task_runner_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_definitions_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_instances_execution_bridge.h>
 #include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_reload.h>
-#include <intravenous/runtime/iv_module_reload_iv_module_definitions_bridge.h>
 #include <intravenous/runtime/lane_filters.h>
 #include <intravenous/runtime/lane_filters_lane_views_bridge.h>
 #include <intravenous/runtime/lane_query_schema_service.h>
@@ -58,13 +55,8 @@
 #include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_sources_bridge.h>
-#include <intravenous/runtime/project_persistence_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/iv_module_definitions_socket_rpc_notification_bridge.h>
-#include <intravenous/runtime/lane_views_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
-#include <intravenous/runtime/lane_query_schema_service_socket_rpc_notification_bridge.h>
-#include <intravenous/runtime/iv_module_instances_socket_rpc_notification_bridge.h>
-#include <intravenous/runtime/iv_module_source_introspection_socket_rpc_notification_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_autosave_bridge.h>
 #include <intravenous/runtime/socket_rpc_timeline_execution_bridge.h>
@@ -314,11 +306,10 @@ namespace iv {
                 timeline.with_graph([&](LaneGraph const &graph) {
                     return timeline_execution.synchronize_from_graph(graph);
                 }));
-            bind_iv_module_definitions_builder_bridge(iv_module_definitions);
-            auto iv_module_instances_iv_module_definitions_scope =
-                iv_module_instances_iv_module_definitions_bridge::bind(
-                    iv_module_instances,
-                    iv_module_definitions);
+            auto iv_module_definitions_iv_module_instances_scope =
+                iv_module_definitions_iv_module_instances_bridge::bind(
+                    iv_module_definitions,
+                    iv_module_instances);
             auto iv_module_instances_execution_task_runner_scope =
                 iv_module_instances_execution_task_runner_bridge::bind(
                     iv_module_instances_execution,
@@ -339,10 +330,6 @@ namespace iv {
                 timeline_execution_iv_module_instances_execution_bridge::bind(
                     timeline_execution,
                     iv_module_instances_execution);
-            auto iv_module_definitions_iv_module_instances_scope =
-                iv_module_definitions_iv_module_instances_bridge::bind(
-                    iv_module_definitions,
-                    iv_module_instances);
             auto iv_module_instances_iv_module_sources_scope =
                 iv_module_instances_iv_module_sources_bridge::bind(
                     iv_module_instances,
@@ -365,10 +352,6 @@ namespace iv {
                 iv_module_instances_graph_input_lanes_bridge::bind(
                     iv_module_instances,
                     graph_input_lanes);
-            auto iv_module_reload_iv_module_definitions_scope =
-                iv_module_reload_iv_module_definitions_bridge::bind(
-                    iv_module_reload,
-                    iv_module_definitions);
             auto iv_module_source_introspection_graph_input_lanes_scope =
                 iv_module_source_introspection_graph_input_lanes_bridge::bind(
                     introspection,
@@ -472,31 +455,13 @@ namespace iv {
                 socket_rpc_iv_module_source_introspection_bridge::bind(
                     server,
                     introspection);
-            auto project_persistence_socket_rpc_notification_scope =
-                project_persistence_socket_rpc_notification_bridge::bind(
-                    project_persistence,
-                    server);
             auto iv_module_definitions_socket_rpc_notification_scope =
                 iv_module_definitions_socket_rpc_notification_bridge::bind(
                     iv_module_definitions,
                     server);
-            auto lane_views_socket_rpc_notification_scope =
-                lane_views_socket_rpc_notification_bridge::bind(lane_views, server);
             auto lanes_visualization_socket_rpc_notification_scope =
                 lanes_visualization_socket_rpc_notification_bridge::bind(
                     lanes_visualization,
-                    server);
-            auto lane_query_schema_service_socket_rpc_notification_scope =
-                lane_query_schema_service_socket_rpc_notification_bridge::bind(
-                    lane_query_schema,
-                    server);
-            auto iv_module_instances_socket_rpc_notification_scope =
-                iv_module_instances_socket_rpc_notification_bridge::bind(
-                    iv_module_instances,
-                    server);
-            auto iv_module_source_introspection_socket_rpc_notification_scope =
-                iv_module_source_introspection_socket_rpc_notification_bridge::bind(
-                    introspection,
                     server);
             auto socket_rpc_project_persistence_scope =
                 socket_rpc_project_persistence_bridge::bind(server, project_persistence);
@@ -521,7 +486,6 @@ namespace iv {
             iv_module_reload_watcher.request_shutdown();
             project_autosave_service.stop();
             audio_device_lanes.request_shutdown();
-            unbind_iv_module_definitions_builder_bridge(iv_module_definitions);
             shutdown_callback = nullptr;
             return 0;
         }
