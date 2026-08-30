@@ -94,6 +94,11 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(nlohmann_json)
+# nlohmann/json 3.11.3 predates GCC 16 and still uses deprecated
+# std::is_trivial.  It is an external header-only dependency, so present its
+# headers as system headers to consumers instead of suppressing the warning
+# for project sources.
+set_property(TARGET nlohmann_json PROPERTY SYSTEM ON)
 
 set(IV_PUBLIC_INCLUDE_ROOT "${CMAKE_SOURCE_DIR}/src")
 

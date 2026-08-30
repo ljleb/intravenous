@@ -14,23 +14,23 @@
         using left_type = left_participant;                                 \
         using right_type = right_participant;                               \
                                                                             \
-        class scope {                                                       \
+        class [[nodiscard]] scope {                                         \
         public:                                                             \
-            scope(left_type* left, right_type* right);                      \
-            scope(left_type& left, right_type& right);                      \
+            [[maybe_unused]] scope(left_type* left, right_type* right);     \
+            [[maybe_unused]] scope(left_type& left, right_type& right);     \
             ~scope();                                                       \
             scope(scope const&) = delete;                                   \
             scope& operator=(scope const&) = delete;                        \
-            scope(scope&& other) noexcept;                                  \
-            scope& operator=(scope&& other) noexcept;                       \
+            [[maybe_unused]] scope(scope&& other) noexcept;                 \
+            [[maybe_unused]] scope& operator=(scope&& other) noexcept;      \
                                                                             \
         private:                                                            \
             void clear() noexcept;                                          \
             bool active_ = false;                                           \
         };                                                                  \
                                                                             \
-        static scope bind(left_type* left, right_type* right);              \
-        static scope bind(left_type& left, right_type& right);              \
+        [[maybe_unused]] static scope bind(left_type* left, right_type* right); \
+        [[maybe_unused]] static scope bind(left_type& left, right_type& right); \
                                                                             \
         template <class T>                                                  \
         static T* get() noexcept                                            \

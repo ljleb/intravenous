@@ -112,6 +112,15 @@ struct AuthoredSampleConnection {
   bool operator==(AuthoredSampleConnection const&) const = default;
 };
 
+struct SampleLoweringGroup {
+  NodeBundlePortId target{};
+  std::vector<AuthoredSampleConnection const*> connections{};
+};
+
+struct SampleLoweringPlan {
+  std::vector<SampleLoweringGroup> groups{};
+};
+
 struct AuthoredEventConnection {
   EventTypeId source_type = EventTypeId::empty;
   std::vector<EventOutputPortId> sources{};
@@ -137,6 +146,7 @@ public:
   }
   constexpr std::span<AuthoredSampleConnection const>
       authored_sample_connections() const;
+  constexpr SampleLoweringPlan sample_lowering_plan() const;
   constexpr void record_authored_event_connection(AuthoredEventConnection);
   constexpr std::span<AuthoredEventConnection const>
       authored_event_connections() const;
@@ -192,6 +202,29 @@ constexpr bool GraphBuilderConnections::event_output_is_connected(
 constexpr std::span<AuthoredSampleConnection const>
 GraphBuilderConnections::authored_sample_connections() const {
   return _authored_sample_connections;
+}
+constexpr SampleLoweringPlan GraphBuilderConnections::sample_lowering_plan() const {
+  SampleLoweringPlan plan;
+  for (auto const& connection : _authored_sample_connections) {
+    if (connection.target_channels.empty())
+      details::error("sample connection has no target");
+    auto const first = connection.target_channels.front();
+    if (!std::ranges::all_of(connection.target_channels, [&](auto target) {
+          return target.bundle == first.bundle && target.port == first.port;
+        }))
+      details::error("sample target spans bundle ports");
+    NodeBundlePortId const target{first.bundle, PortKind::sample, first.port};
+    auto group = std::find_if(
+        plan.groups.begin(), plan.groups.end(), [&](auto const& candidate) {
+          return candidate.target == target;
+        });
+    if (group == plan.groups.end()) {
+      plan.groups.push_back({target, {}});
+      group = std::prev(plan.groups.end());
+    }
+    group->connections.push_back(&connection);
+  }
+  return plan;
 }
 constexpr void GraphBuilderConnections::record_authored_event_connection(
     AuthoredEventConnection connection) {

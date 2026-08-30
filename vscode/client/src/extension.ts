@@ -8,12 +8,13 @@ import { LaneViewProvider } from "./lanesViewProvider";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { WorkspaceSessionFactory } from "./workspaceSessionFactory";
 import { ModulesViewProvider } from "./modulesViewProvider";
+import { timestampOutput } from "./outputLog";
 
 let deactivating = false;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     deactivating = false;
-    const outputChannel = vscode.window.createOutputChannel("Intravenous");
+    const outputChannel = timestampOutput(vscode.window.createOutputChannel("Intravenous"));
     const provider = new LiveGraphViewProvider(context.extensionUri);
     const modulesProvider = new ModulesViewProvider();
     const highlighter = new NodeSpanHighlighter();

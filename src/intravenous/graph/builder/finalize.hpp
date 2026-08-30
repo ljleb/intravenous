@@ -1,7 +1,8 @@
 #pragma once
 
 #include <intravenous/basic_nodes/type_erased.h>
-#include <intravenous/graph/build_types.h>
+#include <intravenous/graph/authored_graph.hpp>
+#include <intravenous/graph/executable_graph_ir.hpp>
 #include <intravenous/graph/node.h>
 #include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/lowering.hpp>
@@ -19,119 +20,26 @@
 #include <vector>
 
 namespace iv {
-struct GraphBuilderIdentity;
-class GraphBuilderNodeBundles;
-class GraphBuilderConnections;
-class GraphBuilderPublicPorts;
-class GraphBuilderVirtualNodes;
-
 struct GraphBuilderRootNodeBuildResult {
   Graph graph;
   GraphBuildMetadata metadata;
 };
 
-class GraphBuilderFinalizer {
+struct CompiledGraph {
+  Graph graph;
+  GraphBuildMetadata metadata;
+  GraphIntrospectionMetadata introspection;
+};
+
+class GraphCompiler {
 public:
-  static constexpr GraphIntrospectionMetadata build_metadata(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderConnections const&, size_t detach_id_offset = 0);
-  static consteval GraphBuilderRootNodeBuildResult build_root_node(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0,
-      bool execution_root = false);
-  // Diagnostic only: execute the value-reflection part of execution-root
-  // preparation without lowering edges or building the static Graph object.
-  static consteval size_t count_execution_reflected_nodes(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      size_t detach_id_offset = 0);
-  // Diagnostic only: freeze each generated execution node without putting the
-  // resulting value through reflect_constant/substitute/extract.
-  static consteval size_t count_execution_frozen_generated_nodes(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&);
-  // Diagnostic only: validate generated connections without freezing their
-  // static representation.
-  static consteval size_t count_execution_validated_connection_nodes(
-      LoweredBuilderGraph const&);
-  // Diagnostic only: isolate value reflection of generated connection nodes.
-  static consteval size_t count_execution_reflected_connection_nodes(
-      LoweredBuilderGraph const&);
-  // Diagnostic only: execute execution-root preparation through graph
-  // validation and topological sorting, but stop before scope construction,
-  // execution-plan compilation, and Graph artifact freezing.
-  static consteval size_t count_execution_sorted_nodes(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: also construct lowered scopes, but stop before
-  // subgraph compilation, execution-plan/dormancy compilation, and Graph
-  // artifact freezing.
-  static consteval size_t count_execution_lowered_scope_count(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: also compile lowered subgraph descriptions, but stop
-  // before virtual metadata, execution planning, and Graph artifact freezing.
-  static consteval size_t count_execution_lowered_subgraph_count(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: also build virtual metadata, but stop before execution
-  // planning, dormancy compilation, and Graph artifact freezing.
-  static consteval size_t count_execution_virtual_metadata_node_count(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: verify the execution root's mapping-only path against
-  // the mapping returned by the full virtual metadata builder.
-  static consteval bool execution_virtual_metadata_mapping_matches(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: also compile the SCC execution plan, but stop before
-  // dormancy compilation and Graph artifact freezing.
-  static consteval size_t count_execution_plan_region_count(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: also compile dormancy groups, but stop before Graph
-  // artifact freezing.
-  static consteval size_t count_execution_dormancy_group_count(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: build the complete GraphBuildArtifact, but stop before
-  // the Graph constructor freezes it into static storage.
-  static consteval size_t count_execution_artifact_scc_count(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: build the GraphBuildArtifact up to edge/buffer/latency
-  // preparation, but do not construct node or SCC wrappers.
-  static consteval size_t count_execution_artifact_base_edge_count(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: construct node wrappers but not SCC wrappers.
-  static consteval size_t count_execution_node_wrapper_count(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
-  // Diagnostic only: construct wrapper scaffolding without promoting static
-  // ports, bindings, or IDs.
-  static consteval size_t count_execution_minimal_node_wrapper_count(
-      GraphBuilderIdentity const&, LoweredBuilderGraph const&,
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderPublicPorts const&, size_t detach_id_offset = 0);
+  static consteval CompiledGraph compile(ExecutableGraphIR);
 };
 
 namespace {
 struct PreparedBuilderGraph {
   GraphBuilderIdentity const& identity;
-  LoweredBuilderGraph const& lowered;
+  LoweringWorkspace const& lowered;
   LoweredTopology const& topology;
   GraphBuilderNodeBundles const& node_bundles;
   GraphBuilderVirtualNodes const& virtual_nodes;
@@ -148,7 +56,7 @@ struct PreparedBuilderGraph {
 
   constexpr PreparedBuilderGraph(
       GraphBuilderIdentity const& identity_,
-      LoweredBuilderGraph const& lowered_,
+      LoweringWorkspace const& lowered_,
       GraphBuilderNodeBundles const& bundles,
       GraphBuilderVirtualNodes const& virtuals)
       : identity(identity_), lowered(lowered_), topology(lowered_.topology),
@@ -630,424 +538,137 @@ struct PreparedBuilderGraph {
   }
 };
 
-consteval void prepare_execution_graph_through_sorting(
-    PreparedBuilderGraph& prepared, GraphBuilderIdentity const& identity,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  if (!ports.sample_outputs_defined())
-    details::error("builder " + identity.value +
-                   ": g.outputs(...) must be called before build()");
-  prepared.append_reflected_nodes(detach_offset);
-  prepared.lower_edges();
-  prepared.add_subgraph_default_edges();
-  prepared.copy_detach_info();
-  details::expand_hyperedge_ports(prepared.graph, identity.value);
-  details::stub_dangling_ports(prepared.graph, 0, identity.value);
-  details::validate_graph(prepared.graph, 0, 0);
-  details::validate_detached_edges(prepared.graph, identity.value);
-  details::sort_nodes_or_error(prepared.graph, identity.value);
-  details::validate_graph(prepared.graph, 0, 0);
-}
 } // namespace
 
-constexpr GraphIntrospectionMetadata GraphBuilderFinalizer::build_metadata(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderConnections const& connections, size_t detach_offset) {
-  (void)detach_offset;
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepared.append_metadata_nodes();
-  prepared.lower_edges();
-  auto scopes = prepared.build_lowered_scopes();
-  auto [virtual_nodes, _] =
-      details::build_virtual_metadata(prepared.graph, scopes);
-  GraphIntrospectionMetadata metadata;
-  metadata.virtual_nodes = std::move(virtual_nodes);
-  details::apply_virtual_port_metadata(metadata, bundles, virtuals, connections);
-  return metadata;
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_reflected_nodes(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepared.append_reflected_nodes(detach_offset);
-  return prepared.graph.nodes.size();
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_frozen_generated_nodes(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  size_t generated_count = 0;
-  for (size_t node_i = 0; node_i < prepared.topology.node_count(); ++node_i) {
-    if (prepared.topology.is_subgraph_node(node_i)) continue;
-    auto const& node = prepared.topology.concrete_node(node_i);
-    if (node.operations.valid()) continue;
-    std::visit(
-        [&]<class Spec>(Spec const& spec) {
-          if constexpr (std::same_as<Spec, std::monostate>) {
-            details::error("concrete node has no implementation");
-          } else {
-            [[maybe_unused]] auto const frozen =
-                details::freeze_generated_node(spec);
-          }
-        },
-        node.generated_node);
-    ++generated_count;
-  }
-  return generated_count;
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_validated_connection_nodes(
-    LoweredBuilderGraph const& lowered) {
-  size_t connection_count = 0;
-  for (size_t node_i = 0; node_i < lowered.topology.node_count(); ++node_i) {
-    if (lowered.topology.is_subgraph_node(node_i)) continue;
-    auto const& node = lowered.topology.concrete_node(node_i);
-    if (!std::holds_alternative<ConnectionNodeSpec>(node.generated_node))
-      continue;
-    details::validate_connection_node_spec(
-        std::get<ConnectionNodeSpec>(node.generated_node));
-    ++connection_count;
-  }
-  return connection_count;
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_reflected_connection_nodes(
-    LoweredBuilderGraph const& lowered) {
-  size_t connection_count = 0;
-  for (size_t node_i = 0; node_i < lowered.topology.node_count(); ++node_i) {
-    if (lowered.topology.is_subgraph_node(node_i)) continue;
-    auto const& node = lowered.topology.concrete_node(node_i);
-    if (!std::holds_alternative<ConnectionNodeSpec>(node.generated_node))
-      continue;
-    [[maybe_unused]] auto const description =
-        details::reflect_generated_node(node.generated_node);
-    ++connection_count;
-  }
-  return connection_count;
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_sorted_nodes(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  return prepared.graph.nodes.size();
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_lowered_scope_count(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  return prepared.build_lowered_scopes().size();
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_lowered_subgraph_count(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  auto scopes = prepared.build_lowered_scopes();
-  return details::compile_lowered_subgraphs(prepared.graph, scopes).size();
-}
-
-consteval size_t
-GraphBuilderFinalizer::count_execution_virtual_metadata_node_count(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  auto scopes = prepared.build_lowered_scopes();
-  [[maybe_unused]] auto lowered_subgraphs =
-      details::compile_lowered_subgraphs(prepared.graph, scopes);
-  auto [virtual_nodes, virtual_by_backing] =
-      details::build_virtual_metadata(prepared.graph, scopes);
-  return virtual_nodes.size() + virtual_by_backing.size();
-}
-
-consteval bool GraphBuilderFinalizer::execution_virtual_metadata_mapping_matches(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  auto scopes = prepared.build_lowered_scopes();
-  auto [_, full_mapping] =
-      details::build_virtual_metadata(prepared.graph, scopes);
-  return full_mapping == details::build_virtual_node_ids_by_backing_node_id(
-                             prepared.graph, scopes);
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_plan_region_count(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  auto scopes = prepared.build_lowered_scopes();
-  auto lowered_subgraphs =
-      details::compile_lowered_subgraphs(prepared.graph, scopes);
-  auto virtual_by_backing =
-      details::build_virtual_node_ids_by_backing_node_id(prepared.graph,
-                                                          scopes);
-  std::vector<DetachedInfo> detached;
-  detached.reserve(prepared.graph.detached_info_by_source.size());
-  for (auto const& [_, info] : prepared.graph.detached_info_by_source)
-    detached.push_back(info);
-  auto execution_plan = details::build_execution_plan(
-      prepared.graph.nodes, prepared.graph.edges, prepared.graph.event_edges,
-      detached);
-  return lowered_subgraphs.size() + virtual_by_backing.size()
-      + execution_plan.regions.size();
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_dormancy_group_count(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  auto scopes = prepared.build_lowered_scopes();
-  auto lowered_subgraphs =
-      details::compile_lowered_subgraphs(prepared.graph, scopes);
-  auto virtual_by_backing =
-      details::build_virtual_node_ids_by_backing_node_id(prepared.graph,
-                                                          scopes);
-  std::vector<DetachedInfo> detached;
-  detached.reserve(prepared.graph.detached_info_by_source.size());
-  for (auto const& [_, info] : prepared.graph.detached_info_by_source)
-    detached.push_back(info);
-  auto execution_plan = details::build_execution_plan(
-      prepared.graph.nodes, prepared.graph.edges, prepared.graph.event_edges,
-      detached);
-  auto dormancy_groups = details::compile_dormancy_groups(
-      prepared.graph, lowered_subgraphs, identity.value, execution_plan);
-  return virtual_by_backing.size() + dormancy_groups.size();
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_artifact_scc_count(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  auto scopes = prepared.build_lowered_scopes();
-  auto lowered_subgraphs =
-      details::compile_lowered_subgraphs(prepared.graph, scopes);
-  [[maybe_unused]] auto virtual_by_backing =
-      details::build_virtual_node_ids_by_backing_node_id(prepared.graph,
-                                                          scopes);
-  std::vector<DetachedInfo> detached;
-  detached.reserve(prepared.graph.detached_info_by_source.size());
-  for (auto const& [_, info] : prepared.graph.detached_info_by_source)
-    detached.push_back(info);
-  auto execution_plan = details::build_execution_plan(
-      prepared.graph.nodes, prepared.graph.edges, prepared.graph.event_edges,
-      detached);
-  auto dormancy_groups = details::compile_dormancy_groups(
-      prepared.graph, lowered_subgraphs, identity.value, execution_plan);
-  auto artifact = details::build_graph_artifact(
-      identity.value, std::move(prepared.graph.nodes),
-      std::move(prepared.graph.explicit_ttl_samples),
-      std::move(prepared.graph.node_ids), std::move(prepared.graph.edges),
-      std::move(prepared.graph.event_edges), std::move(detached),
-      std::move(execution_plan), {}, {}, {}, {}, std::move(dormancy_groups));
-  return artifact.scc_wrappers.size();
-}
-
-consteval size_t
-GraphBuilderFinalizer::count_execution_artifact_base_edge_count(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  auto scopes = prepared.build_lowered_scopes();
-  auto lowered_subgraphs =
-      details::compile_lowered_subgraphs(prepared.graph, scopes);
-  [[maybe_unused]] auto virtual_by_backing =
-      details::build_virtual_node_ids_by_backing_node_id(prepared.graph,
-                                                          scopes);
-  std::vector<DetachedInfo> detached;
-  detached.reserve(prepared.graph.detached_info_by_source.size());
-  for (auto const& [_, info] : prepared.graph.detached_info_by_source)
-    detached.push_back(info);
-  auto execution_plan = details::build_execution_plan(
-      prepared.graph.nodes, prepared.graph.edges, prepared.graph.event_edges,
-      detached);
-  auto dormancy_groups = details::compile_dormancy_groups(
-      prepared.graph, lowered_subgraphs, identity.value, execution_plan);
-  auto artifact = details::build_graph_artifact(
-      identity.value, std::move(prepared.graph.nodes),
-      std::move(prepared.graph.explicit_ttl_samples),
-      std::move(prepared.graph.node_ids), std::move(prepared.graph.edges),
-      std::move(prepared.graph.event_edges), std::move(detached),
-      std::move(execution_plan), {}, {}, {}, {}, std::move(dormancy_groups),
-      details::GraphArtifactWrapperBuildMode::none);
-  return artifact.edges.size();
-}
-
-consteval size_t GraphBuilderFinalizer::count_execution_node_wrapper_count(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  auto scopes = prepared.build_lowered_scopes();
-  auto lowered_subgraphs =
-      details::compile_lowered_subgraphs(prepared.graph, scopes);
-  [[maybe_unused]] auto virtual_by_backing =
-      details::build_virtual_node_ids_by_backing_node_id(prepared.graph,
-                                                          scopes);
-  std::vector<DetachedInfo> detached;
-  detached.reserve(prepared.graph.detached_info_by_source.size());
-  for (auto const& [_, info] : prepared.graph.detached_info_by_source)
-    detached.push_back(info);
-  auto execution_plan = details::build_execution_plan(
-      prepared.graph.nodes, prepared.graph.edges, prepared.graph.event_edges,
-      detached);
-  auto dormancy_groups = details::compile_dormancy_groups(
-      prepared.graph, lowered_subgraphs, identity.value, execution_plan);
-  auto artifact = details::build_graph_artifact(
-      identity.value, std::move(prepared.graph.nodes),
-      std::move(prepared.graph.explicit_ttl_samples),
-      std::move(prepared.graph.node_ids), std::move(prepared.graph.edges),
-      std::move(prepared.graph.event_edges), std::move(detached),
-      std::move(execution_plan), {}, {}, {}, {}, std::move(dormancy_groups),
-      details::GraphArtifactWrapperBuildMode::nodes);
-  return artifact.edges.size();
-}
-
-consteval size_t
-GraphBuilderFinalizer::count_execution_minimal_node_wrapper_count(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset) {
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepare_execution_graph_through_sorting(
-      prepared, identity, ports, detach_offset);
-  auto scopes = prepared.build_lowered_scopes();
-  auto lowered_subgraphs =
-      details::compile_lowered_subgraphs(prepared.graph, scopes);
-  [[maybe_unused]] auto virtual_by_backing =
-      details::build_virtual_node_ids_by_backing_node_id(prepared.graph,
-                                                          scopes);
-  std::vector<DetachedInfo> detached;
-  detached.reserve(prepared.graph.detached_info_by_source.size());
-  for (auto const& [_, info] : prepared.graph.detached_info_by_source)
-    detached.push_back(info);
-  auto execution_plan = details::build_execution_plan(
-      prepared.graph.nodes, prepared.graph.edges, prepared.graph.event_edges,
-      detached);
-  auto dormancy_groups = details::compile_dormancy_groups(
-      prepared.graph, lowered_subgraphs, identity.value, execution_plan);
-  auto artifact = details::build_graph_artifact(
-      identity.value, std::move(prepared.graph.nodes),
-      std::move(prepared.graph.explicit_ttl_samples),
-      std::move(prepared.graph.node_ids), std::move(prepared.graph.edges),
-      std::move(prepared.graph.event_edges), std::move(detached),
-      std::move(execution_plan), {}, {}, {}, {}, std::move(dormancy_groups),
-      details::GraphArtifactWrapperBuildMode::nodes,
-      GraphNodeWrapperBuildMode::minimal);
-  return artifact.edges.size();
-}
-
-consteval GraphBuilderRootNodeBuildResult GraphBuilderFinalizer::build_root_node(
-    GraphBuilderIdentity const& identity, LoweredBuilderGraph const& lowered,
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderPublicPorts const& ports, size_t detach_offset,
+consteval ExecutableGraphIR GraphLowerer::lower(
+    AuthoredGraph const& authored, size_t detach_id_offset,
     bool execution_root) {
-  if (!ports.sample_outputs_defined())
-    details::error("builder " + identity.value +
-                   ": g.outputs(...) must be called before build()");
-  auto const sample_inputs = execution_root
-      ? std::span<InputConfig const>{}
-      : ports.sample_inputs(bundles);
-  auto const sample_outputs = execution_root
-      ? std::span<OutputConfig const>{}
-      : ports.sample_outputs(bundles);
-  auto const event_inputs = execution_root
-      ? std::span<EventInputConfig const>{}
-      : ports.event_inputs(bundles);
-  auto const event_outputs = execution_root
-      ? std::span<EventOutputConfig const>{}
-      : ports.event_outputs(bundles);
-  PreparedBuilderGraph prepared(identity, lowered, bundles, virtuals);
-  prepared.append_reflected_nodes(detach_offset);
+  auto lowered = AuthoredGraphTopologyLowerer::lower(
+      authored.node_bundles, authored.connections, authored.public_ports,
+      authored.virtual_nodes, authored.detach, execution_root);
+  PreparedBuilderGraph prepared(
+      authored.identity, lowered, authored.node_bundles, authored.virtual_nodes);
+  prepared.append_reflected_nodes(detach_id_offset);
   prepared.lower_edges();
   prepared.add_subgraph_default_edges();
   prepared.copy_detach_info();
-  details::expand_hyperedge_ports(prepared.graph, identity.value);
-  details::stub_dangling_ports(prepared.graph, sample_inputs.size(), identity.value);
-  details::validate_graph(prepared.graph, sample_inputs.size(), sample_outputs.size());
-  details::validate_detached_edges(prepared.graph, identity.value);
-  details::sort_nodes_or_error(prepared.graph, identity.value);
-  details::validate_graph(prepared.graph, sample_inputs.size(), sample_outputs.size());
+
+  auto sample_inputs = execution_root
+      ? std::vector<InputConfig>{}
+      : std::vector<InputConfig>(
+            authored.public_ports.sample_inputs(authored.node_bundles).begin(),
+            authored.public_ports.sample_inputs(authored.node_bundles).end());
+  auto sample_outputs = execution_root
+      ? std::vector<OutputConfig>{}
+      : std::vector<OutputConfig>(
+            authored.public_ports.sample_outputs(authored.node_bundles).begin(),
+            authored.public_ports.sample_outputs(authored.node_bundles).end());
+  auto event_inputs = execution_root
+      ? std::vector<EventInputConfig>{}
+      : std::vector<EventInputConfig>(
+            authored.public_ports.event_inputs(authored.node_bundles).begin(),
+            authored.public_ports.event_inputs(authored.node_bundles).end());
+  auto event_outputs = execution_root
+      ? std::vector<EventOutputConfig>{}
+      : std::vector<EventOutputConfig>(
+            authored.public_ports.event_outputs(authored.node_bundles).begin(),
+            authored.public_ports.event_outputs(authored.node_bundles).end());
+
+  // These are semantic completion steps, so they belong before the executable
+  // boundary rather than in GraphCompiler.
+  details::expand_hyperedge_ports(prepared.graph, authored.identity.value);
+  details::stub_dangling_ports(
+      prepared.graph, sample_inputs.size(), authored.identity.value);
+  details::validate_graph(prepared.graph, sample_inputs.size(),
+                          sample_outputs.size());
+  details::validate_detached_edges(prepared.graph, authored.identity.value);
+
   auto scopes = prepared.build_lowered_scopes();
-  auto lowered_subgraphs =
-      details::compile_lowered_subgraphs(prepared.graph, scopes);
-  auto virtual_by_backing =
-      details::build_virtual_node_ids_by_backing_node_id(prepared.graph,
-                                                          scopes);
+  auto [virtual_nodes, _] = details::build_virtual_metadata(prepared.graph, scopes);
+  GraphIntrospectionMetadata introspection;
+  introspection.virtual_nodes = std::move(virtual_nodes);
+  details::apply_virtual_port_metadata(
+      introspection, authored.node_bundles, authored.virtual_nodes,
+      authored.connections);
+
+  auto sample_families =
+      authored.public_ports.sample_input_families(authored.node_bundles);
+  for (auto& family : sample_families.families) {
+    family.authored_connected = std::ranges::any_of(
+        family.channels, [&](auto const& channel) {
+          return std::ranges::any_of(channel.port_ordinals, [&](auto ordinal) {
+            auto channels = authored.node_bundles.sample_output_channels(
+                {authored.public_ports.boundary_handle(), PortKind::sample, ordinal});
+            return std::ranges::any_of(channels, [&](auto c) {
+              return authored.connections.sample_output_is_connected(c);
+            });
+          });
+        });
+  }
+  introspection.public_sample_inputs = std::move(sample_families.families);
+  introspection.public_event_inputs =
+      authored.public_ports.collected_event_inputs(authored.node_bundles);
+  for (auto& input : introspection.public_event_inputs) {
+    auto ports = authored.node_bundles.event_output_ports(
+        {authored.public_ports.boundary_handle(), PortKind::event,
+         input.port_ordinal});
+    input.graph_connected = std::ranges::any_of(ports, [&](auto p) {
+      return authored.connections.event_output_is_connected(p);
+    });
+  }
+  introspection.public_sample_outputs =
+      authored.public_ports.sample_output_families(authored.node_bundles).families;
+  introspection.public_event_outputs =
+      authored.public_ports.collected_event_outputs(authored.node_bundles);
+
+  return {
+      .graph_id = authored.identity.value,
+      .graph = std::move(prepared.graph),
+      .scopes = std::move(scopes),
+      .public_inputs = std::move(sample_inputs),
+      .public_outputs = std::move(sample_outputs),
+      .public_event_inputs = std::move(event_inputs),
+      .public_event_outputs = std::move(event_outputs),
+      .introspection = std::move(introspection),
+  };
+}
+
+consteval CompiledGraph GraphCompiler::compile(ExecutableGraphIR executable) {
+  details::sort_nodes_or_error(executable.graph, executable.graph_id);
+  details::validate_graph(executable.graph, executable.public_inputs.size(),
+                          executable.public_outputs.size());
+  auto lowered_subgraphs = details::compile_lowered_subgraphs(
+      executable.graph, executable.scopes);
+  auto virtual_by_backing = details::build_virtual_node_ids_by_backing_node_id(
+      executable.graph, executable.scopes);
   std::vector<DetachedInfo> detached;
-  detached.reserve(prepared.graph.detached_info_by_source.size());
-  for (auto const& [_, info] : prepared.graph.detached_info_by_source)
+  detached.reserve(executable.graph.detached_info_by_source.size());
+  for (auto const& [_, info] : executable.graph.detached_info_by_source)
     detached.push_back(info);
   auto execution_plan = details::build_execution_plan(
-      prepared.graph.nodes, prepared.graph.edges, prepared.graph.event_edges,
-      detached);
+      executable.graph.nodes, executable.graph.edges,
+      executable.graph.event_edges, detached);
   auto dormancy_groups = details::compile_dormancy_groups(
-      prepared.graph, lowered_subgraphs, identity.value, execution_plan);
-  auto node_source_infos = std::move(prepared.graph.node_source_infos);
-  auto node_type_identities = std::move(prepared.graph.node_type_identities);
+      executable.graph, lowered_subgraphs, executable.graph_id, execution_plan);
+  auto node_source_infos = std::move(executable.graph.node_source_infos);
+  auto node_type_identities = std::move(executable.graph.node_type_identities);
   return {
       .graph = Graph(details::build_graph_artifact(
-          identity.value, std::move(prepared.graph.nodes),
-          std::move(prepared.graph.explicit_ttl_samples),
-          std::move(prepared.graph.node_ids), std::move(prepared.graph.edges),
-          std::move(prepared.graph.event_edges), std::move(detached),
-          std::move(execution_plan),
-          std::vector<InputConfig>(sample_inputs.begin(), sample_inputs.end()),
-          std::vector<OutputConfig>(sample_outputs.begin(), sample_outputs.end()),
-          std::vector<EventInputConfig>(event_inputs.begin(), event_inputs.end()),
-          std::vector<EventOutputConfig>(event_outputs.begin(), event_outputs.end()),
-          std::move(dormancy_groups))),
+          executable.graph_id, std::move(executable.graph.nodes),
+          std::move(executable.graph.explicit_ttl_samples),
+          std::move(executable.graph.node_ids), std::move(executable.graph.edges),
+          std::move(executable.graph.event_edges), std::move(detached),
+          std::move(execution_plan), std::move(executable.public_inputs),
+          std::move(executable.public_outputs),
+          std::move(executable.public_event_inputs),
+          std::move(executable.public_event_outputs), std::move(dormancy_groups))),
       .metadata = {
           .lowered_subgraphs = std::move(lowered_subgraphs),
           .concrete_node_type_identities = std::move(node_type_identities),
           .node_source_infos = std::move(node_source_infos),
           .virtual_node_ids_by_backing_node_id = std::move(virtual_by_backing),
-      }};
+      },
+      .introspection = std::move(executable.introspection),
+  };
 }
 } // namespace iv

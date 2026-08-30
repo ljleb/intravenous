@@ -18,29 +18,6 @@ namespace iv {
 
     enum class ModuleCompileStage {
         full,
-        parse,
-        authoring,
-        metadata,
-        execution_lowering,
-        execution_freeze,
-        execution_connection_validation,
-        execution_connection_reflection,
-        execution_reflection,
-        execution_finalization_sorted,
-        execution_finalization_scopes,
-        execution_finalization_subgraphs,
-        execution_finalization_virtual_metadata,
-        execution_finalization_plan,
-        execution_finalization_dormancy,
-        execution_finalization_artifact,
-        execution_finalization_artifact_base,
-        execution_finalization_node_wrappers,
-        execution_finalization_node_wrapper_scaffolding,
-        // Finalize and freeze the Graph value, but do not instantiate
-        // StaticGraphRoot<Graph>. This separates builder constant evaluation
-        // from the deliberately static execution-code generation.
-        execution_graph,
-        execution,
     };
 
     struct ModuleLoaderToolchainConfig {

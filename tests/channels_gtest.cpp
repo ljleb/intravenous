@@ -723,6 +723,54 @@ consteval ChannelTopologySnapshot reconstructed_sequence_snapshot(bool reverse)
     };
 }
 
+consteval ChannelTopologySnapshot tiled_mono_direct_route_snapshot()
+{
+    iv::GraphBuilder g;
+    auto source = g.node<iv::Constant>(iv::Sample{0.25f});
+    auto target = g.node<MonoPass, iv::stereo>();
+    target(source);
+    g.outputs(target);
+    auto const built = g.build_root_node();
+    auto const connection_nodes = std::ranges::count_if(
+        built.metadata.concrete_node_type_identities,
+        [](auto const& type) {
+            return std::string_view(type).contains("ConnectionNode");
+        });
+    return {
+        .ok = true,
+        .connection_nodes = static_cast<size_t>(connection_nodes),
+    };
+}
+
+consteval bool sample_lowering_plan_groups_connections_by_target_port()
+{
+    iv::GraphBuilderConnections connections;
+    connections.record_authored_sample_connection({
+        .source_type = iv::ChannelTypeId::mono,
+        .source_channels = {{.bundle = 1, .port = 0, .channel = 0}},
+        .target_type = iv::ChannelTypeId::mono,
+        .target_channels = {{.bundle = 4, .port = 2, .channel = 0}},
+    });
+    connections.record_authored_sample_connection({
+        .source_type = iv::ChannelTypeId::mono,
+        .source_channels = {{.bundle = 2, .port = 1, .channel = 0}},
+        .target_type = iv::ChannelTypeId::mono,
+        .target_channels = {{.bundle = 4, .port = 2, .channel = 0}},
+    });
+    connections.record_authored_sample_connection({
+        .source_type = iv::ChannelTypeId::mono,
+        .source_channels = {{.bundle = 3, .port = 0, .channel = 0}},
+        .target_type = iv::ChannelTypeId::mono,
+        .target_channels = {{.bundle = 5, .port = 0, .channel = 0}},
+    });
+    auto const plan = connections.sample_lowering_plan();
+    return plan.groups.size() == 2
+        && plan.groups[0].target == iv::NodeBundlePortId{4, iv::PortKind::sample, 2}
+        && plan.groups[0].connections.size() == 2
+        && plan.groups[1].target == iv::NodeBundlePortId{5, iv::PortKind::sample, 0}
+        && plan.groups[1].connections.size() == 1;
+}
+
 consteval ChannelTopologySnapshot connection_lowering_snapshot(bool connected)
 {
     iv::GraphBuilder g;
@@ -1116,6 +1164,47 @@ TEST(Channels, ReorderedNativeChannelsUseOneConnectionNode)
     constexpr auto snapshot = reconstructed_sequence_snapshot(true);
     EXPECT_TRUE(snapshot.ok);
     EXPECT_EQ(snapshot.connection_nodes, 1u);
+}
+
+TEST(Channels, MonoSourceToATiledInputUsesOneConnectionNode)
+{
+    constexpr auto snapshot = tiled_mono_direct_route_snapshot();
+    EXPECT_TRUE(snapshot.ok);
+    EXPECT_EQ(snapshot.connection_nodes, 1u);
+}
+
+TEST(Channels, SampleLoweringPlanGroupsConnectionsByTargetPort)
+{
+    static_assert(sample_lowering_plan_groups_connections_by_target_port());
+    EXPECT_TRUE(sample_lowering_plan_groups_connections_by_target_port());
+}
+
+consteval bool explicit_three_stage_pipeline_builds_a_graph()
+{
+    iv::GraphBuilder builder;
+    auto source = builder.node<iv::Constant>(iv::Sample{0.25f});
+    builder.outputs(source);
+
+    auto authored = builder.finish();
+    auto executable = iv::GraphLowerer::lower(authored);
+    auto compiled = iv::GraphCompiler::compile(std::move(executable));
+    return compiled.graph.outputs().size() == 1
+        && compiled.introspection.public_sample_outputs.size() == 1;
+}
+
+consteval bool builder_build_consumes_the_finished_authoring_value()
+{
+    iv::GraphBuilder builder;
+    builder.outputs(builder.node<iv::Constant>(iv::Sample{0.5f}));
+    auto compiled = std::move(builder).build();
+    return compiled.graph.outputs().size() == 1
+        && compiled.introspection.public_sample_outputs.size() == 1;
+}
+
+TEST(Channels, ExplicitAuthoredExecutableAndCompiledStagesBuild)
+{
+    static_assert(explicit_three_stage_pipeline_builds_a_graph());
+    static_assert(builder_build_consumes_the_finished_authoring_value());
 }
 
 TEST(Channels, ConnectionLoweringHandlesFanInAndVacantDefaults)

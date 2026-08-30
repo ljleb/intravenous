@@ -231,7 +231,6 @@ struct IntrospectionRegressionSnapshot {
     bool sample_ports_are_preserved = false;
     bool event_ports_are_preserved = false;
     bool shared_lowering_matches_canonical_metadata = false;
-    bool virtual_node_id_mapping_matches_full_metadata = false;
 };
 
 consteval IntrospectionRegressionSnapshot introspection_regression_snapshot()
@@ -281,9 +280,6 @@ consteval IntrospectionRegressionSnapshot introspection_regression_snapshot()
             == execution.public_sample_inputs.front().authored_connected
         && metadata.public_event_inputs.front().graph_connected
             == execution.public_event_inputs.front().graph_connected;
-    result.virtual_node_id_mapping_matches_full_metadata =
-        details::GraphBuilderCompileProfiler::
-            execution_virtual_metadata_mapping_matches(g);
     (void)annotated;
     (void)event;
     return result;
@@ -313,7 +309,6 @@ TEST(GraphModules, ConstevalIntrospectionPreservesVirtualAndPublicPorts)
     EXPECT_TRUE(snapshot.sample_ports_are_preserved);
     EXPECT_TRUE(snapshot.event_ports_are_preserved);
     EXPECT_TRUE(snapshot.shared_lowering_matches_canonical_metadata);
-    EXPECT_TRUE(snapshot.virtual_node_id_mapping_matches_full_metadata);
 }
 
 TEST(GraphModules, ModulesComposeRecursivelyThroughAuthoredGraphSplicing)

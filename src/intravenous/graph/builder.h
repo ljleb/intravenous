@@ -4,6 +4,7 @@
 #include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/channel_ports.h>
 #include <intravenous/graph/builder/annotations.hpp>
+#include <intravenous/graph/authored_graph.hpp>
 #include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/finalize.hpp>
@@ -47,7 +48,6 @@ class GraphRuntimeBindings;
 class GraphBuilder;
 namespace details {
     struct GraphBuilderTestAccess;
-    struct GraphBuilderCompileProfiler;
 }
 
 class GraphBuilder {
@@ -64,7 +64,6 @@ class GraphBuilder {
   friend class GraphBuilderPublicPorts;
   friend class SubgraphBuilder;
   friend struct details::GraphBuilderTestAccess;
-  friend struct details::GraphBuilderCompileProfiler;
 
   GraphBuilderIdentity _identity;
   GraphBuilderNodeBundles _node_bundles;
@@ -179,6 +178,9 @@ public:
   constexpr EventPortRef event_output(NodeBundlePortId source) const;
   constexpr size_t sample_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
   constexpr size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
+  consteval AuthoredGraph finish() const &;
+  consteval AuthoredGraph finish() &&;
+  consteval CompiledGraph build() &&;
   consteval GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
   consteval RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
   consteval RootNodeBuildResult build_execution_root_node(
@@ -443,220 +445,78 @@ consteval void GraphBuilder::populate_public_introspection_metadata(
   metadata.public_event_outputs = public_event_outputs();
 }
 
+consteval AuthoredGraph GraphBuilder::finish() const & {
+  return {
+      .identity = _identity,
+      .node_bundles = _node_bundles,
+      .connections = _connections,
+      .public_ports = _public_ports,
+      .detach = _detach,
+      .annotations = _annotations,
+      .virtual_nodes = _virtual_nodes,
+  };
+}
+
+consteval AuthoredGraph GraphBuilder::finish() && {
+  return {
+      .identity = std::move(_identity),
+      .node_bundles = std::move(_node_bundles),
+      .connections = std::move(_connections),
+      .public_ports = std::move(_public_ports),
+      .detach = std::move(_detach),
+      .annotations = std::move(_annotations),
+      .virtual_nodes = std::move(_virtual_nodes),
+  };
+}
+
+consteval CompiledGraph GraphBuilder::build() && {
+  return GraphCompiler::compile(GraphLowerer::lower(std::move(*this).finish()));
+}
+
 consteval GraphIntrospectionMetadata GraphBuilder::build_metadata(
     size_t detach_offset) const
 {
-  auto lowered = GraphBuilderLowering::lower(
-      _node_bundles, _connections, _public_ports, _virtual_nodes, _detach);
-  auto metadata = GraphBuilderFinalizer::build_metadata(
-      _identity, lowered, _node_bundles, _virtual_nodes, _connections,
-      detach_offset);
-  populate_public_introspection_metadata(metadata);
-  return metadata;
+  return GraphLowerer::lower(finish(), detach_offset).introspection;
 }
 
 consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_root_node(
     size_t detach_offset) const
 {
-  auto lowered=GraphBuilderLowering::lower(
-      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach);
-  return GraphBuilderFinalizer::build_root_node(
-      _identity,lowered,_node_bundles,_virtual_nodes,_public_ports,
-      detach_offset);
+  if (!_public_ports.sample_outputs_defined())
+    details::error("builder " + _identity.value +
+                   ": g.outputs(...) must be called before build()");
+  auto compiled = GraphCompiler::compile(GraphLowerer::lower(finish(), detach_offset));
+  return {.graph = std::move(compiled.graph), .metadata = std::move(compiled.metadata)};
 }
 
 consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_execution_root_node(
     size_t detach_offset) const
 {
-  auto lowered=GraphBuilderLowering::lower(
-      _node_bundles,_connections,_public_ports,_virtual_nodes,_detach,
-      true);
-  return GraphBuilderFinalizer::build_root_node(
-      _identity,lowered,_node_bundles,_virtual_nodes,_public_ports,
-      detach_offset,true);
+  if (!_public_ports.sample_outputs_defined())
+    details::error("builder " + _identity.value +
+                   ": g.outputs(...) must be called before build()");
+  auto compiled = GraphCompiler::compile(
+      GraphLowerer::lower(finish(), detach_offset, true));
+  return {.graph = std::move(compiled.graph), .metadata = std::move(compiled.metadata)};
 }
 
 consteval GraphBuilder::ExecutionRootAndMetadata
 GraphBuilder::build_execution_root_node_with_metadata(size_t detach_offset) const
 {
-  auto lowered = GraphBuilderLowering::lower_shared_base(
-      _node_bundles, _connections, _public_ports, _virtual_nodes, _detach);
-  auto introspection = GraphBuilderFinalizer::build_metadata(
-      _identity, lowered, _node_bundles, _virtual_nodes, _connections,
-      detach_offset);
-  populate_public_introspection_metadata(introspection);
-
-  GraphBuilderLowering::lower_execution_root_ports(
-      lowered, _node_bundles, _connections, _public_ports, _virtual_nodes,
-      _detach);
-  auto root = GraphBuilderFinalizer::build_root_node(
-      _identity, lowered, _node_bundles, _virtual_nodes, _public_ports,
-      detach_offset, true);
+  if (!_public_ports.sample_outputs_defined())
+    details::error("builder " + _identity.value +
+                   ": g.outputs(...) must be called before build()");
+  auto authored = finish();
+  auto introspection = GraphLowerer::lower(authored, detach_offset).introspection;
+  auto compiled = GraphCompiler::compile(
+      GraphLowerer::lower(authored, detach_offset, true));
   return {
-      .root = std::move(root),
+      .root = {.graph = std::move(compiled.graph),
+               .metadata = std::move(compiled.metadata)},
       .introspection = std::move(introspection),
   };
 }
 
-namespace details {
-struct GraphBuilderCompileProfiler {
-  static consteval size_t execution_lowered_node_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return lowered.topology.node_count();
-  }
-
-  static consteval size_t execution_frozen_generated_node_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_frozen_generated_nodes(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes);
-  }
-
-  static consteval size_t execution_reflected_node_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_reflected_nodes(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes);
-  }
-
-  static consteval size_t execution_reflected_connection_node_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_reflected_connection_nodes(
-        lowered);
-  }
-
-  static consteval size_t execution_validated_connection_node_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_validated_connection_nodes(
-        lowered);
-  }
-
-  static consteval size_t execution_sorted_node_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_sorted_nodes(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval size_t execution_lowered_scope_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_lowered_scope_count(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval size_t execution_lowered_subgraph_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_lowered_subgraph_count(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval size_t execution_virtual_metadata_node_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_virtual_metadata_node_count(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval bool execution_virtual_metadata_mapping_matches(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::execution_virtual_metadata_mapping_matches(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval size_t execution_plan_region_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_plan_region_count(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval size_t execution_dormancy_group_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_dormancy_group_count(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval size_t execution_artifact_scc_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_artifact_scc_count(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval size_t execution_artifact_base_edge_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_artifact_base_edge_count(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval size_t execution_node_wrapper_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_node_wrapper_count(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-
-  static consteval size_t execution_minimal_node_wrapper_count(
-      GraphBuilder const& builder) {
-    auto lowered = GraphBuilderLowering::lower(
-        builder._node_bundles, builder._connections, builder._public_ports,
-        builder._virtual_nodes, builder._detach, true);
-    return GraphBuilderFinalizer::count_execution_minimal_node_wrapper_count(
-        builder._identity, lowered, builder._node_bundles,
-        builder._virtual_nodes, builder._public_ports);
-  }
-};
-} // namespace details
 
 constexpr SamplePortRef::SamplePortRef(
     GraphBuilder& builder,

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <flat_map>
+#include <flat_set>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -149,25 +150,29 @@ using VirtualMetadataBuildResult =
 constexpr VirtualMetadataBuildResult
 build_virtual_metadata(PreparedGraph const& g,
                        std::span<LoweredSubgraphSpec const> lowered_scopes) {
+  std::flat_set<ConcretePortId> connected_sample_inputs;
+  std::flat_set<ConcretePortId> connected_sample_outputs;
+  std::flat_set<ConcretePortId> connected_event_inputs;
+  std::flat_set<ConcretePortId> connected_event_outputs;
+  for (auto const& edge : g.edges) {
+    connected_sample_inputs.insert(edge.target);
+    connected_sample_outputs.insert(edge.source);
+  }
+  for (auto const& edge : g.event_edges) {
+    connected_event_inputs.insert(edge.target);
+    connected_event_outputs.insert(edge.source);
+  }
   auto sample_input_connected = [&](size_t node, size_t port) {
-    return std::ranges::any_of(g.edges, [&](GraphEdge const& edge) {
-      return edge.target.node == node && edge.target.port == port;
-    });
+    return connected_sample_inputs.contains(ConcretePortId{node, port});
   };
   auto sample_output_connected = [&](size_t node, size_t port) {
-    return std::ranges::any_of(g.edges, [&](GraphEdge const& edge) {
-      return edge.source.node == node && edge.source.port == port;
-    });
+    return connected_sample_outputs.contains(ConcretePortId{node, port});
   };
   auto event_input_connected = [&](size_t node, size_t port) {
-    return std::ranges::any_of(g.event_edges, [&](GraphEventEdge const& edge) {
-      return edge.target.node == node && edge.target.port == port;
-    });
+    return connected_event_inputs.contains(ConcretePortId{node, port});
   };
   auto event_output_connected = [&](size_t node, size_t port) {
-    return std::ranges::any_of(g.event_edges, [&](GraphEventEdge const& edge) {
-      return edge.source.node == node && edge.source.port == port;
-    });
+    return connected_event_outputs.contains(ConcretePortId{node, port});
   };
 
   std::vector<VirtualConcreteNode> concrete_nodes;

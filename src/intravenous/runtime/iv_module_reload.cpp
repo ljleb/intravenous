@@ -8,6 +8,7 @@
 #include <intravenous/runtime/runtime_project_events.h>
 
 #include <exception>
+#include <chrono>
 #include <iterator>
 
 namespace iv {
@@ -25,6 +26,13 @@ std::string describe_exception(std::exception_ptr exception)
     } catch (...) {
         return "unknown exception";
     }
+}
+
+std::string format_rebuild_duration(std::chrono::steady_clock::duration duration)
+{
+    return std::to_string(
+               std::chrono::duration_cast<std::chrono::milliseconds>(duration).count())
+        + " ms";
 }
 
 IvModuleReloadResults coalesce_results_by_definition(IvModuleReloadResults results)
@@ -260,7 +268,10 @@ void IvModuleReload::compile_dirty_definitions()
             : "Building " + std::to_string(declarations.size()) + " module definitions",
         declarations.size() == 1 ? declarations.front().module_root : std::filesystem::path{});
 
+    auto const rebuild_started_at = std::chrono::steady_clock::now();
     auto results = reload_declarations(declarations);
+    auto const rebuild_duration = format_rebuild_duration(
+        std::chrono::steady_clock::now() - rebuild_started_at);
     if (results.loaded.empty() && results.failed.empty()) {
         return;
     }
@@ -270,13 +281,13 @@ void IvModuleReload::compile_dirty_definitions()
         emit_status(
             "error",
             "rebuildFailed",
-            failure.message,
+            "Module build failed after " + rebuild_duration + ": " + failure.message,
             failure.module_root);
     } else {
         emit_status(
             "info",
             "rebuildFinished",
-            "Module build ready to apply",
+            "Module build ready to apply in " + rebuild_duration,
             results.loaded.size() == 1
                 ? results.loaded.front().module_root
                 : std::filesystem::path{});

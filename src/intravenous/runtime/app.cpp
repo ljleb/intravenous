@@ -89,6 +89,24 @@ namespace iv {
     namespace {
         std::function<void()>* shutdown_callback = nullptr;
 
+        class ScopedShutdownCallback {
+            std::function<void()>* previous_ = nullptr;
+
+        public:
+            explicit ScopedShutdownCallback(std::function<void()>& callback)
+                : previous_(std::exchange(shutdown_callback, &callback))
+            {
+            }
+
+            ~ScopedShutdownCallback()
+            {
+                shutdown_callback = previous_;
+            }
+
+            ScopedShutdownCallback(ScopedShutdownCallback const&) = delete;
+            ScopedShutdownCallback& operator=(ScopedShutdownCallback const&) = delete;
+        };
+
         class IvModuleReloadWatcherService {
             IvModuleReload* reload_ = nullptr;
             IvModuleInstances* instances_ = nullptr;
@@ -275,6 +293,31 @@ namespace iv {
             IvModuleSources iv_module_sources(
                 startup.workspace_root,
                 parse_search_path_env());
+
+            // Construct the complete runtime first.  Binding is a separate
+            // phase: constructors must not observe a partially connected
+            // process graph.
+            ProjectPersistence project_persistence(
+                startup.workspace_root,
+                startup);
+            ProjectAutosave project_autosave;
+            ProjectAutosaveService project_autosave_service(
+                project_autosave,
+                project_persistence);
+            startup_log("constructing socket rpc server");
+            SocketRpcServer server(options.workspace_root, options.rpc_fd);
+            IvModuleReloadWatcherService iv_module_reload_watcher(
+                iv_module_reload,
+                iv_module_instances,
+                iv_module_sources);
+            std::function<void()> shutdown = [&]() {
+                iv_module_reload_watcher.request_shutdown();
+                project_autosave_service.request_shutdown();
+                server.request_shutdown();
+            };
+            ScopedShutdownCallback shutdown_callback_scope(shutdown);
+            install_shutdown_handlers(request_shutdown);
+
             startup_log("binding runtime bridges");
             auto audio_device_lanes_timeline_scope =
                 audio_device_lanes_timeline_bridge::bind(
@@ -302,10 +345,6 @@ namespace iv {
                 timeline_timeline_execution_bridge::bind(timeline, timeline_execution);
             auto authored_lanes_timeline_scope =
                 authored_lanes_timeline_bridge::bind(authored_lanes, timeline);
-            timeline_execution.publish_task_graph_update(
-                timeline.with_graph([&](LaneGraph const &graph) {
-                    return timeline_execution.synchronize_from_graph(graph);
-                }));
             auto iv_module_definitions_iv_module_instances_scope =
                 iv_module_definitions_iv_module_instances_bridge::bind(
                     iv_module_definitions,
@@ -358,7 +397,6 @@ namespace iv {
                     graph_input_lanes);
             auto timeline_lane_filters_scope =
                 timeline_lane_filters_bridge::bind(timeline, lane_filters);
-            lane_query_schema.initialize(timeline.lane_query_schema(0));
             auto timeline_lane_query_schema_scope =
                 timeline_lane_query_schema_bridge::bind(timeline, lane_query_schema);
             auto lane_filters_lane_views_scope =
@@ -377,11 +415,6 @@ namespace iv {
                 timeline_execution_lanes_visualization_bridge::bind(
                     timeline_execution,
                     lanes_visualization);
-            startup_log("binding audio device lanes");
-            audio_device_lanes.bind();
-            ProjectPersistence project_persistence(
-                startup.workspace_root,
-                startup);
             auto project_persistence_timeline_execution_scope =
                 project_persistence_timeline_execution_bridge::bind(
                     project_persistence,
@@ -410,28 +443,10 @@ namespace iv {
                 project_persistence_graph_input_lanes_bridge::bind(
                     project_persistence,
                     graph_input_lanes);
-            ProjectAutosave project_autosave;
             auto project_persistence_project_autosave_scope =
                 project_persistence_project_autosave_bridge::bind(
                     project_persistence,
                     project_autosave);
-            ProjectAutosaveService project_autosave_service(
-                project_autosave,
-                project_persistence);
-
-            startup_log("constructing socket rpc server");
-            SocketRpcServer server(options.workspace_root, options.rpc_fd);
-            IvModuleReloadWatcherService iv_module_reload_watcher(
-                iv_module_reload,
-                iv_module_instances,
-                iv_module_sources);
-            std::function<void()> shutdown = [&]() {
-                iv_module_reload_watcher.request_shutdown();
-                project_autosave_service.request_shutdown();
-                server.request_shutdown();
-            };
-            shutdown_callback = &shutdown;
-            install_shutdown_handlers(request_shutdown);
             startup_log("binding socket rpc bridges");
             auto socket_rpc_lane_views_scope =
                 socket_rpc_lane_views_bridge::bind(server, lane_views);
@@ -468,6 +483,14 @@ namespace iv {
             auto socket_rpc_project_autosave_scope =
                 socket_rpc_project_autosave_bridge::bind(server, project_autosave);
 
+            startup_log("initializing execution state");
+            timeline_execution.publish_task_graph_update(
+                timeline.with_graph([&](LaneGraph const &graph) {
+                    return timeline_execution.synchronize_from_graph(graph);
+                }));
+            lane_query_schema.initialize(timeline.lane_query_schema(0));
+            startup_log("binding audio device lanes");
+            audio_device_lanes.bind();
             startup_log("loading project persistence");
             project_persistence.load();
             startup_log("project persistence loaded");
@@ -486,7 +509,6 @@ namespace iv {
             iv_module_reload_watcher.request_shutdown();
             project_autosave_service.stop();
             audio_device_lanes.request_shutdown();
-            shutdown_callback = nullptr;
             return 0;
         }
     }

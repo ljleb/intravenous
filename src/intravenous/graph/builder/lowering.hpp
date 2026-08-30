@@ -7,6 +7,8 @@
 #include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
+#include <intravenous/graph/authored_graph.hpp>
+#include <intravenous/graph/executable_graph_ir.hpp>
 #include <intravenous/graph/connection_node.hpp>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
 
@@ -25,6 +27,13 @@ class GraphBuilderPublicPorts;
 class GraphBuilderDetach;
 class GraphBuilderVirtualNodes;
 
+class GraphLowerer {
+public:
+  static consteval ExecutableGraphIR lower(
+      AuthoredGraph const&, size_t detach_id_offset = 0,
+      bool execution_root = false);
+};
+
 struct LoweredNodeBundleProjection {
   std::vector<std::vector<TopologyPortId>> sample_inputs{};
   std::vector<std::vector<TopologyPortId>> sample_outputs{};
@@ -41,7 +50,9 @@ struct DetachedSamplePortInfo {
   size_t loop_extra_latency = 1;
 };
 
-struct LoweredBuilderGraph {
+// Mechanical workspace used only while converting authored intent into the
+// closed ExecutableGraphIR. It is not a third semantic graph representation.
+struct LoweringWorkspace {
   LoweredTopology topology{};
   std::vector<LoweredNodeBundleProjection> bundle_projections{};
   std::vector<std::optional<NodeBundleHandle>> bundle_by_lowered_node{};
@@ -54,19 +65,19 @@ struct LoweredBuilderGraph {
   std::flat_set<TopologyPortId> detached_reader_outputs{};
 };
 
-class GraphBuilderLowering {
+class AuthoredGraphTopologyLowerer {
 public:
-  static constexpr LoweredBuilderGraph lower(
+  static constexpr LoweringWorkspace lower(
       GraphBuilderNodeBundles const&, GraphBuilderConnections const&,
       GraphBuilderPublicPorts const&, GraphBuilderVirtualNodes const&,
       GraphBuilderDetach const&,
       bool execution_root = false);
-  static constexpr LoweredBuilderGraph lower_shared_base(
+  static constexpr LoweringWorkspace lower_shared_base(
       GraphBuilderNodeBundles const&, GraphBuilderConnections const&,
       GraphBuilderPublicPorts const&, GraphBuilderVirtualNodes const&,
       GraphBuilderDetach const&);
   static constexpr void lower_execution_root_ports(
-      LoweredBuilderGraph&, GraphBuilderNodeBundles const&,
+      LoweringWorkspace&, GraphBuilderNodeBundles const&,
       GraphBuilderConnections const&, GraphBuilderPublicPorts const&,
       GraphBuilderVirtualNodes const&, GraphBuilderDetach const&);
 };
@@ -79,7 +90,7 @@ class Lowerer {
   GraphBuilderVirtualNodes const& virtuals;
   GraphBuilderDetach const& detach;
   bool execution_root = false;
-  LoweredBuilderGraph& out;
+  LoweringWorkspace& out;
   GraphBuilderVirtualPorts virtual_ports;
   std::flat_map<NodeBundleHandle, size_t> subgraph_by_boundary;
   std::vector<std::pair<NodeBundlePortId, TopologyPortId>>
@@ -250,10 +261,22 @@ class Lowerer {
   constexpr std::optional<TopologyPortId> direct_sample_source(
       ChannelTypeId type, std::span<SampleOutputChannelId const> channels) const {
     if (channels.empty()) details::error("sample source has no channels");
-    if (auto logical = bundles.sample_output_port_for_channels(type, channels)) {
-      auto const& endpoints = out.bundle_projections.at(logical->node_bundle_handle).sample_outputs.at(logical->port_ordinal);
-      if (endpoints.size() == 1) return endpoints.front();
+    auto const first = channels.front();
+    if (first.bundle >= bundles.size()) return std::nullopt;
+    auto const& bundle = bundles.bundle(first.bundle);
+    if (first.port >= bundle.sample_output_count()) return std::nullopt;
+    NodeBundlePortId const logical{first.bundle, PortKind::sample, first.port};
+    auto const config = bundles.resolve_sample_output(logical).config;
+    if (config.channel_layout.channel_type != type ||
+        channels.size() != channel_count(type))
+      return std::nullopt;
+    for (size_t channel = 0; channel < channels.size(); ++channel) {
+      if (channels[channel] != SampleOutputChannelId{
+              first.bundle, first.port, channel})
+        return std::nullopt;
     }
+    auto const& endpoints = out.bundle_projections.at(logical.node_bundle_handle).sample_outputs.at(logical.port_ordinal);
+    if (endpoints.size() == 1) return endpoints.front();
     if (type == ChannelTypeId::mono && channels.size() == 1) {
       auto const resolved = resolve_sample_source_channel(channels.front());
       if (resolved.channel == 0 && channel_count(resolved.config.channel_layout.channel_type) == 1)
@@ -307,29 +330,6 @@ class Lowerer {
     };
   }
 
-  struct SampleGroup {
-    NodeBundlePortId target{};
-    std::vector<AuthoredSampleConnection const*> connections{};
-  };
-
-  constexpr std::vector<SampleGroup> sample_groups() const {
-    std::vector<SampleGroup> groups;
-    for (auto const& c : connections.authored_sample_connections()) {
-      if (c.target_channels.empty()) details::error("sample connection has no target");
-      auto first = c.target_channels.front();
-      if (!std::ranges::all_of(c.target_channels, [&](auto x) { return x.bundle == first.bundle && x.port == first.port; }))
-        details::error("sample target spans bundle ports");
-      NodeBundlePortId target{first.bundle, PortKind::sample, first.port};
-      auto it = std::find_if(groups.begin(), groups.end(), [&](auto const& g) { return g.target == target; });
-      if (it == groups.end()) {
-        groups.push_back({target, {}});
-        it = std::prev(groups.end());
-      }
-      it->connections.push_back(&c);
-    }
-    return groups;
-  }
-
   struct LoweredConnection {
     TopologyPortId output{};
     std::optional<TopologyPortId> target{};
@@ -381,7 +381,7 @@ class Lowerer {
   }
 
   constexpr LoweredConnection lower_connection_node(
-      SampleGroup const& group,
+      SampleLoweringGroup const& group,
       std::optional<TopologyPortId> target_endpoint) {
     std::vector<TopologyPortId> input_sources;
     std::vector<ConnectionNodeInputConfig> input_configs;
@@ -463,7 +463,7 @@ class Lowerer {
     return {.output = source, .target = target_endpoint};
   }
 
-  constexpr bool lower_tiled_group_direct(SampleGroup const& group, std::span<TopologyPortId const> endpoints) {
+  constexpr bool lower_tiled_group_direct(SampleLoweringGroup const& group, std::span<TopologyPortId const> endpoints) {
     auto const target_channels = bundles.sample_input_channels(group.target);
     auto const target_type = bundles.resolve_sample_input(group.target).config.channel_layout.channel_type;
     if (group.connections.size() == 1) {
@@ -511,8 +511,8 @@ class Lowerer {
       if (!std::ranges::contains(bound_targets, target)) bound_targets.push_back(target);
     };
     auto const authored_topology_node_count = out.topology.node_count();
-    auto groups = sample_groups();
-    for (auto const& group : groups) {
+    auto const plan = connections.sample_lowering_plan();
+    for (auto const& group : plan.groups) {
       auto const& endpoints = out.bundle_projections.at(group.target.node_bundle_handle).sample_inputs.at(group.target.port_ordinal);
       auto const target_channels = bundles.sample_input_channels(group.target);
       auto const target_type = bundles.resolve_sample_input(group.target).config.channel_layout.channel_type;
@@ -565,11 +565,12 @@ class Lowerer {
     }
     for (size_t node = 0; node < authored_topology_node_count; ++node) {
       if (out.topology.is_subgraph_node(node)) continue;
-      auto const inputs = out.topology.concrete_node(node).ports.sample_inputs;
-      for (size_t input = 0; input < inputs.size(); ++input) {
+      auto const input_count =
+          out.topology.concrete_node(node).ports.sample_inputs.size();
+      for (size_t input = 0; input < input_count; ++input) {
         TopologyPortId const target{node, input};
         if (std::ranges::contains(bound_targets, target)) continue;
-        SampleGroup vacant;
+        SampleLoweringGroup vacant;
         lower_connection_node(vacant, target);
         mark_bound(target);
       }
@@ -831,7 +832,7 @@ class Lowerer {
 public:
   constexpr Lowerer(GraphBuilderNodeBundles const& b, GraphBuilderConnections const& c,
           GraphBuilderPublicPorts const& p, GraphBuilderVirtualNodes const& v,
-          GraphBuilderDetach const& d, LoweredBuilderGraph& lowered,
+          GraphBuilderDetach const& d, LoweringWorkspace& lowered,
           bool is_execution_root)
       : bundles(b),connections(c),public_ports(p),virtuals(v),detach(d),
         execution_root(is_execution_root), out(lowered),
@@ -854,29 +855,29 @@ public:
 };
 } // namespace
 
-constexpr LoweredBuilderGraph GraphBuilderLowering::lower(
+constexpr LoweringWorkspace AuthoredGraphTopologyLowerer::lower(
     GraphBuilderNodeBundles const& bundles, GraphBuilderConnections const& connections,
     GraphBuilderPublicPorts const& ports, GraphBuilderVirtualNodes const& virtuals,
     GraphBuilderDetach const& detach, bool execution_root) {
-  LoweredBuilderGraph lowered;
+  LoweringWorkspace lowered;
   Lowerer(bundles, connections, ports, virtuals, detach, lowered, execution_root).run();
   return lowered;
 }
 
-constexpr LoweredBuilderGraph GraphBuilderLowering::lower_shared_base(
+constexpr LoweringWorkspace AuthoredGraphTopologyLowerer::lower_shared_base(
     GraphBuilderNodeBundles const& bundles,
     GraphBuilderConnections const& connections,
     GraphBuilderPublicPorts const& ports,
     GraphBuilderVirtualNodes const& virtuals,
     GraphBuilderDetach const& detach) {
-  LoweredBuilderGraph lowered;
+  LoweringWorkspace lowered;
   Lowerer(bundles, connections, ports, virtuals, detach, lowered, false)
       .run(false);
   return lowered;
 }
 
-constexpr void GraphBuilderLowering::lower_execution_root_ports(
-    LoweredBuilderGraph& lowered, GraphBuilderNodeBundles const& bundles,
+constexpr void AuthoredGraphTopologyLowerer::lower_execution_root_ports(
+    LoweringWorkspace& lowered, GraphBuilderNodeBundles const& bundles,
     GraphBuilderConnections const& connections,
     GraphBuilderPublicPorts const& ports,
     GraphBuilderVirtualNodes const& virtuals,
