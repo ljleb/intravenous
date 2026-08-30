@@ -141,7 +141,7 @@ consteval VirtualPortConnectivity stereo_metadata_connectivity()
     (void)annotated;
     auto sink = g.node<Sum<mono, SampleStreamLayout::planar, 1>>();
     sink(source.static_output<0>()[stereo::left]);
-    auto const metadata = g.build_metadata();
+    auto const metadata = std::move(g).build().introspection;
     for (auto const& node : metadata.virtual_nodes) {
         if (node.source_identity == "stereo" && !node.sample_outputs.empty())
             return node.sample_outputs.front().connectivity;
@@ -199,8 +199,8 @@ consteval PublicOutputSnapshot named_channel_output_snapshot()
     GraphBuilder g;
     g.outputs("main"_P[stereo::left] = 0.0f,
               "main"_P[stereo::right] = 0.0f);
-    auto const built = g.build_root_node();
     auto const families = g.public_sample_output_families();
+    auto const built = std::move(g).build();
     PublicOutputSnapshot result{
         .graph_output_count = built.graph.outputs().size(),
         .name_main = built.graph.outputs().size() == 1
@@ -228,8 +228,8 @@ consteval PublicOutputSnapshot repeated_named_output_snapshot()
     GraphBuilder g;
     g.outputs("main"_P = 0.25f);
     g.outputs("main"_P = 0.5f);
-    auto const built = g.build_root_node();
     auto const families = g.public_sample_output_families();
+    auto const built = std::move(g).build();
     return {
         .graph_output_count = built.graph.outputs().size(),
         .name_main = built.graph.outputs().size() == 1
@@ -252,8 +252,8 @@ consteval PublicOutputSnapshot repeated_unnamed_output_snapshot()
     GraphBuilder g;
     g.outputs(0.25f);
     g.outputs(0.5f);
-    auto const built = g.build_root_node();
     auto const families = g.public_sample_output_families();
+    auto const built = std::move(g).build();
     return {
         .graph_output_count = built.graph.outputs().size(),
         .name_main = built.graph.outputs().size() == 1
@@ -277,8 +277,8 @@ consteval PublicOutputSnapshot whole_and_channel_output_snapshot()
     auto stereo_source = g.node<Sum<stereo, SampleStreamLayout::interleaved, 1>>();
     g.outputs("main"_P = stereo_source);
     g.outputs("main"_P[stereo::left] = 0.25f);
-    auto const built = g.build_root_node();
     auto const families = g.public_sample_output_families();
+    auto const built = std::move(g).build();
     PublicOutputSnapshot result{
         .graph_output_count = built.graph.outputs().size(),
         .name_main = built.graph.outputs().size() == 1
@@ -309,7 +309,7 @@ consteval bool named_channel_contributions_share_family()
     GraphBuilder g;
     g.outputs("main"_P[stereo::left] = 0.25f,
               "main"_P[stereo::right] = 0.5f);
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     return built.graph.outputs().size() == 1
         && built.graph.outputs().front().name == "main";
 }
@@ -325,7 +325,7 @@ consteval bool functional_subgraph_has_main_output()
     });
     nested("in"_P = 0.25f);
     g.outputs("main"_P = nested);
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     return built.graph.outputs().size() == 1
         && built.graph.outputs().front().name == "main";
 }
@@ -346,7 +346,7 @@ consteval bool nested_functional_subgraphs_compile()
     });
     outer("in"_P = 0.5f);
     g.outputs("main"_P = outer);
-    (void)g.build_root_node();
+    (void)std::move(g).build();
     return true;
 }
 

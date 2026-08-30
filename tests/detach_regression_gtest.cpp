@@ -86,7 +86,7 @@ namespace {
 
         sink(voice_a + voice_b);
         graph.outputs();
-        return graph.build_root_node().graph;
+        return std::move(graph).build().graph;
     }
 
     static constexpr auto detached_graph = build_detached_graph();
@@ -104,7 +104,7 @@ namespace {
         }).ttl(1);
         nested("in"_P = source);
         graph.outputs("out"_P = nested);
-        return graph.build_execution_root_node().graph;
+        return std::move(graph).build({.execution_root = true}).graph;
     }
 
     static constexpr auto static_dormancy_graph = build_static_dormancy_graph();
@@ -170,4 +170,4 @@ TEST(DetachRegression, StaticGraphRootExecutesDormancyGroups)
 
 // A graph cycle without detach() is now rejected while evaluating the consteval
 // graph build. That diagnostic belongs in compile-fail coverage; it cannot be
-// represented as a runtime EXPECT_THROW around GraphBuilder::build_root_node().
+// represented as a runtime EXPECT_THROW around GraphBuilder::build().

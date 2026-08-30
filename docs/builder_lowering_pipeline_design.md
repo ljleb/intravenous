@@ -24,38 +24,36 @@ declarations, source annotations, and virtual-node declarations. Once it is
 finished, the builder no longer participates in lowering, metadata production,
 or runtime graph construction.
 
-The compiler has two semantic representations and one mechanical construction
-DTO:
+The compiler has exactly three representations and two conversions:
 
 ```text
 AuthoredGraph (HIR)
   -> ExecutableGraphIR
-  -> GraphBuildArtifact (construction DTO)
   -> Graph (frozen runtime value)
 ```
 
 `LoweredTopology`, `PreparedGraph`, execution plans, SCCs, buffer plans, and
-dormancy groups are not additional semantic graph representations. They are
-internal lowering workspaces or analyses of `ExecutableGraphIR`.
+dormancy groups are private scratch or analyses within one of those two
+conversions. They are not additional representations and have no public
+entry points.
 
 Each semantic transition has one owner and one invariant:
 
-- `GraphLowerer::lower(AuthoredGraph const&)` resolves authored structure,
+- `GraphLowerer::lower(AuthoredGraph const&, GraphLoweringOptions)` resolves authored structure,
   tiling, channel semantics, defaults, routing, hierarchy, detach behavior,
   and provenance into a closed `ExecutableGraphIR`.
-- `GraphCompiler::compile(ExecutableGraphIR const&)` validates, schedules,
-  lays out, and freezes that fixed semantic graph through a temporary
-  `GraphBuildArtifact` into `Graph`.
+- `GraphCompiler::compile(ExecutableGraphIR)` validates, schedules,
+  lays out, and freezes that fixed semantic graph into `Graph`.
 
 No semantic node or edge may be created after `ExecutableGraphIR` is finished.
 The compiler may reorder, wrap, schedule, allocate buffers for, or freeze its
 nodes, but discovering a required `Broadcast`, `ConnectionNode`, default, or
 sink after this boundary is a lowering bug.
 
-`GraphBuilder` should eventually expose one ordinary result-producing method:
+`GraphBuilder` exposes one ordinary result-producing convenience method:
 
 ```cpp
-consteval CompiledGraph GraphBuilder::build() &&;
+consteval CompiledGraph GraphBuilder::build(GraphLoweringOptions = {}) &&;
 
 struct CompiledGraph {
   Graph graph;
@@ -64,112 +62,181 @@ struct CompiledGraph {
 };
 ```
 
-Metadata is a product of compilation or an explicit inspection pass over a
-named representation; it is not an alternate semantic build path. The current
+Metadata is a product of the `AuthoredGraph -> ExecutableGraphIR` conversion;
+it is not an alternate semantic build path. The former
 `build_metadata`, `build_root_node`, `build_execution_root_node`, and
-`build_execution_root_node_with_metadata` APIs are transitional compatibility
-facades to be removed after their consumers migrate.
+`build_execution_root_node_with_metadata` façades have been removed. Callers
+either use the explicit two conversions or the single `GraphBuilder::build`
+convenience.
 
 ## Current state
 
 `GraphBuilder` owns authored node bundles, connections, public ports, virtual
-nodes, and detach declarations. `GraphBuilderLowering::lower()` creates one
-private mutable `Lowerer`, whose `run()` method projects bundles, lowers sample
-and event connections, handles detach declarations, and normalizes the result.
+nodes, and detach declarations. Finishing transfers those into `AuthoredGraph`.
+`GraphLowerer::lower()` is the sole public lowering entry point. One
+`GraphLowerer` instance carries the authored references and scratch state for
+the whole authored-to-IR conversion.
 
-The stored authored data is modular, but the substantial work is not: sample
-grouping, direct-route decisions, channel resolution, generated connection-node
-construction, vacant-input lowering, and subgraph binding all mutate one
-`LoweredBuilderGraph` through private helpers. A final graph test therefore
-cannot isolate which unit owns a cost or a regression.
-
-## Target pipeline
+## Target two-conversion architecture
 
 ```text
 AuthoredGraph
-  -> BundleProjection
-  -> SampleLoweringPlan
-  -> ConnectedSampleLowering
-  -> VacantSampleInputLowering
-  -> SubgraphSampleBindingLowering
-  -> event/detach lowering and normalization
-  -> ExecutableGraphIR
-  -> GraphBuildArtifact
+  -> GraphLowerer::lower() // authored graph -> closed executable IR
+  -> GraphCompiler::compile(std::move(ir)) // executable IR -> fixed Graph
   -> Graph
 ```
 
-The named lower-level operations are internal passes of `GraphLowerer`; they
-need not become public graph representations. They have explicit contracts and
-ordinary test/profiling entry points, but share one lowering context and finish
-by producing the single self-sufficient executable IR.
+`GraphLowerer` is one stateful class for the whole authored-graph-to-IR
+conversion. It owns the authored reference, lowering options, the topology
+under construction, and plain nested scratch structs. Its public macro step is
+one function, `lower()`, which composes smaller member functions.
 
-## First extraction: sample lowering
+`GraphCompiler` is the symmetric other half of compilation: it consumes the
+closed executable IR and produces the frozen runtime `Graph` (and the static
+data structures carried by `CompiledGraph`). It likewise has exactly one public
+macro step, `compile(ExecutableGraphIR)`. Scheduling, validation, subgraph
+compilation, dormancy analysis, artifact construction, and metadata extraction
+are private implementation steps of that one IR-to-runtime conversion; none is
+another representation boundary or a public pass API.
 
-The first refactoring boundary is between semantic planning and topology
-materialization.
+The current surface already has that single public `GraphCompiler::compile`
+entry point, but its implementation helpers are `details` free functions in
+`graph/compiler.h`, rather than members of a stateful compiler object. That is
+fine: the important constraint is the single conversion boundary, not a
+symmetrical object-oriented implementation. Helpers may remain ordinary private
+functions and plain data; do not introduce a deeply nested compiler-object
+hierarchy merely to match `GraphLowerer`.
 
-`SampleLoweringPlan` will own, per target logical sample port:
+An operation that takes and returns `ExecutableGraphIR` is not a third
+conversion phase. It is an internal helper of the conversion that owns it.
+For now, executable-IR completion belongs to `GraphLowerer`, immediately
+before it returns the closed IR. Such helpers may only consult the IR they
+receive; `GraphCompiler` therefore never needs a completion-state flag.
 
-- the authored connection group;
-- validated source and target channel counts;
-- resolved source and target channels;
-- exact logical-port identity and direct-routing eligibility;
-- conversion plans;
-- runtime-binding lookup results where applicable.
+`GraphCompiler::compile` is the sole conversion from executable IR to the fixed
+runtime `Graph`. No intermediate graph, diagnostic build mode, or profiling API
+is exposed.
 
-The plan is computed from authored graph state plus the lowering context's
-bundle projection.
-`ConnectedSampleLowering` consumes it to append generated nodes and edges. It
-does not repeat source/target resolution or discover the same logical port by a
-global search.
+## Conversion ownership and information flow
 
-Vacant-input and subgraph-binding passes remain separate consumers of the
-materialized result. This retains the current lowering order and permits
-incremental extraction without changing the final static execution
-representation.
+The implementation should make the full path from `GraphBuilder` to the static
+runtime result straightforward to follow. A piece of work belongs to the
+conversion that owns the semantic transition it performs:
+
+- `GraphLowerer` creates and closes executable meaning: generated nodes and
+  edges, defaults, routing, hierarchy bindings, detach semantics, runtime-port
+  adapters, provenance, and introspection.
+- `GraphCompiler` consumes that fixed meaning only to validate, order, schedule,
+  allocate, lay out, and freeze the runtime graph and its static data.
+
+If `GraphCompiler` discovers or synthesizes executable graph meaning, move that
+work to `GraphLowerer`. If `GraphLowerer` performs a scheduling, allocation, or
+runtime-layout decision, move it to `GraphCompiler`. The rule is about the
+meaning of the work, not which helper happens to contain it today.
+
+Likewise, preserve information at the point where it is known when a later
+step needs it. Do not discard a resolved routing decision, ownership relation,
+binding lookup, or edge classification only to reconstruct it later by scanning
+authored data or the lowered topology. Carry a narrow phase fact or index
+forward instead. A later scan is appropriate only when it is genuinely a new
+analysis of the completed representation, rather than recovery of an earlier
+fact.
+
+## Inside authored lowering
+
+`GraphLowerer::lower()` is deliberately flat at the macro level:
+
+```text
+project_bundles
+plan_sample_lowering
+lower_connected_sample_groups
+lower_vacant_sample_inputs
+bind_subgraph_sample_inputs
+lower_events
+lower_detach
+materialize_runtime_ports
+materialize_executable_ir
+complete_executable_ir // an internal authored-to-IR helper, not a phase
+```
+
+Each listed operation may call smaller helpers, but each temporary data type is
+a plain nested struct with fields only—no methods. The lowering class owns the
+functions, so all AST-to-IR work remains together and can be reordered or
+regrouped without crossing representation boundaries.
+
+The sample-lowering boundary is between semantic planning and topology
+materialization. `plan_sample_lowering` groups authored connections by logical
+target; the three consumers then have distinct responsibilities.
+
+`SampleLoweringPlan` currently owns, per target logical sample port:
+
+- the exact logical target; and
+- references to its authored connection group.
+
+Channel resolution, direct-routing eligibility, conversion planning, and
+runtime-binding lookup still belong to connected materialization. They should
+move into the plan only when more than one later decision can consume the
+result, or when the move removes a graph-wide rediscovery.
+
+The private phase products should be correspondingly narrow:
+
+| Producer | Product consumed later |
+|---|---|
+| Bundle projection | boundary-to-subgraph map and the number of authored topology nodes |
+| Connected sample lowering | bound concrete sample inputs and assigned subgraph sample outputs |
+| Event lowering | materialized multi-member event output ports |
+
+The lowered topology is a field on `GraphLowerer`, because it is authored
+lowering scratch, not the externally meaningful IR. The resulting
+`ExecutableGraphIR` is the only value passed to the next macro step.
+
+The plan is computed from authored graph state. Connected lowering consumes it
+to append direct edges or generated connection nodes and returns only the
+bound-input and assigned-subgraph-output facts needed by later sample phases.
+Vacant-input lowering then provides each unbound concrete input's default path.
+Subgraph binding is last, after all materialized sample edges exist.
+
+This preserves the final static execution representation while making it clear
+where a future optimization should move work: into the plan, connected
+materialization, vacancy handling, or subgraph binding—not into a monolithic
+`lower_samples` routine.
 
 ## Contracts and tests
 
-Every extracted unit needs a focused constexpr test in addition to final graph
-tests.
+Behavior remains covered by focused constexpr graph tests in addition to final
+graph tests. `GraphLowererTestAccess` is a test-only friend, not a public stage
+API: it invokes the private production planner, connected-materialization,
+vacancy, and subgraph-binding members and exposes only their plain phase facts.
+The current tests cover plan grouping, direct native routing, connection-node
+routing, fan-in, and vacant defaults.
 
 | Unit | Contract examples |
 |---|---|
 | Bundle projection | concrete, tiled, and boundary ports map to expected topology endpoints |
-| Sample plan | native ordered channels are direct; reordered channels are not; channel identities and types validate |
-| Connected materialization | direct plans create edges; conversion/fan-in plans create the expected connection nodes |
+| Sample plan | authored connections group by logical target |
+| Connected materialization | native ordered channels are direct; reordered or fan-in routes create the expected connection nodes |
 | Vacant-input lowering | each unbound concrete input receives one default path |
 | Metadata indexing | disconnected, connected, and mixed ports retain their reported connectivity |
 
-Tests should call the production unit directly where its inputs can be built
-without unrelated lowering. End-to-end builder tests remain the compatibility
-check.
+End-to-end builder tests remain the compatibility check. A later decision to
+expose a unit for consteval profiling should add a narrow testable API at that
+time, rather than freezing today's private workspace interface.
 
 ## Profiling model
 
-Compile-time profiling is performed by small benchmark translation units that
-call the normal unit API:
-
-```cpp
-constexpr auto plan = plan_sample_lowering(authored.connections);
-```
-
-Measurements are cumulative only when the input artifact necessarily depends
-on an earlier unit. Individual phase costs are obtained by compiling the
-smallest valid unit invocation, not by adding destructive early returns inside
-the lowering implementation.
+There is intentionally no profiling capability or intermediate public API at
+present. The named pass boundaries make later consteval benchmarks possible,
+but that work must introduce a deliberate, narrow interface instead of
+preserving this context as a de facto API.
 
 ## Migration rules
 
-- First introduce `AuthoredGraph` as a value type and route all existing build
-  methods through `finish()`. Do not add further public compiler entry points
-  to `GraphBuilder`.
-- Preserve existing `GraphBuilder` build methods only as temporary compatibility
-  façades over the explicit compiler pipeline.
-- Move all semantic synthesis currently spread across `Lowerer` and
-  `GraphBuilderFinalizer` into `GraphLowerer`; in particular subgraph defaults,
-  fan-in/fan-out, dangling-port completion, and scope construction must occur
-  before executable IR is finished.
+- `GraphBuilder` has no named lowering, metadata, or root-building façade. Do
+  not add one; use `finish`, `GraphLowerer`, and `GraphCompiler` when the
+  conversion boundary matters.
+- Keep all authored-to-IR synthesis in `GraphLowerer`; in particular subgraph
+  defaults, fan-in/fan-out, dangling-port completion, and scope construction
+  must occur before executable IR is finished.
 - Carry source, virtual-node, and authored-node provenance forward into
   executable nodes. Later compilation must not need `GraphBuilderNodeBundles`,
   `GraphBuilderConnections`, or stringified node IDs to recover authored
@@ -181,10 +248,12 @@ the lowering implementation.
   ownership demands it.
 - Move a repeated computation into the plan only when its result is consumed by
   more than one materialization decision or it removes graph-wide rediscovery.
-- Reprofile after each extraction; do not infer performance from code shape.
+- Measure after each extraction once a deliberate profiling interface exists;
+  do not infer performance from code shape.
 
 ## Completion criterion
 
-The sample-lowering units can be built and tested individually, the existing
-end-to-end graph tests preserve behavior, and the benchmark no longer depends
-on diagnostic compile stages or destructive lowering modes.
+The lowerer is an ordered private pipeline with phase-local state, existing
+end-to-end graph tests preserve behavior, and `ExecutableGraphIR` remains the
+only closed intermediate representation exposed between authoring and
+compilation. `GraphCompiler` accepts no partially completed form.

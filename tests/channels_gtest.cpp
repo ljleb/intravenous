@@ -385,7 +385,7 @@ consteval ChannelTopologySnapshot boundary_adapter_snapshot()
     (void)g.node<iv::ChannelPack<iv::stereo>>();
     (void)g.node<iv::ChannelUnpack<iv::stereo>>();
     g.outputs();
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     return {.ok = built.graph.outputs().empty()};
 }
 
@@ -404,7 +404,7 @@ consteval ChannelTopologySnapshot tiled_source_snapshot()
             std::remove_cvref_t<decltype(iv::stereo::left)>>>);
 
     g.outputs(iv::PortName<"left">{} = left);
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     return {
         .ok = built.graph.outputs().size() == 1
             && built.graph.outputs().front().channel_layout.channel_type
@@ -434,7 +434,7 @@ consteval ChannelTopologySnapshot sample_ref_snapshot()
         && left.channels.front() == erased.channels.front();
 
     g.outputs();
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     ok = ok
         && !has_generated_type(
             built.metadata.concrete_node_type_identities, "ChannelUnpack")
@@ -457,7 +457,7 @@ consteval ChannelTopologySnapshot structural_tile_snapshot()
         && erased.channels[1].bundle == right.node_bundle_handle();
 
     g.outputs();
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     ok = ok
         && !has_generated_type(
             built.metadata.concrete_node_type_identities, "ChannelPack")
@@ -480,7 +480,7 @@ consteval ChannelTopologySnapshot qualified_output_snapshot()
             static_cast<iv::SamplePortRef>(right));
 
     auto after_outputs = g.node<iv::Constant>(iv::Sample{1.0f});
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     auto const connection_nodes = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
         [](auto const& type) {
@@ -509,7 +509,7 @@ consteval ChannelTopologySnapshot detach_snapshot()
     auto detached = static_cast<iv::SamplePortRef>(structural).detach();
     auto after_detach = g.node<iv::Constant>(iv::Sample{1.0f});
     g.outputs(detached);
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     auto const connection_nodes = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
         [](auto const& type) {
@@ -539,7 +539,9 @@ consteval ChannelTopologySnapshot tiled_event_snapshot()
     g.outputs();
 
     auto const virtual_ports = g.virtual_ports();
-    auto const built = g.build_root_node();
+    auto const tiled_handle = tiled.node_bundle_handle();
+    auto const tiled_event_input_connected = tiled.event_input_is_connected(0);
+    auto const built = std::move(g).build();
     auto const merge_count = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
         [](auto const& type) {
@@ -547,8 +549,8 @@ consteval ChannelTopologySnapshot tiled_event_snapshot()
         });
     return {
         .ok = merged.sources.size() == 1
-            && merged.sources.front().bundle == tiled.node_bundle_handle()
-            && tiled.event_input_is_connected(0)
+            && merged.sources.front().bundle == tiled_handle
+            && tiled_event_input_connected
             && virtual_ports.event_inputs.size() == 1
             && virtual_ports.event_outputs.size() == 1
             && virtual_ports.event_inputs.front().node_bundle_ports.size() == 1
@@ -597,7 +599,7 @@ consteval ChannelTopologySnapshot introspection_snapshot()
         "/tmp/tiled-module.cpp",
         40,
         55);
-    auto const metadata = g.build_metadata();
+    auto const metadata = std::move(g).build().introspection;
     bool ok = metadata.virtual_nodes.size() == 1;
     if (!ok) return {.ok = false};
     auto const& virtual_node = metadata.virtual_nodes.front();
@@ -670,7 +672,7 @@ consteval ChannelTopologySnapshot stereo_scalar_product_snapshot()
     auto scaled = stream * 0.1f * modulation;
     g.outputs(scaled);
     auto const public_outputs = g.public_sample_output_families();
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     if (public_outputs.families.size() != 1) {
         return {.ok = false, .connection_nodes = 1};
     }
@@ -711,7 +713,7 @@ consteval ChannelTopologySnapshot reconstructed_sequence_snapshot(bool reverse)
     auto pass = g.node<iv::Sum<iv::stereo, iv::SampleStreamLayout::planar, 1>>();
     pass(reconstructed);
     g.outputs(pass);
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     auto const connection_nodes = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
         [](auto const& type) {
@@ -730,7 +732,7 @@ consteval ChannelTopologySnapshot tiled_mono_direct_route_snapshot()
     auto target = g.node<MonoPass, iv::stereo>();
     target(source);
     g.outputs(target);
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     auto const connection_nodes = std::ranges::count_if(
         built.metadata.concrete_node_type_identities,
         [](auto const& type) {
@@ -780,7 +782,7 @@ consteval ChannelTopologySnapshot connection_lowering_snapshot(bool connected)
         pass(g.node<iv::Constant>(iv::Sample{-0.5f}));
     }
     g.outputs(pass);
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     return {
         .ok = true,
         .connection_nodes = static_cast<size_t>(std::ranges::count_if(
@@ -789,6 +791,18 @@ consteval ChannelTopologySnapshot connection_lowering_snapshot(bool connected)
                 return std::string_view(type).contains("ConnectionNode");
             })),
     };
+}
+
+consteval iv::details::SampleLoweringPassFacts
+sample_lowering_pass_facts(bool connected)
+{
+    iv::GraphBuilder g;
+    auto pass = g.node<DefaultMonoPass>();
+    if (connected)
+        pass(g.node<iv::Constant>(iv::Sample{0.25f}));
+    g.outputs(pass);
+    return iv::details::GraphLowererTestAccess::sample_lowering_pass_facts(
+        g.finish());
 }
 
 struct ExecutionRootSnapshot {
@@ -804,7 +818,7 @@ consteval ExecutionRootSnapshot execution_root_snapshot()
     auto pass = g.node<MonoPass>();
     pass(input);
     g.outputs(iv::PortName<"main">{} = pass);
-    auto const built = g.build_execution_root_node();
+    auto const built = std::move(g).build({.execution_root = true});
     return {
         .closed_interface = built.graph.inputs().empty()
             && built.graph.outputs().empty()
@@ -1177,6 +1191,20 @@ TEST(Channels, SampleLoweringPlanGroupsConnectionsByTargetPort)
 {
     static_assert(sample_lowering_plan_groups_connections_by_target_port());
     EXPECT_TRUE(sample_lowering_plan_groups_connections_by_target_port());
+}
+
+TEST(Channels, SampleLoweringPassesHaveExplicitConnectedAndVacantHandOffs)
+{
+    constexpr auto connected = sample_lowering_pass_facts(true);
+    constexpr auto vacant = sample_lowering_pass_facts(false);
+    static_assert(connected.planned_groups == 2);
+    static_assert(connected.connected_bound_targets == 2);
+    static_assert(connected.vacant_bound_targets == 2);
+    static_assert(vacant.planned_groups == 1);
+    static_assert(vacant.connected_bound_targets == 1);
+    static_assert(vacant.vacant_bound_targets == 2);
+    EXPECT_EQ(connected.assigned_subgraph_outputs, 0u);
+    EXPECT_EQ(vacant.assigned_subgraph_outputs, 0u);
 }
 
 consteval bool explicit_three_stage_pipeline_builds_a_graph()

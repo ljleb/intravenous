@@ -145,7 +145,7 @@ namespace {
         iv::GraphBuilder graph;
         auto input = graph.input<"input">(iv::Sample{0.0f});
         graph.outputs(iv::PortName<"output">{} = input);
-        return graph.build_execution_root_node().graph;
+        return std::move(graph).build({.execution_root = true}).graph;
     }
 
     consteval auto make_runtime_event_binding_graph()
@@ -154,7 +154,7 @@ namespace {
         auto input = graph.event_input<"input">(iv::EventTypeId::trigger);
         graph.event_outputs(iv::PortName<"output">{} = input);
         graph.outputs();
-        return graph.build_execution_root_node().graph;
+        return std::move(graph).build({.execution_root = true}).graph;
     }
 
     static constexpr auto runtime_sample_binding_graph =

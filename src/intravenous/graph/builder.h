@@ -134,11 +134,6 @@ public:
 
   using VacantSampleInput = GraphBuilderVacantSampleInput;
   using VacantEventInput = GraphBuilderVacantEventInput;
-  using RootNodeBuildResult = GraphBuilderRootNodeBuildResult;
-  struct ExecutionRootAndMetadata {
-    RootNodeBuildResult root;
-    GraphIntrospectionMetadata introspection;
-  };
   using VacantInputs = GraphBuilderVacantInputs;
   using VirtualSampleInput = GraphBuilderVirtualSampleInput;
   using VirtualEventInput = GraphBuilderVirtualEventInput;
@@ -180,13 +175,7 @@ public:
   constexpr size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
   consteval AuthoredGraph finish() const &;
   consteval AuthoredGraph finish() &&;
-  consteval CompiledGraph build() &&;
-  consteval GraphIntrospectionMetadata build_metadata(size_t detach_id_offset = 0) const;
-  consteval RootNodeBuildResult build_root_node(size_t detach_id_offset = 0) const;
-  consteval RootNodeBuildResult build_execution_root_node(
-      size_t detach_id_offset = 0) const;
-  consteval ExecutionRootAndMetadata build_execution_root_node_with_metadata(
-      size_t detach_id_offset = 0) const;
+  consteval CompiledGraph build(GraphLoweringOptions options = {}) &&;
 
 private:
   consteval SamplePortRef detach_sample_port(
@@ -469,52 +458,9 @@ consteval AuthoredGraph GraphBuilder::finish() && {
   };
 }
 
-consteval CompiledGraph GraphBuilder::build() && {
-  return GraphCompiler::compile(GraphLowerer::lower(std::move(*this).finish()));
-}
-
-consteval GraphIntrospectionMetadata GraphBuilder::build_metadata(
-    size_t detach_offset) const
-{
-  return GraphLowerer::lower(finish(), detach_offset).introspection;
-}
-
-consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_root_node(
-    size_t detach_offset) const
-{
-  if (!_public_ports.sample_outputs_defined())
-    details::error("builder " + _identity.value +
-                   ": g.outputs(...) must be called before build()");
-  auto compiled = GraphCompiler::compile(GraphLowerer::lower(finish(), detach_offset));
-  return {.graph = std::move(compiled.graph), .metadata = std::move(compiled.metadata)};
-}
-
-consteval GraphBuilder::RootNodeBuildResult GraphBuilder::build_execution_root_node(
-    size_t detach_offset) const
-{
-  if (!_public_ports.sample_outputs_defined())
-    details::error("builder " + _identity.value +
-                   ": g.outputs(...) must be called before build()");
-  auto compiled = GraphCompiler::compile(
-      GraphLowerer::lower(finish(), detach_offset, true));
-  return {.graph = std::move(compiled.graph), .metadata = std::move(compiled.metadata)};
-}
-
-consteval GraphBuilder::ExecutionRootAndMetadata
-GraphBuilder::build_execution_root_node_with_metadata(size_t detach_offset) const
-{
-  if (!_public_ports.sample_outputs_defined())
-    details::error("builder " + _identity.value +
-                   ": g.outputs(...) must be called before build()");
-  auto authored = finish();
-  auto introspection = GraphLowerer::lower(authored, detach_offset).introspection;
-  auto compiled = GraphCompiler::compile(
-      GraphLowerer::lower(authored, detach_offset, true));
-  return {
-      .root = {.graph = std::move(compiled.graph),
-               .metadata = std::move(compiled.metadata)},
-      .introspection = std::move(introspection),
-  };
+consteval CompiledGraph GraphBuilder::build(GraphLoweringOptions options) && {
+  return GraphCompiler::compile(
+      GraphLowerer::lower(std::move(*this).finish(), options));
 }
 
 

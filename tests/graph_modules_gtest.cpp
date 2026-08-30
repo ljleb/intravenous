@@ -60,7 +60,7 @@ consteval RootSignatureSnapshot root_signature_snapshot()
     {
         GraphBuilder root;
         pass_module(root);
-        auto const built = root.build_root_node();
+        auto const built = std::move(root).build();
         result.root_output_named_out =
             built.graph.outputs().size() == 1
             && built.graph.outputs().front().name == "out";
@@ -72,7 +72,7 @@ consteval RootSignatureSnapshot root_signature_snapshot()
         result.child_sample_outputs = child.sample_output_count();
         child("in"_P = 0.25f);
         parent.outputs("main"_P = child["out"]);
-        auto const built = parent.build_root_node();
+        auto const built = std::move(parent).build();
         result.nested_output_named_main =
             built.graph.outputs().size() == 1
             && built.graph.outputs().front().name == "main";
@@ -93,7 +93,7 @@ consteval RecursiveModuleSnapshot recursive_module_snapshot()
     child("in"_P = 0.5f);
     g.outputs("main"_P = child["out"]);
 
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     RecursiveModuleSnapshot result{
         .lowered_subgraph_count = built.metadata.lowered_subgraphs.size(),
         .parent_scopes_valid = true,
@@ -123,7 +123,7 @@ consteval AnnotatedModuleSnapshot annotated_module_snapshot()
     child("in"_P = 0.5f);
     g.outputs("main"_P = child["out"]);
 
-    auto const metadata = g.build_metadata();
+    auto const metadata = std::move(g).build().introspection;
     auto const matching_nodes = std::ranges::count_if(
         metadata.virtual_nodes,
         [](auto const& node) {
@@ -163,7 +163,7 @@ consteval TiledModuleSnapshot tiled_module_snapshot()
     result.output_channel_count = output.channels.size();
     g.outputs("main"_P = output);
 
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     result.graph_output_is_stereo =
         built.graph.outputs().size() == 1
         && built.graph.outputs().front().channel_layout.channel_type
@@ -196,7 +196,7 @@ consteval bool event_interfaces_compile()
     auto sink = g.node<DummyEventSink>();
     sink.connect_event_input(0, child.event_port("event"));
     g.outputs();
-    (void)g.build_root_node();
+    (void)std::move(g).build();
     return true;
 }
 
@@ -212,7 +212,7 @@ consteval bool functional_subgraph_compiles()
 
     nested("in"_P = 0.25f);
     g.outputs("main"_P = nested["out"]);
-    (void)g.build_root_node();
+    (void)std::move(g).build();
     return true;
 }
 
@@ -221,7 +221,7 @@ consteval bool direct_public_sample_passthrough_compiles()
     GraphBuilder g;
     auto input = g.input<"in">(0.0f);
     g.outputs("out"_P = input);
-    auto const built = g.build_root_node();
+    auto const built = std::move(g).build();
     return built.graph.inputs().size() == 1
         && built.graph.outputs().size() == 1;
 }
@@ -243,9 +243,9 @@ consteval IntrospectionRegressionSnapshot introspection_regression_snapshot()
     sum(input);
     g.outputs("out"_P = sum);
 
-    auto const metadata = g.build_metadata();
-    auto const shared = g.build_execution_root_node_with_metadata();
-    auto const& execution = shared.introspection;
+    auto const compiled = std::move(g).build({.execution_root = true});
+    auto const& metadata = compiled.introspection;
+    auto const& execution = compiled.introspection;
     IntrospectionRegressionSnapshot result;
 
     result.virtual_node_is_preserved = metadata.virtual_nodes.size() == 1

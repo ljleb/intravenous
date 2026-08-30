@@ -298,14 +298,15 @@ consteval iv::Graph focused_stereo_saw_graph_value()
 {
     iv::GraphBuilder builder;
     focused_stereo_saw_module(builder);
-    return builder.build_execution_root_node().graph;
+    return std::move(builder).build({.execution_root = true}).graph;
 }
 
 consteval iv::StaticGraphIntrospectionMetadata focused_stereo_saw_metadata_value()
 {
     iv::GraphBuilder builder;
     focused_stereo_saw_module(builder);
-    return iv::details::define_static_metadata(builder.build_metadata());
+    return iv::details::define_static_metadata(
+        std::move(builder).build().introspection);
 }
 
 iv::WeakTypeErasedNode focused_stereo_saw_root()

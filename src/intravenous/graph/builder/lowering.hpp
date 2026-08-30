@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/graph/builder/topology.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/basic_nodes/routing.h>
@@ -11,6 +12,7 @@
 #include <intravenous/graph/executable_graph_ir.hpp>
 #include <intravenous/graph/connection_node.hpp>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
+#include <intravenous/graph/reflected_node.hpp>
 
 #include <algorithm>
 #include <flat_map>
@@ -27,12 +29,13 @@ class GraphBuilderPublicPorts;
 class GraphBuilderDetach;
 class GraphBuilderVirtualNodes;
 
-class GraphLowerer {
-public:
-  static consteval ExecutableGraphIR lower(
-      AuthoredGraph const&, size_t detach_id_offset = 0,
-      bool execution_root = false);
+struct GraphLoweringOptions {
+  size_t detach_id_offset = 0;
+  bool execution_root = false;
 };
+
+namespace details {
+struct GraphLowererTestAccess;
 
 struct LoweredNodeBundleProjection {
   std::vector<std::vector<TopologyPortId>> sample_inputs{};
@@ -50,6 +53,13 @@ struct DetachedSamplePortInfo {
   size_t loop_extra_latency = 1;
 };
 
+struct SampleLoweringPassFacts {
+  size_t planned_groups = 0;
+  size_t connected_bound_targets = 0;
+  size_t vacant_bound_targets = 0;
+  size_t assigned_subgraph_outputs = 0;
+};
+
 // Mechanical workspace used only while converting authored intent into the
 // closed ExecutableGraphIR. It is not a third semantic graph representation.
 struct LoweringWorkspace {
@@ -64,37 +74,33 @@ struct LoweringWorkspace {
       detached_info_by_source{};
   std::flat_set<TopologyPortId> detached_reader_outputs{};
 };
+} // namespace details
 
-class AuthoredGraphTopologyLowerer {
-public:
-  static constexpr LoweringWorkspace lower(
-      GraphBuilderNodeBundles const&, GraphBuilderConnections const&,
-      GraphBuilderPublicPorts const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderDetach const&,
-      bool execution_root = false);
-  static constexpr LoweringWorkspace lower_shared_base(
-      GraphBuilderNodeBundles const&, GraphBuilderConnections const&,
-      GraphBuilderPublicPorts const&, GraphBuilderVirtualNodes const&,
-      GraphBuilderDetach const&);
-  static constexpr void lower_execution_root_ports(
-      LoweringWorkspace&, GraphBuilderNodeBundles const&,
-      GraphBuilderConnections const&, GraphBuilderPublicPorts const&,
-      GraphBuilderVirtualNodes const&, GraphBuilderDetach const&);
-};
+class GraphLowerer {
+  friend struct details::GraphLowererTestAccess;
 
-namespace {
-class Lowerer {
+  GraphBuilderIdentity const& identity;
   GraphBuilderNodeBundles const& bundles;
   GraphBuilderConnections const& connections;
   GraphBuilderPublicPorts const& public_ports;
   GraphBuilderVirtualNodes const& virtuals;
   GraphBuilderDetach const& detach;
   bool execution_root = false;
-  LoweringWorkspace& out;
+  details::LoweringWorkspace& out;
   GraphBuilderVirtualPorts virtual_ports;
   std::flat_map<NodeBundleHandle, size_t> subgraph_by_boundary;
   std::vector<std::pair<NodeBundlePortId, TopologyPortId>>
       materialized_event_output_ports;
+  details::PreparedGraph graph{
+      .nodes = {}, .explicit_ttl_samples = {}, .node_ids = {},
+      .node_virtual_ids = {}, .node_source_infos = {},
+      .node_construction_order = {}, .node_kinds = {},
+      .node_type_identities = {}, .edges = {}, .event_edges = {},
+      .detached_info_by_source = {}, .detached_reader_outputs = {},
+  };
+  std::vector<size_t> runtime_node_indices;
+  std::flat_map<TopologyPortId, TopologyPortId> source_of;
+  std::flat_map<TopologyPortId, TopologyEventEdge> event_source_of;
 
   constexpr size_t append_generated(ConcreteNode node) {
     auto const index = out.topology.append_node(std::move(node));
@@ -335,6 +341,12 @@ class Lowerer {
     std::optional<TopologyPortId> target{};
   };
 
+  struct SampleLoweringState {
+    size_t authored_topology_node_count = 0;
+    std::vector<NodeBundlePortId> assigned_subgraph_outputs;
+    std::vector<TopologyPortId> bound_targets;
+  };
+
   struct RuntimeSampleBindingRef {
     std::string binding_id{};
     size_t source_channel_offset = 0;
@@ -504,14 +516,21 @@ class Lowerer {
     return !edges.empty();
   }
 
-  constexpr void lower_samples() {
-    std::vector<NodeBundlePortId> assigned_subgraph_outputs;
-    std::vector<TopologyPortId> bound_targets;
-    auto mark_bound = [&](TopologyPortId target) {
-      if (!std::ranges::contains(bound_targets, target)) bound_targets.push_back(target);
+  constexpr SampleLoweringPlan plan_sample_lowering() const {
+    return connections.sample_lowering_plan();
+  }
+
+  constexpr SampleLoweringState lower_connected_sample_groups(
+      SampleLoweringPlan const& plan) {
+    SampleLoweringState state{
+        .authored_topology_node_count = out.topology.node_count(),
+        .assigned_subgraph_outputs = {},
+        .bound_targets = {},
     };
-    auto const authored_topology_node_count = out.topology.node_count();
-    auto const plan = connections.sample_lowering_plan();
+    auto mark_bound = [&](TopologyPortId target) {
+      if (!std::ranges::contains(state.bound_targets, target))
+        state.bound_targets.push_back(target);
+    };
     for (auto const& group : plan.groups) {
       auto const& endpoints = out.bundle_projections.at(group.target.node_bundle_handle).sample_inputs.at(group.target.port_ordinal);
       auto const target_channels = bundles.sample_input_channels(group.target);
@@ -520,8 +539,8 @@ class Lowerer {
         auto const subgraph_node = it->second;
         if (group.target.port_ordinal >= out.topology.subgraph_node(subgraph_node).lowered_subgraph.sample_output_sources.size())
           details::error("subgraph sample output out of bounds");
-        if (std::ranges::contains(assigned_subgraph_outputs, group.target)) details::error("subgraph sample output has more than one source");
-        assigned_subgraph_outputs.push_back(group.target);
+        if (std::ranges::contains(state.assigned_subgraph_outputs, group.target)) details::error("subgraph sample output has more than one source");
+        state.assigned_subgraph_outputs.push_back(group.target);
         std::optional<TopologyPortId> source;
         if (group.connections.size() == 1) {
           auto const& connection = *group.connections.front();
@@ -563,18 +582,30 @@ class Lowerer {
         mark_bound(endpoint);
       }
     }
-    for (size_t node = 0; node < authored_topology_node_count; ++node) {
+    return state;
+  }
+
+  constexpr void lower_vacant_sample_inputs(SampleLoweringState& state) {
+    auto mark_bound = [&](TopologyPortId target) {
+      if (!std::ranges::contains(state.bound_targets, target))
+        state.bound_targets.push_back(target);
+    };
+    for (size_t node = 0; node < state.authored_topology_node_count; ++node) {
       if (out.topology.is_subgraph_node(node)) continue;
       auto const input_count =
           out.topology.concrete_node(node).ports.sample_inputs.size();
       for (size_t input = 0; input < input_count; ++input) {
         TopologyPortId const target{node, input};
-        if (std::ranges::contains(bound_targets, target)) continue;
+        if (std::ranges::contains(state.bound_targets, target)) continue;
         SampleLoweringGroup vacant;
         lower_connection_node(vacant, target);
         mark_bound(target);
       }
     }
+  }
+
+  constexpr void bind_subgraph_sample_inputs(
+      SampleLoweringState const& state) {
     for (auto const& [boundary, node] : subgraph_by_boundary) {
       auto& binding = out.topology.subgraph_node(node).lowered_subgraph;
       auto const& p = out.bundle_projections.at(boundary);
@@ -586,7 +617,7 @@ class Lowerer {
         });
       }
       for (size_t output = 0; output < binding.sample_output_sources.size(); ++output)
-        if (!std::ranges::contains(assigned_subgraph_outputs, NodeBundlePortId{boundary, PortKind::sample, output}))
+        if (!std::ranges::contains(state.assigned_subgraph_outputs, NodeBundlePortId{boundary, PortKind::sample, output}))
           details::error("subgraph sample output has no authored source");
     }
   }
@@ -688,7 +719,10 @@ class Lowerer {
       auto const reader_channel = resolve_sample_source_channel(info.reader_channel);
       if (reader_channel.channel != 0 || channel_count(reader_channel.config.channel_layout.channel_type) != 1) details::error("detach reader output must be one concrete channel");
       auto const reader = reader_channel.port;
-      out.detached_info_by_source.emplace(*source,DetachedSamplePortInfo{info.detach_id,*source,*writer,reader,info.loop_extra_latency});
+      out.detached_info_by_source.emplace(
+          *source,
+          details::DetachedSamplePortInfo{
+              info.detach_id, *source, *writer, reader, info.loop_extra_latency});
       out.detached_reader_outputs.emplace(reader);
     }
   }
@@ -829,23 +863,487 @@ class Lowerer {
     }
   }
 
-public:
-  constexpr Lowerer(GraphBuilderNodeBundles const& b, GraphBuilderConnections const& c,
-          GraphBuilderPublicPorts const& p, GraphBuilderVirtualNodes const& v,
-          GraphBuilderDetach const& d, LoweringWorkspace& lowered,
-          bool is_execution_root)
-      : bundles(b),connections(c),public_ports(p),virtuals(v),detach(d),
-        execution_root(is_execution_root), out(lowered),
-        virtual_ports(virtuals.ports(bundles)) {}
-
-  constexpr void append_execution_root_ports() {
-    lower_execution_root_ports();
-    out.topology.normalize_edges();
+  constexpr std::optional<NodeBundleHandle>
+  bundle_for_lowered_node(size_t node) const {
+    if (node >= out.bundle_by_lowered_node.size()) return std::nullopt;
+    return out.bundle_by_lowered_node[node];
   }
 
+  constexpr NodeBundleHandle subgraph_bundle_handle(
+      size_t topology_node) const {
+    auto const handle = bundle_for_lowered_node(topology_node);
+    if (!handle || !bundles.bundle(*handle).is_subgraph())
+      details::error("lowered subgraph node has no semantic subgraph bundle");
+    return *handle;
+  }
+
+  constexpr void begin_materialization() {
+    runtime_node_indices.assign(out.topology.node_count(), GRAPH_ID);
+    source_of.clear();
+    event_source_of.clear();
+    out.topology.for_each_sample_edge(
+        [&](TopologyEdge const& edge) { source_of[edge.target] = edge.source; });
+    out.topology.for_each_event_edge([&](TopologyEventEdge const& edge) {
+      event_source_of[edge.target] = edge;
+    });
+  }
+
+  constexpr void append_reflected_nodes(size_t detach_offset) {
+    for (size_t node_i = 0; node_i < out.topology.node_count(); ++node_i) {
+      if (out.topology.is_subgraph_node(node_i)) continue;
+      auto const& node = out.topology.concrete_node(node_i);
+      runtime_node_indices[node_i] = graph.nodes.size();
+      ReflectedNodeDescription description;
+      if (node.operations.valid()) {
+        description = {
+            .ports = node.ports,
+            .operations = node.operations.apply_detach_id_offset(detach_offset),
+            .type_name = node.type_identity.value,
+            .internal_latency_samples = node.internal_latency_samples,
+            .maximum_block_size = node.maximum_block_size,
+            .default_ttl_samples = node.default_ttl_samples,
+            .block_skippable = node.block_skippable,
+        };
+      } else if consteval {
+        description = details::reflect_generated_node(node.generated_node);
+        description.operations =
+            description.operations.apply_detach_id_offset(detach_offset);
+      } else {
+        details::runtime_graph_builder_node_call_is_forbidden();
+      }
+      graph.nodes.push_back(description);
+      append_node_metadata(
+          node_i, node, std::string(graph.nodes.back().type_name));
+    }
+  }
+
+  constexpr void append_node_metadata(size_t node_i, ConcreteNode const& node,
+                                      std::string kind) {
+    graph.explicit_ttl_samples.push_back(node.lifetime.ttl_samples);
+    graph.node_ids.push_back(identity.child_id(node_i));
+    std::vector<std::string> virtual_ids;
+    std::vector<SourceInfo> source_infos;
+    if (auto handle = bundle_for_lowered_node(node_i)) {
+      auto const& bundle = bundles.bundle(*handle);
+      virtual_ids = virtuals.ids_for_bundle(bundle);
+      source_infos = bundle.source_annotations().infos;
+      for (auto const virtual_handle : bundle.virtual_node_handles()) {
+        for (auto const& info : virtuals.record(virtual_handle).source_infos)
+          if (std::find(source_infos.begin(), source_infos.end(), info) ==
+              source_infos.end())
+            source_infos.push_back(info);
+      }
+    }
+    graph.node_virtual_ids.push_back(std::move(virtual_ids));
+    graph.node_source_infos.push_back(std::move(source_infos));
+    graph.node_construction_order.push_back(node_i);
+    graph.node_kinds.push_back(std::move(kind));
+    graph.node_type_identities.push_back(node.type_identity.value);
+  }
+
+  constexpr ConcretePortId
+  resolve_sample_source(TopologyPortId source) const {
+    if (auto boundary = out.subgraph_input_of_boundary_source.find(source);
+        boundary != out.subgraph_input_of_boundary_source.end()) {
+      auto incoming = source_of.find(boundary->second);
+      if (incoming == source_of.end())
+        details::error(
+            "subgraph boundary sample source has no incoming connection");
+      return resolve_sample_source(incoming->second);
+    }
+    if (source.node == GRAPH_ID) return {GRAPH_ID, source.port};
+    if (source.node >= out.topology.node_count())
+      details::error("unresolved sample boundary out.topology source");
+    if (!out.topology.is_subgraph_node(source.node))
+      return {runtime_node_indices[source.node], source.port};
+    auto const& node = out.topology.subgraph_node(source.node);
+    auto passthrough = node.lowered_subgraph.sample_output_sources.at(source.port);
+    if (passthrough.node == source.node) {
+      auto it = source_of.find(passthrough);
+      if (it == source_of.end())
+        details::error("subgraph sample passthrough has no source");
+      return resolve_sample_source(it->second);
+    }
+    return resolve_sample_source(passthrough);
+  }
+
+  constexpr ConcretePortId resolve_event_source(TopologyPortId source) const {
+    if (auto boundary = out.subgraph_event_input_of_boundary_source.find(source);
+        boundary != out.subgraph_event_input_of_boundary_source.end()) {
+      auto incoming = event_source_of.find(boundary->second);
+      if (incoming == event_source_of.end())
+        details::error(
+            "subgraph boundary event source has no incoming connection");
+      return resolve_event_source(incoming->second.source);
+    }
+    if (source.node == GRAPH_ID) return {GRAPH_ID, source.port};
+    if (source.node >= out.topology.node_count())
+      details::error("unresolved event boundary out.topology source");
+    if (!out.topology.is_subgraph_node(source.node))
+      return {runtime_node_indices[source.node], source.port};
+    auto const& node = out.topology.subgraph_node(source.node);
+    auto passthrough = node.lowered_subgraph.event_output_sources.at(source.port);
+    if (passthrough.node == source.node) {
+      auto it = event_source_of.find(passthrough);
+      if (it == event_source_of.end())
+        details::error("subgraph event passthrough has no source");
+      return resolve_event_source(it->second.source);
+    }
+    return resolve_event_source(passthrough);
+  }
+
+  constexpr TopologyPortId resolve_sample_source_topology(TopologyPortId source) const {
+    if (auto boundary = out.subgraph_input_of_boundary_source.find(source);
+        boundary != out.subgraph_input_of_boundary_source.end()) {
+      auto incoming = source_of.find(boundary->second);
+      if (incoming == source_of.end())
+        details::error(
+            "subgraph boundary sample source has no incoming connection");
+      return resolve_sample_source_topology(incoming->second);
+    }
+    if (source.node == GRAPH_ID) return source;
+    if (source.node >= out.topology.node_count())
+      details::error("unresolved sample boundary out.topology source");
+    if (!out.topology.is_subgraph_node(source.node)) return source;
+    auto const& node = out.topology.subgraph_node(source.node);
+    auto passthrough = node.lowered_subgraph.sample_output_sources.at(source.port);
+    if (passthrough.node == source.node) {
+      auto it = source_of.find(passthrough);
+      if (it == source_of.end())
+        details::error("subgraph sample passthrough has no source");
+      return resolve_sample_source_topology(it->second);
+    }
+    return resolve_sample_source_topology(passthrough);
+  }
+
+  constexpr TopologyPortId resolve_event_source_topology(TopologyPortId source) const {
+    if (auto boundary = out.subgraph_event_input_of_boundary_source.find(source);
+        boundary != out.subgraph_event_input_of_boundary_source.end()) {
+      auto incoming = event_source_of.find(boundary->second);
+      if (incoming == event_source_of.end())
+        details::error(
+            "subgraph boundary event source has no incoming connection");
+      return resolve_event_source_topology(incoming->second.source);
+    }
+    if (source.node == GRAPH_ID) return source;
+    if (source.node >= out.topology.node_count())
+      details::error("unresolved event boundary out.topology source");
+    if (!out.topology.is_subgraph_node(source.node)) return source;
+    auto const& node = out.topology.subgraph_node(source.node);
+    auto passthrough = node.lowered_subgraph.event_output_sources.at(source.port);
+    if (passthrough.node == source.node) {
+      auto it = event_source_of.find(passthrough);
+      if (it == event_source_of.end())
+        details::error("subgraph event passthrough has no source");
+      return resolve_event_source_topology(it->second.source);
+    }
+    return resolve_event_source_topology(passthrough);
+  }
+
+  constexpr void add_sample_target_edges(ConcretePortId source,
+                                         TopologyPortId target) {
+    if (target.node == GRAPH_ID) {
+      graph.edges.emplace(GraphEdge{source, {GRAPH_ID, target.port}});
+      return;
+    }
+    if (!out.topology.is_subgraph_node(target.node)) {
+      graph.edges.emplace(
+          GraphEdge{source, {runtime_node_indices[target.node], target.port}});
+      return;
+    }
+    auto const& node = out.topology.subgraph_node(target.node);
+    for (auto child : node.lowered_subgraph.sample_input_targets.at(target.port))
+      add_sample_target_edges(source, child);
+  }
+
+  constexpr void add_event_target_edges(GraphEventEdge edge, TopologyPortId target) {
+    if (target.node == GRAPH_ID) {
+      graph.event_edges.emplace(GraphEventEdge{
+          edge.source, {GRAPH_ID, target.port}, std::move(edge.conversion)});
+      return;
+    }
+    if (!out.topology.is_subgraph_node(target.node)) {
+      graph.event_edges.emplace(GraphEventEdge{
+          edge.source, {runtime_node_indices[target.node], target.port},
+          std::move(edge.conversion)});
+      return;
+    }
+    auto const& node = out.topology.subgraph_node(target.node);
+    for (auto child : node.lowered_subgraph.event_input_targets.at(target.port))
+      add_event_target_edges(
+          GraphEventEdge{edge.source, {}, edge.conversion}, child);
+  }
+
+  constexpr void lower_edges() {
+    out.topology.for_each_sample_edge([&](TopologyEdge const& edge) {
+      if (out.subgraph_input_of_boundary_source.contains(edge.source)) return;
+      add_sample_target_edges(resolve_sample_source(edge.source), edge.target);
+    });
+    out.topology.for_each_event_edge([&](TopologyEventEdge const& edge) {
+      if (out.subgraph_event_input_of_boundary_source.contains(edge.source))
+        return;
+      add_event_target_edges(
+          GraphEventEdge{resolve_event_source(edge.source), {}, edge.conversion},
+          edge.target);
+    });
+  }
+
+  constexpr ConcretePortId materialize_subgraph_default(
+      size_t subgraph_node, size_t input_port) {
+    runtime_node_indices.push_back(graph.nodes.size());
+    if consteval {
+      graph.nodes.push_back(details::reflect_node(Constant(
+          out.topology.subgraph_node(subgraph_node)
+              .inputs()[input_port]
+              .default_value)));
+    } else {
+      details::runtime_graph_builder_node_call_is_forbidden();
+    }
+    graph.explicit_ttl_samples.push_back(std::nullopt);
+    graph.node_ids.push_back(identity.child_id(subgraph_node) + ".default." +
+                             std::to_string(input_port));
+    graph.node_virtual_ids.emplace_back();
+    graph.node_source_infos.emplace_back();
+    graph.node_construction_order.push_back(subgraph_node);
+    return {graph.nodes.size() - 1, 0};
+  }
+
+  constexpr void add_subgraph_default_edges() {
+    for (size_t node_i = 0; node_i < out.topology.node_count(); ++node_i) {
+      if (!out.topology.is_subgraph_node(node_i)) continue;
+      auto const& node = out.topology.subgraph_node(node_i);
+      for (size_t input = 0; input < node.inputs().size(); ++input) {
+        TopologyPortId subgraph_input{node_i, input};
+        if (source_of.contains(subgraph_input)) continue;
+        auto source = materialize_subgraph_default(node_i, input);
+        for (auto target : node.lowered_subgraph.sample_input_targets[input])
+          add_sample_target_edges(source, target);
+      }
+    }
+  }
+
+  constexpr void copy_detach_info() {
+    for (auto const& [source, info] : out.detached_info_by_source) {
+      auto remapped = resolve_sample_source(source);
+      graph.detached_info_by_source.emplace(
+          remapped,
+          DetachedInfo{
+              .detach_id = info.detach_id,
+              .original_source = remapped,
+              .writer_node = runtime_node_indices[info.writer_node],
+              .reader_output = resolve_sample_source(info.reader_output),
+              .loop_extra_latency = info.loop_extra_latency,
+          });
+    }
+    for (auto reader : out.detached_reader_outputs)
+      graph.detached_reader_outputs.insert(resolve_sample_source(reader));
+  }
+
+  constexpr iv::LoweredSubgraphSpec::PortRef make_scope_port_ref(
+      TopologyPortId port) const {
+    if (port.node == GRAPH_ID)
+      return {.node_id = {}, .port = port.port, .is_graph_port = true};
+    if (port.node >= out.topology.node_count() || out.topology.is_subgraph_node(port.node))
+      details::error("scope port did not resolve to a concrete out.topology node");
+    return {.node_id = identity.child_id(port.node),
+            .port = port.port,
+            .is_graph_port = false};
+  }
+
+  constexpr void collect_scope_targets(
+      TopologyPortId target,
+      std::vector<iv::LoweredSubgraphSpec::PortRef>& out_refs) const {
+    if (target.node == GRAPH_ID || !out.topology.is_subgraph_node(target.node)) {
+      out_refs.push_back(make_scope_port_ref(target));
+      return;
+    }
+    for (auto child : out.topology.subgraph_node(target.node)
+                          .lowered_subgraph.sample_input_targets[target.port])
+      collect_scope_targets(child, out_refs);
+  }
+
+  constexpr void collect_scope_event_targets(
+      TopologyPortId target,
+      std::vector<iv::LoweredSubgraphSpec::PortRef>& out_refs) const {
+    if (target.node == GRAPH_ID || !out.topology.is_subgraph_node(target.node)) {
+      out_refs.push_back(make_scope_port_ref(target));
+      return;
+    }
+    for (auto child : out.topology.subgraph_node(target.node)
+                          .lowered_subgraph.event_input_targets[target.port])
+      collect_scope_event_targets(child, out_refs);
+  }
+
+  constexpr std::vector<size_t> scope_member_topology_nodes(size_t subgraph_node) const {
+    auto const scope_handle = subgraph_bundle_handle(subgraph_node);
+    auto const info = bundles.subgraph_info(scope_handle);
+    auto contains_bundle = [&](NodeBundleHandle handle) {
+      return handle >= info.child_begin &&
+             handle < info.child_begin + info.child_count;
+    };
+
+    auto const node_count = out.topology.node_count();
+    std::vector<bool> anchors(node_count, false);
+    std::vector<bool> members(node_count, false);
+
+    for (size_t node = 0; node < node_count; ++node) {
+      auto const handle = bundle_for_lowered_node(node);
+      if (!handle || !contains_bundle(*handle)) continue;
+      anchors[node] = true;
+      if (!out.topology.is_subgraph_node(node)) members[node] = true;
+    }
+
+    auto const& binding = out.topology.subgraph_node(subgraph_node).lowered_subgraph;
+    auto seed_generated = [&](TopologyPortId port) {
+      if (port.node >= node_count || out.topology.is_subgraph_node(port.node)) return;
+      if (bundle_for_lowered_node(port.node)) return;
+      anchors[port.node] = true;
+      members[port.node] = true;
+    };
+    for (auto const& targets : binding.sample_input_targets)
+      for (auto target : targets) seed_generated(target);
+    for (auto source : binding.sample_output_sources) seed_generated(source);
+    for (auto const& targets : binding.event_input_targets)
+      for (auto target : targets) seed_generated(target);
+    for (auto source : binding.event_output_sources) seed_generated(source);
+
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      auto inspect_edge = [&](TopologyPortId a, TopologyPortId b) {
+        if (a.node >= node_count || b.node >= node_count) return;
+        auto promote = [&](size_t candidate, size_t neighbor) {
+          if (!anchors[neighbor] || anchors[candidate]) return;
+          if (out.topology.is_subgraph_node(candidate)) return;
+          if (bundle_for_lowered_node(candidate)) return;
+          anchors[candidate] = true;
+          members[candidate] = true;
+          changed = true;
+        };
+        promote(a.node, b.node);
+        promote(b.node, a.node);
+      };
+      out.topology.for_each_sample_edge(
+          [&](TopologyEdge const& edge) { inspect_edge(edge.source, edge.target); });
+      out.topology.for_each_event_edge([&](TopologyEventEdge const& edge) {
+        inspect_edge(edge.source, edge.target);
+      });
+    }
+
+    std::vector<size_t> result;
+    for (size_t node = 0; node < node_count; ++node)
+      if (members[node]) result.push_back(node);
+    return result;
+  }
+
+  constexpr bool authored_scope_contains_subgraph(size_t parent,
+                                        size_t child) const {
+    auto const parent_info =
+        bundles.subgraph_info(subgraph_bundle_handle(parent));
+    auto const child_handle = subgraph_bundle_handle(child);
+    return child_handle >= parent_info.child_begin &&
+           child_handle < parent_info.child_begin + parent_info.child_count;
+  }
+
+  constexpr std::vector<iv::LoweredSubgraphSpec>
+  build_lowered_scopes() const {
+    std::vector<size_t> subgraphs;
+    for (size_t i = 0; i < out.topology.node_count(); ++i)
+      if (out.topology.is_subgraph_node(i)) subgraphs.push_back(i);
+
+    std::flat_map<size_t, size_t> scope_index;
+    std::vector<iv::LoweredSubgraphSpec> scopes;
+    for (auto subgraph_i : subgraphs) {
+      auto const& subgraph = out.topology.subgraph_node(subgraph_i);
+      iv::LoweredSubgraphSpec scope;
+      scope.kind = subgraph.lowered_subgraph.kind;
+      scope.backing_node_id = identity.child_id(subgraph_i);
+
+      auto const handle = subgraph_bundle_handle(subgraph_i);
+      for (auto const& info : bundles.bundle(handle).source_annotations().infos) {
+        scope.source_infos.push_back(info);
+        if (!info.span.file_path.empty() && info.span.begin <= info.span.end &&
+            std::find(scope.source_spans.begin(), scope.source_spans.end(),
+                      info.span) == scope.source_spans.end())
+          scope.source_spans.push_back(info.span);
+      }
+
+      scope.sample_inputs = subgraph.ports.sample_inputs;
+      scope.sample_outputs = subgraph.ports.sample_outputs;
+      scope.event_inputs = subgraph.ports.event_input_configs;
+      scope.event_outputs = subgraph.ports.event_output_configs;
+      scope.ttl_samples = subgraph.lifetime.ttl_samples;
+
+      for (auto node : scope_member_topology_nodes(subgraph_i))
+        scope.member_node_ids.push_back(identity.child_id(node));
+
+      for (auto const& targets : subgraph.lowered_subgraph.sample_input_targets) {
+        std::vector<iv::LoweredSubgraphSpec::PortRef> flat;
+        for (auto target : targets) collect_scope_targets(target, flat);
+        scope.sample_input_targets.push_back(std::move(flat));
+      }
+      for (auto source : subgraph.lowered_subgraph.sample_output_sources)
+        scope.sample_output_sources.push_back(make_scope_port_ref(
+            resolve_sample_source_topology(source)));
+      for (auto const& targets : subgraph.lowered_subgraph.event_input_targets) {
+        std::vector<iv::LoweredSubgraphSpec::PortRef> flat;
+        for (auto target : targets) collect_scope_event_targets(target, flat);
+        scope.event_input_targets.push_back(std::move(flat));
+      }
+      for (auto source : subgraph.lowered_subgraph.event_output_sources)
+        scope.event_output_sources.push_back(
+            make_scope_port_ref(resolve_event_source_topology(source)));
+
+      if (scope.member_node_ids.empty()) continue;
+      std::sort(scope.member_node_ids.begin(), scope.member_node_ids.end());
+      scope.member_node_ids.erase(
+          std::unique(scope.member_node_ids.begin(), scope.member_node_ids.end()),
+          scope.member_node_ids.end());
+      scope_index.emplace(subgraph_i, scopes.size());
+      scopes.push_back(std::move(scope));
+    }
+
+    for (auto child : subgraphs) {
+      auto it = scope_index.find(child);
+      if (it == scope_index.end()) continue;
+      size_t parent = GRAPH_ID;
+      size_t best_span = std::numeric_limits<size_t>::max();
+      for (auto candidate : subgraphs) {
+        if (candidate == child || !scope_index.contains(candidate) ||
+            !authored_scope_contains_subgraph(candidate, child))
+          continue;
+        auto const span =
+            bundles.subgraph_info(subgraph_bundle_handle(candidate))
+                .child_count;
+        if (span < best_span) {
+          best_span = span;
+          parent = candidate;
+        }
+      }
+      if (parent != GRAPH_ID)
+        scopes[it->second].parent_scope = scope_index.at(parent);
+    }
+    return scopes;
+  }
+public:
+  constexpr GraphLowerer(GraphBuilderIdentity const& identity_,
+          GraphBuilderNodeBundles const& b, GraphBuilderConnections const& c,
+          GraphBuilderPublicPorts const& p, GraphBuilderVirtualNodes const& v,
+          GraphBuilderDetach const& d, details::LoweringWorkspace& lowered,
+          bool is_execution_root)
+      : identity(identity_), bundles(b),connections(c),public_ports(p),virtuals(v),detach(d),
+        execution_root(is_execution_root), out(lowered),
+        virtual_ports(virtuals.ports(bundles)),
+        runtime_node_indices(out.topology.node_count(), GRAPH_ID) {}
+
+  static consteval ExecutableGraphIR lower(
+      AuthoredGraph const&, GraphLoweringOptions = {});
   constexpr void run(bool normalize = true) {
     project_bundles();
-    lower_samples();
+    auto const sample_plan = plan_sample_lowering();
+    auto sample_state = lower_connected_sample_groups(sample_plan);
+    lower_vacant_sample_inputs(sample_state);
+    bind_subgraph_sample_inputs(sample_state);
     lower_events();
     lower_detach();
     lower_runtime_output_observers();
@@ -853,36 +1351,31 @@ public:
     if (normalize) out.topology.normalize_edges();
   }
 };
-} // namespace
 
-constexpr LoweringWorkspace AuthoredGraphTopologyLowerer::lower(
-    GraphBuilderNodeBundles const& bundles, GraphBuilderConnections const& connections,
-    GraphBuilderPublicPorts const& ports, GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderDetach const& detach, bool execution_root) {
-  LoweringWorkspace lowered;
-  Lowerer(bundles, connections, ports, virtuals, detach, lowered, execution_root).run();
-  return lowered;
-}
+namespace details {
+struct GraphLowererTestAccess {
+  static consteval SampleLoweringPassFacts sample_lowering_pass_facts(
+      AuthoredGraph const& authored) {
+    LoweringWorkspace workspace;
+    GraphLowerer lowerer(
+        authored.identity, authored.node_bundles, authored.connections,
+        authored.public_ports, authored.virtual_nodes, authored.detach,
+        workspace, false);
+    lowerer.project_bundles();
+    auto const plan = lowerer.plan_sample_lowering();
+    auto state = lowerer.lower_connected_sample_groups(plan);
+    SampleLoweringPassFacts facts{
+        .planned_groups = plan.groups.size(),
+        .connected_bound_targets = state.bound_targets.size(),
+        .vacant_bound_targets = 0,
+        .assigned_subgraph_outputs = state.assigned_subgraph_outputs.size(),
+    };
+    lowerer.lower_vacant_sample_inputs(state);
+    facts.vacant_bound_targets = state.bound_targets.size();
+    lowerer.bind_subgraph_sample_inputs(state);
+    return facts;
+  }
+};
+} // namespace details
 
-constexpr LoweringWorkspace AuthoredGraphTopologyLowerer::lower_shared_base(
-    GraphBuilderNodeBundles const& bundles,
-    GraphBuilderConnections const& connections,
-    GraphBuilderPublicPorts const& ports,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderDetach const& detach) {
-  LoweringWorkspace lowered;
-  Lowerer(bundles, connections, ports, virtuals, detach, lowered, false)
-      .run(false);
-  return lowered;
-}
-
-constexpr void AuthoredGraphTopologyLowerer::lower_execution_root_ports(
-    LoweringWorkspace& lowered, GraphBuilderNodeBundles const& bundles,
-    GraphBuilderConnections const& connections,
-    GraphBuilderPublicPorts const& ports,
-    GraphBuilderVirtualNodes const& virtuals,
-    GraphBuilderDetach const& detach) {
-  Lowerer(bundles, connections, ports, virtuals, detach, lowered, true)
-      .append_execution_root_ports();
-}
 } // namespace iv

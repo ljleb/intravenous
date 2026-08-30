@@ -30,6 +30,20 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
     auto const project_cache = project_workspace / "cmake-build" / "CMakeCache.txt";
     EXPECT_TRUE(std::filesystem::exists(project_cache));
 
+    auto const generated_export = iv::test::read_text(
+        project_workspace / "generated" / "root_export.cpp");
+    auto const first_lowering = generated_export.find("GraphLowerer::lower(");
+    ASSERT_NE(first_lowering, std::string::npos);
+    EXPECT_EQ(
+        generated_export.find("GraphLowerer::lower(", first_lowering + 1),
+        std::string::npos);
+    EXPECT_NE(
+        generated_export.find("authored, {.execution_root = true}"),
+        std::string::npos);
+    EXPECT_NE(
+        generated_export.find("define_static_metadata(compiled.introspection)"),
+        std::string::npos);
+
     auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "modules";
     auto const project_import = import_root / "iv.test.behavior_project";
     auto const voice_import = import_root / "iv.test.behavior_voice";

@@ -69,8 +69,6 @@ using SampleOutputPortDescriptor = SamplePortDescriptor<OutputConfig>;
 using EventInputPortDescriptor = EventPortDescriptor<EventInputConfig>;
 using EventOutputPortDescriptor = EventPortDescriptor<EventOutputConfig>;
 
-class AuthoredGraphTopologyLowerer;
-
 class NodeBundle {
   struct ConcreteNodeBundle {
     NodePorts ports{};
@@ -191,7 +189,6 @@ private:
   NodeSourceAnnotations _source_annotations{};
 
   friend class GraphBuilderNodeBundles;
-  friend class AuthoredGraphTopologyLowerer;
 };
 
 struct SemanticSubgraphInfo {
