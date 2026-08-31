@@ -1,6 +1,7 @@
 #pragma once
 
-#include <intravenous/graph/compiler.h>
+#include <intravenous/graph/build_types.h>
+#include <intravenous/graph/error.h>
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_call.h>
 #include <intravenous/graph/builder/node_bundles.hpp>

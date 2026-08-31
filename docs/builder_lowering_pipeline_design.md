@@ -123,6 +123,26 @@ The implementation should make the full path from `GraphBuilder` to the static
 runtime result straightforward to follow. A piece of work belongs to the
 conversion that owns the semantic transition it performs:
 
+This is also a physical source-organization rule, not merely an API rule. The
+required layout has exactly one self-contained implementation file for each
+owner:
+
+- one `GraphBuilder` file for the authoring convenience and its authored-data
+  construction;
+- one `GraphLowerer` file for `AuthoredGraph -> ExecutableGraphIR`; and
+- one `GraphCompiler` file for `ExecutableGraphIR ->` the static data and
+  frozen runtime `Graph` that actually execute.
+
+The authored and executable IR data types may be shared definitions, but they
+must not become a collection of pseudo-pass headers. Existing fragmented
+`graph/builder` headers are a migration artifact to be consolidated before
+further compiler optimization work. The single-file rule is valuable now
+because it makes repeated recovery, misplaced work, and accidental extra
+representations immediately visible.
+
+`dsl.h` is explicitly outside this rule. It provides syntactic extensions for
+clients of `GraphBuilder`; it is not builder storage, lowering, or compilation.
+
 - `GraphLowerer` creates and closes executable meaning: generated nodes and
   edges, defaults, routing, hierarchy bindings, detach semantics, runtime-port
   adapters, provenance, and introspection.

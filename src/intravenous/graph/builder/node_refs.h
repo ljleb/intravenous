@@ -3,7 +3,7 @@
 #include <intravenous/graph/builder/stored_node.hpp>
 #include <intravenous/graph/builder/node_call.h>
 #include <intravenous/graph/builder/output_refs.h>
-#include <intravenous/graph/compiler.h>
+#include <intravenous/graph/error.h>
 #include <intravenous/node/static_port_access.h>
 
 #include <concepts>

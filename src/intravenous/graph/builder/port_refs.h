@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/builder/node_bundles.hpp>
-#include <intravenous/graph/compiler.h>
+#include <intravenous/graph/error.h>
 #include <intravenous/channel_ports.h>
 
 #include <array>

@@ -5,6 +5,7 @@
 #include <intravenous/channel_layout.h>
 
 #include <algorithm>
+#include <flat_map>
 #include <ranges>
 #include <span>
 #include <string>
@@ -205,6 +206,8 @@ GraphBuilderConnections::authored_sample_connections() const {
 }
 constexpr SampleLoweringPlan GraphBuilderConnections::sample_lowering_plan() const {
   SampleLoweringPlan plan;
+  std::flat_map<NodeBundlePortId, size_t, NodeBundlePortIdLess>
+      group_index_by_target;
   for (auto const& connection : _authored_sample_connections) {
     if (connection.target_channels.empty())
       details::error("sample connection has no target");
@@ -214,15 +217,11 @@ constexpr SampleLoweringPlan GraphBuilderConnections::sample_lowering_plan() con
         }))
       details::error("sample target spans bundle ports");
     NodeBundlePortId const target{first.bundle, PortKind::sample, first.port};
-    auto group = std::find_if(
-        plan.groups.begin(), plan.groups.end(), [&](auto const& candidate) {
-          return candidate.target == target;
-        });
-    if (group == plan.groups.end()) {
+    auto const [group, inserted] = group_index_by_target.emplace(
+        target, plan.groups.size());
+    if (inserted)
       plan.groups.push_back({target, {}});
-      group = std::prev(plan.groups.end());
-    }
-    group->connections.push_back(&connection);
+    plan.groups[group->second].connections.push_back(&connection);
   }
   return plan;
 }

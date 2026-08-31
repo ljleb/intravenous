@@ -28,6 +28,17 @@ struct NodeBundlePortId {
   bool operator==(NodeBundlePortId const &) const = default;
 };
 
+struct NodeBundlePortIdLess {
+  constexpr bool operator()(NodeBundlePortId const& lhs,
+                            NodeBundlePortId const& rhs) const {
+    if (lhs.node_bundle_handle != rhs.node_bundle_handle)
+      return lhs.node_bundle_handle < rhs.node_bundle_handle;
+    if (lhs.port_kind != rhs.port_kind)
+      return lhs.port_kind < rhs.port_kind;
+    return lhs.port_ordinal < rhs.port_ordinal;
+  }
+};
+
 struct SampleOutputChannelId {
   NodeBundleHandle bundle = 0;
   size_t port = 0;

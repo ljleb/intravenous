@@ -7,7 +7,7 @@
 #include <intravenous/graph/authored_graph.hpp>
 #include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/detach.hpp>
-#include <intravenous/graph/builder/finalize.hpp>
+#include <intravenous/graph/compiler.h>
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/builder/node_refs.h>
@@ -45,7 +45,6 @@
 
 namespace iv {
 class GraphRuntimeBindings;
-class GraphBuilder;
 namespace details {
     struct GraphBuilderTestAccess;
 }

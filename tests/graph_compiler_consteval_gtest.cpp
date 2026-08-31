@@ -1,4 +1,5 @@
 #include <intravenous/basic_nodes/type_erased.h>
+#include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
 
 #include <gtest/gtest.h>
@@ -56,9 +57,9 @@ constexpr bool same(
 }
 
 template<size_t Arity, class ChannelType, SampleStreamLayout Layout>
-consteval bool lazy_broadcast_reflection_matches_direct_reflection()
+consteval bool lowered_broadcast_reflection_matches_direct_reflection()
 {
-    auto const lazy = details::make_broadcast_node(
+    auto const lowered = details::make_lowered_broadcast_node(
         Arity,
         ChannelLayout{
             .channel_type = ChannelTypeTraits<ChannelType>::id,
@@ -66,16 +67,16 @@ consteval bool lazy_broadcast_reflection_matches_direct_reflection()
         });
     auto const direct = details::reflect_node(
         Broadcast<Arity, ChannelType, Layout>{});
-    return same(lazy, direct);
+    return same(lowered, direct);
 }
 
-static_assert(lazy_broadcast_reflection_matches_direct_reflection<
+static_assert(lowered_broadcast_reflection_matches_direct_reflection<
     1, mono, SampleStreamLayout::planar>());
-static_assert(lazy_broadcast_reflection_matches_direct_reflection<
+static_assert(lowered_broadcast_reflection_matches_direct_reflection<
     2, mono, SampleStreamLayout::interleaved>());
-static_assert(lazy_broadcast_reflection_matches_direct_reflection<
+static_assert(lowered_broadcast_reflection_matches_direct_reflection<
     17, stereo, SampleStreamLayout::planar>());
-static_assert(lazy_broadcast_reflection_matches_direct_reflection<
+static_assert(lowered_broadcast_reflection_matches_direct_reflection<
     64, stereo, SampleStreamLayout::interleaved>());
 
 consteval bool execution_plan_keeps_deterministic_topological_order()
@@ -104,11 +105,11 @@ consteval bool execution_plan_keeps_deterministic_topological_order()
 
 static_assert(execution_plan_keeps_deterministic_topological_order());
 
-TEST(GraphCompilerConsteval, LazyBroadcastKeepsExactValueSpecializedOperations)
+TEST(GraphCompilerConsteval, LoweredBroadcastKeepsExactValueSpecializedOperations)
 {
-    EXPECT_TRUE((lazy_broadcast_reflection_matches_direct_reflection<
+    EXPECT_TRUE((lowered_broadcast_reflection_matches_direct_reflection<
         1, mono, SampleStreamLayout::planar>()));
-    EXPECT_TRUE((lazy_broadcast_reflection_matches_direct_reflection<
+    EXPECT_TRUE((lowered_broadcast_reflection_matches_direct_reflection<
         64, stereo, SampleStreamLayout::interleaved>()));
 }
 
