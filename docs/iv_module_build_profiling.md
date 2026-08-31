@@ -235,3 +235,76 @@ For an ad-hoc GCC phase report, configure the retained workspace with
 `-DCMAKE_CXX_FLAGS='-ftime-report -ftime-report-details'`, then rebuild the
 module target. GCC writes the report to stderr. This does not create a Chrome
 trace.
+
+## Static versus generic graph-root A/B (2026-08-31)
+
+This experiment replaces the generated module root
+`StaticGraphRoot<iv_generated_module.graph>` with
+`RuntimeGraphRoot {iv_generated_module.graph}`. The graph value remains
+compile-time constructed and immutable, but the enclosing graph, SCC, and node
+dispatch loops are no longer instantiated for every distinct graph value.
+
+The results below are one GCC 16.2/Linux development-machine measurement of the
+existing `projects/simple_sine/modules/saw` module. They are directional rather
+than portable benchmarks, but both variants used the same source module, the
+Release configuration, source introspection, PCH, and
+`constexpr_cache_depth=0`.
+
+### Module compilation
+
+The static-root baseline and generic-root candidate were built in separate,
+retained benchmark workspaces using:
+
+```text
+build-release/benchmark/iv_module_build_benchmark \
+  --module projects/simple_sine/modules/saw --keep
+```
+
+| Metric | Static root | Generic root | Generic-root change |
+| --- | ---: | ---: | ---: |
+| Cold pipeline | 317.903 s | 61.007 s | 5.21x faster (-80.8%) |
+| Cold generated-export compile | 305.510 s | 50.070 s | 6.10x faster (-83.6%) |
+| Hot pipeline | 279.949 s | 51.056 s | 5.48x faster (-81.8%) |
+| Hot generated-export compile | 279.522 s | 50.813 s | 5.50x faster (-81.8%) |
+
+The PCH contribution was essentially unchanged (11.067 s static versus
+9.809 s generic on cold builds); the reduction is in compiling and optimizing
+the generated export translation unit.
+
+### Live execution
+
+`iv_module_execution_benchmark` loads each retained module DSO, creates a
+`BlockNodeExecutor`, warms it for 4,096 blocks, and then executes 131,072
+64-sample blocks at 48 kHz. It measures batches of 256 blocks so timing calls
+do not dominate individual DSP blocks.
+
+Three alternating static/generic trials gave these mean timings:
+
+| Metric | Static root | Generic root | Generic-root change |
+| --- | ---: | ---: | ---: |
+| Mean block time | 205.14 us | 193.94 us | 5.46% faster |
+| Real-time factor | 6.50x | 6.87x | 5.7% higher |
+
+The comparison was also pinned to one performance core (`taskset -c 0`) and
+measured with `perf stat` over the same workload:
+
+| Metric | Static root | Generic root | Generic-root change |
+| --- | ---: | ---: | ---: |
+| Mean block time | 218.31 us | 199.91 us | 8.43% faster |
+| Task-clock | 29.498 s | 27.006 s | -8.45% |
+| Cycles | 128.20 B | 117.96 B | -8.00% |
+| Instructions | 525.24 B | 560.21 B | +6.66% |
+| Branches | 95.54 B | 111.70 B | +16.92% |
+| Branch misses | 144.19 M | 145.50 M | +0.91% |
+| IPC | 4.10 | 4.75 | +15.9% |
+
+The generic path executes more instructions and branches, but has higher IPC
+and a lower branch-miss rate (0.130% versus 0.151%), yielding fewer total
+cycles. On this workload the change is therefore a compile-time win without a
+live-execution penalty.
+
+`tests/intravenous_detach_regression_tests` verifies that the generic root
+matches the static root's sample output and executes dormant groups correctly.
+The generated candidate was also loaded and executed by the benchmark itself.
+On Linux, `perf` is available in the repository dev shell for repeating the
+counter measurement.
