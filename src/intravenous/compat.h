@@ -11,10 +11,13 @@
 
 #if defined(_MSC_VER)
 #  define IV_FORCEINLINE __forceinline
+#  define IV_NOINLINE __declspec(noinline)
 #elif defined(__GNUC__) || defined(__clang__)
 #  define IV_FORCEINLINE inline __attribute__((always_inline))
+#  define IV_NOINLINE __attribute__((noinline))
 #else
 #  define IV_FORCEINLINE inline
+#  define IV_NOINLINE
 #endif
 
 namespace iv {

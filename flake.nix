@@ -60,6 +60,7 @@ outputs = { nixpkgs, gcc-reflection-nixpkgs, clang-reflection-nixpkgs, ... }:
               reflectionPkgs.gcc16
               reflectionPkgs.gmp.dev
               reflectionPkgs.mpfr.dev
+              linuxPackages.perf
             ];
 
             shellHook = ''

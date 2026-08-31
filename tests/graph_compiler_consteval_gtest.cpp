@@ -35,6 +35,59 @@ consteval bool execution_plan_keeps_deterministic_topological_order()
     return execution_order == std::vector<size_t>{0, 1, 2, 3};
 }
 
+consteval bool node_adjacency_deduplicates_sample_and_event_edges()
+{
+    auto const node = details::reflect_node(Constant{0.0f});
+    ExecutableGraphData graph;
+    graph.nodes = {node, node, node};
+    graph.edges.emplace(ConcretePortId{0, 0}, ConcretePortId{2, 0});
+    graph.edges.emplace(ConcretePortId{0, 1}, ConcretePortId{2, 1});
+    graph.event_edges.emplace(ConcretePortId{0, 0}, ConcretePortId{2, 0});
+    graph.edges.emplace(ConcretePortId{GRAPH_ID, 0}, ConcretePortId{1, 0});
+    graph.event_edges.emplace(ConcretePortId{1, 0}, ConcretePortId{GRAPH_ID, 0});
+
+    auto const [outgoing, indegree] = details::make_node_adjacency(graph);
+    return outgoing == std::vector<std::vector<size_t>>{{2}, {}, {}}
+        && indegree == std::vector<size_t>{0, 0, 1};
+}
+
+consteval bool dormancy_groups_are_ordered_by_a_single_hierarchy_walk()
+{
+    GraphBuildArtifact artifact{};
+    auto make_group = [](size_t const parent_group, size_t const member_node) {
+        DormancyGroup group{};
+        group.parent_group = parent_group;
+        group.member_nodes.push_back(member_node);
+        return group;
+    };
+    artifact.dormancy_groups = {
+        make_group(1, 0),
+        make_group(GRAPH_ID, 1),
+        make_group(0, 2),
+        make_group(GRAPH_ID, 3),
+        make_group(1, 4),
+    };
+
+    auto const graph = Graph(std::move(artifact));
+    auto const groups = graph._dormancy_groups;
+    return groups.size == 5
+        && groups[0].parent_group == GRAPH_ID
+        && groups[0].subtree_end_exclusive == 4
+        && groups[0].member_nodes[0] == 1
+        && groups[1].parent_group == 0
+        && groups[1].subtree_end_exclusive == 3
+        && groups[1].member_nodes[0] == 0
+        && groups[2].parent_group == 1
+        && groups[2].subtree_end_exclusive == 3
+        && groups[2].member_nodes[0] == 2
+        && groups[3].parent_group == 0
+        && groups[3].subtree_end_exclusive == 4
+        && groups[3].member_nodes[0] == 4
+        && groups[4].parent_group == GRAPH_ID
+        && groups[4].subtree_end_exclusive == 5
+        && groups[4].member_nodes[0] == 3;
+}
+
 consteval bool reflected_nodes_share_type_operations_but_not_static_data()
 {
     auto const low_gain = details::reflect_node(Constant{0.125f});
@@ -95,12 +148,24 @@ consteval bool node_permutation_remaps_all_structural_references()
 }
 
 static_assert(execution_plan_keeps_deterministic_topological_order());
+static_assert(node_adjacency_deduplicates_sample_and_event_edges());
+static_assert(dormancy_groups_are_ordered_by_a_single_hierarchy_walk());
 static_assert(node_permutation_remaps_all_structural_references());
 static_assert(reflected_nodes_share_type_operations_but_not_static_data());
 
 TEST(GraphCompilerConsteval, ExecutionPlanKeepsDeterministicTopologicalOrder)
 {
     EXPECT_TRUE(execution_plan_keeps_deterministic_topological_order());
+}
+
+TEST(GraphCompilerConsteval, NodeAdjacencyDeduplicatesSampleAndEventEdges)
+{
+    EXPECT_TRUE(node_adjacency_deduplicates_sample_and_event_edges());
+}
+
+TEST(GraphCompilerConsteval, DormancyGroupsAreOrderedByASingleHierarchyWalk)
+{
+    EXPECT_TRUE(dormancy_groups_are_ordered_by_a_single_hierarchy_walk());
 }
 
 TEST(GraphCompilerConsteval, NodePermutationRemapsAllStructuralReferences)

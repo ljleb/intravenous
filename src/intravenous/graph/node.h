@@ -108,67 +108,43 @@ namespace iv {
         {
             auto dormancy_groups = std::move(artifact.dormancy_groups);
             if (!dormancy_groups.empty()) {
-                std::vector<size_t> ordered_old_indices;
-                ordered_old_indices.reserve(dormancy_groups.size());
-                std::vector<std::uint8_t> emitted(dormancy_groups.size(), 0);
-                while (ordered_old_indices.size() < dormancy_groups.size()) {
-                    bool progressed = false;
-                    for (size_t old_i = 0; old_i < dormancy_groups.size(); ++old_i) {
-                        if (emitted[old_i] != 0) {
-                            continue;
-                        }
-                        size_t const parent = dormancy_groups[old_i].parent_group;
-                        if (parent == GRAPH_ID || emitted[parent] != 0) {
-                            ordered_old_indices.push_back(old_i);
-                            emitted[old_i] = 1;
-                            progressed = true;
-                        }
-                    }
-                    IV_ASSERT(progressed, "dormancy groups must form an acyclic hierarchy");
-                }
-
-                std::vector<size_t> new_index_by_old(dormancy_groups.size(), GRAPH_ID);
-                for (size_t new_i = 0; new_i < ordered_old_indices.size(); ++new_i) {
-                    new_index_by_old[ordered_old_indices[new_i]] = new_i;
-                }
-
-                std::vector<DormancyGroup> ordered_groups;
-                ordered_groups.reserve(dormancy_groups.size());
-                for (size_t old_i : ordered_old_indices) {
-                    DormancyGroup group = std::move(dormancy_groups[old_i]);
-                    group.parent_group = group.parent_group == GRAPH_ID ? GRAPH_ID : new_index_by_old[group.parent_group];
-                    ordered_groups.push_back(std::move(group));
-                }
-
-                std::vector<std::vector<size_t>> children(ordered_groups.size());
-                for (size_t group_i = 0; group_i < ordered_groups.size(); ++group_i) {
-                    size_t const parent = ordered_groups[group_i].parent_group;
+                std::vector<std::vector<size_t>> children(dormancy_groups.size());
+                for (size_t group_i = 0; group_i < dormancy_groups.size(); ++group_i) {
+                    size_t const parent = dormancy_groups[group_i].parent_group;
                     if (parent != GRAPH_ID) {
+                        IV_ASSERT(parent < dormancy_groups.size(),
+                                  "dormancy group parent must exist");
                         children[parent].push_back(group_i);
                     }
                 }
 
                 std::vector<DormancyGroup> dfs_groups;
-                dfs_groups.reserve(ordered_groups.size());
-                std::vector<size_t> dfs_index_by_old(ordered_groups.size(), GRAPH_ID);
+                dfs_groups.reserve(dormancy_groups.size());
+                std::vector<size_t> new_index_by_old(
+                    dormancy_groups.size(), GRAPH_ID);
                 auto emit_group = [&](auto const& self, size_t old_group_i) -> void {
                     size_t const new_group_i = dfs_groups.size();
-                    dfs_index_by_old[old_group_i] = new_group_i;
-                    dfs_groups.push_back(std::move(ordered_groups[old_group_i]));
+                    new_index_by_old[old_group_i] = new_group_i;
+                    size_t const parent_group = dormancy_groups[old_group_i].parent_group;
+                    DormancyGroup group = std::move(dormancy_groups[old_group_i]);
+                    group.parent_group = parent_group == GRAPH_ID
+                        ? GRAPH_ID
+                        : new_index_by_old[parent_group];
+                    IV_ASSERT(group.parent_group != GRAPH_ID || parent_group == GRAPH_ID,
+                              "dormancy parent must precede its child");
+                    dfs_groups.push_back(std::move(group));
                     for (size_t child_i : children[old_group_i]) {
                         self(self, child_i);
                     }
                     dfs_groups[new_group_i].subtree_end_exclusive = dfs_groups.size();
                 };
-                for (size_t group_i = 0; group_i < ordered_groups.size(); ++group_i) {
-                    if (ordered_groups[group_i].parent_group == GRAPH_ID) {
+                for (size_t group_i = 0; group_i < dormancy_groups.size(); ++group_i) {
+                    if (dormancy_groups[group_i].parent_group == GRAPH_ID) {
                         emit_group(emit_group, group_i);
                     }
                 }
-                for (size_t group_i = 0; group_i < dfs_groups.size(); ++group_i) {
-                    size_t const parent = dfs_groups[group_i].parent_group;
-                    dfs_groups[group_i].parent_group = parent == GRAPH_ID ? GRAPH_ID : dfs_index_by_old[parent];
-                }
+                IV_ASSERT(dfs_groups.size() == dormancy_groups.size(),
+                          "dormancy groups must form an acyclic hierarchy");
                 dormancy_groups = std::move(dfs_groups);
             }
 
@@ -682,6 +658,288 @@ namespace iv {
             }
         }
 
+        void tick_scc(
+            State& state,
+            size_t sample_rate,
+            size_t block_index,
+            size_t block_size,
+            size_t scc_index) const
+        {
+            _scc_wrappers[scc_index].tick({
+                TickContext<GraphSccWrapper> {
+                    .inputs = {},
+                    .outputs = {},
+                    .event_inputs = {},
+                    .event_outputs = {},
+                    .sample_rate = sample_rate,
+                    .scc_feedback_latency = 0,
+                    .buffer = state.scc_states[scc_index],
+                },
+                block_index,
+                block_size,
+            });
+        }
+
+        bool sample_inputs_unchanged(
+            State& state,
+            StaticDormancyGroup const& group,
+            size_t group_index,
+            size_t block_size,
+            bool& inputs_constant) const
+        {
+            size_t const begin = _group_sample_input_offsets[group_index];
+            bool unchanged = true;
+            inputs_constant = true;
+            for (size_t input_index = 0;
+                 input_index < group.sample_input_frontier.size;
+                 ++input_index) {
+                size_t const flat_index = begin + input_index;
+                auto const& frontier = group.sample_input_frontier[input_index];
+                InputPort input(
+                    *state.dormancy_sample_input_port_data[flat_index],
+                    frontier.history,
+                    frontier.latency_samples);
+                auto block = input.get_block(block_size);
+                if (block.empty()) {
+                    state.dormancy_remembered_constant_valid[flat_index] = 0;
+                    unchanged = false;
+                    inputs_constant = false;
+                    continue;
+                }
+
+                Sample const first = block[0];
+                bool const matches_previous =
+                    state.dormancy_remembered_constant_valid[flat_index] != 0
+                    && state.dormancy_remembered_constant_inputs[flat_index] == first;
+                bool const constant = block_is_constant(block, first);
+
+                state.dormancy_remembered_constant_valid[flat_index] =
+                    constant ? 1 : 0;
+                if (constant) {
+                    state.dormancy_remembered_constant_inputs[flat_index] = first;
+                }
+
+                unchanged = unchanged && matches_previous && constant;
+                inputs_constant = inputs_constant && constant;
+            }
+            return unchanged;
+        }
+
+        bool event_inputs_unchanged(
+            State& state,
+            StaticDormancyGroup const& group,
+            size_t group_index,
+            size_t block_index,
+            size_t block_size) const
+        {
+            size_t const begin = _group_event_input_offsets[group_index];
+            for (size_t input_index = 0;
+                 input_index < group.event_input_frontier.size;
+                 ++input_index) {
+                EventInputPort input(
+                    *state.dormancy_event_input_port_data[begin + input_index]);
+                if (!input.get_block(block_index, block_size).empty()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool sample_outputs_silent(
+            State& state,
+            StaticDormancyGroup const& group,
+            size_t group_index,
+            size_t block_size) const
+        {
+            if (group.sample_output_frontier.empty()) {
+                return false;
+            }
+
+            size_t const begin = _group_sample_output_offsets[group_index];
+            for (size_t output_index = 0;
+                 output_index < group.sample_output_frontier.size;
+                 ++output_index) {
+                auto const& frontier = group.sample_output_frontier[output_index];
+                InputPort output(
+                    *state.dormancy_sample_output_port_data[begin + output_index],
+                    frontier.history,
+                    frontier.latency_samples);
+                if (!block_is_constant(output.get_block(block_size), 0.0f)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        void apply_group_transition(
+            State& state,
+            size_t group_index,
+            std::int32_t delta) const
+        {
+            auto const& group = _dormancy_groups[group_index];
+            for (size_t node_index : group.member_nodes) {
+                auto& depth = state.dormancy_node_skip_depth[node_index];
+                depth = static_cast<std::uint32_t>(
+                    static_cast<std::int64_t>(depth) + delta);
+            }
+            for (size_t descendant_index = group_index + 1;
+                 descendant_index < group.subtree_end_exclusive;
+                 ++descendant_index) {
+                auto& blocked =
+                    state.dormancy_group_blocked_by_ancestors[descendant_index];
+                blocked = static_cast<std::uint32_t>(
+                    static_cast<std::int64_t>(blocked) + delta);
+            }
+        }
+
+        void wake_group_if_needed(
+            State& state,
+            size_t group_index,
+            size_t block_index,
+            size_t block_size) const
+        {
+            if (
+                state.dormancy_group_dormant[group_index] == 0
+                || state.dormancy_group_blocked_by_ancestors[group_index] != 0
+            ) {
+                return;
+            }
+
+            auto const& group = _dormancy_groups[group_index];
+            bool inputs_constant = false;
+            bool const unchanged =
+                sample_inputs_unchanged(
+                    state, group, group_index, block_size, inputs_constant)
+                && event_inputs_unchanged(
+                    state, group, group_index, block_index, block_size);
+            if (!unchanged) {
+                state.dormancy_group_dormant[group_index] = 0;
+                state.dormancy_group_silent_samples_accumulated[group_index] = 0;
+                apply_group_transition(state, group_index, -1);
+            }
+        }
+
+        void update_group_dormancy(
+            State& state,
+            size_t group_index,
+            size_t block_index,
+            size_t block_size) const
+        {
+            if (
+                state.dormancy_group_dormant[group_index] != 0
+                || state.dormancy_group_blocked_by_ancestors[group_index] != 0
+            ) {
+                return;
+            }
+
+            auto const& group = _dormancy_groups[group_index];
+            bool inputs_constant = false;
+            bool const unchanged =
+                sample_inputs_unchanged(
+                    state, group, group_index, block_size, inputs_constant)
+                && event_inputs_unchanged(
+                    state, group, group_index, block_index, block_size);
+            bool const silent =
+                sample_outputs_silent(state, group, group_index, block_size);
+            size_t const ttl_samples =
+                state.dormancy_group_effective_ttl_samples[group_index];
+
+            if (ttl_samples == std::numeric_limits<size_t>::max()) {
+                state.dormancy_group_silent_samples_accumulated[group_index] = 0;
+                return;
+            }
+
+            if (inputs_constant && unchanged && silent) {
+                size_t const accumulated =
+                    state.dormancy_group_silent_samples_accumulated[group_index]
+                    + block_size;
+                state.dormancy_group_silent_samples_accumulated[group_index] =
+                    accumulated;
+                if (accumulated >= ttl_samples) {
+                    state.dormancy_group_dormant[group_index] = 1;
+                    apply_group_transition(state, group_index, +1);
+                }
+            } else {
+                state.dormancy_group_silent_samples_accumulated[group_index] = 0;
+            }
+        }
+
+        void propagate_ingress_sample_fanout(
+            State& state, size_t block_size) const
+        {
+            for (size_t input_index = 0;
+                 input_index < state.ingress_outputs.size();
+                 ++input_index) {
+                for (size_t fanout_index =
+                         _ingress_fanout_offsets[input_index];
+                     fanout_index < _ingress_fanout_offsets[input_index + 1];
+                     ++fanout_index) {
+                    state.ingress_outputs[input_index].copy_completed_block_to(
+                        state.ingress_fanout_outputs[fanout_index], block_size);
+                }
+            }
+        }
+
+        IV_NOINLINE void tick(
+            State& state,
+            std::span<InputPort> graph_inputs,
+            std::span<OutputPort> graph_outputs,
+            std::span<EventInputPort> graph_event_inputs,
+            std::span<EventOutputPort> graph_event_outputs,
+            size_t sample_rate,
+            size_t block_index,
+            size_t block_size) const
+        {
+            push_input_blocks_to_private_outputs(
+                state.ingress_outputs, graph_inputs, block_size);
+            propagate_ingress_sample_fanout(state, block_size);
+            if (!state.ingress_event_outputs.empty()) {
+                push_input_events_to_private_outputs(
+                    state.ingress_event_outputs,
+                    graph_event_inputs,
+                    block_index,
+                    block_size
+                );
+            }
+
+            for (size_t scc_index = 0; scc_index < _scc_wrappers.size;
+                 ++scc_index) {
+                if (has_group_dormancy()) {
+                    for (size_t wake_index =
+                             _wake_check_group_offsets[scc_index];
+                         wake_index < _wake_check_group_offsets[scc_index + 1];
+                         ++wake_index) {
+                        wake_group_if_needed(
+                            state,
+                            _wake_check_groups[wake_index],
+                            block_index,
+                            block_size);
+                    }
+                }
+                tick_scc(
+                    state, sample_rate, block_index, block_size, scc_index);
+            }
+
+            if (has_group_dormancy()) {
+                for (size_t group_index = 0;
+                     group_index < _dormancy_groups.size;
+                     ++group_index) {
+                    update_group_dormancy(
+                        state, group_index, block_index, block_size);
+                }
+            }
+
+            push_private_inputs_to_output_blocks(
+                graph_outputs, state.egress_inputs, block_size);
+            if (!state.egress_event_inputs.empty()) {
+                push_private_input_events_to_output_events(
+                    graph_event_outputs,
+                    state.egress_event_inputs,
+                    block_index,
+                    block_size);
+            }
+        }
+
         template<auto GraphValue, class RootNode, size_t... SccIndices>
         static IV_FORCEINLINE void tick_static_sccs(
             TickBlockContext<RootNode> const& ctx,
@@ -1101,6 +1359,58 @@ namespace iv {
         void tick_block(TickBlockContext<StaticGraphRoot> const& ctx) const
         {
             Graph::tick_static<GraphValue>(ctx);
+        }
+    };
+
+    // Generated modules use this root to keep per-module code generation
+    // independent of the complete frozen graph value. The graph remains frozen
+    // at compile time; execution reads that data through generic loops while
+    // each reflected node operation remains specialized by node type.
+    struct RuntimeGraphRoot {
+        using State = Graph::State;
+
+        Graph _graph;
+
+        constexpr explicit RuntimeGraphRoot(Graph graph) : _graph(graph) {}
+
+        constexpr auto inputs() const { return _graph.inputs(); }
+        constexpr auto outputs() const { return _graph.outputs(); }
+        constexpr auto event_inputs() const { return _graph.event_inputs(); }
+        constexpr auto event_outputs() const { return _graph.event_outputs(); }
+        constexpr size_t internal_latency() const
+        {
+            return _graph.internal_latency();
+        }
+        constexpr size_t max_block_size() const { return _graph.max_block_size(); }
+        constexpr std::optional<size_t> ttl_samples() const
+        {
+            return std::nullopt;
+        }
+        constexpr bool can_skip_block() const { return false; }
+
+        template<class RootNode>
+        void declare(DeclarationContext<RootNode> const& ctx) const
+        {
+            _graph.declare(ctx);
+        }
+
+        template<class RootNode>
+        void initialize(InitializationContext<RootNode> const& ctx) const
+        {
+            _graph.initialize(ctx);
+        }
+
+        void tick_block(TickBlockContext<RuntimeGraphRoot> const& ctx) const
+        {
+            _graph.tick(
+                ctx.state(),
+                ctx.inputs,
+                ctx.outputs,
+                ctx.event_inputs,
+                ctx.event_outputs,
+                ctx.sample_rate,
+                ctx.index,
+                ctx.block_size);
         }
     };
 }

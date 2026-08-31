@@ -471,6 +471,59 @@ namespace iv {
             }
         }
 
+        void propagate_sample_fanout(
+            State& state, size_t block_size) const
+        {
+            for (size_t output_i = 0; output_i < state.outputs.size(); ++output_i) {
+                for (size_t fanout_i = _output_fanout_offsets[output_i];
+                     fanout_i < _output_fanout_offsets[output_i + 1];
+                     ++fanout_i) {
+                    state.outputs[output_i].copy_completed_block_to(
+                        state.fanout_outputs[fanout_i], block_size);
+                }
+            }
+        }
+
+        void tick(TickBlockContext<GraphNodeWrapper> const& ctx) const
+        {
+            auto& state = ctx.state();
+            _operations.tick_block(
+                _operations.node_data,
+                ReflectedNodeTickContext {
+                    .inputs = state.inputs,
+                    .outputs = state.outputs,
+                    .event_inputs = state.event_inputs,
+                    .event_outputs = state.event_outputs,
+                    .sample_rate = ctx.sample_rate,
+                    .scc_feedback_latency = ctx.scc_feedback_latency,
+                    .state = state.nested_node_states.back(),
+                },
+                ctx.index,
+                ctx.block_size
+            );
+            propagate_sample_fanout(state, ctx.block_size);
+        }
+
+        void skip(SkipBlockContext<GraphNodeWrapper> const& ctx) const
+        {
+            auto& state = ctx.state();
+            _operations.skip_block(
+                _operations.node_data,
+                ReflectedNodeTickContext {
+                    .inputs = state.inputs,
+                    .outputs = state.outputs,
+                    .event_inputs = state.event_inputs,
+                    .event_outputs = state.event_outputs,
+                    .sample_rate = ctx.sample_rate,
+                    .scc_feedback_latency = ctx.scc_feedback_latency,
+                    .state = state.nested_node_states.back(),
+                },
+                ctx.index,
+                ctx.block_size
+            );
+            propagate_sample_fanout(state, ctx.block_size);
+        }
+
         template<auto Node>
         static IV_FORCEINLINE void propagate_sample_fanout_static(
             State& state, size_t block_size)

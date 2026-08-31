@@ -91,6 +91,7 @@ namespace {
 
     static constexpr auto detached_graph = build_detached_graph();
     static constexpr iv::StaticGraphRoot<detached_graph> static_detached_graph {};
+    static constexpr iv::RuntimeGraphRoot runtime_detached_graph {detached_graph};
 
     consteval auto build_static_dormancy_graph()
     {
@@ -111,6 +112,8 @@ namespace {
     static_assert(static_dormancy_graph._dormancy_groups.size != 0);
     static constexpr iv::StaticGraphRoot<static_dormancy_graph>
         static_dormancy_root {};
+    static constexpr iv::RuntimeGraphRoot runtime_dormancy_root {
+        static_dormancy_graph};
 
     void tick_executor_direct(
         iv::BlockNodeExecutor& executor,
@@ -159,10 +162,48 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     EXPECT_TRUE(saw_non_zero);
 }
 
+TEST(DetachRegression, RuntimeGraphRootMatchesStaticGraphRootOutput)
+{
+    runtime_values[static_cast<size_t>(RuntimeValueSlot::dt)] =
+        iv::Sample{1.0f / 48000.0f};
+    runtime_values[static_cast<size_t>(RuntimeValueSlot::noise_a)] =
+        iv::Sample{0.125f};
+    runtime_values[static_cast<size_t>(RuntimeValueSlot::noise_b)] =
+        iv::Sample{-0.25f};
+
+    std::vector<iv::Sample> static_output(32, 0.0f);
+    runtime_output = static_output;
+    auto static_executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(static_detached_graph), static_output.size());
+    tick_executor_direct(static_executor, 0, static_output.size());
+
+    std::vector<iv::Sample> runtime_root_output(32, 0.0f);
+    runtime_output = runtime_root_output;
+    auto runtime_executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(runtime_detached_graph), runtime_root_output.size());
+    tick_executor_direct(runtime_executor, 0, runtime_root_output.size());
+    runtime_output = {};
+
+    ASSERT_EQ(runtime_root_output.size(), static_output.size());
+    for (size_t i = 0; i < static_output.size(); ++i) {
+        EXPECT_EQ(runtime_root_output[i], static_output[i])
+            << "output differs at sample " << i;
+    }
+}
+
 TEST(DetachRegression, StaticGraphRootExecutesDormancyGroups)
 {
     auto executor = iv::BlockNodeExecutor::create(
         iv::TypeErasedNode(static_dormancy_root), 8);
+
+    executor.tick_block(0);
+    executor.tick_block(8);
+}
+
+TEST(DetachRegression, RuntimeGraphRootExecutesDormancyGroups)
+{
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(runtime_dormancy_root), 8);
 
     executor.tick_block(0);
     executor.tick_block(8);

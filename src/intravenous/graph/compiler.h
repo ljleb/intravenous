@@ -365,32 +365,29 @@ namespace iv::details {
     constexpr auto make_node_adjacency(ExecutableGraphData const& g)
     {
         size_t const num_nodes = g.nodes.size();
-        std::vector<std::flat_set<size_t>> outgoing(num_nodes);
+        std::vector<std::vector<size_t>> outgoing(num_nodes);
         std::vector<size_t> indegree(num_nodes, 0);
 
-        for (GraphEdge const& edge : g.edges)
-        {
-            if (edge.source.node == GRAPH_ID) continue;
-            if (edge.target.node == GRAPH_ID) continue;
-
-            size_t const u = edge.source.node;
-            size_t const v = edge.target.node;
-
-            if (outgoing[u].insert(v).second) {
-                ++indegree[v];
+        auto append_edge = [&](ConcretePortId source, ConcretePortId target) {
+            if (source.node == GRAPH_ID || target.node == GRAPH_ID) {
+                return;
             }
+            outgoing[source.node].push_back(target.node);
+        };
+
+        for (GraphEdge const& edge : g.edges) {
+            append_edge(edge.source, edge.target);
+        }
+        for (GraphEventEdge const& edge : g.event_edges) {
+            append_edge(edge.source, edge.target);
         }
 
-        for (GraphEventEdge const& edge : g.event_edges)
-        {
-            if (edge.source.node == GRAPH_ID) continue;
-            if (edge.target.node == GRAPH_ID) continue;
-
-            size_t const u = edge.source.node;
-            size_t const v = edge.target.node;
-
-            if (outgoing[u].insert(v).second) {
-                ++indegree[v];
+        for (auto& targets : outgoing) {
+            std::sort(targets.begin(), targets.end());
+            targets.erase(std::unique(targets.begin(), targets.end()),
+                          targets.end());
+            for (size_t target : targets) {
+                ++indegree[target];
             }
         }
 
