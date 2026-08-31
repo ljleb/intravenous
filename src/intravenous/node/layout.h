@@ -383,7 +383,8 @@ namespace iv {
         void nested_node_states(std::span<std::span<std::byte>> const& nodes) const;
 
         void declare_reflected_child(
-            size_t (*declare)(NodeLayoutBuilder&)) const;
+            void const* node_data,
+            size_t (*declare)(void const*, NodeLayoutBuilder&)) const;
 
         size_t max_block_size() const;
         size_t event_port_buffer_base_multiplier() const;
@@ -625,10 +626,12 @@ namespace iv {
 
     template<typename Node>
     inline void DeclarationContext<Node>::declare_reflected_child(
-        size_t (*declare)(NodeLayoutBuilder&)) const
+        void const* node_data,
+        size_t (*declare)(void const*, NodeLayoutBuilder&)) const
     {
+        IV_ASSERT(node_data, "reflected child node data cannot be null");
         IV_ASSERT(declare, "reflected child declaration callback cannot be null");
-        _direct_nested_node_indices.push_back(declare(*_builder));
+        _direct_nested_node_indices.push_back(declare(node_data, *_builder));
     }
 
     template<typename Node>

@@ -56,15 +56,19 @@ struct ReflectedNodeTickContext {
     std::span<std::byte> state {};
 };
 
-// Every function is specialized on the exact reflected structural node value.
-// No authored node object or erased object pointer is stored here.
+// Every function is specialized on the node type only.  The authored value is
+// promoted to static storage and travels as data, so several differently
+// configured instances of the same node type share one set of callbacks.
 struct ReflectedNodeRuntimeOperations {
-    size_t (*declare_node)(NodeLayoutBuilder&) = nullptr;
+    void const* node_data = nullptr;
+    size_t (*declare_node)(void const*, NodeLayoutBuilder&) = nullptr;
     void (*tick_block)(
+        void const*,
         ReflectedNodeTickContext const&,
         size_t,
         size_t) = nullptr;
     void (*skip_block)(
+        void const*,
         ReflectedNodeTickContext const&,
         size_t,
         size_t) = nullptr;
@@ -78,11 +82,16 @@ struct ReflectedNodeRuntimeOperations {
 
 struct ReflectedNodeOperations {
     ReflectedNodeRuntimeOperations runtime {};
-    ReflectedNodeOperations (*apply_detach_id_offset)(size_t) = nullptr;
+    ReflectedNodeOperations (*apply_detach_id_offset_fn)(void const*, size_t) = nullptr;
 
     constexpr bool valid() const
     {
-        return runtime.valid() && apply_detach_id_offset != nullptr;
+        return runtime.valid() && apply_detach_id_offset_fn != nullptr;
+    }
+
+    constexpr ReflectedNodeOperations apply_detach_id_offset(size_t offset) const
+    {
+        return apply_detach_id_offset_fn(runtime.node_data, offset);
     }
 };
 
@@ -144,30 +153,29 @@ namespace details {
     template<class Node>
     consteval ReflectedNodeDescription reflect_node(Node node);
 
-    template<auto NodeValue>
-    constexpr ReflectedNodeOperations reflected_node_operations();
+    template<class Node>
+    constexpr ReflectedNodeOperations reflected_node_operations(Node const* node_data);
 
-    template<auto NodeValue>
-    size_t declare_reflected_node(NodeLayoutBuilder& builder)
+    template<class Node>
+    size_t declare_reflected_node(void const* node_data, NodeLayoutBuilder& builder)
     {
-        using Node = std::remove_cvref_t<decltype(NodeValue)>;
-        DeclarationContext<Node> ctx(
-            builder,
-            std::integral_constant<decltype(NodeValue), NodeValue> {});
+        auto const& node = *static_cast<Node const*>(node_data);
+        DeclarationContext<Node> ctx(builder, node);
         if constexpr (details::has_declare<Node>) {
-            NodeValue.declare(ctx);
+            node.declare(ctx);
         }
         return ctx.node_index();
     }
 
-    template<auto NodeValue>
+    template<class Node>
     IV_FORCEINLINE void tick_reflected_node_block(
+        void const* node_data,
         ReflectedNodeTickContext const& ctx,
         size_t index,
         size_t block_size)
     {
-        using Node = std::remove_cvref_t<decltype(NodeValue)>;
-        do_tick_block(NodeValue, TickBlockContext<Node> {
+        auto const& node = *static_cast<Node const*>(node_data);
+        do_tick_block(node, TickBlockContext<Node> {
             TickContext<Node> {
                 .inputs = ctx.inputs,
                 .outputs = ctx.outputs,
@@ -182,14 +190,15 @@ namespace details {
         });
     }
 
-    template<auto NodeValue>
+    template<class Node>
     IV_FORCEINLINE void skip_reflected_node_block(
+        void const* node_data,
         ReflectedNodeTickContext const& ctx,
         size_t index,
         size_t block_size)
     {
-        using Node = std::remove_cvref_t<decltype(NodeValue)>;
-        do_skip_block(NodeValue, SkipBlockContext<Node> {
+        auto const& node = *static_cast<Node const*>(node_data);
+        do_skip_block(node, SkipBlockContext<Node> {
             TickContext<Node> {
                 .inputs = ctx.inputs,
                 .outputs = ctx.outputs,
@@ -204,62 +213,70 @@ namespace details {
         });
     }
 
-    template<auto NodeValue>
-    consteval ReflectedNodeOperations apply_reflected_detach_id_offset(
+    template<class Node>
+    constexpr ReflectedNodeOperations apply_reflected_detach_id_offset(
+        void const* node_data,
         size_t offset)
     {
-        using Node = std::remove_cvref_t<decltype(NodeValue)>;
+        auto const& node = *static_cast<Node const*>(node_data);
         if constexpr (
             std::same_as<Node, DetachWriterNode>
             || std::same_as<Node, DetachReaderNode>) {
-            auto adjusted = NodeValue;
-            adjusted.id.id += offset;
-            return reflect_node(adjusted).operations;
+            if consteval {
+                auto adjusted = node;
+                adjusted.id.id += offset;
+                auto const* adjusted_data = std::define_static_object(adjusted);
+                return reflected_node_operations<Node>(adjusted_data);
+            } else {
+                runtime_graph_builder_node_call_is_forbidden();
+                return {};
+            }
         } else {
-            return reflected_node_operations<NodeValue>();
+            return reflected_node_operations<Node>(static_cast<Node const*>(node_data));
         }
     }
 
-    template<auto NodeValue>
-    constexpr ReflectedNodeOperations reflected_node_operations()
+    template<class Node>
+    constexpr ReflectedNodeOperations reflected_node_operations(Node const* node_data)
     {
         return {
             .runtime = {
-                .declare_node = &declare_reflected_node<NodeValue>,
-                .tick_block = &tick_reflected_node_block<NodeValue>,
-                .skip_block = &skip_reflected_node_block<NodeValue>,
+                .node_data = node_data,
+                .declare_node = &declare_reflected_node<Node>,
+                .tick_block = &tick_reflected_node_block<Node>,
+                .skip_block = &skip_reflected_node_block<Node>,
             },
-            .apply_detach_id_offset =
-                &apply_reflected_detach_id_offset<NodeValue>,
+            .apply_detach_id_offset_fn =
+                &apply_reflected_detach_id_offset<Node>,
         };
     }
 
-    template<auto NodeValue>
-    constexpr ReflectedNodeDescription describe_reflected_node()
+    template<class Node>
+    consteval ReflectedNodeDescription describe_reflected_node(
+        Node const& node,
+        Node const* node_data)
     {
-        using Node = std::remove_cvref_t<decltype(NodeValue)>;
-
         ReflectedNodeDescription description;
-        for (auto const& input : get_inputs(NodeValue)) {
+        for (auto const& input : get_inputs(node)) {
             description.ports.sample_inputs.push_back(input);
         }
-        for (auto const& output : get_outputs(NodeValue)) {
+        for (auto const& output : get_outputs(node)) {
             description.ports.sample_outputs.push_back(output);
         }
-        for (auto const& input : get_event_inputs(NodeValue)) {
+        for (auto const& input : get_event_inputs(node)) {
             description.ports.event_input_configs.push_back(input);
         }
-        for (auto const& output : get_event_outputs(NodeValue)) {
+        for (auto const& output : get_event_outputs(node)) {
             description.ports.event_output_configs.push_back(output);
         }
 
-        description.operations = reflected_node_operations<NodeValue>();
+        description.operations = reflected_node_operations<Node>(node_data);
         description.type_name = std::meta::display_string_of(
             std::meta::dealias(^^Node));
-        description.internal_latency_samples = get_internal_latency(NodeValue);
-        description.maximum_block_size = get_max_block_size(NodeValue);
-        description.default_ttl_samples = get_ttl_samples(NodeValue);
-        description.block_skippable = get_can_skip_block(NodeValue);
+        description.internal_latency_samples = get_internal_latency(node);
+        description.maximum_block_size = get_max_block_size(node);
+        description.default_ttl_samples = get_ttl_samples(node);
+        description.block_skippable = get_can_skip_block(node);
         return description;
     }
 
@@ -269,17 +286,8 @@ namespace details {
         static_assert(
             std::copy_constructible<Node>,
             "authored node values must be copy constructible");
-        if constexpr (std::is_empty_v<Node> && std::default_initializable<Node>) {
-            return describe_reflected_node<Node {}>();
-        } else {
-            auto const reflected_node = std::meta::reflect_constant(node);
-            auto const description_specialization = std::meta::substitute(
-                ^^describe_reflected_node,
-                {reflected_node});
-            auto const describe = std::meta::extract<
-                ReflectedNodeDescription (*)()>(description_specialization);
-            return describe();
-        }
+        auto const* node_data = std::define_static_object(node);
+        return describe_reflected_node(*node_data, node_data);
     }
 } // namespace details
 } // namespace iv

@@ -348,7 +348,9 @@ namespace iv {
             for (auto const& port_data_node : _input_event_port_data_nodes) {
                 do_declare(port_data_node, ctx);
             }
-            ctx.declare_reflected_child(_operations.declare_node);
+            ctx.declare_reflected_child(
+                _operations.node_data,
+                _operations.declare_node);
 
             for (size_t input_i = 0; input_i < num_inputs; ++input_i) {
                 ctx.require_export_array<SharedPortData>(
@@ -489,6 +491,7 @@ namespace iv {
         {
             auto& state = ctx.state();
             Node._operations.tick_block(
+                Node._operations.node_data,
                 ReflectedNodeTickContext {
                     .inputs = state.inputs,
                     .outputs = state.outputs,
@@ -510,6 +513,7 @@ namespace iv {
         {
             auto& state = ctx.state();
             Node._operations.skip_block(
+                Node._operations.node_data,
                 ReflectedNodeTickContext {
                     .inputs = state.inputs,
                     .outputs = state.outputs,

@@ -35,6 +35,19 @@ consteval bool execution_plan_keeps_deterministic_topological_order()
     return execution_order == std::vector<size_t>{0, 1, 2, 3};
 }
 
+consteval bool reflected_nodes_share_type_operations_but_not_static_data()
+{
+    auto const low_gain = details::reflect_node(Constant{0.125f});
+    auto const high_gain = details::reflect_node(Constant{0.875f});
+    auto const& low = low_gain.operations.runtime;
+    auto const& high = high_gain.operations.runtime;
+
+    return low.node_data != high.node_data
+        && low.declare_node == high.declare_node
+        && low.tick_block == high.tick_block
+        && low.skip_block == high.skip_block;
+}
+
 consteval bool node_permutation_remaps_all_structural_references()
 {
     auto const node = details::reflect_node(Constant{0.0f});
@@ -83,6 +96,7 @@ consteval bool node_permutation_remaps_all_structural_references()
 
 static_assert(execution_plan_keeps_deterministic_topological_order());
 static_assert(node_permutation_remaps_all_structural_references());
+static_assert(reflected_nodes_share_type_operations_but_not_static_data());
 
 TEST(GraphCompilerConsteval, ExecutionPlanKeepsDeterministicTopologicalOrder)
 {
@@ -92,6 +106,11 @@ TEST(GraphCompilerConsteval, ExecutionPlanKeepsDeterministicTopologicalOrder)
 TEST(GraphCompilerConsteval, NodePermutationRemapsAllStructuralReferences)
 {
     EXPECT_TRUE(node_permutation_remaps_all_structural_references());
+}
+
+TEST(GraphCompilerConsteval, ReflectedNodesShareTypeOperationsButNotStaticData)
+{
+    EXPECT_TRUE(reflected_nodes_share_type_operations_but_not_static_data());
 }
 
 } // namespace
