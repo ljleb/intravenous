@@ -61,6 +61,26 @@ namespace iv {
         return id;
     }
 
+    constexpr std::string source_port_data_export_id(
+        std::string_view node_id, size_t port_index)
+    {
+        std::string id = "source_port_data:";
+        id += node_id;
+        id += ":";
+        wiring_details::append_decimal(id, port_index);
+        return id;
+    }
+
+    constexpr std::string graph_source_port_data_export_id(
+        std::string_view graph_id, size_t port_index)
+    {
+        std::string id = "graph_source_port_data:";
+        id += graph_id;
+        id += ":";
+        wiring_details::append_decimal(id, port_index);
+        return id;
+    }
+
     constexpr std::string event_port_data_export_id(std::string_view node_id)
     {
         std::string id = "event_port_data:";

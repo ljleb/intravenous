@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/ports.h>
+#include <intravenous/graph/wiring.h>
 
 #include <compare>
 #include <cstdint>
@@ -92,6 +93,22 @@ namespace iv {
         }
     };
 
+    // Every sample input names the storage it reads.  Several inputs may name
+    // one owner; their cursor, history, and validated latency stay local to
+    // their InputPort.
+    struct SampleInputBinding {
+        bool owns_storage = true;
+        std::vector<std::string> aliases {};
+    };
+
+    // A source with no layout-compatible consumer first writes to this
+    // source-layout buffer, then the wrapper fans out conversions from it.
+    struct SampleBufferStorage {
+        std::string id;
+        InputConfig config;
+        PortBufferPlan plan;
+    };
+
     struct DetachedInfo {
         size_t detach_id = 0;
         ConcretePortId original_source;
@@ -128,6 +145,7 @@ namespace iv {
     struct DormancySamplePort {
         std::string export_id;
         size_t history = 0;
+        size_t latency_samples = 0;
     };
 
     struct DormancyEventPort {

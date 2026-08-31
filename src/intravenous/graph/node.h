@@ -19,6 +19,7 @@ namespace iv {
     struct StaticDormancySamplePort {
         StaticString export_id {};
         size_t history = 0;
+        size_t latency_samples = 0;
     };
 
     struct StaticDormancyEventPort {
@@ -41,6 +42,10 @@ namespace iv {
     struct Graph {
         StaticString _graph_id {};
         StaticSpan<GraphSccWrapper> _scc_wrappers {};
+        StaticSpan<GraphPortDataNode> _ingress_port_data_nodes {};
+        StaticSpan<StaticSampleOutputBinding> _ingress_targets {};
+        StaticSpan<size_t> _ingress_fanout_offsets {};
+        StaticSpan<StaticSampleOutputBinding> _ingress_fanout_targets {};
         StaticSpan<GraphPortDataNode> _egress_port_data_nodes {};
         StaticSpan<GraphEventPortDataNode> _egress_event_port_data_nodes {};
         StaticSpan<GraphEdge> _edges {};
@@ -61,11 +66,21 @@ namespace iv {
         consteval explicit Graph(GraphBuildArtifact artifact) :
             _graph_id(details::define_static_string(artifact.graph_id)),
             _scc_wrappers(details::define_static_span(artifact.scc_wrappers)),
+            _ingress_port_data_nodes(details::define_static_span(
+                make_ingress_port_data_nodes(
+                    artifact.public_input_fanout_storage))),
+            _ingress_targets(freeze_primary_ingress_targets(
+                artifact.public_input_targets)),
+            _ingress_fanout_offsets(freeze_ingress_fanout_offsets(
+                artifact.public_input_targets)),
+            _ingress_fanout_targets(freeze_ingress_fanout_targets(
+                artifact.public_input_targets)),
             _egress_port_data_nodes(details::define_static_span(
                 make_egress_port_data_nodes(
                     artifact.graph_id,
                     artifact.public_outputs,
-                    artifact.public_output_buffer_plans))),
+                    artifact.public_output_buffer_plans,
+                    artifact.public_output_bindings))),
             _egress_event_port_data_nodes(details::define_static_span(
                 make_egress_event_port_data_nodes(
                     artifact.graph_id,
@@ -223,6 +238,7 @@ namespace iv {
                 result.push_back({
                     .export_id = details::define_static_string(port.export_id),
                     .history = port.history,
+                    .latency_samples = port.latency_samples,
                 });
             }
             return details::define_static_span(result);
@@ -272,6 +288,7 @@ namespace iv {
         struct State {
             std::span<std::span<std::byte>> scc_states;
             std::span<OutputPort> ingress_outputs;
+            std::span<OutputPort> ingress_fanout_outputs;
             std::span<InputPort> egress_inputs;
             std::span<EventOutputPort> ingress_event_outputs;
             std::span<EventInputPort> egress_event_inputs;
@@ -287,13 +304,75 @@ namespace iv {
             std::span<SharedPortData*> dormancy_sample_output_port_data;
         };
 
+        static consteval StaticSpan<StaticSampleOutputBinding>
+        freeze_primary_ingress_targets(
+            std::span<std::vector<SampleOutputBinding> const> targets)
+        {
+            std::vector<StaticSampleOutputBinding> result;
+            result.reserve(targets.size());
+            for (auto const& input_targets : targets) {
+                auto const& primary = input_targets.empty()
+                    ? SampleOutputBinding{}
+                    : input_targets.front();
+                result.push_back({
+                    .target = details::define_static_string(primary.target),
+                    .conversion = primary.conversion,
+                });
+            }
+            return details::define_static_span(result);
+        }
+
+        static consteval StaticSpan<size_t> freeze_ingress_fanout_offsets(
+            std::span<std::vector<SampleOutputBinding> const> targets)
+        {
+            std::vector<size_t> offsets{0};
+            offsets.reserve(targets.size() + 1);
+            for (auto const& input_targets : targets) {
+                offsets.push_back(offsets.back() +
+                    (input_targets.empty() ? 0 : input_targets.size() - 1));
+            }
+            return details::define_static_span(offsets);
+        }
+
+        static consteval StaticSpan<StaticSampleOutputBinding>
+        freeze_ingress_fanout_targets(
+            std::span<std::vector<SampleOutputBinding> const> targets)
+        {
+            std::vector<StaticSampleOutputBinding> result;
+            for (auto const& input_targets : targets) {
+                for (size_t target_i = 1; target_i < input_targets.size();
+                     ++target_i) {
+                    result.push_back({
+                        .target = details::define_static_string(
+                            input_targets[target_i].target),
+                        .conversion = input_targets[target_i].conversion,
+                    });
+                }
+            }
+            return details::define_static_span(result);
+        }
+
+        static consteval std::vector<GraphPortDataNode>
+        make_ingress_port_data_nodes(
+            std::span<SampleBufferStorage const> storage)
+        {
+            std::vector<GraphPortDataNode> result;
+            result.reserve(storage.size());
+            for (auto const& entry : storage) {
+                result.emplace_back(entry.id, entry.config, entry.plan);
+            }
+            return result;
+        }
+
         static consteval std::vector<GraphPortDataNode> make_egress_port_data_nodes(
             std::string const& graph_id,
             std::span<OutputConfig const> outputs,
-            std::span<PortBufferPlan const> output_buffer_plans
+            std::span<PortBufferPlan const> output_buffer_plans,
+            std::span<SampleInputBinding const> output_bindings
         )
         {
             IV_ASSERT(outputs.size() == output_buffer_plans.size(), "graph egress port data must have one buffer plan per output");
+            IV_ASSERT(outputs.size() == output_bindings.size(), "graph egress port data must have one binding per output");
 
             std::vector<GraphPortDataNode> port_data_nodes;
             port_data_nodes.reserve(outputs.size());
@@ -304,7 +383,9 @@ namespace iv {
                         .name = outputs[output_i].name,
                         .channel_layout = outputs[output_i].channel_layout,
                     },
-                    output_buffer_plans[output_i]
+                    output_buffer_plans[output_i],
+                    output_bindings[output_i].aliases,
+                    output_bindings[output_i].owns_storage
                 );
             }
             return port_data_nodes;
@@ -327,14 +408,6 @@ namespace iv {
                 );
             }
             return port_data_nodes;
-        }
-
-        std::string ingress_target_export_id(ConcretePortId target) const
-        {
-            if (target.node == GRAPH_ID) {
-                return graph_port_data_export_id(_graph_id, target.port);
-            }
-            return port_data_export_id(_node_ids[target.node], target.port);
         }
 
         std::string ingress_event_target_export_id(ConcretePortId target) const
@@ -421,6 +494,8 @@ namespace iv {
         {
             auto const& state = ctx.state();
             ctx.local_array(state.ingress_outputs, num_inputs());
+            ctx.local_array(
+                state.ingress_fanout_outputs, _ingress_fanout_targets.size);
             ctx.local_array(state.ingress_event_outputs, num_event_inputs());
             if (has_group_dormancy()) {
                 ctx.local_array(state.dormancy_group_dormant, _dormancy_groups.size);
@@ -438,6 +513,9 @@ namespace iv {
             ctx.nested_node_states(state.scc_states);
             for (auto const& scc : _scc_wrappers) {
                 do_declare(scc, ctx);
+            }
+            for (auto const& port_data_node : _ingress_port_data_nodes) {
+                do_declare(port_data_node, ctx);
             }
             for (auto const& port_data_node : _egress_port_data_nodes) {
                 do_declare(port_data_node, ctx);
@@ -457,12 +535,17 @@ namespace iv {
                     graph_event_port_data_export_id(_graph_id, output_i)
                 );
             }
-            for (GraphEdge const& edge : _edges) {
-                if (edge.source.node == GRAPH_ID) {
+            for (auto const& target : _ingress_targets) {
+                if (!target.target.empty()) {
                     ctx.template require_export_array<SharedPortData>(
-                        ingress_target_export_id(edge.target)
+                        std::string(target.target.view())
                     );
                 }
+            }
+            for (auto const& target : _ingress_fanout_targets) {
+                ctx.template require_export_array<SharedPortData>(
+                    std::string(target.target.view())
+                );
             }
             for (GraphEventEdge const& edge : _event_edges) {
                 if (edge.source.node == GRAPH_ID) {
@@ -501,7 +584,11 @@ namespace iv {
                     graph_port_data_export_id(_graph_id, output_i)
                 );
                 IV_ASSERT(!egress_port_data.empty(), "graph egress wiring must resolve the requested SharedPortData entry");
-                std::construct_at(&state.egress_inputs[output_i], const_cast<SharedPortData&>(egress_port_data[0]), 0);
+                std::construct_at(
+                    &state.egress_inputs[output_i],
+                    const_cast<SharedPortData&>(egress_port_data[0]),
+                    0,
+                    _egress_port_data_nodes[output_i]._input_buffer_plan.corrected_latency);
             }
             for (size_t output_i = 0; output_i < num_event_outputs(); ++output_i) {
                 auto egress_port_data = ctx.template resolve_exported_array_storage<EventSharedPortData>(
@@ -511,20 +598,35 @@ namespace iv {
                 std::construct_at(&state.egress_event_inputs[output_i], const_cast<EventSharedPortData&>(egress_port_data[0]));
             }
 
-            for (GraphEdge const& edge : _edges) {
-                if (edge.source.node == GRAPH_ID) {
-                    auto consumer_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
-                        ingress_target_export_id(edge.target)
-                    );
-                    IV_ASSERT(!consumer_port_data.empty(), "graph ingress wiring must resolve the requested SharedPortData entry");
+            for (size_t input_i = 0; input_i < num_inputs(); ++input_i) {
+                for (size_t fanout_i = _ingress_fanout_offsets[input_i];
+                     fanout_i < _ingress_fanout_offsets[input_i + 1];
+                     ++fanout_i) {
+                    auto const& target = _ingress_fanout_targets[fanout_i];
+                    auto target_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
+                        std::string(target.target.view()));
+                    IV_ASSERT(!target_port_data.empty(), "graph ingress fanout target wiring must resolve");
                     std::construct_at(
-                        &state.ingress_outputs[edge.source.port],
-                        const_cast<SharedPortData&>(consumer_port_data[0]),
+                        &state.ingress_fanout_outputs[fanout_i],
+                        const_cast<SharedPortData&>(target_port_data[0]),
                         0,
-                        _public_inputs[edge.source.port].channel_layout,
-                        edge.conversion
-                    );
+                        _public_inputs[input_i].channel_layout,
+                        target.conversion);
                 }
+
+                auto const& target = _ingress_targets[input_i];
+                if (target.target.empty()) {
+                    continue;
+                }
+                auto target_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
+                    std::string(target.target.view()));
+                IV_ASSERT(!target_port_data.empty(), "graph ingress wiring must resolve the requested SharedPortData entry");
+                std::construct_at(
+                    &state.ingress_outputs[input_i],
+                    const_cast<SharedPortData&>(target_port_data[0]),
+                    0,
+                    _public_inputs[input_i].channel_layout,
+                    target.conversion);
             }
             for (GraphEventEdge const& edge : _event_edges) {
                 if (edge.source.node == GRAPH_ID) {
@@ -631,7 +733,8 @@ namespace iv {
                 constexpr size_t flat_i = begin + FrontierIndices;
                 InputPort input(
                     *state.dormancy_sample_input_port_data[flat_i],
-                    group.sample_input_frontier[FrontierIndices].history);
+                    group.sample_input_frontier[FrontierIndices].history,
+                    group.sample_input_frontier[FrontierIndices].latency_samples);
                 auto block = input.get_block(block_size);
                 if (block.empty()) {
                     state.dormancy_remembered_constant_valid[flat_i] = 0;
@@ -695,7 +798,8 @@ namespace iv {
                 constexpr size_t flat_i = begin + FrontierIndices;
                 InputPort output(
                     *state.dormancy_sample_output_port_data[flat_i],
-                    group.sample_output_frontier[FrontierIndices].history);
+                    group.sample_output_frontier[FrontierIndices].history,
+                    group.sample_output_frontier[FrontierIndices].latency_samples);
                 silent = silent
                     && block_is_constant(output.get_block(block_size), 0.0f);
             }(), ...);
@@ -905,6 +1009,23 @@ namespace iv {
                 block_size), ...);
         }
 
+        template<auto GraphValue>
+        static IV_FORCEINLINE void propagate_ingress_sample_fanout(
+            State& state, size_t block_size)
+        {
+            for (size_t input_i = 0; input_i < state.ingress_outputs.size();
+                 ++input_i) {
+                for (size_t fanout_i =
+                         GraphValue._ingress_fanout_offsets[input_i];
+                     fanout_i <
+                         GraphValue._ingress_fanout_offsets[input_i + 1];
+                     ++fanout_i) {
+                    state.ingress_outputs[input_i].copy_completed_block_to(
+                        state.ingress_fanout_outputs[fanout_i], block_size);
+                }
+            }
+        }
+
         template<auto GraphValue, class RootNode>
         static IV_FORCEINLINE void tick_static(
             TickBlockContext<RootNode> const& ctx)
@@ -912,6 +1033,8 @@ namespace iv {
             auto& state = ctx.state();
             push_input_blocks_to_private_outputs(
                 state.ingress_outputs, ctx.inputs, ctx.block_size);
+            propagate_ingress_sample_fanout<GraphValue>(
+                state, ctx.block_size);
             if (!state.ingress_event_outputs.empty()) {
                 push_input_events_to_private_outputs(
                     state.ingress_event_outputs,

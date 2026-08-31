@@ -747,56 +747,6 @@ namespace details {
             return {};
         }
     }
-    template<class ChannelType, SampleStreamLayout Layout, size_t Arity>
-    consteval ReflectedNodeDescription describe_lowered_broadcast_node()
-    {
-        return reflect_node(Broadcast<Arity, ChannelType, Layout>{});
-    }
-
-    template<class ChannelType, SampleStreamLayout Layout>
-    constexpr ReflectedNodeDescription make_lowered_broadcast_node(size_t arity)
-    {
-        if consteval {
-            if (arity == 0 || arity > 64) {
-                error("broadcast node arity must be between 1 and 64");
-            }
-            // Select the one required value specialization through reflection.
-            // Expanding all supported arities in a parameter pack eagerly
-            // reflects every Broadcast value while this header is compiled.
-            auto const specialization = std::meta::substitute(
-                ^^describe_lowered_broadcast_node,
-                {
-                    ^^ChannelType,
-                    std::meta::reflect_constant(Layout),
-                    std::meta::reflect_constant(arity),
-                });
-            auto const describe = std::meta::extract<
-                ReflectedNodeDescription (*)()>(specialization);
-            return describe();
-        } else {
-            runtime_graph_builder_node_call_is_forbidden();
-            return {};
-        }
-    }
-
-    constexpr ReflectedNodeDescription make_lowered_broadcast_node(
-        size_t arity, ChannelLayout layout)
-    {
-        switch (layout.channel_type) {
-        case ChannelTypeId::mono:
-            return layout.sample_layout == SampleStreamLayout::planar
-                ? make_lowered_broadcast_node<mono, SampleStreamLayout::planar>(arity)
-                : make_lowered_broadcast_node<mono, SampleStreamLayout::interleaved>(arity);
-        case ChannelTypeId::stereo:
-            return layout.sample_layout == SampleStreamLayout::planar
-                ? make_lowered_broadcast_node<stereo, SampleStreamLayout::planar>(arity)
-                : make_lowered_broadcast_node<stereo, SampleStreamLayout::interleaved>(arity);
-        case ChannelTypeId::count:
-            break;
-        }
-        error("unsupported channel layout for generated broadcast node");
-    }
-
     constexpr std::string lowered_generated_node_id(std::string_view builder_id, size_t generated_index)
     {
         std::string id(builder_id);
@@ -905,48 +855,10 @@ namespace details {
             }
         }
 
-        std::flat_map<ConcretePortId, std::vector<GraphEdge>> edges_map;
-        for (GraphEdge const& edge : g.edges)
-        {
-            edges_map[edge.source].push_back(edge);
-        }
         std::flat_map<ConcretePortId, std::vector<GraphEventEdge>> event_edges_map;
         for (GraphEventEdge const& edge : g.event_edges)
         {
             event_edges_map[edge.source].push_back(edge);
-        }
-
-        nodes_size = g.nodes.size();
-        for (size_t node = 0; node < nodes_size; ++node)
-        {
-            size_t const num_outputs = get_num_outputs(g.nodes[node]);
-            for (size_t out_port = 0; out_port < num_outputs; ++out_port)
-            {
-                auto it = edges_map.find({ node, out_port });
-                if (it == edges_map.end()) continue;
-
-                auto const& edges_to_expand = it->second;
-                size_t const port_arity = edges_to_expand.size();
-                if (port_arity <= 1) continue;
-
-                g.nodes.push_back(make_lowered_broadcast_node(
-                    port_arity,
-                    effective_channel_layout(g.nodes[node].outputs()[out_port])));
-                g.explicit_ttl_samples.push_back(std::nullopt);
-                g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
-                g.node_virtual_ids.emplace_back();
-                g.node_source_infos.emplace_back();
-                g.node_construction_order.push_back(next_lowered_construction_order(g));
-                size_t const broadcast_node = g.nodes.size() - 1;
-
-                for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
-                {
-                    GraphEdge const& to_rewire = edges_to_expand[in_port];
-                    g.edges.erase(to_rewire);
-                    g.edges.insert(GraphEdge{ { broadcast_node, in_port }, to_rewire.target });
-                }
-                g.edges.insert(GraphEdge{ { node, out_port }, { broadcast_node, 0 } });
-            }
         }
 
         nodes_size = g.nodes.size();

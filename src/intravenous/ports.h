@@ -605,6 +605,7 @@ namespace iv {
     class InputPort {
         SharedPortData& _shared_data;
         size_t _history;
+        size_t _latency_samples = 0;
         size_t _read_position = 0;
 
         friend void advance_input(InputPort&, size_t);
@@ -624,12 +625,17 @@ namespace iv {
     public:
         explicit InputPort(
             SharedPortData& shared_data,
-            size_t history
+            size_t history,
+            size_t latency_samples = 0
         ) :
             _shared_data(shared_data),
-            _history(history)
+            _history(history),
+            _latency_samples(latency_samples)
         {
             IV_ASSERT(is_power_of_2(_shared_data.frame_capacity), "buffer frame capacity should be a power of 2");
+            IV_ASSERT(_latency_samples < _shared_data.frame_capacity, "input latency must fit its shared ring buffer");
+            _read_position = (_shared_data.frame_capacity - _latency_samples)
+                & (_shared_data.frame_capacity - 1);
         }
 
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0, size_t channel = 0) const
@@ -657,7 +663,7 @@ namespace iv {
 
         IV_FORCEINLINE constexpr size_t latency() const
         {
-            return _shared_data.latency;
+            return _latency_samples;
         }
 
         IV_FORCEINLINE constexpr size_t buffer_size() const
@@ -850,6 +856,34 @@ namespace iv {
         {
             size_t const start = (_position + buffer_size() - block_size) & (buffer_size() - 1);
             return make_block_view(std::span<Sample const>(_shared_data.buffer), start, block_size);
+        }
+
+        // The primary output writes the source-layout ring once.  Converted
+        // fan-out branches are completed afterward from that exact block;
+        // identity branches bind their InputPorts directly to this ring.
+        IV_FORCEINLINE void copy_completed_block_to(
+            OutputPort& target, size_t block_size) const
+        {
+            IV_ASSERT(
+                _source_layout == target._source_layout,
+                "fan-out branches must preserve the producer source layout");
+            IV_ASSERT(block_size <= buffer_size(),
+                "fan-out block exceeds source ring capacity");
+
+            Sample frame[2] {};
+            size_t const start = (_position + buffer_size() - block_size)
+                & (buffer_size() - 1);
+            for (size_t frame_i = 0; frame_i < block_size; ++frame_i) {
+                size_t const source_frame = (start + frame_i)
+                    & (buffer_size() - 1);
+                for (size_t channel = 0;
+                     channel < channel_count(_source_layout); ++channel) {
+                    frame[channel] = _shared_data.buffer[
+                        _shared_data.sample_index(source_frame, channel)];
+                }
+                target.push_frame(std::span<Sample const>(
+                    frame, channel_count(_source_layout)));
+            }
         }
 
         IV_FORCEINLINE constexpr size_t buffer_size() const

@@ -33,6 +33,7 @@ namespace iv {
 
     struct GraphNodeWrapper {
         ReflectedNodeRuntimeOperations _operations {};
+        StaticSpan<StaticInputConfig> _inputs {};
         StaticSpan<StaticOutputConfig> _outputs {};
         StaticSpan<StaticEventOutputConfig> _event_outputs {};
         size_t _internal_latency = 0;
@@ -44,17 +45,22 @@ namespace iv {
         bool _can_skip_block = false;
         StaticString _node_id {};
         StaticSpan<StaticSampleOutputBinding> _output_targets {};
+        StaticSpan<size_t> _output_fanout_offsets {};
+        StaticSpan<StaticSampleOutputBinding> _fanout_targets {};
         StaticSpan<StaticEventOutputBinding> _event_output_targets {};
         StaticSpan<GraphPortDataNode> _input_port_data_nodes {};
+        StaticSpan<GraphPortDataNode> _output_port_data_nodes {};
         StaticSpan<GraphEventPortDataNode> _input_event_port_data_nodes {};
 
         consteval explicit GraphNodeWrapper(
             ReflectedNodeDescription node,
             std::optional<size_t> ttl_samples,
             std::vector<PortBufferPlan> input_buffer_plans,
+            std::vector<SampleInputBinding> input_bindings,
             std::vector<EventInputConfig> input_event_configs,
             std::string node_id,
-            std::vector<SampleOutputBinding> output_targets,
+            std::vector<std::vector<SampleOutputBinding>> output_targets,
+            std::vector<SampleBufferStorage> output_fanout_storage,
             std::vector<EventOutputBinding> event_output_targets,
             // The minimal mode is used only by artifact profiling to isolate
             // static port/binding promotion from wrapper scaffolding.
@@ -62,6 +68,9 @@ namespace iv {
                 GraphNodeWrapperBuildMode::full
         )
         : _operations(node.operations.runtime)
+        , _inputs(build_mode == GraphNodeWrapperBuildMode::full
+              ? details::define_static_configs<StaticInputConfig>(node.inputs())
+              : StaticSpan<StaticInputConfig>{})
         , _outputs(build_mode == GraphNodeWrapperBuildMode::full
               ? details::define_static_configs<StaticOutputConfig>(
                     node.outputs())
@@ -81,14 +90,24 @@ namespace iv {
               ? details::define_static_string(node_id)
               : StaticString{})
         , _output_targets(build_mode == GraphNodeWrapperBuildMode::full
-              ? freeze_output_targets(output_targets)
+              ? freeze_primary_output_targets(output_targets)
+              : StaticSpan<StaticSampleOutputBinding>{})
+        , _output_fanout_offsets(build_mode == GraphNodeWrapperBuildMode::full
+              ? freeze_output_fanout_offsets(output_targets)
+              : StaticSpan<size_t>{})
+        , _fanout_targets(build_mode == GraphNodeWrapperBuildMode::full
+              ? freeze_fanout_targets(output_targets)
               : StaticSpan<StaticSampleOutputBinding>{})
         , _event_output_targets(build_mode == GraphNodeWrapperBuildMode::full
               ? freeze_event_output_targets(event_output_targets)
               : StaticSpan<StaticEventOutputBinding>{})
         , _input_port_data_nodes(build_mode == GraphNodeWrapperBuildMode::full
               ? details::define_static_span(make_input_port_data_nodes(
-                    node_id, node.inputs(), input_buffer_plans))
+                    node_id, node.inputs(), input_buffer_plans, input_bindings))
+              : StaticSpan<GraphPortDataNode>{})
+        , _output_port_data_nodes(build_mode == GraphNodeWrapperBuildMode::full
+              ? details::define_static_span(make_output_port_data_nodes(
+                    output_fanout_storage))
               : StaticSpan<GraphPortDataNode>{})
         , _input_event_port_data_nodes(
               build_mode == GraphNodeWrapperBuildMode::full
@@ -97,24 +116,8 @@ namespace iv {
                   : StaticSpan<GraphEventPortDataNode>{})
         {}
 
-        consteval explicit GraphNodeWrapper(
-            ReflectedNodeDescription node,
-            std::optional<size_t> ttl_samples,
-            std::vector<PortBufferPlan> input_buffer_plans,
-            std::string node_id,
-            std::vector<SampleOutputBinding> output_targets
-        ) :
-            GraphNodeWrapper(
-                std::move(node),
-                ttl_samples,
-                std::move(input_buffer_plans),
-                {},
-                std::move(node_id),
-                std::move(output_targets),
-                {}
-            )
-        {}
-
+        // Kept for the small standalone layout test. Production compilation
+        // supplies the complete source-to-many target representation above.
         consteval explicit GraphNodeWrapper(
             ReflectedNodeDescription node,
             std::vector<PortBufferPlan> input_buffer_plans,
@@ -122,24 +125,72 @@ namespace iv {
             std::vector<SampleOutputBinding> output_targets
         ) :
             GraphNodeWrapper(
-                std::move(node),
+                node,
                 std::nullopt,
                 std::move(input_buffer_plans),
+                std::vector<SampleInputBinding>(node.inputs().size()),
+                {},
                 std::move(node_id),
-                std::move(output_targets)
-            )
+                wrap_primary_output_targets(output_targets),
+                {},
+                {})
         {}
 
+        static consteval std::vector<std::vector<SampleOutputBinding>>
+        wrap_primary_output_targets(
+            std::span<SampleOutputBinding const> targets)
+        {
+            std::vector<std::vector<SampleOutputBinding>> result;
+            result.reserve(targets.size());
+            for (auto const& target : targets) {
+                result.push_back({target});
+            }
+            return result;
+        }
+
         static consteval StaticSpan<StaticSampleOutputBinding>
-        freeze_output_targets(std::span<SampleOutputBinding const> targets)
+        freeze_primary_output_targets(
+            std::span<std::vector<SampleOutputBinding> const> targets)
         {
             std::vector<StaticSampleOutputBinding> result;
             result.reserve(targets.size());
             for (auto const& target : targets) {
+                auto const& primary = target.empty()
+                    ? SampleOutputBinding{}
+                    : target.front();
                 result.push_back({
-                    .target = details::define_static_string(target.target),
-                    .conversion = target.conversion,
+                    .target = details::define_static_string(primary.target),
+                    .conversion = primary.conversion,
                 });
+            }
+            return details::define_static_span(result);
+        }
+
+        static consteval StaticSpan<size_t> freeze_output_fanout_offsets(
+            std::span<std::vector<SampleOutputBinding> const> targets)
+        {
+            std::vector<size_t> offsets{0};
+            offsets.reserve(targets.size() + 1);
+            for (auto const& target : targets) {
+                offsets.push_back(offsets.back() +
+                    (target.empty() ? 0 : target.size() - 1));
+            }
+            return details::define_static_span(offsets);
+        }
+
+        static consteval StaticSpan<StaticSampleOutputBinding>
+        freeze_fanout_targets(
+            std::span<std::vector<SampleOutputBinding> const> targets)
+        {
+            std::vector<StaticSampleOutputBinding> result;
+            for (auto const& output_targets : targets) {
+                for (size_t i = 1; i < output_targets.size(); ++i) {
+                    result.push_back({
+                        .target = details::define_static_string(
+                            output_targets[i].target),
+                        .conversion = output_targets[i].conversion,
+                    });
+                }
             }
             return details::define_static_span(result);
         }
@@ -162,10 +213,12 @@ namespace iv {
         static consteval std::vector<GraphPortDataNode> make_input_port_data_nodes(
             std::string const& node_id,
             std::span<InputConfig const> inputs,
-            std::span<PortBufferPlan const> input_buffer_plans
+            std::span<PortBufferPlan const> input_buffer_plans,
+            std::span<SampleInputBinding const> input_bindings
         )
         {
             IV_ASSERT(inputs.size() == input_buffer_plans.size(), "graph input port data must have one buffer plan per input");
+            IV_ASSERT(inputs.size() == input_bindings.size(), "graph input bindings must align with input configs");
 
             std::vector<GraphPortDataNode> port_data_nodes;
             port_data_nodes.reserve(inputs.size());
@@ -173,10 +226,23 @@ namespace iv {
                 port_data_nodes.emplace_back(
                     port_data_export_id(node_id, input_i),
                     inputs[input_i],
-                    input_buffer_plans[input_i]
+                    input_buffer_plans[input_i],
+                    input_bindings[input_i].aliases,
+                    input_bindings[input_i].owns_storage
                 );
             }
             return port_data_nodes;
+        }
+
+        static consteval std::vector<GraphPortDataNode> make_output_port_data_nodes(
+            std::span<SampleBufferStorage const> storage)
+        {
+            std::vector<GraphPortDataNode> result;
+            result.reserve(storage.size());
+            for (auto const& entry : storage) {
+                result.emplace_back(entry.id, entry.config, entry.plan);
+            }
+            return result;
         }
 
         static consteval std::vector<GraphEventPortDataNode> make_input_event_port_data_nodes(
@@ -199,6 +265,7 @@ namespace iv {
             std::span<std::span<std::byte>> nested_node_states;
             std::span<InputPort> inputs;
             std::span<OutputPort> outputs;
+            std::span<OutputPort> fanout_outputs;
             std::span<EventInputPort> event_inputs;
             std::span<EventOutputPort> event_outputs;
         };
@@ -206,9 +273,9 @@ namespace iv {
         constexpr auto inputs() const
         {
             std::vector<InputConfig> result;
-            result.reserve(_input_port_data_nodes.size);
-            for (auto const& port_data : _input_port_data_nodes) {
-                result.push_back(port_data._input.config());
+            result.reserve(_inputs.size);
+            for (auto const& input : _inputs) {
+                result.push_back(input.config());
             }
             return result;
         }
@@ -267,9 +334,13 @@ namespace iv {
             ctx.nested_node_states(state.nested_node_states);
             ctx.local_array(state.inputs, num_inputs);
             ctx.local_array(state.outputs, num_outputs);
+            ctx.local_array(state.fanout_outputs, _fanout_targets.size);
             ctx.local_array(state.event_inputs, num_event_inputs);
             ctx.local_array(state.event_outputs, num_event_outputs);
             for (auto const& port_data_node : _input_port_data_nodes) {
+                do_declare(port_data_node, ctx);
+            }
+            for (auto const& port_data_node : _output_port_data_nodes) {
                 do_declare(port_data_node, ctx);
             }
             for (auto const& port_data_node : _input_event_port_data_nodes) {
@@ -290,6 +361,10 @@ namespace iv {
                     ctx.require_export_array<SharedPortData>(
                         std::string(target.target.view()));
                 }
+            }
+            for (auto const& target : _fanout_targets) {
+                ctx.require_export_array<SharedPortData>(
+                    std::string(target.target.view()));
             }
             for (auto const& target : _event_output_targets) {
                 if (!target.target.empty()) {
@@ -313,7 +388,11 @@ namespace iv {
                     port_data_export_id(_node_id.view(), input_i)
                 );
                 IV_ASSERT(!input_port_data.empty(), "graph node wrapper input wiring must resolve the requested SharedPortData entry");
-                std::construct_at(&state.inputs[input_i], const_cast<SharedPortData&>(input_port_data[0]), inputs[input_i].history);
+                std::construct_at(
+                    &state.inputs[input_i],
+                    const_cast<SharedPortData&>(input_port_data[0]),
+                    inputs[input_i].history,
+                    _input_port_data_nodes[input_i]._input_buffer_plan.corrected_latency);
             }
             for (size_t input_i = 0; input_i < event_inputs.size(); ++input_i) {
                 auto input_port_data = ctx.template resolve_exported_array_storage<EventSharedPortData>(
@@ -324,6 +403,20 @@ namespace iv {
             }
 
             for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
+                for (size_t fanout_i = _output_fanout_offsets[output_i];
+                     fanout_i < _output_fanout_offsets[output_i + 1];
+                     ++fanout_i) {
+                    auto const& target = _fanout_targets[fanout_i];
+                    auto target_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
+                        std::string(target.target.view()));
+                    IV_ASSERT(!target_port_data.empty(), "graph fanout target wiring must resolve");
+                    std::construct_at(
+                        &state.fanout_outputs[fanout_i],
+                        const_cast<SharedPortData&>(target_port_data[0]),
+                        outputs[output_i].history,
+                        effective_channel_layout(outputs[output_i]),
+                        target.conversion);
+                }
                 auto const& target = _output_targets[output_i];
                 if (target.target.empty()) {
                     throw std::logic_error(
@@ -375,6 +468,20 @@ namespace iv {
         }
 
         template<auto Node>
+        static IV_FORCEINLINE void propagate_sample_fanout(
+            State& state, size_t block_size)
+        {
+            for (size_t output_i = 0; output_i < state.outputs.size(); ++output_i) {
+                for (size_t fanout_i = Node._output_fanout_offsets[output_i];
+                     fanout_i < Node._output_fanout_offsets[output_i + 1];
+                     ++fanout_i) {
+                    state.outputs[output_i].copy_completed_block_to(
+                        state.fanout_outputs[fanout_i], block_size);
+                }
+            }
+        }
+
+        template<auto Node>
         static IV_FORCEINLINE void tick_static(
             TickBlockContext<GraphNodeWrapper> const& ctx)
         {
@@ -392,6 +499,7 @@ namespace iv {
                 ctx.index,
                 ctx.block_size
             );
+            propagate_sample_fanout<Node>(state, ctx.block_size);
         }
 
         template<auto Node>
@@ -412,6 +520,7 @@ namespace iv {
                 ctx.index,
                 ctx.block_size
             );
+            propagate_sample_fanout<Node>(state, ctx.block_size);
         }
 
         constexpr size_t resolve_default_ttl_samples(size_t default_ttl) const

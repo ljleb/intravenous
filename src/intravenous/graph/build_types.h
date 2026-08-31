@@ -138,6 +138,9 @@ namespace iv {
         std::vector<EventInputConfig> public_event_inputs;
         std::vector<EventOutputConfig> public_event_outputs;
         std::vector<PortBufferPlan> public_output_buffer_plans;
+        std::vector<SampleInputBinding> public_output_bindings;
+        std::vector<SampleBufferStorage> public_input_fanout_storage;
+        std::vector<std::vector<SampleOutputBinding>> public_input_targets;
         std::vector<DormancyGroup> dormancy_groups;
         size_t internal_latency;
         std::vector<std::string> node_ids;

@@ -744,6 +744,45 @@ consteval ChannelTopologySnapshot tiled_mono_direct_route_snapshot()
     };
 }
 
+consteval bool sample_fanout_uses_one_buffer_owner_without_a_broadcast_node()
+{
+    iv::GraphBuilder g;
+    auto source = g.node<iv::Constant>(iv::Sample{0.25f});
+    auto first = g.node<MonoPass>();
+    auto second = g.node<MonoPass>();
+    first(source);
+    second(source);
+    g.outputs(
+        iv::PortName<"first">{} = first,
+        iv::PortName<"second">{} = second);
+
+    auto const built = std::move(g).build();
+    if (has_generated_type(
+            built.metadata.concrete_node_type_identities, "Broadcast")) {
+        return false;
+    }
+
+    size_t wrapped_node_count = 0;
+    size_t aliased_input_count = 0;
+    bool source_has_no_copy_branch = false;
+    for (auto const& scc : built.graph._scc_wrappers) {
+        wrapped_node_count += scc._nodes.size;
+        for (size_t node_i = 0; node_i < scc._nodes.size; ++node_i) {
+            auto const& node = scc._nodes[node_i];
+            if (scc._global_node_indices[node_i] == 0) {
+                source_has_no_copy_branch = node._fanout_targets.size == 0;
+            }
+            if (node._input_port_data_nodes.size == 1
+                && !node._input_port_data_nodes[0]._owns_storage) {
+                ++aliased_input_count;
+            }
+        }
+    }
+    return wrapped_node_count == 3
+        && source_has_no_copy_branch
+        && aliased_input_count == 1;
+}
+
 consteval bool sample_lowering_plan_groups_connections_by_target_port()
 {
     iv::GraphBuilderConnections connections;
@@ -1185,6 +1224,12 @@ TEST(Channels, MonoSourceToATiledInputUsesOneConnectionNode)
     constexpr auto snapshot = tiled_mono_direct_route_snapshot();
     EXPECT_TRUE(snapshot.ok);
     EXPECT_EQ(snapshot.connection_nodes, 1u);
+}
+
+TEST(Channels, SampleFanoutSharesOneOwnerWithoutABroadcastNode)
+{
+    static_assert(sample_fanout_uses_one_buffer_owner_without_a_broadcast_node());
+    EXPECT_TRUE(sample_fanout_uses_one_buffer_owner_without_a_broadcast_node());
 }
 
 TEST(Channels, SampleLoweringPlanGroupsConnectionsByTargetPort)
