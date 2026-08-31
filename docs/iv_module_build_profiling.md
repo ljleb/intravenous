@@ -271,6 +271,15 @@ The PCH contribution was essentially unchanged (11.067 s static versus
 9.809 s generic on cold builds); the reduction is in compiling and optimizing
 the generated export translation unit.
 
+The module-reload status timer is broader than the isolated benchmark: it
+starts before `ModuleLoader` acquires the per-workspace build lock and stops
+after the artifact is copied and loaded. In a later in-project reload of this
+same generic candidate, the status reported 265.643 s, while that workspace's
+Ninja log recorded 49.138 s for `root_export.cpp.o` and 0.222 s to link. The
+remaining time occurred outside those Ninja edges (most plausibly serialized
+workspace access); do not interpret a status duration as compiler time without
+separate phase timings.
+
 ### Live execution
 
 `iv_module_execution_benchmark` loads each retained module DSO, creates a
