@@ -218,103 +218,28 @@ using VirtualMetadataBuildResult =
 constexpr VirtualMetadataBuildResult
 build_virtual_metadata(ExecutableGraphData const& g,
                        std::span<LoweredSubgraphSpec const> lowered_scopes) {
-  std::flat_set<ConcretePortId> connected_sample_inputs;
-  std::flat_set<ConcretePortId> connected_sample_outputs;
-  std::flat_set<ConcretePortId> connected_event_inputs;
-  std::flat_set<ConcretePortId> connected_event_outputs;
-  for (auto const& edge : g.edges) {
-    connected_sample_inputs.insert(edge.target);
-    connected_sample_outputs.insert(edge.source);
+  // The authored virtual-node records already hold the port metadata for
+  // ordinary nodes. Rebuilding it from every reflected runtime node here used
+  // to visit every generated ConnectionNode and then discard it: nodes without
+  // an ID never enter a virtual group, while nodes with one are overwritten by
+  // apply_virtual_port_metadata below. Preserve only the runtime association
+  // needed by the compiler, and reserve graph-derived metadata work for
+  // lowered scopes, which have no authored record to reuse.
+  VirtualNodeIdsByBackingNodeId virtual_node_ids_by_backing_node_id;
+  for (size_t node_i = 0; node_i < g.nodes.size(); ++node_i) {
+    if (node_i >= g.node_virtual_ids.size() ||
+        g.node_virtual_ids[node_i].empty()) {
+      continue;
+    }
+    auto& ids = virtual_node_ids_by_backing_node_id[g.node_ids[node_i]];
+    ids.insert(ids.end(), g.node_virtual_ids[node_i].begin(),
+               g.node_virtual_ids[node_i].end());
   }
-  for (auto const& edge : g.event_edges) {
-    connected_event_inputs.insert(edge.target);
-    connected_event_outputs.insert(edge.source);
-  }
-  auto sample_input_connected = [&](size_t node, size_t port) {
-    return connected_sample_inputs.contains(ConcretePortId{node, port});
-  };
-  auto sample_output_connected = [&](size_t node, size_t port) {
-    return connected_sample_outputs.contains(ConcretePortId{node, port});
-  };
-  auto event_input_connected = [&](size_t node, size_t port) {
-    return connected_event_inputs.contains(ConcretePortId{node, port});
-  };
-  auto event_output_connected = [&](size_t node, size_t port) {
-    return connected_event_outputs.contains(ConcretePortId{node, port});
-  };
 
   std::vector<VirtualConcreteNode> concrete_nodes;
   std::vector<std::vector<std::string>> concrete_node_virtual_ids;
-  concrete_nodes.reserve(g.nodes.size());
-  concrete_node_virtual_ids.reserve(g.nodes.size() + lowered_scopes.size());
-  for (size_t node_i = 0; node_i < g.nodes.size(); ++node_i) {
-    VirtualConcreteNode concrete;
-    concrete.id = g.node_ids[node_i];
-    concrete.kind = node_i < g.node_kinds.size()
-                        ? g.node_kinds[node_i]
-                        : std::string(g.nodes[node_i].type_name);
-    concrete.construction_order = node_i < g.node_construction_order.size()
-                                      ? g.node_construction_order[node_i]
-                                      : node_i;
-    concrete.type_identity = node_i < g.node_type_identities.size()
-                                 ? g.node_type_identities[node_i]
-                                 : concrete.kind;
-    if (node_i < g.node_source_infos.size()) {
-      concrete.source_infos = g.node_source_infos[node_i];
-    }
-
-    auto const inputs = g.nodes[node_i].inputs();
-    concrete.sample_inputs.reserve(inputs.size());
-    for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
-      concrete.sample_inputs.push_back(VirtualConcretePortInfo{
-          .name = inputs[input_i].name,
-          .type = "sample",
-          .connected = sample_input_connected(node_i, input_i),
-          .history = inputs[input_i].history,
-          .default_value = inputs[input_i].default_value,
-          .min = inputs[input_i].min,
-          .max = inputs[input_i].max,
-      });
-    }
-
-    auto const outputs = g.nodes[node_i].outputs();
-    concrete.sample_outputs.reserve(outputs.size());
-    for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
-      concrete.sample_outputs.push_back(VirtualConcretePortInfo{
-          .name = outputs[output_i].name,
-          .type = "sample",
-          .connected = sample_output_connected(node_i, output_i),
-          .history = outputs[output_i].history,
-          .latency = outputs[output_i].latency,
-      });
-    }
-
-    auto const event_inputs = g.nodes[node_i].event_inputs();
-    concrete.event_inputs.reserve(event_inputs.size());
-    for (size_t input_i = 0; input_i < event_inputs.size(); ++input_i) {
-      concrete.event_inputs.push_back(VirtualConcretePortInfo{
-          .name = event_inputs[input_i].name,
-          .type = event_type_name(event_inputs[input_i].type),
-          .connected = event_input_connected(node_i, input_i),
-      });
-    }
-
-    auto const event_outputs = g.nodes[node_i].event_outputs();
-    concrete.event_outputs.reserve(event_outputs.size());
-    for (size_t output_i = 0; output_i < event_outputs.size(); ++output_i) {
-      concrete.event_outputs.push_back(VirtualConcretePortInfo{
-          .name = event_outputs[output_i].name,
-          .type = event_type_name(event_outputs[output_i].type),
-          .connected = event_output_connected(node_i, output_i),
-      });
-    }
-
-    concrete_nodes.push_back(std::move(concrete));
-    concrete_node_virtual_ids.push_back(node_i < g.node_virtual_ids.size()
-                                            ? g.node_virtual_ids[node_i]
-                                            : std::vector<std::string>{});
-  }
-
+  concrete_nodes.reserve(lowered_scopes.size());
+  concrete_node_virtual_ids.reserve(lowered_scopes.size());
   for (size_t scope_i = 0; scope_i < lowered_scopes.size(); ++scope_i) {
     auto const& scope = lowered_scopes[scope_i];
     VirtualConcreteNode concrete;
@@ -505,7 +430,6 @@ build_virtual_metadata(ExecutableGraphData const& g,
               return a.backing_node_ids < b.backing_node_ids;
             });
 
-  VirtualNodeIdsByBackingNodeId virtual_node_ids_by_backing_node_id;
   for (auto const& virtual_node : virtual_nodes) {
     for (auto const& backing_node_id : virtual_node.backing_node_ids) {
       virtual_node_ids_by_backing_node_id[backing_node_id].push_back(
@@ -1159,7 +1083,6 @@ class GraphLowerer {
   std::vector<size_t> runtime_node_indices;
   std::flat_map<TopologyPortId, TopologyPortId> source_of;
   std::flat_map<TopologyPortId, TopologyEventEdge> event_source_of;
-  std::flat_map<TopologyPortId, TopologyPortId> sample_source_by_target;
   std::flat_map<NodeBundlePortId, RuntimeSampleBindingRef, NodeBundlePortIdLess>
       runtime_binding_by_semantic_target;
   std::flat_map<TopologyPortId, RuntimeSampleBindingRef>
@@ -1316,7 +1239,6 @@ class GraphLowerer {
       if (!std::ranges::contains(targets, edge.target))
         targets.push_back(edge.target);
     }
-    sample_source_by_target[edge.target] = edge.source;
     out.pending_topology_edges.push_back(std::move(edge));
   }
 
@@ -1574,7 +1496,15 @@ class GraphLowerer {
     size_t authored_topology_node_count = 0;
     std::flat_set<NodeBundlePortId, NodeBundlePortIdLess>
         assigned_subgraph_outputs;
-    std::flat_set<TopologyPortId> bound_targets;
+    // Input ports of authored concrete nodes form a dense domain. A bitmap is
+    // both the natural representation of this one-pass marking problem and
+    // avoids a flat_set insertion for every authored connection.
+    std::vector<size_t> input_slot_offsets;
+    std::vector<bool> bound_target_slots;
+    // Public and subgraph-boundary targets are outside that dense domain.
+    // They are few, but still count as bound targets for the lowering pass.
+    std::flat_set<TopologyPortId> non_authored_bound_targets;
+    size_t bound_target_count = 0;
   };
 
   constexpr void index_runtime_sample_bindings() {
@@ -1741,10 +1671,41 @@ class GraphLowerer {
     SampleLoweringState state{
         .authored_topology_node_count = topology_node_count(),
         .assigned_subgraph_outputs = {},
-        .bound_targets = {},
+        .input_slot_offsets = {},
+        .bound_target_slots = {},
+        .non_authored_bound_targets = {},
+        .bound_target_count = 0,
     };
+    state.input_slot_offsets.resize(state.authored_topology_node_count + 1);
+    size_t input_slot_count = 0;
+    for (size_t node = 0; node < state.authored_topology_node_count; ++node) {
+      state.input_slot_offsets[node] = input_slot_count;
+      if (!topology_is_subgraph_node(node)) {
+        input_slot_count +=
+            topology_concrete_node(node).ports.sample_inputs.size();
+      }
+    }
+    state.input_slot_offsets[state.authored_topology_node_count] =
+        input_slot_count;
+    state.bound_target_slots.assign(input_slot_count, false);
     auto mark_bound = [&](TopologyPortId target) {
-      state.bound_targets.insert(target);
+      if (target.node >= state.authored_topology_node_count ||
+          topology_is_subgraph_node(target.node)) {
+        if (state.non_authored_bound_targets.insert(target).second)
+          ++state.bound_target_count;
+        return;
+      }
+      if (target.port >=
+          topology_concrete_node(target.node).ports.sample_inputs.size()) {
+        details::error("sample target is outside its authored input range");
+      }
+      auto const slot = state.input_slot_offsets[target.node] + target.port;
+      if (slot >= state.bound_target_slots.size())
+        details::error("sample target is outside its authored input range");
+      if (!state.bound_target_slots[slot]) {
+        state.bound_target_slots[slot] = true;
+        ++state.bound_target_count;
+      }
     };
     for (auto const& group : plan.groups) {
       auto const& endpoints = out.bundle_projections.at(group.target.node_bundle_handle).sample_inputs.at(group.target.port_ordinal);
@@ -1821,7 +1782,13 @@ class GraphLowerer {
 
   constexpr void lower_vacant_sample_inputs(SampleLoweringState& state) {
     auto mark_bound = [&](TopologyPortId target) {
-      state.bound_targets.insert(target);
+      auto const slot = state.input_slot_offsets[target.node] + target.port;
+      if (slot >= state.bound_target_slots.size())
+        details::error("vacant sample target is outside its authored input range");
+      if (!state.bound_target_slots[slot]) {
+        state.bound_target_slots[slot] = true;
+        ++state.bound_target_count;
+      }
     };
     for (size_t node = 0; node < state.authored_topology_node_count; ++node) {
       if (topology_is_subgraph_node(node)) continue;
@@ -1829,7 +1796,8 @@ class GraphLowerer {
           topology_concrete_node(node).ports.sample_inputs.size();
       for (size_t input = 0; input < input_count; ++input) {
         TopologyPortId const target{node, input};
-        if (state.bound_targets.contains(target)) continue;
+        auto const slot = state.input_slot_offsets[node] + input;
+        if (state.bound_target_slots[slot]) continue;
         SampleLoweringGroup vacant;
         lower_connection_node(
             vacant,
@@ -1943,19 +1911,34 @@ class GraphLowerer {
   }
 
   constexpr void lower_detach() {
+    if (detach.authored_infos().empty()) return;
+    // This lookup is meaningful only for detach writers. Building it while
+    // every ordinary sample edge is added made no-detach graphs maintain a
+    // large, repeatedly shifted flat_map for no consumer.
+    auto source_for_target = [&](TopologyPortId target)
+        -> std::optional<TopologyPortId> {
+      for (auto it = out.pending_topology_edges.rbegin();
+           it != out.pending_topology_edges.rend(); ++it) {
+        if (it->target == target) return it->source;
+      }
+      for (auto const& edge : out.topology_edges) {
+        if (edge.target == target) return edge.source;
+      }
+      return std::nullopt;
+    };
     for(auto const& info:detach.authored_infos()) {
       auto writer=out.bundle_projections.at(info.writer_bundle).topology_node;
       if(!writer)details::error("detach writer is not a concrete lowered node");
-      auto const source = sample_source_by_target.find({*writer, 0});
-      if (source == sample_source_by_target.end())
+      auto const source = source_for_target({*writer, 0});
+      if (!source)
         details::error("detach writer has no lowered source");
       auto const reader_channel = resolve_sample_source_channel(info.reader_channel);
       if (reader_channel.channel != 0 || channel_count(reader_channel.config.channel_layout.channel_type) != 1) details::error("detach reader output must be one concrete channel");
       auto const reader = reader_channel.port;
       out.detached_info_by_source.emplace(
-          source->second,
+          *source,
           details::DetachedSamplePortInfo{
-          info.detach_id, source->second, *writer, reader,
+          info.detach_id, *source, *writer, reader,
           info.loop_extra_latency});
       out.detached_reader_outputs.emplace(reader);
     }
@@ -2129,10 +2112,20 @@ class GraphLowerer {
     runtime_node_indices.assign(topology_node_count(), GRAPH_ID);
     source_of.clear();
     event_source_of.clear();
-    for_each_sample_edge(
-        [&](TopologyEdge const& edge) { source_of[edge.target] = edge.source; });
+    // Only lowered-subgraph inputs are followed through source_of. Indexing
+    // every ordinary node input creates an O(E²) flat-map build in the common
+    // flat graph case, then leaves every entry unread.
+    for_each_sample_edge([&](TopologyEdge const& edge) {
+      if (edge.target.node < topology_node_count() &&
+          topology_is_subgraph_node(edge.target.node)) {
+        source_of[edge.target] = edge.source;
+      }
+    });
     for_each_event_edge([&](TopologyEventEdge const& edge) {
-      event_source_of[edge.target] = edge;
+      if (edge.target.node < topology_node_count() &&
+          topology_is_subgraph_node(edge.target.node)) {
+        event_source_of[edge.target] = edge;
+      }
     });
   }
 
@@ -2733,12 +2726,12 @@ struct GraphLowererTestAccess {
     auto state = lowerer.lower_connected_sample_groups(plan);
     SampleLoweringPassFacts facts{
         .planned_groups = plan.groups.size(),
-        .connected_bound_targets = state.bound_targets.size(),
+        .connected_bound_targets = state.bound_target_count,
         .vacant_bound_targets = 0,
         .assigned_subgraph_outputs = state.assigned_subgraph_outputs.size(),
     };
     lowerer.lower_vacant_sample_inputs(state);
-    facts.vacant_bound_targets = state.bound_targets.size();
+    facts.vacant_bound_targets = state.bound_target_count;
     lowerer.bind_subgraph_sample_inputs(state);
     return facts;
   }

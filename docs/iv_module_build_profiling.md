@@ -1,5 +1,13 @@
 # IV module build profiling
 
+> **Status:** This is a profiling notebook, not a statement of current
+> performance. Every numeric result is specific to the recorded checkout,
+> machine, compiler, module shape, and command line; it can become stale as
+> soon as graph construction changes. Treat the commands and measurement
+> methodology as durable, but rerun them on the current checkout before using
+> any number for a decision. Dated A/B sections preserve their historical
+> context and should not be read as current baselines.
+
 ## Reproducible benchmark
 
 Build and run `iv_module_build_benchmark` from the repository root:
@@ -317,3 +325,40 @@ matches the static root's sample output and executes dormant groups correctly.
 The generated candidate was also loaded and executed by the benchmark itself.
 On Linux, `perf` is available in the repository dev shell for repeating the
 counter measurement.
+
+### Rejected static-promotion microexperiment (2026-08-31)
+
+Batching the frozen `ConnectionNode` objects into one static array before
+reflection did not reduce the important work: each object still independently
+froze its nested spans and strings. The retained `saw` hot build measured
+50.917 s for the generated export (49.950 s GCC total, 8,024M reported GGC,
+and 40.340 s constexpr), versus recent generic-root runs around 49–51 s for the
+same edge. It also increased GGC allocation and constexpr time, so the change
+was discarded. A useful arena experiment must flatten the nested tables, not
+only batch their owning objects.
+
+### Rejected offset-slice connection arena (2026-08-31)
+
+A fuller arena flattened the connection-node strings and nested tables. GCC
+cannot reflect an interior pointer such as `storage.data() + offset`, so the
+experiment changed the static views to base-pointer, offset, and size triples.
+It also needed 16-node shards to avoid an optimizer ICE. That workaround made
+the retained `saw` export slower (51.560 s total; 41.120 s constexpr; 8,228M
+reported GGC), produced a 51.2 MiB module instead of the generic-root
+baseline's 4.12 MiB, and was 1.1% slower in execution (196.219 us/block versus
+194.135 us/block). The implementation was reverted.
+
+### Lowering metadata and sparse-index pruning (2026-08-31)
+
+The lowering path was changed to avoid reconstructing virtual-port metadata
+from every reflected runtime node when the authored virtual-node record already
+owns that metadata. It also avoids maintaining ordinary-edge source indexes
+unless detach or subgraph traversal needs them, and uses a dense bitmap for
+authored sample-input binding state.
+
+On the same retained `saw` workload, one hot build measured 46.199 s for the
+generated export (45.720 s GCC total, 7,134M reported GGC, and 36.340 s
+constexpr). A single execution run measured 192.596 us/block. These are
+historical single-run observations, not current baselines or a runtime A/B;
+rerun the documented commands on the current checkout before making a
+performance decision.
