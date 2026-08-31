@@ -166,15 +166,14 @@ namespace iv {
 
     struct LoweredSubgraphSpec {
         struct PortRef {
-            std::string node_id {};
-            size_t port = 0;
-            bool is_graph_port = false;
+            ConcretePortId port {};
+            bool valid = false;
         };
 
         size_t parent_scope = GRAPH_ID;
         std::string kind;
         std::string backing_node_id;
-        std::vector<std::string> member_node_ids;
+        std::vector<size_t> member_nodes;
         std::vector<SourceInfo> source_infos;
         std::vector<SourceSpan> source_spans;
         std::vector<InputConfig> sample_inputs;

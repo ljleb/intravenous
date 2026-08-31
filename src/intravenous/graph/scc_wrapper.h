@@ -253,13 +253,15 @@ namespace iv {
             auto& runtime_state = node_state(state.nested_node_states[NodeIndex]);
             bool inputs_constant = false;
             bool const unchanged =
-                Scc.sample_inputs_unchanged(state, runtime_state, NodeIndex, block_size, inputs_constant)
+                Scc.sample_inputs_unchanged(
+                    state, runtime_state, NodeIndex, block_size, inputs_constant)
                 && event_inputs_unchanged(runtime_state, block_index, block_size);
             state.dormancy.unchanged_inputs[NodeIndex] = unchanged ? 1 : 0;
 
             if (
                 !state.global_node_skip_depth.empty()
-                && state.global_node_skip_depth[Scc._global_node_indices[NodeIndex]] != 0
+                && state.global_node_skip_depth[
+                    Scc._global_node_indices[NodeIndex]] != 0
             ) {
                 GraphNodeWrapper::skip_static<node>({
                     node_ctx,
@@ -301,7 +303,9 @@ namespace iv {
                 && event_outputs_empty(runtime_state, block_index, block_size);
 
             if (inputs_constant && silent) {
-                size_t const accumulated = state.dormancy.silent_samples_accumulated[NodeIndex] + block_size;
+                size_t const accumulated =
+                    state.dormancy.silent_samples_accumulated[NodeIndex]
+                    + block_size;
                 state.dormancy.silent_samples_accumulated[NodeIndex] = accumulated;
                 if (accumulated >= ttl_samples) {
                     state.dormancy.dormant[NodeIndex] = 1;

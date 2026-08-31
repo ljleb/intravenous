@@ -14,7 +14,7 @@ namespace iv {
     struct GraphPortDataNode {
         StaticString _port_data_id;
         StaticInputConfig _input;
-        PortBufferPlan _input_buffer_plan;
+        InputPortPlan _input_plan;
         StaticSpan<StaticString> _aliases {};
         bool _owns_storage = true;
 
@@ -32,13 +32,13 @@ namespace iv {
         consteval explicit GraphPortDataNode(
             std::string port_data_id,
             InputConfig input,
-            PortBufferPlan input_buffer_plan,
+            InputPortPlan input_plan,
             std::vector<std::string> aliases = {},
             bool owns_storage = true
         ) :
             _port_data_id(details::define_static_string(port_data_id)),
             _input(details::define_static_config(input)),
-            _input_buffer_plan(input_buffer_plan),
+            _input_plan(input_plan),
             _aliases(freeze_aliases(aliases)),
             _owns_storage(owns_storage)
         {}
@@ -57,7 +57,7 @@ namespace iv {
                 state.samples,
                 sample_storage_size(
                     _input.channel_layout,
-                    calculate_port_buffer_size(ctx.max_block_size(), _input_buffer_plan)
+                    calculate_port_buffer_size(ctx.max_block_size(), _input_plan.storage)
                 )
             );
             ctx.export_array(

@@ -359,7 +359,9 @@ namespace iv {
             std::vector<GraphPortDataNode> result;
             result.reserve(storage.size());
             for (auto const& entry : storage) {
-                result.emplace_back(entry.id, entry.config, entry.plan);
+                result.emplace_back(
+                    entry.id, entry.config,
+                    InputPortPlan{.storage = entry.plan});
             }
             return result;
         }
@@ -367,11 +369,11 @@ namespace iv {
         static consteval std::vector<GraphPortDataNode> make_egress_port_data_nodes(
             std::string const& graph_id,
             std::span<OutputConfig const> outputs,
-            std::span<PortBufferPlan const> output_buffer_plans,
+            std::span<InputPortPlan const> output_plans,
             std::span<SampleInputBinding const> output_bindings
         )
         {
-            IV_ASSERT(outputs.size() == output_buffer_plans.size(), "graph egress port data must have one buffer plan per output");
+            IV_ASSERT(outputs.size() == output_plans.size(), "graph egress port data must have one plan per output");
             IV_ASSERT(outputs.size() == output_bindings.size(), "graph egress port data must have one binding per output");
 
             std::vector<GraphPortDataNode> port_data_nodes;
@@ -383,7 +385,7 @@ namespace iv {
                         .name = outputs[output_i].name,
                         .channel_layout = outputs[output_i].channel_layout,
                     },
-                    output_buffer_plans[output_i],
+                    output_plans[output_i],
                     output_bindings[output_i].aliases,
                     output_bindings[output_i].owns_storage
                 );
@@ -588,7 +590,7 @@ namespace iv {
                     &state.egress_inputs[output_i],
                     const_cast<SharedPortData&>(egress_port_data[0]),
                     0,
-                    _egress_port_data_nodes[output_i]._input_buffer_plan.corrected_latency);
+                    _egress_port_data_nodes[output_i]._input_plan.read_latency);
             }
             for (size_t output_i = 0; output_i < num_event_outputs(); ++output_i) {
                 auto egress_port_data = ctx.template resolve_exported_array_storage<EventSharedPortData>(

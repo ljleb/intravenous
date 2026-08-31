@@ -117,6 +117,22 @@ receive; `GraphCompiler` therefore never needs a completion-state flag.
 runtime `Graph`. No intermediate graph, diagnostic build mode, or profiling API
 is exposed.
 
+## Deferred event fan-out
+
+Sample fan-out no longer lowers a `Broadcast` node: layout-compatible consumers
+share one output ring, each `InputPort` owns its read cursor, history, and
+validated latency, and only conversion branches receive a wrapper-managed copy.
+
+Event fan-out intentionally remains materialized through `BroadcastEvent` for
+now. `EventSharedPortData` currently owns its read index, so aliasing an event
+buffer would let one consumer advance or clear events needed by another. The
+future event equivalent must first make the reader state consumer-owned in
+`EventInputPort` and give shared event storage a retention rule sufficient for
+all readers. Only then may event lowering stop materializing `BroadcastEvent`:
+same-type consumers can alias one event store, while type-converting consumers
+can receive compiler-managed conversion branches. Do not remove the event
+broadcast node before that reader/retention split exists.
+
 ## Conversion ownership and information flow
 
 The implementation should make the full path from `GraphBuilder` to the static
@@ -161,6 +177,41 @@ authored data or the lowered topology. Carry a narrow phase fact or index
 forward instead. A later scan is appropriate only when it is genuinely a new
 analysis of the completed representation, rather than recovery of an earlier
 fact.
+
+## Compile-time optimization targets
+
+The following are known information-loss or repeated-analysis targets in the
+two conversions. They are ordered by expected compile-time effect.
+
+1. `GraphCompiler` must build its private connectivity analysis once. Region
+   scheduling, per-region latency, dormancy frontiers, sample fan-out, event
+   bindings, and graph latency must consume that one analysis rather than each
+   rebuilding source/target maps or rescanning every edge. In particular, do
+   not scan all edges once per region or once per dormancy scope. This index is
+   compiler-local scratch, not another IR representation.
+2. A generated topology node must retain its scope membership. Do not append it
+   without provenance and later infer membership separately for every subgraph
+   by fixed-point traversal of topology edges. Scope membership is executable
+   IR facts and should be carried directly into the lowered scope records.
+3. Structural node and port references in executable IR must use stable numeric
+   handles, not node-id strings. If compilation reorders nodes, apply the
+   permutation to those handles. Strings are stable runtime/export identities,
+   not compiler-internal addresses.
+4. A completed sample edge includes its channel-conversion plan and must leave
+   lowering with that fact populated. Compiler buffer planning must distinguish
+   per-consumer read requirements from shared-storage requirements, rather than
+   calculating target plans and merging them into a selected fan-out owner.
+   Similarly, dormancy keeps concrete port references until its final static
+   export IDs and latencies are both available.
+5. Lowering metadata must retain results it has already produced, including the
+   virtual-node IDs by backing node. Connectivity queries used for virtual and
+   public-port metadata need one lowering-local authored-connectivity index,
+   not a scan of every authored connection per port.
+
+Small cleanup targets follow the same rule: retain the next construction-order
+counter instead of repeatedly finding a maximum, avoid copying immutable
+detach-validation adjacency, and use the compiler connectivity index for event
+output bindings.
 
 ## Inside authored lowering
 

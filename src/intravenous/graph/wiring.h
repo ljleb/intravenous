@@ -31,6 +31,14 @@ namespace iv {
         size_t output_history;
     };
 
+    // Buffer capacity belongs to shared storage, while latency belongs to one
+    // reader. Fan-out therefore merges only PortBufferPlan and leaves each
+    // InputPortPlan::read_latency intact.
+    struct InputPortPlan {
+        PortBufferPlan storage;
+        size_t read_latency = 0;
+    };
+
     constexpr std::string port_data_export_id(std::string_view node_id)
     {
         std::string id = "port_data:";

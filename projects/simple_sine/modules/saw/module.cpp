@@ -21,7 +21,7 @@ consteval void module_main(iv::GraphBuilder& g)
 {
     constexpr size_t iters = 16;
     auto const f = g.input<"freq">(220, 0, 1000);
-    auto const detune = g.input<"detune">(2.5, 0, 100);
+    auto const detune = g.input<"detune">(2.5, -100, 100);
     auto const detune_pair = detune*2 / (iters-1);
 
     template for (constexpr auto i : std::views::iota(size_t{0}, size_t{iters + 1}))

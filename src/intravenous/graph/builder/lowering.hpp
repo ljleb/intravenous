@@ -90,6 +90,11 @@ struct LoweringWorkspace {
   size_t scope_boundary_port_count = 0;
   std::vector<LoweredNodeBundleProjection> bundle_projections{};
   std::vector<std::optional<NodeBundleHandle>> bundle_by_lowered_node{};
+  // Scope membership is retained for every topology node once the complete
+  // topology exists. Generated nodes inherit memberships from their adjacent
+  // authored components in one global closure rather than being rediscovered
+  // separately for every scope.
+  std::vector<std::vector<size_t>> scope_memberships{};
   std::flat_map<TopologyPortId, TopologyPortId>
       subgraph_input_of_boundary_source{};
   std::flat_map<TopologyPortId, TopologyPortId>
@@ -340,8 +345,7 @@ build_virtual_metadata(ExecutableGraphData const& g,
           .name = scope.sample_outputs[output_i].name,
           .type = "sample",
           .connected = output_i < scope.sample_output_sources.size() &&
-                       (scope.sample_output_sources[output_i].is_graph_port ||
-                        !scope.sample_output_sources[output_i].node_id.empty()),
+                       scope.sample_output_sources[output_i].valid,
           .history = scope.sample_outputs[output_i].history,
           .latency = scope.sample_outputs[output_i].latency,
       });
@@ -364,8 +368,7 @@ build_virtual_metadata(ExecutableGraphData const& g,
           .name = scope.event_outputs[output_i].name,
           .type = event_type_name(scope.event_outputs[output_i].type),
           .connected = output_i < scope.event_output_sources.size() &&
-                       (scope.event_output_sources[output_i].is_graph_port ||
-                        !scope.event_output_sources[output_i].node_id.empty()),
+                       scope.event_output_sources[output_i].valid,
       });
     }
 
@@ -519,22 +522,67 @@ build_virtual_metadata(ExecutableGraphData const& g,
                         std::move(virtual_node_ids_by_backing_node_id));
 }
 
+struct SampleChannelIdLess {
+  template <class ChannelId>
+  constexpr bool operator()(ChannelId const& lhs, ChannelId const& rhs) const {
+    if (lhs.bundle != rhs.bundle) return lhs.bundle < rhs.bundle;
+    if (lhs.port != rhs.port) return lhs.port < rhs.port;
+    return lhs.channel < rhs.channel;
+  }
+};
+
+struct EventPortIdLess {
+  template <class PortId>
+  constexpr bool operator()(PortId const& lhs, PortId const& rhs) const {
+    if (lhs.bundle != rhs.bundle) return lhs.bundle < rhs.bundle;
+    return lhs.port < rhs.port;
+  }
+};
+
+// Authored connectivity is queried heavily while projecting introspection.
+// Build this lowerer-local index once instead of rescanning all authored
+// connections for every virtual/public port.
+struct LoweringAuthoredConnectivity {
+  std::flat_set<SampleInputChannelId, SampleChannelIdLess> sample_inputs;
+  std::flat_set<SampleOutputChannelId, SampleChannelIdLess> sample_outputs;
+  std::flat_set<EventInputPortId, EventPortIdLess> event_inputs;
+  std::flat_set<EventOutputPortId, EventPortIdLess> event_outputs;
+};
+
+constexpr LoweringAuthoredConnectivity build_lowering_authored_connectivity(
+    GraphBuilderConnections const& connections) {
+  LoweringAuthoredConnectivity result;
+  for (auto const& connection : connections.authored_sample_connections()) {
+    result.sample_inputs.insert(connection.target_channels.begin(),
+                                connection.target_channels.end());
+    result.sample_outputs.insert(connection.source_channels.begin(),
+                                 connection.source_channels.end());
+  }
+  for (auto const& connection : connections.authored_event_connections()) {
+    result.event_inputs.insert(connection.targets.begin(), connection.targets.end());
+    result.event_outputs.insert(connection.sources.begin(), connection.sources.end());
+  }
+  return result;
+}
+
 namespace {
 constexpr bool sample_channel_is_connected(
-    GraphBuilderConnections const& connections, SampleInputChannelId channel) {
-  return connections.sample_input_is_connected(channel);
+    LoweringAuthoredConnectivity const& connectivity,
+    SampleInputChannelId channel) {
+  return connectivity.sample_inputs.contains(channel);
 }
 
 constexpr bool sample_channel_is_connected(
-    GraphBuilderConnections const& connections, SampleOutputChannelId channel) {
-  return connections.sample_output_is_connected(channel);
+    LoweringAuthoredConnectivity const& connectivity,
+    SampleOutputChannelId channel) {
+  return connectivity.sample_outputs.contains(channel);
 }
 
 template <class Mapping>
 constexpr std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
     std::vector<Mapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
-    GraphBuilderConnections const& connections, bool inputs) {
+    LoweringAuthoredConnectivity const& connectivity, bool inputs) {
   std::vector<IntrospectionPortInfo> result;
   result.reserve(mappings.size());
   for (auto const& mapping : mappings) {
@@ -560,7 +608,7 @@ constexpr std::vector<IntrospectionPortInfo> project_virtual_sample_ports(
     bool any_connected = false;
     bool any_disconnected = false;
     for (auto const channel : mapping.channels) {
-      bool const connected = sample_channel_is_connected(connections, channel);
+      bool const connected = sample_channel_is_connected(connectivity, channel);
       any_connected = any_connected || connected;
       any_disconnected = any_disconnected || !connected;
     }
@@ -587,7 +635,8 @@ template <class Mapping>
 constexpr std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
     std::vector<Mapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
-    GraphBuilderConnections const& connections, NodeBundleHandle bundle_handle,
+    LoweringAuthoredConnectivity const& connectivity,
+    NodeBundleHandle bundle_handle,
     bool inputs) {
   std::vector<Mapping> bundle_mappings;
   bundle_mappings.reserve(mappings.size());
@@ -600,13 +649,13 @@ constexpr std::vector<IntrospectionPortInfo> project_bundle_sample_ports(
     bundle_mappings.push_back(std::move(projected));
   }
   return project_virtual_sample_ports(
-      bundle_mappings, node_bundles, connections, inputs);
+      bundle_mappings, node_bundles, connectivity, inputs);
 }
 
 constexpr std::vector<IntrospectionPortInfo> project_virtual_event_ports(
     std::vector<VirtualEventPortMapping> const& mappings,
     GraphBuilderNodeBundles const&,
-    GraphBuilderConnections const& connections, bool inputs) {
+    LoweringAuthoredConnectivity const& connectivity, bool inputs) {
   std::vector<IntrospectionPortInfo> result;
   result.reserve(mappings.size());
   for (auto const& mapping : mappings) {
@@ -614,9 +663,9 @@ constexpr std::vector<IntrospectionPortInfo> project_virtual_event_ports(
     bool connected = false;
     for (auto const port : mapping.node_bundle_ports) {
       connected = connected || (inputs
-          ? connections.event_input_is_connected(
+          ? connectivity.event_inputs.contains(
                 EventInputPortId{port.node_bundle_handle, port.port_ordinal})
-          : connections.event_output_is_connected(
+          : connectivity.event_outputs.contains(
                 EventOutputPortId{port.node_bundle_handle, port.port_ordinal}));
     }
     result.push_back(IntrospectionPortInfo{
@@ -632,7 +681,7 @@ constexpr std::vector<IntrospectionPortInfo> project_virtual_event_ports(
 constexpr std::vector<IntrospectionPortInfo> project_bundle_event_ports(
     std::vector<VirtualEventPortMapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
-    GraphBuilderConnections const& connections,
+    LoweringAuthoredConnectivity const& connectivity,
     NodeBundleHandle bundle_handle, bool inputs) {
   auto projected = mappings;
   for (auto& mapping : projected) {
@@ -644,7 +693,7 @@ constexpr std::vector<IntrospectionPortInfo> project_bundle_event_ports(
     return mapping.node_bundle_ports.empty();
   });
   return project_virtual_event_ports(
-      projected, node_bundles, connections, inputs);
+      projected, node_bundles, connectivity, inputs);
 }
 
 constexpr std::pair<std::string, std::string> bundle_display_type(
@@ -658,12 +707,14 @@ constexpr void apply_virtual_port_metadata(
     GraphIntrospectionMetadata& metadata,
     GraphBuilderNodeBundles const& node_bundles,
     GraphBuilderVirtualNodes const& virtual_nodes,
-    GraphBuilderConnections const& connections) {
+    LoweringAuthoredConnectivity const& connectivity) {
+  std::flat_map<std::string, size_t> virtual_node_index;
+  for (size_t i = 0; i < metadata.virtual_nodes.size(); ++i) {
+    virtual_node_index.emplace(metadata.virtual_nodes[i].id, i);
+  }
   for (auto const& record : virtual_nodes.records()) {
-    auto it = std::find_if(metadata.virtual_nodes.begin(),
-                           metadata.virtual_nodes.end(),
-                           [&](auto const& node) { return node.id == record.id; });
-    if (it == metadata.virtual_nodes.end()) {
+    auto index = virtual_node_index.find(record.id);
+    if (index == virtual_node_index.end()) {
       std::vector<SourceSpan> spans;
       spans.reserve(record.source_infos.size());
       for (auto const& info : record.source_infos) spans.push_back(info.span);
@@ -674,36 +725,38 @@ constexpr void apply_virtual_port_metadata(
           .type_identity = record.type_identity,
           .source_spans = std::move(spans),
       });
-      it = std::prev(metadata.virtual_nodes.end());
+      index = virtual_node_index.emplace(
+          record.id, metadata.virtual_nodes.size() - 1).first;
     }
-    it->source_identity = record.source_identity;
-    it->type_identity = record.type_identity;
-    it->sample_inputs = project_virtual_sample_ports(
-        record.sample_inputs, node_bundles, connections, true);
-    it->sample_outputs = project_virtual_sample_ports(
-        record.sample_outputs, node_bundles, connections, false);
-    it->event_inputs = project_virtual_event_ports(
-        record.event_inputs, node_bundles, connections, true);
-    it->event_outputs = project_virtual_event_ports(
-        record.event_outputs, node_bundles, connections, false);
+    auto& node = metadata.virtual_nodes[index->second];
+    node.source_identity = record.source_identity;
+    node.type_identity = record.type_identity;
+    node.sample_inputs = project_virtual_sample_ports(
+        record.sample_inputs, node_bundles, connectivity, true);
+    node.sample_outputs = project_virtual_sample_ports(
+        record.sample_outputs, node_bundles, connectivity, false);
+    node.event_inputs = project_virtual_event_ports(
+        record.event_inputs, node_bundles, connectivity, true);
+    node.event_outputs = project_virtual_event_ports(
+        record.event_outputs, node_bundles, connectivity, false);
 
-    it->members.clear();
-    it->backing_node_ids.clear();
+    node.members.clear();
+    node.backing_node_ids.clear();
     if (record.type_identity == "sample-port"
         || record.type_identity == "event-port") {
-      it->kind = record.type_identity == "sample-port"
+      node.kind = record.type_identity == "sample-port"
           ? "Sample port" : "Event port";
       auto const backing_id = record.type_identity + ":" + record.id;
-      it->backing_node_ids.push_back(backing_id);
-      it->members.push_back(IntrospectionVirtualNode::Member{
+      node.backing_node_ids.push_back(backing_id);
+      node.members.push_back(IntrospectionVirtualNode::Member{
           .ordinal = 0,
           .backing_node_id = backing_id,
-          .kind = it->kind,
+          .kind = node.kind,
           .type_identity = record.type_identity,
-          .sample_inputs = it->sample_inputs,
-          .sample_outputs = it->sample_outputs,
-          .event_inputs = it->event_inputs,
-          .event_outputs = it->event_outputs,
+          .sample_inputs = node.sample_inputs,
+          .sample_outputs = node.sample_outputs,
+          .event_inputs = node.event_inputs,
+          .event_outputs = node.event_outputs,
       });
       continue;
     }
@@ -712,24 +765,24 @@ constexpr void apply_virtual_port_metadata(
       auto const handle = record.node_bundle_handles[bundle_ordinal];
       auto const& bundle = node_bundles.bundle(handle);
       auto const [kind, type_identity] = bundle_display_type(bundle);
-      if (it->kind.empty()) it->kind = kind;
-      if (it->type_identity.empty()) it->type_identity = type_identity;
+      if (node.kind.empty()) node.kind = kind;
+      if (node.type_identity.empty()) node.type_identity = type_identity;
       auto const backing_id = "node-bundle:" + record.id + ":" +
                               decimal_string(bundle_ordinal);
-      it->backing_node_ids.push_back(backing_id);
-      it->members.push_back(IntrospectionVirtualNode::Member{
+      node.backing_node_ids.push_back(backing_id);
+      node.members.push_back(IntrospectionVirtualNode::Member{
           .ordinal = bundle_ordinal,
           .backing_node_id = backing_id,
           .kind = kind,
           .type_identity = type_identity,
           .sample_inputs = project_bundle_sample_ports(
-              record.sample_inputs, node_bundles, connections, handle, true),
+              record.sample_inputs, node_bundles, connectivity, handle, true),
           .sample_outputs = project_bundle_sample_ports(
-              record.sample_outputs, node_bundles, connections, handle, false),
+              record.sample_outputs, node_bundles, connectivity, handle, false),
           .event_inputs = project_bundle_event_ports(
-              record.event_inputs, node_bundles, connections, handle, true),
+              record.event_inputs, node_bundles, connectivity, handle, true),
           .event_outputs = project_bundle_event_ports(
-              record.event_outputs, node_bundles, connections, handle, false),
+              record.event_outputs, node_bundles, connectivity, handle, false),
       });
     }
   }
@@ -764,13 +817,6 @@ namespace details {
         return id;
     }
 
-    constexpr size_t next_lowered_construction_order(ExecutableGraphData const& g)
-    {
-        return g.node_construction_order.empty()
-            ? 0
-            : (*std::ranges::max_element(g.node_construction_order) + 1);
-    }
-
     constexpr auto make_lowered_source_target_edge_maps(ExecutableGraphData const& g)
     {
         std::flat_map<ConcretePortId, ConcretePortId> source_of;
@@ -802,6 +848,9 @@ namespace details {
         ExecutableGraphData& g,
         std::string_view builder_id)
     {
+        size_t next_construction_order = g.node_construction_order.empty()
+            ? 0
+            : (*std::ranges::max_element(g.node_construction_order) + 1);
         std::flat_map<ConcretePortId, std::vector<GraphEdge>> reverse_edges_map;
         for (GraphEdge const& edge : g.edges)
         {
@@ -838,7 +887,7 @@ namespace details {
                 g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                 g.node_virtual_ids.emplace_back();
                 g.node_source_infos.emplace_back();
-                g.node_construction_order.push_back(next_lowered_construction_order(g));
+                g.node_construction_order.push_back(next_construction_order++);
                 size_t const concat_node = g.nodes.size() - 1;
 
                 for (size_t out_port = 0; out_port < edges_to_expand.size(); ++out_port)
@@ -881,7 +930,7 @@ namespace details {
                 g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                 g.node_virtual_ids.emplace_back();
                 g.node_source_infos.emplace_back();
-                g.node_construction_order.push_back(next_lowered_construction_order(g));
+                g.node_construction_order.push_back(next_construction_order++);
                 size_t const broadcast_node = g.nodes.size() - 1;
 
                 for (size_t in_port = 0; in_port < edges_to_expand.size(); ++in_port)
@@ -902,6 +951,9 @@ namespace details {
     constexpr void stub_lowered_dangling_ports(ExecutableGraphData& g, size_t num_public_inputs, std::string_view builder_id)
     {
         auto [source_of, target_of, event_source_of, event_target_of] = make_lowered_source_target_edge_maps(g);
+        size_t next_construction_order = g.node_construction_order.empty()
+            ? 0
+            : (*std::ranges::max_element(g.node_construction_order) + 1);
 
         size_t const num_nodes = g.nodes.size();
         for (size_t node_id = 0; node_id < num_nodes + 1; ++node_id)
@@ -920,7 +972,7 @@ namespace details {
                     g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                     g.node_virtual_ids.emplace_back();
                     g.node_source_infos.emplace_back();
-                    g.node_construction_order.push_back(next_lowered_construction_order(g));
+                    g.node_construction_order.push_back(next_construction_order++);
                     size_t const new_node = g.nodes.size() - 1;
                     g.edges.insert(GraphEdge{ this_port, { new_node, 0 } });
                 }
@@ -936,7 +988,7 @@ namespace details {
                     g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                     g.node_virtual_ids.emplace_back();
                     g.node_source_infos.emplace_back();
-                    g.node_construction_order.push_back(next_lowered_construction_order(g));
+                    g.node_construction_order.push_back(next_construction_order++);
                     size_t const new_node = g.nodes.size() - 1;
                     EventTypeId const source_type = get_event_outputs(g.nodes[node])[output_port].type;
                     g.event_edges.insert(GraphEventEdge{
@@ -969,6 +1021,34 @@ namespace details {
             }
         }
     }
+
+    constexpr void resolve_lowered_sample_edge_conversions(
+        ExecutableGraphData& g,
+        std::span<InputConfig const> public_inputs,
+        std::span<OutputConfig const> public_outputs)
+    {
+        auto output_layout_for = [&](ConcretePortId port) {
+            return port.node == GRAPH_ID
+                ? effective_channel_layout(public_inputs[port.port])
+                : effective_channel_layout(g.nodes[port.node].outputs()[port.port]);
+        };
+        auto input_layout_for = [&](ConcretePortId port) {
+            return port.node == GRAPH_ID
+                ? effective_channel_layout(public_outputs[port.port])
+                : effective_channel_layout(g.nodes[port.node].inputs()[port.port]);
+        };
+
+        std::flat_set<GraphEdge> resolved;
+        for (GraphEdge const& edge : g.edges) {
+            resolved.emplace(
+                edge.source,
+                edge.target,
+                ChannelConversionRegistry::plan(
+                    output_layout_for(edge.source), input_layout_for(edge.target)));
+        }
+        g.edges = std::move(resolved);
+    }
+
     constexpr bool lowered_has_path(
         std::vector<std::flat_set<size_t>> const& outgoing,
         size_t start,
@@ -1037,8 +1117,7 @@ namespace details {
                 size_t const u = info.original_source.node;
                 size_t const v = target_port.node;
 
-                auto augmented = explicit_outgoing;
-                if (!lowered_has_path(augmented, v, u)) {
+                if (!lowered_has_path(explicit_outgoing, v, u)) {
                     error(
                         "builder " + std::string(builder_id) + ": detach() on " +
                         "signal " + std::to_string(info.original_source.node) + ":" + std::to_string(info.original_source.port) +
@@ -2103,8 +2182,8 @@ class GraphLowerer {
             source_infos.push_back(info);
       }
     }
-    graph.node_virtual_ids.push_back(std::move(virtual_ids));
     graph.node_source_infos.push_back(std::move(source_infos));
+    graph.node_virtual_ids.push_back(std::move(virtual_ids));
     graph.node_construction_order.push_back(node_i);
     graph.node_kinds.push_back(std::move(kind));
     graph.node_type_identities.push_back(node.type_identity.value);
@@ -2311,12 +2390,10 @@ class GraphLowerer {
   constexpr iv::LoweredSubgraphSpec::PortRef make_scope_port_ref(
       TopologyPortId port) const {
     if (port.node == GRAPH_ID)
-      return {.node_id = {}, .port = port.port, .is_graph_port = true};
+      return {.port = {GRAPH_ID, port.port}, .valid = true};
     if (port.node >= topology_node_count() || topology_is_subgraph_node(port.node))
       details::error("scope port did not resolve to a concrete out.topology node");
-    return {.node_id = identity.child_id(port.node),
-            .port = port.port,
-            .is_graph_port = false};
+    return {.port = {runtime_node_indices[port.node], port.port}, .valid = true};
   }
 
   constexpr void collect_scope_targets(
@@ -2343,79 +2420,96 @@ class GraphLowerer {
       collect_scope_event_targets(child, out_refs);
   }
 
-  constexpr std::vector<size_t> scope_member_topology_nodes(size_t subgraph_node) const {
-    auto const scope_handle = subgraph_bundle_handle(subgraph_node);
-    auto const info = bundles.subgraph_info(scope_handle);
-    auto contains_bundle = [&](NodeBundleHandle handle) {
-      return handle >= info.child_begin &&
-             handle < info.child_begin + info.child_count;
-    };
-
+  constexpr void build_topology_scope_memberships() {
     auto const node_count = topology_node_count();
-    std::vector<bool> anchors(node_count, false);
-    std::vector<bool> members(node_count, false);
-
-    for (size_t node = 0; node < node_count; ++node) {
-      auto const handle = bundle_for_lowered_node(node);
-      if (!handle || !contains_bundle(*handle)) continue;
-      anchors[node] = true;
-      if (!topology_is_subgraph_node(node)) members[node] = true;
-    }
-
-    auto const& binding = topology_subgraph_node(subgraph_node).lowered_subgraph;
-    auto seed_generated = [&](TopologyPortId port) {
-      if (port.node >= node_count || topology_is_subgraph_node(port.node)) return;
-      if (bundle_for_lowered_node(port.node)) return;
-      anchors[port.node] = true;
-      members[port.node] = true;
-    };
-    for (auto const& targets : binding.sample_input_targets)
-      for (auto target : targets) seed_generated(target);
-    for (auto source : binding.sample_output_sources) seed_generated(source);
-    for (auto const& targets : binding.event_input_targets)
-      for (auto target : targets) seed_generated(target);
-    for (auto source : binding.event_output_sources) seed_generated(source);
-
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      auto inspect_edge = [&](TopologyPortId a, TopologyPortId b) {
-        if (a.node >= node_count || b.node >= node_count) return;
-        auto promote = [&](size_t candidate, size_t neighbor) {
-          if (!anchors[neighbor] || anchors[candidate]) return;
-          if (topology_is_subgraph_node(candidate)) return;
-          if (bundle_for_lowered_node(candidate)) return;
-          anchors[candidate] = true;
-          members[candidate] = true;
-          changed = true;
-        };
-        promote(a.node, b.node);
-        promote(b.node, a.node);
-      };
-      for_each_sample_edge(
-          [&](TopologyEdge const& edge) { inspect_edge(edge.source, edge.target); });
-      for_each_event_edge([&](TopologyEventEdge const& edge) {
-        inspect_edge(edge.source, edge.target);
-      });
-    }
-
-    std::vector<size_t> result;
+    std::vector<size_t> subgraphs;
     for (size_t node = 0; node < node_count; ++node)
-      if (members[node]) result.push_back(node);
+      if (topology_is_subgraph_node(node)) subgraphs.push_back(node);
+
+    out.scope_memberships.assign(node_count, {});
+    for (size_t scope : subgraphs) {
+      auto const info = bundles.subgraph_info(subgraph_bundle_handle(scope));
+      for (size_t node = 0; node < node_count; ++node) {
+        auto const handle = bundle_for_lowered_node(node);
+        if (handle && *handle >= info.child_begin
+            && *handle < info.child_begin + info.child_count) {
+          out.scope_memberships[node].push_back(scope);
+        }
+      }
+    }
+
+    std::vector<bool> generated(node_count, false);
+    std::vector<std::vector<size_t>> generated_neighbors(node_count);
+    std::vector<std::vector<size_t>> adjacent_scope_memberships(node_count);
+    for (size_t node = 0; node < node_count; ++node) {
+      generated[node] = !topology_is_subgraph_node(node)
+          && !bundle_for_lowered_node(node).has_value();
+    }
+    auto inspect_edge = [&](TopologyPortId left, TopologyPortId right) {
+      if (left.node >= node_count || right.node >= node_count) return;
+      auto connect_generated = [&](size_t generated_node, size_t other) {
+        if (!generated[generated_node]) return;
+        if (generated[other]) {
+          generated_neighbors[generated_node].push_back(other);
+        } else {
+          auto const& scopes = out.scope_memberships[other];
+          adjacent_scope_memberships[generated_node].insert(
+              adjacent_scope_memberships[generated_node].end(),
+              scopes.begin(), scopes.end());
+        }
+      };
+      connect_generated(left.node, right.node);
+      connect_generated(right.node, left.node);
+    };
+    for_each_sample_edge([&](TopologyEdge const& edge) {
+      inspect_edge(edge.source, edge.target);
+    });
+    for_each_event_edge([&](TopologyEventEdge const& edge) {
+      inspect_edge(edge.source, edge.target);
+    });
+
+    std::vector<bool> visited(node_count, false);
+    for (size_t start = 0; start < node_count; ++start) {
+      if (!generated[start] || visited[start]) continue;
+      std::vector<size_t> component;
+      std::vector<size_t> membership;
+      std::vector<size_t> pending{start};
+      visited[start] = true;
+      for (size_t pending_i = 0; pending_i < pending.size(); ++pending_i) {
+        auto const node = pending[pending_i];
+        component.push_back(node);
+        auto const& adjacent = adjacent_scope_memberships[node];
+        membership.insert(membership.end(), adjacent.begin(), adjacent.end());
+        for (size_t neighbor : generated_neighbors[node]) {
+          if (!visited[neighbor]) {
+            visited[neighbor] = true;
+            pending.push_back(neighbor);
+          }
+        }
+      }
+      std::sort(membership.begin(), membership.end());
+      membership.erase(std::unique(membership.begin(), membership.end()),
+                       membership.end());
+      for (size_t node : component)
+        out.scope_memberships[node] = membership;
+    }
+  }
+
+  constexpr std::vector<size_t> scope_member_topology_nodes(
+      size_t subgraph_node) const {
+    std::vector<size_t> result;
+    for (size_t node = 0; node < topology_node_count(); ++node) {
+      if (topology_is_subgraph_node(node)) continue;
+      auto const& memberships = out.scope_memberships.at(node);
+      if (std::ranges::contains(memberships, subgraph_node))
+        result.push_back(node);
+    }
     return result;
   }
 
-  constexpr bool authored_scope_contains_subgraph(size_t parent,
-                                        size_t child) const {
-    auto const parent_info =
-        bundles.subgraph_info(subgraph_bundle_handle(parent));
-    auto const child_handle = subgraph_bundle_handle(child);
-    return child_handle >= parent_info.child_begin &&
-           child_handle < parent_info.child_begin + parent_info.child_count;
-  }
-
   constexpr std::vector<iv::LoweredSubgraphSpec>
-  build_lowered_scopes() const {
+  build_lowered_scopes() {
+    build_topology_scope_memberships();
     std::vector<size_t> subgraphs;
     for (size_t i = 0; i < topology_node_count(); ++i)
       if (topology_is_subgraph_node(i)) subgraphs.push_back(i);
@@ -2444,7 +2538,7 @@ class GraphLowerer {
       scope.ttl_samples = subgraph.lifetime.ttl_samples;
 
       for (auto node : scope_member_topology_nodes(subgraph_i))
-        scope.member_node_ids.push_back(identity.child_id(node));
+        scope.member_nodes.push_back(runtime_node_indices[node]);
 
       for (auto const& targets : subgraph.lowered_subgraph.sample_input_targets) {
         std::vector<iv::LoweredSubgraphSpec::PortRef> flat;
@@ -2463,11 +2557,11 @@ class GraphLowerer {
         scope.event_output_sources.push_back(
             make_scope_port_ref(resolve_event_source_topology(source)));
 
-      if (scope.member_node_ids.empty()) continue;
-      std::sort(scope.member_node_ids.begin(), scope.member_node_ids.end());
-      scope.member_node_ids.erase(
-          std::unique(scope.member_node_ids.begin(), scope.member_node_ids.end()),
-          scope.member_node_ids.end());
+      if (scope.member_nodes.empty()) continue;
+      std::sort(scope.member_nodes.begin(), scope.member_nodes.end());
+      scope.member_nodes.erase(
+          std::unique(scope.member_nodes.begin(), scope.member_nodes.end()),
+          scope.member_nodes.end());
       scope_index.emplace(subgraph_i, scopes.size());
       scopes.push_back(std::move(scope));
     }
@@ -2477,9 +2571,8 @@ class GraphLowerer {
       if (it == scope_index.end()) continue;
       size_t parent = GRAPH_ID;
       size_t best_span = std::numeric_limits<size_t>::max();
-      for (auto candidate : subgraphs) {
-        if (candidate == child || !scope_index.contains(candidate) ||
-            !authored_scope_contains_subgraph(candidate, child))
+      for (auto candidate : out.scope_memberships.at(child)) {
+        if (!scope_index.contains(candidate))
           continue;
         auto const span =
             bundles.subgraph_info(subgraph_bundle_handle(candidate))
@@ -2560,17 +2653,24 @@ consteval ExecutableGraphIR GraphLowerer::lower(
   details::expand_lowered_hyperedge_ports(lowerer.graph, authored.identity.value);
   details::stub_lowered_dangling_ports(
       lowerer.graph, sample_inputs.size(), authored.identity.value);
+  details::resolve_lowered_sample_edge_conversions(
+      lowerer.graph, sample_inputs, sample_outputs);
   details::validate_lowered_graph(lowerer.graph, sample_inputs.size(),
                           sample_outputs.size());
   details::validate_lowered_detached_edges(lowerer.graph, authored.identity.value);
 
   auto scopes = lowerer.build_lowered_scopes();
-  auto [virtual_nodes, _] = details::build_virtual_metadata(lowerer.graph, scopes);
+  auto virtual_metadata =
+      details::build_virtual_metadata(lowerer.graph, scopes);
+  auto [virtual_nodes, virtual_node_ids_by_backing_node_id] =
+      std::move(virtual_metadata);
+  auto const authored_connectivity =
+      details::build_lowering_authored_connectivity(authored.connections);
   GraphIntrospectionMetadata introspection;
   introspection.virtual_nodes = std::move(virtual_nodes);
   details::apply_virtual_port_metadata(
       introspection, authored.node_bundles, authored.virtual_nodes,
-      authored.connections);
+      authored_connectivity);
 
   auto sample_families =
       authored.public_ports.sample_input_families(authored.node_bundles);
@@ -2582,7 +2682,7 @@ consteval ExecutableGraphIR GraphLowerer::lower(
                 {authored.public_ports.boundary_handle(), PortKind::sample,
                  ordinal});
             return std::ranges::any_of(channels, [&](auto c) {
-              return authored.connections.sample_output_is_connected(c);
+              return authored_connectivity.sample_outputs.contains(c);
             });
           });
         });
@@ -2595,7 +2695,7 @@ consteval ExecutableGraphIR GraphLowerer::lower(
         {authored.public_ports.boundary_handle(), PortKind::event,
          input.port_ordinal});
     input.graph_connected = std::ranges::any_of(ports, [&](auto p) {
-      return authored.connections.event_output_is_connected(p);
+      return authored_connectivity.event_outputs.contains(p);
     });
   }
   introspection.public_sample_outputs =
@@ -2612,6 +2712,8 @@ consteval ExecutableGraphIR GraphLowerer::lower(
       .public_outputs = std::move(sample_outputs),
       .public_event_inputs = std::move(event_inputs),
       .public_event_outputs = std::move(event_outputs),
+      .virtual_node_ids_by_backing_node_id =
+          std::move(virtual_node_ids_by_backing_node_id),
       .introspection = std::move(introspection),
   };
 }

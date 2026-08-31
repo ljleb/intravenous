@@ -55,7 +55,7 @@ namespace iv {
         consteval explicit GraphNodeWrapper(
             ReflectedNodeDescription node,
             std::optional<size_t> ttl_samples,
-            std::vector<PortBufferPlan> input_buffer_plans,
+            std::vector<InputPortPlan> input_plans,
             std::vector<SampleInputBinding> input_bindings,
             std::vector<EventInputConfig> input_event_configs,
             std::string node_id,
@@ -103,7 +103,7 @@ namespace iv {
               : StaticSpan<StaticEventOutputBinding>{})
         , _input_port_data_nodes(build_mode == GraphNodeWrapperBuildMode::full
               ? details::define_static_span(make_input_port_data_nodes(
-                    node_id, node.inputs(), input_buffer_plans, input_bindings))
+                    node_id, node.inputs(), input_plans, input_bindings))
               : StaticSpan<GraphPortDataNode>{})
         , _output_port_data_nodes(build_mode == GraphNodeWrapperBuildMode::full
               ? details::define_static_span(make_output_port_data_nodes(
@@ -120,14 +120,14 @@ namespace iv {
         // supplies the complete source-to-many target representation above.
         consteval explicit GraphNodeWrapper(
             ReflectedNodeDescription node,
-            std::vector<PortBufferPlan> input_buffer_plans,
+            std::vector<InputPortPlan> input_plans,
             std::string node_id,
             std::vector<SampleOutputBinding> output_targets
         ) :
             GraphNodeWrapper(
                 node,
                 std::nullopt,
-                std::move(input_buffer_plans),
+                std::move(input_plans),
                 std::vector<SampleInputBinding>(node.inputs().size()),
                 {},
                 std::move(node_id),
@@ -213,11 +213,11 @@ namespace iv {
         static consteval std::vector<GraphPortDataNode> make_input_port_data_nodes(
             std::string const& node_id,
             std::span<InputConfig const> inputs,
-            std::span<PortBufferPlan const> input_buffer_plans,
+            std::span<InputPortPlan const> input_plans,
             std::span<SampleInputBinding const> input_bindings
         )
         {
-            IV_ASSERT(inputs.size() == input_buffer_plans.size(), "graph input port data must have one buffer plan per input");
+            IV_ASSERT(inputs.size() == input_plans.size(), "graph input port data must have one plan per input");
             IV_ASSERT(inputs.size() == input_bindings.size(), "graph input bindings must align with input configs");
 
             std::vector<GraphPortDataNode> port_data_nodes;
@@ -226,7 +226,7 @@ namespace iv {
                 port_data_nodes.emplace_back(
                     port_data_export_id(node_id, input_i),
                     inputs[input_i],
-                    input_buffer_plans[input_i],
+                    input_plans[input_i],
                     input_bindings[input_i].aliases,
                     input_bindings[input_i].owns_storage
                 );
@@ -240,7 +240,9 @@ namespace iv {
             std::vector<GraphPortDataNode> result;
             result.reserve(storage.size());
             for (auto const& entry : storage) {
-                result.emplace_back(entry.id, entry.config, entry.plan);
+                result.emplace_back(
+                    entry.id, entry.config,
+                    InputPortPlan{.storage = entry.plan});
             }
             return result;
         }
@@ -392,7 +394,7 @@ namespace iv {
                     &state.inputs[input_i],
                     const_cast<SharedPortData&>(input_port_data[0]),
                     inputs[input_i].history,
-                    _input_port_data_nodes[input_i]._input_buffer_plan.corrected_latency);
+                    _input_port_data_nodes[input_i]._input_plan.read_latency);
             }
             for (size_t input_i = 0; input_i < event_inputs.size(); ++input_i) {
                 auto input_port_data = ctx.template resolve_exported_array_storage<EventSharedPortData>(
@@ -468,7 +470,7 @@ namespace iv {
         }
 
         template<auto Node>
-        static IV_FORCEINLINE void propagate_sample_fanout(
+        static IV_FORCEINLINE void propagate_sample_fanout_static(
             State& state, size_t block_size)
         {
             for (size_t output_i = 0; output_i < state.outputs.size(); ++output_i) {
@@ -499,7 +501,7 @@ namespace iv {
                 ctx.index,
                 ctx.block_size
             );
-            propagate_sample_fanout<Node>(state, ctx.block_size);
+            propagate_sample_fanout_static<Node>(state, ctx.block_size);
         }
 
         template<auto Node>
@@ -520,7 +522,7 @@ namespace iv {
                 ctx.index,
                 ctx.block_size
             );
-            propagate_sample_fanout<Node>(state, ctx.block_size);
+            propagate_sample_fanout_static<Node>(state, ctx.block_size);
         }
 
         constexpr size_t resolve_default_ttl_samples(size_t default_ttl) const

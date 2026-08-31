@@ -38,6 +38,11 @@ struct ExecutableGraphIR {
   std::vector<OutputConfig> public_outputs{};
   std::vector<EventInputConfig> public_event_inputs{};
   std::vector<EventOutputConfig> public_event_outputs{};
+  // Lowering has already grouped virtual metadata by backing runtime node.
+  // Node IDs are stable across compiler scheduling, so compiler forwards this
+  // finished provenance instead of reconstructing it from the IR.
+  std::flat_map<std::string, std::vector<std::string>>
+      virtual_node_ids_by_backing_node_id{};
   GraphIntrospectionMetadata introspection{};
 };
 

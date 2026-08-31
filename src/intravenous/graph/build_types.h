@@ -137,7 +137,7 @@ namespace iv {
         std::vector<OutputConfig> public_outputs;
         std::vector<EventInputConfig> public_event_inputs;
         std::vector<EventOutputConfig> public_event_outputs;
-        std::vector<PortBufferPlan> public_output_buffer_plans;
+        std::vector<InputPortPlan> public_output_buffer_plans;
         std::vector<SampleInputBinding> public_output_bindings;
         std::vector<SampleBufferStorage> public_input_fanout_storage;
         std::vector<std::vector<SampleOutputBinding>> public_input_targets;
