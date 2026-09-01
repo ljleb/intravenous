@@ -10,6 +10,7 @@
 #include <intravenous/graph/authored_graph.hpp>
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/executable_graph_ir.hpp>
+#include <intravenous/graph/hash.hpp>
 #include <intravenous/graph/connection_node.hpp>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
 #include <intravenous/graph/reflected_node.hpp>
@@ -103,13 +104,17 @@ struct LoweringWorkspace {
   // authored components in one global closure rather than being rediscovered
   // separately for every scope.
   std::vector<std::vector<size_t>> scope_memberships{};
-  std::flat_map<TopologyPortId, TopologyPortId>
+  details::ConstexprHashMap<TopologyPortId, TopologyPortId,
+      iv::TopologyPortIdHash>
       subgraph_input_of_boundary_source{};
-  std::flat_map<TopologyPortId, TopologyPortId>
+  details::ConstexprHashMap<TopologyPortId, TopologyPortId,
+      iv::TopologyPortIdHash>
       subgraph_event_input_of_boundary_source{};
-  std::flat_map<TopologyPortId, DetachedSamplePortInfo>
+  details::ConstexprHashMap<TopologyPortId, DetachedSamplePortInfo,
+      iv::TopologyPortIdHash>
       detached_info_by_source{};
-  std::flat_set<TopologyPortId> detached_reader_outputs{};
+  details::ConstexprHashSet<TopologyPortId, iv::TopologyPortIdHash>
+      detached_reader_outputs{};
 };
 } // namespace details
 
@@ -641,13 +646,14 @@ constexpr void apply_virtual_port_metadata(
     GraphBuilderNodeBundles const& node_bundles,
     GraphBuilderVirtualNodes const& virtual_nodes,
     LoweringAuthoredConnectivity const& connectivity) {
-  std::flat_map<std::string, size_t> virtual_node_index;
+  details::ConstexprHashMap<std::string, size_t, details::ConstexprStringHash>
+      virtual_node_index;
   for (size_t i = 0; i < metadata.virtual_nodes.size(); ++i) {
-    virtual_node_index.emplace(metadata.virtual_nodes[i].id, i);
+    virtual_node_index.try_emplace(metadata.virtual_nodes[i].id, i);
   }
   for (auto const& record : virtual_nodes.records()) {
-    auto index = virtual_node_index.find(record.id);
-    if (index == virtual_node_index.end()) {
+    auto const* index = virtual_node_index.find(record.id);
+    if (!index) {
       std::vector<SourceSpan> spans;
       spans.reserve(record.source_infos.size());
       for (auto const& info : record.source_infos) spans.push_back(info.span);
@@ -658,10 +664,11 @@ constexpr void apply_virtual_port_metadata(
           .type_identity = record.type_identity,
           .source_spans = std::move(spans),
       });
-      index = virtual_node_index.emplace(
-          record.id, metadata.virtual_nodes.size() - 1).first;
+      virtual_node_index.try_emplace(
+          record.id, metadata.virtual_nodes.size() - 1);
+      index = virtual_node_index.find(record.id);
     }
-    auto& node = metadata.virtual_nodes[index->second];
+    auto& node = metadata.virtual_nodes[*index];
     node.source_identity = record.source_identity;
     node.type_identity = record.type_identity;
     node.sample_inputs = project_virtual_sample_ports(
@@ -749,13 +756,6 @@ namespace details {
         id.append(digits + begin, digits + sizeof(digits));
         return id;
     }
-
-    struct ConcretePortIdHash {
-        constexpr size_t operator()(ConcretePortId const& value) const
-        {
-            return constexpr_hash_combine(value.node, value.port);
-        }
-    };
 
     constexpr auto make_lowered_connected_output_sets(ExecutableGraphData const& g)
     {
@@ -974,15 +974,19 @@ namespace details {
                 : effective_channel_layout(g.nodes[port.node].inputs()[port.port]);
         };
 
-        std::flat_set<GraphEdge> resolved;
+        std::vector<GraphEdge> resolved_edges;
         for (GraphEdge const& edge : g.edges) {
-            resolved.emplace(
-                edge.source,
-                edge.target,
-                ChannelConversionRegistry::plan(
-                    output_layout_for(edge.source), input_layout_for(edge.target)));
+            resolved_edges.push_back(
+                GraphEdge{edge.source, edge.target,
+                    ChannelConversionRegistry::plan(
+                        output_layout_for(edge.source), input_layout_for(edge.target))});
         }
-        g.edges = std::move(resolved);
+        std::ranges::sort(resolved_edges);
+        resolved_edges.erase(
+            std::ranges::unique(resolved_edges).begin(),
+            resolved_edges.end());
+        g.edges = std::flat_set<GraphEdge>(
+            std::sorted_unique, resolved_edges.begin(), resolved_edges.end());
     }
 
     constexpr bool lowered_has_path(
@@ -1023,7 +1027,8 @@ namespace details {
         size_t const num_nodes = g.nodes.size();
 
         std::vector<std::flat_set<size_t>> explicit_outgoing(num_nodes);
-        std::flat_map<ConcretePortId, std::vector<ConcretePortId>> consumers_of_output;
+        details::ConstexprHashMap<ConcretePortId, std::vector<ConcretePortId>,
+            details::ConcretePortIdHash> consumers_of_output;
 
         for (GraphEdge const& edge : g.edges)
         {
@@ -1041,12 +1046,12 @@ namespace details {
                 continue;
             }
 
-            auto it = consumers_of_output.find(info.reader_output);
-            if (it == consumers_of_output.end()) {
+            auto const* it = consumers_of_output.find(info.reader_output);
+            if (!it) {
                 continue;
             }
 
-            for (ConcretePortId target_port : it->second)
+            for (ConcretePortId target_port : *it)
             {
                 if (target_port.node == GRAPH_ID) {
                     continue;
@@ -1084,9 +1089,10 @@ class GraphLowerer {
   bool execution_root = false;
   details::LoweringWorkspace& out;
   GraphBuilderVirtualPorts virtual_ports;
-  std::flat_map<NodeBundleHandle, size_t> subgraph_by_boundary;
-  std::flat_map<NodeBundlePortId, TopologyPortId, NodeBundlePortIdLess>
-      materialized_event_output_ports;
+  details::ConstexprHashMap<NodeBundleHandle, size_t,
+      details::ConstexprIdentityHash> subgraph_by_boundary;
+  details::ConstexprHashMap<NodeBundlePortId, TopologyPortId,
+      details::NodeBundlePortIdHash> materialized_event_output_ports;
   ExecutableGraphData graph{
       .nodes = {}, .explicit_ttl_samples = {}, .node_ids = {},
       .node_virtual_ids = {}, .node_source_infos = {},
@@ -1095,12 +1101,17 @@ class GraphLowerer {
       .detached_info_by_source = {}, .detached_reader_outputs = {},
   };
   std::vector<size_t> runtime_node_indices;
-  std::flat_map<TopologyPortId, TopologyPortId> source_of;
-  std::flat_map<TopologyPortId, TopologyEventEdge> event_source_of;
-  std::flat_map<NodeBundlePortId, RuntimeSampleBindingRef, NodeBundlePortIdLess>
+  details::ConstexprHashMap<TopologyPortId, TopologyPortId, TopologyPortIdHash>
+      source_of;
+  details::ConstexprHashMap<TopologyPortId, TopologyEventEdge, TopologyPortIdHash>
+      event_source_of;
+  details::ConstexprHashMap<NodeBundlePortId, RuntimeSampleBindingRef,
+      details::NodeBundlePortIdHash>
       runtime_binding_by_semantic_target;
-  std::flat_map<TopologyPortId, RuntimeSampleBindingRef>
+  details::ConstexprHashMap<TopologyPortId, RuntimeSampleBindingRef,
+      TopologyPortIdHash>
       runtime_binding_by_concrete_target;
+  std::vector<GraphEdge> sample_edge_batch;
 
   constexpr size_t topology_node_count() const {
     return out.topology_nodes.size();
@@ -1151,41 +1162,63 @@ class GraphLowerer {
     normalize_sample_edges();
     normalize_event_edges();
   }
-  constexpr void replace_sample_ports(
-      std::span<std::pair<TopologyPortId, TopologyPortId> const> sources,
-      std::span<std::pair<TopologyPortId, TopologyPortId> const> targets) {
-    normalize_sample_edges();
-    auto replacement_for = [](auto replacements, TopologyPortId port) {
-      auto const it = std::ranges::find_if(replacements, [&](auto const& item) {
-        return item.first == port;
-      });
-      return it == replacements.end() ? std::optional<TopologyPortId>{}
-                                      : std::optional{it->second};
+    constexpr void replace_sample_ports(
+        std::span<std::pair<TopologyPortId, TopologyPortId> const> sources,
+        std::span<std::pair<TopologyPortId, TopologyPortId> const> targets) {
+        normalize_sample_edges();
+    using TopologyPortReplacements =
+        details::ConstexprHashMap<TopologyPortId, TopologyPortId, TopologyPortIdHash>;
+    auto make_replacements = [](auto const& replacements) {
+      TopologyPortReplacements result;
+      for (auto const& [from, to] : replacements)
+        result.try_emplace(from, to);
+      return result;
+    };
+    auto const source_replacements = make_replacements(sources);
+    auto const target_replacements = make_replacements(targets);
+    auto replacement_for = [](
+        TopologyPortReplacements const& replacements, TopologyPortId port) {
+      auto const* replacement = replacements.find(port);
+      if (!replacement) return std::optional<TopologyPortId>{};
+      return std::optional{*replacement};
     };
     auto replaced = std::move(out.topology_edges).extract();
     for (auto& edge : replaced) {
-      if (auto source = replacement_for(sources, edge.source)) edge.source = *source;
-      if (auto target = replacement_for(targets, edge.target)) edge.target = *target;
+      if (auto source = replacement_for(source_replacements, edge.source))
+        edge.source = *source;
+      if (auto target = replacement_for(target_replacements, edge.target))
+        edge.target = *target;
     }
     std::ranges::sort(replaced);
     replaced.erase(std::ranges::unique(replaced).begin(), replaced.end());
     out.topology_edges.replace(std::move(replaced));
   }
-  constexpr void replace_event_ports(
-      std::span<std::pair<TopologyPortId, TopologyPortId> const> sources,
-      std::span<std::pair<TopologyPortId, TopologyPortId> const> targets) {
-    normalize_event_edges();
-    auto replacement_for = [](auto replacements, TopologyPortId port) {
-      auto const it = std::ranges::find_if(replacements, [&](auto const& item) {
-        return item.first == port;
-      });
-      return it == replacements.end() ? std::optional<TopologyPortId>{}
-                                      : std::optional{it->second};
+    constexpr void replace_event_ports(
+        std::span<std::pair<TopologyPortId, TopologyPortId> const> sources,
+        std::span<std::pair<TopologyPortId, TopologyPortId> const> targets) {
+        normalize_event_edges();
+    using TopologyPortReplacements =
+        details::ConstexprHashMap<TopologyPortId, TopologyPortId, TopologyPortIdHash>;
+    auto make_replacements = [](auto const& replacements) {
+      TopologyPortReplacements result;
+      for (auto const& [from, to] : replacements)
+        result.try_emplace(from, to);
+      return result;
+    };
+    auto const source_replacements = make_replacements(sources);
+    auto const target_replacements = make_replacements(targets);
+    auto replacement_for = [](
+        TopologyPortReplacements const& replacements, TopologyPortId port) {
+      auto const* replacement = replacements.find(port);
+      if (!replacement) return std::optional<TopologyPortId>{};
+      return std::optional{*replacement};
     };
     auto replaced = std::move(out.topology_event_edges).extract();
     for (auto& edge : replaced) {
-      if (auto source = replacement_for(sources, edge.source)) edge.source = *source;
-      if (auto target = replacement_for(targets, edge.target)) edge.target = *target;
+      if (auto source = replacement_for(source_replacements, edge.source))
+        edge.source = *source;
+      if (auto target = replacement_for(target_replacements, edge.target))
+        edge.target = *target;
     }
     std::ranges::sort(replaced);
     replaced.erase(std::ranges::unique(replaced).begin(), replaced.end());
@@ -1245,11 +1278,10 @@ class GraphLowerer {
   }
 
   constexpr void add_sample_edge(TopologyEdge edge) {
-    if (auto boundary = out.subgraph_input_of_boundary_source.find(edge.source);
-        boundary != out.subgraph_input_of_boundary_source.end()) {
-      auto& targets = topology_subgraph_node(boundary->second.node)
+    if (auto const* boundary = out.subgraph_input_of_boundary_source.find(edge.source)) {
+      auto& targets = topology_subgraph_node(boundary->node)
                           .lowered_subgraph.sample_input_targets.at(
-                              boundary->second.port);
+                              boundary->port);
       if (!std::ranges::contains(targets, edge.target))
         targets.push_back(edge.target);
     }
@@ -1257,12 +1289,11 @@ class GraphLowerer {
   }
 
   constexpr void add_event_edge(TopologyEventEdge edge) {
-    if (auto boundary = out.subgraph_event_input_of_boundary_source.find(
-            edge.source);
-        boundary != out.subgraph_event_input_of_boundary_source.end()) {
-      auto& targets = topology_subgraph_node(boundary->second.node)
+    if (auto const* boundary = out.subgraph_event_input_of_boundary_source.find(
+            edge.source)) {
+      auto& targets = topology_subgraph_node(boundary->node)
                           .lowered_subgraph.event_input_targets.at(
-                              boundary->second.port);
+                              boundary->port);
       if (!std::ranges::contains(targets, edge.target))
         targets.push_back(edge.target);
     }
@@ -1361,12 +1392,12 @@ class GraphLowerer {
         for(size_t i=0;i<bundle.event_output_count();++i)p.event_outputs.push_back({{node,i}});
         if (subgraph_by_boundary.contains(info.boundary))
           details::error("boundary belongs to more than one subgraph");
-        subgraph_by_boundary.emplace(info.boundary, node);
+        subgraph_by_boundary.try_emplace(info.boundary, node);
         auto const& bp=out.bundle_projections[info.boundary];
         for(size_t i=0;i<bp.sample_outputs.size();++i)
-          if(!bp.sample_outputs[i].empty())out.subgraph_input_of_boundary_source.emplace(bp.sample_outputs[i].front(),TopologyPortId{node,i});
+          if(!bp.sample_outputs[i].empty())out.subgraph_input_of_boundary_source.try_emplace(bp.sample_outputs[i].front(),TopologyPortId{node,i});
         for(size_t i=0;i<bp.event_outputs.size();++i)
-          if(!bp.event_outputs[i].empty())out.subgraph_event_input_of_boundary_source.emplace(bp.event_outputs[i].front(),TopologyPortId{node,i});
+          if(!bp.event_outputs[i].empty())out.subgraph_event_input_of_boundary_source.try_emplace(bp.event_outputs[i].front(),TopologyPortId{node,i});
       }
     }
   }
@@ -1497,7 +1528,7 @@ class GraphLowerer {
 
   struct SampleLoweringState {
     size_t authored_topology_node_count = 0;
-    std::flat_set<NodeBundlePortId, NodeBundlePortIdLess>
+    details::ConstexprHashSet<NodeBundlePortId, details::NodeBundlePortIdHash>
         assigned_subgraph_outputs;
     // Input ports of authored concrete nodes form a dense domain. A bitmap is
     // both the natural representation of this one-pass marking problem and
@@ -1506,7 +1537,8 @@ class GraphLowerer {
     std::vector<bool> bound_target_slots;
     // Public and subgraph-boundary targets are outside that dense domain.
     // They are few, but still count as bound targets for the lowering pass.
-    std::flat_set<TopologyPortId> non_authored_bound_targets;
+    details::ConstexprHashSet<TopologyPortId, TopologyPortIdHash>
+        non_authored_bound_targets;
     size_t bound_target_count = 0;
   };
 
@@ -1538,14 +1570,12 @@ class GraphLowerer {
       NodeBundlePortId semantic_target,
       std::optional<TopologyPortId> concrete_target) const {
     if (concrete_target) {
-      if (auto const it = runtime_binding_by_concrete_target.find(
-              *concrete_target);
-          it != runtime_binding_by_concrete_target.end())
-        return it->second;
+      if (auto const* it = runtime_binding_by_concrete_target.find(
+              *concrete_target))
+        return *it;
     }
-    if (auto const it = runtime_binding_by_semantic_target.find(semantic_target);
-        it != runtime_binding_by_semantic_target.end())
-      return it->second;
+    if (auto const* it = runtime_binding_by_semantic_target.find(semantic_target))
+      return *it;
     return {};
   }
 
@@ -1694,7 +1724,7 @@ class GraphLowerer {
     auto mark_bound = [&](TopologyPortId target) {
       if (target.node >= state.authored_topology_node_count ||
           topology_is_subgraph_node(target.node)) {
-        if (state.non_authored_bound_targets.insert(target).second)
+        if (state.non_authored_bound_targets.insert(target))
           ++state.bound_target_count;
         return;
       }
@@ -1723,11 +1753,11 @@ class GraphLowerer {
         for (auto const channel : connection->target_channels)
           if (!std::ranges::contains(target_channels, channel))
             details::error("sample connection target does not belong to its group");
-      if (auto it = subgraph_by_boundary.find(group.target.node_bundle_handle); it != subgraph_by_boundary.end()) {
-        auto const subgraph_node = it->second;
+      if (auto const* it = subgraph_by_boundary.find(group.target.node_bundle_handle)) {
+        auto const subgraph_node = *it;
         if (group.target.port_ordinal >= topology_subgraph_node(subgraph_node).lowered_subgraph.sample_output_sources.size())
           details::error("subgraph sample output out of bounds");
-        if (!state.assigned_subgraph_outputs.insert(group.target).second)
+        if (!state.assigned_subgraph_outputs.insert(group.target))
           details::error("subgraph sample output has more than one source");
         std::optional<TopologyPortId> source;
         if (group.connections.size() == 1) {
@@ -1825,9 +1855,8 @@ class GraphLowerer {
 
   constexpr TopologyPortId materialize_event_output_port(
       NodeBundlePortId logical, EventTypeId type) {
-    if (auto const existing = materialized_event_output_ports.find(logical);
-        existing != materialized_event_output_ports.end())
-      return existing->second;
+        if (auto const* existing = materialized_event_output_ports.find(logical))
+      return *existing;
     auto const& endpoints = out.bundle_projections.at(
         logical.node_bundle_handle).event_outputs.at(logical.port_ordinal);
     if (endpoints.empty())
@@ -1840,8 +1869,8 @@ class GraphLowerer {
       add_event_edge({
           endpoints[input], {node, input},
           EventConversionRegistry::instance().plan(type, type)});
-    return materialized_event_output_ports.emplace(
-        logical, TopologyPortId{node, 0}).first->second;
+    return materialized_event_output_ports.try_emplace(
+        logical, TopologyPortId{node, 0}).value;
   }
 
   constexpr TopologyPortId materialize_event_source(AuthoredEventConnection const& c) {
@@ -1881,18 +1910,18 @@ class GraphLowerer {
   }
 
   constexpr void lower_events() {
-    std::flat_set<NodeBundlePortId, NodeBundlePortIdLess>
+    details::ConstexprHashSet<NodeBundlePortId, details::NodeBundlePortIdHash>
         assigned_subgraph_outputs;
     for(auto const& c:connections.authored_event_connections()) {
       auto source=materialize_event_source(c);
       for(auto target:c.targets) {
         auto config=bundles.resolve_event_input({target.bundle,PortKind::event,target.port}).config;
         if(config.type!=c.target_type)details::error("event target type changed before lowering");
-        if(auto it=subgraph_by_boundary.find(target.bundle);it!=subgraph_by_boundary.end()) {
+        if(auto const* it=subgraph_by_boundary.find(target.bundle)) {
           NodeBundlePortId const logical{target.bundle, PortKind::event, target.port};
-          if (!assigned_subgraph_outputs.insert(logical).second)
+          if (!assigned_subgraph_outputs.insert(logical))
             details::error("subgraph event output has more than one source");
-          topology_subgraph_node(it->second).lowered_subgraph.event_output_sources.at(target.port)=source;
+          topology_subgraph_node(*it).lowered_subgraph.event_output_sources.at(target.port)=source;
           continue;
         }
         auto const& endpoints=out.bundle_projections.at(target.bundle).event_inputs.at(target.port);
@@ -1938,12 +1967,12 @@ class GraphLowerer {
       auto const reader_channel = resolve_sample_source_channel(info.reader_channel);
       if (reader_channel.channel != 0 || channel_count(reader_channel.config.channel_layout.channel_type) != 1) details::error("detach reader output must be one concrete channel");
       auto const reader = reader_channel.port;
-      out.detached_info_by_source.emplace(
+      out.detached_info_by_source.try_emplace(
           *source,
           details::DetachedSamplePortInfo{
           info.detach_id, *source, *writer, reader,
           info.loop_extra_latency});
-      out.detached_reader_outputs.emplace(reader);
+      out.detached_reader_outputs.insert(reader);
     }
   }
 
@@ -2188,13 +2217,12 @@ class GraphLowerer {
 
   constexpr ConcretePortId
   resolve_sample_source(TopologyPortId source) const {
-    if (auto boundary = out.subgraph_input_of_boundary_source.find(source);
-        boundary != out.subgraph_input_of_boundary_source.end()) {
-      auto incoming = source_of.find(boundary->second);
-      if (incoming == source_of.end())
+    if (auto const* boundary = out.subgraph_input_of_boundary_source.find(source)) {
+      auto const* incoming = source_of.find(*boundary);
+      if (!incoming)
         details::error(
             "subgraph boundary sample source has no incoming connection");
-      return resolve_sample_source(incoming->second);
+      return resolve_sample_source(*incoming);
     }
     if (source.node == GRAPH_ID) return {GRAPH_ID, source.port};
     if (source.node >= topology_node_count())
@@ -2204,22 +2232,21 @@ class GraphLowerer {
     auto const& node = topology_subgraph_node(source.node);
     auto passthrough = node.lowered_subgraph.sample_output_sources.at(source.port);
     if (passthrough.node == source.node) {
-      auto it = source_of.find(passthrough);
-      if (it == source_of.end())
+      auto const* it = source_of.find(passthrough);
+      if (!it)
         details::error("subgraph sample passthrough has no source");
-      return resolve_sample_source(it->second);
+      return resolve_sample_source(*it);
     }
     return resolve_sample_source(passthrough);
   }
 
   constexpr ConcretePortId resolve_event_source(TopologyPortId source) const {
-    if (auto boundary = out.subgraph_event_input_of_boundary_source.find(source);
-        boundary != out.subgraph_event_input_of_boundary_source.end()) {
-      auto incoming = event_source_of.find(boundary->second);
-      if (incoming == event_source_of.end())
+    if (auto const* boundary = out.subgraph_event_input_of_boundary_source.find(source)) {
+      auto const* incoming = event_source_of.find(*boundary);
+      if (!incoming)
         details::error(
             "subgraph boundary event source has no incoming connection");
-      return resolve_event_source(incoming->second.source);
+      return resolve_event_source(incoming->source);
     }
     if (source.node == GRAPH_ID) return {GRAPH_ID, source.port};
     if (source.node >= topology_node_count())
@@ -2229,22 +2256,21 @@ class GraphLowerer {
     auto const& node = topology_subgraph_node(source.node);
     auto passthrough = node.lowered_subgraph.event_output_sources.at(source.port);
     if (passthrough.node == source.node) {
-      auto it = event_source_of.find(passthrough);
-      if (it == event_source_of.end())
+      auto const* it = event_source_of.find(passthrough);
+      if (!it)
         details::error("subgraph event passthrough has no source");
-      return resolve_event_source(it->second.source);
+      return resolve_event_source(it->source);
     }
     return resolve_event_source(passthrough);
   }
 
   constexpr TopologyPortId resolve_sample_source_topology(TopologyPortId source) const {
-    if (auto boundary = out.subgraph_input_of_boundary_source.find(source);
-        boundary != out.subgraph_input_of_boundary_source.end()) {
-      auto incoming = source_of.find(boundary->second);
-      if (incoming == source_of.end())
+    if (auto const* boundary = out.subgraph_input_of_boundary_source.find(source)) {
+      auto const* incoming = source_of.find(*boundary);
+      if (!incoming)
         details::error(
             "subgraph boundary sample source has no incoming connection");
-      return resolve_sample_source_topology(incoming->second);
+      return resolve_sample_source_topology(*incoming);
     }
     if (source.node == GRAPH_ID) return source;
     if (source.node >= topology_node_count())
@@ -2253,22 +2279,21 @@ class GraphLowerer {
     auto const& node = topology_subgraph_node(source.node);
     auto passthrough = node.lowered_subgraph.sample_output_sources.at(source.port);
     if (passthrough.node == source.node) {
-      auto it = source_of.find(passthrough);
-      if (it == source_of.end())
+      auto const* it = source_of.find(passthrough);
+      if (!it)
         details::error("subgraph sample passthrough has no source");
-      return resolve_sample_source_topology(it->second);
+      return resolve_sample_source_topology(*it);
     }
     return resolve_sample_source_topology(passthrough);
   }
 
   constexpr TopologyPortId resolve_event_source_topology(TopologyPortId source) const {
-    if (auto boundary = out.subgraph_event_input_of_boundary_source.find(source);
-        boundary != out.subgraph_event_input_of_boundary_source.end()) {
-      auto incoming = event_source_of.find(boundary->second);
-      if (incoming == event_source_of.end())
+    if (auto const* boundary = out.subgraph_event_input_of_boundary_source.find(source)) {
+      auto const* incoming = event_source_of.find(*boundary);
+      if (!incoming)
         details::error(
             "subgraph boundary event source has no incoming connection");
-      return resolve_event_source_topology(incoming->second.source);
+      return resolve_event_source_topology(incoming->source);
     }
     if (source.node == GRAPH_ID) return source;
     if (source.node >= topology_node_count())
@@ -2277,29 +2302,45 @@ class GraphLowerer {
     auto const& node = topology_subgraph_node(source.node);
     auto passthrough = node.lowered_subgraph.event_output_sources.at(source.port);
     if (passthrough.node == source.node) {
-      auto it = event_source_of.find(passthrough);
-      if (it == event_source_of.end())
+      auto const* it = event_source_of.find(passthrough);
+      if (!it)
         details::error("subgraph event passthrough has no source");
-      return resolve_event_source_topology(it->second.source);
+      return resolve_event_source_topology(it->source);
     }
     return resolve_event_source_topology(passthrough);
   }
 
-  constexpr void add_sample_target_edges(ConcretePortId source,
-                                         TopologyPortId target) {
-    if (target.node == GRAPH_ID) {
-      graph.edges.emplace(GraphEdge{source, {GRAPH_ID, target.port}});
-      return;
+    constexpr void add_sample_target_edges(ConcretePortId source,
+                                           TopologyPortId target) {
+        if (target.node == GRAPH_ID) {
+            sample_edge_batch.push_back(
+                GraphEdge{source, {GRAPH_ID, target.port}});
+            return;
+        }
+        if (!topology_is_subgraph_node(target.node)) {
+            sample_edge_batch.push_back(GraphEdge{
+                source, {runtime_node_indices[target.node], target.port}});
+            return;
+        }
+        auto const& node = topology_subgraph_node(target.node);
+        for (auto child : node.lowered_subgraph.sample_input_targets.at(target.port))
+            add_sample_target_edges(source, child);
     }
-    if (!topology_is_subgraph_node(target.node)) {
-      graph.edges.emplace(
-          GraphEdge{source, {runtime_node_indices[target.node], target.port}});
-      return;
+
+    constexpr void canonicalize_sample_edges() {
+        std::ranges::sort(sample_edge_batch);
+        sample_edge_batch.erase(
+            std::ranges::unique(sample_edge_batch).begin(),
+            sample_edge_batch.end());
+      details::ConstexprHashSet<GraphEdge, details::GraphEdgeHash> seen;
+      std::vector<GraphEdge> unique_edges;
+      for (auto& edge : sample_edge_batch) {
+        if (seen.insert(edge))
+          unique_edges.push_back(std::move(edge));
+      }
+      graph.edges.replace(std::move(unique_edges));
+      sample_edge_batch.clear();
     }
-    auto const& node = topology_subgraph_node(target.node);
-    for (auto child : node.lowered_subgraph.sample_input_targets.at(target.port))
-      add_sample_target_edges(source, child);
-  }
 
   constexpr void add_event_target_edges(GraphEventEdge edge, TopologyPortId target) {
     if (target.node == GRAPH_ID) {
@@ -2362,8 +2403,8 @@ class GraphLowerer {
         if (source_of.contains(subgraph_input)) continue;
         auto source = materialize_subgraph_default(node_i, input);
         for (auto target : node.lowered_subgraph.sample_input_targets[input])
-          add_sample_target_edges(source, target);
-      }
+            add_sample_target_edges(source, target);
+    }
     }
   }
 
@@ -2513,7 +2554,8 @@ class GraphLowerer {
 
     build_topology_scope_memberships();
 
-    std::flat_map<size_t, size_t> scope_index;
+    details::ConstexprHashMap<size_t, size_t, details::ConstexprIdentityHash>
+        scope_index;
     std::vector<iv::LoweredSubgraphSpec> scopes;
     for (auto subgraph_i : subgraphs) {
       auto const& subgraph = topology_subgraph_node(subgraph_i);
@@ -2561,13 +2603,13 @@ class GraphLowerer {
       scope.member_nodes.erase(
           std::unique(scope.member_nodes.begin(), scope.member_nodes.end()),
           scope.member_nodes.end());
-      scope_index.emplace(subgraph_i, scopes.size());
+      scope_index.try_emplace(subgraph_i, scopes.size());
       scopes.push_back(std::move(scope));
     }
 
     for (auto child : subgraphs) {
-      auto it = scope_index.find(child);
-      if (it == scope_index.end()) continue;
+      auto const* it = scope_index.find(child);
+      if (!it) continue;
       size_t parent = GRAPH_ID;
       size_t best_span = std::numeric_limits<size_t>::max();
       for (auto candidate : out.scope_memberships.at(child)) {
@@ -2582,7 +2624,7 @@ class GraphLowerer {
         }
       }
       if (parent != GRAPH_ID)
-        scopes[it->second].parent_scope = scope_index.at(parent);
+        scopes[*it].parent_scope = *scope_index.find(parent);
     }
     return scopes;
   }
@@ -2666,10 +2708,11 @@ consteval size_t GraphLowerer::profile(
     return topology_cardinality();
 
   lowerer.begin_materialization();
-  lowerer.append_reflected_nodes(options.detach_id_offset);
-  lowerer.lower_edges();
-  lowerer.add_subgraph_default_edges();
-  lowerer.copy_detach_info();
+    lowerer.append_reflected_nodes(options.detach_id_offset);
+    lowerer.lower_edges();
+    lowerer.add_subgraph_default_edges();
+    lowerer.canonicalize_sample_edges();
+    lowerer.copy_detach_info();
   if (stage == GraphLoweringProfileStage::materialization)
     return graph_cardinality();
 
@@ -2708,6 +2751,7 @@ consteval ExecutableGraphIR GraphLowerer::lower(
   lowerer.append_reflected_nodes(options.detach_id_offset);
   lowerer.lower_edges();
   lowerer.add_subgraph_default_edges();
+  lowerer.canonicalize_sample_edges();
   lowerer.copy_detach_info();
 
   auto sample_inputs = options.execution_root

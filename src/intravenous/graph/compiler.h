@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/build_types.h>
 #include <intravenous/graph/executable_graph_ir.hpp>
+#include <intravenous/graph/hash.hpp>
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/names.h>
 #include <intravenous/graph/node.h>
@@ -105,10 +106,10 @@ namespace iv::details {
 
     struct CompilerConnectivity {
         std::vector<std::vector<size_t>> node_outgoing;
-        std::flat_map<ConcretePortId, std::vector<GraphEdge>> sample_targets;
+        ConstexprHashMap<ConcretePortId, std::vector<GraphEdge>, ConcretePortIdHash> sample_targets;
         CompilerSampleSources sample_source;
-        std::flat_map<ConcretePortId, std::vector<GraphEventEdge>> event_targets;
-        std::flat_map<ConcretePortId, GraphEventEdge> event_source;
+        ConstexprHashMap<ConcretePortId, std::vector<GraphEventEdge>, ConcretePortIdHash> event_targets;
+        ConstexprHashMap<ConcretePortId, GraphEventEdge, ConcretePortIdHash> event_source;
 
         constexpr explicit CompilerConnectivity(
             std::vector<ReflectedNodeDescription> const& nodes)
@@ -134,7 +135,7 @@ namespace iv::details {
         }
         for (GraphEventEdge const& edge : g.event_edges) {
             result.event_targets[edge.source].push_back(edge);
-            result.event_source.emplace(edge.target, edge);
+            result.event_source.try_emplace(edge.target, edge);
             append_node_edge(edge.source, edge.target);
         }
         for (auto& targets : result.node_outgoing) {
@@ -179,7 +180,7 @@ namespace iv::details {
 
         std::vector<DormancyGroupPlan> groups;
         groups.reserve(lowered_subgraphs.size());
-        std::vector<std::flat_set<size_t>> member_sets;
+        std::vector<ConstexprHashSet<size_t, ConstexprIdentityHash>> member_sets;
         member_sets.reserve(lowered_subgraphs.size());
 
         for (auto const& lowered_subgraph : lowered_subgraphs) {
@@ -188,19 +189,18 @@ namespace iv::details {
             group.ttl_samples = lowered_subgraph.ttl_samples;
             group.member_nodes = lowered_subgraph.member_nodes;
 
-            std::flat_set<size_t> member_set(
-                group.member_nodes.begin(),
-                group.member_nodes.end()
-            );
+            ConstexprHashSet<size_t, ConstexprIdentityHash> member_set;
+            for (size_t node : group.member_nodes)
+                member_set.insert(node);
             member_sets.push_back(std::move(member_set));
             groups.push_back(std::move(group));
         }
 
         for (size_t group_i = 0; group_i < groups.size(); ++group_i) {
             auto const& member_set = member_sets[group_i];
-            std::flat_set<ConcretePortId> seen_sample_inputs;
-            std::flat_set<ConcretePortId> seen_event_inputs;
-            std::flat_set<ConcretePortId> seen_sample_outputs;
+            ConstexprHashSet<ConcretePortId, ConcretePortIdHash> seen_sample_inputs;
+            ConstexprHashSet<ConcretePortId, ConcretePortIdHash> seen_event_inputs;
+            ConstexprHashSet<ConcretePortId, ConcretePortIdHash> seen_sample_outputs;
 
             for (size_t node : groups[group_i].member_nodes) {
                 auto const inputs = g.nodes[node].inputs();
@@ -212,7 +212,7 @@ namespace iv::details {
                             && member_set.contains(source->node))) {
                         continue;
                     }
-                    if (seen_sample_inputs.insert(target).second) {
+                    if (seen_sample_inputs.insert(target)) {
                         groups[group_i].sample_input_frontier.push_back(DormancySamplePortRef{
                             .port = target,
                             .history = inputs[input].history,
@@ -227,11 +227,11 @@ namespace iv::details {
 
                 auto const outputs = g.nodes[node].outputs();
                 for (size_t output = 0; output < outputs.size(); ++output) {
-                    auto const targets = connectivity.sample_targets.find({node, output});
-                    if (targets == connectivity.sample_targets.end()) {
+                    auto const* targets = connectivity.sample_targets.find({node, output});
+                    if (!targets) {
                         continue;
                     }
-                    for (GraphEdge const& edge : targets->second) {
+                    for (GraphEdge const& edge : *targets) {
                         if (edge.target.node != GRAPH_ID
                             && member_set.contains(edge.target.node)) {
                             continue;
@@ -242,7 +242,7 @@ namespace iv::details {
                                           .inputs()[edge.target.port]
                                           .history;
                         }
-                        if (seen_sample_outputs.insert(edge.target).second) {
+                        if (seen_sample_outputs.insert(edge.target)) {
                             groups[group_i].sample_output_frontier.push_back(
                                 DormancySamplePortRef{
                                     .port = edge.target,
@@ -255,13 +255,13 @@ namespace iv::details {
                 auto const event_inputs = g.nodes[node].event_inputs();
                 for (size_t input = 0; input < event_inputs.size(); ++input) {
                     ConcretePortId const target{node, input};
-                    auto const source = connectivity.event_source.find(target);
-                    if (source == connectivity.event_source.end()
-                        || (source->second.source.node != GRAPH_ID
-                            && member_set.contains(source->second.source.node))) {
+                    auto const* source = connectivity.event_source.find(target);
+                    if (!source
+                        || (source->source.node != GRAPH_ID
+                            && member_set.contains(source->source.node))) {
                         continue;
                     }
-                    if (seen_event_inputs.insert(target).second) {
+                    if (seen_event_inputs.insert(target)) {
                         groups[group_i].event_input_frontier.push_back(target);
                     }
                     size_t const ordered_region =
@@ -297,9 +297,9 @@ namespace iv::details {
             }
         }
 
-        std::flat_map<size_t, size_t> remapped_group_indices;
+        ConstexprHashMap<size_t, size_t, ConstexprIdentityHash> remapped_group_indices;
         for (size_t new_i = 0; new_i < kept_old_indices.size(); ++new_i) {
-            remapped_group_indices.emplace(kept_old_indices[new_i], new_i);
+            remapped_group_indices.try_emplace(kept_old_indices[new_i], new_i);
         }
 
         std::vector<DormancyGroupPlan> filtered;
@@ -310,7 +310,7 @@ namespace iv::details {
             while (parent != GRAPH_ID && !remapped_group_indices.contains(parent)) {
                 parent = groups[parent].parent_group;
             }
-            group.parent_group = parent == GRAPH_ID ? GRAPH_ID : remapped_group_indices.at(parent);
+            group.parent_group = parent == GRAPH_ID ? GRAPH_ID : *remapped_group_indices.find(parent);
             filtered.push_back(std::move(group));
         }
 
@@ -546,7 +546,7 @@ namespace iv::details {
                 port.node = reverse_sorted[port.node];
             }
         };
-        std::flat_map<ConcretePortId, DetachedInfo> sorted_detached_info;
+        std::vector<std::pair<ConcretePortId, DetachedInfo>> sorted_detached_info;
         for (auto const& [original_source, original_info] : g.detached_info_by_source) {
             ConcretePortId source = original_source;
             DetachedInfo info = original_info;
@@ -560,16 +560,26 @@ namespace iv::details {
             if (info.reader_output.node != GRAPH_ID) {
                 info.reader_output.node = reverse_sorted[info.reader_output.node];
             }
-            sorted_detached_info.emplace(source, std::move(info));
+            sorted_detached_info.emplace_back(source, std::move(info));
         }
-        g.detached_info_by_source.swap(sorted_detached_info);
+        std::sort(sorted_detached_info.begin(), sorted_detached_info.end(),
+            [](auto const& a, auto const& b) { return a.first < b.first; });
+        g.detached_info_by_source = std::flat_map<ConcretePortId, DetachedInfo>(
+            std::sorted_unique,
+            sorted_detached_info.begin(), sorted_detached_info.end());
 
-        std::flat_set<ConcretePortId> sorted_detached_reader_outputs;
+        std::vector<ConcretePortId> sorted_detached_reader_outputs;
         for (auto reader : g.detached_reader_outputs) {
             remap_port(reader);
-            sorted_detached_reader_outputs.insert(reader);
+            sorted_detached_reader_outputs.push_back(reader);
         }
-        g.detached_reader_outputs.swap(sorted_detached_reader_outputs);
+        std::sort(sorted_detached_reader_outputs.begin(), sorted_detached_reader_outputs.end());
+        sorted_detached_reader_outputs.erase(
+            std::unique(sorted_detached_reader_outputs.begin(), sorted_detached_reader_outputs.end()),
+            sorted_detached_reader_outputs.end());
+        g.detached_reader_outputs = std::flat_set<ConcretePortId>(
+            std::sorted_unique,
+            sorted_detached_reader_outputs.begin(), sorted_detached_reader_outputs.end());
 
         for (auto& scope : scopes) {
             for (size_t& node : scope.member_nodes) {
@@ -737,11 +747,11 @@ namespace iv::details {
             if (detached_info.original_source.node == GRAPH_ID) {
                 continue;
             }
-            auto it = connectivity.sample_targets.find(detached_info.reader_output);
-            if (it == connectivity.sample_targets.end()) {
+            auto const* it = connectivity.sample_targets.find(detached_info.reader_output);
+            if (!it) {
                 continue;
             }
-            for (GraphEdge const& edge : it->second) {
+            for (GraphEdge const& edge : *it) {
                 ConcretePortId const consumer = edge.target;
                 if (consumer.node == GRAPH_ID) {
                     continue;
@@ -962,7 +972,7 @@ namespace iv::details {
             return max_latency;
         }
 
-        std::flat_map<ConcretePortId, size_t> input_latencies;
+        ConstexprHashMap<ConcretePortId, size_t, ConcretePortIdHash> input_latencies;
         size_t max_latency = 0;
         size_t const region_index = node_to_region[region.nodes.front()];
         for (size_t const node_i : region.execution_order) {
@@ -979,9 +989,8 @@ namespace iv::details {
             for (size_t output_port = 0; output_port < outputs.size(); ++output_port) {
                 size_t const output_latency = node_latency + outputs[output_port].latency;
                 max_latency = std::max(max_latency, output_latency);
-                if (auto it = connectivity.sample_targets.find({ node_i, output_port });
-                    it != connectivity.sample_targets.end()) {
-                    for (GraphEdge const& edge : it->second) {
+                if (auto const* it = connectivity.sample_targets.find({ node_i, output_port })) {
+                    for (GraphEdge const& edge : *it) {
                         if (edge.target.node != GRAPH_ID
                             && node_to_region[edge.target.node] == region_index) {
                             input_latencies[edge.target] = output_latency;
@@ -1051,8 +1060,8 @@ namespace iv::details {
             if (node_i == GRAPH_ID) return;
             node_global_latency += get_internal_latency(node);
             for (size_t output = 0; output < output_configs.size(); ++output) {
-                if (auto it = targets_of.find({node_i, output}); it != targets_of.end()) {
-                    for (GraphEdge const& edge : it->second) {
+                if (auto const* it = targets_of.find({node_i, output})) {
+                    for (GraphEdge const& edge : *it) {
                         input_port_global_latencies[edge.target] =
                             node_global_latency + output_configs[output].latency;
                     }
@@ -1380,11 +1389,10 @@ namespace iv::details {
                 node_global_latency += node.internal_latency();
                 auto node_outputs = node.outputs();
                 for (size_t output_port = 0; output_port < node_outputs.size(); ++output_port) {
-                    if (auto it = connectivity.sample_targets.find({ node_i, output_port });
-                        it != connectivity.sample_targets.end()) {
+                    if (auto const* it = connectivity.sample_targets.find({ node_i, output_port })) {
                         size_t const new_latency = node_global_latency + node_outputs[output_port].latency;
                         max_latency = std::max(max_latency, new_latency);
-                        for (GraphEdge const& edge : it->second) {
+                        for (GraphEdge const& edge : *it) {
                             input_global_latencies[edge.target] = new_latency;
                         }
                     }
@@ -1431,12 +1439,12 @@ namespace iv::details {
                 auto event_outputs = nodes[global_i].event_outputs();
                 event_output_targets.reserve(event_outputs.size());
                 for (size_t output_i = 0; output_i < event_outputs.size(); ++output_i) {
-                    auto const it = connectivity.event_targets.find(
+                    auto const* it = connectivity.event_targets.find(
                         {global_i, output_i});
-                    if (it != connectivity.event_targets.end()) {
-                        IV_ASSERT(it->second.size() == 1,
+                    if (it) {
+                        IV_ASSERT(it->size() == 1,
                                   "event fan-out must lower through BroadcastEvent");
-                        auto const& edge = it->second.front();
+                        auto const& edge = it->front();
                         if (edge.target.node == GRAPH_ID) {
                             event_output_targets.push_back(EventOutputBinding{
                                 .target = graph_event_port_data_export_id(
