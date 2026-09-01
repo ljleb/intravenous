@@ -576,25 +576,26 @@ constexpr std::optional<NodeBundlePortId>
 GraphBuilderNodeBundles::sample_output_port_for_channels(
     ChannelTypeId type,
     std::span<SampleOutputChannelId const> channels) const {
-  for (NodeBundleHandle handle = 0; handle < _bundles.size(); ++handle) {
-    auto const &candidate = bundle(handle);
-    for (size_t port = 0; port < candidate.sample_output_count(); ++port) {
-      NodeBundlePortId const id {handle, PortKind::sample, port};
-      if (resolve_sample_output(id).config.channel_layout.channel_type != type)
-        continue;
-      auto const candidate_channels = sample_output_channels(id);
-      if (candidate_channels.size() != channels.size()) continue;
-      bool equal = true;
-      for (size_t channel = 0; channel < channels.size(); ++channel) {
-        if (candidate_channels[channel] != channels[channel]) {
-          equal = false;
-          break;
-        }
-      }
-      if (equal) return id;
-    }
+  // A native output's channel IDs already carry its logical identity.  Do not
+  // rediscover that identity by scanning every bundle and output port: validate
+  // that this is the canonical consecutive channel sequence for its first ID.
+  if (channels.empty()) return std::nullopt;
+  auto const first = channels.front();
+  if (first.bundle >= _bundles.size()) return std::nullopt;
+  auto const& candidate = bundle(first.bundle);
+  if (first.port >= candidate.sample_output_count()) return std::nullopt;
+
+  NodeBundlePortId const id {first.bundle, PortKind::sample, first.port};
+  if (resolve_sample_output(id).config.channel_layout.channel_type != type
+      || channels.size() != channel_count(type))
+    return std::nullopt;
+
+  for (size_t channel = 0; channel < channels.size(); ++channel) {
+    if (channels[channel]
+        != SampleOutputChannelId{first.bundle, first.port, channel})
+      return std::nullopt;
   }
-  return std::nullopt;
+  return id;
 }
 } // namespace iv
 namespace iv {

@@ -15,13 +15,6 @@ benchmark_marker="$(mktemp)"
 trap 'rm -f "$benchmark_marker"' EXIT
 
 for stage in \
-    authoring \
-    lowering-topology \
-    lowering-materialization \
-    lowering-normalization \
-    lowering \
-    compilation \
-    static-metadata \
     full; do
     build-release/benchmark/iv_module_build_benchmark \
         --module "$module_path" \

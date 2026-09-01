@@ -1426,21 +1426,10 @@ class GraphLowerer {
   constexpr std::optional<TopologyPortId> direct_sample_source(
       ChannelTypeId type, std::span<SampleOutputChannelId const> channels) const {
     if (channels.empty()) details::error("sample source has no channels");
-    auto const first = channels.front();
-    if (first.bundle >= bundles.size()) return std::nullopt;
-    auto const& bundle = bundles.bundle(first.bundle);
-    if (first.port >= bundle.sample_output_count()) return std::nullopt;
-    NodeBundlePortId const logical{first.bundle, PortKind::sample, first.port};
-    auto const config = bundles.resolve_sample_output(logical).config;
-    if (config.channel_layout.channel_type != type ||
-        channels.size() != channel_count(type))
-      return std::nullopt;
-    for (size_t channel = 0; channel < channels.size(); ++channel) {
-      if (channels[channel] != SampleOutputChannelId{
-              first.bundle, first.port, channel})
-        return std::nullopt;
-    }
-    auto const& endpoints = out.bundle_projections.at(logical.node_bundle_handle).sample_outputs.at(logical.port_ordinal);
+    auto const logical = bundles.sample_output_port_for_channels(type, channels);
+    if (!logical) return std::nullopt;
+    auto const& endpoints = out.bundle_projections.at(
+        logical->node_bundle_handle).sample_outputs.at(logical->port_ordinal);
     if (endpoints.size() == 1) return endpoints.front();
     if (type == ChannelTypeId::mono && channels.size() == 1) {
       auto const resolved = resolve_sample_source_channel(channels.front());

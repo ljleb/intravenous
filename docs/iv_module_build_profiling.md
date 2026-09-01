@@ -478,3 +478,51 @@ Accordingly, the next detailed profile should subdivide `GraphLowerer::lower`,
 rather than add path-specific compiler shortcuts. The execution handoff did
 not run in this attempt because of a script typo, so this observation has no
 new runtime sample.
+
+### GCC source-level constexpr attribution (2026-09-01)
+
+The hot `saw` generated-export translation unit was first recorded with the
+configured Nix GCC 16.2 compiler (35,568 `perf` samples). Its dominant work was
+the constexpr evaluator: `cxx_eval_constant_expression` had 14.84% exclusive
+samples and `cxx_eval_call_expression` 5.76%. Allocation/collection, stores,
+function-definition lookup, and constexpr-cache work were also material, while
+final optimization/code generation was not the dominant cost.
+
+For line and callsite attribution, a separate GCC 16.2 checkout was built with
+debug information and an opt-in inclusive/self-time profiler around
+`cxx_eval_call_expression`. The exact generated source, target options,
+source-introspection plugin, and a PCH compiled by that GCC were used. A
+P-core-only recording collected 34,763 samples over 34.83 seconds. This is a
+source-attribution run, not a replacement performance baseline: the GCC
+frontend itself was built with `-O2 -g`, whereas the configured Nix compiler is
+the release baseline.
+
+The profiler attributes the current lowering work as follows:
+
+| constexpr function/callsite | Inclusive evaluator CPU time | Calls | Observation |
+| --- | ---: | ---: | --- |
+| `GraphCompiler::compile` | 23.246 s | 1 | Contains the full authoring/lowering/compilation flow. |
+| `GraphLowerer::lower` | 15.263 s | 2 | Lowering remains the largest named pipeline phase. |
+| `lower_runtime_output_observers` | 4.335 s | 1 | Materializes every virtual runtime output member. |
+| `materialize_sample_output_channels` | 4.187 s | 35 | 4.166 s is reached directly from the observer loop. |
+| `sample_output_port_for_channels` | 5.525 s | 59 | Repeated global logical-output rediscovery. |
+| `NodeBundle::sample_output_descriptor` | 2.845 s | 19,038 | Returns copied `OutputConfig` descriptors through a variant visit. |
+| `OutputConfig` construction | 1.890 s | 24,452 | Configuration copying is independently visible. |
+
+`sample_output_port_for_channels` scans every bundle and every output port.
+For each candidate it resolves a descriptor by value, constructs a temporary
+`std::vector` of channel IDs, and compares it with the already-known semantic
+channels. The call at `materialize_sample_output_channels` therefore performs a
+whole-graph identity lookup even though its channel IDs already encode the
+candidate bundle and port. This confirms the earlier lowering-complexity report
+on the current full production export rather than identifying a new GCC
+frontend bottleneck.
+
+The first follow-up should replace that rediscovery with an identity-preserving
+check: derive the first `{bundle, port}` from the semantic channels, verify the
+remaining channels refer to that same output in order, then use it directly.
+The descriptor/channel helpers should subsequently expose references or compact
+layout metadata in the lookup path, avoiding `OutputConfig` and temporary
+channel-vector construction. Re-profile before attempting further static
+promotion changes; the latter is visible, but is not the first lowering
+culprit.
