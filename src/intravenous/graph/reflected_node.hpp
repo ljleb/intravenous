@@ -83,16 +83,10 @@ struct ReflectedNodeRuntimeOperations {
 
 struct ReflectedNodeOperations {
     ReflectedNodeRuntimeOperations runtime {};
-    ReflectedNodeOperations (*apply_detach_id_offset_fn)(void const*, size_t) = nullptr;
 
     constexpr bool valid() const
     {
-        return runtime.valid() && apply_detach_id_offset_fn != nullptr;
-    }
-
-    constexpr ReflectedNodeOperations apply_detach_id_offset(size_t offset) const
-    {
-        return apply_detach_id_offset_fn(runtime.node_data, offset);
+        return runtime.valid();
     }
 };
 
@@ -219,29 +213,6 @@ namespace details {
     }
 
     template<class Node>
-    constexpr ReflectedNodeOperations apply_reflected_detach_id_offset(
-        void const* node_data,
-        size_t offset)
-    {
-        auto const& node = *static_cast<Node const*>(node_data);
-        if constexpr (
-            std::same_as<Node, DetachWriterNode>
-            || std::same_as<Node, DetachReaderNode>) {
-            if consteval {
-                auto adjusted = node;
-                adjusted.id.id += offset;
-                auto const* adjusted_data = std::define_static_object(adjusted);
-                return reflected_node_operations<Node>(adjusted_data);
-            } else {
-                runtime_graph_builder_node_call_is_forbidden();
-                return {};
-            }
-        } else {
-            return reflected_node_operations<Node>(static_cast<Node const*>(node_data));
-        }
-    }
-
-    template<class Node>
     constexpr ReflectedNodeOperations reflected_node_operations(Node const* node_data)
     {
         return {
@@ -251,8 +222,6 @@ namespace details {
                 .tick_block = &tick_reflected_node_block<Node>,
                 .skip_block = &skip_reflected_node_block<Node>,
             },
-            .apply_detach_id_offset_fn =
-                &apply_reflected_detach_id_offset<Node>,
         };
     }
 

@@ -434,9 +434,11 @@ consteval void GraphBuilder::populate_public_introspection_metadata(
 }
 
 consteval AuthoredGraph GraphBuilder::finish() const & {
+  auto bundles = _node_bundles;
+  bundles.materialize_deferred_detaches();
   return {
       .identity = _identity,
-      .node_bundles = _node_bundles,
+      .node_bundles = std::move(bundles),
       .connections = _connections,
       .public_ports = _public_ports,
       .detach = _detach,
@@ -446,6 +448,7 @@ consteval AuthoredGraph GraphBuilder::finish() const & {
 }
 
 consteval AuthoredGraph GraphBuilder::finish() && {
+  _node_bundles.materialize_deferred_detaches();
   return {
       .identity = std::move(_identity),
       .node_bundles = std::move(_node_bundles),
@@ -609,10 +612,12 @@ consteval SamplePortRef GraphBuilder::detach_sample_port(
   if (latency < 1)
     details::error("detach loop extra latency must be at least 1");
   auto id = _detach.allocate_detach_id();
-  auto writer = node<DetachWriterNode>(id, latency);
+  auto writer = NodeRef(
+      *this, _node_bundles.append_deferred_detach_writer(id, latency));
   record_authored_sample_connection(
       {writer.node_bundle_handle(), PortKind::sample, 0}, source);
-  auto reader = node<DetachReaderNode>(id, latency);
+  auto reader = NodeRef(
+      *this, _node_bundles.append_deferred_detach_reader(id, latency));
   SamplePortRef detached = static_cast<SamplePortRef>(reader);
   if (detached.channel_type != ChannelTypeId::mono ||
       detached.channels.size() != 1)

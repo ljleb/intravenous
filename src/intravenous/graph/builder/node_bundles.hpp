@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/basic_nodes/routing.h>
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/names.h>
 #include <intravenous/graph/builder/stored_node.hpp>
@@ -91,6 +92,7 @@ class NodeBundle {
     std::optional<size_t> default_ttl_samples{};
     bool block_skippable = false;
     std::optional<Sample> static_sample_value{};
+    std::optional<DeferredDetachNode> deferred_detach{};
   };
 
   struct TiledNodeBundle {
@@ -229,6 +231,11 @@ public:
   constexpr NodeBundleHandle append_scope_boundary();
 
   constexpr NodeBundleHandle append_concrete(ConcreteNode node);
+  constexpr NodeBundleHandle append_deferred_detach_writer(
+      size_t detach_id, size_t loop_extra_latency);
+  constexpr NodeBundleHandle append_deferred_detach_reader(
+      size_t detach_id, size_t loop_extra_latency);
+  constexpr void materialize_deferred_detaches();
 
   constexpr NodeBundleHandle append_tiled(
       std::span<NodeBundleHandle const>, ChannelLayout promoted_channel_layout);
@@ -333,10 +340,82 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .default_ttl_samples = lowered.default_ttl_samples,
       .block_skippable = lowered.block_skippable,
       .static_sample_value = lowered.static_sample_value,
+      .deferred_detach = lowered.deferred_detach,
   };
   auto const handle = _bundles.size();
   _bundles.push_back(NodeBundle(std::move(payload)));
   return handle;
+}
+
+constexpr NodeBundleHandle
+GraphBuilderNodeBundles::append_deferred_detach_writer(
+    size_t detach_id, size_t loop_extra_latency) {
+  ConcreteNode node;
+  node.ports.sample_inputs = {InputConfig{}};
+  node.type_identity = {.value = std::string(
+      details::reflected_node_type_metadata<DetachWriterNode>.type_name)};
+  node.deferred_detach = DeferredDetachNode{
+      .kind = DeferredDetachNodeKind::writer,
+      .id = detach_id,
+      .loop_extra_latency = loop_extra_latency,
+  };
+  return append_concrete(std::move(node));
+}
+
+constexpr NodeBundleHandle
+GraphBuilderNodeBundles::append_deferred_detach_reader(
+    size_t detach_id, size_t loop_extra_latency) {
+  ConcreteNode node;
+  node.ports.sample_outputs = {OutputConfig{}};
+  node.type_identity = {.value = std::string(
+      details::reflected_node_type_metadata<DetachReaderNode>.type_name)};
+  node.deferred_detach = DeferredDetachNode{
+      .kind = DeferredDetachNodeKind::reader,
+      .id = detach_id,
+      .loop_extra_latency = loop_extra_latency,
+  };
+  return append_concrete(std::move(node));
+}
+
+constexpr void GraphBuilderNodeBundles::materialize_deferred_detaches() {
+  for (auto& bundle : _bundles) {
+    if (!bundle.is_concrete()) continue;
+    auto& payload = std::get<NodeBundle::ConcreteNodeBundle>(
+        *bundle._payload);
+    if (!payload.deferred_detach) continue;
+
+    ConcreteNode materialized;
+    auto const deferred = *payload.deferred_detach;
+    if consteval {
+      if (deferred.kind == DeferredDetachNodeKind::writer) {
+        materialized = make_concrete_node(details::reflect_node(
+            DetachWriterNode{
+                .id = DetachArrayId{deferred.id},
+                .loop_extra_latency = deferred.loop_extra_latency,
+            }));
+      } else {
+        materialized = make_concrete_node(details::reflect_node(
+            DetachReaderNode{
+                .id = DetachArrayId{deferred.id},
+                .loop_extra_latency = deferred.loop_extra_latency,
+            }));
+      }
+    } else {
+      details::runtime_graph_builder_node_call_is_forbidden();
+      return;
+    }
+
+    payload.ports = std::move(materialized.ports);
+    payload.operations = materialized.operations;
+    payload.lifetime = std::move(materialized.lifetime);
+    payload.type_identity = std::move(materialized.type_identity);
+    payload.internal_latency_samples = materialized.internal_latency_samples;
+    payload.maximum_block_size = materialized.maximum_block_size;
+    payload.default_ttl_samples = materialized.default_ttl_samples;
+    payload.block_skippable = materialized.block_skippable;
+    payload.static_sample_value = materialized.static_sample_value;
+    payload.deferred_detach.reset();
+  }
 }
 
 constexpr NodeBundleHandle GraphBuilderNodeBundles::append_boundary() {
@@ -846,8 +925,9 @@ constexpr void NodeBundle::import_into(
   std::visit([&](auto &payload) {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
     if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
-      payload.operations =
-          payload.operations.apply_detach_id_offset(detach_id_offset);
+      if (payload.deferred_detach) {
+        payload.deferred_detach->id += detach_id_offset;
+      }
     } else if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
       for (auto &member : payload.member_bundles) member += node_bundle_offset;
     } else if constexpr (std::is_same_v<Bundle, SubgraphNodeBundle>) {

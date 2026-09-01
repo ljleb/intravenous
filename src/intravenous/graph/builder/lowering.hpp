@@ -50,7 +50,6 @@ struct TopologyEventEdge {
 };
 
 struct GraphLoweringOptions {
-  size_t detach_id_offset = 0;
   bool execution_root = false;
 };
 
@@ -730,16 +729,6 @@ constexpr void apply_virtual_port_metadata(
 } // namespace details
 
 namespace details {
-    template<class Node>
-    constexpr ReflectedNodeDescription reflect_lowered_node(Node node)
-    {
-        if consteval {
-            return reflect_node(node);
-        } else {
-            runtime_graph_builder_node_call_is_forbidden();
-            return {};
-        }
-    }
     constexpr std::string lowered_generated_node_id(std::string_view builder_id, size_t generated_index)
     {
         std::string id(builder_id);
@@ -813,7 +802,7 @@ namespace details {
                 if (port_arity <= 1) continue;
 
                 EventTypeId const concat_type = get_event_inputs(g.nodes[node])[in_port].type;
-                g.nodes.push_back(reflect_lowered_node(
+                g.nodes.push_back(materialize_compiler_node_or_forbid(
                     EventConcatenation(port_arity, concat_type)));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
@@ -859,7 +848,7 @@ namespace details {
                 if (port_arity <= 1) continue;
 
                 EventTypeId const broadcast_type = get_event_outputs(g.nodes[node])[out_port].type;
-                g.nodes.push_back(reflect_lowered_node(
+                g.nodes.push_back(materialize_compiler_node_or_forbid(
                     BroadcastEvent(port_arity, broadcast_type)));
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
@@ -903,7 +892,8 @@ namespace details {
                 ConcretePortId const this_port{ node, output_port };
                 if (!connected_sample_outputs.contains(this_port))
                 {
-                    g.nodes.push_back(reflect_lowered_node(DummySink()));
+                    g.nodes.push_back(materialize_compiler_node_or_forbid(
+                        DummySink()));
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                     g.node_virtual_ids.emplace_back();
@@ -919,7 +909,8 @@ namespace details {
                 ConcretePortId const this_port{ node, output_port };
                 if (!connected_event_outputs.contains(this_port))
                 {
-                    g.nodes.push_back(reflect_lowered_node(DummyEventSink()));
+                    g.nodes.push_back(materialize_compiler_node_or_forbid(
+                        DummyEventSink()));
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                     g.node_virtual_ids.emplace_back();
@@ -2162,7 +2153,7 @@ class GraphLowerer {
     });
   }
 
-  constexpr void append_reflected_nodes(size_t detach_offset) {
+  constexpr void append_reflected_nodes() {
     for (size_t node_i = 0; node_i < topology_node_count(); ++node_i) {
       if (topology_is_subgraph_node(node_i)) continue;
       auto const& node = topology_concrete_node(node_i);
@@ -2171,7 +2162,7 @@ class GraphLowerer {
       if (node.operations.valid()) {
         description = {
             .ports = node.ports,
-            .operations = node.operations.apply_detach_id_offset(detach_offset),
+            .operations = node.operations,
             .type_name = node.type_identity.value,
             .internal_latency_samples = node.internal_latency_samples,
             .maximum_block_size = node.maximum_block_size,
@@ -2180,9 +2171,8 @@ class GraphLowerer {
             .static_sample_value = node.static_sample_value,
         };
       } else if consteval {
-        description = details::reflect_generated_node(node.generated_node);
-        description.operations =
-            description.operations.apply_detach_id_offset(detach_offset);
+        description = details::materialize_generated_node(
+            node.generated_node);
       } else {
         details::runtime_graph_builder_node_call_is_forbidden();
       }
@@ -2382,7 +2372,7 @@ class GraphLowerer {
       size_t subgraph_node, size_t input_port) {
     runtime_node_indices.push_back(graph.nodes.size());
     if consteval {
-      graph.nodes.push_back(details::reflect_node(Constant(
+      graph.nodes.push_back(details::materialize_compiler_node(Constant(
           topology_subgraph_node(subgraph_node)
               .inputs()[input_port]
               .default_value)));
@@ -2721,7 +2711,7 @@ consteval size_t GraphLowerer::profile(
     return topology_cardinality();
 
   lowerer.begin_materialization();
-    lowerer.append_reflected_nodes(options.detach_id_offset);
+    lowerer.append_reflected_nodes();
     lowerer.lower_edges();
     lowerer.add_subgraph_default_edges();
     lowerer.canonicalize_sample_edges();
@@ -2762,7 +2752,7 @@ consteval ExecutableGraphIR GraphLowerer::lower(
       options.execution_root);
   lowerer.run();
   lowerer.begin_materialization();
-  lowerer.append_reflected_nodes(options.detach_id_offset);
+  lowerer.append_reflected_nodes();
   lowerer.lower_edges();
   lowerer.add_subgraph_default_edges();
   lowerer.canonicalize_sample_edges();
