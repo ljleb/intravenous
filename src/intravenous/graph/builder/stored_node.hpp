@@ -56,12 +56,23 @@ struct DeferredDetachNode {
   size_t loop_extra_latency = 1;
 };
 
+// Authored concrete-node data stays owned by GraphBuilderNodeBundles throughout
+// topology lowering. The workspace carries this lightweight handle instead of
+// copying ports, strings, callbacks, and static values into another graph
+// representation.
+struct AuthoredConcreteNodeRef {
+  size_t node_bundle_handle = 0;
+};
+
 // Lowered execution-topology IR produced from semantic NodeBundles.
 struct ConcreteNode {
   NodePorts ports{};
   ReflectedNodeOperations operations{};
   NodeLifetime lifetime{};
   NodeTypeIdentity type_identity{};
+  // Reflection supplies a static type spelling. Keep that stable view separate
+  // from the owned identity used for graph-generated names and metadata.
+  std::string_view reflected_type_name{};
   size_t internal_latency_samples = 0;
   size_t maximum_block_size = MAX_BLOCK_SIZE;
   std::optional<size_t> default_ttl_samples{};
@@ -106,6 +117,7 @@ struct SubgraphNode {
   }
 };
 
-using StoredNode = std::variant<ConcreteNode, SubgraphNode>;
+using StoredNode = std::variant<AuthoredConcreteNodeRef, ConcreteNode,
+                                SubgraphNode>;
 
 } // namespace iv

@@ -87,6 +87,7 @@ class NodeBundle {
     ReflectedNodeOperations operations{};
     NodeLifetime lifetime{};
     NodeTypeIdentity type_identity{};
+    std::string_view reflected_type_name{};
     size_t internal_latency_samples = 0;
     size_t maximum_block_size = MAX_BLOCK_SIZE;
     std::optional<size_t> default_ttl_samples{};
@@ -267,7 +268,9 @@ public:
   constexpr NodePorts const &typed_ports(NodeBundleHandle) const;
   constexpr NodeBundleHandle tiled_member(
       NodeBundleHandle, size_t channel) const;
-  constexpr ConcreteNode lowered_concrete(NodeBundleHandle) const;
+  constexpr NodeLifetime const &concrete_lifetime(NodeBundleHandle) const;
+  constexpr ReflectedNodeDescription materialize_concrete_description(
+      NodeBundleHandle) const;
   constexpr SemanticSubgraphInfo subgraph_info(NodeBundleHandle) const;
 
   constexpr size_t size() const { return _bundles.size(); }
@@ -308,6 +311,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       .ports = std::move(description.ports),
       .operations = description.operations,
       .type_identity = NodeTypeIdentity{.value = std::string(description.type_name)},
+      .reflected_type_name = description.type_name,
       .internal_latency_samples = description.internal_latency_samples,
       .maximum_block_size = description.maximum_block_size,
       .default_ttl_samples = description.default_ttl_samples,
@@ -335,6 +339,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .operations = lowered.operations,
       .lifetime = std::move(lowered.lifetime),
       .type_identity = std::move(lowered.type_identity),
+      .reflected_type_name = lowered.reflected_type_name,
       .internal_latency_samples = lowered.internal_latency_samples,
       .maximum_block_size = lowered.maximum_block_size,
       .default_ttl_samples = lowered.default_ttl_samples,
@@ -409,6 +414,7 @@ constexpr void GraphBuilderNodeBundles::materialize_deferred_detaches() {
     payload.operations = materialized.operations;
     payload.lifetime = std::move(materialized.lifetime);
     payload.type_identity = std::move(materialized.type_identity);
+    payload.reflected_type_name = materialized.reflected_type_name;
     payload.internal_latency_samples = materialized.internal_latency_samples;
     payload.maximum_block_size = materialized.maximum_block_size;
     payload.default_ttl_samples = materialized.default_ttl_samples;
@@ -1060,16 +1066,26 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::tiled_member(
   return members[channel];
 }
 
-constexpr ConcreteNode GraphBuilderNodeBundles::lowered_concrete(
+constexpr NodeLifetime const &GraphBuilderNodeBundles::concrete_lifetime(
     NodeBundleHandle handle) const {
   auto const &b = bundle(handle);
   auto const *payload = b._payload ? std::get_if<NodeBundle::ConcreteNodeBundle>(&*b._payload) : nullptr;
   if (!payload) details::error("NodeBundle is not concrete");
-  return ConcreteNode{
+  return payload->lifetime;
+}
+
+constexpr ReflectedNodeDescription
+GraphBuilderNodeBundles::materialize_concrete_description(
+    NodeBundleHandle handle) const {
+  auto const &b = bundle(handle);
+  auto const *payload = b._payload
+      ? std::get_if<NodeBundle::ConcreteNodeBundle>(&*b._payload)
+      : nullptr;
+  if (!payload) details::error("NodeBundle is not concrete");
+  return ReflectedNodeDescription{
       .ports = payload->ports,
       .operations = payload->operations,
-      .lifetime = payload->lifetime,
-      .type_identity = payload->type_identity,
+      .type_name = payload->reflected_type_name,
       .internal_latency_samples = payload->internal_latency_samples,
       .maximum_block_size = payload->maximum_block_size,
       .default_ttl_samples = payload->default_ttl_samples,

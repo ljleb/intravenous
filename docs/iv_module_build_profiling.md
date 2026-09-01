@@ -576,3 +576,50 @@ output configs (0.397 s and 0.293 s), primary output targets (0.388 s), aliases
 static port metadata, IDs, and buffer plans, so a follow-up must first separate
 duplicated promotion from essential runtime representation rather than simply
 discarding or zeroing default/storage fields.
+
+### Lossless authored-node and generated-node simplification (2026-09-01)
+
+The next representation cleanup is deliberately separate from the proposed
+authoring-DSO/runtime-lowering architecture. It removes avoidable work from the
+existing consteval pipeline first, and establishes the same boundary that a
+runtime pipeline would later consume.
+
+Before this change, a concrete authored node was represented three times:
+
+```text
+ConcreteNodeBundle in AuthoredGraph
+  -> copied ConcreteNode in LoweringWorkspace::topology_nodes
+  -> copied ReflectedNodeDescription in ExecutableGraphData::nodes
+```
+
+The topology workspace now carries `AuthoredConcreteNodeRef`, a bundle handle,
+for authored nodes. Port and lifetime queries resolve through the immutable
+authored bundle; a complete `ReflectedNodeDescription` is copied only when the
+node enters executable IR. This prevents lowering from repeatedly copying port
+vectors, type strings, callback records, and static-value metadata merely to
+preserve them across topology rewrites.
+
+Compiler-owned nodes are also a closed data set. `GeneratedNodeSpec` now owns
+the description of connection nodes, runtime bindings, event concatenation and
+broadcast nodes, dangling sinks, and subgraph-default constants. A single
+spec-to-ports operation supplies topology shape, and a single
+spec-to-executable operation materializes the corresponding built-in node.
+Lowering must not call the authored `reflect_node` entry point or construct an
+arbitrary authored C++ value.
+
+The invariants to retain are:
+
+- Authored node metadata remains lossless after `GraphBuilder::finish()`;
+  lowering may reference it but must not re-reflect it.
+- Topology owns only structural rewrites and compiler-generated records;
+  it does not clone authored concrete-node payloads.
+- Each generated-node kind has one semantic spec and one port-description
+  function. Do not duplicate its port derivation at topology and executable
+  materialization sites.
+- `ExecutableGraphData` retains its parallel metadata arrays for now. Its
+  compiler passes frequently traverse only node descriptions, so changing to
+  an array-of-structs is not presumed to improve locality and needs profiling.
+
+This is expected to reduce constexpr allocation and copying, not to remove the
+graph algorithms themselves. Re-run the full `saw` benchmark and GCC time
+report before attributing a numerical improvement to it.
