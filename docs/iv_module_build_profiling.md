@@ -623,3 +623,61 @@ The invariants to retain are:
 This is expected to reduce constexpr allocation and copying, not to remove the
 graph algorithms themselves. Re-run the full `saw` benchmark and GCC time
 report before attributing a numerical improvement to it.
+
+## Training a GCC PGO build on IV modules
+
+GCC's normal `profiledbootstrap` trains on GCC's own compiler workload. That
+does not represent this project’s constexpr-heavy module export, so use the
+repository wrapper instead:
+
+```text
+cmake --build build-release --target iv_module_build_benchmark -j16
+scripts/build_gcc_iv_pgo.sh \
+  --benchmark build-release/benchmark/iv_module_build_benchmark \
+  --module projects/simple_sine/modules/saw
+```
+
+GCC 16 reserves `--enable-pgo-build` for non-compiler builds, so the wrapper
+performs the equivalent supported two-pass process explicitly. It first builds
+an instrumented non-bootstrap compiler, invokes the module benchmark using
+that build's `xgcc`/`xg++`, then runs `distclean`, reconfigures with the
+external profile directory, and builds with `-fprofile-use`. The instrumented
+pass also propagates `-fprofile-generate` to host-tool link commands, so their
+libgcov runtime is linked correctly. Both passes build `all-gcc`, rather than
+target runtime libraries such as `libgcc_s`, because the benchmark needs only
+the host compiler. During training, lightweight wrapper drivers retain Nix's
+standard-library paths while directing the host driver to the local
+instrumented `cc1`/`cc1plus`; the source-introspection plugin is likewise
+rebuilt against the local GCC's generated plugin headers. The output compiler is
+`build/gcc-iv-pgo/gcc/g++` by default.
+
+Profile data is stored beside the build directory by default and can be set
+with `--profile-dir`. When several representative IV modules are available,
+extend the wrapper's training invocation to compile each module before the
+feedback pass. Always compare the resulting compiler with the configured Nix
+GCC using the same retained benchmark workspace and module flags.
+
+The benchmark owns and marks its workspace for safe cleanup. Pass it a path
+that does not already exist for a new training run; the wrapper deliberately
+does not pre-create it. Its default workspace and profile directory are both
+derived from `--build-dir`, so independent build directories do not collide.
+
+If the instrumented `all-gcc` phase completed but training then failed, avoid
+rebuilding it by using `--resume-instrumented` with the same build directory.
+The wrapper regenerates its compiler wrappers/plugin and clears only stale
+`.gcda` files before compiling the IV workload.
+
+On Nix, GMP and MPFR headers and libraries are split into separate store
+outputs. The wrapper discovers them through `pkg-config` and locates an
+available `libmpc` store output automatically. If the development environment
+does not expose those paths, pass `--gmp-include`, `--gmp-lib`,
+`--mpfr-include`, `--mpfr-lib`, and `--mpc-prefix` explicitly.
+
+The wrapper likewise finds Nix's glibc development headers and passes them as
+GCC's native system-header directory, preventing the `fixincludes` stage from
+looking for the intentionally absent `/usr/include`. Override it with
+`--native-system-header-dir` if needed.
+
+The wrapper also disables `-Werror=format-security` for the GCC build only:
+GCC's own translated diagnostic messages intentionally pass through its
+diagnostic formatting APIs, which conflicts with Nix's global hardening flag.

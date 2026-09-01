@@ -60,6 +60,9 @@ struct Options {
     std::optional<size_t> constexpr_cache_depth;
     SourceShape source_shape = SourceShape::full;
     std::optional<std::filesystem::path> source_module;
+    std::optional<std::filesystem::path> c_compiler;
+    std::optional<std::filesystem::path> cxx_compiler;
+    std::optional<std::filesystem::path> gcc_source_introspection_plugin;
 };
 
 std::string_view source_shape_name(SourceShape shape)
@@ -235,6 +238,12 @@ Options parse_options(int argc, char** argv)
             options.source_shape = parse_source_shape(require_value(arg));
         } else if (arg == "--module") {
             options.source_module = require_value(arg);
+        } else if (arg == "--c-compiler") {
+            options.c_compiler = require_value(arg);
+        } else if (arg == "--cxx-compiler") {
+            options.cxx_compiler = require_value(arg);
+        } else if (arg == "--gcc-source-introspection-plugin") {
+            options.gcc_source_introspection_plugin = require_value(arg);
         } else if (arg == "--help") {
             std::cout
                 << "Usage: iv_module_build_benchmark [--voices N] [--workspace PATH]"
@@ -242,6 +251,8 @@ Options parse_options(int argc, char** argv)
                 << " [--optimization O0|O3]"
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"
+                << " [--c-compiler PATH] [--cxx-compiler PATH]"
+                << " [--gcc-source-introspection-plugin PATH]"
                 << " [--no-source-introspection] [--no-pch]"
                 << " [--constexpr-cache-depth N]"
                 << " [--keep] [--gcc-time-report]\n";
@@ -249,6 +260,10 @@ Options parse_options(int argc, char** argv)
         } else {
             throw std::runtime_error("unknown argument '" + std::string(arg) + "'");
         }
+    }
+    if (options.c_compiler.has_value() != options.cxx_compiler.has_value()) {
+        throw std::runtime_error(
+            "--c-compiler and --cxx-compiler must be provided together");
     }
     return options;
 }
@@ -496,6 +511,10 @@ void run(Options const& options)
         iv::ModuleLoader loader(
             std::filesystem::current_path(), {},
             iv::ModuleLoaderToolchainConfig{
+                .c_compiler = options.c_compiler,
+                .cxx_compiler = options.cxx_compiler,
+                .gcc_source_introspection_plugin =
+                    options.gcc_source_introspection_plugin,
                 .gcc_time_report = options.gcc_time_report,
                 .compile_stage = options.compile_stage,
                 .optimization = options.optimization,
