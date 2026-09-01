@@ -362,3 +362,64 @@ constexpr). A single execution run measured 192.596 us/block. These are
 historical single-run observations, not current baselines or a runtime A/B;
 rerun the documented commands on the current checkout before making a
 performance decision.
+
+### Lookup-only constexpr hash indexes (2026-08-31)
+
+The lowering connectivity indexes and sample-group lookup were changed from
+ordered flat containers to small open-addressing constexpr hash containers.
+Those relations require only insertion and membership/lookup, so their
+iteration order is not semantically observed; graph structures whose ordering
+is meaningful remain flat ordered containers.
+
+After all 419 tests passed, one hot `saw` build measured 43.944 s for the
+generated export (43.500 s GCC total, 6,716M reported GGC, and 34.380 s
+constexpr). Against the immediately preceding pruning observation, that is a
+2.255 s (4.9%) reduction in generated-export time. One execution run measured
+193.223 us/block, versus 192.596 us in the preceding single run; this small
+difference is not a controlled runtime comparison. These are historical
+single-run observations, not current baselines; rerun the documented commands
+on the current checkout before making a performance decision.
+
+### Finalization adjacency pruning (2026-08-31)
+
+Dangling-output stubbing now records only the two output-membership relations
+it actually queries, rather than constructing four source/target maps. The
+event hyperedge pass likewise uses lookup-only reverse adjacency maps, while
+the canonical graph edge sets remain ordered.
+
+After all 419 tests passed, one hot `saw` build measured 39.012 s for the
+generated export (38.590 s GCC total, 5,842M reported GGC, and 29.500 s
+constexpr). That is 4.932 s (11.2%) below the immediately preceding hash-index
+observation. One execution run measured 191.903 us/block, but this is not a
+controlled runtime comparison. These are historical single-run observations,
+not current baselines; rerun the documented commands on the current checkout
+before making a performance decision.
+
+### Batched edge remapping during node permutation (2026-08-31)
+
+Node permutation remaps every sample and event edge. Instead of individually
+inserting each remapped edge into a flat set, the compiler now collects edges,
+sorts and deduplicates once, then constructs the canonical sorted sets.
+
+After all 419 tests passed, one hot `saw` build measured 36.763 s for the
+generated export (36.330 s GCC total, 5,378M reported GGC, and 27.450 s
+constexpr). That is 0.531 s (1.4%) below the immediately preceding dense-table
+observation. One execution run measured 190.246 us/block; it is not a
+controlled runtime comparison. These are historical single-run observations,
+not current baselines; rerun the documented commands on the current checkout
+before making a performance decision.
+
+### Dense compiler input-latency tables (2026-08-31)
+
+Two whole-graph compiler passes previously propagated latency through sorted
+maps keyed by `(node, input port)`. Those keys occupy a dense domain, so they
+now use one compact offset table for real-node input ports and public-output
+ports. This does not affect generated runtime code.
+
+After all 419 tests passed, one hot `saw` build measured 37.294 s for the
+generated export (36.870 s GCC total, 5,482M reported GGC, and 27.570 s
+constexpr). That is 1.718 s (4.4%) below the immediately preceding stable
+39.012 s observation. One execution run measured 192.635 us/block; it is not
+a controlled runtime comparison. These are historical single-run observations,
+not current baselines; rerun the documented commands on the current checkout
+before making a performance decision.

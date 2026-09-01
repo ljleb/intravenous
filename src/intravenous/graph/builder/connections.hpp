@@ -1,11 +1,11 @@
 #pragma once
 
+#include <intravenous/graph/builder/constexpr_hash.hpp>
 #include <intravenous/graph/builder/port_refs.h>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
 #include <intravenous/channel_layout.h>
 
 #include <algorithm>
-#include <flat_map>
 #include <ranges>
 #include <span>
 #include <string>
@@ -13,6 +13,17 @@
 #include <vector>
 
 namespace iv {
+namespace details {
+struct NodeBundlePortIdHash {
+  constexpr size_t operator()(NodeBundlePortId const& value) const {
+    auto result = constexpr_hash_combine(0, value.node_bundle_handle);
+    result = constexpr_hash_combine(
+        result, static_cast<size_t>(value.port_kind));
+    return constexpr_hash_combine(result, value.port_ordinal);
+  }
+};
+} // namespace details
+
 class GraphBuilderNodeBundles;
 class GraphBuilderVirtualNodes;
 
@@ -206,7 +217,7 @@ GraphBuilderConnections::authored_sample_connections() const {
 }
 constexpr SampleLoweringPlan GraphBuilderConnections::sample_lowering_plan() const {
   SampleLoweringPlan plan;
-  std::flat_map<NodeBundlePortId, size_t, NodeBundlePortIdLess>
+  details::ConstexprHashMap<NodeBundlePortId, size_t, details::NodeBundlePortIdHash>
       group_index_by_target;
   for (auto const& connection : _authored_sample_connections) {
     if (connection.target_channels.empty())
@@ -217,11 +228,11 @@ constexpr SampleLoweringPlan GraphBuilderConnections::sample_lowering_plan() con
         }))
       details::error("sample target spans bundle ports");
     NodeBundlePortId const target{first.bundle, PortKind::sample, first.port};
-    auto const [group, inserted] = group_index_by_target.emplace(
-        target, plan.groups.size());
-    if (inserted)
+    auto const group =
+        group_index_by_target.try_emplace(target, plan.groups.size());
+    if (group.inserted)
       plan.groups.push_back({target, {}});
-    plan.groups[group->second].connections.push_back(&connection);
+    plan.groups[group.value].connections.push_back(&connection);
   }
   return plan;
 }

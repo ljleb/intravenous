@@ -234,24 +234,6 @@ constexpr GraphBuilderPublicSamplePortFamilies collect_sample_port_families(
 }
 }
 
-constexpr SamplePortRef GraphBuilderPublicPorts::add_sample_input(
-    GraphBuilder& builder, GraphBuilderNodeBundles& bundles, std::string_view name,
-    Sample value, std::optional<Sample> min, std::optional<Sample> max) {
-  auto ordinal = bundles.bundle(_boundary).append_boundary_sample_input({
-      .name = std::string(name), .default_value = value,
-      .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
-      .max = max.value_or(std::numeric_limits<Sample::storage>::infinity())});
-  _sample_input_source_infos.emplace_back();
-  return SamplePortRef(builder, NodeBundlePortId{_boundary, PortKind::sample, ordinal});
-}
-constexpr EventPortRef GraphBuilderPublicPorts::add_event_input(
-    GraphBuilder& builder, GraphBuilderNodeBundles& bundles, std::string_view name,
-    EventTypeId type) {
-  auto ordinal = bundles.bundle(_boundary).append_boundary_event_input(
-      {.name = std::string(name), .type = type});
-  _event_input_source_infos.emplace_back();
-  return EventPortRef(builder, NodeBundlePortId{_boundary, PortKind::event, ordinal});
-}
 constexpr bool GraphBuilderPublicPorts::sample_outputs_defined() const {
   return _sample_outputs_defined;
 }

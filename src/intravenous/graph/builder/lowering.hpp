@@ -446,20 +446,19 @@ build_virtual_metadata(ExecutableGraphData const& g,
                         std::move(virtual_node_ids_by_backing_node_id));
 }
 
-struct SampleChannelIdLess {
+struct SampleChannelIdHash {
   template <class ChannelId>
-  constexpr bool operator()(ChannelId const& lhs, ChannelId const& rhs) const {
-    if (lhs.bundle != rhs.bundle) return lhs.bundle < rhs.bundle;
-    if (lhs.port != rhs.port) return lhs.port < rhs.port;
-    return lhs.channel < rhs.channel;
+  constexpr size_t operator()(ChannelId const& value) const {
+    auto result = constexpr_hash_combine(0, value.bundle);
+    result = constexpr_hash_combine(result, value.port);
+    return constexpr_hash_combine(result, value.channel);
   }
 };
 
-struct EventPortIdLess {
+struct EventPortIdHash {
   template <class PortId>
-  constexpr bool operator()(PortId const& lhs, PortId const& rhs) const {
-    if (lhs.bundle != rhs.bundle) return lhs.bundle < rhs.bundle;
-    return lhs.port < rhs.port;
+  constexpr size_t operator()(PortId const& value) const {
+    return constexpr_hash_combine(value.bundle, value.port);
   }
 };
 
@@ -467,24 +466,26 @@ struct EventPortIdLess {
 // Build this lowerer-local index once instead of rescanning all authored
 // connections for every virtual/public port.
 struct LoweringAuthoredConnectivity {
-  std::flat_set<SampleInputChannelId, SampleChannelIdLess> sample_inputs;
-  std::flat_set<SampleOutputChannelId, SampleChannelIdLess> sample_outputs;
-  std::flat_set<EventInputPortId, EventPortIdLess> event_inputs;
-  std::flat_set<EventOutputPortId, EventPortIdLess> event_outputs;
+  ConstexprHashSet<SampleInputChannelId, SampleChannelIdHash> sample_inputs;
+  ConstexprHashSet<SampleOutputChannelId, SampleChannelIdHash> sample_outputs;
+  ConstexprHashSet<EventInputPortId, EventPortIdHash> event_inputs;
+  ConstexprHashSet<EventOutputPortId, EventPortIdHash> event_outputs;
 };
 
 constexpr LoweringAuthoredConnectivity build_lowering_authored_connectivity(
     GraphBuilderConnections const& connections) {
   LoweringAuthoredConnectivity result;
   for (auto const& connection : connections.authored_sample_connections()) {
-    result.sample_inputs.insert(connection.target_channels.begin(),
-                                connection.target_channels.end());
-    result.sample_outputs.insert(connection.source_channels.begin(),
-                                 connection.source_channels.end());
+    result.sample_inputs.insert_range(connection.target_channels.begin(),
+                                      connection.target_channels.end());
+    result.sample_outputs.insert_range(connection.source_channels.begin(),
+                                       connection.source_channels.end());
   }
   for (auto const& connection : connections.authored_event_connections()) {
-    result.event_inputs.insert(connection.targets.begin(), connection.targets.end());
-    result.event_outputs.insert(connection.sources.begin(), connection.sources.end());
+    result.event_inputs.insert_range(connection.targets.begin(),
+                                     connection.targets.end());
+    result.event_outputs.insert_range(connection.sources.begin(),
+                                      connection.sources.end());
   }
   return result;
 }
@@ -741,29 +742,29 @@ namespace details {
         return id;
     }
 
-    constexpr auto make_lowered_source_target_edge_maps(ExecutableGraphData const& g)
+    struct ConcretePortIdHash {
+        constexpr size_t operator()(ConcretePortId const& value) const
+        {
+            return constexpr_hash_combine(value.node, value.port);
+        }
+    };
+
+    constexpr auto make_lowered_connected_output_sets(ExecutableGraphData const& g)
     {
-        std::flat_map<ConcretePortId, ConcretePortId> source_of;
-        std::flat_map<ConcretePortId, ConcretePortId> target_of;
-        std::flat_map<ConcretePortId, GraphEventEdge> event_source_of;
-        std::flat_map<ConcretePortId, GraphEventEdge> event_target_of;
+        ConstexprHashSet<ConcretePortId, ConcretePortIdHash> sample_outputs;
+        ConstexprHashSet<ConcretePortId, ConcretePortIdHash> event_outputs;
 
         for (GraphEdge const& edge : g.edges)
         {
-            source_of[edge.target] = edge.source;
-            target_of[edge.source] = edge.target;
+            sample_outputs.insert(edge.source);
         }
         for (GraphEventEdge const& edge : g.event_edges)
         {
-            event_source_of[edge.target] = edge;
-            event_target_of[edge.source] = edge;
+            event_outputs.insert(edge.source);
         }
 
         return std::make_tuple(
-            std::move(source_of),
-            std::move(target_of),
-            std::move(event_source_of),
-            std::move(event_target_of)
+            std::move(sample_outputs), std::move(event_outputs)
         );
     }
 
@@ -775,20 +776,19 @@ namespace details {
         size_t next_construction_order = g.node_construction_order.empty()
             ? 0
             : (*std::ranges::max_element(g.node_construction_order) + 1);
-        std::flat_map<ConcretePortId, std::vector<GraphEdge>> reverse_edges_map;
+        ConstexprHashSet<ConcretePortId, ConcretePortIdHash> sample_targets;
         for (GraphEdge const& edge : g.edges)
         {
-            reverse_edges_map[edge.target].push_back(edge);
+            if (!sample_targets.insert(edge.target))
+                error("sample fan-in reached completion after lowering instead of one ConnectionNode");
         }
-        std::flat_map<ConcretePortId, std::vector<GraphEventEdge>> reverse_event_edges_map;
+        ConstexprHashMap<ConcretePortId, std::vector<GraphEventEdge>, ConcretePortIdHash>
+            reverse_event_edges_map;
         for (GraphEventEdge const& edge : g.event_edges)
         {
-            reverse_event_edges_map[edge.target].push_back(edge);
-        }
-
-        for (auto const& [_, incoming] : reverse_edges_map) {
-            if (incoming.size() > 1)
-                error("sample fan-in reached completion after lowering instead of one ConnectionNode");
+            auto group = reverse_event_edges_map.try_emplace(
+                edge.target, std::vector<GraphEventEdge>{});
+            group.value.push_back(edge);
         }
 
         size_t nodes_size = g.nodes.size();
@@ -797,10 +797,10 @@ namespace details {
             size_t const num_inputs = get_num_event_inputs(g.nodes[node]);
             for (size_t in_port = 0; in_port < num_inputs; ++in_port)
             {
-                auto it = reverse_event_edges_map.find({ node, in_port });
-                if (it == reverse_event_edges_map.end()) continue;
+                auto const* edges = reverse_event_edges_map.find({ node, in_port });
+                if (!edges) continue;
 
-                auto const& edges_to_expand = it->second;
+                auto const& edges_to_expand = *edges;
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
@@ -828,10 +828,13 @@ namespace details {
             }
         }
 
-        std::flat_map<ConcretePortId, std::vector<GraphEventEdge>> event_edges_map;
+        ConstexprHashMap<ConcretePortId, std::vector<GraphEventEdge>, ConcretePortIdHash>
+            event_edges_map;
         for (GraphEventEdge const& edge : g.event_edges)
         {
-            event_edges_map[edge.source].push_back(edge);
+            auto group = event_edges_map.try_emplace(
+                edge.source, std::vector<GraphEventEdge>{});
+            group.value.push_back(edge);
         }
 
         nodes_size = g.nodes.size();
@@ -840,10 +843,10 @@ namespace details {
             size_t const num_outputs = get_num_event_outputs(g.nodes[node]);
             for (size_t out_port = 0; out_port < num_outputs; ++out_port)
             {
-                auto it = event_edges_map.find({ node, out_port });
-                if (it == event_edges_map.end()) continue;
+                auto const* edges = event_edges_map.find({ node, out_port });
+                if (!edges) continue;
 
-                auto const& edges_to_expand = it->second;
+                auto const& edges_to_expand = *edges;
                 size_t const port_arity = edges_to_expand.size();
                 if (port_arity <= 1) continue;
 
@@ -874,7 +877,8 @@ namespace details {
 
     constexpr void stub_lowered_dangling_ports(ExecutableGraphData& g, size_t num_public_inputs, std::string_view builder_id)
     {
-        auto [source_of, target_of, event_source_of, event_target_of] = make_lowered_source_target_edge_maps(g);
+        auto [connected_sample_outputs, connected_event_outputs] =
+            make_lowered_connected_output_sets(g);
         size_t next_construction_order = g.node_construction_order.empty()
             ? 0
             : (*std::ranges::max_element(g.node_construction_order) + 1);
@@ -889,7 +893,7 @@ namespace details {
             for (size_t output_port = 0; output_port < num_outputs; ++output_port)
             {
                 ConcretePortId const this_port{ node, output_port };
-                if (auto it = target_of.find(this_port); it == target_of.end())
+                if (!connected_sample_outputs.contains(this_port))
                 {
                     g.nodes.push_back(reflect_lowered_node(DummySink()));
                     g.explicit_ttl_samples.push_back(std::nullopt);
@@ -905,7 +909,7 @@ namespace details {
             for (size_t output_port = 0; output_port < num_event_outputs; ++output_port)
             {
                 ConcretePortId const this_port{ node, output_port };
-                if (auto it = event_target_of.find(this_port); it == event_target_of.end())
+                if (!connected_event_outputs.contains(this_port))
                 {
                     g.nodes.push_back(reflect_lowered_node(DummyEventSink()));
                     g.explicit_ttl_samples.push_back(std::nullopt);
@@ -1006,6 +1010,8 @@ namespace details {
 
     constexpr void validate_lowered_detached_edges(ExecutableGraphData const& g, std::string_view builder_id)
     {
+        if (g.detached_info_by_source.empty()) return;
+
         size_t const num_nodes = g.nodes.size();
 
         std::vector<std::flat_set<size_t>> explicit_outgoing(num_nodes);
@@ -2502,10 +2508,12 @@ class GraphLowerer {
 
   constexpr std::vector<iv::LoweredSubgraphSpec>
   build_lowered_scopes() {
-    build_topology_scope_memberships();
     std::vector<size_t> subgraphs;
     for (size_t i = 0; i < topology_node_count(); ++i)
       if (topology_is_subgraph_node(i)) subgraphs.push_back(i);
+    if (subgraphs.empty()) return {};
+
+    build_topology_scope_memberships();
 
     std::flat_map<size_t, size_t> scope_index;
     std::vector<iv::LoweredSubgraphSpec> scopes;
