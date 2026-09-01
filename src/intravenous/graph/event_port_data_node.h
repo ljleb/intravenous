@@ -10,14 +10,14 @@
 namespace iv {
     struct GraphEventPortDataNode {
         StaticString _port_data_id;
-        StaticEventInputConfig _input;
+        EventTypeId _type {};
 
         consteval explicit GraphEventPortDataNode(
             std::string port_data_id,
-            EventInputConfig input
+            EventTypeId type
         ) :
             _port_data_id(details::define_static_string(port_data_id)),
-            _input(details::define_static_config(input))
+            _type(type)
         {}
 
         struct State {
@@ -31,7 +31,8 @@ namespace iv {
             ctx.local_array(state.port_data, 1);
             ctx.local_array(
                 state.events,
-                calculate_event_port_buffer_capacity(ctx.event_port_buffer_base_multiplier(), _input.type)
+                calculate_event_port_buffer_capacity(
+                    ctx.event_port_buffer_base_multiplier(), _type)
             );
             ctx.export_array(
                 std::string(_port_data_id.view()), state.port_data);
@@ -45,7 +46,7 @@ namespace iv {
                 state.events,
                 0,
                 0,
-                _input.type
+                _type
             );
         }
     };

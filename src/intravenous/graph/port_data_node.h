@@ -11,9 +11,23 @@
 #include <vector>
 
 namespace iv {
+    // Graph port-data nodes are execution storage, not reflective ports.  By
+    // the time a graph reaches this representation its input name, range, and
+    // other authoring-only attributes have already been consumed.  Keeping a
+    // full StaticInputConfig here duplicated every private input in the
+    // generated object and inflated constexpr static promotion substantially.
+    struct GraphPortStorageConfig {
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
+        size_t history = 0;
+        Sample default_value = 0.0f;
+    };
+
     struct GraphPortDataNode {
         StaticString _port_data_id;
-        StaticInputConfig _input;
+        GraphPortStorageConfig _storage;
         InputPortPlan _input_plan;
         StaticSpan<StaticString> _aliases {};
         bool _owns_storage = true;
@@ -32,14 +46,14 @@ namespace iv {
 
         consteval explicit GraphPortDataNode(
             std::string port_data_id,
-            InputConfig input,
+            GraphPortStorageConfig storage,
             InputPortPlan input_plan,
             std::vector<std::string> aliases = {},
             bool owns_storage = true,
             bool is_static_constant = false
         ) :
             _port_data_id(details::define_static_string(port_data_id)),
-            _input(details::define_static_config(input)),
+            _storage(storage),
             _input_plan(input_plan),
             _aliases(freeze_aliases(aliases)),
             _owns_storage(owns_storage),
@@ -59,7 +73,7 @@ namespace iv {
             ctx.local_array(
                 state.samples,
                 sample_storage_size(
-                    _input.channel_layout,
+                    _storage.channel_layout,
                     calculate_port_buffer_size(ctx.max_block_size(), _input_plan.storage)
                 )
             );
@@ -74,8 +88,10 @@ namespace iv {
         {
             if (!_owns_storage) return;
             auto& state = ctx.state();
-            std::fill(state.samples.begin(), state.samples.end(), _input.default_value);
-            auto const layout = _input.channel_layout;
+            std::fill(
+                state.samples.begin(), state.samples.end(),
+                _storage.default_value);
+            auto const layout = _storage.channel_layout;
             std::construct_at(
                 &state.port_data[0],
                 state.samples,

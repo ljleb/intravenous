@@ -31,11 +31,21 @@ namespace iv {
         EventConversionPlan conversion {};
     };
 
+    // A lowered wrapper needs only the output attributes consumed while it
+    // constructs runtime OutputPorts.  Name and latency were needed by graph
+    // compilation, but are not needed by execution.
+    struct GraphOutputPortConfig {
+        ChannelLayout channel_layout {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        };
+        size_t history = 0;
+    };
+
     struct GraphNodeWrapper {
         ReflectedNodeRuntimeOperations _operations {};
-        StaticSpan<StaticInputConfig> _inputs {};
-        StaticSpan<StaticOutputConfig> _outputs {};
-        StaticSpan<StaticEventOutputConfig> _event_outputs {};
+        StaticSpan<GraphOutputPortConfig> _outputs {};
+        StaticSpan<EventTypeId> _event_output_types {};
         size_t _internal_latency = 0;
         size_t _max_block_size = MAX_BLOCK_SIZE;
         size_t _ttl_samples = 0;
@@ -68,17 +78,12 @@ namespace iv {
                 GraphNodeWrapperBuildMode::full
         )
         : _operations(node.operations.runtime)
-        , _inputs(build_mode == GraphNodeWrapperBuildMode::full
-              ? details::define_static_configs<StaticInputConfig>(node.inputs())
-              : StaticSpan<StaticInputConfig>{})
         , _outputs(build_mode == GraphNodeWrapperBuildMode::full
-              ? details::define_static_configs<StaticOutputConfig>(
-                    node.outputs())
-              : StaticSpan<StaticOutputConfig>{})
-        , _event_outputs(build_mode == GraphNodeWrapperBuildMode::full
-              ? details::define_static_configs<StaticEventOutputConfig>(
-                    node.event_outputs())
-              : StaticSpan<StaticEventOutputConfig>{})
+              ? make_output_port_configs(node.outputs())
+              : StaticSpan<GraphOutputPortConfig>{})
+        , _event_output_types(build_mode == GraphNodeWrapperBuildMode::full
+              ? make_event_output_types(node.event_outputs())
+              : StaticSpan<EventTypeId>{})
         , _internal_latency(node.internal_latency())
         , _max_block_size(node.max_block_size())
         , _ttl_samples(ttl_samples.value_or(0))
@@ -146,6 +151,31 @@ namespace iv {
                 result.push_back({target});
             }
             return result;
+        }
+
+        static consteval StaticSpan<GraphOutputPortConfig>
+        make_output_port_configs(std::span<OutputConfig const> outputs)
+        {
+            std::vector<GraphOutputPortConfig> result;
+            result.reserve(outputs.size());
+            for (auto const& output : outputs) {
+                result.push_back({
+                    .channel_layout = output.channel_layout,
+                    .history = output.history,
+                });
+            }
+            return details::define_static_span(result);
+        }
+
+        static consteval StaticSpan<EventTypeId>
+        make_event_output_types(std::span<EventOutputConfig const> outputs)
+        {
+            std::vector<EventTypeId> result;
+            result.reserve(outputs.size());
+            for (auto const& output : outputs) {
+                result.push_back(output.type);
+            }
+            return details::define_static_span(result);
         }
 
         static consteval StaticSpan<StaticSampleOutputBinding>
@@ -223,13 +253,15 @@ namespace iv {
             std::vector<GraphPortDataNode> port_data_nodes;
             port_data_nodes.reserve(inputs.size());
             for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
-                auto input = inputs[input_i];
-                if (input_bindings[input_i].static_value.has_value()) {
-                    input.default_value = *input_bindings[input_i].static_value;
-                }
+                auto const& input = inputs[input_i];
                 port_data_nodes.emplace_back(
                     port_data_export_id(node_id, input_i),
-                    input,
+                    GraphPortStorageConfig {
+                        .channel_layout = input.channel_layout,
+                        .history = input.history,
+                        .default_value = input_bindings[input_i].static_value
+                            .value_or(input.default_value),
+                    },
                     input_plans[input_i],
                     input_bindings[input_i].aliases,
                     input_bindings[input_i].owns_storage,
@@ -246,7 +278,12 @@ namespace iv {
             result.reserve(storage.size());
             for (auto const& entry : storage) {
                 result.emplace_back(
-                    entry.id, entry.config,
+                    entry.id,
+                    GraphPortStorageConfig {
+                        .channel_layout = entry.config.channel_layout,
+                        .history = entry.config.history,
+                        .default_value = entry.config.default_value,
+                    },
                     InputPortPlan{.storage = entry.plan});
             }
             return result;
@@ -262,7 +299,7 @@ namespace iv {
             for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
                 port_data_nodes.emplace_back(
                     event_port_data_export_id(node_id, input_i),
-                    inputs[input_i]
+                    inputs[input_i].type
                 );
             }
             return port_data_nodes;
@@ -276,44 +313,6 @@ namespace iv {
             std::span<EventInputPort> event_inputs;
             std::span<EventOutputPort> event_outputs;
         };
-
-        constexpr auto inputs() const
-        {
-            std::vector<InputConfig> result;
-            result.reserve(_inputs.size);
-            for (auto const& input : _inputs) {
-                result.push_back(input.config());
-            }
-            return result;
-        }
-
-        constexpr auto outputs() const
-        {
-            std::vector<OutputConfig> result;
-            result.reserve(_outputs.size);
-            for (auto const& output : _outputs)
-                result.push_back(output.config());
-            return result;
-        }
-
-        constexpr auto event_inputs() const
-        {
-            std::vector<EventInputConfig> result;
-            result.reserve(_input_event_port_data_nodes.size);
-            for (auto const& port_data : _input_event_port_data_nodes) {
-                result.push_back(port_data._input.config());
-            }
-            return result;
-        }
-
-        constexpr auto event_outputs() const
-        {
-            std::vector<EventOutputConfig> result;
-            result.reserve(_event_outputs.size);
-            for (auto const& output : _event_outputs)
-                result.push_back(output.config());
-            return result;
-        }
 
         constexpr size_t internal_latency() const
         {
@@ -336,7 +335,7 @@ namespace iv {
             auto const num_inputs = _input_port_data_nodes.size;
             auto const num_outputs = _outputs.size;
             auto const num_event_inputs = _input_event_port_data_nodes.size;
-            auto const num_event_outputs = _event_outputs.size;
+            auto const num_event_outputs = _event_output_types.size;
 
             ctx.nested_node_states(state.nested_node_states);
             ctx.local_array(state.inputs, num_inputs);
@@ -359,11 +358,14 @@ namespace iv {
 
             for (size_t input_i = 0; input_i < num_inputs; ++input_i) {
                 ctx.require_export_array<SharedPortData>(
-                    port_data_export_id(_node_id.view(), input_i));
+                    std::string(
+                        _input_port_data_nodes[input_i]._port_data_id.view()));
             }
             for (size_t input_i = 0; input_i < num_event_inputs; ++input_i) {
                 ctx.require_export_array<EventSharedPortData>(
-                    event_port_data_export_id(_node_id.view(), input_i));
+                    std::string(
+                        _input_event_port_data_nodes[input_i]
+                            ._port_data_id.view()));
             }
             for (auto const& target : _output_targets) {
                 if (!target.target.empty()) {
@@ -386,32 +388,34 @@ namespace iv {
         void initialize(InitializationContext<GraphNodeWrapper> const& ctx) const
         {
             auto& state = ctx.state();
-            auto const inputs = this->inputs();
-            auto const outputs = this->outputs();
-            auto const event_inputs = this->event_inputs();
-            auto const event_outputs = this->event_outputs();
             auto const node_id = std::string(_node_id.view());
 
-            for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
+            for (size_t input_i = 0;
+                 input_i < _input_port_data_nodes.size;
+                 ++input_i) {
                 auto input_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
-                    port_data_export_id(_node_id.view(), input_i)
+                    std::string(_input_port_data_nodes[input_i]._port_data_id.view())
                 );
                 IV_ASSERT(!input_port_data.empty(), "graph node wrapper input wiring must resolve the requested SharedPortData entry");
                 std::construct_at(
                     &state.inputs[input_i],
                     const_cast<SharedPortData&>(input_port_data[0]),
-                    inputs[input_i].history,
+                    _input_port_data_nodes[input_i]._storage.history,
                     _input_port_data_nodes[input_i]._input_plan.read_latency);
             }
-            for (size_t input_i = 0; input_i < event_inputs.size(); ++input_i) {
+            for (size_t input_i = 0;
+                 input_i < _input_event_port_data_nodes.size;
+                 ++input_i) {
                 auto input_port_data = ctx.template resolve_exported_array_storage<EventSharedPortData>(
-                    event_port_data_export_id(_node_id.view(), input_i)
+                    std::string(
+                        _input_event_port_data_nodes[input_i]
+                            ._port_data_id.view())
                 );
                 IV_ASSERT(!input_port_data.empty(), "graph node wrapper event input wiring must resolve the requested EventSharedPortData entry");
                 std::construct_at(&state.event_inputs[input_i], const_cast<EventSharedPortData&>(input_port_data[0]));
             }
 
-            for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
+            for (size_t output_i = 0; output_i < _outputs.size; ++output_i) {
                 for (size_t fanout_i = _output_fanout_offsets[output_i];
                      fanout_i < _output_fanout_offsets[output_i + 1];
                      ++fanout_i) {
@@ -422,8 +426,8 @@ namespace iv {
                     std::construct_at(
                         &state.fanout_outputs[fanout_i],
                         const_cast<SharedPortData&>(target_port_data[0]),
-                        outputs[output_i].history,
-                        effective_channel_layout(outputs[output_i]),
+                        _outputs[output_i].history,
+                        _outputs[output_i].channel_layout,
                         target.conversion);
                 }
                 auto const& target = _output_targets[output_i];
@@ -446,12 +450,14 @@ namespace iv {
                 std::construct_at(
                     &state.outputs[output_i],
                     const_cast<SharedPortData&>(target_port_data[0]),
-                    outputs[output_i].history,
-                    effective_channel_layout(outputs[output_i]),
+                    _outputs[output_i].history,
+                    _outputs[output_i].channel_layout,
                     target.conversion
                 );
             }
-            for (size_t output_i = 0; output_i < event_outputs.size(); ++output_i) {
+            for (size_t output_i = 0;
+                 output_i < _event_output_types.size;
+                 ++output_i) {
                 auto const& target = _event_output_targets[output_i];
                 if (target.target.empty()) {
                     std::construct_at(&state.event_outputs[output_i]);
@@ -470,7 +476,7 @@ namespace iv {
                 std::construct_at(
                     &state.event_outputs[output_i],
                     const_cast<EventSharedPortData&>(target_port_data[0]),
-                    event_outputs[output_i].type,
+                    _event_output_types[output_i],
                     target.conversion
                 );
             }

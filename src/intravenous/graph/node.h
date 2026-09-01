@@ -336,7 +336,12 @@ namespace iv {
             result.reserve(storage.size());
             for (auto const& entry : storage) {
                 result.emplace_back(
-                    entry.id, entry.config,
+                    entry.id,
+                    GraphPortStorageConfig {
+                        .channel_layout = entry.config.channel_layout,
+                        .history = entry.config.history,
+                        .default_value = entry.config.default_value,
+                    },
                     InputPortPlan{.storage = entry.plan});
             }
             return result;
@@ -355,16 +360,13 @@ namespace iv {
             std::vector<GraphPortDataNode> port_data_nodes;
             port_data_nodes.reserve(outputs.size());
             for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
-                auto input = InputConfig{
-                    .name = outputs[output_i].name,
-                    .channel_layout = outputs[output_i].channel_layout,
-                };
-                if (output_bindings[output_i].static_value.has_value()) {
-                    input.default_value = *output_bindings[output_i].static_value;
-                }
                 port_data_nodes.emplace_back(
                     graph_port_data_export_id(graph_id, output_i),
-                    input,
+                    GraphPortStorageConfig {
+                        .channel_layout = outputs[output_i].channel_layout,
+                        .default_value = output_bindings[output_i].static_value
+                            .value_or(Sample{0.0f}),
+                    },
                     output_plans[output_i],
                     output_bindings[output_i].aliases,
                     output_bindings[output_i].owns_storage,
@@ -384,10 +386,7 @@ namespace iv {
             for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
                 port_data_nodes.emplace_back(
                     graph_event_port_data_export_id(graph_id, output_i),
-                    EventInputConfig {
-                        .name = outputs[output_i].name,
-                        .type = outputs[output_i].type,
-                    }
+                    outputs[output_i].type
                 );
             }
             return port_data_nodes;
