@@ -90,6 +90,7 @@ class NodeBundle {
     size_t maximum_block_size = MAX_BLOCK_SIZE;
     std::optional<size_t> default_ttl_samples{};
     bool block_skippable = false;
+    std::optional<Sample> static_sample_value{};
   };
 
   struct TiledNodeBundle {
@@ -304,6 +305,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       .maximum_block_size = description.maximum_block_size,
       .default_ttl_samples = description.default_ttl_samples,
       .block_skippable = description.block_skippable,
+      .static_sample_value = description.static_sample_value,
   };
 }
 
@@ -330,6 +332,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .maximum_block_size = lowered.maximum_block_size,
       .default_ttl_samples = lowered.default_ttl_samples,
       .block_skippable = lowered.block_skippable,
+      .static_sample_value = lowered.static_sample_value,
   };
   auto const handle = _bundles.size();
   _bundles.push_back(NodeBundle(std::move(payload)));
@@ -990,6 +993,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::lowered_concrete(
       .maximum_block_size = payload->maximum_block_size,
       .default_ttl_samples = payload->default_ttl_samples,
       .block_skippable = payload->block_skippable,
+      .static_sample_value = payload->static_sample_value,
   };
 }
 

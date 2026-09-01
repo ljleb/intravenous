@@ -17,6 +17,7 @@ namespace iv {
         InputPortPlan _input_plan;
         StaticSpan<StaticString> _aliases {};
         bool _owns_storage = true;
+        bool _is_static_constant = false;
 
         static consteval StaticSpan<StaticString> freeze_aliases(
             std::span<std::string const> aliases)
@@ -34,13 +35,15 @@ namespace iv {
             InputConfig input,
             InputPortPlan input_plan,
             std::vector<std::string> aliases = {},
-            bool owns_storage = true
+            bool owns_storage = true,
+            bool is_static_constant = false
         ) :
             _port_data_id(details::define_static_string(port_data_id)),
             _input(details::define_static_config(input)),
             _input_plan(input_plan),
             _aliases(freeze_aliases(aliases)),
-            _owns_storage(owns_storage)
+            _owns_storage(owns_storage),
+            _is_static_constant(is_static_constant)
         {}
 
         struct State {

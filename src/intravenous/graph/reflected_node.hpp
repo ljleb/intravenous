@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/basic_nodes/routing.h>
+#include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/node/lifecycle.h>
 #include <intravenous/ports.h>
 
@@ -103,6 +104,10 @@ struct ReflectedNodeDescription {
     size_t maximum_block_size = MAX_BLOCK_SIZE;
     std::optional<size_t> default_ttl_samples {};
     bool block_skippable = false;
+    // Constants are sources, not executable DSP work.  Carry their authored
+    // value through reflection so the compiler can bind their consumers to
+    // initialized storage instead of emitting a ticking Constant wrapper.
+    std::optional<Sample> static_sample_value {};
 
     constexpr std::vector<InputConfig> const& inputs() const
     {
@@ -294,6 +299,9 @@ namespace details {
         description.maximum_block_size = get_max_block_size(node);
         description.default_ttl_samples = get_ttl_samples(node);
         description.block_skippable = get_can_skip_block(node);
+        if constexpr (std::same_as<std::remove_cvref_t<Node>, Constant>) {
+            description.static_sample_value = node._value;
+        }
         return description;
     }
 

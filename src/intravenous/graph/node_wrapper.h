@@ -223,12 +223,17 @@ namespace iv {
             std::vector<GraphPortDataNode> port_data_nodes;
             port_data_nodes.reserve(inputs.size());
             for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
+                auto input = inputs[input_i];
+                if (input_bindings[input_i].static_value.has_value()) {
+                    input.default_value = *input_bindings[input_i].static_value;
+                }
                 port_data_nodes.emplace_back(
                     port_data_export_id(node_id, input_i),
-                    inputs[input_i],
+                    input,
                     input_plans[input_i],
                     input_bindings[input_i].aliases,
-                    input_bindings[input_i].owns_storage
+                    input_bindings[input_i].owns_storage,
+                    input_bindings[input_i].static_value.has_value()
                 );
             }
             return port_data_nodes;

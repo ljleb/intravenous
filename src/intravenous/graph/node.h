@@ -355,15 +355,20 @@ namespace iv {
             std::vector<GraphPortDataNode> port_data_nodes;
             port_data_nodes.reserve(outputs.size());
             for (size_t output_i = 0; output_i < outputs.size(); ++output_i) {
+                auto input = InputConfig{
+                    .name = outputs[output_i].name,
+                    .channel_layout = outputs[output_i].channel_layout,
+                };
+                if (output_bindings[output_i].static_value.has_value()) {
+                    input.default_value = *output_bindings[output_i].static_value;
+                }
                 port_data_nodes.emplace_back(
                     graph_port_data_export_id(graph_id, output_i),
-                    InputConfig{
-                        .name = outputs[output_i].name,
-                        .channel_layout = outputs[output_i].channel_layout,
-                    },
+                    input,
                     output_plans[output_i],
                     output_bindings[output_i].aliases,
-                    output_bindings[output_i].owns_storage
+                    output_bindings[output_i].owns_storage,
+                    output_bindings[output_i].static_value.has_value()
                 );
             }
             return port_data_nodes;

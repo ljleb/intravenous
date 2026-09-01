@@ -1181,6 +1181,20 @@ namespace iv::details {
             artifact.public_output_buffer_plans.size());
         artifact.public_input_targets.resize(artifact.public_inputs.size());
 
+        // Inputs without a source are already initialized from their declared
+        // default.  Treat them as static too, so dormancy never spends a
+        // block scan rediscovering that fact.
+        for (size_t node_i = 0; node_i < nodes.size(); ++node_i) {
+            for (size_t input_i = 0;
+                 input_i < node_input_bindings[node_i].size();
+                 ++input_i) {
+                ConcretePortId const target{node_i, input_i};
+                if (connectivity.sample_source.find(target) == nullptr) {
+                    node_input_bindings[node_i][input_i].static_value =
+                        nodes[node_i].inputs()[input_i].default_value;
+                }
+            }
+        }
         auto target_export_id = [&](ConcretePortId target) {
             return target.node == GRAPH_ID
                 ? graph_port_data_export_id(artifact.graph_id, target.port)
@@ -1223,12 +1237,59 @@ namespace iv::details {
             destination.output_history = std::max(
                 destination.output_history, source.output_history);
         };
+        auto bind_static_value = [&](ConcretePortId target, Sample value) {
+            auto& binding = target_binding(target);
+            IV_ASSERT(
+                !binding.static_value.has_value(),
+                "a graph input cannot have more than one static source");
+            binding.static_value = value;
+        };
         for (auto const& [source, targets] : connectivity.sample_targets) {
             std::vector<GraphEdge const*> direct_targets;
             for (GraphEdge const& edge : targets) {
                 if (edge.conversion.source == edge.conversion.target) {
                     direct_targets.push_back(&edge);
                 }
+            }
+
+            // A Constant has no time-varying state.  Its consumers can read
+            // an ordinary ring that is filled once during initialization;
+            // there is no reason to emit a wrapper which writes the same
+            // samples into that ring every block.  Identity consumers still
+            // share one owner, exactly like dynamic fan-out.  Layout-changing
+            // consumers receive their own initialized target ring instead of
+            // a per-block conversion copy.
+            if (source.node != GRAPH_ID
+                && nodes[source.node].static_sample_value.has_value()) {
+                Sample const value = *nodes[source.node].static_sample_value;
+                if (!direct_targets.empty()) {
+                    GraphEdge const& owner_edge = *direct_targets.front();
+                    ConcretePortId const owner_target = owner_edge.target;
+                    bind_static_value(owner_target, value);
+
+                    for (GraphEdge const* edge : direct_targets) {
+                        merge_buffer_plan(target_plan(owner_target).storage,
+                                          target_plan(edge->target).storage);
+                        if (edge->target == owner_target) {
+                            continue;
+                        }
+                        bind_static_value(edge->target, value);
+                        auto& binding = target_binding(edge->target);
+                        binding.owns_storage = false;
+                        target_binding(owner_target).aliases.push_back(
+                            target_export_id(edge->target));
+                    }
+                    for (GraphEdge const& edge : targets) {
+                        if (edge.conversion.source != edge.conversion.target) {
+                            bind_static_value(edge.target, value);
+                        }
+                    }
+                } else {
+                    for (GraphEdge const& edge : targets) {
+                        bind_static_value(edge.target, value);
+                    }
+                }
+                continue;
             }
 
             std::vector<SampleOutputBinding> source_targets;
@@ -1358,6 +1419,13 @@ namespace iv::details {
             region_global_node_indices.reserve(region.execution_order.size());
 
             for (size_t global_i : region.execution_order) {
+                // Constant outputs have already been materialized into their
+                // consumers' initialized port storage.  Leaving their empty
+                // SCC in the schedule preserves region/dormancy indices while
+                // avoiding node state, port state, and a per-block tick.
+                if (nodes[global_i].static_sample_value.has_value()) {
+                    continue;
+                }
                 std::vector<EventOutputBinding> event_output_targets;
                 auto event_inputs = nodes[global_i].event_inputs();
                 auto event_outputs = nodes[global_i].event_outputs();

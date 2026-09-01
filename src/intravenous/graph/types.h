@@ -99,6 +99,11 @@ namespace iv {
     struct SampleInputBinding {
         bool owns_storage = true;
         std::vector<std::string> aliases {};
+        // A static source is materialized by filling the owning ring once at
+        // graph initialization.  The consumer still has an ordinary
+        // InputPort (and therefore block/history/latency semantics), but no
+        // producer node needs to write this storage each block.
+        std::optional<Sample> static_value {};
     };
 
     // A source with no layout-compatible consumer first writes to this

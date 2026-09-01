@@ -2158,6 +2158,7 @@ class GraphLowerer {
             .maximum_block_size = node.maximum_block_size,
             .default_ttl_samples = node.default_ttl_samples,
             .block_skippable = node.block_skippable,
+            .static_sample_value = node.static_sample_value,
         };
       } else if consteval {
         description = details::reflect_generated_node(node.generated_node);
@@ -2356,7 +2357,7 @@ class GraphLowerer {
     }
     graph.explicit_ttl_samples.push_back(std::nullopt);
     graph.node_ids.push_back(identity.child_id(subgraph_node) + ".default." +
-                             std::to_string(input_port));
+                             details::decimal_string(input_port));
     graph.node_virtual_ids.emplace_back();
     graph.node_source_infos.emplace_back();
     graph.node_construction_order.push_back(subgraph_node);

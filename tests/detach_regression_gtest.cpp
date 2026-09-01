@@ -115,6 +115,32 @@ namespace {
     static constexpr iv::RuntimeGraphRoot runtime_dormancy_root {
         static_dormancy_graph};
 
+    // An unconnected subgraph input lowers through materialize_subgraph_default.
+    // Its default must reach a block-reading node without leaving a ticking
+    // Constant wrapper in the executable graph.
+    consteval auto build_static_default_sink_graph()
+    {
+        iv::GraphBuilder graph;
+        auto const nested = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+            auto const input = boundary.input<"in">(iv::Sample{0.375f});
+            auto const pass = graph.node<
+                iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>();
+            pass(input);
+            boundary.outputs("out"_P = pass);
+        });
+        auto const sink = graph.node<RuntimeBufferSink>();
+        sink(nested);
+        graph.outputs();
+        return std::move(graph).build().graph;
+    }
+
+    static constexpr auto static_default_sink_graph =
+        build_static_default_sink_graph();
+    static constexpr iv::StaticGraphRoot<static_default_sink_graph>
+        static_default_sink_root {};
+    static constexpr iv::RuntimeGraphRoot runtime_default_sink_root {
+        static_default_sink_graph};
+
     void tick_executor_direct(
         iv::BlockNodeExecutor& executor,
         size_t index,
@@ -207,6 +233,27 @@ TEST(DetachRegression, RuntimeGraphRootExecutesDormancyGroups)
 
     executor.tick_block(0);
     executor.tick_block(8);
+}
+
+TEST(DetachRegression, StaticSubgraphDefaultUsesInitializedConstantStorage)
+{
+    auto execute = [](auto root) {
+        std::vector<iv::Sample> output(16, 0.0f);
+        runtime_output = output;
+        auto executor = iv::BlockNodeExecutor::create(
+            iv::TypeErasedNode(root), 8);
+        executor.tick_block(0);
+        executor.tick_block(8);
+        runtime_output = {};
+        return output;
+    };
+
+    auto const static_output = execute(static_default_sink_root);
+    auto const runtime_output_values = execute(runtime_default_sink_root);
+    for (size_t i = 0; i < static_output.size(); ++i) {
+        EXPECT_EQ(static_output[i], iv::Sample{0.375f});
+        EXPECT_EQ(runtime_output_values[i], iv::Sample{0.375f});
+    }
 }
 
 // A graph cycle without detach() is now rejected while evaluating the consteval

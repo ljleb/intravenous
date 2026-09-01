@@ -52,6 +52,9 @@ struct ConcreteNode {
   size_t maximum_block_size = MAX_BLOCK_SIZE;
   std::optional<size_t> default_ttl_samples{};
   bool block_skippable = false;
+  // Static data attached to an authored node survives semantic lowering so
+  // later compiler passes can materialize it without a ticking producer.
+  std::optional<Sample> static_sample_value{};
   GeneratedNodeSpec generated_node{};
 
   constexpr std::vector<InputConfig> const& inputs() const {
