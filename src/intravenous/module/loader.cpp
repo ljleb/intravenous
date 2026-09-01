@@ -339,19 +339,50 @@ std::string_view compile_stage_name(ModuleCompileStage stage)
 {
     switch (stage) {
     case ModuleCompileStage::full: return "full";
+    case ModuleCompileStage::authoring: return "authoring";
+    case ModuleCompileStage::lowering_topology: return "lowering-topology";
+    case ModuleCompileStage::lowering_materialization:
+        return "lowering-materialization";
+    case ModuleCompileStage::lowering_normalization:
+        return "lowering-normalization";
+    case ModuleCompileStage::lowering: return "lowering";
+    case ModuleCompileStage::compilation: return "compilation";
+    case ModuleCompileStage::static_metadata: return "static-metadata";
     }
     throw std::logic_error("invalid module compile stage");
 }
 
-std::string quote(std::filesystem::path const &path)
+std::string_view module_optimization_name(ModuleOptimization optimization)
 {
-    std::string value = path.generic_string();
+    switch (optimization) {
+    case ModuleOptimization::O0: return "O0";
+    case ModuleOptimization::O3: return "O3";
+    }
+    throw std::logic_error("invalid module optimization");
+}
+
+std::string_view module_optimization_flags(ModuleOptimization optimization)
+{
+    switch (optimization) {
+    case ModuleOptimization::O0: return "-O0 -DNDEBUG";
+    case ModuleOptimization::O3: return "-O3 -DNDEBUG";
+    }
+    throw std::logic_error("invalid module optimization");
+}
+
+std::string quote_string(std::string_view value)
+{
     std::string out = "\"";
     for (char c : value) {
         if (c == '"') out += '\\';
         out += c;
     }
     return out + "\"";
+}
+
+std::string quote(std::filesystem::path const &path)
+{
+    return quote_string(path.generic_string());
 }
 
 std::filesystem::path discover_repo(std::filesystem::path start)
@@ -747,6 +778,101 @@ class ModuleLoader::Impl {
                 << "  return iv_generated_module.metadata;\n"
                 << "}\n";
             break;
+        case ModuleCompileStage::authoring:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t iv_generated_profile_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  auto authored = std::move(builder).finish();\n"
+                << "  return authored.node_bundles.size();\n"
+                << "}\n"
+                << "inline constexpr auto iv_generated_profile = "
+                   "iv_generated_profile_value();\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::lowering_topology:
+        case ModuleCompileStage::lowering_materialization:
+        case ModuleCompileStage::lowering_normalization: {
+            auto const stage_name = toolchain_.compile_stage
+                    == ModuleCompileStage::lowering_topology
+                ? "iv::GraphLoweringProfileStage::topology"
+                : toolchain_.compile_stage
+                        == ModuleCompileStage::lowering_materialization
+                    ? "iv::GraphLoweringProfileStage::materialization"
+                    : "iv::GraphLoweringProfileStage::normalization";
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t iv_generated_profile_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  auto authored = std::move(builder).finish();\n"
+                << "  return iv::GraphLowerer::profile(\n"
+                   "      authored, {.execution_root = true}, "
+                << stage_name << ");\n"
+                << "}\n"
+                << "inline constexpr auto iv_generated_profile = "
+                   "iv_generated_profile_value();\n"
+                << "}\n";
+            break;
+        }
+        case ModuleCompileStage::lowering:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t iv_generated_profile_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  auto authored = std::move(builder).finish();\n"
+                << "  auto executable = iv::GraphLowerer::lower(\n"
+                   "      authored, {.execution_root = true});\n"
+                << "  return executable.graph.nodes.size()\n"
+                   "      + executable.graph.edges.size()\n"
+                   "      + executable.graph.event_edges.size()\n"
+                   "      + executable.introspection.virtual_nodes.size();\n"
+                << "}\n"
+                << "inline constexpr auto iv_generated_profile = "
+                   "iv_generated_profile_value();\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::compilation:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t iv_generated_profile_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  auto authored = std::move(builder).finish();\n"
+                << "  auto compiled = iv::GraphCompiler::compile(\n"
+                   "      iv::GraphLowerer::lower(\n"
+                   "          authored, {.execution_root = true}));\n"
+                << "  return compiled.metadata.concrete_node_type_identities.size()\n"
+                   "      + compiled.introspection.virtual_nodes.size();\n"
+                << "}\n"
+                << "inline constexpr auto iv_generated_profile = "
+                   "iv_generated_profile_value();\n"
+                << "}\n";
+            break;
+        case ModuleCompileStage::static_metadata:
+            export_tu
+                << "namespace {\n"
+                << "consteval std::size_t iv_generated_profile_value() {\n"
+                << "  iv::GraphBuilder builder;\n"
+                << "  " << root.manifest.main << "(builder);\n"
+                << "  auto authored = std::move(builder).finish();\n"
+                << "  auto compiled = iv::GraphCompiler::compile(\n"
+                   "      iv::GraphLowerer::lower(\n"
+                   "          authored, {.execution_root = true}));\n"
+                << "  auto metadata = iv::details::define_static_metadata(\n"
+                   "      compiled.introspection);\n"
+                << "  return metadata.virtual_nodes.size\n"
+                   "      + metadata.public_sample_inputs.size\n"
+                   "      + metadata.public_event_inputs.size\n"
+                   "      + metadata.public_sample_outputs.size\n"
+                   "      + metadata.public_event_outputs.size;\n"
+                << "}\n"
+                << "inline constexpr auto iv_generated_profile = "
+                   "iv_generated_profile_value();\n"
+                << "}\n";
+            break;
         }
         write_text_if_different(export_file, export_tu.str());
 
@@ -784,6 +910,8 @@ class ModuleLoader::Impl {
                   << "gcc-time-report=" << toolchain_.gcc_time_report << '\n'
                   << "compile-stage="
                   << compile_stage_name(toolchain_.compile_stage) << '\n'
+                  << "optimization="
+                  << module_optimization_name(toolchain_.optimization) << '\n'
                   << "source-introspection="
                   << toolchain_.source_introspection << '\n'
                   << "precompiled-header="
@@ -839,7 +967,9 @@ class ModuleLoader::Impl {
         configure << quote(cmake_program())
                   << " -S " << quote(source_dir)
                   << " -B " << quote(build_dir)
-                  << " -DCMAKE_BUILD_TYPE=" << config_name();
+                  << " -DCMAKE_BUILD_TYPE=" << config_name()
+                  << " -DCMAKE_CXX_FLAGS_RELEASE="
+                  << quote_string(module_optimization_flags(toolchain_.optimization));
         if (!generator.empty()) configure << " -G " << quote(generator);
         if (!cc.empty()) configure << " -DCMAKE_C_COMPILER=" << quote(cc);
         if (!cxx.empty()) configure << " -DCMAKE_CXX_COMPILER=" << quote(cxx);

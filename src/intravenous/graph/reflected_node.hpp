@@ -251,12 +251,29 @@ namespace details {
         };
     }
 
+    // The callback set and reflected type spelling are properties of Node,
+    // not of one authored Node value.  GraphBuilder can create hundreds of
+    // values of the same small set of node types, so materialize this portion
+    // once per type and patch only the value-specific data pointer below.
+    struct ReflectedNodeTypeMetadata {
+        ReflectedNodeOperations operations {};
+        std::string_view type_name {};
+    };
+
+    template<class Node>
+    inline constexpr ReflectedNodeTypeMetadata reflected_node_type_metadata {
+        .operations = reflected_node_operations<Node>(nullptr),
+        .type_name = std::meta::display_string_of(
+            std::meta::dealias(^^Node)),
+    };
+
     template<class Node>
     consteval ReflectedNodeDescription describe_reflected_node(
         Node const& node,
         Node const* node_data)
     {
         ReflectedNodeDescription description;
+        auto const& type_metadata = reflected_node_type_metadata<Node>;
         for (auto const& input : get_inputs(node)) {
             description.ports.sample_inputs.push_back(input);
         }
@@ -270,9 +287,9 @@ namespace details {
             description.ports.event_output_configs.push_back(output);
         }
 
-        description.operations = reflected_node_operations<Node>(node_data);
-        description.type_name = std::meta::display_string_of(
-            std::meta::dealias(^^Node));
+        description.operations = type_metadata.operations;
+        description.operations.runtime.node_data = node_data;
+        description.type_name = type_metadata.type_name;
         description.internal_latency_samples = get_internal_latency(node);
         description.maximum_block_size = get_max_block_size(node);
         description.default_ttl_samples = get_ttl_samples(node);

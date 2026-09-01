@@ -53,6 +53,14 @@ struct GraphLoweringOptions {
   bool execution_root = false;
 };
 
+// Diagnostic checkpoints for the build benchmark. They retain intermediate
+// state only long enough to force the selected constexpr work to complete.
+enum class GraphLoweringProfileStage {
+  topology,
+  materialization,
+  normalization,
+};
+
 namespace details {
 struct GraphLowererTestAccess;
 
@@ -2601,6 +2609,9 @@ public:
 
   static consteval ExecutableGraphIR lower(
       AuthoredGraph const&, GraphLoweringOptions = {});
+  static consteval size_t profile(
+      AuthoredGraph const&, GraphLoweringOptions,
+      GraphLoweringProfileStage);
   constexpr void run(bool normalize = true) {
     project_bundles();
     index_runtime_sample_bindings();
@@ -2615,6 +2626,85 @@ public:
     if (normalize) normalize_topology_edges();
   }
 };
+
+consteval size_t GraphLowerer::profile(
+    AuthoredGraph const& authored, GraphLoweringOptions options,
+    GraphLoweringProfileStage stage) {
+  details::LoweringWorkspace lowered;
+  GraphLowerer lowerer(
+      authored.identity, authored.node_bundles, authored.connections,
+      authored.public_ports, authored.virtual_nodes, authored.detach, lowered,
+      options.execution_root);
+  auto topology_cardinality = [&] {
+    return lowerer.out.topology_nodes.size()
+        + lowerer.out.topology_edges.size()
+        + lowerer.out.topology_event_edges.size()
+        + lowerer.out.pending_topology_edges.size()
+        + lowerer.out.pending_topology_event_edges.size()
+        + lowerer.out.bundle_projections.size()
+        + lowerer.out.bundle_by_lowered_node.size()
+        + lowerer.out.scope_memberships.size()
+        + lowerer.out.subgraph_input_of_boundary_source.size()
+        + lowerer.out.subgraph_event_input_of_boundary_source.size()
+        + lowerer.out.detached_info_by_source.size()
+        + lowerer.out.detached_reader_outputs.size()
+        + lowerer.subgraph_by_boundary.size()
+        + lowerer.materialized_event_output_ports.size()
+        + lowerer.runtime_node_indices.size()
+        + lowerer.source_of.size()
+        + lowerer.event_source_of.size()
+        + lowerer.runtime_binding_by_semantic_target.size()
+        + lowerer.runtime_binding_by_concrete_target.size();
+  };
+  auto graph_cardinality = [&] {
+    return lowerer.graph.nodes.size()
+        + lowerer.graph.explicit_ttl_samples.size()
+        + lowerer.graph.node_ids.size()
+        + lowerer.graph.node_virtual_ids.size()
+        + lowerer.graph.node_source_infos.size()
+        + lowerer.graph.node_construction_order.size()
+        + lowerer.graph.node_kinds.size()
+        + lowerer.graph.node_type_identities.size()
+        + lowerer.graph.edges.size()
+        + lowerer.graph.event_edges.size()
+        + lowerer.graph.detached_info_by_source.size()
+        + lowerer.graph.detached_reader_outputs.size();
+  };
+
+  lowerer.run();
+  if (stage == GraphLoweringProfileStage::topology)
+    return topology_cardinality();
+
+  lowerer.begin_materialization();
+  lowerer.append_reflected_nodes(options.detach_id_offset);
+  lowerer.lower_edges();
+  lowerer.add_subgraph_default_edges();
+  lowerer.copy_detach_info();
+  if (stage == GraphLoweringProfileStage::materialization)
+    return graph_cardinality();
+
+  auto sample_inputs = options.execution_root
+      ? std::vector<InputConfig>{}
+      : std::vector<InputConfig>(
+            authored.public_ports.sample_inputs(authored.node_bundles).begin(),
+            authored.public_ports.sample_inputs(authored.node_bundles).end());
+  auto sample_outputs = options.execution_root
+      ? std::vector<OutputConfig>{}
+      : std::vector<OutputConfig>(
+            authored.public_ports.sample_outputs(authored.node_bundles).begin(),
+            authored.public_ports.sample_outputs(authored.node_bundles).end());
+
+  details::expand_lowered_hyperedge_ports(lowerer.graph, authored.identity.value);
+  details::stub_lowered_dangling_ports(
+      lowerer.graph, sample_inputs.size(), authored.identity.value);
+  details::resolve_lowered_sample_edge_conversions(
+      lowerer.graph, sample_inputs, sample_outputs);
+  details::validate_lowered_graph(
+      lowerer.graph, sample_inputs.size(), sample_outputs.size());
+  details::validate_lowered_detached_edges(
+      lowerer.graph, authored.identity.value);
+  return graph_cardinality();
+}
 
 consteval ExecutableGraphIR GraphLowerer::lower(
     AuthoredGraph const& authored, GraphLoweringOptions options) {

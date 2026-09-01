@@ -170,6 +170,8 @@ namespace iv::details {
         CompilerConnectivity const& connectivity
     )
     {
+        if (lowered_subgraphs.empty()) return {};
+
         std::vector<size_t> region_to_order(execution_plan.regions.size(), GRAPH_ID);
         for (size_t ordered_i = 0; ordered_i < execution_plan.region_order.size(); ++ordered_i) {
             region_to_order[execution_plan.region_order[ordered_i]] = ordered_i;
@@ -640,13 +642,38 @@ namespace iv::details {
             return plan;
         }
 
-        auto outgoing = connectivity.node_outgoing;
+        bool const is_forward_topology = [&] {
+            for (size_t source = 0;
+                 source < connectivity.node_outgoing.size(); ++source) {
+                for (size_t target : connectivity.node_outgoing[source]) {
+                    if (target <= source) return false;
+                }
+            }
+            return true;
+        }();
+        if (detached.empty() && is_forward_topology) {
+            plan.regions.reserve(num_nodes);
+            plan.region_order.reserve(num_nodes);
+            for (size_t node = 0; node < num_nodes; ++node) {
+                plan.node_to_region[node] = node;
+                plan.regions.push_back(GraphRegion{
+                    .nodes = {node},
+                    .execution_order = {node},
+                    .max_block_size = nodes[node].max_block_size(),
+                });
+                plan.region_order.push_back(node);
+            }
+            return plan;
+        }
 
+        auto outgoing = connectivity.node_outgoing;
         for (auto const& detached_info : detached) {
-            if (detached_info.writer_node == GRAPH_ID || detached_info.reader_output.node == GRAPH_ID) {
+            if (detached_info.writer_node == GRAPH_ID
+                || detached_info.reader_output.node == GRAPH_ID) {
                 continue;
             }
-            outgoing[detached_info.writer_node].push_back(detached_info.reader_output.node);
+            outgoing[detached_info.writer_node].push_back(
+                detached_info.reader_output.node);
         }
 
         std::vector<size_t> index(num_nodes, std::numeric_limits<size_t>::max());
@@ -924,6 +951,17 @@ namespace iv::details {
         std::span<size_t const> node_to_region
     )
     {
+        if (region.nodes.size() == 1) {
+            auto const& node = nodes[region.nodes.front()];
+            size_t const node_latency = node.internal_latency();
+            size_t max_latency = node_latency;
+            for (auto const& output : node.outputs()) {
+                max_latency = std::max(
+                    max_latency, node_latency + output.latency);
+            }
+            return max_latency;
+        }
+
         std::flat_map<ConcretePortId, size_t> input_latencies;
         size_t max_latency = 0;
         size_t const region_index = node_to_region[region.nodes.front()];

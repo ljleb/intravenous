@@ -423,3 +423,58 @@ constexpr). That is 1.718 s (4.4%) below the immediately preceding stable
 a controlled runtime comparison. These are historical single-run observations,
 not current baselines; rerun the documented commands on the current checkout
 before making a performance decision.
+
+### Dense compiler sample-source slots (2026-08-31)
+
+The compiler's completed sample-source relation has one source per input and a
+dense node-input domain. It now stores optional source slots by input ordinal,
+with a dynamic public-output extension, instead of a flat map.
+
+After all 419 tests passed, one hot `saw` build measured 36.602 s for the
+generated export (36.200 s GCC total, 5,251M reported GGC, and 27.120 s
+constexpr). This is only 0.161 s below the prior 36.763 s single observation,
+so it is not independently conclusive. One execution run measured 193.845
+us/block; it is not a controlled runtime comparison.
+
+### Direct singleton execution plans (2026-08-31)
+
+After topological permutation, no-detach graphs with strictly forward
+dependencies have only singleton SCCs. The compiler now recognizes that case
+and directly emits its regions and execution order, bypassing Tarjan, the
+in-region ordering pass, and SCC-DAG construction. Dormancy planning also
+returns immediately when there are no lowered subgraphs.
+
+After all 419 tests passed, one hot `saw` build measured 35.302 s for the
+generated export (34.920 s GCC total, 5,144M reported GGC, and 26.070 s
+constexpr). That is 1.300 s (3.6%) below the immediately preceding 36.602 s
+observation. One execution run measured 190.956 us/block; it is not a
+controlled runtime comparison. These are historical single-run observations,
+not current baselines; rerun the documented commands on the current checkout
+before making a performance decision.
+
+### Cumulative pipeline-stage profile (2026-08-31)
+
+The generated export originally placed authoring, lowering, compilation, and
+static-metadata promotion in one consteval initializer. The benchmark now has
+diagnostic cumulative stages which return a scalar only after completing the
+selected work. This preserves the constexpr work while avoiding an invalid
+attempt to retain dynamically allocated intermediate IR as a constexpr object.
+
+After the release test gate completed, one `saw` run measured:
+
+| Cumulative stage | Hot export | GCC total | Constexpr | GGC |
+| --- | ---: | ---: | ---: | ---: |
+| Authoring | 9.240 s | 9.170 s | 5.840 s | 1,492M |
+| Lowering | 23.136 s | 22.980 s | 19.260 s | 3,885M |
+| Compilation | 31.315 s | 31.120 s | 26.100 s | 4,898M |
+| Static metadata | 31.190 s | 30.990 s | 25.810 s | 4,926M |
+| Full production export | 35.351 s | 34.990 s | 26.030 s | 5,134M |
+
+The useful deltas are approximately 5.840 s for authoring, 13.420 s for
+lowering, and 6.840 s for compilation. Static metadata is within single-run
+noise here. The remaining roughly 3.8 s in `full` is its reported optimized
+code generation and production wrapper emission, not more constexpr work.
+Accordingly, the next detailed profile should subdivide `GraphLowerer::lower`,
+rather than add path-specific compiler shortcuts. The execution handoff did
+not run in this attempt because of a script typo, so this observation has no
+new runtime sample.

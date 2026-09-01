@@ -54,6 +54,7 @@ struct Options {
     bool keep_workspace = false;
     bool gcc_time_report = false;
     iv::ModuleCompileStage compile_stage = iv::ModuleCompileStage::full;
+    iv::ModuleOptimization optimization = iv::ModuleOptimization::O3;
     bool source_introspection = true;
     bool precompiled_header = true;
     std::optional<size_t> constexpr_cache_depth;
@@ -87,6 +88,16 @@ std::string_view compile_stage_name(iv::ModuleCompileStage stage)
 {
     switch (stage) {
     case iv::ModuleCompileStage::full: return "full";
+    case iv::ModuleCompileStage::authoring: return "authoring";
+    case iv::ModuleCompileStage::lowering_topology:
+        return "lowering-topology";
+    case iv::ModuleCompileStage::lowering_materialization:
+        return "lowering-materialization";
+    case iv::ModuleCompileStage::lowering_normalization:
+        return "lowering-normalization";
+    case iv::ModuleCompileStage::lowering: return "lowering";
+    case iv::ModuleCompileStage::compilation: return "compilation";
+    case iv::ModuleCompileStage::static_metadata: return "static-metadata";
     }
     throw std::logic_error("invalid module compile stage");
 }
@@ -94,7 +105,33 @@ std::string_view compile_stage_name(iv::ModuleCompileStage stage)
 iv::ModuleCompileStage parse_compile_stage(std::string_view value)
 {
     if (value == "full") return iv::ModuleCompileStage::full;
+    if (value == "authoring") return iv::ModuleCompileStage::authoring;
+    if (value == "lowering-topology")
+        return iv::ModuleCompileStage::lowering_topology;
+    if (value == "lowering-materialization")
+        return iv::ModuleCompileStage::lowering_materialization;
+    if (value == "lowering-normalization")
+        return iv::ModuleCompileStage::lowering_normalization;
+    if (value == "lowering") return iv::ModuleCompileStage::lowering;
+    if (value == "compilation") return iv::ModuleCompileStage::compilation;
+    if (value == "static-metadata") return iv::ModuleCompileStage::static_metadata;
     throw std::runtime_error("invalid compile stage '" + std::string(value) + "'");
+}
+
+std::string_view optimization_name(iv::ModuleOptimization optimization)
+{
+    switch (optimization) {
+    case iv::ModuleOptimization::O0: return "O0";
+    case iv::ModuleOptimization::O3: return "O3";
+    }
+    throw std::logic_error("invalid module optimization");
+}
+
+iv::ModuleOptimization parse_optimization(std::string_view value)
+{
+    if (value == "O0") return iv::ModuleOptimization::O0;
+    if (value == "O3") return iv::ModuleOptimization::O3;
+    throw std::runtime_error("invalid optimization '" + std::string(value) + "'");
 }
 
 std::string read(std::filesystem::path const& path)
@@ -182,6 +219,8 @@ Options parse_options(int argc, char** argv)
             options.gcc_time_report = true;
         } else if (arg == "--stage") {
             options.compile_stage = parse_compile_stage(require_value(arg));
+        } else if (arg == "--optimization") {
+            options.optimization = parse_optimization(require_value(arg));
         } else if (arg == "--no-source-introspection") {
             options.source_introspection = false;
         } else if (arg == "--no-pch") {
@@ -199,7 +238,8 @@ Options parse_options(int argc, char** argv)
         } else if (arg == "--help") {
             std::cout
                 << "Usage: iv_module_build_benchmark [--voices N] [--workspace PATH]"
-                << " [--stage full|parse|authoring|metadata|execution-lowering|execution-freeze|execution-connection-validation|execution-connection-reflection|execution-reflection|execution-graph|execution]"
+                << " [--stage full|authoring|lowering-topology|lowering-materialization|lowering-normalization|lowering|compilation|static-metadata]"
+                << " [--optimization O0|O3]"
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"
                 << " [--no-source-introspection] [--no-pch]"
@@ -389,6 +429,7 @@ void print(
     std::string_view phase,
     std::string_view workload,
     iv::ModuleCompileStage stage,
+    iv::ModuleOptimization optimization,
     SourceShape shape,
     bool source_introspection,
     bool precompiled_header,
@@ -399,6 +440,7 @@ void print(
               << " phase=" << phase
               << " workload=" << workload
               << " stage=" << compile_stage_name(stage)
+              << " optimization=" << optimization_name(optimization)
               << " source_shape=" << source_shape_name(shape)
               << " source_introspection=" << source_introspection
               << " pch=" << precompiled_header
@@ -456,6 +498,7 @@ void run(Options const& options)
             iv::ModuleLoaderToolchainConfig{
                 .gcc_time_report = options.gcc_time_report,
                 .compile_stage = options.compile_stage,
+                .optimization = options.optimization,
                 .source_introspection = options.source_introspection,
                 .precompiled_header = options.precompiled_header,
                 .constexpr_cache_depth = options.constexpr_cache_depth,
@@ -467,7 +510,8 @@ void run(Options const& options)
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
         print(
-            "cold", workload, options.compile_stage, options.source_shape,
+            "cold", workload, options.compile_stage, options.optimization,
+            options.source_shape,
             options.source_introspection, options.precompiled_header,
             options.constexpr_cache_depth,
             summarize(cold_elapsed, ninja_edges(cold_log)));
@@ -479,7 +523,8 @@ void run(Options const& options)
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
         print(
-            "hot", workload, options.compile_stage, options.source_shape,
+            "hot", workload, options.compile_stage, options.optimization,
+            options.source_shape,
             options.source_introspection, options.precompiled_header,
             options.constexpr_cache_depth,
             summarize(hot_elapsed, appended_ninja_edges(cold_log, hot_log)));

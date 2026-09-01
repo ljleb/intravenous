@@ -18,6 +18,20 @@ namespace iv {
 
     enum class ModuleCompileStage {
         full,
+        authoring,
+        lowering_topology,
+        lowering_materialization,
+        lowering_normalization,
+        lowering,
+        compilation,
+        static_metadata,
+    };
+
+    // The module benchmark can override this while keeping the module build
+    // configuration otherwise equivalent to Release.
+    enum class ModuleOptimization {
+        O0,
+        O3,
     };
 
     struct ModuleLoaderToolchainConfig {
@@ -29,6 +43,7 @@ namespace iv {
         std::optional<std::filesystem::path> juce_dir {};
         bool gcc_time_report = false;
         ModuleCompileStage compile_stage = ModuleCompileStage::full;
+        ModuleOptimization optimization = ModuleOptimization::O3;
         bool source_introspection = true;
         bool precompiled_header = true;
         // Empty keeps GCC's default constexpr evaluator cache depth.
