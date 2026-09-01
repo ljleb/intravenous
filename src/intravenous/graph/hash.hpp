@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/builder/constexpr_hash.hpp>
+#include <intravenous/graph/builder/topology_port.h>
 #include <intravenous/graph/types.h>
 
 namespace iv {

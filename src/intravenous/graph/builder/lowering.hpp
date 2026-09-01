@@ -331,24 +331,24 @@ build_virtual_metadata(ExecutableGraphData const& g,
   };
 
   std::vector<VirtualGroup> groups;
+  details::ConstexprHashMap<std::string, size_t, details::ConstexprStringHash>
+      group_index_by_virtual_node_id;
   for (size_t i = 0; i < concrete_nodes.size(); ++i) {
     if (i >= concrete_node_virtual_ids.size() ||
         concrete_node_virtual_ids[i].empty()) {
       continue;
     }
     for (auto const& virtual_node_id : concrete_node_virtual_ids[i]) {
-      auto group_it =
-          std::find_if(groups.begin(), groups.end(), [&](auto const& group) {
-            return group.virtual_node_id == virtual_node_id;
-          });
-      if (group_it == groups.end()) {
+      auto group = group_index_by_virtual_node_id.try_emplace(
+          virtual_node_id, groups.size());
+      if (group.inserted) {
         groups.push_back(VirtualGroup{
             .virtual_node_id = virtual_node_id,
-            .member_indices = {i},
+            .member_indices = {},
         });
-      } else if (!std::ranges::contains(group_it->member_indices, i)) {
-        group_it->member_indices.push_back(i);
       }
+      // concrete_node_virtual_ids already deduplicates IDs per member.
+      groups[group.value].member_indices.push_back(i);
     }
   }
 
@@ -1112,6 +1112,7 @@ class GraphLowerer {
       TopologyPortIdHash>
       runtime_binding_by_concrete_target;
   std::vector<GraphEdge> sample_edge_batch;
+  std::vector<GraphEventEdge> event_edge_batch;
 
   constexpr size_t topology_node_count() const {
     return out.topology_nodes.size();
@@ -2332,24 +2333,18 @@ class GraphLowerer {
         sample_edge_batch.erase(
             std::ranges::unique(sample_edge_batch).begin(),
             sample_edge_batch.end());
-      details::ConstexprHashSet<GraphEdge, details::GraphEdgeHash> seen;
-      std::vector<GraphEdge> unique_edges;
-      for (auto& edge : sample_edge_batch) {
-        if (seen.insert(edge))
-          unique_edges.push_back(std::move(edge));
-      }
-      graph.edges.replace(std::move(unique_edges));
+      graph.edges.replace(std::move(sample_edge_batch));
       sample_edge_batch.clear();
     }
 
   constexpr void add_event_target_edges(GraphEventEdge edge, TopologyPortId target) {
     if (target.node == GRAPH_ID) {
-      graph.event_edges.emplace(GraphEventEdge{
+      event_edge_batch.push_back(GraphEventEdge{
           edge.source, {GRAPH_ID, target.port}, std::move(edge.conversion)});
       return;
     }
     if (!topology_is_subgraph_node(target.node)) {
-      graph.event_edges.emplace(GraphEventEdge{
+      event_edge_batch.push_back(GraphEventEdge{
           edge.source, {runtime_node_indices[target.node], target.port},
           std::move(edge.conversion)});
       return;
@@ -2358,6 +2353,15 @@ class GraphLowerer {
     for (auto child : node.lowered_subgraph.event_input_targets.at(target.port))
       add_event_target_edges(
           GraphEventEdge{edge.source, {}, edge.conversion}, child);
+  }
+
+  constexpr void canonicalize_event_edges() {
+    std::ranges::sort(event_edge_batch);
+    event_edge_batch.erase(
+        std::ranges::unique(event_edge_batch).begin(),
+        event_edge_batch.end());
+    graph.event_edges.replace(std::move(event_edge_batch));
+    event_edge_batch.clear();
   }
 
   constexpr void lower_edges() {
@@ -2458,19 +2462,22 @@ class GraphLowerer {
       collect_scope_event_targets(child, out_refs);
   }
 
-  constexpr void build_topology_scope_memberships() {
+  constexpr std::vector<std::vector<size_t>>
+  build_topology_scope_memberships(std::span<size_t const> subgraphs) {
     auto const node_count = topology_node_count();
-    std::vector<size_t> subgraphs;
-    for (size_t node = 0; node < node_count; ++node)
-      if (topology_is_subgraph_node(node)) subgraphs.push_back(node);
-
     out.scope_memberships.assign(node_count, {});
+    std::vector<std::vector<size_t>> topology_nodes_by_bundle(bundles.size());
+    for (size_t node = 0; node < node_count; ++node) {
+      if (auto const handle = bundle_for_lowered_node(node)) {
+        topology_nodes_by_bundle.at(*handle).push_back(node);
+      }
+    }
     for (size_t scope : subgraphs) {
       auto const info = bundles.subgraph_info(subgraph_bundle_handle(scope));
-      for (size_t node = 0; node < node_count; ++node) {
-        auto const handle = bundle_for_lowered_node(node);
-        if (handle && *handle >= info.child_begin
-            && *handle < info.child_begin + info.child_count) {
+      for (size_t handle = info.child_begin;
+           handle < info.child_begin + info.child_count;
+           ++handle) {
+        for (size_t node : topology_nodes_by_bundle.at(handle)) {
           out.scope_memberships[node].push_back(scope);
         }
       }
@@ -2531,18 +2538,20 @@ class GraphLowerer {
       for (size_t node : component)
         out.scope_memberships[node] = membership;
     }
-  }
 
-  constexpr std::vector<size_t> scope_member_topology_nodes(
-      size_t subgraph_node) const {
-    std::vector<size_t> result;
+    details::ConstexprHashMap<size_t, size_t, details::ConstexprIdentityHash>
+        subgraph_order;
+    for (size_t i = 0; i < subgraphs.size(); ++i)
+      subgraph_order.try_emplace(subgraphs[i], i);
+    std::vector<std::vector<size_t>> member_nodes(subgraphs.size());
     for (size_t node = 0; node < topology_node_count(); ++node) {
       if (topology_is_subgraph_node(node)) continue;
-      auto const& memberships = out.scope_memberships.at(node);
-      if (std::ranges::contains(memberships, subgraph_node))
-        result.push_back(node);
+      for (size_t scope : out.scope_memberships.at(node)) {
+        if (auto const* order = subgraph_order.find(scope))
+          member_nodes[*order].push_back(node);
+      }
     }
-    return result;
+    return member_nodes;
   }
 
   constexpr std::vector<iv::LoweredSubgraphSpec>
@@ -2552,12 +2561,16 @@ class GraphLowerer {
       if (topology_is_subgraph_node(i)) subgraphs.push_back(i);
     if (subgraphs.empty()) return {};
 
-    build_topology_scope_memberships();
+    auto const scope_member_topology_nodes =
+        build_topology_scope_memberships(subgraphs);
 
     details::ConstexprHashMap<size_t, size_t, details::ConstexprIdentityHash>
         scope_index;
     std::vector<iv::LoweredSubgraphSpec> scopes;
-    for (auto subgraph_i : subgraphs) {
+    for (size_t subgraph_order = 0;
+         subgraph_order < subgraphs.size();
+         ++subgraph_order) {
+      auto const subgraph_i = subgraphs[subgraph_order];
       auto const& subgraph = topology_subgraph_node(subgraph_i);
       iv::LoweredSubgraphSpec scope;
       scope.kind = subgraph.lowered_subgraph.kind;
@@ -2578,7 +2591,7 @@ class GraphLowerer {
       scope.event_outputs = subgraph.ports.event_output_configs;
       scope.ttl_samples = subgraph.lifetime.ttl_samples;
 
-      for (auto node : scope_member_topology_nodes(subgraph_i))
+      for (auto node : scope_member_topology_nodes[subgraph_order])
         scope.member_nodes.push_back(runtime_node_indices[node]);
 
       for (auto const& targets : subgraph.lowered_subgraph.sample_input_targets) {
@@ -2712,6 +2725,7 @@ consteval size_t GraphLowerer::profile(
     lowerer.lower_edges();
     lowerer.add_subgraph_default_edges();
     lowerer.canonicalize_sample_edges();
+    lowerer.canonicalize_event_edges();
     lowerer.copy_detach_info();
   if (stage == GraphLoweringProfileStage::materialization)
     return graph_cardinality();
@@ -2752,6 +2766,7 @@ consteval ExecutableGraphIR GraphLowerer::lower(
   lowerer.lower_edges();
   lowerer.add_subgraph_default_edges();
   lowerer.canonicalize_sample_edges();
+  lowerer.canonicalize_event_edges();
   lowerer.copy_detach_info();
 
   auto sample_inputs = options.execution_root
