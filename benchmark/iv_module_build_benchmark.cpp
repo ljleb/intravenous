@@ -513,8 +513,6 @@ void run(Options const& options)
             iv::ModuleLoaderToolchainConfig{
                 .c_compiler = options.c_compiler,
                 .cxx_compiler = options.cxx_compiler,
-                .gcc_source_introspection_plugin =
-                    options.gcc_source_introspection_plugin,
                 .gcc_time_report = options.gcc_time_report,
                 .compile_stage = options.compile_stage,
                 .optimization = options.optimization,

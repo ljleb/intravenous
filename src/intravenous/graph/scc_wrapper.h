@@ -32,7 +32,7 @@ namespace iv {
         ) :
             _nodes(std::move(nodes)),
             _global_node_indices(std::move(global_node_indices)),
-            _input_constant_offsets(make_input_constant_offsets(nodes)),
+            _input_constant_offsets(make_input_constant_offsets(_nodes)),
             _block_size(block_size),
             _internal_latency(internal_latency),
             _scc_feedback_latency(scc_feedback_latency),

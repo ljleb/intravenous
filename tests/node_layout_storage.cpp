@@ -561,7 +561,7 @@ int main()
     }
 
     {
-        static constexpr iv::GraphNodeWrapper wrapper(
+        const iv::GraphNodeWrapper wrapper(
             iv::details::reflect_node(StatefulTickingNode {}),
             std::vector<iv::InputPortPlan>{},
             "standalone",

@@ -423,34 +423,23 @@ TEST(IvModuleInstancesExecution, FamilyBindingsResolveDistinctAbiResources)
         .channel_type = iv::ChannelTypeId::mono,
         .sample_layout = iv::SampleStreamLayout::planar,
     };
-    static constexpr std::array<iv::StaticRuntimeInputConfig, 2>
-        sample_inputs{{
-            {.channel_layout = mono_planar},
-            {.channel_layout = mono_planar},
-        }};
-    static constexpr std::array<iv::StaticString, 2> sample_member_ids{{
-        {.data = "sample-member-0", .size = 15},
-        {.data = "sample-member-1", .size = 15},
-    }};
-    static constexpr std::array<iv::StaticString, 2> event_member_ids{{
-        {.data = "event-member-0", .size = 14},
-        {.data = "event-member-1", .size = 14},
-    }};
-    static constexpr iv::RuntimeSampleOutputFamilyNode sample_family{
-        .input_configs = {sample_inputs.data(), sample_inputs.size()},
-        .member_binding_ids = {
-            sample_member_ids.data(), sample_member_ids.size()},
-        .aggregate_binding_id = {
-            .data = "sample-aggregate", .size = 16},
+    const std::vector<iv::InputConfig> sample_inputs(2, iv::InputConfig{
+        .channel_layout = mono_planar});
+    const std::vector<std::string> sample_member_ids{
+        "sample-member-0", "sample-member-1"};
+    const std::vector<std::string> event_member_ids{
+        "event-member-0", "event-member-1"};
+    const iv::RuntimeSampleOutputFamilyNode sample_family{
+        .input_configs = sample_inputs,
+        .member_binding_ids = sample_member_ids,
+        .aggregate_binding_id = "sample-aggregate",
         .layout = mono_planar,
     };
-    static constexpr iv::RuntimeEventOutputFamilyNode event_family{
+    const iv::RuntimeEventOutputFamilyNode event_family{
         .type = iv::EventTypeId::trigger,
         .member_count = 2,
-        .member_binding_ids = {
-            event_member_ids.data(), event_member_ids.size()},
-        .aggregate_binding_id = {
-            .data = "event-aggregate", .size = 15},
+        .member_binding_ids = event_member_ids,
+        .aggregate_binding_id = "event-aggregate",
     };
 
     iv::NodeLayoutBuilder builder(8);
@@ -494,11 +483,8 @@ TEST(IvModuleInstancesExecution, FamilyBindingsResolveDistinctAbiResources)
 
 TEST(IvModuleInstancesExecution, ConnectionNodeResolvesItsRuntimeInputThroughAbi)
 {
-    static constexpr iv::ConnectionNode connection{
-        .runtime_binding_id = {
-            .data = "connection-runtime-input",
-            .size = 24,
-        },
+    static const iv::ConnectionNode connection{
+        .runtime_binding_id = "connection-runtime-input",
         .output_channel_count = 1,
     };
     iv::GraphRuntimeBindings bindings;

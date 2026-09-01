@@ -1079,7 +1079,8 @@ class GraphLowerer {
   details::ConstexprHashMap<NodeBundlePortId, TopologyPortId,
       details::NodeBundlePortIdHash> materialized_event_output_ports;
   ExecutableGraphData graph{
-      .nodes = {}, .explicit_ttl_samples = {}, .node_ids = {},
+      .nodes = {}, .generated_node_storage = {},
+      .explicit_ttl_samples = {}, .node_ids = {},
       .node_virtual_ids = {}, .node_source_infos = {},
       .node_construction_order = {}, .node_kinds = {},
       .node_type_identities = {}, .edges = {}, .event_edges = {},
@@ -2640,9 +2641,9 @@ public:
         virtual_ports(virtuals.ports(bundles)),
         runtime_node_indices(topology_node_count(), GRAPH_ID) {}
 
-  static constexpr ExecutableGraphIR lower(
+  static ExecutableGraphIR lower(
       AuthoredGraph const&, GraphLoweringOptions = {});
-  static constexpr size_t profile(
+  static size_t profile(
       AuthoredGraph const&, GraphLoweringOptions,
       GraphLoweringProfileStage);
   constexpr void run(bool normalize = true) {
@@ -2660,7 +2661,7 @@ public:
   }
 };
 
-constexpr size_t GraphLowerer::profile(
+inline size_t GraphLowerer::profile(
     AuthoredGraph const& authored, GraphLoweringOptions options,
     GraphLoweringProfileStage stage) {
   details::LoweringWorkspace lowered;
@@ -2741,7 +2742,7 @@ constexpr size_t GraphLowerer::profile(
   return graph_cardinality();
 }
 
-constexpr ExecutableGraphIR GraphLowerer::lower(
+inline ExecutableGraphIR GraphLowerer::lower(
     AuthoredGraph const& authored, GraphLoweringOptions options) {
   details::LoweringWorkspace lowered;
   GraphLowerer lowerer(

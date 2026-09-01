@@ -88,7 +88,7 @@ class NodeBundle {
     ReflectedNodeOperations operations{};
     NodeLifetime lifetime{};
     NodeTypeIdentity type_identity{};
-    std::string_view reflected_type_name{};
+    std::string reflected_type_name{};
     size_t internal_latency_samples = 0;
     size_t maximum_block_size = MAX_BLOCK_SIZE;
     std::optional<size_t> default_ttl_samples{};
@@ -386,7 +386,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .operations = lowered.operations,
       .lifetime = std::move(lowered.lifetime),
       .type_identity = std::move(lowered.type_identity),
-      .reflected_type_name = lowered.reflected_type_name,
+      .reflected_type_name = std::string(lowered.reflected_type_name),
       .internal_latency_samples = lowered.internal_latency_samples,
       .maximum_block_size = lowered.maximum_block_size,
       .default_ttl_samples = lowered.default_ttl_samples,

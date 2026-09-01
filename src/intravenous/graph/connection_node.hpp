@@ -203,7 +203,7 @@ private:
         std::fill(gathered.begin(), gathered.end(), Sample{0});
         for (size_t input = 0; input < input_configs.size(); ++input) {
             auto const& config = input_configs[input];
-            if (config.channel_layout.sample_layout ==
+            if (config.input.channel_layout.sample_layout ==
                 SampleStreamLayout::planar) {
                 for (auto const copy : config.channel_copies) {
                     auto const& ephemeral =

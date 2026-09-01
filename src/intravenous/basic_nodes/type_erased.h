@@ -46,6 +46,7 @@ namespace iv {
         void (*_tick_fn)(void*, TickSampleContext<TypeErasedNode> const&) = nullptr;
         void (*_tick_block_fn)(void*, TickBlockContext<TypeErasedNode> const&) = nullptr;
         void (*_skip_block_fn)(void*, SkipBlockContext<TypeErasedNode> const&) = nullptr;
+        void* (*_clone_fn)(void const*) = nullptr;
 
     public:
         struct State {
@@ -53,11 +54,42 @@ namespace iv {
         };
 
         TypeErasedNode() = default;
-        TypeErasedNode(TypeErasedNode const&) = delete;
-        TypeErasedNode& operator=(TypeErasedNode const&) = delete;
-
         TypeErasedNode(TypeErasedNode&&) noexcept = default;
         TypeErasedNode& operator=(TypeErasedNode&&) noexcept = default;
+
+        TypeErasedNode(TypeErasedNode const& other)
+            : _node(nullptr, other._node.get_deleter())
+            , _inputs(other._inputs)
+            , _outputs(other._outputs)
+            , _event_inputs(other._event_inputs)
+            , _event_outputs(other._event_outputs)
+            , _internal_latency(other._internal_latency)
+            , _max_block_size(other._max_block_size)
+            , _ttl_samples(other._ttl_samples)
+            , _can_skip_block(other._can_skip_block)
+            , _type_name(other._type_name)
+            , _type_info(other._type_info)
+            , _const_ptr_fn(other._const_ptr_fn)
+            , _declare_fn(other._declare_fn)
+            , _tick_fn(other._tick_fn)
+            , _tick_block_fn(other._tick_block_fn)
+            , _skip_block_fn(other._skip_block_fn)
+            , _clone_fn(other._clone_fn)
+        {
+            if (other._clone_fn != nullptr && other._node.get() != nullptr) {
+                _node = NodeStoragePtr(
+                    other._clone_fn(other._node.get()),
+                    other._node.get_deleter());
+            }
+        }
+
+        TypeErasedNode& operator=(TypeErasedNode const& other)
+        {
+            if (this == &other) return *this;
+            TypeErasedNode copy(other);
+            *this = std::move(copy);
+            return *this;
+        }
 
         template<typename Node>
         /*implicit*/ TypeErasedNode(Node node)
@@ -133,6 +165,7 @@ namespace iv {
                         ctx.block_size,
                     });
                 };
+                _clone_fn = nullptr;
             } else {
                 _node = NodeStoragePtr(
                     new Node(std::move(node)),
@@ -190,6 +223,9 @@ namespace iv {
                         ctx.index,
                         ctx.block_size,
                     });
+                };
+                _clone_fn = +[](void const* ptr) -> void* {
+                    return new Node(*static_cast<Node const*>(ptr));
                 };
             }
         }

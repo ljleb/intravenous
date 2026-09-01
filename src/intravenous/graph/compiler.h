@@ -1515,7 +1515,7 @@ struct RuntimeGraphPlan {
 
 class GraphCompiler {
 public:
-    static constexpr RuntimeGraphPlan compile(ExecutableGraphIR executable) {
+    static RuntimeGraphPlan compile(ExecutableGraphIR executable) {
         details::sort_nodes_or_error(
             executable.graph, executable.graph_id, executable.scopes);
         for (auto const& edge : executable.graph.edges) {

@@ -1,4 +1,7 @@
 #include <intravenous/module/abi.h>
+#include <intravenous/graph/authored_graph_view.hpp>
+#include <intravenous/graph/builder/lowering.hpp>
+#include <intravenous/graph/compiler.h>
 #include <intravenous/node/block_executor.h>
 
 #include <algorithm>
@@ -157,21 +160,23 @@ void benchmark_module(std::filesystem::path const& path, Options const& options)
     DynamicLibrary library(path);
     auto const abi_version = reinterpret_cast<iv_module_abi_version_fn>(
         library.symbol("iv_module_abi_version"));
-    auto const graph = reinterpret_cast<iv_module_graph_fn>(
-        library.symbol("iv_module_graph"));
-    if (!abi_version || !graph) {
+    auto const authored_graph = reinterpret_cast<iv_module_authored_graph_fn>(
+        library.symbol("iv_module_authored_graph"));
+    if (!abi_version || !authored_graph) {
         throw std::runtime_error("module '" + path.string() + "' is missing IV exports");
     }
     if (abi_version() != iv::IV_MODULE_ABI_VERSION) {
         throw std::runtime_error("module '" + path.string() + "' has an incompatible ABI");
     }
 
-    auto root = graph();
-    if (!root) {
-        throw std::runtime_error("module '" + path.string() + "' exported an invalid root");
-    }
+    auto view = authored_graph();
+    auto authored = iv::thaw_authored_graph(view);
+    auto plan = iv::GraphCompiler::compile(
+        iv::GraphLowerer::lower(std::move(authored)));
+    auto root = std::make_shared<iv::RuntimeGraphRoot>(
+        std::move(plan.graph));
     auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(root),
+        iv::TypeErasedNode(*root),
         options.block_size,
         {},
         std::nullopt,
