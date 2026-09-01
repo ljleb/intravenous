@@ -695,12 +695,12 @@ constexpr EventInputConfig inward_event_input_config(
   return EventInputConfig{.name = config.name, .type = config.type};
 }
 
-template <class Configs>
+template <class MatchesName>
 constexpr size_t index_for_name(
-    Configs const &configs, std::string_view name) {
+    size_t count, MatchesName matches_name, std::string_view name) {
   std::optional<size_t> result;
-  for (size_t ordinal = 0; ordinal < configs.size(); ++ordinal) {
-    if (configs[ordinal].name != name) continue;
+  for (size_t ordinal = 0; ordinal < count; ++ordinal) {
+    if (!matches_name(ordinal)) continue;
     if (result) {
       details::error("NodeBundle port name '" + std::string(name) +
                      "' is ambiguous");
@@ -901,28 +901,20 @@ constexpr size_t NodeBundle::event_output_count() const {
 }
 
 constexpr size_t NodeBundle::sample_input_index(std::string_view name) const {
-  std::vector<InputConfig> configs;
-  configs.reserve(sample_input_count());
-  for (size_t i = 0; i < sample_input_count(); ++i) configs.push_back(sample_input_config(i));
-  return index_for_name(configs, name);
+  return index_for_name(sample_input_count(),
+      [&](size_t i) { return sample_input_config(i).name == name; }, name);
 }
 constexpr size_t NodeBundle::sample_output_index(std::string_view name) const {
-  std::vector<OutputConfig> configs;
-  configs.reserve(sample_output_count());
-  for (size_t i = 0; i < sample_output_count(); ++i) configs.push_back(sample_output_config(i));
-  return index_for_name(configs, name);
+  return index_for_name(sample_output_count(),
+      [&](size_t i) { return sample_output_config(i).name == name; }, name);
 }
 constexpr size_t NodeBundle::event_input_index(std::string_view name) const {
-  std::vector<EventInputConfig> configs;
-  configs.reserve(event_input_count());
-  for (size_t i = 0; i < event_input_count(); ++i) configs.push_back(event_input_config(i));
-  return index_for_name(configs, name);
+  return index_for_name(event_input_count(),
+      [&](size_t i) { return event_input_config(i).name == name; }, name);
 }
 constexpr size_t NodeBundle::event_output_index(std::string_view name) const {
-  std::vector<EventOutputConfig> configs;
-  configs.reserve(event_output_count());
-  for (size_t i = 0; i < event_output_count(); ++i) configs.push_back(event_output_config(i));
-  return index_for_name(configs, name);
+  return index_for_name(event_output_count(),
+      [&](size_t i) { return event_output_config(i).name == name; }, name);
 }
 
 constexpr void NodeBundle::import_into(

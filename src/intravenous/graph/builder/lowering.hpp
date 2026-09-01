@@ -144,28 +144,13 @@ struct VirtualConcreteNode {
   std::string kind;
   std::string type_identity;
   size_t construction_order = 0;
-  std::vector<SourceInfo> source_infos;
+  std::span<SourceInfo const> source_infos{};
   std::vector<VirtualConcretePortInfo> sample_inputs;
   std::vector<VirtualConcretePortInfo> sample_outputs;
   std::vector<VirtualConcretePortInfo> event_inputs;
   std::vector<VirtualConcretePortInfo> event_outputs;
 };
 
-
-constexpr VirtualPortConnectivity
-aggregate_connectivity(std::span<VirtualConcretePortInfo const> ports) {
-  bool any_connected = false;
-  bool any_disconnected = false;
-  for (auto const& port : ports) {
-    any_connected = any_connected || port.connected;
-    any_disconnected = any_disconnected || !port.connected;
-  }
-  if (any_connected && any_disconnected) {
-    return VirtualPortConnectivity::mixed;
-  }
-  return any_connected ? VirtualPortConnectivity::connected
-                       : VirtualPortConnectivity::disconnected;
-}
 
 constexpr void sort_and_deduplicate_spans(std::vector<SourceSpan>& spans) {
   std::sort(spans.begin(), spans.end(), [](auto const& a, auto const& b) {
@@ -199,16 +184,22 @@ constexpr std::vector<IntrospectionPortInfo> aggregate_ports(
   std::vector<IntrospectionPortInfo> virtual_ports;
   virtual_ports.reserve(first_ports.size());
   for (size_t i = 0; i < first_ports.size(); ++i) {
-    std::vector<VirtualConcretePortInfo> concrete_ports;
-    concrete_ports.reserve(nodes.size());
+    bool any_connected = false;
+    bool any_disconnected = false;
     for (auto const* node : nodes) {
-      concrete_ports.push_back((node->*member)[i]);
+      auto const connected = (node->*member)[i].connected;
+      any_connected = any_connected || connected;
+      any_disconnected = any_disconnected || !connected;
     }
+    auto const connectivity = any_connected && any_disconnected
+        ? VirtualPortConnectivity::mixed
+        : any_connected ? VirtualPortConnectivity::connected
+                        : VirtualPortConnectivity::disconnected;
 
     virtual_ports.push_back(IntrospectionPortInfo{
         .name = first_ports[i].name,
         .type = first_ports[i].type,
-        .connectivity = aggregate_connectivity(concrete_ports),
+        .connectivity = connectivity,
         .ordinal = i,
         .default_value = first_ports[i].default_value,
         .min = first_ports[i].min,
@@ -259,7 +250,7 @@ build_virtual_metadata(ExecutableGraphData const& g,
     concrete.kind = scope.kind;
     concrete.construction_order = g.nodes.size() + scope_i;
     concrete.type_identity = "lowered-subgraph:" + scope.kind;
-    concrete.source_infos = scope.source_infos;
+    concrete.source_infos = std::span<SourceInfo const>(scope.source_infos);
 
     concrete.sample_inputs.reserve(scope.sample_inputs.size());
     for (size_t input_i = 0; input_i < scope.sample_inputs.size(); ++input_i) {
