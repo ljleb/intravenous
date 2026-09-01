@@ -1,6 +1,5 @@
 #pragma once
 
-#include <intravenous/graph/static_storage.hpp>
 #include <intravenous/graph/wiring.h>
 #include <intravenous/node/lifecycle.h>
 
@@ -26,25 +25,14 @@ namespace iv {
     };
 
     struct GraphPortDataNode {
-        StaticString _port_data_id;
+        std::string _port_data_id;
         GraphPortStorageConfig _storage;
         InputPortPlan _input_plan;
-        StaticSpan<StaticString> _aliases {};
+        std::vector<std::string> _aliases {};
         bool _owns_storage = true;
         bool _is_static_constant = false;
 
-        static consteval StaticSpan<StaticString> freeze_aliases(
-            std::span<std::string const> aliases)
-        {
-            std::vector<StaticString> result;
-            result.reserve(aliases.size());
-            for (auto const& alias : aliases) {
-                result.push_back(details::define_static_string(alias));
-            }
-            return details::define_static_span(result);
-        }
-
-        consteval explicit GraphPortDataNode(
+        explicit GraphPortDataNode(
             std::string port_data_id,
             GraphPortStorageConfig storage,
             InputPortPlan input_plan,
@@ -52,10 +40,10 @@ namespace iv {
             bool owns_storage = true,
             bool is_static_constant = false
         ) :
-            _port_data_id(details::define_static_string(port_data_id)),
+            _port_data_id(std::move(port_data_id)),
             _storage(storage),
             _input_plan(input_plan),
-            _aliases(freeze_aliases(aliases)),
+            _aliases(std::move(aliases)),
             _owns_storage(owns_storage),
             _is_static_constant(is_static_constant)
         {}
@@ -78,9 +66,9 @@ namespace iv {
                 )
             );
             ctx.export_array(
-                std::string(_port_data_id.view()), state.port_data);
+                _port_data_id, state.port_data);
             for (auto const& alias : _aliases) {
-                ctx.export_array(std::string(alias.view()), state.port_data);
+                ctx.export_array(alias, state.port_data);
             }
         }
 

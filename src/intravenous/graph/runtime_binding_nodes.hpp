@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/graph/runtime_bindings.h>
-#include <intravenous/graph/static_storage.hpp>
 #include <intravenous/node/lifecycle.h>
 
 #include <algorithm>
@@ -78,54 +77,10 @@ struct RuntimeEventOutputFamilyNodeSpec {
     }
 };
 
-struct StaticRuntimeInputConfig {
-    StaticString name {};
-    ChannelLayout channel_layout {
-        .channel_type = ChannelTypeId::mono,
-        .sample_layout = SampleStreamLayout::planar,
-    };
-    size_t history = 0;
-    Sample default_value = 0.0;
-    Sample min = -std::numeric_limits<Sample::storage>::infinity();
-    Sample max = std::numeric_limits<Sample::storage>::infinity();
-
-    constexpr InputConfig config() const
-    {
-        return {
-            .name = std::string(name.view()),
-            .channel_layout = channel_layout,
-            .history = history,
-            .default_value = default_value,
-            .min = min,
-            .max = max,
-        };
-    }
-};
-
-struct StaticRuntimeOutputConfig {
-    StaticString name {};
-    ChannelLayout channel_layout {
-        .channel_type = ChannelTypeId::mono,
-        .sample_layout = SampleStreamLayout::planar,
-    };
-    size_t latency = 0;
-    size_t history = 0;
-
-    constexpr OutputConfig config() const
-    {
-        return {
-            .name = std::string(name.view()),
-            .channel_layout = channel_layout,
-            .latency = latency,
-            .history = history,
-        };
-    }
-};
-
 struct RuntimeSampleInputNode {
-    StaticRuntimeOutputConfig output {};
+    OutputConfig output {};
     Sample default_value = 0.0f;
-    StaticString binding_id {};
+    std::string binding_id {};
 
     struct State {
         std::span<Sample> samples {};
@@ -134,7 +89,7 @@ struct RuntimeSampleInputNode {
 
     constexpr auto outputs() const
     {
-        return std::array<OutputConfig, 1>{ output.config() };
+        return std::array<OutputConfig, 1>{ output };
     }
 
     void declare(DeclarationContext<RuntimeSampleInputNode> const& ctx) const
@@ -148,7 +103,7 @@ struct RuntimeSampleInputNode {
     void initialize(InitializationContext<RuntimeSampleInputNode> const& ctx) const
     {
         ctx.state().binding.front() =
-            ctx.resources.runtime_bindings.sample_input(binding_id.view());
+            ctx.resources.runtime_bindings.sample_input(binding_id);
     }
 
     void tick_block(TickBlockContext<RuntimeSampleInputNode> const& ctx) const
@@ -185,7 +140,7 @@ struct RuntimeSampleInputNode {
 
 struct RuntimeEventInputNode {
     EventTypeId type = EventTypeId::empty;
-    StaticString binding_id {};
+    std::string binding_id {};
 
     struct State {
         std::span<RuntimeEventInputBinding const*> binding {};
@@ -204,7 +159,7 @@ struct RuntimeEventInputNode {
     void initialize(InitializationContext<RuntimeEventInputNode> const& ctx) const
     {
         ctx.state().binding.front() =
-            ctx.resources.runtime_bindings.event_input(binding_id.view());
+            ctx.resources.runtime_bindings.event_input(binding_id);
     }
 
     void tick_block(TickBlockContext<RuntimeEventInputNode> const& ctx) const
@@ -221,8 +176,8 @@ struct RuntimeEventInputNode {
 };
 
 struct RuntimeSampleOutputNode {
-    StaticRuntimeInputConfig input {};
-    StaticString binding_id {};
+    InputConfig input {};
+    std::string binding_id {};
 
     struct State {
         std::span<Sample> samples {};
@@ -231,7 +186,7 @@ struct RuntimeSampleOutputNode {
 
     constexpr auto inputs() const
     {
-        return std::array<InputConfig, 1>{ input.config() };
+        return std::array<InputConfig, 1>{ input };
     }
 
     void declare(DeclarationContext<RuntimeSampleOutputNode> const& ctx) const
@@ -245,7 +200,7 @@ struct RuntimeSampleOutputNode {
     void initialize(InitializationContext<RuntimeSampleOutputNode> const& ctx) const
     {
         ctx.state().binding.front() =
-            ctx.resources.runtime_bindings.output(binding_id.view());
+            ctx.resources.runtime_bindings.output(binding_id);
     }
 
     void tick_block(TickBlockContext<RuntimeSampleOutputNode> const& ctx) const
@@ -273,7 +228,7 @@ struct RuntimeSampleOutputNode {
 
 struct RuntimeEventOutputNode {
     EventTypeId type = EventTypeId::empty;
-    StaticString binding_id {};
+    std::string binding_id {};
 
     struct State {
         std::span<TimedEvent> events {};
@@ -297,7 +252,7 @@ struct RuntimeEventOutputNode {
     void initialize(InitializationContext<RuntimeEventOutputNode> const& ctx) const
     {
         ctx.state().binding.front() =
-            ctx.resources.runtime_bindings.output(binding_id.view());
+            ctx.resources.runtime_bindings.output(binding_id);
     }
 
     void tick_block(TickBlockContext<RuntimeEventOutputNode> const& ctx) const
@@ -318,9 +273,9 @@ struct RuntimeEventOutputNode {
 };
 
 struct RuntimeSampleOutputFamilyNode {
-    StaticSpan<StaticRuntimeInputConfig> input_configs {};
-    StaticSpan<StaticString> member_binding_ids {};
-    StaticString aggregate_binding_id {};
+    std::vector<InputConfig> input_configs {};
+    std::vector<std::string> member_binding_ids {};
+    std::string aggregate_binding_id {};
     ChannelLayout layout {};
 
     struct State {
@@ -333,9 +288,9 @@ struct RuntimeSampleOutputFamilyNode {
     constexpr std::vector<InputConfig> inputs() const
     {
         std::vector<InputConfig> result;
-        result.reserve(input_configs.size);
+        result.reserve(input_configs.size());
         for (auto const& input : input_configs)
-            result.push_back(input.config());
+            result.push_back(input);
         return result;
     }
 
@@ -347,23 +302,23 @@ struct RuntimeSampleOutputFamilyNode {
         ctx.local_array(ctx.state().aggregate_samples, sample_count);
         ctx.local_array(
             ctx.state().member_samples,
-            sample_count * input_configs.size);
+            sample_count * input_configs.size());
         ctx.local_array(
             ctx.state().member_bindings,
-            member_binding_ids.size);
+            member_binding_ids.size());
         ctx.local_array(ctx.state().aggregate_binding, 1);
     }
 
     void initialize(
         InitializationContext<RuntimeSampleOutputFamilyNode> const& ctx) const
     {
-        for (size_t member = 0; member < member_binding_ids.size; ++member)
+        for (size_t member = 0; member < member_binding_ids.size(); ++member)
             ctx.state().member_bindings[member] =
                 ctx.resources.runtime_bindings.output(
-                    member_binding_ids[member].view());
+                    member_binding_ids[member]);
         ctx.state().aggregate_binding.front() =
             ctx.resources.runtime_bindings.output(
-                aggregate_binding_id.view());
+            aggregate_binding_id);
     }
 
     void tick_block(
@@ -374,7 +329,7 @@ struct RuntimeSampleOutputFamilyNode {
         auto aggregate = ctx.state().aggregate_samples.first(sample_count);
         std::fill(aggregate.begin(), aggregate.end(), Sample{0.0f});
 
-        for (size_t member = 0; member < input_configs.size; ++member) {
+        for (size_t member = 0; member < input_configs.size(); ++member) {
             auto const* binding = ctx.state().member_bindings[member];
             if (!binding ||
                 (!binding->target_lane && !binding->include_in_aggregate))
@@ -420,8 +375,8 @@ struct RuntimeSampleOutputFamilyNode {
 struct RuntimeEventOutputFamilyNode {
     EventTypeId type = EventTypeId::empty;
     size_t member_count = 0;
-    StaticSpan<StaticString> member_binding_ids {};
-    StaticString aggregate_binding_id {};
+    std::vector<std::string> member_binding_ids {};
+    std::string aggregate_binding_id {};
 
     struct State {
         std::span<TimedEvent> aggregate_events {};
@@ -453,13 +408,13 @@ struct RuntimeEventOutputFamilyNode {
     void initialize(
         InitializationContext<RuntimeEventOutputFamilyNode> const& ctx) const
     {
-        for (size_t member = 0; member < member_binding_ids.size; ++member)
+        for (size_t member = 0; member < member_binding_ids.size(); ++member)
             ctx.state().member_bindings[member] =
                 ctx.resources.runtime_bindings.output(
-                    member_binding_ids[member].view());
+                    member_binding_ids[member]);
         ctx.state().aggregate_binding.front() =
             ctx.resources.runtime_bindings.output(
-                aggregate_binding_id.view());
+            aggregate_binding_id);
     }
 
     void tick_block(
@@ -522,68 +477,44 @@ struct RuntimeEventOutputFamilyNode {
 };
 
 namespace details {
-consteval StaticRuntimeInputConfig freeze_runtime_input_config(
-    InputConfig const& config)
-{
-    return {
-        .name = define_static_string(config.name),
-        .channel_layout = config.channel_layout,
-        .history = config.history,
-        .default_value = config.default_value,
-        .min = config.min,
-        .max = config.max,
-    };
-}
-
-consteval StaticRuntimeOutputConfig freeze_runtime_output_config(
-    OutputConfig const& config)
-{
-    return {
-        .name = define_static_string(config.name),
-        .channel_layout = config.channel_layout,
-        .latency = config.latency,
-        .history = config.history,
-    };
-}
-
-consteval RuntimeSampleInputNode freeze_generated_node(
+inline RuntimeSampleInputNode make_generated_node(
     RuntimeSampleInputNodeSpec const& spec)
 {
     return {
-        .output = freeze_runtime_output_config(spec.output),
+        .output = spec.output,
         .default_value = spec.default_value,
-        .binding_id = define_static_string(spec.binding_id),
+        .binding_id = spec.binding_id,
     };
 }
 
-consteval RuntimeEventInputNode freeze_generated_node(
+inline RuntimeEventInputNode make_generated_node(
     RuntimeEventInputNodeSpec const& spec)
 {
     return {
         .type = spec.type,
-        .binding_id = define_static_string(spec.binding_id),
+        .binding_id = spec.binding_id,
     };
 }
 
-consteval RuntimeSampleOutputNode freeze_generated_node(
+inline RuntimeSampleOutputNode make_generated_node(
     RuntimeSampleOutputNodeSpec const& spec)
 {
     return {
-        .input = freeze_runtime_input_config(spec.input),
-        .binding_id = define_static_string(spec.binding_id),
+        .input = spec.input,
+        .binding_id = spec.binding_id,
     };
 }
 
-consteval RuntimeEventOutputNode freeze_generated_node(
+inline RuntimeEventOutputNode make_generated_node(
     RuntimeEventOutputNodeSpec const& spec)
 {
     return {
         .type = spec.type,
-        .binding_id = define_static_string(spec.binding_id),
+        .binding_id = spec.binding_id,
     };
 }
 
-consteval RuntimeSampleOutputFamilyNode freeze_generated_node(
+inline RuntimeSampleOutputFamilyNode make_generated_node(
     RuntimeSampleOutputFamilyNodeSpec const& spec)
 {
     if (spec.input_configs.empty()
@@ -592,29 +523,21 @@ consteval RuntimeSampleOutputFamilyNode freeze_generated_node(
             "runtime sample output family requires one binding per member");
     }
     auto const layout = spec.input_configs.front().channel_layout;
-    std::vector<StaticRuntimeInputConfig> inputs;
-    inputs.reserve(spec.input_configs.size());
     for (auto const& input : spec.input_configs) {
         if (input.channel_layout != layout) {
             throw std::logic_error(
                 "runtime sample output family member layouts differ");
         }
-        inputs.push_back(freeze_runtime_input_config(input));
     }
-    std::vector<StaticString> member_binding_ids;
-    member_binding_ids.reserve(spec.member_binding_ids.size());
-    for (auto const& id : spec.member_binding_ids)
-        member_binding_ids.push_back(define_static_string(id));
     return {
-        .input_configs = define_static_span(inputs),
-        .member_binding_ids = define_static_span(member_binding_ids),
-        .aggregate_binding_id =
-            define_static_string(spec.aggregate_binding_id),
+        .input_configs = spec.input_configs,
+        .member_binding_ids = spec.member_binding_ids,
+        .aggregate_binding_id = spec.aggregate_binding_id,
         .layout = layout,
     };
 }
 
-consteval RuntimeEventOutputFamilyNode freeze_generated_node(
+inline RuntimeEventOutputFamilyNode make_generated_node(
     RuntimeEventOutputFamilyNodeSpec const& spec)
 {
     if (spec.member_count == 0
@@ -622,16 +545,11 @@ consteval RuntimeEventOutputFamilyNode freeze_generated_node(
         throw std::logic_error(
             "runtime event output family requires one binding per member");
     }
-    std::vector<StaticString> member_binding_ids;
-    member_binding_ids.reserve(spec.member_binding_ids.size());
-    for (auto const& id : spec.member_binding_ids)
-        member_binding_ids.push_back(define_static_string(id));
     return {
         .type = spec.type,
         .member_count = spec.member_count,
-        .member_binding_ids = define_static_span(member_binding_ids),
-        .aggregate_binding_id =
-            define_static_string(spec.aggregate_binding_id),
+        .member_binding_ids = spec.member_binding_ids,
+        .aggregate_binding_id = spec.aggregate_binding_id,
     };
 }
 } // namespace details

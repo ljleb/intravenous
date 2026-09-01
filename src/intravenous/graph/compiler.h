@@ -14,6 +14,7 @@
 #include <bit>
 #include <deque>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -1008,9 +1009,10 @@ namespace iv::details {
         sccs,
     };
 
-    consteval GraphBuildArtifact build_graph_artifact(
+    constexpr GraphBuildArtifact build_graph_artifact(
         std::string graph_id,
         std::vector<ReflectedNodeDescription> nodes,
+        std::vector<std::shared_ptr<void const>> generated_node_storage,
         std::vector<std::optional<size_t>> explicit_ttl_samples,
         std::vector<std::string> node_ids,
         std::flat_set<GraphEdge> edges,
@@ -1155,6 +1157,7 @@ namespace iv::details {
         GraphBuildArtifact artifact {
             .graph_id = std::move(graph_id),
             .scc_wrappers = {},
+            .generated_node_storage = std::move(generated_node_storage),
             .edges = std::move(edges),
             .event_edges = std::move(event_edges),
             .detached = std::move(detached),
@@ -1504,7 +1507,7 @@ namespace iv::details {
 }
 
 namespace iv {
-struct CompiledGraph {
+struct RuntimeGraphPlan {
     Graph graph;
     GraphBuildMetadata metadata;
     GraphIntrospectionMetadata introspection;
@@ -1512,7 +1515,7 @@ struct CompiledGraph {
 
 class GraphCompiler {
 public:
-    static consteval CompiledGraph compile(ExecutableGraphIR executable) {
+    static constexpr RuntimeGraphPlan compile(ExecutableGraphIR executable) {
         details::sort_nodes_or_error(
             executable.graph, executable.graph_id, executable.scopes);
         for (auto const& edge : executable.graph.edges) {
@@ -1541,6 +1544,7 @@ public:
         return {
             .graph = Graph(details::build_graph_artifact(
                 executable.graph_id, std::move(executable.graph.nodes),
+                std::move(executable.graph.generated_node_storage),
                 std::move(executable.graph.explicit_ttl_samples),
                 std::move(executable.graph.node_ids),
                 std::move(executable.graph.edges),

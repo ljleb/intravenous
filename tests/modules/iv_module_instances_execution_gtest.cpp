@@ -2,6 +2,9 @@
 #include <intravenous/runtime/iv_module_instances_iv_module_instances_execution_bridge.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
+#include <intravenous/graph/authored_graph_view.hpp>
+#include <intravenous/graph/builder/lowering.hpp>
+#include <intravenous/graph/compiler.h>
 #include <intravenous/graph/runtime_binding_nodes.hpp>
 
 #include <gtest/gtest.h>
@@ -145,7 +148,7 @@ namespace {
         iv::GraphBuilder graph;
         auto input = graph.input<"input">(iv::Sample{0.0f});
         graph.outputs(iv::PortName<"output">{} = input);
-        return std::move(graph).build({.execution_root = true}).graph;
+        return iv::freeze_authored_graph(std::move(graph).finish());
     }
 
     consteval auto make_runtime_event_binding_graph()
@@ -154,17 +157,31 @@ namespace {
         auto input = graph.event_input<"input">(iv::EventTypeId::trigger);
         graph.event_outputs(iv::PortName<"output">{} = input);
         graph.outputs();
-        return std::move(graph).build({.execution_root = true}).graph;
+        return iv::freeze_authored_graph(std::move(graph).finish());
     }
 
-    static constexpr auto runtime_sample_binding_graph =
-        make_runtime_sample_binding_graph();
-    static constexpr auto runtime_event_binding_graph =
-        make_runtime_event_binding_graph();
-    static constexpr iv::StaticGraphRoot<runtime_sample_binding_graph>
-        runtime_sample_binding_root {};
-    static constexpr iv::StaticGraphRoot<runtime_event_binding_graph>
-        runtime_event_binding_root {};
+    iv::RuntimeGraphRoot build_runtime_binding_root(iv::AuthoredGraphView view)
+    {
+        auto authored = iv::thaw_authored_graph(view);
+        auto plan = iv::GraphCompiler::compile(
+            iv::GraphLowerer::lower(
+                std::move(authored), {.execution_root = true}));
+        return iv::RuntimeGraphRoot(std::move(plan.graph));
+    }
+
+    iv::RuntimeGraphRoot const& runtime_sample_binding_root()
+    {
+        static constexpr auto view = make_runtime_sample_binding_graph();
+        static auto root = build_runtime_binding_root(view);
+        return root;
+    }
+
+    iv::RuntimeGraphRoot const& runtime_event_binding_root()
+    {
+        static constexpr auto view = make_runtime_event_binding_graph();
+        static auto root = build_runtime_binding_root(view);
+        return root;
+    }
 
     iv::IvModuleInstance make_instance(std::string instance_id)
     {
@@ -329,7 +346,7 @@ TEST(IvModuleInstancesExecution, MaterializesLiveSampleBindingsIntoExecutorStora
         iv::IvModuleInstanceBuildersChanged{
             .created = {iv::IvModuleInstanceBuilderRef{
                 .instance = &instance,
-                .root = iv::WeakTypeErasedNode(runtime_sample_binding_root),
+                .root = iv::WeakTypeErasedNode(runtime_sample_binding_root()),
             }},
         });
     auto const callback = update.update.to_create.front().callback;
@@ -376,7 +393,7 @@ TEST(IvModuleInstancesExecution, MaterializesLiveEventBindingsIntoExecutorStorag
         iv::IvModuleInstanceBuildersChanged{
             .created = {iv::IvModuleInstanceBuilderRef{
                 .instance = &instance,
-                .root = iv::WeakTypeErasedNode(runtime_event_binding_root),
+                .root = iv::WeakTypeErasedNode(runtime_event_binding_root()),
             }},
         });
     auto const callback = update.update.to_create.front().callback;

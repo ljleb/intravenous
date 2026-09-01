@@ -5,6 +5,7 @@
 
 #include <flat_map>
 #include <flat_set>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,6 +16,10 @@ namespace iv {
 // It is the only mutable graph-shaped data shared with GraphCompiler.
 struct ExecutableGraphData {
   std::vector<ReflectedNodeDescription> nodes;
+  // Compiler-generated node objects are host-owned. Descriptions retain only
+  // opaque callbacks and node_data pointers, so this storage must travel with
+  // the final runtime graph plan.
+  std::vector<std::shared_ptr<void const>> generated_node_storage;
   std::vector<std::optional<size_t>> explicit_ttl_samples;
   std::vector<std::string> node_ids;
   std::vector<std::vector<std::string>> node_virtual_ids;

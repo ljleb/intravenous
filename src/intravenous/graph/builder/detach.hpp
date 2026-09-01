@@ -33,6 +33,10 @@ public:
   constexpr void record_detached_source(AuthoredDetachedSamplePortInfo);
   constexpr std::span<AuthoredDetachedSamplePortInfo const>
       authored_infos() const;
+  constexpr size_t next_detach_id() const { return _next_detach_id; }
+  static constexpr GraphBuilderDetach from_authored_infos(
+      size_t next_detach_id,
+      std::span<AuthoredDetachedSamplePortInfo const>);
 
 private:
   size_t _next_detach_id = 0;
@@ -76,6 +80,14 @@ constexpr void GraphBuilderDetach::record_detached_source(
 constexpr std::span<AuthoredDetachedSamplePortInfo const>
 GraphBuilderDetach::authored_infos() const {
   return _authored_infos;
+}
+constexpr GraphBuilderDetach GraphBuilderDetach::from_authored_infos(
+    size_t next_detach_id,
+    std::span<AuthoredDetachedSamplePortInfo const> infos) {
+  GraphBuilderDetach result;
+  result._next_detach_id = next_detach_id;
+  result._authored_infos.assign(infos.begin(), infos.end());
+  return result;
 }
 constexpr void GraphBuilderDetach::import_child(
     GraphBuilderDetach const& child, size_t bundle_offset,

@@ -183,6 +183,9 @@ public:
 
   constexpr void import_child(
       GraphBuilderConnections const&, size_t node_bundle_offset);
+  static constexpr GraphBuilderConnections from_authored_connections(
+      std::span<AuthoredSampleConnection const>,
+      std::span<AuthoredEventConnection const>);
 
 private:
   std::vector<AuthoredSampleConnection> _authored_sample_connections{};
@@ -245,6 +248,15 @@ constexpr void GraphBuilderConnections::record_authored_event_connection(
 constexpr std::span<AuthoredEventConnection const>
 GraphBuilderConnections::authored_event_connections() const {
   return _authored_event_connections;
+}
+constexpr GraphBuilderConnections
+GraphBuilderConnections::from_authored_connections(
+    std::span<AuthoredSampleConnection const> samples,
+    std::span<AuthoredEventConnection const> events) {
+  GraphBuilderConnections result;
+  result._authored_sample_connections.assign(samples.begin(), samples.end());
+  result._authored_event_connections.assign(events.begin(), events.end());
+  return result;
 }
 
 constexpr GraphBuilderVacantInputs

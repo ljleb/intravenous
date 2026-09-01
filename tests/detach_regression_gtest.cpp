@@ -1,5 +1,8 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
+#include <intravenous/graph/authored_graph_view.hpp>
+#include <intravenous/graph/builder/lowering.hpp>
+#include <intravenous/graph/compiler.h>
 #include <intravenous/node/block_executor.h>
 
 #include <gtest/gtest.h>
@@ -86,12 +89,25 @@ namespace {
 
         sink(voice_a + voice_b);
         graph.outputs();
-        return std::move(graph).build().graph;
+        return iv::freeze_authored_graph(std::move(graph).finish());
     }
 
-    static constexpr auto detached_graph = build_detached_graph();
-    static constexpr iv::StaticGraphRoot<detached_graph> static_detached_graph {};
-    static constexpr iv::RuntimeGraphRoot runtime_detached_graph {detached_graph};
+    iv::RuntimeGraphRoot build_runtime_root(
+        iv::AuthoredGraphView view,
+        bool execution_root = false)
+    {
+        auto authored = iv::thaw_authored_graph(view);
+        auto plan = iv::GraphCompiler::compile(
+            iv::GraphLowerer::lower(
+                std::move(authored), {.execution_root = execution_root}));
+        return iv::RuntimeGraphRoot(std::move(plan.graph));
+    }
+
+    iv::RuntimeGraphRoot build_detached_runtime_root()
+    {
+        static constexpr auto view = build_detached_graph();
+        return build_runtime_root(view);
+    }
 
     consteval auto build_static_dormancy_graph()
     {
@@ -105,15 +121,14 @@ namespace {
         }).ttl(1);
         nested("in"_P = source);
         graph.outputs("out"_P = nested);
-        return std::move(graph).build({.execution_root = true}).graph;
+        return iv::freeze_authored_graph(std::move(graph).finish());
     }
 
-    static constexpr auto static_dormancy_graph = build_static_dormancy_graph();
-    static_assert(static_dormancy_graph._dormancy_groups.size != 0);
-    static constexpr iv::StaticGraphRoot<static_dormancy_graph>
-        static_dormancy_root {};
-    static constexpr iv::RuntimeGraphRoot runtime_dormancy_root {
-        static_dormancy_graph};
+    iv::RuntimeGraphRoot build_dormancy_runtime_root()
+    {
+        static constexpr auto view = build_static_dormancy_graph();
+        return build_runtime_root(view, true);
+    }
 
     // An unconnected subgraph input lowers through materialize_subgraph_default.
     // Its default must reach a block-reading node without leaving a ticking
@@ -131,15 +146,14 @@ namespace {
         auto const sink = graph.node<RuntimeBufferSink>();
         sink(nested);
         graph.outputs();
-        return std::move(graph).build().graph;
+        return iv::freeze_authored_graph(std::move(graph).finish());
     }
 
-    static constexpr auto static_default_sink_graph =
-        build_static_default_sink_graph();
-    static constexpr iv::StaticGraphRoot<static_default_sink_graph>
-        static_default_sink_root {};
-    static constexpr iv::RuntimeGraphRoot runtime_default_sink_root {
-        static_default_sink_graph};
+    iv::RuntimeGraphRoot build_default_sink_runtime_root()
+    {
+        static constexpr auto view = build_static_default_sink_graph();
+        return build_runtime_root(view);
+    }
 
     void tick_executor_direct(
         iv::BlockNodeExecutor& executor,
@@ -169,7 +183,7 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     runtime_output = output;
 
     iv::BlockNodeExecutor executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(static_detached_graph),
+        iv::TypeErasedNode(build_detached_runtime_root()),
         output.size());
     tick_executor_direct(executor, 0, output.size());
     runtime_output = {};
@@ -188,7 +202,7 @@ TEST(DetachRegression, ProducesFiniteNonZeroOutput)
     EXPECT_TRUE(saw_non_zero);
 }
 
-TEST(DetachRegression, RuntimeGraphRootMatchesStaticGraphRootOutput)
+TEST(DetachRegression, RuntimeGraphRootIsDeterministic)
 {
     runtime_values[static_cast<size_t>(RuntimeValueSlot::dt)] =
         iv::Sample{1.0f / 48000.0f};
@@ -197,39 +211,30 @@ TEST(DetachRegression, RuntimeGraphRootMatchesStaticGraphRootOutput)
     runtime_values[static_cast<size_t>(RuntimeValueSlot::noise_b)] =
         iv::Sample{-0.25f};
 
-    std::vector<iv::Sample> static_output(32, 0.0f);
-    runtime_output = static_output;
-    auto static_executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(static_detached_graph), static_output.size());
-    tick_executor_direct(static_executor, 0, static_output.size());
+    std::vector<iv::Sample> first_output(32, 0.0f);
+    runtime_output = first_output;
+    auto first_executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(build_detached_runtime_root()), first_output.size());
+    tick_executor_direct(first_executor, 0, first_output.size());
 
     std::vector<iv::Sample> runtime_root_output(32, 0.0f);
     runtime_output = runtime_root_output;
     auto runtime_executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(runtime_detached_graph), runtime_root_output.size());
+        iv::TypeErasedNode(build_detached_runtime_root()), runtime_root_output.size());
     tick_executor_direct(runtime_executor, 0, runtime_root_output.size());
     runtime_output = {};
 
-    ASSERT_EQ(runtime_root_output.size(), static_output.size());
-    for (size_t i = 0; i < static_output.size(); ++i) {
-        EXPECT_EQ(runtime_root_output[i], static_output[i])
+    ASSERT_EQ(runtime_root_output.size(), first_output.size());
+    for (size_t i = 0; i < first_output.size(); ++i) {
+        EXPECT_EQ(runtime_root_output[i], first_output[i])
             << "output differs at sample " << i;
     }
-}
-
-TEST(DetachRegression, StaticGraphRootExecutesDormancyGroups)
-{
-    auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(static_dormancy_root), 8);
-
-    executor.tick_block(0);
-    executor.tick_block(8);
 }
 
 TEST(DetachRegression, RuntimeGraphRootExecutesDormancyGroups)
 {
     auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(runtime_dormancy_root), 8);
+        iv::TypeErasedNode(build_dormancy_runtime_root()), 8);
 
     executor.tick_block(0);
     executor.tick_block(8);
@@ -248,10 +253,10 @@ TEST(DetachRegression, StaticSubgraphDefaultUsesInitializedConstantStorage)
         return output;
     };
 
-    auto const static_output = execute(static_default_sink_root);
-    auto const runtime_output_values = execute(runtime_default_sink_root);
-    for (size_t i = 0; i < static_output.size(); ++i) {
-        EXPECT_EQ(static_output[i], iv::Sample{0.375f});
+    auto const first_output = execute(build_default_sink_runtime_root());
+    auto const runtime_output_values = execute(build_default_sink_runtime_root());
+    for (size_t i = 0; i < first_output.size(); ++i) {
+        EXPECT_EQ(first_output[i], iv::Sample{0.375f});
         EXPECT_EQ(runtime_output_values[i], iv::Sample{0.375f});
     }
 }

@@ -14,15 +14,15 @@
 
 namespace iv {
     struct GraphSccWrapper {
-        StaticSpan<GraphNodeWrapper> _nodes {};
-        StaticSpan<size_t> _global_node_indices {};
-        StaticSpan<size_t> _input_constant_offsets {};
+        std::vector<GraphNodeWrapper> _nodes {};
+        std::vector<size_t> _global_node_indices {};
+        std::vector<size_t> _input_constant_offsets {};
         size_t _block_size;
         size_t _internal_latency;
         size_t _scc_feedback_latency;
-        StaticString _node_skip_import_id {};
+        std::string _node_skip_import_id {};
 
-        consteval GraphSccWrapper(
+        constexpr GraphSccWrapper(
             std::vector<GraphNodeWrapper> nodes,
             std::vector<size_t> global_node_indices,
             size_t block_size,
@@ -30,29 +30,27 @@ namespace iv {
             size_t scc_feedback_latency,
             std::string node_skip_import_id
         ) :
-            _nodes(details::define_static_span(nodes)),
-            _global_node_indices(details::define_static_span(
-                global_node_indices)),
+            _nodes(std::move(nodes)),
+            _global_node_indices(std::move(global_node_indices)),
             _input_constant_offsets(make_input_constant_offsets(nodes)),
             _block_size(block_size),
             _internal_latency(internal_latency),
             _scc_feedback_latency(scc_feedback_latency),
-            _node_skip_import_id(details::define_static_string(
-                node_skip_import_id))
+            _node_skip_import_id(std::move(node_skip_import_id))
         {
-            IV_ASSERT(_nodes.size == _global_node_indices.size,
+            IV_ASSERT(_nodes.size() == _global_node_indices.size(),
                 "SCC wrapper must have one global node index per wrapped node");
         }
 
-        static consteval StaticSpan<size_t> make_input_constant_offsets(
+        static constexpr std::vector<size_t> make_input_constant_offsets(
             std::span<GraphNodeWrapper const> nodes)
         {
             std::vector<size_t> offsets(nodes.size() + 1, 0);
             for (size_t node_i = 0; node_i < nodes.size(); ++node_i) {
                 offsets[node_i + 1] =
-                    offsets[node_i] + nodes[node_i]._input_port_data_nodes.size;
+                    offsets[node_i] + nodes[node_i]._input_port_data_nodes.size();
             }
-            return details::define_static_span(offsets);
+            return offsets;
         }
 
         struct DormancyState {
@@ -72,7 +70,7 @@ namespace iv {
 
         size_t num_nodes() const
         {
-            return _nodes.size;
+            return _nodes.size();
         }
 
         size_t max_block_size() const
@@ -91,13 +89,13 @@ namespace iv {
             ctx.nested_node_states(state.nested_node_states);
             if (!_node_skip_import_id.empty()) {
                 ctx.import_array(
-                    std::string(_node_skip_import_id.view()),
+                    _node_skip_import_id,
                     state.global_node_skip_depth);
             }
-            ctx.local_array(state.dormancy.dormant, _nodes.size);
-            ctx.local_array(state.dormancy.unchanged_inputs, _nodes.size);
-            ctx.local_array(state.dormancy.silent_samples_accumulated, _nodes.size);
-            ctx.local_array(state.dormancy.effective_ttl_samples, _nodes.size);
+            ctx.local_array(state.dormancy.dormant, _nodes.size());
+            ctx.local_array(state.dormancy.unchanged_inputs, _nodes.size());
+            ctx.local_array(state.dormancy.silent_samples_accumulated, _nodes.size());
+            ctx.local_array(state.dormancy.effective_ttl_samples, _nodes.size());
             ctx.local_array(state.dormancy.remembered_constant_inputs, _input_constant_offsets.back());
             ctx.local_array(state.dormancy.remembered_constant_valid, _input_constant_offsets.back());
             for (auto const& node : _nodes) {
@@ -111,7 +109,7 @@ namespace iv {
             std::fill(state.dormancy.dormant.begin(), state.dormancy.dormant.end(), 0);
             std::fill(state.dormancy.unchanged_inputs.begin(), state.dormancy.unchanged_inputs.end(), 0);
             std::fill(state.dormancy.silent_samples_accumulated.begin(), state.dormancy.silent_samples_accumulated.end(), 0);
-            for (size_t node_i = 0; node_i < _nodes.size; ++node_i) {
+            for (size_t node_i = 0; node_i < _nodes.size(); ++node_i) {
                 state.dormancy.effective_ttl_samples[node_i] = _nodes[node_i].can_skip_block()
                     ? _nodes[node_i].resolve_default_ttl_samples(ctx.default_silence_ttl_samples())
                     : std::numeric_limits<size_t>::max();
@@ -313,7 +311,7 @@ namespace iv {
             size_t const scc_block_size = std::min(ctx.block_size, _block_size);
 
             for (size_t offset = 0; offset < ctx.block_size; offset += scc_block_size) {
-                for (size_t node_index = 0; node_index < _nodes.size; ++node_index) {
+                for (size_t node_index = 0; node_index < _nodes.size(); ++node_index) {
                     tick_node(
                         state,
                         ctx,
@@ -324,82 +322,8 @@ namespace iv {
             }
         }
 
-        template<auto Scc, size_t NodeIndex>
-        static IV_FORCEINLINE void tick_static_node(
-            State& state,
-            TickBlockContext<GraphSccWrapper> const& ctx,
-            size_t block_index,
-            size_t block_size)
-        {
-            (void) block_index;
-            (void) block_size;
-            constexpr auto node = Scc._nodes[NodeIndex];
-            auto node_ctx = TickContext<GraphNodeWrapper> {
-                .inputs = {},
-                .outputs = {},
-                .event_inputs = {},
-                .event_outputs = {},
-                .sample_rate = ctx.sample_rate,
-                .scc_feedback_latency = Scc._scc_feedback_latency,
-                .buffer = state.nested_node_states[NodeIndex],
-            };
-            // StaticGraphRoot expands the execution graph at compile time.
-            // Its per-node dormancy probe only rescans dynamic port buffers
-            // before taking the same tick path, while graph-level dormancy
-            // remains responsible for explicitly declared dormant subgraphs.
-            if (
-                !state.global_node_skip_depth.empty()
-                && state.global_node_skip_depth[
-                    Scc._global_node_indices[NodeIndex]] != 0
-            ) {
-                GraphNodeWrapper::skip_static<node>({
-                    node_ctx,
-                    block_index,
-                    block_size
-                });
-                return;
-            }
-
-            GraphNodeWrapper::tick_static<node>({
-                node_ctx,
-                block_index,
-                block_size
-            });
-        }
-
-        template<auto Scc, size_t... NodeIndices>
-        static IV_FORCEINLINE void tick_static_nodes(
-            State& state,
-            TickBlockContext<GraphSccWrapper> const& ctx,
-            size_t block_index,
-            size_t block_size,
-            std::index_sequence<NodeIndices...>)
-        {
-            (void)block_index;
-            (void)block_size;
-            (tick_static_node<Scc, NodeIndices>(
-                state,
-                ctx,
-                block_index,
-                block_size), ...);
-        }
-
-        template<auto Scc>
-        static IV_FORCEINLINE void tick_static(
-            TickBlockContext<GraphSccWrapper> const& ctx)
-        {
-            auto& state = ctx.state();
-            size_t const scc_block_size = std::min(ctx.block_size, Scc._block_size);
-
-            for (size_t offset = 0; offset < ctx.block_size; offset += scc_block_size) {
-                tick_static_nodes<Scc>(
-                    state,
-                    ctx,
-                    ctx.index + offset,
-                    scc_block_size,
-                    std::make_index_sequence<Scc._nodes.size> {});
-            }
-        }
+        template<auto>
+        static void tick_static(TickBlockContext<GraphSccWrapper> const&) = delete;
 
     };
 }

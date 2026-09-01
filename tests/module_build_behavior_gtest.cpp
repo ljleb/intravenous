@@ -32,16 +32,12 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
 
     auto const generated_export = iv::test::read_text(
         project_workspace / "generated" / "root_export.cpp");
-    auto const first_lowering = generated_export.find("GraphLowerer::lower(");
-    ASSERT_NE(first_lowering, std::string::npos);
-    EXPECT_EQ(
-        generated_export.find("GraphLowerer::lower(", first_lowering + 1),
+    EXPECT_EQ(generated_export.find("GraphLowerer::lower("), std::string::npos);
+    EXPECT_NE(
+        generated_export.find("freeze_authored_graph(authored)"),
         std::string::npos);
     EXPECT_NE(
-        generated_export.find("authored, {.execution_root = true}"),
-        std::string::npos);
-    EXPECT_NE(
-        generated_export.find("define_static_metadata(compiled.introspection)"),
+        generated_export.find("iv_module_authored_graph"),
         std::string::npos);
 
     auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "modules";

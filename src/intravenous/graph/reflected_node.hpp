@@ -241,8 +241,12 @@ namespace details {
             std::meta::dealias(^^Node)),
     };
 
+    // Description is independent of where the node object lives.  Authoring
+    // reflection still promotes authored values through reflect_node(), but a
+    // bootstrap DSO or host-owned compiler node can describe an already-owned
+    // typed object at runtime without invoking std::meta or static promotion.
     template<class Node>
-    consteval ReflectedNodeDescription describe_reflected_node(
+    constexpr ReflectedNodeDescription describe_reflected_node(
         Node const& node,
         Node const* node_data)
     {

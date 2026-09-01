@@ -11,6 +11,7 @@
 #include <string>
 #include <flat_map>
 #include <flat_set>
+#include <memory>
 #include <vector>
 
 namespace iv {
@@ -129,6 +130,7 @@ namespace iv {
     struct GraphBuildArtifact {
         std::string graph_id;
         std::vector<GraphSccWrapper> scc_wrappers;
+        std::vector<std::shared_ptr<void const>> generated_node_storage;
         std::flat_set<GraphEdge> edges;
         std::flat_set<GraphEventEdge> event_edges;
         std::vector<DetachedInfo> detached;

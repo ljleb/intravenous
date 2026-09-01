@@ -3,6 +3,9 @@
 #include <intravenous/bridge.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/dsl.h>
+#include <intravenous/graph/authored_graph_view.hpp>
+#include <intravenous/graph/builder/lowering.hpp>
+#include <intravenous/graph/compiler.h>
 #include <intravenous/module/authoring.h>
 #include <intravenous/runtime/graph_input_lanes.h>
 #include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
@@ -294,31 +297,32 @@ consteval void focused_stereo_saw_module(iv::GraphBuilder& graph)
         "main"_P[stereo::right] = voice[stereo::right] * 0.1f);
 }
 
-consteval iv::Graph focused_stereo_saw_graph_value()
+consteval iv::AuthoredGraphView focused_stereo_saw_authored_graph_value()
 {
     iv::GraphBuilder builder;
     focused_stereo_saw_module(builder);
-    return std::move(builder).build({.execution_root = true}).graph;
-}
-
-consteval iv::StaticGraphIntrospectionMetadata focused_stereo_saw_metadata_value()
-{
-    iv::GraphBuilder builder;
-    focused_stereo_saw_module(builder);
-    return iv::details::define_static_metadata(
-        std::move(builder).build().introspection);
+    return iv::freeze_authored_graph(std::move(builder).finish());
 }
 
 iv::WeakTypeErasedNode focused_stereo_saw_root()
 {
-    static constexpr iv::StaticGraphRoot<focused_stereo_saw_graph_value()> graph {};
+    static constexpr auto view = focused_stereo_saw_authored_graph_value();
+    static auto graph = [] {
+        auto authored = iv::thaw_authored_graph(view);
+        auto plan = iv::GraphCompiler::compile(
+            iv::GraphLowerer::lower(
+                std::move(authored), {.execution_root = true}));
+        return iv::RuntimeGraphRoot(std::move(plan.graph));
+    }();
     return iv::WeakTypeErasedNode(graph);
 }
 
 iv::GraphIntrospectionMetadata focused_stereo_saw_metadata()
 {
-    static constexpr auto metadata = focused_stereo_saw_metadata_value();
-    return metadata.metadata();
+    static constexpr auto view = focused_stereo_saw_authored_graph_value();
+    auto authored = iv::thaw_authored_graph(view);
+    return iv::GraphCompiler::compile(
+        iv::GraphLowerer::lower(std::move(authored))).introspection;
 }
 }
 

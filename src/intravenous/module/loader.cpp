@@ -1,6 +1,9 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/compat.h>
+#include <intravenous/graph/builder/lowering.hpp>
+#include <intravenous/graph/compiler.h>
+#include <intravenous/graph/node.h>
 
 #include <nlohmann/json.hpp>
 
@@ -721,6 +724,7 @@ class ModuleLoader::Impl {
             : std::string("iv/modules/") + root.manifest.id;
         std::ostringstream export_tu;
         export_tu << "#include <intravenous/dsl.h>\n"
+                  << "#include <intravenous/graph/authored_graph_view.hpp>\n"
                   << "namespace iv::details::source_introspection_plugin_bridge {\n"
                   << "template<class Ref> constexpr void "
                      "_annotate_source_info_after_statement(\n"
@@ -743,39 +747,23 @@ class ModuleLoader::Impl {
         case ModuleCompileStage::full:
             export_tu
                 << "namespace {\n"
-                << "struct IvGeneratedModule {\n"
-                << "  iv::Graph graph;\n"
-                << "  iv::StaticGraphIntrospectionMetadata metadata;\n"
-                << "};\n"
-                << "consteval IvGeneratedModule iv_generated_module_value() {\n"
+                << "consteval iv::AuthoredGraphView "
+                   "iv_generated_authored_graph_value() {\n"
                 << "  iv::GraphBuilder builder;\n"
                 << "  " << root.manifest.main << "(builder);\n"
                 << "  auto authored = std::move(builder).finish();\n"
-                << "  auto compiled = iv::GraphCompiler::compile(\n"
-                   "      iv::GraphLowerer::lower(\n"
-                   "          authored, {.execution_root = true}));\n"
-                << "  return {\n"
-                << "      .graph = compiled.graph,\n"
-                << "      .metadata = iv::details::define_static_metadata("
-                   "compiled.introspection),\n"
-                << "  };\n"
+                << "  return iv::freeze_authored_graph(authored);\n"
                 << "}\n"
-                << "inline constexpr auto iv_generated_module = "
-                   "iv_generated_module_value();\n"
+                << "inline constexpr auto iv_generated_authored_graph = "
+                   "iv_generated_authored_graph_value();\n"
                 << "}\n"
                 << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
                    "iv_module_abi_version() {\n"
                 << "  return iv::IV_MODULE_ABI_VERSION;\n"
                 << "}\n"
-                << "extern \"C\" IV_MODULE_EXPORT iv::WeakTypeErasedNode "
-                   "iv_module_graph() {\n"
-                << "  static constexpr iv::RuntimeGraphRoot graph {"
-                   "iv_generated_module.graph};\n"
-                << "  return iv::WeakTypeErasedNode(graph);\n"
-                << "}\n"
-                << "extern \"C\" IV_MODULE_EXPORT "
-                   "iv::StaticGraphIntrospectionMetadata iv_module_metadata() {\n"
-                << "  return iv_generated_module.metadata;\n"
+                << "extern \"C\" IV_MODULE_EXPORT iv::AuthoredGraphView "
+                   "iv_module_authored_graph() {\n"
+                << "  return iv_generated_authored_graph;\n"
                 << "}\n";
             break;
         case ModuleCompileStage::authoring:
@@ -1152,24 +1140,20 @@ public:
                 std::to_string(loaded_abi_version) + " (expected " +
                 std::to_string(IV_MODULE_ABI_VERSION) + ")");
         }
-        auto graph = reinterpret_cast<iv_module_graph_fn>(
-            library->symbol("iv_module_graph"));
-        if (!graph) {
+        auto authored_graph = reinterpret_cast<iv_module_authored_graph_fn>(
+            library->symbol("iv_module_authored_graph"));
+        if (!authored_graph) {
             throw std::runtime_error(
-                "module '" + artifact.string() + "' does not export iv_module_graph");
+                "module '" + artifact.string() +
+                "' does not export iv_module_authored_graph");
         }
-        auto metadata = reinterpret_cast<iv_module_metadata_fn>(
-            library->symbol("iv_module_metadata"));
-        if (!metadata) {
-            throw std::runtime_error(
-                "module '" + artifact.string() + "' does not export iv_module_metadata");
-        }
-        auto root_node = graph();
-        if (!root_node) {
-            throw std::runtime_error(
-                "module '" + artifact.string() + "' exported an invalid graph root");
-        }
-        auto introspection = metadata().metadata();
+        auto authored = thaw_authored_graph(authored_graph());
+        auto plan = GraphCompiler::compile(
+            GraphLowerer::lower(authored, {.execution_root = true}));
+        auto runtime_root = std::make_shared<RuntimeGraphRoot>(
+            std::move(plan.graph));
+        WeakTypeErasedNode root_node(*runtime_root);
+        auto introspection = std::move(plan.introspection);
 
         auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
             root.manifest.id,
@@ -1195,7 +1179,9 @@ public:
                 return a.module_dir < b.module_dir;
             });
 
-        std::vector<ModuleRef> refs{binary};
+        std::vector<ModuleRef> refs;
+        refs.push_back(binary);
+        refs.push_back(runtime_root);
         return LoadedDefinition(
             std::move(refs),
             root_node,

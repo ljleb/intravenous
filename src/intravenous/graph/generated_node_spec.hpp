@@ -7,8 +7,10 @@
 #include <intravenous/basic_nodes/type_erased.h>
 
 #include <stdexcept>
+#include <memory>
 #include <type_traits>
 #include <variant>
+#include <vector>
 
 namespace iv {
 struct EventConcatenationNodeSpec {
@@ -44,17 +46,25 @@ using GeneratedNodeSpec = std::variant<
     ConstantNodeSpec>;
 
 namespace details {
-// Compiler-owned nodes are materialized here rather than through the authored
-// reflection entry point. Lowering only asks for a complete concrete-node
-// description; it never needs to reflect an arbitrary authored C++ value.
+// Compiler-owned nodes are materialized in host-owned storage rather than
+// through the authored reflection entry point. Lowering only asks for a
+// complete concrete-node description; it never reflects an authored value.
+struct RuntimeGeneratedNode {
+    ReflectedNodeDescription description {};
+    std::shared_ptr<void const> storage {};
+};
+
 template<class Node>
-consteval ReflectedNodeDescription materialize_compiler_node(Node node)
+inline RuntimeGeneratedNode materialize_compiler_node(Node node)
 {
     static_assert(
         std::copy_constructible<Node>,
         "compiler-generated node values must be copy constructible");
-    auto const* node_data = std::define_static_object(node);
-    return describe_reflected_node(*node_data, node_data);
+    auto storage = std::make_shared<Node>(std::move(node));
+    return {
+        .description = describe_reflected_node(*storage, storage.get()),
+        .storage = std::move(storage),
+    };
 }
 
 constexpr NodePorts generated_node_ports(ConnectionNodeSpec const& spec)
@@ -135,125 +145,120 @@ constexpr NodePorts generated_node_ports(ConstantNodeSpec const&)
     return {.sample_outputs = {OutputConfig{}}};
 }
 
-consteval EventConcatenation freeze_generated_node(
+inline EventConcatenation make_generated_node(
     EventConcatenationNodeSpec const& spec)
 {
     return EventConcatenation(spec.input_count, spec.type);
 }
 
-consteval BroadcastEvent freeze_generated_node(
+inline BroadcastEvent make_generated_node(
     BroadcastEventNodeSpec const& spec)
 {
     return BroadcastEvent(spec.output_count, spec.type);
 }
 
-consteval DummySink freeze_generated_node(DummySinkNodeSpec const&)
+inline DummySink make_generated_node(DummySinkNodeSpec const&)
 {
     return {};
 }
 
-consteval DummyEventSink freeze_generated_node(DummyEventSinkNodeSpec const&)
+inline DummyEventSink make_generated_node(DummyEventSinkNodeSpec const&)
 {
     return {};
 }
 
-consteval Constant freeze_generated_node(ConstantNodeSpec const& spec)
+inline Constant make_generated_node(ConstantNodeSpec const& spec)
 {
     return Constant{spec.value};
 }
 
 template<class Node>
-constexpr ReflectedNodeDescription materialize_generated_node(
+inline RuntimeGeneratedNode materialize_generated_node(
     Node node,
     NodePorts ports)
 {
-    auto description = materialize_compiler_node(std::move(node));
-    description.ports = std::move(ports);
-    return description;
+    auto materialized = materialize_compiler_node(std::move(node));
+    materialized.description.ports = std::move(ports);
+    return materialized;
 }
 
-consteval ReflectedNodeDescription materialize_generated_node(
+inline RuntimeGeneratedNode materialize_generated_node(
     GeneratedNodeSpec const& spec)
 {
-    // libstdc++ dispatches std::visit through a table of function pointers.
-    // The callbacks here are immediate because freezing a compiler-owned node
-    // promotes its value to static storage, so GCC correctly rejects taking
-    // their addresses. Keep this dispatch direct instead.
     switch (spec.index()) {
     case 1: {
         auto const& value = std::get<ConnectionNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 2: {
         auto const& value = std::get<RuntimeSampleInputNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 3: {
         auto const& value = std::get<RuntimeEventInputNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 4: {
         auto const& value = std::get<RuntimeSampleOutputNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 5: {
         auto const& value = std::get<RuntimeEventOutputNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 6: {
         auto const& value = std::get<RuntimeSampleOutputFamilyNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 7: {
         auto const& value = std::get<RuntimeEventOutputFamilyNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 8: {
         auto const& value = std::get<EventConcatenationNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 9: {
         auto const& value = std::get<BroadcastEventNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 10: {
         auto const& value = std::get<DummySinkNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 11: {
         auto const& value = std::get<DummyEventSinkNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     case 12: {
         auto const& value = std::get<ConstantNodeSpec>(spec);
         return materialize_generated_node(
-            freeze_generated_node(value), generated_node_ports(value));
+            make_generated_node(value), generated_node_ports(value));
     }
     default:
         throw std::logic_error("concrete node has no implementation");
     }
 }
 
-constexpr ReflectedNodeDescription materialize_generated_node_or_forbid(
+inline void append_generated_node(
+    std::vector<ReflectedNodeDescription>& nodes,
+    std::vector<std::shared_ptr<void const>>& storage,
     GeneratedNodeSpec const& spec)
 {
-    if consteval {
-        return materialize_generated_node(spec);
-    } else {
-        runtime_graph_builder_node_call_is_forbidden();
-        return {};
-    }
+    auto materialized = materialize_generated_node(spec);
+    nodes.push_back(std::move(materialized.description));
+    storage.push_back(std::move(materialized.storage));
 }
 } // namespace details
 } // namespace iv

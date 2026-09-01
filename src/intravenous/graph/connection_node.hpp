@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/graph/runtime_bindings.h>
-#include <intravenous/graph/static_storage.hpp>
 #include <intravenous/node/lifecycle.h>
 
 #include <algorithm>
@@ -40,57 +39,6 @@ struct ConnectionNodeEphemeralPortConfig {
     std::vector<ConnectionNodeOutputChannelCopy> output_channel_copies {};
 };
 
-struct StaticConnectionNodeInputConfig {
-    StaticString name {};
-    ChannelLayout channel_layout {
-        .channel_type = ChannelTypeId::mono,
-        .sample_layout = SampleStreamLayout::planar,
-    };
-    size_t history = 0;
-    Sample default_value = 0.0;
-    Sample min = -std::numeric_limits<Sample::storage>::infinity();
-    Sample max = std::numeric_limits<Sample::storage>::infinity();
-    StaticSpan<ConnectionNodeInputChannelCopy> channel_copies {};
-
-    constexpr InputConfig config() const
-    {
-        return {
-            .name = std::string(name.view()),
-            .channel_layout = channel_layout,
-            .history = history,
-            .default_value = default_value,
-            .min = min,
-            .max = max,
-        };
-    }
-};
-
-struct StaticConnectionNodeOutputConfig {
-    StaticString name {};
-    ChannelLayout channel_layout {
-        .channel_type = ChannelTypeId::mono,
-        .sample_layout = SampleStreamLayout::planar,
-    };
-    size_t latency = 0;
-    size_t history = 0;
-
-    constexpr OutputConfig config() const
-    {
-        return {
-            .name = std::string(name.view()),
-            .channel_layout = channel_layout,
-            .latency = latency,
-            .history = history,
-        };
-    }
-};
-
-struct StaticConnectionNodeEphemeralPortConfig {
-    ChannelLayout channel_layout {};
-    ChannelConversionPlan conversion {};
-    StaticSpan<ConnectionNodeOutputChannelCopy> output_channel_copies {};
-};
-
 struct ConnectionNodeSpec {
     std::vector<ConnectionNodeInputConfig> input_configs {};
     std::vector<ConnectionNodeEphemeralPortConfig> ephemeral_port_configs {};
@@ -102,15 +50,15 @@ struct ConnectionNodeSpec {
 
 struct ConnectionNode {
 public:
-    StaticSpan<StaticConnectionNodeInputConfig> input_configs {};
-    StaticSpan<StaticConnectionNodeEphemeralPortConfig>
+    std::vector<ConnectionNodeInputConfig> input_configs {};
+    std::vector<ConnectionNodeEphemeralPortConfig>
         ephemeral_port_configs {};
-    StaticConnectionNodeOutputConfig output_config {};
+    OutputConfig output_config {};
     Sample default_value = 0.0f;
-    StaticString runtime_binding_id {};
+    std::string runtime_binding_id {};
     size_t runtime_source_channel_offset = 0;
-    StaticSpan<size_t> ephemeral_channel_offsets {};
-    StaticSpan<std::uint8_t> contributed_output_channels {};
+    std::vector<size_t> ephemeral_channel_offsets {};
+    std::vector<std::uint8_t> contributed_output_channels {};
     size_t output_channel_count = 0;
     size_t gathered_channel_count = 0;
     size_t converted_channel_count = 0;
@@ -126,15 +74,15 @@ public:
     [[nodiscard]] constexpr std::vector<InputConfig> inputs() const
     {
         std::vector<InputConfig> result;
-        result.reserve(input_configs.size);
+        result.reserve(input_configs.size());
         for (auto const& input : input_configs)
-            result.push_back(input.config());
+            result.push_back(input.input);
         return result;
     }
 
     [[nodiscard]] constexpr auto outputs() const
     {
-        return std::array<OutputConfig, 1>{ output_config.config() };
+        return std::array<OutputConfig, 1>{ output_config };
     }
 
     void declare(DeclarationContext<ConnectionNode> const& ctx) const
@@ -162,7 +110,7 @@ public:
         if (!runtime_binding_id.empty())
             ctx.state().runtime_binding.front() =
                 ctx.resources.runtime_bindings.sample_input(
-                    runtime_binding_id.view());
+                    runtime_binding_id);
     }
 
     void tick_block(TickBlockContext<ConnectionNode> const& ctx) const
@@ -253,7 +201,7 @@ private:
         auto gathered = gathered_storage.first(
             gathered_channel_count * ctx.block_size);
         std::fill(gathered.begin(), gathered.end(), Sample{0});
-        for (size_t input = 0; input < input_configs.size; ++input) {
+        for (size_t input = 0; input < input_configs.size(); ++input) {
             auto const& config = input_configs[input];
             if (config.channel_layout.sample_layout ==
                 SampleStreamLayout::planar) {
@@ -299,7 +247,7 @@ private:
         size_t frame_count) const
     {
         for (size_t ephemeral_i = 0;
-             ephemeral_i < ephemeral_port_configs.size;
+             ephemeral_i < ephemeral_port_configs.size();
              ++ephemeral_i) {
             auto const& ephemeral = ephemeral_port_configs[ephemeral_i];
             auto const converted_channels =
@@ -364,7 +312,7 @@ private:
 };
 
 namespace details {
-consteval void validate_connection_node_spec(ConnectionNodeSpec const& spec)
+inline void validate_connection_node_spec(ConnectionNodeSpec const& spec)
 {
     auto const output_channel_count =
         channel_count(spec.output_config.channel_layout);
@@ -416,27 +364,13 @@ consteval void validate_connection_node_spec(ConnectionNodeSpec const& spec)
     }
 }
 
-consteval ConnectionNode freeze_connection_node(ConnectionNodeSpec const& spec)
+inline ConnectionNode make_generated_node(ConnectionNodeSpec const& spec)
 {
     validate_connection_node_spec(spec);
     auto const output_channel_count =
         channel_count(spec.output_config.channel_layout);
-    std::vector<StaticConnectionNodeInputConfig> input_configs;
-    input_configs.reserve(spec.input_configs.size());
-    for (auto const& input : spec.input_configs) {
-        input_configs.push_back({
-            .name = define_static_string(input.input.name),
-            .channel_layout = input.input.channel_layout,
-            .history = input.input.history,
-            .default_value = input.input.default_value,
-            .min = input.input.min,
-            .max = input.input.max,
-            .channel_copies = define_static_span(input.channel_copies),
-        });
-    }
-
-    std::vector<StaticConnectionNodeEphemeralPortConfig> ephemeral_configs;
-    ephemeral_configs.reserve(spec.ephemeral_port_configs.size());
+    auto input_configs = spec.input_configs;
+    auto ephemeral_configs = spec.ephemeral_port_configs;
     std::vector<size_t> ephemeral_channel_offsets;
     ephemeral_channel_offsets.reserve(spec.ephemeral_port_configs.size());
     std::vector<std::uint8_t> contributed_output_channels(
@@ -444,12 +378,6 @@ consteval ConnectionNode freeze_connection_node(ConnectionNodeSpec const& spec)
     size_t gathered_channel_count = 0;
     size_t converted_channel_count = 0;
     for (auto const& ephemeral : spec.ephemeral_port_configs) {
-        ephemeral_configs.push_back({
-            .channel_layout = ephemeral.channel_layout,
-            .conversion = ephemeral.conversion,
-            .output_channel_copies =
-                define_static_span(ephemeral.output_channel_copies),
-        });
         ephemeral_channel_offsets.push_back(gathered_channel_count);
         gathered_channel_count += channel_count(ephemeral.channel_layout);
         converted_channel_count = std::max(
@@ -460,30 +388,19 @@ consteval ConnectionNode freeze_connection_node(ConnectionNodeSpec const& spec)
     }
 
     return {
-        .input_configs = define_static_span(input_configs),
-        .ephemeral_port_configs = define_static_span(ephemeral_configs),
-        .output_config = {
-            .name = define_static_string(spec.output_config.name),
-            .channel_layout = spec.output_config.channel_layout,
-            .latency = spec.output_config.latency,
-            .history = spec.output_config.history,
-        },
+        .input_configs = std::move(input_configs),
+        .ephemeral_port_configs = std::move(ephemeral_configs),
+        .output_config = spec.output_config,
         .default_value = spec.default_value,
-        .runtime_binding_id = define_static_string(spec.runtime_binding_id),
+        .runtime_binding_id = spec.runtime_binding_id,
         .runtime_source_channel_offset = spec.runtime_source_channel_offset,
-        .ephemeral_channel_offsets =
-            define_static_span(ephemeral_channel_offsets),
-        .contributed_output_channels =
-            define_static_span(contributed_output_channels),
+        .ephemeral_channel_offsets = std::move(ephemeral_channel_offsets),
+        .contributed_output_channels = std::move(contributed_output_channels),
         .output_channel_count = output_channel_count,
         .gathered_channel_count = gathered_channel_count,
         .converted_channel_count = converted_channel_count,
     };
 }
 
-consteval ConnectionNode freeze_generated_node(ConnectionNodeSpec const& spec)
-{
-    return freeze_connection_node(spec);
-}
 } // namespace details
 } // namespace iv

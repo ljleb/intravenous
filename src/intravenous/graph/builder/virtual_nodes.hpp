@@ -96,6 +96,8 @@ public:
       size_t node_bundle_offset);
 
   constexpr std::vector<VirtualNodeRecord> const& records() const;
+  static constexpr GraphBuilderVirtualNodes from_authored_records(
+      std::span<VirtualNodeRecord const>);
   constexpr GraphBuilderVirtualPorts ports(
       GraphBuilderNodeBundles const&) const;
   constexpr VirtualNodeRecord const& record(VirtualNodeHandle) const;
@@ -308,6 +310,17 @@ constexpr void GraphBuilderVirtualNodes::import_child(
 constexpr std::vector<VirtualNodeRecord> const&
 GraphBuilderVirtualNodes::records() const {
   return _records;
+}
+constexpr GraphBuilderVirtualNodes
+GraphBuilderVirtualNodes::from_authored_records(
+    std::span<VirtualNodeRecord const> records) {
+  GraphBuilderVirtualNodes result;
+  result._records.assign(records.begin(), records.end());
+  for (size_t handle = 0; handle < result._records.size(); ++handle) {
+    auto const& record = result._records[handle];
+    result._handles_by_source_identity[record.source_identity].push_back(handle);
+  }
+  return result;
 }
 constexpr VirtualNodeRecord const& GraphBuilderVirtualNodes::record(
     VirtualNodeHandle handle) const {

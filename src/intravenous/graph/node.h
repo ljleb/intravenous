@@ -2,13 +2,13 @@
 
 #include <intravenous/graph/build_types.h>
 #include <intravenous/graph/event_port_data_node.h>
-#include <intravenous/graph/static_storage.hpp>
 #include <intravenous/graph/wiring.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <span>
 #include <string>
@@ -16,89 +16,58 @@
 #include <vector>
 
 namespace iv {
-    struct StaticDormancySamplePort {
-        StaticString export_id {};
-        size_t history = 0;
-        size_t latency_samples = 0;
-    };
-
-    struct StaticDormancyEventPort {
-        StaticString export_id {};
-    };
-
-    struct StaticDormancyGroup {
-        size_t parent_group = GRAPH_ID;
-        size_t subtree_end_exclusive = 0;
-        StaticSpan<size_t> member_nodes {};
-        StaticSpan<size_t> wake_check_regions {};
-        StaticSpan<StaticDormancySamplePort> sample_input_frontier {};
-        StaticSpan<StaticDormancyEventPort> event_input_frontier {};
-        StaticSpan<StaticDormancySamplePort> sample_output_frontier {};
-        size_t ttl_samples = 0;
-        bool has_ttl_samples = false;
-        bool can_skip = false;
-    };
-
     struct Graph {
-        StaticString _graph_id {};
-        StaticSpan<GraphSccWrapper> _scc_wrappers {};
-        StaticSpan<GraphPortDataNode> _ingress_port_data_nodes {};
-        StaticSpan<StaticSampleOutputBinding> _ingress_targets {};
-        StaticSpan<size_t> _ingress_fanout_offsets {};
-        StaticSpan<StaticSampleOutputBinding> _ingress_fanout_targets {};
-        StaticSpan<GraphPortDataNode> _egress_port_data_nodes {};
-        StaticSpan<GraphEventPortDataNode> _egress_event_port_data_nodes {};
-        StaticSpan<GraphEdge> _edges {};
-        StaticSpan<GraphEventEdge> _event_edges {};
-        StaticSpan<StaticInputConfig> _public_inputs {};
-        StaticSpan<StaticOutputConfig> _public_outputs {};
-        StaticSpan<StaticEventInputConfig> _public_event_inputs {};
-        StaticSpan<StaticEventOutputConfig> _public_event_outputs {};
-        size_t _internal_latency;
-        StaticSpan<StaticString> _node_ids {};
-        StaticSpan<StaticDormancyGroup> _dormancy_groups {};
-        StaticSpan<size_t> _group_sample_input_offsets {};
-        StaticSpan<size_t> _group_event_input_offsets {};
-        StaticSpan<size_t> _group_sample_output_offsets {};
-        StaticSpan<size_t> _wake_check_group_offsets {};
-        StaticSpan<size_t> _wake_check_groups {};
+        std::string _graph_id {};
+        std::vector<GraphSccWrapper> _scc_wrappers {};
+        // Keeps compiler-generated node_data pointers alive for as long as
+        // their wrappers can execute.
+        std::vector<std::shared_ptr<void const>> _generated_node_storage {};
+        std::vector<GraphPortDataNode> _ingress_port_data_nodes {};
+        std::vector<SampleOutputBinding> _ingress_targets {};
+        std::vector<size_t> _ingress_fanout_offsets {};
+        std::vector<SampleOutputBinding> _ingress_fanout_targets {};
+        std::vector<GraphPortDataNode> _egress_port_data_nodes {};
+        std::vector<GraphEventPortDataNode> _egress_event_port_data_nodes {};
+        std::vector<GraphEdge> _edges {};
+        std::vector<GraphEventEdge> _event_edges {};
+        std::vector<InputConfig> _public_inputs {};
+        std::vector<OutputConfig> _public_outputs {};
+        std::vector<EventInputConfig> _public_event_inputs {};
+        std::vector<EventOutputConfig> _public_event_outputs {};
+        size_t _internal_latency = 0;
+        std::vector<std::string> _node_ids {};
+        std::vector<DormancyGroup> _dormancy_groups {};
+        std::vector<size_t> _group_sample_input_offsets {};
+        std::vector<size_t> _group_event_input_offsets {};
+        std::vector<size_t> _group_sample_output_offsets {};
+        std::vector<size_t> _wake_check_group_offsets {};
+        std::vector<size_t> _wake_check_groups {};
 
-        consteval explicit Graph(GraphBuildArtifact artifact) :
-            _graph_id(details::define_static_string(artifact.graph_id)),
-            _scc_wrappers(details::define_static_span(artifact.scc_wrappers)),
-            _ingress_port_data_nodes(details::define_static_span(
-                make_ingress_port_data_nodes(
-                    artifact.public_input_fanout_storage))),
-            _ingress_targets(freeze_primary_ingress_targets(
+        constexpr explicit Graph(GraphBuildArtifact artifact) :
+            _graph_id(std::move(artifact.graph_id)),
+            _scc_wrappers(std::move(artifact.scc_wrappers)),
+            _generated_node_storage(std::move(artifact.generated_node_storage)),
+            _ingress_port_data_nodes(make_ingress_port_data_nodes(
+                artifact.public_input_fanout_storage)),
+            _ingress_targets(primary_ingress_targets(artifact.public_input_targets)),
+            _ingress_fanout_offsets(ingress_fanout_offsets(
                 artifact.public_input_targets)),
-            _ingress_fanout_offsets(freeze_ingress_fanout_offsets(
+            _ingress_fanout_targets(ingress_fanout_targets(
                 artifact.public_input_targets)),
-            _ingress_fanout_targets(freeze_ingress_fanout_targets(
-                artifact.public_input_targets)),
-            _egress_port_data_nodes(details::define_static_span(
-                make_egress_port_data_nodes(
-                    artifact.graph_id,
-                    artifact.public_outputs,
-                    artifact.public_output_buffer_plans,
-                    artifact.public_output_bindings))),
-            _egress_event_port_data_nodes(details::define_static_span(
-                make_egress_event_port_data_nodes(
-                    artifact.graph_id,
-                    artifact.public_event_outputs))),
-            _edges(details::define_static_span(artifact.edges)),
-            _event_edges(details::define_static_span(artifact.event_edges)),
-            _public_inputs(details::define_static_configs<StaticInputConfig>(
-                artifact.public_inputs)),
-            _public_outputs(details::define_static_configs<StaticOutputConfig>(
-                artifact.public_outputs)),
-            _public_event_inputs(
-                details::define_static_configs<StaticEventInputConfig>(
-                    artifact.public_event_inputs)),
-            _public_event_outputs(
-                details::define_static_configs<StaticEventOutputConfig>(
-                    artifact.public_event_outputs)),
+            _egress_port_data_nodes(make_egress_port_data_nodes(
+                _graph_id, artifact.public_outputs,
+                artifact.public_output_buffer_plans,
+                artifact.public_output_bindings)),
+            _egress_event_port_data_nodes(make_egress_event_port_data_nodes(
+                _graph_id, artifact.public_event_outputs)),
+            _edges(artifact.edges.begin(), artifact.edges.end()),
+            _event_edges(artifact.event_edges.begin(), artifact.event_edges.end()),
+            _public_inputs(std::move(artifact.public_inputs)),
+            _public_outputs(std::move(artifact.public_outputs)),
+            _public_event_inputs(std::move(artifact.public_event_inputs)),
+            _public_event_outputs(std::move(artifact.public_event_outputs)),
             _internal_latency(artifact.internal_latency),
-            _node_ids(freeze_strings(artifact.node_ids)),
+            _node_ids(std::move(artifact.node_ids)),
             _dormancy_groups(),
             _group_sample_input_offsets(),
             _group_event_input_offsets(),
@@ -161,10 +130,10 @@ namespace iv {
             }
 
             std::vector<size_t> wake_check_group_offsets(
-                _scc_wrappers.size + 1, 0);
+                _scc_wrappers.size() + 1, 0);
             std::vector<size_t> wake_check_groups;
             std::vector<std::vector<size_t>> wake_groups_by_region(
-                _scc_wrappers.size);
+                _scc_wrappers.size());
             for (size_t group_i = 0; group_i < dormancy_groups.size(); ++group_i) {
                 for (size_t region_i : dormancy_groups[group_i].wake_check_regions) {
                     if (region_i < wake_groups_by_region.size()) {
@@ -181,84 +150,12 @@ namespace iv {
                     wake_check_groups.end(), groups.begin(), groups.end());
             }
 
-            _dormancy_groups = freeze_dormancy_groups(dormancy_groups);
-            _group_sample_input_offsets =
-                details::define_static_span(group_sample_input_offsets);
-            _group_event_input_offsets =
-                details::define_static_span(group_event_input_offsets);
-            _group_sample_output_offsets =
-                details::define_static_span(group_sample_output_offsets);
-            _wake_check_group_offsets =
-                details::define_static_span(wake_check_group_offsets);
-            _wake_check_groups = details::define_static_span(wake_check_groups);
-        }
-
-        static consteval StaticSpan<StaticString> freeze_strings(
-            std::span<std::string const> strings)
-        {
-            std::vector<StaticString> result;
-            result.reserve(strings.size());
-            for (auto const& string : strings) {
-                result.push_back(details::define_static_string(string));
-            }
-            return details::define_static_span(result);
-        }
-
-        static consteval StaticSpan<StaticDormancySamplePort>
-        freeze_dormancy_sample_ports(
-            std::span<DormancySamplePort const> ports)
-        {
-            std::vector<StaticDormancySamplePort> result;
-            result.reserve(ports.size());
-            for (auto const& port : ports) {
-                result.push_back({
-                    .export_id = details::define_static_string(port.export_id),
-                    .history = port.history,
-                    .latency_samples = port.latency_samples,
-                });
-            }
-            return details::define_static_span(result);
-        }
-
-        static consteval StaticSpan<StaticDormancyEventPort>
-        freeze_dormancy_event_ports(
-            std::span<DormancyEventPort const> ports)
-        {
-            std::vector<StaticDormancyEventPort> result;
-            result.reserve(ports.size());
-            for (auto const& port : ports) {
-                result.push_back({
-                    .export_id = details::define_static_string(port.export_id),
-                });
-            }
-            return details::define_static_span(result);
-        }
-
-        static consteval StaticSpan<StaticDormancyGroup>
-        freeze_dormancy_groups(std::span<DormancyGroup const> groups)
-        {
-            std::vector<StaticDormancyGroup> result;
-            result.reserve(groups.size());
-            for (auto const& group : groups) {
-                result.push_back({
-                    .parent_group = group.parent_group,
-                    .subtree_end_exclusive = group.subtree_end_exclusive,
-                    .member_nodes =
-                        details::define_static_span(group.member_nodes),
-                    .wake_check_regions =
-                        details::define_static_span(group.wake_check_regions),
-                    .sample_input_frontier = freeze_dormancy_sample_ports(
-                        group.sample_input_frontier),
-                    .event_input_frontier = freeze_dormancy_event_ports(
-                        group.event_input_frontier),
-                    .sample_output_frontier = freeze_dormancy_sample_ports(
-                        group.sample_output_frontier),
-                    .ttl_samples = group.ttl_samples.value_or(0),
-                    .has_ttl_samples = group.ttl_samples.has_value(),
-                    .can_skip = group.can_skip,
-                });
-            }
-            return details::define_static_span(result);
+            _dormancy_groups = std::move(dormancy_groups);
+            _group_sample_input_offsets = std::move(group_sample_input_offsets);
+            _group_event_input_offsets = std::move(group_event_input_offsets);
+            _group_sample_output_offsets = std::move(group_sample_output_offsets);
+            _wake_check_group_offsets = std::move(wake_check_group_offsets);
+            _wake_check_groups = std::move(wake_check_groups);
         }
 
         struct State {
@@ -280,25 +177,22 @@ namespace iv {
             std::span<SharedPortData*> dormancy_sample_output_port_data;
         };
 
-        static consteval StaticSpan<StaticSampleOutputBinding>
-        freeze_primary_ingress_targets(
+        static constexpr std::vector<SampleOutputBinding>
+        primary_ingress_targets(
             std::span<std::vector<SampleOutputBinding> const> targets)
         {
-            std::vector<StaticSampleOutputBinding> result;
+            std::vector<SampleOutputBinding> result;
             result.reserve(targets.size());
             for (auto const& input_targets : targets) {
                 auto const& primary = input_targets.empty()
                     ? SampleOutputBinding{}
                     : input_targets.front();
-                result.push_back({
-                    .target = details::define_static_string(primary.target),
-                    .conversion = primary.conversion,
-                });
+                result.push_back(primary);
             }
-            return details::define_static_span(result);
+            return result;
         }
 
-        static consteval StaticSpan<size_t> freeze_ingress_fanout_offsets(
+        static constexpr std::vector<size_t> ingress_fanout_offsets(
             std::span<std::vector<SampleOutputBinding> const> targets)
         {
             std::vector<size_t> offsets{0};
@@ -307,28 +201,24 @@ namespace iv {
                 offsets.push_back(offsets.back() +
                     (input_targets.empty() ? 0 : input_targets.size() - 1));
             }
-            return details::define_static_span(offsets);
+            return offsets;
         }
 
-        static consteval StaticSpan<StaticSampleOutputBinding>
-        freeze_ingress_fanout_targets(
+        static constexpr std::vector<SampleOutputBinding>
+        ingress_fanout_targets(
             std::span<std::vector<SampleOutputBinding> const> targets)
         {
-            std::vector<StaticSampleOutputBinding> result;
+            std::vector<SampleOutputBinding> result;
             for (auto const& input_targets : targets) {
                 for (size_t target_i = 1; target_i < input_targets.size();
                      ++target_i) {
-                    result.push_back({
-                        .target = details::define_static_string(
-                            input_targets[target_i].target),
-                        .conversion = input_targets[target_i].conversion,
-                    });
+                    result.push_back(input_targets[target_i]);
                 }
             }
-            return details::define_static_span(result);
+            return result;
         }
 
-        static consteval std::vector<GraphPortDataNode>
+        static constexpr std::vector<GraphPortDataNode>
         make_ingress_port_data_nodes(
             std::span<SampleBufferStorage const> storage)
         {
@@ -347,7 +237,7 @@ namespace iv {
             return result;
         }
 
-        static consteval std::vector<GraphPortDataNode> make_egress_port_data_nodes(
+        static constexpr std::vector<GraphPortDataNode> make_egress_port_data_nodes(
             std::string const& graph_id,
             std::span<OutputConfig const> outputs,
             std::span<InputPortPlan const> output_plans,
@@ -376,7 +266,7 @@ namespace iv {
             return port_data_nodes;
         }
 
-        static consteval std::vector<GraphEventPortDataNode> make_egress_event_port_data_nodes(
+        static constexpr std::vector<GraphEventPortDataNode> make_egress_event_port_data_nodes(
             std::string const& graph_id,
             std::span<EventOutputConfig const> outputs
         )
@@ -403,57 +293,57 @@ namespace iv {
         constexpr auto inputs() const
         {
             std::vector<InputConfig> result;
-            result.reserve(_public_inputs.size);
+            result.reserve(_public_inputs.size());
             for (auto const& input : _public_inputs)
-                result.push_back(input.config());
+                result.push_back(input);
             return result;
         }
 
         constexpr auto outputs() const
         {
             std::vector<OutputConfig> result;
-            result.reserve(_public_outputs.size);
+            result.reserve(_public_outputs.size());
             for (auto const& output : _public_outputs)
-                result.push_back(output.config());
+                result.push_back(output);
             return result;
         }
 
         constexpr auto event_inputs() const
         {
             std::vector<EventInputConfig> result;
-            result.reserve(_public_event_inputs.size);
+            result.reserve(_public_event_inputs.size());
             for (auto const& input : _public_event_inputs)
-                result.push_back(input.config());
+                result.push_back(input);
             return result;
         }
 
         constexpr auto event_outputs() const
         {
             std::vector<EventOutputConfig> result;
-            result.reserve(_public_event_outputs.size);
+            result.reserve(_public_event_outputs.size());
             for (auto const& output : _public_event_outputs)
-                result.push_back(output.config());
+                result.push_back(output);
             return result;
         }
 
         auto num_inputs() const
         {
-            return _public_inputs.size;
+            return _public_inputs.size();
         }
 
         auto num_outputs() const
         {
-            return _public_outputs.size;
+            return _public_outputs.size();
         }
 
         auto num_event_inputs() const
         {
-            return _public_event_inputs.size;
+            return _public_event_inputs.size();
         }
 
         auto num_event_outputs() const
         {
-            return _public_event_outputs.size;
+            return _public_event_outputs.size();
         }
 
         size_t internal_latency() const
@@ -477,16 +367,16 @@ namespace iv {
             auto const& state = ctx.state();
             ctx.local_array(state.ingress_outputs, num_inputs());
             ctx.local_array(
-                state.ingress_fanout_outputs, _ingress_fanout_targets.size);
+                state.ingress_fanout_outputs, _ingress_fanout_targets.size());
             ctx.local_array(state.ingress_event_outputs, num_event_inputs());
             if (has_group_dormancy()) {
-                ctx.local_array(state.dormancy_group_dormant, _dormancy_groups.size);
-                ctx.local_array(state.dormancy_group_blocked_by_ancestors, _dormancy_groups.size);
-                ctx.local_array(state.dormancy_group_silent_samples_accumulated, _dormancy_groups.size);
-                ctx.local_array(state.dormancy_group_effective_ttl_samples, _dormancy_groups.size);
+                ctx.local_array(state.dormancy_group_dormant, _dormancy_groups.size());
+                ctx.local_array(state.dormancy_group_blocked_by_ancestors, _dormancy_groups.size());
+                ctx.local_array(state.dormancy_group_silent_samples_accumulated, _dormancy_groups.size());
+                ctx.local_array(state.dormancy_group_effective_ttl_samples, _dormancy_groups.size());
                 ctx.local_array(state.dormancy_remembered_constant_inputs, _group_sample_input_offsets.back());
                 ctx.local_array(state.dormancy_remembered_constant_valid, _group_sample_input_offsets.back());
-                ctx.local_array(state.dormancy_node_skip_depth, _node_ids.size);
+                ctx.local_array(state.dormancy_node_skip_depth, _node_ids.size());
                 ctx.local_array(state.dormancy_sample_input_port_data, _group_sample_input_offsets.back());
                 ctx.local_array(state.dormancy_event_input_port_data, _group_event_input_offsets.back());
                 ctx.local_array(state.dormancy_sample_output_port_data, _group_sample_output_offsets.back());
@@ -520,13 +410,13 @@ namespace iv {
             for (auto const& target : _ingress_targets) {
                 if (!target.target.empty()) {
                     ctx.template require_export_array<SharedPortData>(
-                        std::string(target.target.view())
+                        target.target
                     );
                 }
             }
             for (auto const& target : _ingress_fanout_targets) {
                 ctx.template require_export_array<SharedPortData>(
-                    std::string(target.target.view())
+                    target.target
                 );
             }
             for (GraphEventEdge const& edge : _event_edges) {
@@ -552,12 +442,11 @@ namespace iv {
                 std::fill(state.dormancy_sample_input_port_data.begin(), state.dormancy_sample_input_port_data.end(), nullptr);
                 std::fill(state.dormancy_event_input_port_data.begin(), state.dormancy_event_input_port_data.end(), nullptr);
                 std::fill(state.dormancy_sample_output_port_data.begin(), state.dormancy_sample_output_port_data.end(), nullptr);
-                for (size_t group_i = 0; group_i < _dormancy_groups.size; ++group_i) {
+                for (size_t group_i = 0; group_i < _dormancy_groups.size(); ++group_i) {
                     auto const& group = _dormancy_groups[group_i];
                     state.dormancy_group_effective_ttl_samples[group_i] =
-                        group.has_ttl_samples
-                            ? group.ttl_samples
-                            : ctx.default_silence_ttl_samples();
+                        group.ttl_samples.value_or(
+                            ctx.default_silence_ttl_samples());
                 }
             }
 
@@ -586,7 +475,7 @@ namespace iv {
                      ++fanout_i) {
                     auto const& target = _ingress_fanout_targets[fanout_i];
                     auto target_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
-                        std::string(target.target.view()));
+                        target.target);
                     IV_ASSERT(!target_port_data.empty(), "graph ingress fanout target wiring must resolve");
                     std::construct_at(
                         &state.ingress_fanout_outputs[fanout_i],
@@ -601,7 +490,7 @@ namespace iv {
                     continue;
                 }
                 auto target_port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
-                    std::string(target.target.view()));
+                    target.target);
                 IV_ASSERT(!target_port_data.empty(), "graph ingress wiring must resolve the requested SharedPortData entry");
                 std::construct_at(
                     &state.ingress_outputs[input_i],
@@ -626,34 +515,34 @@ namespace iv {
             }
 
             if (has_group_dormancy()) {
-                for (size_t group_i = 0; group_i < _dormancy_groups.size; ++group_i) {
+                for (size_t group_i = 0; group_i < _dormancy_groups.size(); ++group_i) {
                     auto const& group = _dormancy_groups[group_i];
 
                     size_t const sample_input_begin = _group_sample_input_offsets[group_i];
-                    for (size_t i = 0; i < group.sample_input_frontier.size; ++i) {
+                    for (size_t i = 0; i < group.sample_input_frontier.size(); ++i) {
                         auto port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
                             std::string(
-                                group.sample_input_frontier[i].export_id.view())
+                                group.sample_input_frontier[i].export_id)
                         );
                         IV_ASSERT(!port_data.empty(), "graph dormancy sample input frontier must resolve");
                         state.dormancy_sample_input_port_data[sample_input_begin + i] = const_cast<SharedPortData*>(&port_data[0]);
                     }
 
                     size_t const event_input_begin = _group_event_input_offsets[group_i];
-                    for (size_t i = 0; i < group.event_input_frontier.size; ++i) {
+                    for (size_t i = 0; i < group.event_input_frontier.size(); ++i) {
                         auto port_data = ctx.template resolve_exported_array_storage<EventSharedPortData>(
                             std::string(
-                                group.event_input_frontier[i].export_id.view())
+                                group.event_input_frontier[i].export_id)
                         );
                         IV_ASSERT(!port_data.empty(), "graph dormancy event input frontier must resolve");
                         state.dormancy_event_input_port_data[event_input_begin + i] = const_cast<EventSharedPortData*>(&port_data[0]);
                     }
 
                     size_t const sample_output_begin = _group_sample_output_offsets[group_i];
-                    for (size_t i = 0; i < group.sample_output_frontier.size; ++i) {
+                    for (size_t i = 0; i < group.sample_output_frontier.size(); ++i) {
                         auto port_data = ctx.template resolve_exported_array_storage<SharedPortData>(
                             std::string(
-                                group.sample_output_frontier[i].export_id.view())
+                                group.sample_output_frontier[i].export_id)
                         );
                         IV_ASSERT(!port_data.empty(), "graph dormancy sample output frontier must resolve");
                         state.dormancy_sample_output_port_data[sample_output_begin + i] = const_cast<SharedPortData*>(&port_data[0]);
@@ -686,7 +575,7 @@ namespace iv {
 
         bool sample_inputs_unchanged(
             State& state,
-            StaticDormancyGroup const& group,
+            DormancyGroup const& group,
             size_t group_index,
             size_t block_size,
             bool& inputs_constant) const
@@ -695,7 +584,7 @@ namespace iv {
             bool unchanged = true;
             inputs_constant = true;
             for (size_t input_index = 0;
-                 input_index < group.sample_input_frontier.size;
+                 input_index < group.sample_input_frontier.size();
                  ++input_index) {
                 size_t const flat_index = begin + input_index;
                 auto const& frontier = group.sample_input_frontier[input_index];
@@ -731,14 +620,14 @@ namespace iv {
 
         bool event_inputs_unchanged(
             State& state,
-            StaticDormancyGroup const& group,
+            DormancyGroup const& group,
             size_t group_index,
             size_t block_index,
             size_t block_size) const
         {
             size_t const begin = _group_event_input_offsets[group_index];
             for (size_t input_index = 0;
-                 input_index < group.event_input_frontier.size;
+                 input_index < group.event_input_frontier.size();
                  ++input_index) {
                 EventInputPort input(
                     *state.dormancy_event_input_port_data[begin + input_index]);
@@ -751,7 +640,7 @@ namespace iv {
 
         bool sample_outputs_silent(
             State& state,
-            StaticDormancyGroup const& group,
+            DormancyGroup const& group,
             size_t group_index,
             size_t block_size) const
         {
@@ -761,7 +650,7 @@ namespace iv {
 
             size_t const begin = _group_sample_output_offsets[group_index];
             for (size_t output_index = 0;
-                 output_index < group.sample_output_frontier.size;
+                 output_index < group.sample_output_frontier.size();
                  ++output_index) {
                 auto const& frontier = group.sample_output_frontier[output_index];
                 InputPort output(
@@ -906,7 +795,7 @@ namespace iv {
                 );
             }
 
-            for (size_t scc_index = 0; scc_index < _scc_wrappers.size;
+            for (size_t scc_index = 0; scc_index < _scc_wrappers.size();
                  ++scc_index) {
                 if (has_group_dormancy()) {
                     for (size_t wake_index =
@@ -926,7 +815,7 @@ namespace iv {
 
             if (has_group_dormancy()) {
                 for (size_t group_index = 0;
-                     group_index < _dormancy_groups.size;
+                     group_index < _dormancy_groups.size();
                      ++group_index) {
                     update_group_dormancy(
                         state, group_index, block_index, block_size);
@@ -1273,109 +1162,18 @@ namespace iv {
                 block_size), ...);
         }
 
-        template<auto GraphValue>
-        static IV_FORCEINLINE void propagate_ingress_sample_fanout(
-            State& state, size_t block_size)
-        {
-            for (size_t input_i = 0; input_i < state.ingress_outputs.size();
-                 ++input_i) {
-                for (size_t fanout_i =
-                         GraphValue._ingress_fanout_offsets[input_i];
-                     fanout_i <
-                         GraphValue._ingress_fanout_offsets[input_i + 1];
-                     ++fanout_i) {
-                    state.ingress_outputs[input_i].copy_completed_block_to(
-                        state.ingress_fanout_outputs[fanout_i], block_size);
-                }
-            }
-        }
-
-        template<auto GraphValue, class RootNode>
-        static IV_FORCEINLINE void tick_static(
-            TickBlockContext<RootNode> const& ctx)
-        {
-            auto& state = ctx.state();
-            push_input_blocks_to_private_outputs(
-                state.ingress_outputs, ctx.inputs, ctx.block_size);
-            propagate_ingress_sample_fanout<GraphValue>(
-                state, ctx.block_size);
-            if (!state.ingress_event_outputs.empty()) {
-                push_input_events_to_private_outputs(
-                    state.ingress_event_outputs,
-                    ctx.event_inputs,
-                    ctx.index,
-                    ctx.block_size
-                );
-            }
-
-            if constexpr (GraphValue._dormancy_groups.size == 0) {
-                tick_static_sccs<GraphValue>(
-                    ctx,
-                    std::make_index_sequence<GraphValue._scc_wrappers.size> {});
-            } else {
-                tick_static_sccs_with_dormancy<GraphValue>(
-                    ctx,
-                    std::make_index_sequence<GraphValue._scc_wrappers.size> {});
-                static_update_group_dormancy_states<GraphValue>(
-                    state,
-                    ctx.index,
-                    ctx.block_size,
-                    std::make_index_sequence<GraphValue._dormancy_groups.size> {});
-            }
-
-            push_private_inputs_to_output_blocks(
-                ctx.outputs, state.egress_inputs, ctx.block_size);
-            if (!state.egress_event_inputs.empty()) {
-                push_private_input_events_to_output_events(
-                    ctx.event_outputs,
-                    state.egress_event_inputs,
-                    ctx.index,
-                    ctx.block_size
-                );
-            }
-        }
-
     };
 
-    template<auto GraphValue>
-    struct StaticGraphRoot {
-        using State = Graph::State;
-
-        constexpr auto inputs() const { return GraphValue.inputs(); }
-        constexpr auto outputs() const { return GraphValue.outputs(); }
-        constexpr auto event_inputs() const { return GraphValue.event_inputs(); }
-        constexpr auto event_outputs() const { return GraphValue.event_outputs(); }
-        constexpr size_t internal_latency() const { return GraphValue.internal_latency(); }
-        constexpr size_t max_block_size() const { return GraphValue.max_block_size(); }
-
-        template<class RootNode>
-        void declare(DeclarationContext<RootNode> const& ctx) const
-        {
-            GraphValue.declare(ctx);
-        }
-
-        template<class RootNode>
-        void initialize(InitializationContext<RootNode> const& ctx) const
-        {
-            GraphValue.initialize(ctx);
-        }
-
-        void tick_block(TickBlockContext<StaticGraphRoot> const& ctx) const
-        {
-            Graph::tick_static<GraphValue>(ctx);
-        }
-    };
-
-    // Generated modules use this root to keep per-module code generation
-    // independent of the complete frozen graph value. The graph remains frozen
-    // at compile time; execution reads that data through generic loops while
-    // each reflected node operation remains specialized by node type.
+    // The module loader owns the graph plan and pins the authoring DSO that
+    // provides its opaque node_data pointers. There is deliberately no
+    // graph-value-specialized root: all execution runs through this owning
+    // runtime plan.
     struct RuntimeGraphRoot {
         using State = Graph::State;
 
         Graph _graph;
 
-        constexpr explicit RuntimeGraphRoot(Graph graph) : _graph(graph) {}
+        explicit RuntimeGraphRoot(Graph graph) : _graph(std::move(graph)) {}
 
         constexpr auto inputs() const { return _graph.inputs(); }
         constexpr auto outputs() const { return _graph.outputs(); }

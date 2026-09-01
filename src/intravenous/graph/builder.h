@@ -7,9 +7,7 @@
 #include <intravenous/graph/authored_graph.hpp>
 #include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/detach.hpp>
-#include <intravenous/graph/compiler.h>
 #include <intravenous/graph/builder/identity.h>
-#include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/builder/node_refs.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
@@ -174,7 +172,6 @@ public:
   constexpr size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
   consteval AuthoredGraph finish() const &;
   consteval AuthoredGraph finish() &&;
-  consteval CompiledGraph build(GraphLoweringOptions options = {}) &&;
 
 private:
   consteval SamplePortRef detach_sample_port(
@@ -459,12 +456,6 @@ consteval AuthoredGraph GraphBuilder::finish() && {
       .virtual_nodes = std::move(_virtual_nodes),
   };
 }
-
-consteval CompiledGraph GraphBuilder::build(GraphLoweringOptions options) && {
-  return GraphCompiler::compile(
-      GraphLowerer::lower(std::move(*this).finish(), options));
-}
-
 
 constexpr SamplePortRef::SamplePortRef(
     GraphBuilder& builder,

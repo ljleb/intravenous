@@ -793,9 +793,9 @@ namespace details {
                 if (port_arity <= 1) continue;
 
                 EventTypeId const concat_type = get_event_inputs(g.nodes[node])[in_port].type;
-                g.nodes.push_back(materialize_generated_node_or_forbid(
+                append_generated_node(g.nodes, g.generated_node_storage,
                     EventConcatenationNodeSpec{
-                        .input_count = port_arity, .type = concat_type}));
+                        .input_count = port_arity, .type = concat_type});
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                 g.node_virtual_ids.emplace_back();
@@ -840,9 +840,9 @@ namespace details {
                 if (port_arity <= 1) continue;
 
                 EventTypeId const broadcast_type = get_event_outputs(g.nodes[node])[out_port].type;
-                g.nodes.push_back(materialize_generated_node_or_forbid(
+                append_generated_node(g.nodes, g.generated_node_storage,
                     BroadcastEventNodeSpec{
-                        .output_count = port_arity, .type = broadcast_type}));
+                        .output_count = port_arity, .type = broadcast_type});
                 g.explicit_ttl_samples.push_back(std::nullopt);
                 g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                 g.node_virtual_ids.emplace_back();
@@ -885,8 +885,8 @@ namespace details {
                 ConcretePortId const this_port{ node, output_port };
                 if (!connected_sample_outputs.contains(this_port))
                 {
-                    g.nodes.push_back(materialize_generated_node_or_forbid(
-                        DummySinkNodeSpec{}));
+                    append_generated_node(
+                        g.nodes, g.generated_node_storage, DummySinkNodeSpec{});
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                     g.node_virtual_ids.emplace_back();
@@ -902,8 +902,9 @@ namespace details {
                 ConcretePortId const this_port{ node, output_port };
                 if (!connected_event_outputs.contains(this_port))
                 {
-                    g.nodes.push_back(materialize_generated_node_or_forbid(
-                        DummyEventSinkNodeSpec{}));
+                    append_generated_node(
+                        g.nodes, g.generated_node_storage,
+                        DummyEventSinkNodeSpec{});
                     g.explicit_ttl_samples.push_back(std::nullopt);
                     g.node_ids.push_back(lowered_generated_node_id(builder_id, g.node_ids.size()));
                     g.node_virtual_ids.emplace_back();
@@ -2167,11 +2168,11 @@ class GraphLowerer {
       if (topology_is_authored_concrete_node(node_i)) {
         description = bundles.materialize_concrete_description(
             topology_authored_node(node_i).node_bundle_handle);
-      } else if consteval {
-        description = details::materialize_generated_node(
-            topology_generated_node(node_i).generated_node);
       } else {
-        details::runtime_graph_builder_node_call_is_forbidden();
+        auto materialized = details::materialize_generated_node(
+            topology_generated_node(node_i).generated_node);
+        description = std::move(materialized.description);
+        graph.generated_node_storage.push_back(std::move(materialized.storage));
       }
       auto const kind = std::string(description.type_name);
       graph.nodes.push_back(std::move(description));
@@ -2369,15 +2370,13 @@ class GraphLowerer {
   constexpr ConcretePortId materialize_subgraph_default(
       size_t subgraph_node, size_t input_port) {
     runtime_node_indices.push_back(graph.nodes.size());
-    if consteval {
-      graph.nodes.push_back(details::materialize_generated_node(
-          ConstantNodeSpec{
-              .value = topology_subgraph_node(subgraph_node)
-                           .inputs()[input_port]
-                           .default_value}));
-    } else {
-      details::runtime_graph_builder_node_call_is_forbidden();
-    }
+    details::append_generated_node(
+        graph.nodes,
+        graph.generated_node_storage,
+        ConstantNodeSpec{
+            .value = topology_subgraph_node(subgraph_node)
+                         .inputs()[input_port]
+                         .default_value});
     graph.explicit_ttl_samples.push_back(std::nullopt);
     graph.node_ids.push_back(identity.child_id(subgraph_node) + ".default." +
                              details::decimal_string(input_port));
@@ -2641,9 +2640,9 @@ public:
         virtual_ports(virtuals.ports(bundles)),
         runtime_node_indices(topology_node_count(), GRAPH_ID) {}
 
-  static consteval ExecutableGraphIR lower(
+  static constexpr ExecutableGraphIR lower(
       AuthoredGraph const&, GraphLoweringOptions = {});
-  static consteval size_t profile(
+  static constexpr size_t profile(
       AuthoredGraph const&, GraphLoweringOptions,
       GraphLoweringProfileStage);
   constexpr void run(bool normalize = true) {
@@ -2661,7 +2660,7 @@ public:
   }
 };
 
-consteval size_t GraphLowerer::profile(
+constexpr size_t GraphLowerer::profile(
     AuthoredGraph const& authored, GraphLoweringOptions options,
     GraphLoweringProfileStage stage) {
   details::LoweringWorkspace lowered;
@@ -2742,7 +2741,7 @@ consteval size_t GraphLowerer::profile(
   return graph_cardinality();
 }
 
-consteval ExecutableGraphIR GraphLowerer::lower(
+constexpr ExecutableGraphIR GraphLowerer::lower(
     AuthoredGraph const& authored, GraphLoweringOptions options) {
   details::LoweringWorkspace lowered;
   GraphLowerer lowerer(
@@ -2849,7 +2848,7 @@ consteval ExecutableGraphIR GraphLowerer::lower(
 
 namespace details {
 struct GraphLowererTestAccess {
-  static consteval SampleLoweringPassFacts sample_lowering_pass_facts(
+  static constexpr SampleLoweringPassFacts sample_lowering_pass_facts(
       AuthoredGraph const& authored) {
     LoweringWorkspace workspace;
     GraphLowerer lowerer(
