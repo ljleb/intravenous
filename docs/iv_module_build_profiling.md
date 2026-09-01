@@ -526,3 +526,53 @@ layout metadata in the lookup path, avoiding `OutputConfig` and temporary
 channel-vector construction. Re-profile before attempting further static
 promotion changes; the latter is visible, but is not the first lowering
 culprit.
+
+### Local output identity and current GCC attribution (2026-09-01)
+
+The identity-preserving check was implemented in
+`GraphBuilderNodeBundles::sample_output_port_for_channels`.  It now validates
+the first channel's bundle, port, channel type, and canonical lane sequence
+directly, instead of scanning every bundle/output and reconstructing candidate
+channel vectors.  `direct_sample_source` uses the same helper, so the two
+callers cannot drift.  An exact canonical sequence still resolves as a native
+logical output; reordered or mixed-source sequences still lower through a
+connection node.
+
+The release gate subsequently passed all 420 tests.  In the supplied current
+full-stage observation, hot export time was 29.836 s (29.510 s GCC total,
+20.630 s constexpr, 4,196M GGC).  The accompanying 9.22 realtime factor is
+from the separate constant-port inlining change and must not be attributed to
+this compile-time lookup change.
+
+The GCC call profiler must be read as a nested call tree, not as additive
+phase totals.  Filtering only to `/src/intravenous` omits the generated root
+initializer, which made the earlier table appear to account for only part of
+the build.  A complementary generated-project filter measured
+`iv_generated_module_value` at 23.649 s inclusive in the locally instrumented
+frontend.  Within the IV-source filter, `GraphCompiler::compile` was 19.426 s
+inclusive and `GraphLowerer::lower` was 11.092 s inclusive; the latter is
+nested in the former.  The local frontend was built for attribution rather
+than as a release baseline, so these values explain ownership, not the exact
+29.510 s wall-clock total.
+
+An isolated current `compilation`-stage build measured 26.339 s hot export
+(26.170 s GCC total, 21.080 s constexpr, 3,945M GGC).  Compared with the
+separately-run full-stage result above, this leaves about 3.34 s of the full
+GCC total outside the scalar compilation diagnostic.  GCC's time report puts
+that difference in deferred work and final optimization/code generation; it
+is not an unaccounted-for lowering region.  Small differences in constexpr
+time between the two runs are normal measurement variation.
+
+The post-change `perf` capture reinforces this: the leading exclusive samples
+remain `cxx_eval_constant_expression` (14.56%),
+`cxx_eval_call_expression_impl` (5.63%), constexpr stores (2.29%), and GGC
+allocation (2.17%).  There is no independent backend-sized hotspot.
+
+The next residual candidate is static graph-wrapper promotion, not another
+global lowering lookup.  In the attribution build its largest child calls were
+`make_input_port_data_nodes` (1.279 s across 279 wrappers), freezing input and
+output configs (0.397 s and 0.293 s), primary output targets (0.388 s), aliases
+(0.192 s), and fanout offsets (0.180 s).  These values create runtime-required
+static port metadata, IDs, and buffer plans, so a follow-up must first separate
+duplicated promotion from essential runtime representation rather than simply
+discarding or zeroing default/storage fields.
