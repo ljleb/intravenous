@@ -172,7 +172,8 @@ void benchmark_module(std::filesystem::path const& path, Options const& options)
     auto view = authored_graph();
     auto authored = iv::thaw_authored_graph(view);
     auto plan = iv::GraphCompiler::compile(
-        iv::GraphLowerer::lower(std::move(authored)));
+        iv::GraphLowerer::lower(
+            std::move(authored), {.execution_root = true}));
     auto root = std::make_shared<iv::RuntimeGraphRoot>(
         std::move(plan.graph));
     auto executor = iv::BlockNodeExecutor::create(
