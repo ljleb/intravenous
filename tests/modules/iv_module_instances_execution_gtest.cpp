@@ -483,10 +483,9 @@ TEST(IvModuleInstancesExecution, FamilyBindingsResolveDistinctAbiResources)
 
 TEST(IvModuleInstancesExecution, ConnectionNodeResolvesItsRuntimeInputThroughAbi)
 {
-    static const iv::ConnectionNode connection{
-        .runtime_binding_id = "connection-runtime-input",
-        .output_channel_count = 1,
-    };
+    iv::ConnectionNode connection;
+    connection.runtime_binding_id = "connection-runtime-input";
+    connection.output_channel_count = 1;
     iv::GraphRuntimeBindings bindings;
     auto expected = bindings.sample_input("connection-runtime-input");
 

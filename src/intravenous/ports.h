@@ -645,10 +645,10 @@ namespace iv {
             return _shared_data.buffer[_shared_data.sample_index(idx, channel)];
         }
 
-        IV_FORCEINLINE constexpr Sample get_frame(size_t frame_offset, size_t channel = 0) const
+        IV_FORCEINLINE constexpr Sample get_frame(size_t sample_offset, size_t channel = 0) const
         {
-            size_t const frame = (current_read_position() + frame_offset) & (buffer_size() - 1);
-            return _shared_data.buffer[_shared_data.sample_index(frame, channel)];
+            size_t const sample = (current_read_position() + sample_offset) & (buffer_size() - 1);
+            return _shared_data.buffer[_shared_data.sample_index(sample, channel)];
         }
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const

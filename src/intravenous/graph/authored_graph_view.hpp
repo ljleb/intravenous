@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace iv {
@@ -152,6 +153,39 @@ struct AuthoredGraphView {
     StaticSpan<StaticVirtualNodeRecord> virtual_nodes {};
 };
 
+static_assert(std::is_standard_layout_v<StaticSourceInfo>);
+static_assert(std::is_trivially_copyable_v<StaticSourceInfo>);
+static_assert(std::is_standard_layout_v<StaticNodePorts>);
+static_assert(std::is_trivially_copyable_v<StaticNodePorts>);
+static_assert(std::is_standard_layout_v<StaticDeferredDetachNode>);
+static_assert(std::is_trivially_copyable_v<StaticDeferredDetachNode>);
+static_assert(std::is_standard_layout_v<StaticAuthoredNodeBundle>);
+static_assert(std::is_trivially_copyable_v<StaticAuthoredNodeBundle>);
+static_assert(std::is_standard_layout_v<StaticAuthoredSampleConnection>);
+static_assert(std::is_trivially_copyable_v<StaticAuthoredSampleConnection>);
+static_assert(std::is_standard_layout_v<StaticAuthoredEventConnection>);
+static_assert(std::is_trivially_copyable_v<StaticAuthoredEventConnection>);
+static_assert(std::is_standard_layout_v<StaticAuthoredDetachedSamplePortInfo>);
+static_assert(std::is_trivially_copyable_v<StaticAuthoredDetachedSamplePortInfo>);
+static_assert(std::is_standard_layout_v<StaticPublicSamplePortMember>);
+static_assert(std::is_trivially_copyable_v<StaticPublicSamplePortMember>);
+static_assert(std::is_standard_layout_v<
+    StaticVirtualSamplePortMapping<SampleInputChannelId>>);
+static_assert(std::is_trivially_copyable_v<
+    StaticVirtualSamplePortMapping<SampleInputChannelId>>);
+static_assert(std::is_standard_layout_v<
+    StaticVirtualSamplePortMapping<SampleOutputChannelId>>);
+static_assert(std::is_trivially_copyable_v<
+    StaticVirtualSamplePortMapping<SampleOutputChannelId>>);
+static_assert(std::is_standard_layout_v<StaticVirtualEventPortMapping>);
+static_assert(std::is_trivially_copyable_v<StaticVirtualEventPortMapping>);
+static_assert(std::is_standard_layout_v<StaticVirtualNodeRecord>);
+static_assert(std::is_trivially_copyable_v<StaticVirtualNodeRecord>);
+static_assert(std::is_standard_layout_v<StaticAuthoredPublicPorts>);
+static_assert(std::is_trivially_copyable_v<StaticAuthoredPublicPorts>);
+static_assert(std::is_standard_layout_v<AuthoredGraphView>);
+static_assert(std::is_trivially_copyable_v<AuthoredGraphView>);
+
 namespace details {
 consteval StaticSourceInfo freeze_source_info(SourceInfo const& info) {
     return {
@@ -192,29 +226,47 @@ consteval StaticNodePorts freeze_node_ports(NodePorts const& ports) {
 }
 
 consteval StaticAuthoredNodeBundle freeze_node_bundle(
-    AuthoredNodeBundleRecord const& record) {
+    AuthoredNodeBundleView record) {
     return {
         .kind = record.kind,
-        .ports = freeze_node_ports(record.ports),
-        .operations = record.operations,
-        .has_ttl_samples = record.lifetime.ttl_samples.has_value(),
-        .ttl_samples = record.lifetime.ttl_samples.value_or(0),
-        .type_identity = define_static_string(record.type_identity),
-        .reflected_type_name = define_static_string(record.reflected_type_name),
+        .ports = record.ports
+            ? freeze_node_ports(*record.ports)
+            : StaticNodePorts{},
+        .operations = record.operations
+            ? *record.operations
+            : ReflectedNodeOperations{},
+        .has_ttl_samples = record.lifetime
+            && record.lifetime->ttl_samples.has_value(),
+        .ttl_samples = record.lifetime
+            ? record.lifetime->ttl_samples.value_or(0)
+            : 0,
+        .type_identity = record.type_identity
+            ? define_static_string(*record.type_identity)
+            : StaticString{},
+        .reflected_type_name = record.reflected_type_name
+            ? define_static_string(*record.reflected_type_name)
+            : StaticString{},
         .internal_latency_samples = record.internal_latency_samples,
         .maximum_block_size = record.maximum_block_size,
-        .has_default_ttl_samples = record.default_ttl_samples.has_value(),
-        .default_ttl_samples = record.default_ttl_samples.value_or(0),
+        .has_default_ttl_samples = record.default_ttl_samples
+            && record.default_ttl_samples->has_value(),
+        .default_ttl_samples = record.default_ttl_samples
+            ? record.default_ttl_samples->value_or(0)
+            : 0,
         .block_skippable = record.block_skippable,
-        .has_static_sample_value = record.static_sample_value.has_value(),
-        .static_sample_value = record.static_sample_value.value_or(Sample{}),
-        .has_deferred_detach = record.deferred_detach.has_value(),
-        .deferred_detach = record.deferred_detach
+        .has_static_sample_value = record.static_sample_value
+            && record.static_sample_value->has_value(),
+        .static_sample_value = record.static_sample_value
+            ? record.static_sample_value->value_or(Sample{})
+            : Sample{},
+        .has_deferred_detach = record.deferred_detach
+            && record.deferred_detach->has_value(),
+        .deferred_detach = record.deferred_detach && *record.deferred_detach
             ? StaticDeferredDetachNode{
-                  .kind = record.deferred_detach->kind,
-                  .id = record.deferred_detach->id,
+                  .kind = (*record.deferred_detach)->kind,
+                  .id = (*record.deferred_detach)->id,
                   .loop_extra_latency =
-                      record.deferred_detach->loop_extra_latency}
+                      (*record.deferred_detach)->loop_extra_latency}
             : StaticDeferredDetachNode{},
         .tiled_members = define_static_span(record.tiled_members),
         .sample_input_configs = define_static_configs<StaticInputConfig>(
@@ -228,7 +280,9 @@ consteval StaticAuthoredNodeBundle freeze_node_bundle(
         .subgraph_boundary = record.subgraph_boundary,
         .subgraph_child_begin = record.subgraph_child_begin,
         .subgraph_child_count = record.subgraph_child_count,
-        .subgraph_kind = define_static_string(record.subgraph_kind),
+        .subgraph_kind = record.subgraph_kind
+            ? define_static_string(*record.subgraph_kind)
+            : StaticString{},
         .subgraph_sample_input_count = record.subgraph_sample_input_count,
         .subgraph_sample_output_count = record.subgraph_sample_output_count,
         .subgraph_event_input_count = record.subgraph_event_input_count,
@@ -296,11 +350,11 @@ consteval StaticVirtualNodeRecord freeze_virtual_node_record(
 } // namespace details
 
 consteval AuthoredGraphView freeze_authored_graph(AuthoredGraph const& authored) {
-    auto const records = authored.node_bundles.authored_records();
     std::vector<StaticAuthoredNodeBundle> bundles;
-    bundles.reserve(records.size());
-    for (auto const& record : records)
-        bundles.push_back(details::freeze_node_bundle(record));
+    bundles.reserve(authored.node_bundles.size());
+    authored.node_bundles.for_each_authored_bundle([&](auto bundle) {
+        bundles.push_back(details::freeze_node_bundle(bundle));
+    });
 
     std::vector<StaticAuthoredSampleConnection> sample_connections;
     for (auto const& connection : authored.connections.authored_sample_connections()) {

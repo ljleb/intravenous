@@ -77,49 +77,6 @@ namespace iv {
         }
     };
 
-    template<
-        size_t NumOutputs,
-        class ChannelType = mono,
-        SampleStreamLayout Layout = SampleStreamLayout::planar>
-    class Broadcast {
-    public:
-        static_assert(NumOutputs >= 1, "Broadcast requires at least one output");
-
-        static constexpr auto inputs()
-        {
-            return std::array<InputConfig, 1>{InputConfig{
-                .channel_layout = {
-                    .channel_type = ChannelTypeTraits<ChannelType>::id,
-                    .sample_layout = Layout,
-                },
-            }};
-        }
-
-        static constexpr auto outputs()
-        {
-            auto result = std::array<OutputConfig, NumOutputs>{};
-            for (auto& output : result) {
-                output.channel_layout = {
-                    .channel_type = ChannelTypeTraits<ChannelType>::id,
-                    .sample_layout = Layout,
-                };
-            }
-            return result;
-        }
-
-        void tick_block(TickBlockContext<Broadcast> const& ctx) const
-        {
-            for (size_t frame = 0; frame < ctx.block_size; ++frame) {
-                for (size_t channel = 0; channel < ChannelType::channel_count;
-                     ++channel) {
-                    auto const sample = ctx.inputs[0].get_frame(frame, channel);
-                    for (auto& output : ctx.outputs)
-                        output.write_frame(frame, channel, sample);
-                }
-            }
-        }
-    };
-
     struct BroadcastEvent {
         size_t _num_outputs;
         EventTypeId _type;

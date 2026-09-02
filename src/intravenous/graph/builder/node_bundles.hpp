@@ -258,6 +258,42 @@ struct AuthoredNodeBundleRecord {
   std::vector<SourceInfo> source_infos{};
 };
 
+// A non-owning serialization view of a semantic bundle. It is valid only for
+// the duration of the for_each_authored_bundle callback, allowing freezing to
+// promote GraphBuilder storage directly without materializing an owning record.
+struct AuthoredNodeBundleView {
+  AuthoredNodeBundleKind kind = AuthoredNodeBundleKind::boundary;
+  NodePorts const* ports = nullptr;
+  ReflectedNodeOperations const* operations = nullptr;
+  NodeLifetime const* lifetime = nullptr;
+  std::string const* type_identity = nullptr;
+  std::string const* reflected_type_name = nullptr;
+  size_t internal_latency_samples = 0;
+  size_t maximum_block_size = MAX_BLOCK_SIZE;
+  std::optional<size_t> const* default_ttl_samples = nullptr;
+  bool block_skippable = false;
+  std::optional<Sample> const* static_sample_value = nullptr;
+  std::optional<DeferredDetachNode> const* deferred_detach = nullptr;
+
+  std::span<NodeBundleHandle const> tiled_members{};
+  std::span<InputConfig const> sample_input_configs{};
+  std::span<OutputConfig const> sample_output_configs{};
+  std::span<EventInputConfig const> event_input_configs{};
+  std::span<EventOutputConfig const> event_output_configs{};
+
+  NodeBundleHandle subgraph_boundary = 0;
+  size_t subgraph_child_begin = 0;
+  size_t subgraph_child_count = 0;
+  std::string const* subgraph_kind = nullptr;
+  size_t subgraph_sample_input_count = 0;
+  size_t subgraph_sample_output_count = 0;
+  size_t subgraph_event_input_count = 0;
+  size_t subgraph_event_output_count = 0;
+
+  std::span<size_t const> virtual_node_handles{};
+  std::span<SourceInfo const> source_infos{};
+};
+
 class GraphBuilderNodeBundles {
 public:
   template <class Config>
@@ -321,7 +357,8 @@ public:
   constexpr void apply_ttl(NodeBundleHandle, size_t ttl_samples);
   constexpr size_t import_child(
       GraphBuilderNodeBundles const &, size_t detach_id_offset);
-  constexpr std::vector<AuthoredNodeBundleRecord> authored_records() const;
+  template<class Visitor>
+  constexpr void for_each_authored_bundle(Visitor&& visitor) const;
   static constexpr GraphBuilderNodeBundles from_authored_records(
       std::span<AuthoredNodeBundleRecord const>);
 
@@ -1199,60 +1236,68 @@ constexpr size_t GraphBuilderNodeBundles::import_child(
   return bundle_offset;
 }
 
-constexpr std::vector<AuthoredNodeBundleRecord>
-GraphBuilderNodeBundles::authored_records() const {
-  std::vector<AuthoredNodeBundleRecord> result;
-  result.reserve(_bundles.size());
+template<class Visitor>
+constexpr void GraphBuilderNodeBundles::for_each_authored_bundle(
+    Visitor&& visitor) const {
   for (auto const& bundle : _bundles) {
-    AuthoredNodeBundleRecord record;
-    record.virtual_node_handles = bundle._virtual_node_handles;
-    record.source_infos = bundle._source_annotations.infos;
+    AuthoredNodeBundleView view{
+        .virtual_node_handles = bundle._virtual_node_handles,
+        .source_infos = bundle._source_annotations.infos,
+    };
     std::visit([&](auto const& payload) {
       using Payload = std::remove_cvref_t<decltype(payload)>;
       if constexpr (std::same_as<Payload, NodeBundle::ConcreteNodeBundle>) {
-        record.kind = AuthoredNodeBundleKind::concrete;
-        record.ports = payload.ports;
-        record.operations = payload.operations;
-        record.lifetime = payload.lifetime;
-        record.type_identity = payload.type_identity.value;
-        record.reflected_type_name = payload.reflected_type_name;
-        record.internal_latency_samples = payload.internal_latency_samples;
-        record.maximum_block_size = payload.maximum_block_size;
-        record.default_ttl_samples = payload.default_ttl_samples;
-        record.block_skippable = payload.block_skippable;
-        record.static_sample_value = payload.static_sample_value;
-        record.deferred_detach = payload.deferred_detach;
+        view.kind = AuthoredNodeBundleKind::concrete;
+        view.ports = &payload.ports;
+        view.operations = &payload.operations;
+        view.lifetime = &payload.lifetime;
+        view.type_identity = &payload.type_identity.value;
+        view.reflected_type_name = &payload.reflected_type_name;
+        view.internal_latency_samples = payload.internal_latency_samples;
+        view.maximum_block_size = payload.maximum_block_size;
+        view.default_ttl_samples = &payload.default_ttl_samples;
+        view.block_skippable = payload.block_skippable;
+        view.static_sample_value = &payload.static_sample_value;
+        view.deferred_detach = &payload.deferred_detach;
       } else if constexpr (std::same_as<Payload, NodeBundle::TiledNodeBundle>) {
-        record.kind = AuthoredNodeBundleKind::tiled;
-        record.tiled_members = payload.member_bundles;
-        record.type_identity = payload.type_identity.value;
-        record.sample_input_configs = payload.sample_input_configs;
-        record.sample_output_configs = payload.sample_output_configs;
-        record.event_input_configs = payload.event_input_configs;
-        record.event_output_configs = payload.event_output_configs;
+        view.kind = AuthoredNodeBundleKind::tiled;
+        view.tiled_members = std::span<NodeBundleHandle const>{
+            payload.member_bundles};
+        view.type_identity = &payload.type_identity.value;
+        view.sample_input_configs = std::span<InputConfig const>{
+            payload.sample_input_configs};
+        view.sample_output_configs = std::span<OutputConfig const>{
+            payload.sample_output_configs};
+        view.event_input_configs = std::span<EventInputConfig const>{
+            payload.event_input_configs};
+        view.event_output_configs = std::span<EventOutputConfig const>{
+            payload.event_output_configs};
       } else if constexpr (std::same_as<Payload, NodeBundle::BoundaryNodeBundle>) {
-        record.kind = AuthoredNodeBundleKind::boundary;
-        record.sample_input_configs = payload.sample_inputs;
-        record.sample_output_configs = payload.sample_outputs;
-        record.event_input_configs = payload.event_inputs;
-        record.event_output_configs = payload.event_outputs;
+        view.kind = AuthoredNodeBundleKind::boundary;
+        view.sample_input_configs = std::span<InputConfig const>{
+            payload.sample_inputs};
+        view.sample_output_configs = std::span<OutputConfig const>{
+            payload.sample_outputs};
+        view.event_input_configs = std::span<EventInputConfig const>{
+            payload.event_inputs};
+        view.event_output_configs = std::span<EventOutputConfig const>{
+            payload.event_outputs};
       } else {
-        record.kind = AuthoredNodeBundleKind::subgraph;
-        record.subgraph_boundary = payload.boundary;
-        record.subgraph_child_begin = payload.child_begin;
-        record.subgraph_child_count = payload.child_count;
-        record.subgraph_kind = payload.kind;
-        record.lifetime = payload.lifetime;
-        record.type_identity = payload.type_identity.value;
-        record.subgraph_sample_input_count = payload.sample_input_count;
-        record.subgraph_sample_output_count = payload.sample_output_count;
-        record.subgraph_event_input_count = payload.event_input_count;
-        record.subgraph_event_output_count = payload.event_output_count;
+        view.kind = AuthoredNodeBundleKind::subgraph;
+        view.subgraph_boundary = payload.boundary;
+        view.subgraph_child_begin = payload.child_begin;
+        view.subgraph_child_count = payload.child_count;
+        view.subgraph_kind = &payload.kind;
+        view.lifetime = &payload.lifetime;
+        view.type_identity = &payload.type_identity.value;
+        view.subgraph_sample_input_count = payload.sample_input_count;
+        view.subgraph_sample_output_count = payload.sample_output_count;
+        view.subgraph_event_input_count = payload.event_input_count;
+        view.subgraph_event_output_count = payload.event_output_count;
       }
     }, *bundle._payload);
-    result.push_back(std::move(record));
+    visitor(view);
   }
-  return result;
 }
 
 constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_authored_records(
