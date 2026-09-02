@@ -80,8 +80,23 @@ constexpr SamplePortRef GraphBuilderPublicPorts::add_sample_input(
     GraphBuilder& builder, GraphBuilderNodeBundles& bundles,
     std::string_view name, Sample value, std::optional<Sample> min,
     std::optional<Sample> max) {
+  return add_sample_input(
+      builder, bundles, name,
+      {
+          .channel_type = ChannelTypeId::mono,
+          .sample_layout = SampleStreamLayout::planar,
+      },
+      value, min, max);
+}
+
+constexpr SamplePortRef GraphBuilderPublicPorts::add_sample_input(
+    GraphBuilder& builder, GraphBuilderNodeBundles& bundles,
+    std::string_view name, ChannelLayout channel_layout, Sample value,
+    std::optional<Sample> min, std::optional<Sample> max) {
   auto ordinal = bundles.bundle(_boundary).append_boundary_sample_input({
-      .name = std::string(name), .default_value = value,
+      .name = std::string(name),
+      .channel_layout = channel_layout,
+      .default_value = value,
       .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
       .max = max.value_or(std::numeric_limits<Sample::storage>::infinity())});
   _sample_input_source_infos.emplace_back();

@@ -1358,6 +1358,31 @@ TEST(Channels, DetachAuthorsOnlyItsExplicitWriterAndReaderNodes)
     EXPECT_EQ(snapshot.connection_nodes, 1u);
 }
 
+consteval bool named_public_inputs_preserve_requested_channel_types()
+{
+    iv::GraphBuilder graph;
+    auto const default_input = graph.input<"default">(iv::Sample{0.25f});
+    auto const stereo_input = graph.input<"stereo", iv::stereo>(iv::Sample{0.5f});
+    auto const inputs = graph.public_sample_input_families();
+
+    return static_cast<iv::SamplePortRef>(default_input).channel_type
+            == iv::ChannelTypeId::mono
+        && static_cast<iv::SamplePortRef>(default_input).channels.size() == 1
+        && static_cast<iv::SamplePortRef>(stereo_input).channel_type
+            == iv::ChannelTypeId::stereo
+        && static_cast<iv::SamplePortRef>(stereo_input).channels.size() == 2
+        && inputs.families.size() == 2
+        && inputs.families[0].channel_type == iv::ChannelTypeId::mono
+        && inputs.families[0].channels.size() == 1
+        && inputs.families[1].channel_type == iv::ChannelTypeId::stereo
+        && inputs.families[1].channels.size() == 2;
+}
+
+TEST(Channels, NamedPublicInputsDefaultToStereoAndAllowExplicitMono)
+{
+    EXPECT_TRUE(named_public_inputs_preserve_requested_channel_types());
+}
+
 TEST(Channels, TiledEventPortsBroadcastInputsAndMergeOutputs)
 {
     auto snapshot = tiled_event_snapshot();

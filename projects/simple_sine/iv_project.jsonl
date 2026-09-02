@@ -2,6 +2,7 @@
 {"command":"timeline.createAuthoredLane","args":{"lane_id":"7d10b7c2-e63b-46b6-9c4c-9a7c9738ad89","type_id":"iv.timeline.audio-file-capture","serialized_state":"{\"path\":\"/home/ljleb/src/intravenous/projects/simple_sine/out.wav\"}"}}
 {"command":"audioDevices.setLaneIds","args":{"output_lane_id":"8ea9d4aa-34ec-4d9d-bcec-1d8c1f4a6a90","input_lane_id":"5c55a6fc-58e4-4d3f-b121-466dcb2cf44a"}}
 {"command":"ivModuleInstances.create","args":{"instance_id":"acd7fefe-220c-41e9-a1ea-4acbb2d54941","module_id":"iv.project.saw","display_name":"saw1"}}
+{"command":"ivModuleInstances.create","args":{"instance_id":"bc36c926-9d12-4ce7-8470-4d1f2ef484ce","module_id":"iv.project.brown_duda","display_name":null}}
 {"command":"graph.setSampleInputValue","args":{"node_id":"iv.public-input:acd7fefe-220c-41e9-a1ea-4acbb2d54941:_Z11module_mainRN2iv12GraphBuilderE@f","member_ordinal":null,"input_ordinal":0,"value":141.6666717529297}}
 {"command":"graph.setSampleInputValue","args":{"node_id":"iv.public-input:acd7fefe-220c-41e9-a1ea-4acbb2d54941:_Z11module_mainRN2iv12GraphBuilderE@detune","member_ordinal":null,"input_ordinal":0,"value":1.1111104488372803}}
 {"command":"graph.setSampleInputState","args":{"node_id":"iv.public-input:acd7fefe-220c-41e9-a1ea-4acbb2d54941:_Z11module_mainRN2iv12GraphBuilderE@f","member_ordinal":null,"input_ordinal":0,"state":"overridden","lane_id":null}}

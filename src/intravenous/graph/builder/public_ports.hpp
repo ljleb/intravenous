@@ -40,6 +40,9 @@ public:
 
   constexpr SamplePortRef add_sample_input(GraphBuilder&, GraphBuilderNodeBundles&,
       std::string_view, Sample, std::optional<Sample>, std::optional<Sample>);
+  constexpr SamplePortRef add_sample_input(
+      GraphBuilder&, GraphBuilderNodeBundles&, std::string_view,
+      ChannelLayout, Sample, std::optional<Sample>, std::optional<Sample>);
   constexpr EventPortRef add_event_input(GraphBuilder&, GraphBuilderNodeBundles&,
       std::string_view, EventTypeId);
   constexpr bool sample_outputs_defined() const;
@@ -272,7 +275,13 @@ constexpr std::span<SourceInfo const> GraphBuilderPublicPorts::event_input_sourc
 
 constexpr GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_input_families(GraphBuilderNodeBundles const& b) const {
   auto configs = sample_inputs(b); std::vector<PublicSamplePortMember> members;
-  for (auto const& c : configs) members.push_back({.channel_type = c.channel_layout.channel_type});
+  for (auto const& c : configs) {
+    members.push_back({
+        .family_name = c.name,
+        .channel_type = c.channel_layout.channel_type,
+        .whole_stream = true,
+    });
+  }
   auto result = collect_sample_port_families(configs, members, true);
   for (auto& family : result.families) for (auto& channel : family.channels) for (auto ordinal : channel.port_ordinals)
     for (auto const& info : sample_input_source_infos(ordinal)) if (!std::ranges::contains(family.source_infos, info)) family.source_infos.push_back(info);

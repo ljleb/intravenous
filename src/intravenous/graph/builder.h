@@ -76,16 +76,26 @@ class GraphBuilder {
   constexpr PublicSampleInputRef input_named(std::string_view name, Sample default_value,
                                    std::optional<Sample> min,
                                    std::optional<Sample> max);
+  constexpr PublicSampleInputRef input_named(
+      std::string_view name, ChannelLayout channel_layout,
+      Sample default_value, std::optional<Sample> min,
+      std::optional<Sample> max);
   constexpr PublicEventInputRef event_input_named(std::string_view name, EventTypeId type);
 
 public:
   constexpr GraphBuilder();
   constexpr PublicSampleInputRef input();
-  template<fixed_string Name>
+  template<fixed_string Name, class ChannelType = mono>
   constexpr PublicSampleInputRef input(Sample default_value = 0.0,
                              std::optional<Sample> min = std::nullopt,
                              std::optional<Sample> max = std::nullopt) {
-    return input_named(Name.view(), default_value, min, max);
+    return input_named(
+        Name.view(),
+        {
+            .channel_type = ChannelTypeTraits<ChannelType>::id,
+            .sample_layout = SampleStreamLayout::planar,
+        },
+        default_value, min, max);
   }
   constexpr PublicSampleInputRef input(Sample default_value,
                              std::optional<Sample> min = std::nullopt,
@@ -366,6 +376,13 @@ constexpr PublicSampleInputRef GraphBuilder::input_named(
     std::optional<Sample> max) {
   return PublicSampleInputRef(
       _public_ports.add_sample_input(*this, _node_bundles, name, value, min, max));
+}
+
+constexpr PublicSampleInputRef GraphBuilder::input_named(
+    std::string_view name, ChannelLayout channel_layout, Sample value,
+    std::optional<Sample> min, std::optional<Sample> max) {
+  return PublicSampleInputRef(_public_ports.add_sample_input(
+      *this, _node_bundles, name, channel_layout, value, min, max));
 }
 
 constexpr GraphBuilderPublicSamplePortFamilies
