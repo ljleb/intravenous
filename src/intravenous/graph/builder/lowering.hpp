@@ -2176,6 +2176,7 @@ class GraphLowerer {
         graph.generated_node_storage.push_back(std::move(materialized.storage));
       }
       auto const kind = std::string(description.type_name);
+      description.type_name = {};
       graph.nodes.push_back(std::move(description));
       append_node_metadata(
           node_i, topology_concrete_lifetime(node_i), std::move(kind));

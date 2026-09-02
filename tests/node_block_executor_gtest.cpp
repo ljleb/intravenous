@@ -2,11 +2,33 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <type_traits>
+
 namespace {
 struct CountingNode {
     int *ticks = nullptr;
 
     void tick_block(iv::TickBlockContext<CountingNode> const&) const
+    {
+        if (ticks) {
+            *ticks += 1;
+        }
+    }
+};
+
+struct MoveOnlyCountingNode {
+    std::unique_ptr<int> token = std::make_unique<int>(0);
+    int* ticks = nullptr;
+
+    explicit MoveOnlyCountingNode(int* ticks_) : ticks(ticks_) {}
+
+    MoveOnlyCountingNode(MoveOnlyCountingNode const&) = delete;
+    MoveOnlyCountingNode& operator=(MoveOnlyCountingNode const&) = delete;
+    MoveOnlyCountingNode(MoveOnlyCountingNode&&) noexcept = default;
+    MoveOnlyCountingNode& operator=(MoveOnlyCountingNode&&) noexcept = default;
+
+    void tick_block(iv::TickBlockContext<MoveOnlyCountingNode> const&) const
     {
         if (ticks) {
             *ticks += 1;
@@ -96,6 +118,21 @@ TEST(BlockNodeExecutor, TicksRootOncePerCall)
 
     EXPECT_EQ(executor.block_size(), 8u);
     EXPECT_EQ(ticks, 2);
+}
+
+TEST(TypeErasedNode, RetainsMoveOnlyNodeSupport)
+{
+    static_assert(!std::is_copy_constructible_v<iv::TypeErasedNode>);
+    static_assert(!std::is_copy_assignable_v<iv::TypeErasedNode>);
+
+    int ticks = 0;
+    auto executor = iv::BlockNodeExecutor::create(
+        iv::TypeErasedNode(MoveOnlyCountingNode{&ticks}),
+        8);
+
+    executor.tick_block(0);
+
+    EXPECT_EQ(ticks, 1);
 }
 
 TEST(BlockNodeExecutor, ReloadReplacesTheRootNode)
