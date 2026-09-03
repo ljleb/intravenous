@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <thread>
-#include <variant>
 
 namespace iv {
 namespace {
@@ -17,17 +16,13 @@ enum class TrackedLaneKind {
     compiled_event,
 };
 
-TrackedLaneKind output_lane_kind(LaneOutputConfig const &output)
+TrackedLaneKind output_lane_kind(LanePortConfig const &output)
 {
-    if (std::holds_alternative<RealtimeSampleLaneOutputConfig>(output)) {
-        return TrackedLaneKind::realtime_sample;
-    }
-    if (std::holds_alternative<RealtimeEventLaneOutputConfig>(output)) {
-        return TrackedLaneKind::realtime_event;
-    }
-    if (std::holds_alternative<CompiledSampleLaneOutputConfig>(output)) {
-        return TrackedLaneKind::compiled_sample;
-    }
+    auto const realtime = lane_port_domain(output) == LanePortDomain::realtime;
+    auto const sample = lane_port_kind(output) == PortKind::sample;
+    if (realtime && sample) return TrackedLaneKind::realtime_sample;
+    if (realtime) return TrackedLaneKind::realtime_event;
+    if (sample) return TrackedLaneKind::compiled_sample;
     return TrackedLaneKind::compiled_event;
 }
 
@@ -42,9 +37,6 @@ void limit_events_to_display_columns(
         return;
     }
 
-    // At most one marker can be seen in a horizontal display column. Keep the
-    // first event in each column before serializing, rather than shipping (and
-    // creating DOM for) potentially millions of indistinguishable events.
     auto const window_sample_count = last_sample_index - first_sample_index + 1;
     std::vector<TimedEvent> reduced;
     reduced.reserve(display_sample_count);
@@ -92,7 +84,6 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
         return TrackedLaneKind::none;
     };
 
-    // Query output configs (no lock — fires linker events)
     std::unordered_map<uint64_t, LaneVisualizationOutputDescriptor> output_descriptors;
     for (auto const &info : new_lane_infos) {
         auto const lane = info.runtime_lane;
@@ -106,7 +97,6 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
         }
     }
 
-    // Allocate realtime level sinks and sample visible compiled windows.
     std::unordered_map<uint64_t, TrackedRealtimeSampleLane> new_sample_lanes;
     std::unordered_map<uint64_t, TrackedRealtimeEventLane> new_event_lanes;
     std::unordered_map<uint64_t, CompiledSampleWindow> compiled_sample_windows;
@@ -192,7 +182,6 @@ void LanesVisualization::handle_lane_views_updated(LaneViewResult const &update)
         }
     }
 
-    // Apply under lock
     {
         std::scoped_lock lock(mutex_);
 
@@ -336,7 +325,6 @@ void LanesVisualization::handle_lane_view_closed(std::string const &view_id)
 void LanesVisualization::handle_task_runner_after_pass(
     TasksRunnerAfterPass const &)
 {
-    // Compute which source lanes are currently in use by any active view
     std::unordered_set<uint64_t> used_sample_sources;
     std::unordered_set<uint64_t> used_event_sources;
 
@@ -373,7 +361,6 @@ void LanesVisualization::handle_task_runner_after_pass(
             }
         }
 
-        // Process tracked sample lanes
         std::vector<LaneId> sample_to_erase;
         for (auto &[source_lane, tracked] : tracked_sample_lanes_) {
             bool const in_use = used_sample_sources.contains(source_lane.value);
@@ -390,7 +377,6 @@ void LanesVisualization::handle_task_runner_after_pass(
                 draining_sample_queues_.push_back(tracked.queue);
                 sample_to_erase.push_back(source_lane);
             } else if (!tracked.registered_in_timeline && !in_use) {
-                // Never added to Timeline, just cleanup
                 draining_sample_queues_.push_back(tracked.queue);
                 sample_to_erase.push_back(source_lane);
             }
@@ -399,7 +385,6 @@ void LanesVisualization::handle_task_runner_after_pass(
             tracked_sample_lanes_.erase(lane);
         }
 
-        // Process tracked event lanes
         std::vector<LaneId> event_to_erase;
         for (auto &[source_lane, tracked] : tracked_event_lanes_) {
             bool const in_use = used_event_sources.contains(source_lane.value);
@@ -424,9 +409,6 @@ void LanesVisualization::handle_task_runner_after_pass(
         }
     }
 
-    // Build batch entries (outside lock — queue raw ptrs are safe: queues kept
-    // alive by shared_ptr in tracked_sample_lanes_ which only grows via
-    // handle_lane_views_updated; we marked additions as registered under lock)
     for (auto const &add : sample_additions) {
         auto *queue_ptr = add.queue_ptr;
         auto const vis_lane = add.vis_lane;
@@ -480,8 +462,6 @@ void LanesVisualization::publish_now()
         playback_position_builder);
     auto const playback_sample_index = playback_position_builder.build();
 
-    // UI model serialization is strictly demand-driven: the lane itself
-    // decides whether its cheap dirty flag warrants a snapshot this frame.
     std::unordered_set<uint64_t> visible_ui_model_lanes;
     {
         std::scoped_lock lock(mutex_);
@@ -504,7 +484,6 @@ void LanesVisualization::publish_now()
         }
     }
 
-    // Snapshot queue shared_ptrs and draining queues under lock (brief)
     struct SampleSnapshot {
         LaneId source_lane {};
         std::shared_ptr<RealtimeSampleBlockQueue> queue {};
@@ -517,7 +496,6 @@ void LanesVisualization::publish_now()
     std::vector<SampleSnapshot> sample_snapshots;
     std::vector<EventSnapshot> event_snapshots;
     std::vector<std::shared_ptr<RealtimeEventBlockQueue>> draining_event;
-
     {
         std::scoped_lock lock(mutex_);
         for (auto const &[source_lane, tracked] : tracked_sample_lanes_) {
@@ -530,8 +508,6 @@ void LanesVisualization::publish_now()
         draining_event = std::move(draining_event_queues_);
     }
 
-    // Read one sampled level per realtime lane. No sample blocks cross this
-    // boundary and no audio buffers are copied for visualization.
     std::unordered_map<uint64_t, Sample::storage> sampled_levels;
     std::unordered_map<uint64_t, std::vector<TimedEvent>> drained_events;
 
@@ -544,14 +520,10 @@ void LanesVisualization::publish_now()
             buf.insert(buf.end(), events.begin(), events.end());
         });
     }
-    // Event queues retain their drain semantics because event detail is still
-    // part of the visualization API. Sample sinks need no removal drain.
     for (auto &q : draining_event) {
         q->drain([](std::span<TimedEvent const>) {});
     }
-    // shared_ptrs released here — frees queues no longer needed
 
-    // Accumulate event history and build updates under lock.
     std::vector<LaneViewContentUpdate> updates;
     {
         std::scoped_lock lock(mutex_);
