@@ -24,6 +24,8 @@ namespace iv {
         realtime,
     };
 
+    // Legacy declaration/runtime config types. These remain while existing
+    // lane nodes migrate to the unified LanePortConfig declaration API.
     struct CompiledSampleLaneInputConfig {
         std::string name {};
         Sample default_value = 0.0f;
@@ -73,19 +75,60 @@ namespace iv {
         RealtimeEventLaneOutputConfig
     >;
 
-    // The declaration-side representation of a lane port. A lane may return a
-    // tuple of concrete port config types when its shape is static, or a range
-    // of LanePortConfig when its shape is determined at runtime.
-    using LanePortConfig = std::variant<
-        CompiledSampleLaneInputConfig,
-        CompiledEventLaneInputConfig,
-        RealtimeSampleLaneInputConfig,
-        RealtimeEventLaneInputConfig,
-        CompiledSampleLaneOutputConfig,
-        CompiledEventLaneOutputConfig,
-        RealtimeSampleLaneOutputConfig,
-        RealtimeEventLaneOutputConfig
+    // Unified declaration-side config. Orthogonal concerns are represented by
+    // independent variants instead of one variant over every combination.
+    struct CompiledLanePortConfig {};
+    struct RealtimeLanePortConfig {};
+    using LanePortDomainConfig = std::variant<
+        CompiledLanePortConfig,
+        RealtimeLanePortConfig
     >;
+
+    struct SampleLaneInputPortConfig {
+        Sample default_value = 0.0f;
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
+    };
+
+    struct EventLaneInputPortConfig {
+        EventTypeId event_type = EventTypeId::empty;
+    };
+
+    using LaneInputPortTypeConfig = std::variant<
+        SampleLaneInputPortConfig,
+        EventLaneInputPortConfig
+    >;
+
+    struct LaneInputPortConfig {
+        LaneInputPortTypeConfig type {};
+    };
+
+    struct SampleLaneOutputPortConfig {
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
+    };
+
+    struct EventLaneOutputPortConfig {
+        EventTypeId event_type = EventTypeId::empty;
+    };
+
+    using LaneOutputPortTypeConfig = std::variant<
+        SampleLaneOutputPortConfig,
+        EventLaneOutputPortConfig
+    >;
+
+    struct LaneOutputPortConfig {
+        LaneOutputPortTypeConfig type {};
+    };
+
+    using LanePortDirectionConfig = std::variant<
+        LaneInputPortConfig,
+        LaneOutputPortConfig
+    >;
+
+    struct LanePortConfig {
+        std::string name {};
+        LanePortDomainConfig domain { RealtimeLanePortConfig {} };
+        LanePortDirectionConfig direction { LaneOutputPortConfig {} };
+    };
 
     template<typename Config>
     inline constexpr bool is_lane_input_config_v =
@@ -196,98 +239,97 @@ namespace iv {
             node.output();
         };
 
-        template<typename Port, typename Fn>
-        void visit_lane_port(Port const& port, Fn&& fn)
+        template<typename Fn>
+        void visit_lane_port(LanePortConfig const& port, Fn&& fn)
         {
-            using PortType = std::remove_cvref_t<Port>;
-            if constexpr (std::same_as<PortType, LanePortConfig>) {
-                std::visit(std::forward<Fn>(fn), port);
-            } else {
-                static_assert(
-                    is_lane_input_config_v<PortType> || is_lane_output_config_v<PortType>,
-                    "ports() must contain lane port config values");
-                std::invoke(std::forward<Fn>(fn), port);
-            }
+            bool const compiled = std::holds_alternative<CompiledLanePortConfig>(port.domain);
+            std::visit([&](auto const& direction) {
+                using Direction = std::remove_cvref_t<decltype(direction)>;
+                if constexpr (std::same_as<Direction, LaneInputPortConfig>) {
+                    std::visit([&](auto const& type) {
+                        using Type = std::remove_cvref_t<decltype(type)>;
+                        if constexpr (std::same_as<Type, SampleLaneInputPortConfig>) {
+                            if (compiled) {
+                                std::invoke(fn, CompiledSampleLaneInputConfig{
+                                    .name = port.name,
+                                    .default_value = type.default_value,
+                                    .sample_layout = type.sample_layout,
+                                });
+                            } else {
+                                std::invoke(fn, RealtimeSampleLaneInputConfig{
+                                    .name = port.name,
+                                    .default_value = type.default_value,
+                                    .sample_layout = type.sample_layout,
+                                });
+                            }
+                        } else {
+                            if (compiled) {
+                                std::invoke(fn, CompiledEventLaneInputConfig{
+                                    .name = port.name,
+                                    .event_type = type.event_type,
+                                });
+                            } else {
+                                std::invoke(fn, RealtimeEventLaneInputConfig{
+                                    .name = port.name,
+                                    .event_type = type.event_type,
+                                });
+                            }
+                        }
+                    }, direction.type);
+                } else {
+                    std::visit([&](auto const& type) {
+                        using Type = std::remove_cvref_t<decltype(type)>;
+                        if constexpr (std::same_as<Type, SampleLaneOutputPortConfig>) {
+                            if (compiled) {
+                                std::invoke(fn, CompiledSampleLaneOutputConfig{
+                                    .name = port.name,
+                                    .sample_layout = type.sample_layout,
+                                });
+                            } else {
+                                std::invoke(fn, RealtimeSampleLaneOutputConfig{
+                                    .name = port.name,
+                                    .sample_layout = type.sample_layout,
+                                });
+                            }
+                        } else {
+                            if (compiled) {
+                                std::invoke(fn, CompiledEventLaneOutputConfig{
+                                    .name = port.name,
+                                    .event_type = type.event_type,
+                                });
+                            } else {
+                                std::invoke(fn, RealtimeEventLaneOutputConfig{
+                                    .name = port.name,
+                                    .event_type = type.event_type,
+                                });
+                            }
+                        }
+                    }, direction.type);
+                }
+            }, port.direction);
         }
 
         template<typename Ports, typename Fn>
         void for_each_ports_value(Ports const& ports, Fn&& fn)
         {
-            if constexpr (requires { std::tuple_size<std::remove_cvref_t<Ports>>::value; }) {
+            using PortsType = std::remove_cvref_t<Ports>;
+            if constexpr (std::same_as<PortsType, LanePortConfig>) {
+                visit_lane_port(ports, std::forward<Fn>(fn));
+            } else if constexpr (requires { std::tuple_size<PortsType>::value; }) {
                 std::apply([&](auto const&... port) {
+                    static_assert((std::same_as<std::remove_cvref_t<decltype(port)>, LanePortConfig> && ...),
+                        "ports() tuple elements must be LanePortConfig");
                     (visit_lane_port(port, fn), ...);
                 }, ports);
             } else {
                 for (auto const& port : ports) {
+                    static_assert(
+                        std::same_as<std::remove_cvref_t<decltype(port)>, LanePortConfig>,
+                        "ports() range elements must be LanePortConfig");
                     visit_lane_port(port, fn);
                 }
             }
         }
-
-        template<typename Config>
-        struct output_config_candidate {
-            using type = void;
-        };
-
-        template<> struct output_config_candidate<CompiledSampleLaneOutputConfig> {
-            using type = CompiledSampleLaneOutputConfig;
-        };
-        template<> struct output_config_candidate<CompiledEventLaneOutputConfig> {
-            using type = CompiledEventLaneOutputConfig;
-        };
-        template<> struct output_config_candidate<RealtimeSampleLaneOutputConfig> {
-            using type = RealtimeSampleLaneOutputConfig;
-        };
-        template<> struct output_config_candidate<RealtimeEventLaneOutputConfig> {
-            using type = RealtimeEventLaneOutputConfig;
-        };
-        template<> struct output_config_candidate<LaneOutputConfig> {
-            using type = LaneOutputConfig;
-        };
-        template<> struct output_config_candidate<LanePortConfig> {
-            using type = LaneOutputConfig;
-        };
-
-        template<typename... Configs>
-        struct first_output_config {
-            using type = LaneOutputConfig;
-        };
-
-        template<typename Config, typename... Rest>
-        struct first_output_config<Config, Rest...> {
-        private:
-            using Candidate = typename output_config_candidate<
-                std::remove_cvref_t<Config>>::type;
-        public:
-            using type = std::conditional_t<
-                std::is_void_v<Candidate>,
-                typename first_output_config<Rest...>::type,
-                Candidate>;
-        };
-
-        template<typename Ports, typename = void>
-        struct output_declaration_for_ports {
-            using type = LaneOutputConfig;
-        };
-
-        template<typename... Ports>
-        struct output_declaration_for_ports<std::tuple<Ports...>, void> {
-            using type = typename first_output_config<Ports...>::type;
-        };
-
-        template<typename Ports>
-        struct output_declaration_for_ports<
-            Ports,
-            std::void_t<typename std::remove_cvref_t<Ports>::value_type>> {
-        private:
-            using Candidate = typename output_config_candidate<
-                std::remove_cvref_t<typename std::remove_cvref_t<Ports>::value_type>>::type;
-        public:
-            using type = std::conditional_t<
-                std::is_void_v<Candidate>,
-                LaneOutputConfig,
-                Candidate>;
-        };
 
         // An optional, presentation-independent authored model. A lane that
         // declares a model type id must provide the complete state contract
@@ -460,9 +502,7 @@ namespace iv {
 
         template<typename LaneNode>
         struct output_declaration_for_node<LaneNode, true> {
-            using Ports = std::remove_cvref_t<decltype(
-                get_lane_ports(std::declval<LaneNode const&>()))>;
-            using type = typename output_declaration_for_ports<Ports>::type;
+            using type = LaneOutputConfig;
         };
     }
 
