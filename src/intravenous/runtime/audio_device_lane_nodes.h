@@ -3,30 +3,23 @@
 #include <intravenous/lane_node/generate.h>
 #include <intravenous/runtime/audio_device_lanes_events.h>
 
+#include <array>
+
 namespace iv {
 
 struct AudioDeviceOutputLaneNode {
     static auto ports()
     {
         return std::array{
-            LanePortConfig{
-                .name = "source",
-                .domain = RealtimeLanePortConfig{},
-                .direction = LaneInputPortConfig{
-                    .type = SampleLaneInputPortConfig{
-                        .sample_layout = SampleStreamLayout::interleaved,
-                    },
-                },
-            },
-            LanePortConfig{
-                .name = "output",
-                .domain = RealtimeLanePortConfig{},
-                .direction = LaneOutputPortConfig{
-                    .type = SampleLaneOutputPortConfig{
-                        .sample_layout = SampleStreamLayout::interleaved,
-                    },
-                },
-            },
+            sample_input_port(
+                "source",
+                LanePortDomain::realtime,
+                0.0f,
+                SampleStreamLayout::interleaved),
+            sample_output_port(
+                "output",
+                LanePortDomain::realtime,
+                SampleStreamLayout::interleaved),
         };
     }
 
@@ -52,15 +45,10 @@ struct AudioDeviceInputLaneNode {
     static auto ports()
     {
         return std::array{
-            LanePortConfig{
-                .name = "output",
-                .domain = RealtimeLanePortConfig{},
-                .direction = LaneOutputPortConfig{
-                    .type = SampleLaneOutputPortConfig{
-                        .sample_layout = SampleStreamLayout::interleaved,
-                    },
-                },
-            },
+            sample_output_port(
+                "output",
+                LanePortDomain::realtime,
+                SampleStreamLayout::interleaved),
         };
     }
 
