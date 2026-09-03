@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -67,9 +68,10 @@ public:
         std::string_view serialized_state,
         LaneCreationContext const& context);
 
-    static CompiledEventLaneOutputConfig output()
+    static std::array<LanePortConfig, 1> ports()
     {
-        return {.name = "beats", .event_type = EventTypeId::trigger};
+        return { event_output_port(
+            "beats", LanePortDomain::compiled, EventTypeId::trigger) };
     }
 
     std::vector<CompiledSupportRange> compiled_support_ranges(
@@ -84,13 +86,14 @@ public:
             (static_cast<double>(sample_rate_) * 60.0) / (settings_.bpm * settings_.events_per_beat);
         if (!(samples_per_event > 0.0)) return;
 
+        auto& output = std::get<CompiledEventLaneOutput>(ctx.out());
         auto const first = static_cast<size_t>(std::ceil(
             static_cast<double>(ctx.start_index()) / samples_per_event));
         for (size_t event_index = first;; ++event_index) {
             auto const sample_index = static_cast<size_t>(std::llround(event_index * samples_per_event));
             if (sample_index >= ctx.end_index()) break;
             if (sample_index >= ctx.start_index()) {
-                ctx.out().push(TimedEvent{.time = sample_index, .value = TriggerEvent{}});
+                output.push(TimedEvent{.time = sample_index, .value = TriggerEvent{}});
             }
         }
     }
@@ -104,9 +107,6 @@ public:
 
     LaneUiStateSnapshot snapshot_lane_ui_state() const
     {
-        // This is the only execution-derived value the beat presentation
-        // needs. Keeping it in the UI snapshot lets the client reconstruct
-        // the regular event sequence without subscribing to event changes.
         auto const samples_per_event =
             (static_cast<double>(sample_rate_) * 60.0) / (settings_.bpm * settings_.events_per_beat);
         return {.revision = revision_, .serialized_state = nlohmann::json{
