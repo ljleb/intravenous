@@ -6,21 +6,17 @@
 namespace iv {
 
 struct AudioDeviceOutputLaneNode {
-    static std::array<RealtimeSampleLaneInputConfig, 1> realtime_sample_inputs()
+    static auto ports()
     {
-        return {
+        return std::tuple{
             RealtimeSampleLaneInputConfig{
                 .name = "source",
                 .sample_layout = SampleStreamLayout::interleaved,
             },
-        };
-    }
-
-    static RealtimeSampleLaneOutputConfig output()
-    {
-        return RealtimeSampleLaneOutputConfig{
-            .name = "output",
-            .sample_layout = SampleStreamLayout::interleaved,
+            RealtimeSampleLaneOutputConfig{
+                .name = "output",
+                .sample_layout = SampleStreamLayout::interleaved,
+            },
         };
     }
 
@@ -42,11 +38,13 @@ struct AudioDeviceOutputLaneNode {
 struct AudioDeviceInputLaneNode {
     LaneId lane {};
 
-    static RealtimeSampleLaneOutputConfig output()
+    static auto ports()
     {
-        return RealtimeSampleLaneOutputConfig{
-            .name = "output",
-            .sample_layout = SampleStreamLayout::interleaved,
+        return std::tuple{
+            RealtimeSampleLaneOutputConfig{
+                .name = "output",
+                .sample_layout = SampleStreamLayout::interleaved,
+            },
         };
     }
 
