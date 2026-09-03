@@ -6,14 +6,12 @@
 #include <algorithm>
 #include <exception>
 #include <unordered_set>
-#include <variant>
 
 namespace iv {
     namespace {
-        LaneDomain lane_domain(LaneOutputConfig const &output)
+        LaneDomain lane_domain(LanePortConfig const &output)
         {
-            return std::holds_alternative<CompiledSampleLaneOutputConfig>(output)
-                    || std::holds_alternative<CompiledEventLaneOutputConfig>(output)
+            return lane_port_domain(output) == LanePortDomain::compiled
                 ? LaneDomain::compiled
                 : LaneDomain::realtime;
         }
@@ -113,9 +111,13 @@ namespace iv {
             std::unordered_map<uint64_t, std::vector<LaneInputInfo>> inputs;
             snapshot->visit_lanes(
                 requested_output_lanes,
-                [&domains, &sample_channel_types, &output_kinds, &inputs](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output,
-                           std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &,
-                           std::vector<std::string> const &) {
+                [&domains, &sample_channel_types, &output_kinds, &inputs](
+                    LaneId lane,
+                    TypeErasedLaneNode const &node,
+                    LanePortConfig const &output,
+                    std::optional<ChannelTypeId> sample_channel_type,
+                    std::vector<LaneInputConnection> const &,
+                    std::vector<std::string> const &) {
                     domains[lane.value] = lane_domain(output);
                     sample_channel_types[lane.value] = sample_channel_type;
                     output_kinds[lane.value] = lane_output_kind(output);
@@ -130,10 +132,10 @@ namespace iv {
                             });
                         }
                     };
-                    append_inputs(node.compiled_sample_inputs(), LanePortDomain::compiled, PortKind::sample);
-                    append_inputs(node.compiled_event_inputs(), LanePortDomain::compiled, PortKind::event);
-                    append_inputs(node.realtime_sample_inputs(), LanePortDomain::realtime, PortKind::sample);
-                    append_inputs(node.realtime_event_inputs(), LanePortDomain::realtime, PortKind::event);
+                    append_inputs(node.input_ports(LanePortDomain::compiled, PortKind::sample), LanePortDomain::compiled, PortKind::sample);
+                    append_inputs(node.input_ports(LanePortDomain::compiled, PortKind::event), LanePortDomain::compiled, PortKind::event);
+                    append_inputs(node.input_ports(LanePortDomain::realtime, PortKind::sample), LanePortDomain::realtime, PortKind::sample);
+                    append_inputs(node.input_ports(LanePortDomain::realtime, PortKind::event), LanePortDomain::realtime, PortKind::event);
                 });
             for (auto &lane : result.lanes) {
                 if (auto const it = domains.find(lane.runtime_lane.value); it != domains.end()) {
@@ -192,9 +194,6 @@ namespace iv {
             });
         request.query.filter.source = filter_name;
         auto result = lane_views.open_view(std::move(request));
-        // Opening a view is itself a visibility change. Publish it immediately
-        // so visualization starts tracking its lanes without waiting for a
-        // later filter or graph mutation.
         emit_updated(result);
         return result;
     }
@@ -211,8 +210,6 @@ namespace iv {
             });
         request.query.filter.source = filter_name;
         auto result = lane_views.update_view(std::move(request));
-        // Viewport changes must update the visualization subscription even
-        // when the underlying lane-filter result has not changed.
         emit_updated(result);
         return result;
     }
