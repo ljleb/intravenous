@@ -17,11 +17,11 @@ namespace iv {
         using NodeStoragePtr = std::unique_ptr<void, void(*)(void*)>;
 
         NodeStoragePtr _node { nullptr, +[](void*) {} };
-        std::vector<CompiledSampleLaneInputConfig> _compiled_sample_inputs;
-        std::vector<CompiledEventLaneInputConfig> _compiled_event_inputs;
-        std::vector<RealtimeSampleLaneInputConfig> _realtime_sample_inputs;
-        std::vector<RealtimeEventLaneInputConfig> _realtime_event_inputs;
-        LaneOutputConfig _output {};
+        std::vector<LanePortConfig> _compiled_sample_inputs;
+        std::vector<LanePortConfig> _compiled_event_inputs;
+        std::vector<LanePortConfig> _realtime_sample_inputs;
+        std::vector<LanePortConfig> _realtime_event_inputs;
+        LanePortConfig _output {};
         bool _subscribes_to_compiled_output_changes = false;
         char const* _type_name = "<unknown>";
         std::type_info const* _type_info = &typeid(void);
@@ -52,21 +52,21 @@ namespace iv {
         /*implicit*/ TypeErasedLaneNode(LaneNode node)
         {
             size_t output_count = 0;
-            for_each_lane_port(node, [&](auto const& port) {
-                using Config = std::remove_cvref_t<decltype(port)>;
-                if constexpr (std::same_as<Config, CompiledSampleLaneInputConfig>) {
-                    _compiled_sample_inputs.push_back(port);
-                } else if constexpr (std::same_as<Config, CompiledEventLaneInputConfig>) {
-                    _compiled_event_inputs.push_back(port);
-                } else if constexpr (std::same_as<Config, RealtimeSampleLaneInputConfig>) {
-                    _realtime_sample_inputs.push_back(port);
-                } else if constexpr (std::same_as<Config, RealtimeEventLaneInputConfig>) {
-                    _realtime_event_inputs.push_back(port);
-                } else if constexpr (is_lane_output_config_v<Config>) {
-                    _output = LaneOutputConfig { port };
+            for (auto const& port : get_lane_ports(node)) {
+                if (lane_port_is_output(port)) {
+                    _output = port;
                     ++output_count;
+                    continue;
                 }
-            });
+                auto& inputs = lane_port_domain(port) == LanePortDomain::compiled
+                    ? (lane_port_kind(port) == PortKind::sample
+                        ? _compiled_sample_inputs
+                        : _compiled_event_inputs)
+                    : (lane_port_kind(port) == PortKind::sample
+                        ? _realtime_sample_inputs
+                        : _realtime_event_inputs);
+                inputs.push_back(port);
+            }
             if (output_count != 1) {
                 throw std::runtime_error("lane node must declare exactly one output port");
             }
@@ -144,11 +144,15 @@ namespace iv {
             }
         }
 
-        std::vector<CompiledSampleLaneInputConfig> const& compiled_sample_inputs() const { return _compiled_sample_inputs; }
-        std::vector<CompiledEventLaneInputConfig> const& compiled_event_inputs() const { return _compiled_event_inputs; }
-        std::vector<RealtimeSampleLaneInputConfig> const& realtime_sample_inputs() const { return _realtime_sample_inputs; }
-        std::vector<RealtimeEventLaneInputConfig> const& realtime_event_inputs() const { return _realtime_event_inputs; }
-        LaneOutputConfig const& output() const { return _output; }
+        std::vector<LanePortConfig> const& input_ports(LanePortDomain domain, PortKind kind) const
+        {
+            if (domain == LanePortDomain::compiled) {
+                return kind == PortKind::sample ? _compiled_sample_inputs : _compiled_event_inputs;
+            }
+            return kind == PortKind::sample ? _realtime_sample_inputs : _realtime_event_inputs;
+        }
+
+        LanePortConfig const& output() const { return _output; }
         bool subscribes_to_compiled_output_changes() const
         {
             return _subscribes_to_compiled_output_changes;
