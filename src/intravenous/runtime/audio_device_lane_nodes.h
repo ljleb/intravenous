@@ -8,23 +8,34 @@ namespace iv {
 struct AudioDeviceOutputLaneNode {
     static auto ports()
     {
-        return std::tuple{
-            RealtimeSampleLaneInputConfig{
+        return std::array{
+            LanePortConfig{
                 .name = "source",
-                .sample_layout = SampleStreamLayout::interleaved,
+                .domain = RealtimeLanePortConfig{},
+                .direction = LaneInputPortConfig{
+                    .type = SampleLaneInputPortConfig{
+                        .sample_layout = SampleStreamLayout::interleaved,
+                    },
+                },
             },
-            RealtimeSampleLaneOutputConfig{
+            LanePortConfig{
                 .name = "output",
-                .sample_layout = SampleStreamLayout::interleaved,
+                .domain = RealtimeLanePortConfig{},
+                .direction = LaneOutputPortConfig{
+                    .type = SampleLaneOutputPortConfig{
+                        .sample_layout = SampleStreamLayout::interleaved,
+                    },
+                },
             },
         };
     }
 
     void tick_block_realtime(RealtimeLaneTickContext<AudioDeviceOutputLaneNode> &ctx)
     {
-        auto const out = ctx.out().block_view();
+        auto &output = std::get<RealtimeSampleLaneOutput>(ctx.out());
+        auto const out = output.block_view();
         if (ctx.realtime_sample_input(0).connected()) {
-            ctx.out().write_block(ctx.realtime_sample_input(0).block_view());
+            output.write_block(ctx.realtime_sample_input(0).block_view());
             return;
         }
         for (size_t frame = 0; frame < out.frames(); ++frame) {
@@ -40,10 +51,15 @@ struct AudioDeviceInputLaneNode {
 
     static auto ports()
     {
-        return std::tuple{
-            RealtimeSampleLaneOutputConfig{
+        return std::array{
+            LanePortConfig{
                 .name = "output",
-                .sample_layout = SampleStreamLayout::interleaved,
+                .domain = RealtimeLanePortConfig{},
+                .direction = LaneOutputPortConfig{
+                    .type = SampleLaneOutputPortConfig{
+                        .sample_layout = SampleStreamLayout::interleaved,
+                    },
+                },
             },
         };
     }
@@ -56,9 +72,10 @@ struct AudioDeviceInputLaneNode {
             lane,
             builder);
         auto const block = builder.build();
-        auto const out = ctx.out().block_view();
+        auto &output = std::get<RealtimeSampleLaneOutput>(ctx.out());
+        auto const out = output.block_view();
         if (!block.empty()) {
-            ctx.out().write_block(block.view());
+            output.write_block(block.view());
             return;
         }
         for (size_t frame = 0; frame < out.frames(); ++frame) {
