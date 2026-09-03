@@ -371,36 +371,6 @@ namespace iv {
         RealtimeEventLaneOutput
     >;
 
-    template<typename OutputDeclaration>
-    struct LaneOutputViewFor {
-        using Type = LaneOutputView;
-    };
-
-    template<>
-    struct LaneOutputViewFor<CompiledSampleLaneOutputConfig> {
-        using Type = CompiledSampleLaneOutput;
-    };
-
-    template<>
-    struct LaneOutputViewFor<CompiledEventLaneOutputConfig> {
-        using Type = CompiledEventLaneOutput;
-    };
-
-    template<>
-    struct LaneOutputViewFor<RealtimeSampleLaneOutputConfig> {
-        using Type = RealtimeSampleLaneOutput;
-    };
-
-    template<>
-    struct LaneOutputViewFor<RealtimeEventLaneOutputConfig> {
-        using Type = RealtimeEventLaneOutput;
-    };
-
-    template<>
-    struct LaneOutputViewFor<LaneOutputConfig> {
-        using Type = LaneOutputView;
-    };
-
     struct TimelineOutputRequest {
         size_t start_index = 0;
         size_t count = 0;
@@ -476,10 +446,6 @@ namespace iv {
         friend class RealtimeLaneTickContext;
 
     public:
-        using OutputView = typename LaneOutputViewFor<
-            std::remove_cvref_t<LaneOutputDeclaration<LaneNode>>
-        >::Type;
-
         explicit CompiledLaneTickContext(UntypedCompiledLaneTickContext& untyped) :
             _untyped(untyped)
         {}
@@ -493,13 +459,9 @@ namespace iv {
         CompiledSampleLaneInput& compiled_sample_input(size_t index) const { return _untyped.compiled_sample_inputs[index]; }
         CompiledEventLaneInput& compiled_event_input(size_t index) const { return _untyped.compiled_event_inputs[index]; }
 
-        OutputView& out() const
+        LaneOutputView& out() const
         {
-            if constexpr (std::same_as<OutputView, LaneOutputView>) {
-                return _untyped.output;
-            } else {
-                return std::get<OutputView>(_untyped.output);
-            }
+            return _untyped.output;
         }
 
         UntypedCompiledLaneTickContext& untyped() const
@@ -547,10 +509,6 @@ namespace iv {
         friend class RealtimeLaneTickContext;
 
     public:
-        using OutputView = typename LaneOutputViewFor<
-            std::remove_cvref_t<LaneOutputDeclaration<LaneNode>>
-        >::Type;
-
         explicit RealtimeLaneTickContext(UntypedRealtimeLaneTickContext& untyped) :
             _untyped(untyped)
         {}
@@ -567,13 +525,9 @@ namespace iv {
         RealtimeSampleLaneInput& realtime_sample_input(size_t index) const { return _untyped.realtime_sample_inputs[index]; }
         RealtimeEventLaneInput& realtime_event_input(size_t index) const { return _untyped.realtime_event_inputs[index]; }
 
-        OutputView& out() const
+        LaneOutputView& out() const
         {
-            if constexpr (std::same_as<OutputView, LaneOutputView>) {
-                return _untyped.output;
-            } else {
-                return std::get<OutputView>(_untyped.output);
-            }
+            return _untyped.output;
         }
 
         UntypedRealtimeLaneTickContext& untyped() const
@@ -605,42 +559,61 @@ namespace iv {
     } // namespace lane_node_details
 
     namespace lane_tick_details {
-        template<typename OutputView>
-        ChannelLayout output_channel_layout(OutputView const& output)
+        inline ChannelLayout output_channel_layout(LaneOutputView const& output)
         {
-            if constexpr (requires { output.channel_layout(); }) {
-                return output.channel_layout();
-            } else if constexpr (requires { output.channel_layout; }) {
-                return output.channel_layout;
-            } else {
-                return ChannelLayout{
-                    .channel_type = ChannelTypeId::mono,
-                    .sample_layout = SampleStreamLayout::planar,
-                };
+            return std::visit([](auto const& concrete) {
+                if constexpr (requires { concrete.channel_layout(); }) {
+                    return concrete.channel_layout();
+                } else if constexpr (requires { concrete.channel_layout; }) {
+                    return concrete.channel_layout;
+                } else {
+                    return ChannelLayout{
+                        .channel_type = ChannelTypeId::mono,
+                        .sample_layout = SampleStreamLayout::planar,
+                    };
+                }
+            }, output);
+        }
+
+        template<typename LaneNode>
+        std::vector<LanePortConfig> input_ports(
+            LaneNode const& node,
+            LanePortDomain domain,
+            PortKind kind)
+        {
+            std::vector<LanePortConfig> result;
+            for (auto const& port : get_lane_ports(node)) {
+                if (lane_port_is_input(port)
+                    && lane_port_domain(port) == domain
+                    && lane_port_kind(port) == kind) {
+                    result.push_back(port);
+                }
             }
+            return result;
         }
 
         template<typename LaneNode>
         void invoke_compiled_from_realtime(LaneNode& node, RealtimeLaneTickContext<LaneNode>& ctx)
         {
-            auto const compiled_sample_decls = get_compiled_sample_lane_inputs(node);
-            auto const compiled_event_decls = get_compiled_event_lane_inputs(node);
+            auto const compiled_sample_decls = input_ports(
+                node, LanePortDomain::compiled, PortKind::sample);
+            auto const compiled_event_decls = input_ports(
+                node, LanePortDomain::compiled, PortKind::event);
+            auto const realtime_sample_decls = input_ports(
+                node, LanePortDomain::realtime, PortKind::sample);
+
             std::vector<CompiledSampleLaneInput> compiled_sample_inputs_storage;
-            auto const realtime_sample_decls = get_realtime_sample_lane_inputs(node);
             compiled_sample_inputs_storage.resize(std::max(
                 compiled_sample_decls.size(), realtime_sample_decls.size()));
             for (size_t i = 0; i < compiled_sample_inputs_storage.size(); ++i) {
-                auto const default_value = i < compiled_sample_decls.size()
-                    ? compiled_sample_decls[i].default_value
-                    : realtime_sample_decls[i].default_value;
-                auto const sample_layout = i < compiled_sample_decls.size()
-                    ? compiled_sample_decls[i].sample_layout
-                    : realtime_sample_decls[i].sample_layout;
-                compiled_sample_inputs_storage[i].default_value = default_value;
+                auto const& decl = i < compiled_sample_decls.size()
+                    ? compiled_sample_decls[i]
+                    : realtime_sample_decls[i];
+                compiled_sample_inputs_storage[i].default_value = lane_port_default_value(decl);
                 auto const out_layout = output_channel_layout(ctx.out());
                 compiled_sample_inputs_storage[i].channel_layout = ChannelLayout {
                     .channel_type = out_layout.channel_type,
-                    .sample_layout = sample_layout,
+                    .sample_layout = lane_port_sample_layout(decl),
                 };
                 compiled_sample_inputs_storage[i].frame_count = ctx.sample_count();
             }
