@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <typeinfo>
@@ -50,15 +51,25 @@ namespace iv {
         template<typename LaneNode>
         /*implicit*/ TypeErasedLaneNode(LaneNode node)
         {
-            auto const compiled_sample_inputs = get_compiled_sample_lane_inputs(node);
-            auto const compiled_event_inputs = get_compiled_event_lane_inputs(node);
-            auto const realtime_sample_inputs = get_realtime_sample_lane_inputs(node);
-            auto const realtime_event_inputs = get_realtime_event_lane_inputs(node);
-            _compiled_sample_inputs.assign(compiled_sample_inputs.begin(), compiled_sample_inputs.end());
-            _compiled_event_inputs.assign(compiled_event_inputs.begin(), compiled_event_inputs.end());
-            _realtime_sample_inputs.assign(realtime_sample_inputs.begin(), realtime_sample_inputs.end());
-            _realtime_event_inputs.assign(realtime_event_inputs.begin(), realtime_event_inputs.end());
-            _output = normalize_lane_output(get_lane_output(node));
+            size_t output_count = 0;
+            for_each_lane_port(node, [&](auto const& port) {
+                using Config = std::remove_cvref_t<decltype(port)>;
+                if constexpr (std::same_as<Config, CompiledSampleLaneInputConfig>) {
+                    _compiled_sample_inputs.push_back(port);
+                } else if constexpr (std::same_as<Config, CompiledEventLaneInputConfig>) {
+                    _compiled_event_inputs.push_back(port);
+                } else if constexpr (std::same_as<Config, RealtimeSampleLaneInputConfig>) {
+                    _realtime_sample_inputs.push_back(port);
+                } else if constexpr (std::same_as<Config, RealtimeEventLaneInputConfig>) {
+                    _realtime_event_inputs.push_back(port);
+                } else if constexpr (is_lane_output_config_v<Config>) {
+                    _output = LaneOutputConfig { port };
+                    ++output_count;
+                }
+            });
+            if (output_count != 1) {
+                throw std::runtime_error("lane node must declare exactly one output port");
+            }
             if constexpr (requires { LaneNode::subscribes_to_compiled_output_changes(); }) {
                 _subscribes_to_compiled_output_changes =
                     LaneNode::subscribes_to_compiled_output_changes();
