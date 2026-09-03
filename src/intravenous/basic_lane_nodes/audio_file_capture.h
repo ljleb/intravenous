@@ -21,9 +21,6 @@ namespace iv {
 struct LaneCreationContext;
 class TypeErasedLaneNode;
 
-// A compiled audio clip which optionally records a live realtime input. While
-// recording, input is monitored through the compiled output; otherwise that
-// output plays the captured timeline back without requiring an input edge.
 class AudioFileCaptureLaneNode {
     std::string path_ = "timeline-capture.wav";
     size_t sample_rate_ = 48000;
@@ -72,12 +69,13 @@ public:
         std::string_view serialized_state,
         LaneCreationContext const& context);
 
-    std::array<RealtimeSampleLaneInputConfig, 1> realtime_sample_inputs() const
+    static std::array<LanePortConfig, 2> ports()
     {
-        return {{{.name = "audio"}}};
+        return {
+            sample_input_port("audio", LanePortDomain::realtime),
+            sample_output_port("audio", LanePortDomain::compiled),
+        };
     }
-
-    static CompiledSampleLaneOutputConfig output() { return {.name = "audio"}; }
 
     std::vector<CompiledSupportRange> compiled_support_ranges(
         CompiledSupportContext<AudioFileCaptureLaneNode>&) const
@@ -87,11 +85,12 @@ public:
 
     void tick_block_compiled(CompiledLaneTickContext<AudioFileCaptureLaneNode>& ctx) const
     {
+        auto& output = std::get<CompiledSampleLaneOutput>(ctx.out());
         auto const &input_port = ctx.compiled_sample_input(0);
         auto const input = input_port.block_view();
         auto const recording = ctx.transport_playing() && input_port.connected();
         if (!recording) {
-            auto const output_layout = ctx.out().channel_layout;
+            auto const output_layout = output.channel_layout;
             auto const frame_count = ctx.sample_count();
             std::vector<Sample> playback(sample_storage_size(output_layout, frame_count), Sample {});
             SampleBlockView<Sample> playback_view(playback, output_layout, frame_count);
@@ -106,7 +105,7 @@ public:
                     }
                 }
             }
-            ctx.out().write_block(ctx.start_index(), SampleBlockView<Sample const>(
+            output.write_block(ctx.start_index(), SampleBlockView<Sample const>(
                 std::span<Sample const>(playback), output_layout, frame_count));
             return;
         }
@@ -121,7 +120,7 @@ public:
             recording_channels_.assign(input.channels(), {});
             recording_start_index_ = ctx.start_index();
         }
-        ctx.out().write_block(ctx.start_index(), input);
+        output.write_block(ctx.start_index(), input);
         auto const capture_offset = ctx.start_index() - recording_start_index_;
         for (size_t channel = 0; channel < input.channels(); ++channel) {
             auto& captured = recording_channels_[channel];
