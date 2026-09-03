@@ -121,7 +121,7 @@ TEST(LanesVisualizationTest, PublishesExactCompiledSampleWindowForVisibleLane)
     VisualizationTestBindings bindings(state);
 
     state.output_descriptors[42] = LaneVisualizationOutputDescriptor{
-        .config = CompiledSampleLaneOutputConfig{ .name = "test", .sample_layout = SampleStreamLayout::interleaved },
+        .config = sample_output_port("test", LanePortDomain::compiled, SampleStreamLayout::interleaved),
         .sample_channel_type = ChannelTypeId::stereo,
         .subscribes_to_compiled_output_changes = true,
     };
@@ -161,7 +161,6 @@ TEST(LanesVisualizationTest, PublishesExactCompiledSampleWindowForVisibleLane)
     EXPECT_EQ(state.updates.front().lanes.front().compiled_sample_window->primary[2], 2.0f);
     EXPECT_EQ(state.updates.front().lanes.front().compiled_window_first_sample_index, 0u);
     EXPECT_EQ(state.updates.front().lanes.front().compiled_window_last_sample_index, 100u);
-
 }
 
 TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
@@ -170,7 +169,7 @@ TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
     VisualizationTestBindings bindings(state);
 
     state.output_descriptors[7] = LaneVisualizationOutputDescriptor{
-        .config = CompiledEventLaneOutputConfig{ .name = "test" },
+        .config = event_output_port("test", LanePortDomain::compiled),
         .subscribes_to_compiled_output_changes = true,
     };
     state.compiled_events[7] = {
@@ -199,7 +198,6 @@ TEST(LanesVisualizationTest, PublishesCompiledEventDataForVisibleLanes)
     EXPECT_EQ(state.updates.front().lanes.front().lane_id.str(), "lane-7");
     EXPECT_EQ(state.updates.front().lanes.front().adapter_type, "events");
     EXPECT_EQ(state.updates.front().lanes.front().events.size(), 2u);
-
 }
 
 TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
@@ -208,7 +206,7 @@ TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
     VisualizationTestBindings bindings(state);
 
     state.output_descriptors[42] = LaneVisualizationOutputDescriptor{
-        .config = CompiledSampleLaneOutputConfig{ .name = "test" },
+        .config = sample_output_port("test", LanePortDomain::compiled),
         .sample_channel_type = ChannelTypeId::mono,
         .subscribes_to_compiled_output_changes = true,
     };
@@ -241,7 +239,6 @@ TEST(LanesVisualizationTest, ClosedViewStopsPublishingUpdates)
     visualization.handle_lane_view_closed(intern("view-1"));
     visualization.publish_now();
     EXPECT_TRUE(state.updates.empty());
-
 }
 
 TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished)
@@ -250,7 +247,7 @@ TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished
     VisualizationTestBindings bindings(state);
 
     state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
+        .config = sample_output_port("test", LanePortDomain::realtime),
         .sample_channel_type = ChannelTypeId::mono,
     };
 
@@ -265,13 +262,11 @@ TEST(LanesVisualizationTest, RealtimeSampleLaneQueuesTimelineBatchOnPassFinished
         },
     });
 
-    // Pass finished should trigger timeline batch with one upsert and one connection
     visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
 
     ASSERT_EQ(state.last_batch.upserts.size(), 1u);
     ASSERT_EQ(state.last_batch.connections_to_add.size(), 1u);
     EXPECT_EQ(state.last_batch.connections_to_add.front().source.value, 10u);
-
 }
 
 TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPass)
@@ -280,7 +275,7 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
     VisualizationTestBindings bindings(state);
 
     state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
+        .config = sample_output_port("test", LanePortDomain::realtime),
         .sample_channel_type = ChannelTypeId::mono,
     };
 
@@ -305,7 +300,6 @@ TEST(LanesVisualizationTest, ClosingViewRemovesRealtimeVisualizationLaneOnNextPa
 
     ASSERT_EQ(state.last_batch.removals.size(), 1u);
     EXPECT_EQ(state.last_batch.removals.front(), vis_lane);
-
 }
 
 TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateTimelineUpserts)
@@ -314,7 +308,7 @@ TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateT
     VisualizationTestBindings bindings(state);
 
     state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
+        .config = sample_output_port("test", LanePortDomain::realtime),
         .sample_channel_type = ChannelTypeId::mono,
     };
 
@@ -337,7 +331,6 @@ TEST(LanesVisualizationTest, RepeatedIdenticalRealtimeViewUpdatesDoNotDuplicateT
     visualization.handle_task_runner_after_pass(TasksRunnerAfterPass{});
     EXPECT_TRUE(state.last_batch.upserts.empty());
     EXPECT_TRUE(state.last_batch.connections_to_add.empty());
-
 }
 
 TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
@@ -346,7 +339,7 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
     VisualizationTestBindings bindings(state);
 
     state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeSampleLaneOutputConfig{ .name = "test" },
+        .config = sample_output_port("test", LanePortDomain::realtime),
         .sample_channel_type = ChannelTypeId::mono,
     };
 
@@ -367,7 +360,7 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
     EXPECT_EQ(state.last_batch.connections_to_add.front().input.kind, PortKind::sample);
 
     state.output_descriptors[10] = LaneVisualizationOutputDescriptor{
-        .config = RealtimeEventLaneOutputConfig{ .name = "test" },
+        .config = event_output_port("test", LanePortDomain::realtime),
     };
     state.last_batch = {};
     visualization.handle_lane_views_updated(view);
@@ -377,7 +370,6 @@ TEST(LanesVisualizationTest, RealtimeLaneKindChangesAreReclassifiedAcrossPasses)
     EXPECT_EQ(state.last_batch.removals.front(), old_vis_lane);
     ASSERT_EQ(state.last_batch.upserts.size(), 1u);
     EXPECT_EQ(state.last_batch.connections_to_add.front().input.kind, PortKind::event);
-
 }
 
 } // namespace iv
