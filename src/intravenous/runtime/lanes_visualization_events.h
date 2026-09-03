@@ -12,14 +12,10 @@
 namespace iv {
 
 struct LaneVisualizationOutputDescriptor {
-    LaneOutputConfig config {};
+    LanePortConfig config {};
     std::optional<ChannelTypeId> sample_channel_type {};
-    // Compiled output is not observed by default. A lane node explicitly
-    // opts in when its presentation needs compiled sample/event changes.
     bool subscribes_to_compiled_output_changes = false;
 };
-
-// ---- Lane output config query ----
 
 class LanesVisualizationLaneOutputQueryBuilder {
     std::optional<LaneVisualizationOutputDescriptor> result_ {};
@@ -38,8 +34,6 @@ public:
 
 using LanesVisualizationLaneOutputQueryEvent =
     void (*)(LaneId, LanesVisualizationLaneOutputQueryBuilder&);
-
-// ---- Realtime playback position query ----
 
 class LanesVisualizationPlaybackPositionBuilder {
     std::optional<size_t> result_ {};
@@ -61,8 +55,6 @@ public:
 using LanesVisualizationLaneUiStateQueryEvent =
     void (*)(LaneId, bool changed_only, LanesVisualizationLaneUiStateBuilder&);
 
-// ---- Compiled sample window query ----
-
 class LanesVisualizationCompiledSampleWindowBuilder {
     std::optional<CompiledSampleWindow> window_ {};
 
@@ -81,8 +73,6 @@ public:
 using LanesVisualizationCompiledSampleWindowRequestedEvent =
     void (*)(LaneId, size_t first, size_t last, size_t point_count,
              LanesVisualizationCompiledSampleWindowBuilder&);
-
-// ---- Compiled event range query ----
 
 class LanesVisualizationCompiledEventWindowBuilder {
     std::vector<TimedEvent> events_ {};
@@ -103,12 +93,8 @@ using LanesVisualizationCompiledEventWindowRequestedEvent =
     void (*)(LaneId, size_t first, size_t last,
              LanesVisualizationCompiledEventWindowBuilder&);
 
-// ---- Timeline batch request ----
-
 using LanesVisualizationTimelineBatchRequestedEvent =
     void (*)(TimelineLaneBatchUpdate const&);
-
-// ---- Content update notification ----
 
 using LaneViewContentUpdatedEvent =
     void (*)(LaneViewContentUpdate const&);
