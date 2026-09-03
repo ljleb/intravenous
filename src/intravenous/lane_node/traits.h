@@ -7,6 +7,7 @@
 #include <array>
 #include <concepts>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <stdexcept>
