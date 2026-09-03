@@ -16,24 +16,28 @@
 
 namespace iv {
 namespace {
-bool is_realtime_sample_output(LaneOutputConfig const &output)
+bool is_realtime_sample_output(LanePortConfig const &output)
 {
-    return std::holds_alternative<RealtimeSampleLaneOutputConfig>(output);
+    return lane_port_domain(output) == LanePortDomain::realtime
+        && lane_port_kind(output) == PortKind::sample;
 }
 
-bool is_realtime_event_output(LaneOutputConfig const &output)
+bool is_realtime_event_output(LanePortConfig const &output)
 {
-    return std::holds_alternative<RealtimeEventLaneOutputConfig>(output);
+    return lane_port_domain(output) == LanePortDomain::realtime
+        && lane_port_kind(output) == PortKind::event;
 }
 
-bool is_compiled_sample_output(LaneOutputConfig const &output)
+bool is_compiled_sample_output(LanePortConfig const &output)
 {
-    return std::holds_alternative<CompiledSampleLaneOutputConfig>(output);
+    return lane_port_domain(output) == LanePortDomain::compiled
+        && lane_port_kind(output) == PortKind::sample;
 }
 
-bool is_compiled_event_output(LaneOutputConfig const &output)
+bool is_compiled_event_output(LanePortConfig const &output)
 {
-    return std::holds_alternative<CompiledEventLaneOutputConfig>(output);
+    return lane_port_domain(output) == LanePortDomain::compiled
+        && lane_port_kind(output) == PortKind::event;
 }
 
 std::vector<Sample> hold_compiled_sample_at_current_index(
@@ -54,17 +58,11 @@ std::vector<Sample> hold_compiled_sample_at_current_index(
     return held;
 }
 
-SampleStreamLayout sample_output_layout(LaneOutputConfig const& output)
+SampleStreamLayout sample_output_layout(LanePortConfig const& output)
 {
-    return std::visit([](auto const& config) -> SampleStreamLayout {
-        using Config = std::remove_cvref_t<decltype(config)>;
-        if constexpr (std::same_as<Config, RealtimeSampleLaneOutputConfig>
-            || std::same_as<Config, CompiledSampleLaneOutputConfig>) {
-            return config.sample_layout;
-        } else {
-            return SampleStreamLayout::planar;
-        }
-    }, output);
+    return lane_port_kind(output) == PortKind::sample
+        ? lane_port_sample_layout(output)
+        : SampleStreamLayout::planar;
 }
 
 ChannelTypeId sample_channel_type_for(std::optional<ChannelTypeId> channel_type)
@@ -73,7 +71,7 @@ ChannelTypeId sample_channel_type_for(std::optional<ChannelTypeId> channel_type)
 }
 
 ChannelLayout sample_output_channel_layout(
-    LaneOutputConfig const& output,
+    LanePortConfig const& output,
     std::optional<ChannelTypeId> channel_type)
 {
     return ChannelLayout {
@@ -269,7 +267,7 @@ VersionedTaskGraphUpdate TimelineExecution::handle_timeline_lanes_changed(Timeli
                 std::unique(visited.begin(), visited.end()),
                 visited.end());
         }
-        change.visit_lanes(visited, [&](LaneId lane, TypeErasedLaneNode const &node, LaneOutputConfig const &output, std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &inputs, std::vector<std::string> const &external_task_dependencies) {
+        change.visit_lanes(visited, [&](LaneId lane, TypeErasedLaneNode const &node, LanePortConfig const &output, std::optional<ChannelTypeId> sample_channel_type, std::vector<LaneInputConnection> const &inputs, std::vector<std::string> const &external_task_dependencies) {
             auto &tracked = tracked_lanes_[lane];
             bool const existed = tracked.id == lane && tracked.node != nullptr;
             tracked.id = lane;
@@ -479,15 +477,13 @@ void TimelineExecution::resume(size_t start_index)
 {
     std::scoped_lock lock(mutex_);
     current_start_index_ = start_index;
-    // A capture lane with an attached realtime source is recording again, so
-    // it must observe fresh live blocks. A disconnected capture is playback:
-    // retain its compiled cache so its recorded audio remains available.
     for (auto const &[lane, tracked] : tracked_lanes_) {
         auto const has_live_sample_source = std::ranges::any_of(tracked.inputs, [](auto const& input) {
             return input.input.domain == LanePortDomain::realtime
                 && input.input.kind == PortKind::sample;
         });
-        if (!tracked.node->realtime_sample_inputs().empty() && has_live_sample_source) {
+        if (!tracked.node->input_ports(LanePortDomain::realtime, PortKind::sample).empty()
+            && has_live_sample_source) {
             compiled_sample_cache_.erase(lane);
         }
     }
@@ -596,8 +592,6 @@ CompiledSampleWindow TimelineExecution::compiled_sample_window(
     result.primary.reserve(point_count);
     std::optional<bool> has_secondary;
     for (size_t point = 0; point < point_count; ++point) {
-        // The window endpoints are inclusive. Use integer arithmetic so the
-        // first and last visual columns always retrieve those exact samples.
         auto const sample_index = point_count == 1
             ? first + (last - first) / 2
             : first + ((last - first) * point + (point_count - 1) / 2) / (point_count - 1);
@@ -745,8 +739,10 @@ void TimelineExecution::rebuild_compiled_support_and_notify_locked()
         if (supports_compiled_support_ranges(*tracked.node)) {
             std::vector<CompiledSupportLaneInput> compiled_sample_inputs;
             std::vector<CompiledSupportLaneInput> compiled_event_inputs;
-            compiled_sample_inputs.resize(tracked.node->compiled_sample_inputs().size());
-            compiled_event_inputs.resize(tracked.node->compiled_event_inputs().size());
+            compiled_sample_inputs.resize(
+                tracked.node->input_ports(LanePortDomain::compiled, PortKind::sample).size());
+            compiled_event_inputs.resize(
+                tracked.node->input_ports(LanePortDomain::compiled, PortKind::event).size());
 
             for (auto const& connection : tracked.inputs) {
                 auto const source_it = tracked_lanes_.find(connection.source);
@@ -792,7 +788,7 @@ void TimelineExecution::rebuild_compiled_support_and_notify_locked()
                 std::span<CompiledSupportRange const> source_support {};
                 auto const source_it = tracked_lanes_.find(connection.source);
                 if (source_it != tracked_lanes_.end()) {
-                    source_output_domain = lane_output_domain(source_it->second.output);
+                    source_output_domain = lane_port_domain(source_it->second.output);
                     if (source_output_domain == LanePortDomain::compiled) {
                         source_support = compiled_support_ranges_locked(connection.source);
                     }
@@ -950,27 +946,29 @@ void TimelineExecution::execute_lane_locked(LaneId lane, size_t start_index)
         }
     }
 
-    std::vector<CompiledSampleLaneInput> compiled_sample_inputs;
-    std::vector<CompiledEventLaneInput> compiled_event_inputs;
-    std::vector<RealtimeSampleLaneInput> realtime_sample_inputs;
-    std::vector<RealtimeEventLaneInput> realtime_event_inputs;
+    auto const& compiled_sample_configs = tracked.node->input_ports(LanePortDomain::compiled, PortKind::sample);
+    auto const& compiled_event_configs = tracked.node->input_ports(LanePortDomain::compiled, PortKind::event);
+    auto const& realtime_sample_configs = tracked.node->input_ports(LanePortDomain::realtime, PortKind::sample);
+    auto const& realtime_event_configs = tracked.node->input_ports(LanePortDomain::realtime, PortKind::event);
+
+    std::vector<CompiledSampleLaneInput> compiled_sample_inputs(compiled_sample_configs.size());
+    std::vector<CompiledEventLaneInput> compiled_event_inputs(compiled_event_configs.size());
+    std::vector<RealtimeSampleLaneInput> realtime_sample_inputs(realtime_sample_configs.size());
+    std::vector<RealtimeEventLaneInput> realtime_event_inputs(realtime_event_configs.size());
     std::vector<std::vector<Sample>> compiled_sample_input_blocks;
 
-    compiled_sample_inputs.resize(tracked.node->compiled_sample_inputs().size());
-    compiled_event_inputs.resize(tracked.node->compiled_event_inputs().size());
-    realtime_sample_inputs.resize(tracked.node->realtime_sample_inputs().size());
-    realtime_event_inputs.resize(tracked.node->realtime_event_inputs().size());
+    for (size_t i = 0; i < compiled_sample_inputs.size(); ++i) {
+        compiled_sample_inputs[i].default_value = lane_port_default_value(compiled_sample_configs[i]);
+    }
+    for (size_t i = 0; i < realtime_sample_inputs.size(); ++i) {
+        realtime_sample_inputs[i].default_value = lane_port_default_value(realtime_sample_configs[i]);
+    }
 
     auto input_layout_for = [&](LanePortId input) {
-        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
-        if (input.domain == LanePortDomain::compiled) {
-            sample_layout = tracked.node->compiled_sample_inputs()[input.ordinal].sample_layout;
-        } else {
-            sample_layout = tracked.node->realtime_sample_inputs()[input.ordinal].sample_layout;
-        }
+        auto const& config = tracked.node->input_ports(input.domain, PortKind::sample)[input.ordinal];
         return ChannelLayout {
             .channel_type = sample_channel_type_for(tracked.sample_channel_type),
-            .sample_layout = sample_layout,
+            .sample_layout = lane_port_sample_layout(config),
         };
     };
 
@@ -1164,11 +1162,8 @@ bool TimelineExecution::compiled_support_intersects_request_locked(
 
 size_t TimelineExecution::compiled_sample_cache_chunk_size_locked(LaneId lane) const
 {
-    // Realtime-input compiled lanes are materialized only by their live task.
-    // A larger speculative chunk would otherwise repeat the current realtime
-    // block across a future timeline interval.
     if (auto const it = tracked_lanes_.find(lane); it != tracked_lanes_.end()
-        && !it->second.node->realtime_sample_inputs().empty()) {
+        && !it->second.node->input_ports(LanePortDomain::realtime, PortKind::sample).empty()) {
         return block_size_;
     }
     return block_size_ * compiled_sample_cache_chunk_size_multiplier_;
@@ -1182,30 +1177,32 @@ void TimelineExecution::execute_compiled_sample_chunk_locked(LaneId lane, size_t
     }
     auto& tracked = it->second;
 
-    std::vector<CompiledSampleLaneInput> compiled_sample_inputs;
-    std::vector<CompiledEventLaneInput> compiled_event_inputs;
-    std::vector<RealtimeSampleLaneInput> realtime_sample_inputs;
-    std::vector<RealtimeEventLaneInput> realtime_event_inputs;
+    auto const& compiled_sample_configs = tracked.node->input_ports(LanePortDomain::compiled, PortKind::sample);
+    auto const& compiled_event_configs = tracked.node->input_ports(LanePortDomain::compiled, PortKind::event);
+    auto const& realtime_sample_configs = tracked.node->input_ports(LanePortDomain::realtime, PortKind::sample);
+    auto const& realtime_event_configs = tracked.node->input_ports(LanePortDomain::realtime, PortKind::event);
+
+    std::vector<CompiledSampleLaneInput> compiled_sample_inputs(compiled_sample_configs.size());
+    std::vector<CompiledEventLaneInput> compiled_event_inputs(compiled_event_configs.size());
+    std::vector<RealtimeSampleLaneInput> realtime_sample_inputs(realtime_sample_configs.size());
+    std::vector<RealtimeEventLaneInput> realtime_event_inputs(realtime_event_configs.size());
     std::vector<std::vector<Sample>> compiled_sample_input_blocks;
 
-    compiled_sample_inputs.resize(tracked.node->compiled_sample_inputs().size());
-    compiled_event_inputs.resize(tracked.node->compiled_event_inputs().size());
-    realtime_sample_inputs.resize(tracked.node->realtime_sample_inputs().size());
-    realtime_event_inputs.resize(tracked.node->realtime_event_inputs().size());
+    for (size_t i = 0; i < compiled_sample_inputs.size(); ++i) {
+        compiled_sample_inputs[i].default_value = lane_port_default_value(compiled_sample_configs[i]);
+    }
+    for (size_t i = 0; i < realtime_sample_inputs.size(); ++i) {
+        realtime_sample_inputs[i].default_value = lane_port_default_value(realtime_sample_configs[i]);
+    }
 
     auto const chunk_size = compiled_sample_cache_chunk_size_locked(lane);
     auto const chunk_start = chunk_start_index(chunk_index, chunk_size);
 
     auto input_layout_for = [&](LanePortId input) {
-        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
-        if (input.domain == LanePortDomain::compiled) {
-            sample_layout = tracked.node->compiled_sample_inputs()[input.ordinal].sample_layout;
-        } else {
-            sample_layout = tracked.node->realtime_sample_inputs()[input.ordinal].sample_layout;
-        }
+        auto const& config = tracked.node->input_ports(input.domain, PortKind::sample)[input.ordinal];
         return ChannelLayout {
             .channel_type = sample_channel_type_for(tracked.sample_channel_type),
-            .sample_layout = sample_layout,
+            .sample_layout = lane_port_sample_layout(config),
         };
     };
 
@@ -1369,10 +1366,6 @@ OwnedSampleBlock TimelineExecution::read_compiled_sample_block_locked(LaneId lan
         auto const last_chunk_index =
             std::min(chunk_range.end_chunk_index, request_end_chunk_index);
         for (; chunk_index < last_chunk_index; ++chunk_index) {
-            // A realtime input has no value away from the live task's current
-            // block. Viewport reads may retrieve recorded cache blocks, but
-            // must not render a missing historical/future block using today's
-            // realtime input.
             if (!cache.chunks.contains(chunk_index)
                 && (!has_live_realtime_sample_source
                     || chunk_start_index(chunk_index, chunk_size) == current_start_index_)) {
