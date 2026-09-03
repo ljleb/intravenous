@@ -8,16 +8,15 @@
 #include <algorithm>
 #include <deque>
 #include <functional>
-#include <optional>
-#include <variant>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace iv {
@@ -154,22 +153,12 @@ namespace iv {
         }
     };
 
-    inline PortKind lane_output_kind(LaneOutputConfig const& output)
+    inline PortKind lane_output_kind(LanePortConfig const& output)
     {
-        return std::visit([](auto const& config) {
-            using Config = std::remove_cvref_t<decltype(config)>;
-            if constexpr (
-                std::same_as<Config, CompiledEventLaneOutputConfig>
-                || std::same_as<Config, RealtimeEventLaneOutputConfig>
-            ) {
-                return PortKind::event;
-            } else {
-                return PortKind::sample;
-            }
-        }, output);
+        return lane_port_kind(output);
     }
 
-    inline std::optional<ChannelTypeId> default_sample_channel_type(LaneOutputConfig const& output)
+    inline std::optional<ChannelTypeId> default_sample_channel_type(LanePortConfig const& output)
     {
         return lane_output_kind(output) == PortKind::sample
             ? std::optional<ChannelTypeId>(ChannelTypeId::stereo)
@@ -181,7 +170,7 @@ namespace iv {
     struct LaneRecord {
         LaneId id {};
         TypeErasedLaneNode node {};
-        LaneOutputConfig output {};
+        LanePortConfig output {};
         std::optional<ChannelTypeId> sample_channel_type {};
         LaneMetadata metadata {};
         std::vector<std::string> external_task_dependencies {};
@@ -207,8 +196,6 @@ namespace iv {
 
     struct LaneGraphLaneStore {
         LaneIdAllocator ids;
-        // Task execution keeps non-owning pointers to lane nodes. Deque keeps
-        // existing records at stable addresses when lanes are appended.
         std::deque<CompiledLaneRecord> compiled;
         std::deque<RealtimeLaneRecord> realtime;
         std::unordered_map<LaneId, LaneLocation, LaneIdHash> indices;
@@ -262,8 +249,7 @@ namespace iv {
         static LaneGraphDomainConnections& connections_for_domain(
             LanePortDomain domain,
             LaneGraphDomainConnections& compiled,
-            LaneGraphDomainConnections& realtime
-        )
+            LaneGraphDomainConnections& realtime)
         {
             return domain == LanePortDomain::compiled ? compiled : realtime;
         }
@@ -271,24 +257,14 @@ namespace iv {
         static LaneGraphDomainConnections const& connections_for_domain(
             LanePortDomain domain,
             LaneGraphDomainConnections const& compiled,
-            LaneGraphDomainConnections const& realtime
-        )
+            LaneGraphDomainConnections const& realtime)
         {
             return domain == LanePortDomain::compiled ? compiled : realtime;
         }
 
         static size_t input_count(TypeErasedLaneNode const& node, LanePortId input)
         {
-            if (input.domain == LanePortDomain::compiled && input.kind == PortKind::sample) {
-                return node.compiled_sample_inputs().size();
-            }
-            if (input.domain == LanePortDomain::compiled && input.kind == PortKind::event) {
-                return node.compiled_event_inputs().size();
-            }
-            if (input.domain == LanePortDomain::realtime && input.kind == PortKind::sample) {
-                return node.realtime_sample_inputs().size();
-            }
-            return node.realtime_event_inputs().size();
+            return node.input_ports(input.domain, input.kind).size();
         }
 
         bool would_create_cycle(LaneId source, LaneId target) const
@@ -316,8 +292,6 @@ namespace iv {
                         pending.push_back(connection.target);
                     }
                 };
-                // A compiled output may feed a realtime input, so cycle
-                // detection must traverse both connection domains.
                 append_targets(_connections.compiled);
                 append_targets(_connections.realtime);
             }
@@ -331,7 +305,7 @@ namespace iv {
             if (lane_output_kind(source_record.output) != input.kind) {
                 throw std::runtime_error("lane connection kind mismatch");
             }
-            auto const source_domain = lane_output_domain(source_record.output);
+            auto const source_domain = lane_port_domain(source_record.output);
             if (!(source_domain == input.domain
                     || (source_domain == LanePortDomain::compiled
                         && input.domain == LanePortDomain::realtime))) {
@@ -358,17 +332,17 @@ namespace iv {
             std::optional<ChannelTypeId> sample_channel_type = std::nullopt)
         {
             LaneId const id = _lanes.ids.next();
-            LaneOutputConfig output = node.output();
+            LanePortConfig output = node.output();
             auto record = LaneRecord {
                 .id = id,
                 .node = std::move(node),
-                .output = std::move(output),
+                .output = output,
                 .sample_channel_type = sample_channel_type.has_value()
                     ? sample_channel_type
                     : default_sample_channel_type(output),
                 .metadata = std::move(metadata),
             };
-            LanePortDomain const domain = lane_output_domain(record.output);
+            LanePortDomain const domain = lane_port_domain(record.output);
             if (domain == LanePortDomain::compiled) {
                 _lanes.indices.emplace(id, LaneLocation {
                     .domain = domain,
@@ -396,8 +370,8 @@ namespace iv {
             std::vector<std::string> external_task_dependencies = {},
             std::optional<ChannelTypeId> sample_channel_type = std::nullopt)
         {
-            LaneOutputConfig output = node.output();
-            LanePortDomain const domain = lane_output_domain(output);
+            LanePortConfig output = node.output();
+            LanePortDomain const domain = lane_port_domain(output);
             if (contains(id)) {
                 auto const location = location_for(id);
                 if (location.domain != domain) {
@@ -405,7 +379,7 @@ namespace iv {
                 }
                 auto& record = lane(id);
                 record.node = std::move(node);
-                record.output = std::move(output);
+                record.output = output;
                 record.sample_channel_type = sample_channel_type.has_value()
                     ? sample_channel_type
                     : default_sample_channel_type(output);
@@ -418,7 +392,7 @@ namespace iv {
             auto record = LaneRecord {
                 .id = id,
                 .node = std::move(node),
-                .output = std::move(output),
+                .output = output,
                 .sample_channel_type = sample_channel_type.has_value()
                     ? sample_channel_type
                     : default_sample_channel_type(output),
@@ -654,8 +628,7 @@ namespace iv {
                 connections.outputs_by_source.erase(it);
                 for (auto const& output : outputs) {
                     if (auto target_it = connections.inputs_by_target.find(output.target);
-                        target_it != connections.inputs_by_target.end()
-                    ) {
+                        target_it != connections.inputs_by_target.end()) {
                         auto& target_inputs = target_it->second;
                         std::erase(target_inputs, LaneInputConnection {
                             .source = removed,
@@ -679,8 +652,7 @@ namespace iv {
                 connections.inputs_by_target.erase(it);
                 for (auto const& input : inputs) {
                     if (auto source_it = connections.outputs_by_source.find(input.source);
-                        source_it != connections.outputs_by_source.end()
-                    ) {
+                        source_it != connections.outputs_by_source.end()) {
                         auto& source_outputs = source_it->second;
                         std::erase(source_outputs, LaneOutputConnection {
                             .target = removed,
@@ -734,7 +706,6 @@ namespace iv {
                 _lanes.realtime.pop_back();
             }
             _lanes.indices.erase(removed);
-
         }
 
         std::vector<LaneInputConnection> inputs_for(LaneId target) const
