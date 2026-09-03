@@ -17,14 +17,11 @@ namespace iv {
     using TimelineLaneVisitFn = std::function<void(
         LaneId,
         TypeErasedLaneNode const&,
-        LaneOutputConfig const&,
+        LanePortConfig const&,
         std::optional<ChannelTypeId>,
         std::vector<LaneInputConnection> const&,
         std::vector<std::string> const&)>;
 
-    // A persistent lane is supplied by an owner that can reconstruct it during
-    // project replay. Ephemeral lanes are runtime infrastructure, such as
-    // visualization sinks, and must never contribute durable project state.
     enum class TimelineLaneLifetime {
         persistent,
         ephemeral,
