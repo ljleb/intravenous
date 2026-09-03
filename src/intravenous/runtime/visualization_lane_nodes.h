@@ -5,6 +5,7 @@
 #include <intravenous/sample.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -14,11 +15,8 @@
 namespace iv {
 
 struct RealtimeSampleBlockQueue {
-    // This crosses the realtime/UI boundary with one scalar, not copied audio
-    // blocks. The latest block peak is sufficient for a sampled level meter.
     RealtimeSampleBlockQueue(ChannelLayout, size_t) {}
 
-    // Producer side (task runner thread) — lock-free and allocation-free.
     void push(SampleBlockView<Sample const> block)
     {
         Sample::storage primary = 0.0f;
@@ -33,8 +31,6 @@ struct RealtimeSampleBlockQueue {
         secondary_peak_level_.store(secondary, std::memory_order_release);
     }
 
-    // Consumer side (publisher thread): one scalar per visible lane per UI
-    // update frame.
     [[nodiscard]] Sample::storage peak_level() const
     {
         return peak_level_.load(std::memory_order_acquire);
@@ -67,19 +63,17 @@ struct RealtimeEventBlockQueue {
     alignas(64) std::atomic<size_t> head { 0 };
     alignas(64) std::atomic<size_t> tail { 0 };
 
-    // Producer side (task runner thread) — lock-free
     void push(std::span<TimedEvent const> events)
     {
         auto const t = tail.load(std::memory_order_relaxed);
         auto const next = (t + 1) % kCapacity;
         if (next == head.load(std::memory_order_acquire)) {
-            return; // full — drop
+            return;
         }
         ring[t].events.assign(events.begin(), events.end());
         tail.store(next, std::memory_order_release);
     }
 
-    // Consumer side (publisher thread) — lock-free
     template<typename F>
     void drain(F&& callback)
     {
@@ -95,23 +89,22 @@ struct RealtimeEventBlockQueue {
 };
 
 struct VisualizationRealtimeSampleLane {
-    RealtimeSampleBlockQueue* queue = nullptr; // non-owning
+    RealtimeSampleBlockQueue* queue = nullptr;
 
-    static std::array<RealtimeSampleLaneInputConfig, 1> realtime_sample_inputs()
+    static std::array<LanePortConfig, 2> ports()
     {
-        return { RealtimeSampleLaneInputConfig { .name = "source" } };
-    }
-
-    static RealtimeSampleLaneOutputConfig output()
-    {
-        return RealtimeSampleLaneOutputConfig { .name = "pass" };
+        return {
+            sample_input_port("source", LanePortDomain::realtime),
+            sample_output_port("pass", LanePortDomain::realtime),
+        };
     }
 
     void tick_block_realtime(RealtimeLaneTickContext<VisualizationRealtimeSampleLane>& ctx)
     {
+        auto& output = std::get<RealtimeSampleLaneOutput>(ctx.out());
         if (ctx.realtime_sample_input(0).connected()) {
             auto const block = ctx.realtime_sample_input(0).block_view();
-            ctx.out().write_block(block);
+            output.write_block(block);
             if (queue != nullptr) {
                 queue->push(block);
             }
@@ -119,7 +112,7 @@ struct VisualizationRealtimeSampleLane {
             if (queue != nullptr) {
                 queue->clear();
             }
-            auto const out = ctx.out().block_view();
+            auto const out = output.block_view();
             for (size_t frame = 0; frame < out.frames(); ++frame) {
                 for (size_t channel = 0; channel < out.channels(); ++channel) {
                     out.set(frame, channel, Sample{});
@@ -130,22 +123,21 @@ struct VisualizationRealtimeSampleLane {
 };
 
 struct VisualizationRealtimeEventLane {
-    RealtimeEventBlockQueue* queue = nullptr; // non-owning
+    RealtimeEventBlockQueue* queue = nullptr;
 
-    static std::array<RealtimeEventLaneInputConfig, 1> realtime_event_inputs()
+    static std::array<LanePortConfig, 2> ports()
     {
-        return { RealtimeEventLaneInputConfig { .name = "source" } };
-    }
-
-    static RealtimeEventLaneOutputConfig output()
-    {
-        return RealtimeEventLaneOutputConfig { .name = "pass" };
+        return {
+            event_input_port("source", LanePortDomain::realtime),
+            event_output_port("pass", LanePortDomain::realtime),
+        };
     }
 
     void tick_block_realtime(RealtimeLaneTickContext<VisualizationRealtimeEventLane>& ctx)
     {
         auto const events = ctx.realtime_event_input(0).get_block();
-        ctx.out().push_block(BlockView<TimedEvent const> { .first = events });
+        std::get<RealtimeEventLaneOutput>(ctx.out()).push_block(
+            BlockView<TimedEvent const> { .first = events });
         if (queue != nullptr) {
             queue->push(events);
         }
