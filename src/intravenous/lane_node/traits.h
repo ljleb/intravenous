@@ -59,6 +59,66 @@ namespace iv {
         LanePortTypeConfig type { SampleLanePortConfig {} };
     };
 
+    inline LanePortDomainConfig lane_port_domain_config(LanePortDomain domain)
+    {
+        return domain == LanePortDomain::compiled
+            ? LanePortDomainConfig { CompiledLanePortConfig {} }
+            : LanePortDomainConfig { RealtimeLanePortConfig {} };
+    }
+
+    inline LanePortConfig sample_input_port(
+        std::string name,
+        LanePortDomain domain,
+        Sample default_value = 0.0f,
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar)
+    {
+        return LanePortConfig {
+            .name = std::move(name),
+            .domain = lane_port_domain_config(domain),
+            .direction = LaneInputPortConfig { .default_value = default_value },
+            .type = SampleLanePortConfig { .sample_layout = sample_layout },
+        };
+    }
+
+    inline LanePortConfig event_input_port(
+        std::string name,
+        LanePortDomain domain,
+        EventTypeId event_type = EventTypeId::empty)
+    {
+        return LanePortConfig {
+            .name = std::move(name),
+            .domain = lane_port_domain_config(domain),
+            .direction = LaneInputPortConfig {},
+            .type = EventLanePortConfig { .event_type = event_type },
+        };
+    }
+
+    inline LanePortConfig sample_output_port(
+        std::string name,
+        LanePortDomain domain,
+        SampleStreamLayout sample_layout = SampleStreamLayout::planar)
+    {
+        return LanePortConfig {
+            .name = std::move(name),
+            .domain = lane_port_domain_config(domain),
+            .direction = LaneOutputPortConfig {},
+            .type = SampleLanePortConfig { .sample_layout = sample_layout },
+        };
+    }
+
+    inline LanePortConfig event_output_port(
+        std::string name,
+        LanePortDomain domain,
+        EventTypeId event_type = EventTypeId::empty)
+    {
+        return LanePortConfig {
+            .name = std::move(name),
+            .domain = lane_port_domain_config(domain),
+            .direction = LaneOutputPortConfig {},
+            .type = EventLanePortConfig { .event_type = event_type },
+        };
+    }
+
     inline LanePortDomain lane_port_domain(LanePortConfig const& port)
     {
         return std::holds_alternative<CompiledLanePortConfig>(port.domain)
