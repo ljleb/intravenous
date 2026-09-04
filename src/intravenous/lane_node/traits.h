@@ -20,54 +20,34 @@ namespace iv {
         realtime,
     };
 
-    struct CompiledSampleLaneInputConfig {
-        std::string name {};
+    struct LaneSampleInputPortConfig {
+        ChannelLayout channel_layout {};
         Sample default_value = 0.0f;
-        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
     };
 
-    struct CompiledEventLaneInputConfig {
-        std::string name {};
+    struct LaneEventInputPortConfig {
         EventTypeId event_type = EventTypeId::empty;
     };
 
-    struct RealtimeSampleLaneInputConfig {
+    struct LaneInputConfig {
         std::string name {};
-        Sample default_value = 0.0f;
-        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
+        LanePortDomain domain = LanePortDomain::realtime;
+        std::variant<LaneSampleInputPortConfig, LaneEventInputPortConfig> kind_config;
     };
 
-    struct RealtimeEventLaneInputConfig {
-        std::string name {};
+    struct LaneSampleOutputPortConfig {
+        ChannelLayout channel_layout {};
+    };
+
+    struct LaneEventOutputPortConfig {
         EventTypeId event_type = EventTypeId::empty;
     };
 
-    struct CompiledSampleLaneOutputConfig {
+    struct LaneOutputConfig {
         std::string name {};
-        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
+        LanePortDomain domain = LanePortDomain::realtime;
+        std::variant<LaneSampleOutputPortConfig, LaneEventOutputPortConfig> kind_config;
     };
-
-    struct CompiledEventLaneOutputConfig {
-        std::string name {};
-        EventTypeId event_type = EventTypeId::empty;
-    };
-
-    struct RealtimeSampleLaneOutputConfig {
-        std::string name {};
-        SampleStreamLayout sample_layout = SampleStreamLayout::planar;
-    };
-
-    struct RealtimeEventLaneOutputConfig {
-        std::string name {};
-        EventTypeId event_type = EventTypeId::empty;
-    };
-
-    using LaneOutputConfig = std::variant<
-        CompiledSampleLaneOutputConfig,
-        CompiledEventLaneOutputConfig,
-        RealtimeSampleLaneOutputConfig,
-        RealtimeEventLaneOutputConfig
-    >;
 
     inline std::optional<SampleStreamLayout> sample_stream_layout_for(
         LaneOutputConfig const& output)
