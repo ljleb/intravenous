@@ -3,8 +3,11 @@
 #include <intravenous/lane_node/generate.h>
 #include <intravenous/runtime/lane_graph.h>
 
+#include <algorithm>
 #include <memory>
 #include <optional>
+#include <ranges>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <typeinfo>
@@ -16,11 +19,8 @@ namespace iv {
         using NodeStoragePtr = std::unique_ptr<void, void(*)(void*)>;
 
         NodeStoragePtr _node { nullptr, +[](void*) {} };
-        std::vector<CompiledSampleLaneInputConfig> _compiled_sample_inputs;
-        std::vector<CompiledEventLaneInputConfig> _compiled_event_inputs;
-        std::vector<RealtimeSampleLaneInputConfig> _realtime_sample_inputs;
-        std::vector<RealtimeEventLaneInputConfig> _realtime_event_inputs;
-        LaneOutputConfig _output {};
+        std::vector<LaneInputConfig> _inputs;
+        std::vector<LaneOutputConfig> _outputs;
         bool _subscribes_to_compiled_output_changes = false;
         char const* _type_name = "<unknown>";
         std::type_info const* _type_info = &typeid(void);
@@ -50,15 +50,10 @@ namespace iv {
         template<typename LaneNode>
         /*implicit*/ TypeErasedLaneNode(LaneNode node)
         {
-            auto const compiled_sample_inputs = get_compiled_sample_lane_inputs(node);
-            auto const compiled_event_inputs = get_compiled_event_lane_inputs(node);
-            auto const realtime_sample_inputs = get_realtime_sample_lane_inputs(node);
-            auto const realtime_event_inputs = get_realtime_event_lane_inputs(node);
-            _compiled_sample_inputs.assign(compiled_sample_inputs.begin(), compiled_sample_inputs.end());
-            _compiled_event_inputs.assign(compiled_event_inputs.begin(), compiled_event_inputs.end());
-            _realtime_sample_inputs.assign(realtime_sample_inputs.begin(), realtime_sample_inputs.end());
-            _realtime_event_inputs.assign(realtime_event_inputs.begin(), realtime_event_inputs.end());
-            _output = normalize_lane_output(get_lane_output(node));
+            auto const inputs = get_lane_inputs(node);
+            auto const outputs = get_lane_outputs(node);
+            _inputs.assign(inputs.begin(), inputs.end());
+            _outputs.assign(outputs.begin(), outputs.end());
             if constexpr (requires { LaneNode::subscribes_to_compiled_output_changes(); }) {
                 _subscribes_to_compiled_output_changes =
                     LaneNode::subscribes_to_compiled_output_changes();
@@ -133,11 +128,72 @@ namespace iv {
             }
         }
 
-        std::vector<CompiledSampleLaneInputConfig> const& compiled_sample_inputs() const { return _compiled_sample_inputs; }
-        std::vector<CompiledEventLaneInputConfig> const& compiled_event_inputs() const { return _compiled_event_inputs; }
-        std::vector<RealtimeSampleLaneInputConfig> const& realtime_sample_inputs() const { return _realtime_sample_inputs; }
-        std::vector<RealtimeEventLaneInputConfig> const& realtime_event_inputs() const { return _realtime_event_inputs; }
-        LaneOutputConfig const& output() const { return _output; }
+        std::vector<LaneInputConfig> const& inputs() const { return _inputs; }
+        std::vector<LaneOutputConfig> const& outputs() const { return _outputs; }
+
+        size_t input_count(LanePortDomain domain, PortKind kind) const
+        {
+            return static_cast<size_t>(std::ranges::count_if(_inputs, [&](auto const& input) {
+                return lane_port_matches(input, domain, kind);
+            }));
+        }
+
+        size_t output_count(LanePortDomain domain, PortKind kind) const
+        {
+            return static_cast<size_t>(std::ranges::count_if(_outputs, [&](auto const& output) {
+                return lane_port_matches(output, domain, kind);
+            }));
+        }
+
+        LaneInputConfig const& input_config(
+            LanePortDomain domain, PortKind kind, size_t ordinal) const
+        {
+            size_t current = 0;
+            for (auto const& input : _inputs) {
+                if (!lane_port_matches(input, domain, kind)) continue;
+                if (current++ == ordinal) return input;
+            }
+            throw std::out_of_range("lane input ordinal out of range");
+        }
+
+        LaneOutputConfig const& output_config(
+            LanePortDomain domain, PortKind kind, size_t ordinal) const
+        {
+            size_t current = 0;
+            for (auto const& output : _outputs) {
+                if (!lane_port_matches(output, domain, kind)) continue;
+                if (current++ == ordinal) return output;
+            }
+            throw std::out_of_range("lane output ordinal out of range");
+        }
+
+        LaneSampleInputPortConfig const& sample_input_config(
+            LanePortDomain domain, size_t ordinal) const
+        {
+            return std::get<LaneSampleInputPortConfig>(
+                input_config(domain, PortKind::sample, ordinal).kind_config);
+        }
+
+        LaneEventInputPortConfig const& event_input_config(
+            LanePortDomain domain, size_t ordinal) const
+        {
+            return std::get<LaneEventInputPortConfig>(
+                input_config(domain, PortKind::event, ordinal).kind_config);
+        }
+
+        LaneSampleOutputPortConfig const& sample_output_config(
+            LanePortDomain domain, size_t ordinal) const
+        {
+            return std::get<LaneSampleOutputPortConfig>(
+                output_config(domain, PortKind::sample, ordinal).kind_config);
+        }
+
+        LaneEventOutputPortConfig const& event_output_config(
+            LanePortDomain domain, size_t ordinal) const
+        {
+            return std::get<LaneEventOutputPortConfig>(
+                output_config(domain, PortKind::event, ordinal).kind_config);
+        }
         bool subscribes_to_compiled_output_changes() const
         {
             return _subscribes_to_compiled_output_changes;
