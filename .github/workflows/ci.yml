@@ -50,6 +50,7 @@ jobs:
             cmake -S . -B build \
               -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
+              -DIV_BUILD_BENCHMARKS=OFF \
               -DJUCE_DIR="${JUCE_DIR}"
 
             echo "Building with ${jobs} workers"
@@ -88,6 +89,7 @@ jobs:
             cmake -S . -B build \
               -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
+              -DIV_BUILD_BENCHMARKS=OFF \
               -DJUCE_DIR="${JUCE_DIR}"
 
             echo "Building with ${jobs} workers"
@@ -144,6 +146,7 @@ jobs:
             cmake -S . -B build \
               -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
+              -DIV_BUILD_BENCHMARKS=OFF \
               -DJUCE_DIR="${JUCE_DIR}" \
               -DCMAKE_C_FLAGS_RELEASE="${flags} -DNDEBUG" \
               -DCMAKE_CXX_FLAGS_RELEASE="${flags} -DNDEBUG" \
