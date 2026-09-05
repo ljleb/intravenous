@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - converted_to_draft
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CMAKE_GENERATOR: Ninja
+
+jobs:
+  light-tests:
+    name: Light tests (draft PR)
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure release build
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            echo "CC=${CC}"
+            echo "CXX=${CXX}"
+            "${CXX}" --version | head -n 1
+            cmake -S . -B build \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DJUCE_DIR="${JUCE_DIR}"
+          '
+
+      - name: Build
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            jobs="$(nproc)"
+            echo "Building with ${jobs} workers"
+            cmake --build build --parallel "${jobs}"
+          '
+
+      - name: Run light tests
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            jobs="$(nproc)"
+            echo "Running light tests with ${jobs} workers"
+            ctest --test-dir build \
+              --parallel "${jobs}" \
+              --output-on-failure \
+              -L light
+          '
+
+  full-tests:
+    name: Full tests
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure release build
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            echo "CC=${CC}"
+            echo "CXX=${CXX}"
+            "${CXX}" --version | head -n 1
+            cmake -S . -B build \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DJUCE_DIR="${JUCE_DIR}"
+          '
+
+      - name: Build
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            jobs="$(nproc)"
+            echo "Building with ${jobs} workers"
+            cmake --build build --parallel "${jobs}"
+          '
+
+      - name: Run full test suite
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            jobs="$(nproc)"
+            echo "Running tests with ${jobs} workers"
+            ctest --test-dir build \
+              --parallel "${jobs}" \
+              --output-on-failure
+          '
+
+  sanitizer-tests:
+    name: ${{ matrix.name }} full tests
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      TSAN_OPTIONS: halt_on_error=1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ASan + LSan
+            sanitizer: address
+          - name: UBSan
+            sanitizer: undefined
+          - name: TSan
+            sanitizer: thread
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure sanitized release build
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            flags="-O3 -g -fno-omit-frame-pointer -fno-sanitize-recover=all -fsanitize=${SANITIZER}"
+            linker_flags="-fsanitize=${SANITIZER}"
+            echo "CC=${CC}"
+            echo "CXX=${CXX}"
+            "${CXX}" --version | head -n 1
+            cmake -S . -B build \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DJUCE_DIR="${JUCE_DIR}" \
+              -DCMAKE_C_FLAGS_RELEASE="${flags} -DNDEBUG" \
+              -DCMAKE_CXX_FLAGS_RELEASE="${flags} -DNDEBUG" \
+              -DCMAKE_EXE_LINKER_FLAGS_RELEASE="${linker_flags}" \
+              -DCMAKE_SHARED_LINKER_FLAGS_RELEASE="${linker_flags}"
+          '
+
+      - name: Build
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            jobs="$(nproc)"
+            echo "Building with ${jobs} workers"
+            cmake --build build --parallel "${jobs}"
+          '
+
+      - name: Run full test suite
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            jobs="$(nproc)"
+            echo "Running tests with ${jobs} workers"
+            ctest --test-dir build \
+              --parallel "${jobs}" \
+              --output-on-failure
+          '
