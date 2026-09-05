@@ -39,7 +39,7 @@ jobs:
 
       - name: Build and run light tests
         run: |
-          nix develop --command bash -c '
+          nix develop .#ci --command bash -c '
             set -euo pipefail
             jobs="$(nproc)"
 
@@ -77,7 +77,7 @@ jobs:
 
       - name: Build and run full test suite
         run: |
-          nix develop --command bash -c '
+          nix develop .#ci --command bash -c '
             set -euo pipefail
             jobs="$(nproc)"
 
@@ -131,7 +131,7 @@ jobs:
         env:
           SANITIZER: ${{ matrix.sanitizer }}
         run: |
-          nix develop --command bash -c '
+          nix develop .#ci --command bash -c '
             set -euo pipefail
             jobs="$(nproc)"
             flags="-O3 -g -fno-omit-frame-pointer -fno-sanitize-recover=all -fsanitize=${SANITIZER}"
