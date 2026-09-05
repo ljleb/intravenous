@@ -34,6 +34,13 @@ outputs = { nixpkgs, gcc-reflection-nixpkgs, clang-reflection-nixpkgs, ... }:
           '';
         in {
           default = pkgs.mkShell {
+            # Keep the compiler/JUCE selection in the derivation environment so
+            # non-interactive `nix develop --command ...` users (including CI)
+            # get the same toolchain as an interactive development shell.
+            CC = "${reflectionPkgs.gcc16}/bin/gcc";
+            CXX = "${reflectionPkgs.gcc16}/bin/g++";
+            JUCE_DIR = "${pkgs.juce}";
+
             packages = with pkgs; [
               clangd-p2996
 
@@ -68,9 +75,6 @@ outputs = { nixpkgs, gcc-reflection-nixpkgs, clang-reflection-nixpkgs, ... }:
             ];
 
             shellHook = ''
-              export CC=${reflectionPkgs.gcc16}/bin/gcc
-              export CXX=${reflectionPkgs.gcc16}/bin/g++
-              export JUCE_DIR=${pkgs.juce}
               export IV_VST3_PATH="$HOME/vst"
 
               export PATH="$HOME/.local/bin:$PATH"
