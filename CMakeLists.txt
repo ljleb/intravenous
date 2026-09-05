@@ -17,6 +17,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-freflection>)
 
 set(JUCE_DIR "" CACHE PATH "Path to a JUCE source tree or installed JUCE package root")
+option(IV_BUILD_BENCHMARKS "Build Intravenous benchmarks" ON)
 
 # avoid pulling heavy GUI/web dependencies
 # unless explicitly re-enabled by the user at configure time.
@@ -44,7 +45,9 @@ endif()
 add_subdirectory(src/intravenous)
 
 add_subdirectory(tests)
-add_subdirectory(benchmark)
+if(IV_BUILD_BENCHMARKS)
+    add_subdirectory(benchmark)
+endif()
 
 function(iv_force_cxx26 directory)
     get_property(_iv_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
