@@ -8,23 +8,43 @@
     # development environment for C++26 reflection and the GCC plugin API.
     gcc-reflection-nixpkgs.url = "github:NixOS/nixpkgs/2c423e03bbafcff28bfadc6781a4a8257f205cb5";
 
-    # Reflection-capable clang/clangd fork
+    # Reflection-capable clang/clangd fork used only by the development shell.
     clang-reflection-nixpkgs.url = "github:cadkin/nixpkgs/p2996";
   };
 
-outputs = { nixpkgs, gcc-reflection-nixpkgs, clang-reflection-nixpkgs, ... }:
+  outputs = { nixpkgs, gcc-reflection-nixpkgs, clang-reflection-nixpkgs, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in {
       devShells = forAllSystems (system:
         let
-          pkgs = import nixpkgs {
-            inherit system;
-            config.allowUnfreePredicate = pkg:
-              builtins.elem (pkg.pname or "") [ "claude-code" ];
-          };
+          pkgs = import nixpkgs { inherit system; };
           reflectionPkgs = import gcc-reflection-nixpkgs { inherit system; };
+
+          # Everything required to configure, compile, and test Intravenous.
+          ciPackages = [
+            pkgs.cmake
+            pkgs.ninja
+            pkgs.pkg-config
+            pkgs.juce
+            reflectionPkgs.gcc16
+            reflectionPkgs.gmp.dev
+            reflectionPkgs.mpfr.dev
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            # JUCE/Linux dependencies.
+            pkgs.alsa-lib
+            pkgs.fontconfig
+            pkgs.freetype
+            pkgs.libGL
+            pkgs.libx11.dev
+            pkgs.libxrandr.dev
+            pkgs.libxinerama.dev
+            pkgs.libxext.dev
+            pkgs.libxcursor.dev
+          ];
+
+          # Interactive/editor/debugging tools that CI does not need.
           clangReflectionPkgs = import clang-reflection-nixpkgs { inherit system; };
           clangd-p2996 = pkgs.writeShellScriptBin "clangd-p2996" ''
             export CPLUS_INCLUDE_PATH="${clangReflectionPkgs.llvmPackages_p2996.libcxx.dev}/include/c++/v1..."
@@ -32,51 +52,32 @@ outputs = { nixpkgs, gcc-reflection-nixpkgs, clang-reflection-nixpkgs, ... }:
               --query-driver=${reflectionPkgs.gcc16}/bin/g++ \
               "$@"
           '';
-        in {
-          default = pkgs.mkShell {
-            # Keep the compiler/JUCE selection in the derivation environment so
-            # non-interactive `nix develop --command ...` users (including CI)
-            # get the same toolchain as an interactive development shell.
+          devOnlyPackages = [
+            clangd-p2996
+            pkgs.vscode-extensions.vadimcn.vscode-lldb
+            pkgs.nodejs
+            pkgs.vsce
+            pkgs.valgrind
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.linuxPackages.perf
+            pkgs.flamegraph
+          ];
+
+          shellEnvironment = {
             CC = "${reflectionPkgs.gcc16}/bin/gcc";
             CXX = "${reflectionPkgs.gcc16}/bin/g++";
             JUCE_DIR = "${pkgs.juce}";
+          };
+        in {
+          ci = pkgs.mkShell (shellEnvironment // {
+            packages = ciPackages;
+          });
 
-            packages = with pkgs; [
-              clangd-p2996
-
-              cmake
-              ninja
-              pkg-config
-              vscode-extensions.vadimcn.vscode-lldb
-              python3
-              nodejs
-              vsce
-              juce
-              claude-code
-
-              # JUCE/Linux deps
-              alsa-lib
-              fontconfig
-              freetype
-              libGL
-              libx11.dev
-              libxrandr.dev
-              libxinerama.dev
-              libxext.dev
-              libxcursor.dev
-              reflectionPkgs.gcc16
-              reflectionPkgs.gmp.dev
-              reflectionPkgs.mpfr.dev
-              flex
-              m4
-              linuxPackages.perf
-              flamegraph
-              valgrind
-            ];
+          default = pkgs.mkShell (shellEnvironment // {
+            packages = ciPackages ++ devOnlyPackages;
 
             shellHook = ''
               export IV_VST3_PATH="$HOME/vst"
-
               export PATH="$HOME/.local/bin:$PATH"
 
               echo "intravenous dev shell ready"
@@ -86,7 +87,7 @@ outputs = { nixpkgs, gcc-reflection-nixpkgs, clang-reflection-nixpkgs, ... }:
               echo "IV_VST3_PATH=$IV_VST3_PATH"
               echo "Configure with: cmake -S . -B build -G Ninja -DJUCE_DIR=$JUCE_DIR"
             '';
-          };
+          });
         });
     };
 }
