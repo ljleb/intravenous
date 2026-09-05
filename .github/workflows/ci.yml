@@ -37,33 +37,24 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure release build
+      - name: Build and run light tests
         run: |
           nix develop --command bash -c '
             set -euo pipefail
+            jobs="$(nproc)"
+
             echo "CC=${CC}"
             echo "CXX=${CXX}"
             "${CXX}" --version | head -n 1
+
             cmake -S . -B build \
               -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DJUCE_DIR="${JUCE_DIR}"
-          '
 
-      - name: Build
-        run: |
-          nix develop --command bash -c '
-            set -euo pipefail
-            jobs="$(nproc)"
             echo "Building with ${jobs} workers"
             cmake --build build --parallel "${jobs}"
-          '
 
-      - name: Run light tests
-        run: |
-          nix develop --command bash -c '
-            set -euo pipefail
-            jobs="$(nproc)"
             echo "Running light tests with ${jobs} workers"
             ctest --test-dir build \
               --parallel "${jobs}" \
@@ -84,33 +75,24 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure release build
+      - name: Build and run full test suite
         run: |
           nix develop --command bash -c '
             set -euo pipefail
+            jobs="$(nproc)"
+
             echo "CC=${CC}"
             echo "CXX=${CXX}"
             "${CXX}" --version | head -n 1
+
             cmake -S . -B build \
               -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DJUCE_DIR="${JUCE_DIR}"
-          '
 
-      - name: Build
-        run: |
-          nix develop --command bash -c '
-            set -euo pipefail
-            jobs="$(nproc)"
             echo "Building with ${jobs} workers"
             cmake --build build --parallel "${jobs}"
-          '
 
-      - name: Run full test suite
-        run: |
-          nix develop --command bash -c '
-            set -euo pipefail
-            jobs="$(nproc)"
             echo "Running tests with ${jobs} workers"
             ctest --test-dir build \
               --parallel "${jobs}" \
@@ -145,17 +127,20 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure sanitized release build
+      - name: Build and run sanitized full test suite
         env:
           SANITIZER: ${{ matrix.sanitizer }}
         run: |
           nix develop --command bash -c '
             set -euo pipefail
+            jobs="$(nproc)"
             flags="-O3 -g -fno-omit-frame-pointer -fno-sanitize-recover=all -fsanitize=${SANITIZER}"
             linker_flags="-fsanitize=${SANITIZER}"
+
             echo "CC=${CC}"
             echo "CXX=${CXX}"
             "${CXX}" --version | head -n 1
+
             cmake -S . -B build \
               -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
@@ -164,22 +149,10 @@ jobs:
               -DCMAKE_CXX_FLAGS_RELEASE="${flags} -DNDEBUG" \
               -DCMAKE_EXE_LINKER_FLAGS_RELEASE="${linker_flags}" \
               -DCMAKE_SHARED_LINKER_FLAGS_RELEASE="${linker_flags}"
-          '
 
-      - name: Build
-        run: |
-          nix develop --command bash -c '
-            set -euo pipefail
-            jobs="$(nproc)"
             echo "Building with ${jobs} workers"
             cmake --build build --parallel "${jobs}"
-          '
 
-      - name: Run full test suite
-        run: |
-          nix develop --command bash -c '
-            set -euo pipefail
-            jobs="$(nproc)"
             echo "Running tests with ${jobs} workers"
             ctest --test-dir build \
               --parallel "${jobs}" \
