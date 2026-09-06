@@ -1,12 +1,25 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 
 project(intravenous-dsp LANGUAGES C CXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 23)
+    message(FATAL_ERROR
+        "Intravenous modules require Clang 23 or newer for the LLVM reload pipeline; "
+        "configured compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} "
+        "(${CMAKE_CXX_COMPILER})")
+endif()
+
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(LLVM 23 REQUIRED CONFIG)
+find_package(Clang 23 REQUIRED CONFIG)
+if(NOT LLVM_VERSION_MAJOR EQUAL 23)
+    message(FATAL_ERROR "Intravenous requires LLVM 23; found LLVM ${LLVM_PACKAGE_VERSION}")
+endif()
 
 set(JUCE_DIR "" CACHE PATH "Path to a JUCE source tree or installed JUCE package root")
 
@@ -34,6 +47,15 @@ else()
 endif()
 
 add_subdirectory(src/intravenous)
+add_subdirectory(tools)
+
+add_dependencies(
+    intravenous_module_loader
+    iv_clang_source_introspection_plugin
+    iv_module_finalize)
+target_compile_definitions(intravenous_module_loader PRIVATE
+    IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN="$<TARGET_FILE:iv_clang_source_introspection_plugin>"
+    IV_CONFIGURED_IV_MODULE_FINALIZER="$<TARGET_FILE:iv_module_finalize>")
 
 add_subdirectory(tests)
 add_subdirectory(benchmark)

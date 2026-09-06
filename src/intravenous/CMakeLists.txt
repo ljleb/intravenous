@@ -94,8 +94,8 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(nlohmann_json)
-# nlohmann/json 3.11.3 predates GCC 16 and still uses deprecated
-# std::is_trivial.  It is an external header-only dependency, so present its
+# nlohmann/json 3.11.3 still uses deprecated std::is_trivial. It is an
+# external header-only dependency, so present its
 # headers as system headers to consumers instead of suppressing the warning
 # for project sources.
 set_property(TARGET nlohmann_json PROPERTY SYSTEM ON)
@@ -196,6 +196,7 @@ iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 
 add_library(iv_module_shared SHARED
     $<TARGET_OBJECTS:intravenous_graph_builder>
+    module/authoring.cpp
 )
 iv_configure_intravenous_target(iv_module_shared PUBLIC)
 iv_link_stacktrace_support(iv_module_shared)

@@ -1,7 +1,7 @@
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-consteval void benchmark_constant_voice(iv::GraphBuilder& g)
+void benchmark_constant_voice(iv::GraphBuilder& g)
 {
     using namespace iv;
 

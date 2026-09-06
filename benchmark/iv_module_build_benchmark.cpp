@@ -34,10 +34,6 @@ struct PhaseResult {
     bool ninja_log_delta_available = true;
 };
 
-struct CompilerPhase {
-    std::int64_t wall_ms = 0;
-    std::string ggc_memory;
-};
 
 enum class SourceShape {
     empty,
@@ -52,17 +48,14 @@ struct Options {
         std::filesystem::temp_directory_path() / "intravenous-module-build-benchmark";
     size_t voices = 1;
     bool keep_workspace = false;
-    bool gcc_time_report = false;
     iv::ModuleCompileStage compile_stage = iv::ModuleCompileStage::full;
     iv::ModuleOptimization optimization = iv::ModuleOptimization::O3;
     bool source_introspection = true;
     bool precompiled_header = true;
-    std::optional<size_t> constexpr_cache_depth;
     SourceShape source_shape = SourceShape::full;
     std::optional<std::filesystem::path> source_module;
     std::optional<std::filesystem::path> c_compiler;
     std::optional<std::filesystem::path> cxx_compiler;
-    std::optional<std::filesystem::path> gcc_source_introspection_plugin;
 };
 
 std::string_view source_shape_name(SourceShape shape)
@@ -161,7 +154,7 @@ std::string benchmark_source(size_t voices, SourceShape shape)
         || shape == SourceShape::full) {
         source << "#include <intravenous/basic_nodes/shaping.h>\n";
     }
-    source << "\nconsteval void module_main(iv::GraphBuilder& g)\n"
+    source << "\nvoid module_main(iv::GraphBuilder& g)\n"
            << "{\n";
     if (shape == SourceShape::empty) {
         source << "    (void)g;\n"
@@ -218,8 +211,6 @@ Options parse_options(int argc, char** argv)
             options.voices = std::stoull(std::string(require_value(arg)));
         } else if (arg == "--keep") {
             options.keep_workspace = true;
-        } else if (arg == "--gcc-time-report") {
-            options.gcc_time_report = true;
         } else if (arg == "--stage") {
             options.compile_stage = parse_compile_stage(require_value(arg));
         } else if (arg == "--optimization") {
@@ -228,12 +219,6 @@ Options parse_options(int argc, char** argv)
             options.source_introspection = false;
         } else if (arg == "--no-pch") {
             options.precompiled_header = false;
-        } else if (arg == "--constexpr-cache-depth") {
-            auto const value = std::stoull(std::string(require_value(arg)));
-            if (value == 0) {
-                throw std::runtime_error("constexpr cache depth must be positive");
-            }
-            options.constexpr_cache_depth = value;
         } else if (arg == "--source-shape") {
             options.source_shape = parse_source_shape(require_value(arg));
         } else if (arg == "--module") {
@@ -242,8 +227,6 @@ Options parse_options(int argc, char** argv)
             options.c_compiler = require_value(arg);
         } else if (arg == "--cxx-compiler") {
             options.cxx_compiler = require_value(arg);
-        } else if (arg == "--gcc-source-introspection-plugin") {
-            options.gcc_source_introspection_plugin = require_value(arg);
         } else if (arg == "--help") {
             std::cout
                 << "Usage: iv_module_build_benchmark [--voices N] [--workspace PATH]"
@@ -252,10 +235,8 @@ Options parse_options(int argc, char** argv)
                 << " [--source-shape empty|input|nodes|connected|full]"
                 << " [--module PATH]"
                 << " [--c-compiler PATH] [--cxx-compiler PATH]"
-                << " [--gcc-source-introspection-plugin PATH]"
                 << " [--no-source-introspection] [--no-pch]"
-                << " [--constexpr-cache-depth N]"
-                << " [--keep] [--gcc-time-report]\n";
+                << " [--keep]\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown argument '" + std::string(arg) + "'");
@@ -394,52 +375,6 @@ PhaseResult summarize(
     return result;
 }
 
-std::optional<CompilerPhase> compiler_phase(
-    std::string_view report,
-    std::string_view name)
-{
-    std::optional<CompilerPhase> result;
-    std::istringstream lines{std::string(report)};
-    for (std::string line; std::getline(lines, line);) {
-        auto const prefix = " " + std::string(name);
-        if (!line.starts_with(prefix)) continue;
-        auto const colon = line.find(':', prefix.size());
-        if (colon == std::string::npos) continue;
-        std::istringstream values(line.substr(colon + 1));
-        double seconds = 0;
-        if (!(values >> seconds)) continue;
-        auto const memory_begin = line.find_last_of(" \t");
-        result = CompilerPhase{
-            .wall_ms = static_cast<std::int64_t>(std::llround(seconds * 1000.0)),
-            .ggc_memory = memory_begin == std::string::npos
-                ? std::string{}
-                : line.substr(memory_begin + 1),
-        };
-    }
-    return result;
-}
-
-void print_compiler_summary(std::filesystem::path const& path)
-{
-    auto const report = read(path);
-    auto const total = compiler_phase(report, "TOTAL");
-    if (!total) return;
-    std::cout << "iv-module-build-benchmark gcc_hot"
-              << " total_ms=" << total->wall_ms
-              << " ggc=" << total->ggc_memory;
-    for (auto const& [label, field] : {
-             std::pair{"constant expression evaluation", "constexpr_ms"},
-             std::pair{"template instantiation", "template_ms"},
-             std::pair{"phase lang. deferred", "deferred_ms"},
-             std::pair{"phase opt and generate", "opt_codegen_ms"},
-         }) {
-        if (auto const phase = compiler_phase(report, label)) {
-            std::cout << ' ' << field << '=' << phase->wall_ms;
-        }
-    }
-    std::cout << '\n';
-}
-
 void print(
     std::string_view phase,
     std::string_view workload,
@@ -448,7 +383,6 @@ void print(
     SourceShape shape,
     bool source_introspection,
     bool precompiled_header,
-    std::optional<size_t> constexpr_cache_depth,
     PhaseResult const& result)
 {
     std::cout << "iv-module-build-benchmark"
@@ -459,8 +393,6 @@ void print(
               << " source_shape=" << source_shape_name(shape)
               << " source_introspection=" << source_introspection
               << " pch=" << precompiled_header
-              << " constexpr_cache_depth="
-              << constexpr_cache_depth.value_or(0)
               << " pipeline_ms=" << result.pipeline_ms
               << " pch_ms=" << result.pch_ms
               << " export_ms=" << result.export_ms
@@ -506,19 +438,16 @@ void run(Options const& options)
     }
     auto source = read(hot_source);
 
-    std::optional<std::filesystem::path> compiler_report;
     {
         iv::ModuleLoader loader(
             std::filesystem::current_path(), {},
             iv::ModuleLoaderToolchainConfig{
                 .c_compiler = options.c_compiler,
                 .cxx_compiler = options.cxx_compiler,
-                .gcc_time_report = options.gcc_time_report,
                 .compile_stage = options.compile_stage,
                 .optimization = options.optimization,
                 .source_introspection = options.source_introspection,
                 .precompiled_header = options.precompiled_header,
-                .constexpr_cache_depth = options.constexpr_cache_depth,
             });
 
         auto const cold_start = Clock::now();
@@ -530,7 +459,6 @@ void run(Options const& options)
             "cold", workload, options.compile_stage, options.optimization,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
-            options.constexpr_cache_depth,
             summarize(cold_elapsed, ninja_edges(cold_log)));
 
         source += "// Hot-reload marker.\n";
@@ -543,20 +471,11 @@ void run(Options const& options)
             "hot", workload, options.compile_stage, options.optimization,
             options.source_shape,
             options.source_introspection, options.precompiled_header,
-            options.constexpr_cache_depth,
             summarize(hot_elapsed, appended_ninja_edges(cold_log, hot_log)));
 
-        if (options.gcc_time_report) {
-            compiler_report = ninja_log.parent_path().parent_path() / "compiler.time.log";
-        }
     }
 
-    if (compiler_report) {
-        print_compiler_summary(*compiler_report);
-        std::cout << "iv-module-build-benchmark compiler_time_report="
-                  << compiler_report->string() << '\n';
-    }
-    if (options.keep_workspace || options.gcc_time_report) {
+    if (options.keep_workspace) {
         std::cout << "iv-module-build-benchmark workspace="
                   << options.workspace.string() << '\n';
     } else {

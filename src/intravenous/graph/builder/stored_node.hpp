@@ -5,6 +5,7 @@
 #include <intravenous/graph/reflected_node.hpp>
 #include <intravenous/graph/types.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -68,6 +69,11 @@ struct AuthoredConcreteNodeRef {
 struct ConcreteNode {
   NodePorts ports{};
   ReflectedNodeOperations operations{};
+  std::shared_ptr<void const> node_storage{};
+  std::shared_ptr<NodeStateStructure const> state_structure_storage{};
+  NodeCodeKey code_key{};
+  size_t node_size = 0;
+  size_t node_alignment = 1;
   NodeLifetime lifetime{};
   NodeTypeIdentity type_identity{};
   // Reflection supplies a static type spelling. Keep that stable view separate

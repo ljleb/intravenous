@@ -34,9 +34,9 @@ TEST(ModuleBuildBehavior, SourceAndCmakeEditsTriggerExpectedRebuildBehavior)
         project_workspace / "generated" / "root_export.cpp");
     EXPECT_EQ(generated_export.find("GraphLowerer::lower("), std::string::npos);
     EXPECT_NE(
-        generated_export.find("freeze_authored_graph(authored)"),
+        generated_export.find("iv_module_author(iv::GraphBuilder* builder)"),
         std::string::npos);
-    EXPECT_NE(
+    EXPECT_EQ(
         generated_export.find("iv_module_authored_graph"),
         std::string::npos);
 

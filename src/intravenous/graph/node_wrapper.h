@@ -320,6 +320,7 @@ namespace iv {
             }
             ctx.declare_reflected_child(
                 _operations.node_data,
+                _operations.state_structure,
                 _operations.declare_node);
 
             for (size_t input_i = 0; input_i < num_inputs; ++input_i) {

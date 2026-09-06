@@ -3,7 +3,7 @@
 #include <intravenous/basic_nodes/filters.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-consteval void benchmark_constant_filtered(iv::GraphBuilder& g)
+void benchmark_constant_filtered(iv::GraphBuilder& g)
 {
     using namespace iv;
 

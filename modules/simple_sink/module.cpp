@@ -2,7 +2,7 @@
 #include <intravenous/basic_nodes/buffers.h>
 #include <intravenous/basic_nodes/shaping.h>
 
-consteval void simple_sink(iv::GraphBuilder& g)
+void simple_sink(iv::GraphBuilder& g)
 {
     using namespace iv;
     SamplePortRef left;

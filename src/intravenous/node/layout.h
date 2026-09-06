@@ -66,7 +66,13 @@ namespace iv {
             static_assert(
                 std::is_default_constructible_v<State>,
                 "Node::State must be default constructible");
-            return {
+
+            // Clang does not expose C++ record-field reflection to ordinary
+            // source. The LLVM module finalizer owns structural state metadata
+            // now; this runtime fallback intentionally records only ABI size
+            // and alignment. The finalizer patches full field metadata into
+            // compiled module type descriptors before they are published.
+            return NodeStateStructure {
                 .size_bits = sizeof(State) * 8,
                 .alignment_bits = alignof(State) * 8,
             };
@@ -155,6 +161,9 @@ namespace iv {
         size_t nested_nodes_placeholder(size_t node_index, Marker const*, std::span<std::span<std::byte>> const*);
 
         void finalize_nested_nodes(size_t region_index, std::vector<size_t> nested_node_indices);
+
+        void override_node_state_structure(
+            size_t node_index, NodeStateStructure structure);
 
         template<typename A>
         void export_array(size_t node_index, std::string id, std::span<A> const*);
@@ -350,7 +359,9 @@ namespace iv {
 
         void declare_reflected_child(
             void const* node_data,
-            size_t (*declare)(void const*, NodeLayoutBuilder&)) const;
+            NodeStateStructure const* state_structure,
+            size_t (*declare)(
+                void const*, NodeStateStructure const*, NodeLayoutBuilder&)) const;
 
         size_t max_block_size() const;
         size_t event_port_buffer_base_multiplier() const;
@@ -593,11 +604,14 @@ namespace iv {
     template<typename Node>
     inline void DeclarationContext<Node>::declare_reflected_child(
         void const* node_data,
-        size_t (*declare)(void const*, NodeLayoutBuilder&)) const
+        NodeStateStructure const* state_structure,
+        size_t (*declare)(
+            void const*, NodeStateStructure const*, NodeLayoutBuilder&)) const
     {
         IV_ASSERT(node_data, "reflected child node data cannot be null");
         IV_ASSERT(declare, "reflected child declaration callback cannot be null");
-        _direct_nested_node_indices.push_back(declare(node_data, *_builder));
+        _direct_nested_node_indices.push_back(
+            declare(node_data, state_structure, *_builder));
     }
 
     template<typename Node>
@@ -610,6 +624,15 @@ namespace iv {
     inline size_t DeclarationContext<Node>::event_port_buffer_base_multiplier() const
     {
         return _builder->event_port_buffer_base_multiplier();
+    }
+
+    inline void NodeLayoutBuilder::override_node_state_structure(
+        size_t node_index, NodeStateStructure structure)
+    {
+        if (node_index >= _nodes.size()) {
+            throw std::out_of_range("node state structure index out of range");
+        }
+        _nodes[node_index].node_state_structure = std::move(structure);
     }
 
     template<typename Node>

@@ -2,7 +2,7 @@
 #include <intravenous/basic_nodes/shaping.h>
 #include <iv/modules/iv.test.behavior_voice>
 
-consteval void behavior_project(iv::GraphBuilder& g)
+void behavior_project(iv::GraphBuilder& g)
 {
     using namespace iv;
     auto const phase = g.node<PhaseIntegrator>();

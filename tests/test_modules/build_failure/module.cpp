@@ -1,7 +1,7 @@
 #include <intravenous/dsl.h>
 
 namespace {
-consteval void build_failure(iv::GraphBuilder& g)
+void build_failure(iv::GraphBuilder& g)
 {
     g.outputs();
 }

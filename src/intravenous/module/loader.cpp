@@ -1,5 +1,6 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
+#include <intravenous/module/authored_graph_wire.h>
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder/lowering.hpp>
 #include <intravenous/graph/compiler.h>
@@ -724,36 +725,24 @@ class ModuleLoader::Impl {
             : std::string("iv/modules/") + root.manifest.id;
         std::ostringstream export_tu;
         export_tu << "#include <intravenous/dsl.h>\n"
-                  << "namespace iv::details::source_introspection_plugin_bridge {\n"
-                  << "template<class Ref> constexpr void "
-                     "_annotate_source_info_after_statement(\n"
-                  << "    Ref* ref, char const* declaration_identity, "
-                     "char const* file_path,\n"
-                  << "    std::uint32_t begin, std::uint32_t end) {\n"
-                  << "  iv::_annotate_source_info_after_statement(\n"
-                  << "      ref, declaration_identity, file_path, begin, end);\n"
-                  << "}\n"
-                  << "constexpr void _annotate_public_output_after_statement(\n"
-                  << "    iv::GraphBuilder* builder, bool event, std::size_t ordinal,\n"
-                  << "    char const* file_path, std::uint32_t begin, "
-                     "std::uint32_t end) {\n"
-                  << "  iv::_annotate_public_output_after_statement(\n"
-                  << "      builder, event, ordinal, file_path, begin, end);\n"
-                  << "}\n"
-                  << "}\n"
                   << "#include <" << root_include << ">\n";
-        // The consteval/frozen-graph module export path is intentionally gone.
-        // The next commit installs the Clang/LLVM authoring/finalization path.
         export_tu
             << "extern \"C\" IV_MODULE_EXPORT std::uint32_t "
-               "iv_module_abi_version() { return iv::IV_MODULE_ABI_VERSION; }\n";
+               "iv_module_abi_version() {\n"
+            << "  return iv::IV_MODULE_ABI_VERSION;\n"
+            << "}\n"
+            << "extern \"C\" void "
+               "iv_module_author(iv::GraphBuilder* builder) {\n"
+            << "  if (!builder) return;\n"
+            << "  " << root.manifest.main << "(*builder);\n"
+            << "}\n";
         write_text_if_different(export_file, export_tu.str());
 
         if (!std::filesystem::exists(custom_cmake)) {
             std::filesystem::create_directories(default_source_dir);
             write_text_if_different(
                 default_source_dir / "CMakeLists.txt",
-                "cmake_minimum_required(VERSION 3.20)\n"
+                "cmake_minimum_required(VERSION 3.21)\n"
                 "project(iv_runtime_module LANGUAGES CXX)\n"
                 "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n"
                 "include(${IV_SOURCE_DIR}/module/template/ModuleSupport.cmake)\n"
@@ -761,6 +750,22 @@ class ModuleLoader::Impl {
         }
 
         auto const [cc, cxx] = compilers();
+        auto const source_introspection_plugin =
+            std::filesystem::path(IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN);
+        auto const module_finalizer =
+            std::filesystem::path(IV_CONFIGURED_IV_MODULE_FINALIZER);
+        if (toolchain_.source_introspection
+            && (source_introspection_plugin.empty()
+                || !std::filesystem::exists(source_introspection_plugin))) {
+            throw std::runtime_error(
+                "configured Clang source-introspection plugin does not exist: '" +
+                source_introspection_plugin.string() + "'");
+        }
+        if (module_finalizer.empty() || !std::filesystem::exists(module_finalizer)) {
+            throw std::runtime_error(
+                "configured IV module finalizer does not exist: '" +
+                module_finalizer.string() + "'");
+        }
         std::string generator = toolchain_.cmake_generator.value_or(
             std::string(IV_CONFIGURED_CMAKE_GENERATOR));
 
@@ -785,8 +790,20 @@ class ModuleLoader::Impl {
                          .time_since_epoch().count() << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/abi.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/authoring.h") << '\n'
-                  << read_text(repo_root_ / "src/intravenous/graph/static_metadata.hpp") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n';
+        signature
+            << "module-finalizer=" << module_finalizer.generic_string() << '\n'
+            << "module-finalizer-stamp="
+            << std::filesystem::last_write_time(module_finalizer)
+                   .time_since_epoch().count() << '\n';
+        if (toolchain_.source_introspection) {
+            signature
+                << "source-introspection-plugin="
+                << source_introspection_plugin.generic_string() << '\n'
+                << "source-introspection-plugin-stamp="
+                << std::filesystem::last_write_time(source_introspection_plugin)
+                       .time_since_epoch().count() << '\n';
+        }
         for (auto const &module : closure.modules) {
             signature << key(module) << '\n'
                       << read_text(module.manifest_file) << '\n'
@@ -837,7 +854,11 @@ class ModuleLoader::Impl {
                   << " -DIV_MODULE_INCLUDE_DIRS=\"" << include_list.str() << "\""
                   << " -DIV_MODULE_OUTPUT_DIR=" << quote(output_dir)
                   << " -DIV_MODULE_OUTPUT_NAME=iv_module_" << sanitize(root.manifest.id)
-;
+                  << " -DIV_CLANG_SOURCE_INTROSPECTION_PLUGIN="
+                  << quote(source_introspection_plugin)
+                  << " -DIV_MODULE_FINALIZER=" << quote(module_finalizer)
+                  << " -DIV_MODULE_FINALIZER_OPTIMIZATION="
+                  << module_optimization_name(toolchain_.optimization);
         if (!toolchain_.source_introspection) {
             configure << " -DIV_MODULE_SOURCE_INTROSPECTION=OFF";
         }
@@ -985,9 +1006,44 @@ public:
                 std::to_string(loaded_abi_version) + " (expected " +
                 std::to_string(IV_MODULE_ABI_VERSION) + ")");
         }
-        throw std::runtime_error(
-            "module loading requires the Clang/LLVM authoring finalizer");
-
+        auto authored_graph = reinterpret_cast<iv_module_authored_graph_fn>(
+            library->symbol("iv_module_authored_graph"));
+        auto node_configs = reinterpret_cast<iv_module_node_configs_fn>(
+            library->symbol("iv_module_node_configs"));
+        auto node_types = reinterpret_cast<iv_module_node_types_fn>(
+            library->symbol("iv_module_node_types"));
+        if (!authored_graph || !node_configs || !node_types) {
+            throw std::runtime_error(
+                "module '" + artifact.string() +
+                "' does not export the finalized authored-graph tables");
+        }
+        auto const graph_view = authored_graph();
+        auto const config_view = node_configs();
+        auto const type_view = node_types();
+        if (!graph_view.data && graph_view.size != 0) {
+            throw std::runtime_error("module authored graph view has null data");
+        }
+        if (config_view.size % sizeof(ModuleNodeConfigRecord) != 0) {
+            throw std::runtime_error("module node config table has invalid size");
+        }
+        if (type_view.size % sizeof(details::NodeCompilerRecord) != 0) {
+            throw std::runtime_error("module node type table has invalid size");
+        }
+        auto const graph_json = std::string_view(
+            static_cast<char const*>(graph_view.data), graph_view.size);
+        auto const configs = std::span(
+            static_cast<ModuleNodeConfigRecord const*>(config_view.data),
+            config_view.size / sizeof(ModuleNodeConfigRecord));
+        auto const types = std::span(
+            static_cast<details::NodeCompilerRecord const*>(type_view.data),
+            type_view.size / sizeof(details::NodeCompilerRecord));
+        auto authored = deserialize_authored_graph(graph_json, types, configs);
+        auto plan = GraphCompiler::compile(
+            GraphLowerer::lower(authored, {.execution_root = true}));
+        auto runtime_root = std::make_shared<RuntimeGraphRoot>(
+            std::move(plan.graph));
+        WeakTypeErasedNode root_node(*runtime_root);
+        auto introspection = std::move(plan.introspection);
 
         auto binary = std::make_shared<LoadedBinary>(LoadedBinary{
             root.manifest.id,

@@ -3,11 +3,14 @@
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/node/lifecycle.h>
+#include <intravenous/module/authoring.h>
+#include <intravenous/node/code_key.h>
 #include <intravenous/ports.h>
 
 
 #include <concepts>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -18,6 +21,7 @@
 
 namespace iv {
 struct NodeLayoutBuilder;
+struct NodeStateStructure;
 
 struct NodePorts {
     std::vector<InputConfig> sample_inputs {};
@@ -56,12 +60,14 @@ struct ReflectedNodeTickContext {
     std::span<std::byte> state {};
 };
 
-// Every function is specialized on the node type only.  The authored value is
-// promoted to static storage and travels as data, so several differently
-// configured instances of the same node type share one set of callbacks.
+// Every function is specialized on the node type only. The authored Node
+// value is immutable configuration data, so several differently configured
+// instances of the same type share one set of callbacks.
 struct ReflectedNodeRuntimeOperations {
     void const* node_data = nullptr;
-    size_t (*declare_node)(void const*, NodeLayoutBuilder&) = nullptr;
+    NodeStateStructure const* state_structure = nullptr;
+    size_t (*declare_node)(
+        void const*, NodeStateStructure const*, NodeLayoutBuilder&) = nullptr;
     void (*tick_block)(
         void const*,
         ReflectedNodeTickContext const&,
@@ -92,6 +98,14 @@ struct ReflectedNodeOperations {
 struct ReflectedNodeDescription {
     NodePorts ports {};
     ReflectedNodeOperations operations {};
+    // Authored node configuration is ordinary immutable C++ data. Keep the
+    // object alive independently from the authoring stack/JIT generation; the
+    // runtime callbacks continue to receive operations.runtime.node_data.
+    std::shared_ptr<void const> node_storage {};
+    std::shared_ptr<NodeStateStructure const> state_structure_storage {};
+    NodeCodeKey code_key {};
+    std::size_t node_size = 0;
+    std::size_t node_alignment = 1;
     std::string_view type_name {};
     size_t internal_latency_samples = 0;
     size_t maximum_block_size = MAX_BLOCK_SIZE;
@@ -144,21 +158,23 @@ struct ReflectedNodeDescription {
 };
 
 namespace details {
-    [[gnu::error(
-        "GraphBuilder::node may only be called during constant evaluation")]]
-    void runtime_graph_builder_node_call_is_forbidden();
-
     template<class Node>
-    ReflectedNodeDescription reflect_node(Node node);
+    ReflectedNodeDescription reflect_node(Node const& node);
 
     template<class Node>
     constexpr ReflectedNodeOperations reflected_node_operations(Node const* node_data);
 
     template<class Node>
-    size_t declare_reflected_node(void const* node_data, NodeLayoutBuilder& builder)
+    size_t declare_reflected_node(
+        void const* node_data,
+        NodeStateStructure const* state_structure,
+        NodeLayoutBuilder& builder)
     {
         auto const& node = *static_cast<Node const*>(node_data);
         DeclarationContext<Node> ctx(builder, node);
+        if (state_structure) {
+            builder.override_node_state_structure(ctx.node_index(), *state_structure);
+        }
         if constexpr (details::has_declare<Node>) {
             node.declare(ctx);
         }
@@ -217,6 +233,7 @@ namespace details {
         return {
             .runtime = {
                 .node_data = node_data,
+                .state_structure = nullptr,
                 .declare_node = &declare_reflected_node<Node>,
                 .tick_block = &tick_reflected_node_block<Node>,
                 .skip_block = &skip_reflected_node_block<Node>,
@@ -224,25 +241,51 @@ namespace details {
         };
     }
 
-    // The callback set and reflected type spelling are properties of Node,
-    // not of one authored Node value.  GraphBuilder can create hundreds of
-    // values of the same small set of node types, so materialize this portion
-    // once per type and patch only the value-specific data pointer below.
+    // The callback set and Clang type spelling are properties of Node, not of
+    // one authored Node value. NodeCodeKey is intentionally build-local: it
+    // joins the graph produced by module_main with the LLVM compiler record
+    // emitted by the same compilation. Hot-reload identity remains the type
+    // spelling stored separately in graph metadata.
     struct ReflectedNodeTypeMetadata {
         ReflectedNodeOperations operations {};
+        NodeCodeKey code_key {};
         std::string_view type_name {};
     };
 
     template<class Node>
     inline constexpr ReflectedNodeTypeMetadata reflected_node_type_metadata {
         .operations = reflected_node_operations<Node>(nullptr),
-        .type_name = {},
+        .code_key = node_code_key_v<Node>,
+        .type_name = clang_type_name<Node>(),
     };
 
-    // Description is independent of where the node object lives.  Authoring
-    // reflection still promotes authored values through reflect_node(), but a
-    // bootstrap DSO or host-owned compiler node can describe an already-owned
-    // typed object at runtime without invoking std::meta or static promotion.
+    struct NodeCompilerRecord {
+        NodeCodeKey code_key {};
+        ReflectedNodeRuntimeOperations runtime {};
+        char const* type_name = nullptr;
+        std::size_t type_name_size = 0;
+    };
+
+#if defined(__APPLE__)
+#define IV_NODE_COMPILER_RECORD_ATTR __attribute__((used, section("__DATA,__iv_node_types")))
+#elif defined(_WIN32)
+#define IV_NODE_COMPILER_RECORD_ATTR __declspec(selectany)
+#else
+#define IV_NODE_COMPILER_RECORD_ATTR __attribute__((used, section("iv_node_types")))
+#endif
+
+    template<class Node>
+    IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
+        node_compiler_record {
+            .code_key = node_code_key_v<Node>,
+            .runtime = reflected_node_operations<Node>(nullptr).runtime,
+            .type_name = clang_type_name<Node>().data(),
+            .type_name_size = clang_type_name<Node>().size(),
+        };
+
+    // Description is independent of where the node object lives. Authoring owns
+    // the immutable config separately from the stack so it can be serialized
+    // after module_main returns.
     template<class Node>
     constexpr ReflectedNodeDescription describe_reflected_node(
         Node const& node,
@@ -265,6 +308,9 @@ namespace details {
 
         description.operations = type_metadata.operations;
         description.operations.runtime.node_data = node_data;
+        description.code_key = type_metadata.code_key;
+        description.node_size = sizeof(Node);
+        description.node_alignment = alignof(Node);
         description.type_name = type_metadata.type_name;
         description.internal_latency_samples = get_internal_latency(node);
         description.maximum_block_size = get_max_block_size(node);
@@ -276,6 +322,25 @@ namespace details {
         return description;
     }
 
+    template<class Node>
+    ReflectedNodeDescription reflect_node(Node const& node)
+    {
+        using Value = std::remove_cvref_t<Node>;
+        static_assert(
+            std::is_trivially_copyable_v<Value>,
+            "authored node values must be trivially copyable");
+        // Force the compiler record specialization into the LLVM module. The
+        // authoring graph stores only its NodeCodeKey; iv-module-finalize later
+        // resolves that key back to this record's direct function references.
+        (void)&node_compiler_record<Value>;
 
+        auto storage = copy_authored_node_bytes(
+            std::addressof(node), sizeof(Value), alignof(Value));
+        auto const* stored = static_cast<Value const*>(storage.get());
+        auto description = describe_reflected_node(*stored, stored);
+        description.node_storage = std::move(storage);
+        return description;
+    }
+#undef IV_NODE_COMPILER_RECORD_ATTR
 } // namespace details
 } // namespace iv
