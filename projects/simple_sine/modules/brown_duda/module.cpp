@@ -1,4 +1,9 @@
 #include <intravenous/dsl.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <numbers>
 
 using namespace iv;
 
@@ -89,8 +94,7 @@ struct StereoSourceGeometry
         result[1].name = "width";
 
         result[2].name = "distance";
-        result[2].channel_layout =
-            brown_duda_detail::stereo_planar;
+        result[2].channel_layout = stereo_planar;
 
         return result;
     }
@@ -100,8 +104,7 @@ struct StereoSourceGeometry
         std::array<OutputConfig, 1> result {};
 
         result[0].name = "azimuth";
-        result[0].channel_layout =
-            brown_duda_detail::stereo_planar;
+        result[0].channel_layout = stereo_planar;
 
         return result;
     }
@@ -217,15 +220,7 @@ enum class BrownDudaPinnaProfile {
 
 struct BrownDudaParameters
 {
-    BrownDudaPinnaProfile pinna_profile =
-        BrownDudaPinnaProfile::PB_NH;
-
     constexpr BrownDudaParameters() = default;
-
-    constexpr explicit BrownDudaParameters(
-        BrownDudaPinnaProfile profile)
-        : pinna_profile(profile)
-    {}
 
     static constexpr auto inputs()
     {
@@ -243,38 +238,38 @@ struct BrownDudaParameters
 
         result[0].name = "head_b0";
         result[0].channel_layout =
-            brown_duda_detail::stereo_planar;
+            stereo_planar;
 
         result[1].name = "head_b1";
         result[1].channel_layout =
-            brown_duda_detail::stereo_planar;
+            stereo_planar;
 
         result[2].name = "head_feedback";
         // mono: broadcasts into the tiled head filter
 
         result[3].name = "head_delay";
         result[3].channel_layout =
-            brown_duda_detail::stereo_planar;
+            stereo_planar;
 
         result[4].name = "d2";
         result[4].channel_layout =
-            brown_duda_detail::stereo_planar;
+            stereo_planar;
 
         result[5].name = "d3";
         result[5].channel_layout =
-            brown_duda_detail::stereo_planar;
+            stereo_planar;
 
         result[6].name = "d4";
         result[6].channel_layout =
-            brown_duda_detail::stereo_planar;
+            stereo_planar;
 
         result[7].name = "d5";
         result[7].channel_layout =
-            brown_duda_detail::stereo_planar;
+            stereo_planar;
 
         result[8].name = "d6";
         result[8].channel_layout =
-            brown_duda_detail::stereo_planar;
+            stereo_planar;
 
         return result;
     }
@@ -298,8 +293,6 @@ private:
     static float propagation_delay_seconds(
         float incidence_degrees)
     {
-        using namespace brown_duda_detail;
-
         auto const theta =
             degrees_to_radians(
                 wrap_degrees(incidence_degrees));
@@ -328,48 +321,37 @@ private:
         return radius_over_c + relative_delay;
     }
 
-    float pinna_d(size_t event) const
+    static float pinna_d(size_t event)
     {
-        if (pinna_profile == BrownDudaPinnaProfile::RD) {
-            return event == 0 ? 0.85f : 0.35f;
-        }
+        // if (pinna_profile == BrownDudaPinnaProfile::RD) {
+        //     return event == 0 ? 0.85f : 0.35f;
+        // }
 
         // PB and NH
         return event == 0 ? 1.0f : 0.5f;
     }
 
-    float pinna_delay_44100(
+    static float raw_pinna_delay_44100(
         size_t event,
         float azimuth,
-        float elevation) const
+        float elevation,
+        float D)
     {
-        // Table I, rows n=2..6.
         constexpr std::array<float, 5> A {
-            1.0f,
-            5.0f,
-            5.0f,
-            5.0f,
-            5.0f,
+            1.0f, 5.0f, 5.0f, 5.0f, 5.0f
         };
 
         constexpr std::array<float, 5> B {
-            2.0f,
-            4.0f,
-            7.0f,
-            11.0f,
-            13.0f,
+            2.0f, 4.0f, 7.0f, 11.0f, 13.0f
         };
 
         auto const azimuth_factor =
-            std::cos(
-                brown_duda_detail::degrees_to_radians(
-                    azimuth * 0.5f));
+            std::cos(degrees_to_radians(azimuth * 0.5f));
 
         auto const elevation_factor =
             std::sin(
-                brown_duda_detail::degrees_to_radians(
-                    pinna_d(event)
-                    * (90.0f - elevation)));
+                degrees_to_radians(
+                    D * (90.0f - elevation)));
 
         return
             A[event]
@@ -378,12 +360,101 @@ private:
             + B[event];
     }
 
+    static float raw_pinna_slope_44100(
+        size_t event,
+        float azimuth,
+        float elevation,
+        float D)
+    {
+        constexpr std::array<float, 5> A {
+            1.0f, 5.0f, 5.0f, 5.0f, 5.0f
+        };
+
+        auto const azimuth_factor =
+            std::cos(degrees_to_radians(azimuth * 0.5f));
+
+        // derivative with respect to elevation in DEGREES
+        return
+            -A[event]
+            * azimuth_factor
+            * D
+            * std::numbers::pi_v<float> / 180.0f
+            * std::cos(
+                degrees_to_radians(
+                    D * (90.0f - elevation)));
+    }
+
+    static float pinna_delay_full_sphere_44100(
+        size_t event,
+        float azimuth,
+        float elevation)
+    {
+        auto const D = pinna_d(event);
+
+        // canonical [-180, +180)
+        elevation = std::remainder(elevation, 360.0f);
+
+        // The measured / fitted region: leave it completely alone.
+        if (elevation >= -90.0f &&
+            elevation <= +90.0f) {
+            return raw_pinna_delay_44100(
+                event,
+                azimuth,
+                elevation,
+                D);
+        }
+
+        // Traverse the rear hemisphere continuously:
+        //
+        // +90  -> u=0
+        // +180 -> u=.5
+        // -180 -> u=.5
+        // -90  -> u=1
+
+        float u;
+
+        if (elevation > 90.0f)
+            u = (elevation - 90.0f) / 180.0f;
+        else
+            u = (elevation + 270.0f) / 180.0f;
+
+        constexpr float span = 180.0f;
+
+        auto const y0 =
+            raw_pinna_delay_44100(
+                event, azimuth, +90.0f, D);
+
+        auto const y1 =
+            raw_pinna_delay_44100(
+                event, azimuth, -90.0f, D);
+
+        auto const m0 =
+            raw_pinna_slope_44100(
+                event, azimuth, +90.0f, D);
+
+        auto const m1 =
+            raw_pinna_slope_44100(
+                event, azimuth, -90.0f, D);
+
+        auto const u2 = u * u;
+        auto const u3 = u2 * u;
+
+        auto const h00 =  2.0f*u3 - 3.0f*u2 + 1.0f;
+        auto const h10 =        u3 - 2.0f*u2 + u;
+        auto const h01 = -2.0f*u3 + 3.0f*u2;
+        auto const h11 =        u3 -       u2;
+
+        return
+            h00 * y0
+            + h10 * span * m0
+            + h01 * y1
+            + h11 * span * m1;
+    }
+
 public:
     void tick_block(
         TickBlockContext<BrownDudaParameters> const& ctx) const
     {
-        using namespace brown_duda_detail;
-
         auto const azimuth =
             ctx.template input<"azimuth">();
 
@@ -488,35 +559,35 @@ public:
                 * sample_rate;
 
             auto const delay2 =
-                pinna_delay_44100(
+                pinna_delay_full_sphere_44100(
                     0,
                     source_azimuth,
                     source_elevation)
                 * pinna_sample_rate_scale;
 
             auto const delay3 =
-                pinna_delay_44100(
+                pinna_delay_full_sphere_44100(
                     1,
                     source_azimuth,
                     source_elevation)
                 * pinna_sample_rate_scale;
 
             auto const delay4 =
-                pinna_delay_44100(
+                pinna_delay_full_sphere_44100(
                     2,
                     source_azimuth,
                     source_elevation)
                 * pinna_sample_rate_scale;
 
             auto const delay5 =
-                pinna_delay_44100(
+                pinna_delay_full_sphere_44100(
                     3,
                     source_azimuth,
                     source_elevation)
                 * pinna_sample_rate_scale;
 
             auto const delay6 =
-                pinna_delay_44100(
+                pinna_delay_full_sphere_44100(
                     4,
                     source_azimuth,
                     source_elevation)
@@ -682,7 +753,7 @@ struct SampleDelay
                     std::lround(delay));
 
             output[i] =
-                brown_duda_detail::read_ago(
+                read_ago(
                     input,
                     i,
                     integer_delay);
@@ -764,27 +835,27 @@ struct BrownDudaPinna
                 input.get_frame(i);
 
             y += 0.50f
-                * brown_duda_detail::read_fractional_delay<
+                * read_fractional_delay<
                     max_delay_samples>(
                         input, i, d2[i]);
 
             y -= 1.00f
-                * brown_duda_detail::read_fractional_delay<
+                * read_fractional_delay<
                     max_delay_samples>(
                         input, i, d3[i]);
 
             y += 0.50f
-                * brown_duda_detail::read_fractional_delay<
+                * read_fractional_delay<
                     max_delay_samples>(
                         input, i, d4[i]);
 
             y -= 0.25f
-                * brown_duda_detail::read_fractional_delay<
+                * read_fractional_delay<
                     max_delay_samples>(
                         input, i, d5[i]);
 
             y += 0.25f
-                * brown_duda_detail::read_fractional_delay<
+                * read_fractional_delay<
                     max_delay_samples>(
                         input, i, d6[i]);
 
@@ -800,37 +871,41 @@ consteval void brown_duda_source(iv::GraphBuilder& g)
     auto const elevation = g.input<"elevation">(0.0f);
 
     auto const params = g.node<BrownDudaParameters>();
-    auto const shadow = g.node<HeadShadow, stereo>();
-    auto const propagation = g.node<VariableDelay, stereo>();
-    auto const pinna = g.node<Pinna, stereo>();
+    auto const shadow = g.node<OnePoleOneZero, stereo>();
+    auto const propagation = g.node<SampleDelay, stereo>();
+    auto const pinna = g.node<BrownDudaPinna, stereo>();
 
     params(
         "azimuth"_P = azimuth,
-        "elevation"_P = elevation);
+        "elevation"_P = elevation
+    );
     shadow(
         "in"_P = source,
-        "alpha"_P = params["alpha"]);
+        "b0"_P = params["head_b0"_P],
+        "b1"_P = params["head_b1"_P],
+        "feedback"_P = params["head_feedback"_P]
+    );
     propagation(
         "in"_P = shadow,
-        "delay"_P = params["delay"]);
+        "delay_samples"_P = params["head_delay"_P]
+    );
     pinna(
         "in"_P = propagation,
-        "d2"_P = params["d2"],
-        "d3"_P = params["d3"],
-        "d4"_P = params["d4"],
-        "d5"_P = params["d5"],
-        "d6"_P = params["d6"]
+        "d2"_P = params["d2"_P],
+        "d3"_P = params["d3"_P],
+        "d4"_P = params["d4"_P],
+        "d5"_P = params["d5"_P],
+        "d6"_P = params["d6"_P]
     );
 
-    g.outputs(
-        "main"_P = pinna
-    );
+    g.outputs("main"_P = pinna);
 }
 
 consteval void module_main(iv::GraphBuilder& g)
 {
-    auto const audio = g.input<"main", stereo>();
-    auto const center = g.input<"azimuth">(0);
+    auto const audio_input = g.input<"main", stereo>();
+    auto const audio = TypedSamplePortRef<stereo>{ static_cast<SamplePortRef>(audio_input) };
+    auto const center = g.input<"azimuth">(0,-90, 90);
     auto const spread = g.input<"spread">(30, 0, 180);
     auto const elevation = g.input<"elevation">(0, -90, 90);
     auto const source_left = g.module<brown_duda_source>();
@@ -838,17 +913,17 @@ consteval void module_main(iv::GraphBuilder& g)
 
     auto const azimuths = g.tile<stereo>(center - spread * 0.5, center + spread * 0.5);
 
-    auto const spatialized_left = source_left(
+    auto const spatialized_left = TypedSamplePortRef<stereo>{source_left(
         "source"_P = audio[stereo::left],
         "azimuth"_P = azimuths[stereo::left],
         "elevation"_P = elevation
-    );
+    )["main"_P]};
 
-    auto const spatialized_right = source_right(
+    auto const spatialized_right = TypedSamplePortRef<stereo>{source_right(
         "source"_P = audio[stereo::right],
         "azimuth"_P = azimuths[stereo::right],
         "elevation"_P = elevation
-    );
+    )["main"_P]};
 
     g.outputs("main"_P = spatialized_left + spatialized_right);
 }
