@@ -5,7 +5,6 @@
 #include <intravenous/node/lifecycle.h>
 #include <intravenous/ports.h>
 
-#include <meta>
 
 #include <concepts>
 #include <cstddef>
@@ -150,7 +149,7 @@ namespace details {
     void runtime_graph_builder_node_call_is_forbidden();
 
     template<class Node>
-    consteval ReflectedNodeDescription reflect_node(Node node);
+    ReflectedNodeDescription reflect_node(Node node);
 
     template<class Node>
     constexpr ReflectedNodeOperations reflected_node_operations(Node const* node_data);
@@ -237,8 +236,7 @@ namespace details {
     template<class Node>
     inline constexpr ReflectedNodeTypeMetadata reflected_node_type_metadata {
         .operations = reflected_node_operations<Node>(nullptr),
-        .type_name = std::meta::display_string_of(
-            std::meta::dealias(^^Node)),
+        .type_name = {},
     };
 
     // Description is independent of where the node object lives.  Authoring
@@ -278,14 +276,6 @@ namespace details {
         return description;
     }
 
-    template<class Node>
-    consteval ReflectedNodeDescription reflect_node(Node node)
-    {
-        static_assert(
-            std::copy_constructible<Node>,
-            "authored node values must be copy constructible");
-        auto const* node_data = std::define_static_object(node);
-        return describe_reflected_node(*node_data, node_data);
-    }
+
 } // namespace details
 } // namespace iv

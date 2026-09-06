@@ -3,12 +3,8 @@ include_guard(GLOBAL)
 include(${IV_SOURCE_DIR}/module/template/JuceSupport.cmake)
 include(${IV_SOURCE_DIR}/module/template/ModuleProjectInit.cmake)
 
-option(IV_MODULE_GCC_TIME_REPORT
-    "Emit GCC compile-phase timing reports for IV module builds" OFF)
 option(IV_MODULE_SOURCE_INTROSPECTION
-    "Annotate authored IV module source declarations" ON)
-set(IV_MODULE_CONSTEXPR_CACHE_DEPTH "" CACHE STRING
-    "GCC constexpr evaluator cache depth for IV module builds (empty uses GCC default)")
+    "Collect authored IV module source/state metadata" ON)
 
 function(iv_configure_iv_module_shared_import)
     set(IV_MODULE_SHARED_LIBRARY "${IV_MODULE_SHARED_LIBRARY}" CACHE FILEPATH "Path to the built iv_module_shared library")
@@ -17,7 +13,7 @@ function(iv_configure_iv_module_shared_import)
     endif()
     if(NOT TARGET iv_module_shared)
         set(_iv_links "")
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             list(APPEND _iv_links stdc++exp)
         endif()
         add_library(iv_module_shared SHARED IMPORTED GLOBAL)
@@ -37,43 +33,48 @@ function(iv_add_runtime_module target)
     if(NOT DEFINED IV_MODULE_EXPORT_FILE OR IV_MODULE_EXPORT_FILE STREQUAL "")
         message(FATAL_ERROR "iv_add_runtime_module(${target}) requires IV_MODULE_EXPORT_FILE")
     endif()
-
-    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 20)
         message(FATAL_ERROR
-            "IV modules require GCC 16 or newer for C++26 reflection; configured compiler is "
+            "IV modules require Clang 20 or newer; configured compiler is "
             "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER})")
     endif()
+    if(NOT DEFINED IV_MODULE_FINALIZER OR IV_MODULE_FINALIZER STREQUAL ""
+       OR NOT EXISTS "${IV_MODULE_FINALIZER}")
+        message(FATAL_ERROR
+            "iv_add_runtime_module(${target}) requires a built IV_MODULE_FINALIZER")
+    endif()
     if(IV_MODULE_SOURCE_INTROSPECTION
-       AND (NOT DEFINED IV_GCC_SOURCE_INTROSPECTION_PLUGIN
-            OR IV_GCC_SOURCE_INTROSPECTION_PLUGIN STREQUAL ""
-            OR NOT EXISTS "${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"))
+       AND (NOT DEFINED IV_CLANG_SOURCE_INTROSPECTION_PLUGIN
+            OR IV_CLANG_SOURCE_INTROSPECTION_PLUGIN STREQUAL ""
+            OR NOT EXISTS "${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}"))
         message(FATAL_ERROR
             "iv_add_runtime_module(${target}) requires a built "
-            "IV_GCC_SOURCE_INTROSPECTION_PLUGIN")
+            "IV_CLANG_SOURCE_INTROSPECTION_PLUGIN")
     endif()
 
     iv_configure_iv_module_shared_import()
 
+    set(_iv_metadata_dir "${CMAKE_CURRENT_BINARY_DIR}/iv-module-metadata")
+    file(MAKE_DIRECTORY "${_iv_metadata_dir}")
+
     add_library(${target}__compile_settings INTERFACE)
     target_compile_features(${target}__compile_settings INTERFACE cxx_std_26)
     target_compile_options(${target}__compile_settings INTERFACE
-        -freflection
-        # Module graphs are lowered entirely during constant evaluation. The
-        # default 128M-operation limit is too small for ordinary polyphonic
-        # graphs, but larger values trigger a GCC 16 reflection issue.
-        -fconstexpr-ops-limit=17179869184)
-    if(NOT IV_MODULE_CONSTEXPR_CACHE_DEPTH STREQUAL "")
-        if(NOT IV_MODULE_CONSTEXPR_CACHE_DEPTH MATCHES "^[1-9][0-9]*$")
-            message(FATAL_ERROR
-                "IV_MODULE_CONSTEXPR_CACHE_DEPTH must be a positive integer or empty")
-        endif()
-        target_compile_options(${target}__compile_settings INTERFACE
-            "-fconstexpr-cache-depth=${IV_MODULE_CONSTEXPR_CACHE_DEPTH}")
-    endif()
+        # Preserve the complete TU as LLVM bitcode for iv_module_finalize.
+        -flto=full
+        # Authoring is JITed immediately. Expensive optimization belongs after
+        # the graph has been authored and the execution kernel exists.
+        -O0
+        -g
+        -Xclang -disable-O0-optnone
+        -Wall -Wextra -Wpedantic)
     if(IV_MODULE_SOURCE_INTROSPECTION)
         target_compile_options(${target}__compile_settings INTERFACE
-            "-fplugin=${IV_GCC_SOURCE_INTROSPECTION_PLUGIN}"
-            "-fplugin-arg-iv_gcc_source_introspection_plugin-core-source-dir=${IV_SOURCE_DIR}")
+            "-fplugin=${IV_CLANG_SOURCE_INTROSPECTION_PLUGIN}"
+            -Xclang -plugin-arg-iv-module-metadata
+            -Xclang "core-source-dir=${IV_SOURCE_DIR}"
+            -Xclang -plugin-arg-iv-module-metadata
+            -Xclang "metadata-dir=${_iv_metadata_dir}")
     endif()
     target_include_directories(${target}__compile_settings INTERFACE
         ${IV_INCLUDE_DIR}
@@ -88,13 +89,6 @@ function(iv_add_runtime_module target)
     endif()
     target_include_directories(${target}__compile_settings SYSTEM INTERFACE ${IV_THIRD_PARTY_INCLUDE_DIR})
 
-    target_compile_options(${target}__compile_settings INTERFACE -Wall -Wextra -Wpedantic)
-    if(IV_MODULE_GCC_TIME_REPORT AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        target_compile_options(${target}__compile_settings INTERFACE
-            -ftime-report
-            -ftime-report-details)
-    endif()
-
     if(IVM_ENABLE_JUCE AND DEFINED IV_CORE_ENABLE_JUCE_VST AND IV_CORE_ENABLE_JUCE_VST)
         target_compile_definitions(${target}__compile_settings INTERFACE IV_ENABLE_JUCE_VST=1 JUCE_PLUGINHOST_VST3=1)
         if(DEFINED IV_JUCE_MODULES_DIR AND EXISTS "${IV_JUCE_MODULES_DIR}")
@@ -108,6 +102,7 @@ function(iv_add_runtime_module target)
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES
+        INTERPROCEDURAL_OPTIMIZATION OFF
         OUTPUT_NAME ${IV_MODULE_OUTPUT_NAME}
         RUNTIME_OUTPUT_DIRECTORY ${IV_MODULE_OUTPUT_DIR}
         RUNTIME_OUTPUT_DIRECTORY_DEBUG ${IV_MODULE_OUTPUT_DIR}
@@ -116,15 +111,19 @@ function(iv_add_runtime_module target)
         LIBRARY_OUTPUT_DIRECTORY_DEBUG ${IV_MODULE_OUTPUT_DIR}
         LIBRARY_OUTPUT_DIRECTORY_RELEASE ${IV_MODULE_OUTPUT_DIR})
     target_link_libraries(${target} PRIVATE ${target}__compile_settings)
+    target_link_options(${target} PRIVATE -flto=full)
+
+    # CMake still owns the complete custom link line. The launcher consumes the
+    # target's LTO objects, authors the graph through ORC, embeds the authored
+    # graph/config/type tables, emits one native object, then executes this
+    # original link command with all custom libraries/options intact.
+    set_property(TARGET ${target} PROPERTY CXX_LINKER_LAUNCHER
+        "${IV_MODULE_FINALIZER};--metadata-dir=${_iv_metadata_dir};--")
 
     if(TARGET iv_module_shared)
         target_link_libraries(${target} PRIVATE iv_module_shared)
     endif()
 
-    # dsl.h owns the compile-time graph authoring surface and transitively pulls
-    # in the heavy builder implementation. Precompile it by default for runtime
-    # module builds; callers can explicitly set IV_MODULE_PCH_HEADER to an empty
-    # string to opt out.
     if(NOT DEFINED IV_MODULE_PCH_HEADER)
         set(IV_MODULE_PCH_HEADER "${IV_SOURCE_DIR}/module/template/module_pch.h")
     endif()

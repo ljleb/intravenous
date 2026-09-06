@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
-#include <meta>
 #include <memory>
 #include <new>
 #include <limits>
@@ -67,43 +66,10 @@ namespace iv {
             static_assert(
                 std::is_default_constructible_v<State>,
                 "Node::State must be default constructible");
-
-            NodeStateStructure structure {
+            return {
                 .size_bits = sizeof(State) * 8,
                 .alignment_bits = alignof(State) * 8,
             };
-
-            if constexpr (std::is_class_v<State>) {
-                static_assert(
-                    std::meta::bases_of(
-                        ^^State,
-                        std::meta::access_context::unchecked()).empty(),
-                    "Node::State must not derive from another class");
-                static constexpr auto fields = std::define_static_array(
-                    std::meta::nonstatic_data_members_of(
-                        ^^State,
-                        std::meta::access_context::unchecked()));
-                template for (constexpr auto field : fields) {
-                    NodeStateFieldStructure reflected_field {
-                        .name = std::string(std::meta::identifier_of(field)),
-                        .type_name = std::string(
-                            std::meta::display_string_of(
-                                std::meta::type_of(field))),
-                        .bit_offset = std::meta::offset_of(field).total_bits(),
-                        .size_bits = std::meta::size_of(
-                            std::meta::type_of(field)) * 8,
-                        .alignment_bits = std::meta::alignment_of(
-                            std::meta::type_of(field)) * 8,
-                    };
-                    if constexpr (std::meta::is_bit_field(field)) {
-                        reflected_field.bit_width =
-                            std::meta::bit_size_of(field);
-                    }
-                    structure.fields.push_back(std::move(reflected_field));
-                }
-            }
-
-            return structure;
         }
     }
 

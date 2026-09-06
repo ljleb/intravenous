@@ -4,17 +4,9 @@ project(intravenous-dsp LANGUAGES C CXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 
-if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
-    message(FATAL_ERROR
-        "Intravenous Phase 4 requires GCC 16 or newer for C++26 reflection; "
-        "configured compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} "
-        "(${CMAKE_CXX_COMPILER})")
-endif()
-
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-freflection>)
 
 set(JUCE_DIR "" CACHE PATH "Path to a JUCE source tree or installed JUCE package root")
 
@@ -61,32 +53,3 @@ function(iv_force_cxx26 directory)
     endforeach()
 endfunction()
 iv_force_cxx26("${CMAKE_SOURCE_DIR}")
-
-include(ExternalProject)
-
-set(_iv_gcc_plugin_build_dir "${CMAKE_BINARY_DIR}/tools-gcc")
-set(_iv_gcc_plugin_file
-    "${_iv_gcc_plugin_build_dir}/iv_gcc_source_introspection_plugin${CMAKE_SHARED_MODULE_SUFFIX}")
-
-ExternalProject_Add(iv_gcc_source_introspection_plugin_build
-    SOURCE_DIR "${CMAKE_SOURCE_DIR}/tools"
-    BINARY_DIR "${_iv_gcc_plugin_build_dir}"
-    CMAKE_ARGS
-        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
-        "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-    BUILD_ALWAYS TRUE
-    BUILD_BYPRODUCTS "${_iv_gcc_plugin_file}"
-    INSTALL_COMMAND "")
-
-add_library(iv_gcc_source_introspection_plugin MODULE IMPORTED GLOBAL)
-set_target_properties(iv_gcc_source_introspection_plugin PROPERTIES
-    IMPORTED_LOCATION "${_iv_gcc_plugin_file}")
-add_dependencies(
-    iv_gcc_source_introspection_plugin
-    iv_gcc_source_introspection_plugin_build)
-
-add_dependencies(
-    intravenous_module_loader
-    iv_gcc_source_introspection_plugin_build)
-target_compile_definitions(intravenous_module_loader PRIVATE
-    IV_CONFIGURED_GCC_SOURCE_INTROSPECTION_PLUGIN="$<TARGET_FILE:iv_gcc_source_introspection_plugin>")

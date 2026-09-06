@@ -41,13 +41,10 @@ namespace iv {
         std::optional<std::string> cmake_generator {};
         std::optional<std::filesystem::path> make_program {};
         std::optional<std::filesystem::path> juce_dir {};
-        bool gcc_time_report = false;
         ModuleCompileStage compile_stage = ModuleCompileStage::full;
         ModuleOptimization optimization = ModuleOptimization::O3;
         bool source_introspection = true;
         bool precompiled_header = true;
-        // Empty keeps GCC's default constexpr evaluator cache depth.
-        std::optional<size_t> constexpr_cache_depth {};
     };
 
     class ModuleLoader {

@@ -1,17 +1,12 @@
 #pragma once
 
-#include <intravenous/graph/authored_graph_view.hpp>
-
 #include <cstdint>
 
 namespace iv {
-inline constexpr std::uint32_t IV_MODULE_ABI_VERSION = 3;
+inline constexpr std::uint32_t IV_MODULE_ABI_VERSION = 4;
 }
 
-// A module exports only the frozen authored graph. The host owns lowering,
-// compilation, and execution-plan lifetime.
 extern "C" {
-using iv_module_authored_graph_fn = iv::AuthoredGraphView (*)();
 using iv_module_abi_version_fn = std::uint32_t (*)();
 }
 
