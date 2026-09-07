@@ -642,7 +642,7 @@ struct BaselineFir256
     }
 };
 
-consteval void single_pan(GraphBuilder& g)
+void single_pan(GraphBuilder& g)
 {
     auto const in = g.input<"in">();
     auto const az = g.input<"azimuth">(0, -180, 180);
@@ -659,7 +659,7 @@ consteval void single_pan(GraphBuilder& g)
     g.outputs(hrtf);
 }
 
-consteval void module_main(GraphBuilder& g)
+void module_main(GraphBuilder& g)
 {
     auto const in = TypedSamplePortRef<stereo>{ static_cast<SamplePortRef>(g.input<"in", stereo>()) };
     auto const center = g.input<"azimuth">(0, -180, 180);
