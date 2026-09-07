@@ -771,6 +771,44 @@ private:
     }
 };
 
+std::optional<QualType> direct_node_state_type(
+    ASTContext& context,
+    CXXRecordDecl const* node)
+{
+    if (!node) return std::nullopt;
+    for (auto const* declaration : node->decls()) {
+        auto const* type = dyn_cast<TypeDecl>(declaration);
+        if (type && type->getName() == "State")
+            return context.getTypeDeclType(type);
+    }
+    return std::nullopt;
+}
+
+std::optional<QualType> node_state_type(
+    ASTContext& context,
+    CXXRecordDecl const* node,
+    std::set<CXXRecordDecl const*>& visited)
+{
+    if (!node || !visited.insert(node).second) return std::nullopt;
+    if (auto state = direct_node_state_type(context, node)) return state;
+    // `typename Node::State` uses normal base-class lookup too. Follow that
+    // same lookup here so inherited aliases and nested State records receive
+    // metadata keyed by the derived node that actually uses them.
+    for (auto const& base : node->bases()) {
+        auto const* base_record = base.getType()->getAsCXXRecordDecl();
+        if (auto state = node_state_type(context, base_record, visited)) return state;
+    }
+    return std::nullopt;
+}
+
+std::optional<QualType> node_state_type(
+    ASTContext& context,
+    CXXRecordDecl const* node)
+{
+    std::set<CXXRecordDecl const*> visited;
+    return node_state_type(context, node, visited);
+}
+
 class StateMetadataVisitor final : public RecursiveASTVisitor<StateMetadataVisitor> {
 public:
     explicit StateMetadataVisitor(ASTContext& context)
@@ -779,68 +817,71 @@ public:
 
     bool VisitCXXRecordDecl(CXXRecordDecl* record)
     {
-        record_state(record);
+        record_node(record);
         return true;
     }
 
-    void record_state(CXXRecordDecl const* record)
+    void record_node(CXXRecordDecl const* node)
     {
-        if (!record || !record->isCompleteDefinition() || record->getName() != "State")
-            return;
-        auto* parent = dyn_cast<CXXRecordDecl>(record->getDeclContext());
-        if (!parent || parent->isLambda()) return;
+        if (!node || !node->isCompleteDefinition() || node->isLambda()) return;
         // An uninstantiated class template has no concrete State ABI. Asking
         // Clang for its layout recursively instantiates its own dependent
         // members (for example MidiVoiceAllocator's voice-count arrays),
-        // exhausting the frontend stack. A nested State declaration in a
-        // concrete class-template specialization retains a dependent pattern
-        // in Clang 23, even though its parent and fields are concrete. The
-        // parent is therefore the discriminator here.
-        if (!has_concrete_template_arguments(parent)) return;
+        // exhausting the frontend stack. A concrete specialization can retain
+        // a dependent pattern in its nested declarations, so the node itself
+        // is the discriminator.
+        if (!has_concrete_template_arguments(node)) return;
 
-        if (record->getNumBases() != 0) {
+        auto state_type = node_state_type(context_, node);
+        if (!state_type) return;
+        auto const canonical_state_type = state_type->getCanonicalType();
+        auto const* state_record = canonical_state_type->getAsCXXRecordDecl();
+        if (state_record && !state_record->isCompleteDefinition()) return;
+
+        if (state_record && state_record->getNumBases() != 0) {
             auto id = context_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
                 "Node::State must not have base classes");
-            context_.getDiagnostics().Report(record->getLocation(), id);
+            context_.getDiagnostics().Report(state_record->getLocation(), id);
             return;
         }
 
-        auto const node_type = context_.getCanonicalTagType(parent);
+        auto const node_type = context_.getCanonicalTagType(node);
         auto const node_type_name = type_string(context_, node_type);
-        auto const node_type_usr = declaration_usr(context_, parent);
+        auto const node_type_usr = declaration_usr(context_, node);
         // The canonical declaration of every specialization is the primary
         // class template. Deduplicate by the concrete spelling instead so
         // each NodeCodeKey receives exactly one State record.
         if (!seen_node_types_.insert(node_type_name).second) return;
 
-        auto const& layout = context_.getASTRecordLayout(record);
         llvm::json::Array fields;
-        unsigned index = 0;
-        for (auto* field : record->fields()) {
-            auto const type = field->getType();
-            llvm::json::Object field_record{
-                {"name", field->getNameAsString()},
-                {"type_usr", type_usr(context_, type)},
-                {"type", type_string(context_, type)},
-                {"bit_offset", static_cast<std::int64_t>(layout.getFieldOffset(index++))},
-                {"size_bits", static_cast<std::int64_t>(context_.getTypeSize(type))},
-                {"alignment_bits", static_cast<std::int64_t>(context_.getTypeAlign(type))},
-            };
-            if (field->isBitField()) {
-                field_record["bit_width"] = static_cast<std::int64_t>(
-                    field->getBitWidthValue());
+        if (state_record) {
+            auto const& layout = context_.getASTRecordLayout(state_record);
+            unsigned index = 0;
+            for (auto* field : state_record->fields()) {
+                auto const type = field->getType();
+                llvm::json::Object field_record{
+                    {"name", field->getNameAsString()},
+                    {"type_usr", type_usr(context_, type)},
+                    {"type", type_string(context_, type)},
+                    {"bit_offset", static_cast<std::int64_t>(layout.getFieldOffset(index++))},
+                    {"size_bits", static_cast<std::int64_t>(context_.getTypeSize(type))},
+                    {"alignment_bits", static_cast<std::int64_t>(context_.getTypeAlign(type))},
+                };
+                if (field->isBitField()) {
+                    field_record["bit_width"] = static_cast<std::int64_t>(
+                        field->getBitWidthValue());
+                }
+                fields.push_back(std::move(field_record));
             }
-            fields.push_back(std::move(field_record));
         }
-        auto const state_type = context_.getCanonicalTagType(record);
         states_.push_back(llvm::json::Object{
             {"node_code_key", node_code_key(context_, node_type)},
             {"node_type_usr", node_type_usr},
             {"node_type", node_type_name},
-            {"state_type_usr", declaration_usr(context_, record)},
-            {"size_bits", static_cast<std::int64_t>(context_.getTypeSize(state_type))},
-            {"alignment_bits", static_cast<std::int64_t>(context_.getTypeAlign(state_type))},
+            {"state_type_usr", type_usr(context_, canonical_state_type)},
+            {"size_bits", static_cast<std::int64_t>(context_.getTypeSize(canonical_state_type))},
+            {"alignment_bits", static_cast<std::int64_t>(context_.getTypeAlign(canonical_state_type))},
             {"fields", std::move(fields)},
         });
     }
@@ -875,15 +916,15 @@ std::filesystem::path metadata_path(
 void write_state_metadata(
     CompilerInstance& compiler,
     std::filesystem::path const& metadata_dir,
-    std::span<CXXRecordDecl const* const> completed_states = {})
+    std::span<CXXRecordDecl const* const> completed_nodes = {})
 {
     auto& context = compiler.getASTContext();
     StateMetadataVisitor visitor(context);
     visitor.TraverseDecl(context.getTranslationUnitDecl());
-    // Nested member-class instantiations are reported to the mutation
-    // listener but are not children in the translation unit's DeclContext.
-    // Add those exact declarations explicitly to the same per-TU snapshot.
-    for (auto const* state : completed_states) visitor.record_state(state);
+    // Concrete class-template specializations can be completed after their
+    // owning top-level declaration was first traversed. Add those exact node
+    // declarations to the same per-TU snapshot.
+    for (auto const* node : completed_nodes) visitor.record_node(node);
 
     std::error_code error;
     std::filesystem::create_directories(metadata_dir, error);
@@ -925,9 +966,9 @@ private:
     FunctionInstrumenter& instrumenter_;
 };
 
-class StateMetadataMutationListener final : public ASTMutationListener {
+class ModuleMutationListener final : public ASTMutationListener {
 public:
-    StateMetadataMutationListener(
+    ModuleMutationListener(
         CompilerInstance& compiler,
         std::filesystem::path metadata_dir,
         FunctionInstrumenter* instrumenter)
@@ -946,14 +987,24 @@ public:
 
     void CompletedTagDefinition(TagDecl const* definition) override
     {
-        auto const* state = dyn_cast_or_null<CXXRecordDecl>(definition);
-        if (!state || state->getName() != "State") return;
-        auto const* parent = dyn_cast<CXXRecordDecl>(state->getDeclContext());
-        if (!parent || parent->isLambda()) return;
-        if (!has_concrete_template_arguments(parent)) return;
-        if (std::find(completed_states_.begin(), completed_states_.end(), state)
-            != completed_states_.end()) return;
-        completed_states_.push_back(state);
+        auto const* record = dyn_cast_or_null<CXXRecordDecl>(definition);
+        if (!record) return;
+        remember_node(record);
+        // A nested State of a late class-template specialization can complete
+        // after its parent was traversed. Reconsider that parent now that its
+        // State layout is complete.
+        remember_node(dyn_cast<CXXRecordDecl>(record->getDeclContext()));
+    }
+
+    void remember_node(CXXRecordDecl const* node)
+    {
+        if (!node || node->isLambda() || !has_concrete_template_arguments(node)
+            || !node_state_type(compiler_.getASTContext(), node)) {
+            return;
+        }
+        if (std::find(completed_nodes_.begin(), completed_nodes_.end(), node)
+            != completed_nodes_.end()) return;
+        completed_nodes_.push_back(node);
         if (initial_snapshot_written_) write_snapshot();
     }
 
@@ -969,13 +1020,13 @@ private:
         write_state_metadata(
             compiler_,
             metadata_dir_,
-            {completed_states_.data(), completed_states_.size()});
+            {completed_nodes_.data(), completed_nodes_.size()});
     }
 
     CompilerInstance& compiler_;
     std::filesystem::path metadata_dir_;
     FunctionInstrumenter* instrumenter_ = nullptr;
-    std::vector<CXXRecordDecl const*> completed_states_;
+    std::vector<CXXRecordDecl const*> completed_nodes_;
     bool initial_snapshot_written_ = false;
 };
 
@@ -1032,7 +1083,7 @@ private:
     SourceModel sources_;
     FunctionInstrumenter instrumenter_;
     std::filesystem::path metadata_dir_;
-    StateMetadataMutationListener state_metadata_listener_;
+    ModuleMutationListener state_metadata_listener_;
     bool source_introspection_ = true;
 };
 

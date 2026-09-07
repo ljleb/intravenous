@@ -146,16 +146,46 @@ does not reintroduce the former frozen graph representation.
 - Final verification: a complete Linux `cmake --build build -j4` succeeds,
   and `ctest --test-dir build --output-on-failure -L light` passes all 384
   light tests.
+- Audit refinement: the source plugin now resolves `Node::State` by the same
+  C++ lookup model used by `NodeState<Node>::Type`, rather than looking only
+  for a lexically nested record named `State`. Direct aliases, inherited
+  aliases, nested records, and scalar State types now have one metadata path.
+  The late-instantiation listener records only concrete nodes that actually
+  have a State, while reconsidering a parent whose nested State finishes late;
+  it no longer treats every completed C++ record as a candidate node.
+- Verification: `AliasedStateIsFinalizedWithStructuralMetadata` compiles a
+  module containing direct and inherited aliases plus a scalar State, then
+  checks that the two record layouts and the scalar layout reach the live
+  executor. This is an end-to-end check from Clang metadata through finalizing,
+  archive loading, and layout creation.
+- Verification: `AuthoredGraphBinaryArchive.RoundTripsNativeScalarsAndRejectsCorruption`
+  covers an ordinary graph round trip (including infinite input bounds) and
+  rejects bad magic, truncation, and trailing data.
+- Verification: `NodeConfigMaterialization.CopiesAlignedConfigAndOwnsEmptyAndEmbeddedNulStrings`
+  checks an over-aligned config, an embedded-NUL string, an empty string, and
+  duplicate relocation rejection after the authoring storage has gone away.
+- Verification: `ModuleStateReload.SameSizeStateFieldTypeChangeInitializesInsteadOfMigrating`
+  compiles two module generations with the same node name/identity and an
+  equal-size `int32_t`-to-`float` State change. It proves the reload path
+  initializes the second generation rather than reusing incompatible bytes.
+  Valgrind also caught an initial test-only teardown error: a `LoadedDefinition`
+  was being unloaded before its executor, leaving callback pointers dangling.
+  The fixture now keeps both generation library references alive through
+  executor destruction, matching production lifetime ownership.
+- Final verification after the audit additions: the complete debug suite passed
+  **426/426** tests (40 heavy, 386 light) in 52.84 seconds. The complete
+  Release build and Release test suite also passed.
 
-## Remaining work
+## Remaining work and boundary
 
-1. Add a direct archive round-trip/corruption test for the native graph
-   payload.
-2. Add direct unit coverage for `NodeConfigString` relocation, including empty
-   and embedded-NUL labels. The existing module behavior fixture covers the
-   ordinary nonempty end-to-end case.
-3. Add a two-generation module hot-reload test that changes a same-size State
-   field type. The end-to-end test now proves compiler metadata reaches the
-   layout, and `NodeStorageMigration` proves that differing field USRs reject
-   a move; one test still does not compile both generations and exercise the
-   full reload coordinator together.
+No known correctness work remains within this migration's NodeCodeKey, State
+metadata, native archive, configuration-relocation, or State-reload boundary.
+Future changes that add variable-length trivially-copyable configuration must
+declare and test their pointer relocations; arbitrary pointers still cannot be
+serialized as raw config bytes.
+
+The Nix compiler is Clang 23.1.0, but its current wrapper still supplies the
+Nix GCC libstdc++ headers/runtime. Moving to a pure LLVM libc++ toolchain is a
+separate toolchain migration, not a substitute for or a remaining correctness
+step in this module-reload work; it needs an explicit stdenv/stdlib decision
+and a fresh full-suite validation.
